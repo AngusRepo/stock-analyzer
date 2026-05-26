@@ -24,25 +24,32 @@ const rows = normalizeOhlcvRows(Array.from({ length: 70 }, (_, index) => {
 const levels = buildOhlcvTradePlanLevels(rows)
 
 assert(levels != null, 'backend should compute trade plan levels from OHLCV rows')
-assert(levels!.support === 107, 'backend support must come from OHLCV swing low')
-assert(levels!.resistance === 171, 'backend resistance must come from OHLCV previous high structure')
-assert(levels!.confirmation === 170, 'backend confirmation must use the prior high before the latest candle')
+assert(levels!.support > 140 && levels!.support < levels!.latestClose, 'backend support must use an actionable recent swing low, not the full-window floor')
+assert(levels!.resistance === 170, 'backend resistance must use the prior high before the latest candle')
+assert(levels!.confirmation > levels!.resistance, 'backend confirmation must be a buffered trigger above prior-high pressure')
 assert(levels!.volumeNode != null && levels!.volumeNode > 145 && levels!.volumeNode < 165, 'backend volume node must come from OHLCV volume distribution')
 assert(levels!.atrLower != null && levels!.atrLower < levels!.latestClose, 'backend ATR defense must come from OHLCV ATR')
 
-const breakoutPlan = resolveOhlcvEntryPlan(levels!, { latestPrice: 170.5 })
+const breakoutPlan = resolveOhlcvEntryPlan(levels!, { latestPrice: levels!.confirmation + 0.1 })
 
 assert(breakoutPlan?.source === 'ohlcv', 'resolved backend entry plan should declare OHLCV source')
 assert(breakoutPlan?.mode === 'breakout', 'price above confirmation should use breakout mode')
-assert(breakoutPlan?.entryPrice === 170, 'breakout entry must use OHLCV confirmation, not model close')
-assert(breakoutPlan?.target1 === 171, 'breakout target1 must use OHLCV resistance')
-assert(breakoutPlan?.optimisticLow === 170, 'optimistic range low must be OHLCV confirmation')
-assert(breakoutPlan?.optimisticHigh === 171, 'optimistic range high must be OHLCV resistance')
-assert(breakoutPlan?.buyReferenceHigh === levels!.volumeNode, 'buy reference high must use the OHLCV volume node')
+assert(breakoutPlan?.entryPrice === levels!.confirmation, 'breakout entry must use buffered OHLCV confirmation, not model close')
+assert(breakoutPlan!.target1 > breakoutPlan!.entryPrice, 'breakout target1 must sit above the buffered entry trigger')
+assert(breakoutPlan?.optimisticLow === levels!.confirmation, 'optimistic range low must be OHLCV confirmation')
+assert(breakoutPlan!.optimisticHigh >= round2(levels!.confirmation * 1.018), 'optimistic range high must not sit below the strong breakout chase ceiling')
+assert(
+  breakoutPlan!.buyReferenceHigh - breakoutPlan!.buyReferenceLow <= Math.max(3, breakoutPlan!.buyReferenceLow * 0.025),
+  'buy reference zone must be an actionable band, not support-to-volume-node across the whole box',
+)
 
 const watchPoint = formatOhlcvTradePlanWatchPoint(breakoutPlan!)
 
 assert(watchPoint.startsWith('ohlcv_trade_plan:'), 'OHLCV backend plan should be persisted as a watch point')
 assert(watchPoint.includes('buy_reference='), 'watch point should expose buy reference zone')
-assert(watchPoint.includes('optimistic_range=170~171'), 'watch point should expose OHLCV optimistic range')
+assert(watchPoint.includes(`optimistic_range=${breakoutPlan!.optimisticLow}~${breakoutPlan!.optimisticHigh}`), 'watch point should expose OHLCV optimistic range')
 assert(!watchPoint.includes('fair_value'), 'watch point must not expose fair value as a trading line')
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}

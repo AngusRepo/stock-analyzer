@@ -8,6 +8,10 @@ export type TradePlanStructureInput = {
   support?: number | string | null
   atrDefense?: number | string | null
   volumeNode?: number | string | null
+  buyReferenceLow?: number | string | null
+  buyReferenceHigh?: number | string | null
+  optimisticLow?: number | string | null
+  optimisticHigh?: number | string | null
 }
 
 export type AlphaStructureInput = {
@@ -70,6 +74,19 @@ export function buildTradePlanStructureZones(
   const atrDefenseValue = usesOhlcv ? plan?.atrDefense : (plan?.atrDefense ?? context?.fairValueLow ?? context?.poc)
   const confirmation = finitePrice(confirmationValue)
   const breakoutLimit = confirmation == null ? null : confirmation * (1 + strongBreakoutChasePct)
+  const optimisticHighCandidate = usesOhlcv
+    ? (finitePrice(plan?.optimisticHigh) ?? finitePrice(resistanceValue))
+    : finitePrice(resistanceValue)
+  const optimisticHigh = confirmation == null
+    ? optimisticHighCandidate
+    : Math.max(
+      confirmation,
+      breakoutLimit ?? confirmation,
+      optimisticHighCandidate ?? confirmation,
+    )
+  const optimisticLow = usesOhlcv ? (plan?.optimisticLow ?? confirmationValue) : confirmationValue
+  const buyReferenceLow = usesOhlcv ? (plan?.buyReferenceLow ?? supportValue) : supportValue
+  const buyReferenceHigh = usesOhlcv ? (plan?.buyReferenceHigh ?? volumeNodeValue) : volumeNodeValue
 
   return {
     source,
@@ -79,8 +96,8 @@ export function buildTradePlanStructureZones(
     support: priceText(supportValue),
     atrDefense: priceText(atrDefenseValue),
     volumeNode: priceText(volumeNodeValue),
-    buyReferenceZone: rangeText(supportValue, volumeNodeValue),
-    optimisticPriceRange: rangeText(confirmationValue, resistanceValue),
+    buyReferenceZone: rangeText(buyReferenceLow, buyReferenceHigh),
+    optimisticPriceRange: rangeText(optimisticLow, optimisticHigh),
     breakoutChaseZone: rangeText(confirmationValue, breakoutLimit),
   }
 }

@@ -25,9 +25,14 @@ const rows = normalizeOhlcvRows(Array.from({ length: 70 }, (_, index) => {
   const levels = buildTradingPlanLevels(rows)
   assert(levels != null, 'trading plan levels should be computed from OHLCV rows')
   assert(levels!.latestClose === 169, 'latest close should be deterministic')
-  assert(levels!.support === 107, 'support should be the swing low in the lookback window')
-  assert(levels!.resistance === 171, 'resistance should be the swing high in the lookback window')
-  assert(levels!.confirmation === 170, 'confirmation should be the previous swing high before the latest candle')
+  assert(levels!.support > 140 && levels!.support < levels!.latestClose, 'support should be a recent actionable swing low, not the full-window floor')
+  assert(levels!.resistance === 170, 'resistance should be the previous swing high before the latest candle')
+  assert(levels!.confirmation > levels!.resistance, 'confirmation should be buffered above prior-high pressure')
+  assert(levels!.optimisticHigh >= round2(levels!.confirmation * 1.018), 'optimistic high should not sit below the breakout chase ceiling')
+  assert(
+    levels!.buyReferenceHigh - levels!.buyReferenceLow <= Math.max(3, levels!.buyReferenceLow * 0.025),
+    'buy reference zone should be a compact actionable band',
+  )
   assert(levels!.atrLower != null && levels!.atrLower < levels!.latestClose, 'ATR lower band should sit below latest close')
   assert(levels!.atrUpper != null && levels!.atrUpper > levels!.latestClose, 'ATR upper band should sit above latest close')
   assert(levels!.ma20 === 159.5, 'MA20 should be derived from the same close series')
@@ -44,6 +49,10 @@ const rows = normalizeOhlcvRows(Array.from({ length: 70 }, (_, index) => {
 {
   const node = volumeNode(rows.slice(-30))
   assert(node != null && node > 140 && node < 170, 'volume node should follow the high-volume price region')
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
 }
 
 {

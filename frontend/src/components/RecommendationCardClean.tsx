@@ -343,6 +343,10 @@ type TradePlanContext = {
   support: number | null
   atrDefense: number | null
   volumeNode: number | null
+  buyReferenceLow?: number | null
+  buyReferenceHigh?: number | null
+  optimisticLow?: number | null
+  optimisticHigh?: number | null
   ma20: number | null
   ma60: number | null
   levels: TradingPlanLevels | null
@@ -827,6 +831,10 @@ function buildOhlcvTradePlanContext(rec: any, context: AlphaContext | null, pric
       support: levels.support,
       atrDefense: levels.atrLower,
       volumeNode: levels.volumeNode,
+      buyReferenceLow: levels.buyReferenceLow,
+      buyReferenceHigh: levels.buyReferenceHigh,
+      optimisticLow: levels.optimisticLow,
+      optimisticHigh: levels.optimisticHigh,
       ma20: levels.ma20,
       ma60: levels.ma60,
       levels,
@@ -846,6 +854,10 @@ function buildOhlcvTradePlanContext(rec: any, context: AlphaContext | null, pric
     support: fairLow ?? poc,
     atrDefense: fairLow ?? poc,
     volumeNode: poc,
+    buyReferenceLow: null,
+    buyReferenceHigh: null,
+    optimisticLow: null,
+    optimisticHigh: null,
     ma20: null,
     ma60: null,
     levels: null,
@@ -1065,6 +1077,7 @@ function KLinePlanSketch({
   const support = plan.support ?? plan.volumeNode ?? latest
   const confirmation = plan.confirmation ?? plan.resistance
   const resistance = plan.resistance ?? confirmation
+  const optimisticHigh = plan.optimisticHigh ?? resistance
   const atrDefense = plan.atrDefense
   const volumeNode = plan.volumeNode
   const prices = [latest, support, confirmation, resistance, atrDefense, volumeNode].filter((value): value is number => value != null)
@@ -1073,11 +1086,11 @@ function KLinePlanSketch({
   const lastTime = candles[candles.length - 1]?.time
   const nextTime = addCalendarDays(lastTime, 1)
   const targetTime = addCalendarDays(lastTime, 3)
-  const projection = latest && resistance && lastTime && nextTime && targetTime
+  const projection = latest && optimisticHigh && lastTime && nextTime && targetTime
     ? [
       { time: lastTime, value: latest },
       { time: nextTime, value: confirmation ?? latest },
-      { time: targetTime, value: resistance },
+      { time: targetTime, value: optimisticHigh },
     ]
     : []
   const chartKey = JSON.stringify({
@@ -1086,6 +1099,7 @@ function KLinePlanSketch({
     support,
     confirmation,
     resistance,
+    optimisticHigh,
     atrDefense,
     volumeNode,
     rows: candles.map((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close]),

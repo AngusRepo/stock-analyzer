@@ -31,6 +31,20 @@ const alphaContext = {
 }
 
 {
+  const zones = buildTradePlanStructureZones({
+    source: 'ohlcv',
+    latest: 66,
+    support: 58.4,
+    volumeNode: 61.2,
+    confirmation: 65.4,
+    resistance: 65.4,
+  }, alphaContext)
+
+  assert(zones.optimisticPriceRange === '65.40~66.58', 'OHLCV optimistic range must not sit below the breakout chase ceiling')
+  assert(zones.breakoutChaseZone === '65.40~66.58', 'breakout chase zone should stay aligned with the optimistic buyable ceiling')
+}
+
+{
   const zones = buildTradePlanStructureZones(null, alphaContext)
 
   assert(zones.source === 'alpha_fallback', 'alpha values are allowed only as fallback when OHLCV is missing')

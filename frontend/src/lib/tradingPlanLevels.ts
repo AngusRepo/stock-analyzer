@@ -22,9 +22,15 @@ export interface TradingPlanLevels {
   volumeNode: number | null
   atrUpper: number | null
   atrLower: number | null
+  buyReferenceLow: number
+  buyReferenceHigh: number
+  optimisticLow: number
+  optimisticHigh: number
   ma20: number | null
   ma60: number | null
 }
+
+export const DEFAULT_STRONG_BREAKOUT_CHASE_PCT = 0.018
 
 function finiteNumber(value: unknown): number | null {
   const n = typeof value === 'number' ? value : Number(value)
@@ -42,6 +48,57 @@ function rowVolume(row: any): number {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+function confirmationBuffer(resistance: number, atr: number | null): number {
+  const minBuffer = resistance * 0.002
+  const dynamicBuffer = atr == null ? resistance * 0.006 : atr * 0.15
+  const maxBuffer = resistance * 0.012
+  return Math.max(0.01, Math.min(Math.max(minBuffer, dynamicBuffer), maxBuffer))
+}
+
+function actionableSupport(window: OhlcvRow[]): number {
+  const supportWindow = window.slice(-Math.min(20, window.length))
+  return Math.min(...supportWindow.map((row) => row.low))
+}
+
+function buyReferenceZone(input: {
+  support: number
+  confirmation: number
+  volumeNode: number | null
+  atrLower: number | null
+  atr: number | null
+}): { low: number; high: number } {
+  const confirmationCeiling = Math.max(0, input.confirmation - Math.max(0.01, input.confirmation * 0.001))
+  const candidates = [
+    input.atrLower,
+    input.volumeNode,
+    input.support,
+  ]
+    .filter((value): value is number => value != null && Number.isFinite(value) && value > 0)
+    .filter((value) => value >= input.support && value <= confirmationCeiling)
+  const anchor = candidates.length > 0 ? Math.max(...candidates) : Math.min(input.support, confirmationCeiling)
+  const width = input.atr == null
+    ? anchor * 0.018
+    : Math.min(Math.max(input.atr * 0.55, anchor * 0.006), anchor * 0.025)
+  const low = Math.max(input.support, anchor - width / 2)
+  const high = Math.min(confirmationCeiling, anchor + width / 2)
+  return {
+    low: round2(Math.min(low, high)),
+    high: round2(Math.max(low, high)),
+  }
+}
+
+function optimisticHigh(input: {
+  confirmation: number
+  resistance: number
+  atr: number | null
+}, strongBreakoutChasePct = DEFAULT_STRONG_BREAKOUT_CHASE_PCT): number {
+  const chaseCeiling = input.confirmation * (1 + strongBreakoutChasePct)
+  const atrExtension = input.atr == null
+    ? input.confirmation * strongBreakoutChasePct
+    : input.atr * 0.8
+  return round2(Math.max(chaseCeiling, input.confirmation + atrExtension, input.resistance))
 }
 
 export function normalizeOhlcvRows(rows: any[]): OhlcvRow[] {
@@ -130,19 +187,34 @@ export function buildTradingPlanLevels(rows: OhlcvRow[], lookback = 60): Trading
   const latest = rows[rows.length - 1]
   if (!latest || window.length < 5) return null
   const atr = latestAtr(rows)
-  const support = Math.min(...window.map((row) => row.low))
-  const resistance = Math.max(...window.map((row) => row.high))
   const previousWindow = window.slice(0, -1)
-  const confirmationWindow = previousWindow.length > 0 ? previousWindow : window
-  const confirmation = Math.max(...confirmationWindow.map((row) => row.high))
+  const priorWindow = previousWindow.length > 0 ? previousWindow : window
+  const support = round2(actionableSupport(window))
+  const resistance = round2(Math.max(...priorWindow.map((row) => row.high)))
+  const confirmation = round2(resistance + confirmationBuffer(resistance, atr))
+  const node = volumeNode(window)
+  const atrLower = atr == null ? null : round2(latest.close - atr)
+  const atrUpper = atr == null ? null : round2(latest.close + atr)
+  const buyReference = buyReferenceZone({
+    support,
+    confirmation,
+    volumeNode: node,
+    atrLower,
+    atr,
+  })
+  const optimistic = optimisticHigh({ confirmation, resistance, atr })
   return {
     latestClose: round2(latest.close),
-    support: round2(support),
-    resistance: round2(resistance),
-    confirmation: round2(confirmation),
-    volumeNode: volumeNode(window),
-    atrUpper: atr == null ? null : round2(latest.close + atr),
-    atrLower: atr == null ? null : round2(latest.close - atr),
+    support,
+    resistance,
+    confirmation,
+    volumeNode: node,
+    atrUpper,
+    atrLower,
+    buyReferenceLow: buyReference.low,
+    buyReferenceHigh: buyReference.high,
+    optimisticLow: confirmation,
+    optimisticHigh: optimistic,
     ma20: simpleMovingAverage(rows, 20),
     ma60: simpleMovingAverage(rows, 60),
   }

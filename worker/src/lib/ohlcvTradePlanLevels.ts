@@ -20,6 +20,8 @@ export interface OhlcvTradePlanLevels {
 
 export type OhlcvEntryMode = 'breakout' | 'pullback'
 
+export const DEFAULT_STRONG_BREAKOUT_CHASE_PCT = 0.018
+
 export interface OhlcvEntryPlan {
   source: 'ohlcv'
   mode: OhlcvEntryMode
@@ -60,6 +62,50 @@ function round2(value: number): number {
 function priceText(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return 'na'
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function confirmationBuffer(resistance: number, atr: number | null): number {
+  const minBuffer = resistance * 0.002
+  const dynamicBuffer = atr == null ? resistance * 0.006 : atr * 0.15
+  const maxBuffer = resistance * 0.012
+  return Math.max(0.01, Math.min(Math.max(minBuffer, dynamicBuffer), maxBuffer))
+}
+
+function actionableSupport(window: OhlcvRow[]): number {
+  const supportWindow = window.slice(-Math.min(20, window.length))
+  return Math.min(...supportWindow.map((row) => row.low))
+}
+
+function resolveBuyReferenceZone(levels: OhlcvTradePlanLevels): { low: number; high: number } {
+  const confirmationCeiling = Math.max(0, levels.confirmation - Math.max(0.01, levels.confirmation * 0.001))
+  const candidates = [
+    levels.atrLower,
+    levels.volumeNode,
+    levels.support,
+  ]
+    .filter((value): value is number => value != null && Number.isFinite(value) && value > 0)
+    .filter((value) => value >= levels.support && value <= confirmationCeiling)
+  const anchor = candidates.length > 0 ? Math.max(...candidates) : Math.min(levels.support, confirmationCeiling)
+  const width = levels.atr == null
+    ? anchor * 0.018
+    : Math.min(Math.max(levels.atr * 0.55, anchor * 0.006), anchor * 0.025)
+  const low = Math.max(levels.support, anchor - width / 2)
+  const high = Math.min(confirmationCeiling, anchor + width / 2)
+  return {
+    low: round2(Math.min(low, high)),
+    high: round2(Math.max(low, high)),
+  }
+}
+
+function resolveOptimisticHigh(
+  levels: OhlcvTradePlanLevels,
+  strongBreakoutChasePct = DEFAULT_STRONG_BREAKOUT_CHASE_PCT,
+): number {
+  const chaseCeiling = levels.confirmation * (1 + strongBreakoutChasePct)
+  const atrExtension = levels.atr == null
+    ? levels.confirmation * strongBreakoutChasePct
+    : levels.atr * 0.8
+  return round2(Math.max(chaseCeiling, levels.confirmation + atrExtension, levels.resistance))
 }
 
 export function normalizeOhlcvRows(rows: any[]): OhlcvRow[] {
@@ -125,11 +171,11 @@ export function buildOhlcvTradePlanLevels(rows: OhlcvRow[], lookback = 60): Ohlc
   const latest = rows[rows.length - 1]
   if (!latest || window.length < 5) return null
   const atr = latestAtr(rows)
-  const support = Math.min(...window.map((row) => row.low))
-  const resistance = Math.max(...window.map((row) => row.high))
   const previousWindow = window.slice(0, -1)
-  const confirmationWindow = previousWindow.length > 0 ? previousWindow : window
-  const confirmation = Math.max(...confirmationWindow.map((row) => row.high))
+  const priorWindow = previousWindow.length > 0 ? previousWindow : window
+  const support = actionableSupport(window)
+  const resistance = Math.max(...priorWindow.map((row) => row.high))
+  const confirmation = resistance + confirmationBuffer(resistance, atr)
   return {
     latestClose: round2(latest.close),
     support: round2(support),
@@ -144,23 +190,24 @@ export function buildOhlcvTradePlanLevels(rows: OhlcvRow[], lookback = 60): Ohlc
 
 export function resolveOhlcvEntryPlan(
   levels: OhlcvTradePlanLevels | null | undefined,
-  options: { latestPrice?: number | string | null } = {},
+  options: { latestPrice?: number | string | null; strongBreakoutChasePct?: number } = {},
 ): OhlcvEntryPlan | null {
   if (!levels) return null
   const latest = positivePrice(options.latestPrice) ?? levels.latestClose
   const confirmation = levels.confirmation
-  const resistance = Math.max(levels.resistance, confirmation)
-  const volumeNodePrice = levels.volumeNode ?? levels.support
-  const buyReferenceLow = round2(levels.support)
-  const buyReferenceHigh = round2(Math.max(levels.support, Math.min(volumeNodePrice, confirmation)))
+  const resistance = levels.resistance
+  const buyReference = resolveBuyReferenceZone(levels)
+  const buyReferenceLow = buyReference.low
+  const buyReferenceHigh = buyReference.high
+  const optimisticHigh = resolveOptimisticHigh(levels, options.strongBreakoutChasePct)
   const mode: OhlcvEntryMode = latest >= confirmation ? 'breakout' : 'pullback'
   const entryPrice = mode === 'breakout' ? confirmation : buyReferenceHigh
   const stopAnchor = levels.atrLower == null
     ? levels.support
     : Math.min(levels.support, levels.atrLower)
   const stopLoss = stopAnchor < entryPrice ? stopAnchor : entryPrice * 0.97
-  const target1 = mode === 'breakout' ? resistance : confirmation
-  const target2Base = Math.max(resistance, target1)
+  const target1 = mode === 'breakout' ? optimisticHigh : confirmation
+  const target2Base = Math.max(optimisticHigh, target1)
   const target2 = levels.atr != null ? target2Base + levels.atr : target2Base
 
   return {
@@ -179,7 +226,7 @@ export function resolveOhlcvEntryPlan(
     buyReferenceLow,
     buyReferenceHigh,
     optimisticLow: round2(confirmation),
-    optimisticHigh: round2(resistance),
+    optimisticHigh,
   }
 }
 

@@ -45,6 +45,32 @@ function Assert-True {
   }
 }
 
+function Wait-SchedulerCallback {
+  param(
+    [Parameter(Mandatory = $true)][string]$Task,
+    [Parameter(Mandatory = $true)][string[]]$ExpectedIds,
+    [Parameter(Mandatory = $true)][datetime]$Deadline
+  )
+
+  $expected = ($ExpectedIds | Where-Object { $_ } | ForEach-Object { [string]$_ })
+  while ((Get-Date) -lt $Deadline) {
+    Start-Sleep -Seconds 20
+    $logs = Invoke-Json -Method GET -Url "$workerBase/api/admin/cron-logs?date=$Date" -Headers $workerHeaders -TimeoutSec 60
+    $items = @($logs.logs)
+    foreach ($item in $items) {
+      $itemRunId = [string]$item.run_id
+      if ($item.task -eq $Task -and $expected -contains $itemRunId -and $item.status -in @('success', 'error')) {
+        if ($item.status -ne 'success') {
+          throw "$Task callback landed with status=$($item.status): $($item | ConvertTo-Json -Compress -Depth 5)"
+        }
+        return $item
+      }
+    }
+  }
+
+  throw "Timed out waiting for $Task callback. expected=$($expected -join ',')"
+}
+
 $workerBase = $WorkerUrl.TrimEnd('/')
 $controllerBase = $ControllerUrl.TrimEnd('/')
 $workerHeaders = @{}
@@ -90,7 +116,14 @@ if (-not $RunTriggers) {
 
 $pipeline = Invoke-Json -Method POST -Url "$controllerBase/pipeline/v2/run?date=$Date" -Headers $controllerHeaders -TimeoutSec 120
 Assert-True ($pipeline.status -eq 'triggered') "Pipeline trigger did not return triggered: $($pipeline | ConvertTo-Json -Depth 4)"
-Write-Host "[OK] Pipeline trigger accepted: $($pipeline.run_id)"
+$pipelineIds = @($pipeline.run_id, $pipeline.execution_id) | Where-Object { $_ } | ForEach-Object { [string]$_ }
+Write-Host "[OK] Pipeline trigger accepted: run_id=$($pipeline.run_id) execution_id=$($pipeline.execution_id)"
+
+if ($WaitCallback) {
+  $pipelineDeadline = (Get-Date).AddSeconds($CallbackTimeoutSec)
+  $pipelineCallback = Wait-SchedulerCallback -Task 'pipeline' -ExpectedIds $pipelineIds -Deadline $pipelineDeadline
+  Write-Host "[OK] Pipeline callback success: run_id=$($pipelineCallback.run_id)"
+}
 
 $verify = Invoke-Json -Method POST -Url "$controllerBase/verify/run" -Headers $controllerHeaders -Body @{
   run_date = $Date
@@ -100,35 +133,15 @@ $verify = Invoke-Json -Method POST -Url "$controllerBase/verify/run" -Headers $c
   callback_task = 'verify-v2'
 } -TimeoutSec 120
 Assert-True ($verify.status -eq 'triggered') "Verify trigger did not return triggered: $($verify | ConvertTo-Json -Depth 4)"
-Write-Host "[OK] Verify trigger accepted: $($verify.run_id)"
+$verifyIds = @($verify.run_id, $verify.execution_id) | Where-Object { $_ } | ForEach-Object { [string]$_ }
+Write-Host "[OK] Verify trigger accepted: run_id=$($verify.run_id) execution_id=$($verify.execution_id)"
 
 if (-not $WaitCallback) {
   Write-Host "[SKIP] Callback wait disabled. Add -WaitCallback to poll /api/admin/cron-logs."
   exit 0
 }
 
-$deadline = (Get-Date).AddSeconds($CallbackTimeoutSec)
-$seen = @{
-  pipeline = $false
-  'verify-v2' = $false
-}
-
-while ((Get-Date) -lt $deadline) {
-  Start-Sleep -Seconds 20
-  $logs = Invoke-Json -Method GET -Url "$workerBase/api/admin/cron-logs?date=$Date" -Headers $workerHeaders -TimeoutSec 60
-  $items = @($logs.logs)
-  foreach ($item in $items) {
-    if ($item.task -eq 'pipeline' -and $item.run_id -eq $pipeline.run_id -and $item.status -in @('success', 'error')) {
-      $seen.pipeline = $true
-    }
-    if ($item.task -eq 'verify-v2' -and $item.run_id -eq $verify.run_id -and $item.status -in @('success', 'error')) {
-      $seen['verify-v2'] = $true
-    }
-  }
-  if ($seen.pipeline -and $seen['verify-v2']) {
-    Write-Host "[OK] Callback logs landed for pipeline and verify-v2"
-    exit 0
-  }
-}
-
-throw "Timed out waiting for callback logs. pipeline=$($seen.pipeline) verify-v2=$($seen['verify-v2'])"
+$verifyDeadline = (Get-Date).AddSeconds($CallbackTimeoutSec)
+$verifyCallback = Wait-SchedulerCallback -Task 'verify-v2' -ExpectedIds $verifyIds -Deadline $verifyDeadline
+Write-Host "[OK] Verify callback success: run_id=$($verifyCallback.run_id)"
+Write-Host "[OK] Callback logs landed for pipeline and verify-v2"

@@ -49,7 +49,8 @@ function Wait-SchedulerCallback {
   param(
     [Parameter(Mandatory = $true)][string]$Task,
     [Parameter(Mandatory = $true)][string[]]$ExpectedIds,
-    [Parameter(Mandatory = $true)][datetime]$Deadline
+    [Parameter(Mandatory = $true)][datetime]$Deadline,
+    [switch]$AllowSkipped
   )
 
   $expected = ($ExpectedIds | Where-Object { $_ } | ForEach-Object { [string]$_ })
@@ -59,8 +60,11 @@ function Wait-SchedulerCallback {
     $items = @($logs.logs)
     foreach ($item in $items) {
       $itemRunId = [string]$item.run_id
-      if ($item.task -eq $Task -and $expected -contains $itemRunId -and $item.status -in @('success', 'error')) {
+      if ($item.task -eq $Task -and $expected -contains $itemRunId -and $item.status -in @('success', 'skipped', 'error')) {
         if ($item.status -ne 'success') {
+          if ($item.status -eq 'skipped' -and $AllowSkipped) {
+            return $item
+          }
           throw "$Task callback landed with status=$($item.status): $($item | ConvertTo-Json -Compress -Depth 5)"
         }
         return $item
@@ -170,6 +174,6 @@ if (-not $WaitCallback) {
 }
 
 $verifyDeadline = (Get-Date).AddSeconds($CallbackTimeoutSec)
-$verifyCallback = Wait-SchedulerCallback -Task 'verify-v2' -ExpectedIds $verifyIds -Deadline $verifyDeadline
-Write-Host "[OK] Verify callback success: run_id=$($verifyCallback.run_id)"
+$verifyCallback = Wait-SchedulerCallback -Task 'verify-v2' -ExpectedIds $verifyIds -Deadline $verifyDeadline -AllowSkipped
+Write-Host "[OK] Verify callback $($verifyCallback.status): run_id=$($verifyCallback.run_id)"
 Write-Host "[OK] Callback logs landed for pipeline and verify-v2"

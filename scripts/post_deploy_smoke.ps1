@@ -125,13 +125,41 @@ if ($WaitCallback) {
   Write-Host "[OK] Pipeline callback success: run_id=$($pipelineCallback.run_id)"
 }
 
-$verify = Invoke-Json -Method POST -Url "$controllerBase/verify/run" -Headers $controllerHeaders -Body @{
-  run_date = $Date
-  lookback_days = 5
-  limit = 200
-  async_mode = $true
-  callback_task = 'verify-v2'
-} -TimeoutSec 120
+$verify = $null
+try {
+  $verify = Invoke-Json -Method POST -Url "$controllerBase/verify/run" -Headers $controllerHeaders -Body @{
+    run_date = $Date
+    lookback_days = 5
+    limit = 200
+    async_mode = $true
+    callback_task = 'verify-v2'
+  } -TimeoutSec 120
+} catch {
+  $detail = $null
+  try {
+    $body = $_.ErrorDetails.Message | ConvertFrom-Json
+    $detail = $body.detail
+  } catch {
+    $detail = $null
+  }
+
+  if (
+    $null -ne $detail -and
+    [string]$detail.message -like '*verify-v2 already has an active execution*' -and
+    $detail.execution_id
+  ) {
+    $verify = [pscustomobject]@{
+      status = 'triggered'
+      run_id = $detail.run_id
+      callback_task = 'verify-v2'
+      execution_id = $detail.execution_id
+      execution_name = $detail.execution_name
+      note = 'verify-v2 already active; waiting existing execution'
+    }
+  } else {
+    throw
+  }
+}
 Assert-True ($verify.status -eq 'triggered') "Verify trigger did not return triggered: $($verify | ConvertTo-Json -Depth 4)"
 $verifyIds = @($verify.run_id, $verify.execution_id) | Where-Object { $_ } | ForEach-Object { [string]$_ }
 Write-Host "[OK] Verify trigger accepted: run_id=$($verify.run_id) execution_id=$($verify.execution_id)"

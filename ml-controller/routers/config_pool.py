@@ -299,6 +299,7 @@ def _load_parameter_candidate_rows(candidate_ids: list[str], limit: int) -> list
                        metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
                 FROM parameter_candidate_registry
                 WHERE candidate_id IN ({placeholders})
+                  AND source != 'ga_optimizer'
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
@@ -310,6 +311,7 @@ def _load_parameter_candidate_rows(candidate_ids: list[str], limit: int) -> list
                    metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
             FROM parameter_candidate_registry
             WHERE status IN ('SHADOW_COLLECTING', 'VALIDATION_BLOCKED', 'APPROVAL_REQUIRED')
+              AND source != 'ga_optimizer'
             ORDER BY updated_at DESC
             LIMIT ?
             """,

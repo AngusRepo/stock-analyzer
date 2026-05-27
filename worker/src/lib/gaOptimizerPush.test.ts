@@ -117,4 +117,38 @@ void (async () => {
   const approved = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
   assert(approved.promotion.level === 'L3', 'approved GA review should advance promotion state to L3')
   assert(!(env.KV as any).store.has('trading:config'), 'GA review approval must not write trading:config directly')
+
+  const weeklyPushAfterApproval = await adminOptunaRoutes.request('/api/admin/optuna-push', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer service-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      source: 'ga_optimizer',
+      params: {
+        optimizer: 'GAOptimizer',
+        status: 'learning',
+        history: [
+          { generation: 2, best_score: 1.21 },
+          { generation: 3, best_score: 1.23 },
+        ],
+        best: {
+          score: 1.23,
+          metrics: { pbo: 0.18, mdd_95th: 0.15, sharpe: 1.15, trade_count: 140 },
+          gate: { decision: 'PASS', passed: true, failed_gates: [], checks: { pbo: true, monte_carlo_mdd_95th: true } },
+        },
+        best_alphaFramework: {
+          riskOverlay: { highVolThreshold: 0.047 },
+          allocation: { weights: { bull: { trend_following: 0.52 } } },
+        },
+      },
+      meta: { best_score: 1.23, cadence: 'weekly', run_id: 'weekly-after-approval' },
+    }),
+  }, env)
+  assert(weeklyPushAfterApproval.status === 200, 'weekly GA push after approval should be accepted')
+  const postWeekly = JSON.parse((env.KV as any).store.get('optimizer:ga:latest'))
+  assert(postWeekly.promotion.level === 'L3', 'weekly GA push must preserve prior L3 approval when current evidence remains L2-ready')
+  assert(postWeekly.promotion.approved_level === 'L3', 'weekly GA push must retain approved_level in promotion context')
+  assert(postWeekly.mutates_trading_config === false, 'post-approval GA learning still must not write trading:config')
 })()

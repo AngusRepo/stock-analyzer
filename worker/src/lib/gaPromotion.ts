@@ -83,7 +83,13 @@ export function evaluateGaPromotion(
   const reasons: string[] = []
   const requiredEvidence = ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']
   const missingEvidence: string[] = []
-  const approvedLevel = normalizeLevel(state?.promotion?.approved_level ?? state?.meta?.promotion_approved_level)
+  const approvedLevel = normalizeLevel(
+    state?.promotion?.approved_level ??
+    state?.promotion?.approvedLevel ??
+    state?.meta?.promotion_approved_level ??
+    previousState?.promotion?.approved_level ??
+    previousState?.promotion?.approvedLevel,
+  )
   const previousLevel = normalizeLevel(previousState?.promotion?.level) ?? 'L0'
   let level: GAPromotionLevel = 'L0'
 
@@ -124,16 +130,25 @@ export function evaluateGaPromotion(
   if (level === 'L1' && !stableHistory) missingEvidence.push('stable_history')
   if (level === 'L1' && !governanceEvidence) missingEvidence.push('pbo_mc_cost_governance')
 
-  const requestedLevel = normalizeLevel(state?.promotion?.requested_level ?? state?.meta?.promotion_requested_level)
+  const requestedLevel = normalizeLevel(
+    state?.promotion?.requested_level ??
+    state?.promotion?.requestedLevel ??
+    state?.meta?.promotion_requested_level ??
+    previousState?.promotion?.requested_level ??
+    previousState?.promotion?.requestedLevel,
+  )
   const targetApprovalLevel = requestedLevel && levelIndex(requestedLevel) > levelIndex(level) ? requestedLevel : null
   let pendingApprovalLevel: GAPromotionLevel | null = null
   if (targetApprovalLevel && levelIndex(targetApprovalLevel) >= levelIndex('L3')) {
-    if (approvedLevel && levelIndex(approvedLevel) >= levelIndex(targetApprovalLevel)) {
+    const currentEvidenceReadyForApproval = levelIndex(level) >= levelIndex('L2') && missingEvidence.length === 0
+    if (approvedLevel && levelIndex(approvedLevel) >= levelIndex(targetApprovalLevel) && currentEvidenceReadyForApproval) {
       level = targetApprovalLevel
       reasons.push(`Wei approval accepted for ${targetApprovalLevel}`)
-    } else {
+    } else if (currentEvidenceReadyForApproval) {
       pendingApprovalLevel = targetApprovalLevel
       reasons.push(`${targetApprovalLevel} requires Wei approval`)
+    } else {
+      reasons.push(`${targetApprovalLevel} approval held until current GA evidence returns to L2-ready`)
     }
   }
 

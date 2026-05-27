@@ -405,7 +405,8 @@ def run_ga_optimizer(req: GAOptimizerRequest, *, evaluator: Evaluator | None = N
             "target": "production_meta_optimizer_learning_state",
             "production_learning_loop": True,
             "mutates_trading_config": False,
-            "applies_to_production": "learning_state_only_until_gated_promotion",
+            "applies_to_production": False,
+            "production_application_policy": "learning_state_only_until_gated_promotion",
             "push_target": "worker_kv_ga_optimizer_state",
             "effective_fields": [
                 "alphaFramework.allocation.weights",

@@ -82,6 +82,11 @@ assert(
 )
 
 assert(
+  configPool.includes("source != 'ga_optimizer'"),
+  'parameter validation chain must exclude GAOptimizer because GA is KV-backed meta learning, not a replayable config sandbox candidate',
+)
+
+assert(
   configPool.includes('DELETE FROM parameter_candidate_evidence') &&
     configPool.includes('validation_run_id') &&
     configPool.includes('candidate_validation_running'),

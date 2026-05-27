@@ -311,6 +311,9 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     case 'ga_optimizer': {
       const now = new Date().toISOString()
       const previousRaw = await c.env.KV.get('optimizer:ga:latest', 'json').catch(() => null) as any
+      const previousPromotion = previousRaw?.promotion && typeof previousRaw.promotion === 'object'
+        ? previousRaw.promotion
+        : {}
       const learningState = {
         ...(params && typeof params === 'object' ? params : {}),
         source: 'ga_optimizer',
@@ -321,10 +324,18 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         updated_at: now,
         meta: meta ?? null,
       }
+      const incomingPromotion = (learningState as any).promotion && typeof (learningState as any).promotion === 'object'
+        ? (learningState as any).promotion
+        : {}
+      learningState.promotion = {
+        ...previousPromotion,
+        ...incomingPromotion,
+      }
       const promotion = evaluateGaPromotion(learningState, previousRaw)
       learningState.status = promotion.status
       learningState.promotion = {
-        ...((learningState as any).promotion ?? {}),
+        ...previousPromotion,
+        ...incomingPromotion,
         ...promotion,
         evaluated_at: now,
         previous_level: previousRaw?.promotion?.level ?? null,

@@ -10,6 +10,7 @@ Required env vars (Cloud Run):
 from __future__ import annotations
 import os
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -33,11 +34,17 @@ def _with_optuna_run_context(meta: dict[str, Any] | None) -> dict[str, Any] | No
     return merged or None
 
 
+def _retry_delay(base_delay_seconds: float, attempt: int) -> float:
+    return max(0.0, base_delay_seconds) * (2 ** max(0, attempt - 1))
+
+
 def push_optuna_result(
     source: str,
     params: dict[str, Any],
     meta: dict[str, Any] | None = None,
     timeout: float = 30.0,
+    max_attempts: int | None = None,
+    retry_delay_seconds: float | None = None,
 ) -> dict:
     """
     Push Optuna search result to Worker KV.
@@ -60,10 +67,40 @@ def push_optuna_result(
 
     logger.info(f"[KVPusher] Pushing {source} ({len(params)} params)...")
 
-    try:
-        resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
-    except httpx.RequestError as e:
-        raise RuntimeError(f"Worker push failed: network error: {e}") from e
+    attempts = max(1, int(max_attempts or os.environ.get("WORKER_PUSH_MAX_ATTEMPTS", "3") or 3))
+    delay_seconds = float(
+        retry_delay_seconds
+        if retry_delay_seconds is not None
+        else os.environ.get("WORKER_PUSH_RETRY_DELAY_SECONDS", "2")
+        or 2
+    )
+
+    resp: httpx.Response | None = None
+    last_error: httpx.RequestError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+            break
+        except httpx.RequestError as e:
+            last_error = e
+            if attempt >= attempts:
+                break
+            wait_s = _retry_delay(delay_seconds, attempt)
+            logger.warning(
+                "[KVPusher] %s push network error on attempt %s/%s: %s; retrying in %.1fs",
+                source,
+                attempt,
+                attempts,
+                e,
+                wait_s,
+            )
+            if wait_s > 0:
+                time.sleep(wait_s)
+
+    if resp is None:
+        raise RuntimeError(
+            f"Worker push failed after {attempts} attempts: network error: {last_error}"
+        ) from last_error
 
     if resp.status_code == 401:
         raise RuntimeError("Worker push failed: 401 Unauthorized")

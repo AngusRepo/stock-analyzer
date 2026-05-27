@@ -8,6 +8,7 @@ function assert(condition: unknown, message: string): void {
 
 const dailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
+const adminOptunaRoutes = fs.readFileSync('src/routes/adminOptunaRoutes.ts', 'utf8')
 const schedulerRunLogger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 
 assert(
@@ -42,4 +43,10 @@ assert(
 assert(
   schedulerRunLogger.includes("'regime-compute': 'HMM Regime'"),
   'regime compute must remain visible under the existing scheduler task name',
+)
+
+assert(
+  adminOptunaRoutes.includes("if (source === 'regime')") &&
+    adminOptunaRoutes.indexOf("if (source === 'regime')") < adminOptunaRoutes.indexOf('getTradingConfig'),
+  'regime optuna-push must write market_regime_state before loading unrelated trading config',
 )

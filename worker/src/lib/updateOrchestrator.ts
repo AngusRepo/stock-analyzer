@@ -16,6 +16,8 @@ const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
+const REGIME_COMPUTE_RETRY_DELAY_SECONDS = 60
+const REGIME_COMPUTE_RETRY_MAX_ATTEMPTS = 3
 
 const UPDATE_UNIVERSE_WHERE = `
   COALESCE(UPPER(market), '') NOT IN ('US', 'NYSE', 'NASDAQ')
@@ -403,10 +405,12 @@ async function continuePostScreenerPipeline(
   deps: ProcessUpdateBatchDeps,
   triggerTime: string,
   runId?: string,
+  attempt = 1,
 ): Promise<void> {
+  const regimeAttempt = Math.max(1, Math.floor(attempt))
   await logSchedulerResult(env.KV, 'regime-compute', {
     status: 'running',
-    summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}`,
+    summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}; attempt=${regimeAttempt}/${REGIME_COMPUTE_RETRY_MAX_ATTEMPTS}`,
     duration_ms: 0,
     run_date: triggerTime,
   })
@@ -415,6 +419,10 @@ async function continuePostScreenerPipeline(
     const startedAt = Date.now()
     const regimeSummary = String(await runRegimeCompute(env, triggerTime))
     const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
+    if (regimeStatus !== 'success' && regimeAttempt < REGIME_COMPUTE_RETRY_MAX_ATTEMPTS) {
+      await scheduleRegimeComputeRetry(env, triggerTime, runId, regimeAttempt, regimeSummary)
+      return
+    }
     await logSchedulerResult(env.KV, 'regime-compute', {
       status: regimeStatus,
       summary: `pre-pipeline ${regimeSummary}`,
@@ -432,6 +440,10 @@ async function continuePostScreenerPipeline(
     }
     console.log(`[Queue] Event-driven: regime-compute completed before pipeline for ${triggerTime}`)
   } catch (e) {
+    if (regimeAttempt < REGIME_COMPUTE_RETRY_MAX_ATTEMPTS) {
+      await scheduleRegimeComputeRetry(env, triggerTime, runId, regimeAttempt, e instanceof Error ? e.message : String(e))
+      return
+    }
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'error',
       summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
@@ -499,6 +511,36 @@ async function continuePostScreenerPipeline(
     })
     console.warn('[Queue] Event-driven ML trigger failed:', e)
   }
+}
+
+async function scheduleRegimeComputeRetry(
+  env: Bindings,
+  triggerTime: string,
+  runId: string | undefined,
+  regimeAttempt: number,
+  reason: string,
+): Promise<void> {
+  const nextAttempt = regimeAttempt + 1
+  const summary = `regime-compute retry ${nextAttempt}/${REGIME_COMPUTE_RETRY_MAX_ATTEMPTS} scheduled for ${triggerTime}; retry_in=${REGIME_COMPUTE_RETRY_DELAY_SECONDS}s; reason=${reason.slice(0, 240)}`
+  await logSchedulerResult(env.KV, 'regime-compute', {
+    status: 'running',
+    summary,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `event-driven chain waiting on ${summary}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  await env.UPDATE_QUEUE.send({
+    type: 'post_screener_pipeline',
+    cursor: 0,
+    triggerTime,
+    runId,
+    attempt: regimeAttempt + 1,
+  }, { delaySeconds: REGIME_COMPUTE_RETRY_DELAY_SECONDS } as any)
 }
 
 async function markShardComplete(
@@ -898,11 +940,12 @@ export async function processUpdateBatch(
   if (msg.type === 'post_screener_pipeline') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `${triggerTime}-post-screener`
+    const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid post-screener continuation date ${triggerTime}, skipping.`)
       return
     }
-    await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+    await continuePostScreenerPipeline(env, deps, triggerTime, runId, attempt)
     return
   }
 

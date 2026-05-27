@@ -105,6 +105,41 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
   }
 
   const { source, params, meta } = body
+  if (source === 'regime') {
+    const label = String(params.label ?? 'sideways')
+    const validLabels = new Set(['bull_market', 'volatile', 'sideways', 'bear_market'])
+    if (!validLabels.has(label)) {
+      return c.json({
+        error: `Invalid regime label: ${label}`,
+        allowed: Array.from(validLabels),
+      }, 400)
+    }
+
+    const state = buildMarketRegimeState({
+      label,
+      runDate: typeof meta?.run_date === 'string' ? meta.run_date : null,
+      computedAt: typeof meta?.computed_at === 'string' ? meta.computed_at : null,
+      params,
+    })
+    await persistMarketRegimeState(c.env.KV, state)
+
+    const auditKey = `audit:optuna-push:regime:${twToday()}`
+    await c.env.KV.put(auditKey, JSON.stringify({
+      source: 'regime',
+      params,
+      market_regime_state: state,
+      meta: meta ?? null,
+      pushed_at: new Date().toISOString(),
+    }), { expirationTtl: 30 * 86400 })
+
+    return c.json({
+      success: true,
+      source: 'regime',
+      regime: label,
+      updatedKeys: [MARKET_REGIME_STATE_KEY, LEGACY_REGIME_KEY, LEGACY_REGIME_META_KEY],
+    })
+  }
+
   const { getTradingConfig, setTradingConfig, validateTradingConfig, writeSandbox, mergeAlphaFrameworkConfig } = await import('../lib/tradingConfig')
   const current = await getTradingConfig(c.env.KV)
 
@@ -411,40 +446,6 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         ...Object.keys(pL2).map((key) => `L2_formula.${key}`),
       ]
       break
-    }
-    case 'regime': {
-      const label = String(params.label ?? 'sideways')
-      const validLabels = new Set(['bull_market', 'volatile', 'sideways', 'bear_market'])
-      if (!validLabels.has(label)) {
-        return c.json({
-          error: `Invalid regime label: ${label}`,
-          allowed: Array.from(validLabels),
-        }, 400)
-      }
-
-      const state = buildMarketRegimeState({
-        label,
-        runDate: typeof meta?.run_date === 'string' ? meta.run_date : null,
-        computedAt: typeof meta?.computed_at === 'string' ? meta.computed_at : null,
-        params,
-      })
-      await persistMarketRegimeState(c.env.KV, state)
-
-      const auditKey = `audit:optuna-push:regime:${twToday()}`
-      await c.env.KV.put(auditKey, JSON.stringify({
-        source: 'regime',
-        params,
-        market_regime_state: state,
-        meta: meta ?? null,
-        pushed_at: new Date().toISOString(),
-      }), { expirationTtl: 30 * 86400 })
-
-      return c.json({
-        success: true,
-        source: 'regime',
-        regime: label,
-        updatedKeys: [MARKET_REGIME_STATE_KEY, LEGACY_REGIME_KEY, LEGACY_REGIME_META_KEY],
-      })
     }
     default:
       return c.json({

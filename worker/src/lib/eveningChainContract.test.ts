@@ -60,6 +60,14 @@ assert(
     updateOrchestrator.includes("status: 'triggered'"),
   'evening chain must not overwrite a successful in-flight pipeline trigger with success/LOCKED telemetry',
 )
+assert(
+  updateOrchestrator.includes('REGIME_COMPUTE_RETRY_MAX_ATTEMPTS') &&
+    updateOrchestrator.includes('REGIME_COMPUTE_RETRY_DELAY_SECONDS') &&
+    updateOrchestrator.includes('regime-compute retry') &&
+    updateOrchestrator.includes("type: 'post_screener_pipeline'") &&
+    updateOrchestrator.includes('attempt: regimeAttempt + 1'),
+  'evening chain must retry transient regime-compute kv=fail instead of permanently stopping before pipeline',
+)
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
 assert(

@@ -50,7 +50,8 @@ function Wait-SchedulerCallback {
     [Parameter(Mandatory = $true)][string]$Task,
     [Parameter(Mandatory = $true)][string[]]$ExpectedIds,
     [Parameter(Mandatory = $true)][datetime]$Deadline,
-    [switch]$AllowSkipped
+    [switch]$AllowSkipped,
+    [switch]$AllowAnyRunId
   )
 
   $expected = ($ExpectedIds | Where-Object { $_ } | ForEach-Object { [string]$_ })
@@ -60,7 +61,14 @@ function Wait-SchedulerCallback {
     $items = @($logs.logs)
     foreach ($item in $items) {
       $itemRunId = [string]$item.run_id
-      if ($item.task -eq $Task -and $expected -contains $itemRunId -and $item.status -in @('success', 'skipped', 'error')) {
+      $runIdMatches = $expected -contains $itemRunId
+      if (-not $runIdMatches -and $AllowAnyRunId -and $itemRunId -like "$Task*") {
+        $runIdMatches = $true
+      }
+      if (-not $runIdMatches -and $AllowAnyRunId -and $Task -eq 'verify-v2' -and $itemRunId -like 'verify-*') {
+        $runIdMatches = $true
+      }
+      if ($item.task -eq $Task -and $runIdMatches -and $item.status -in @('success', 'skipped', 'error')) {
         if ($item.status -ne 'success') {
           if ($item.status -eq 'skipped' -and $AllowSkipped) {
             return $item
@@ -130,6 +138,7 @@ if ($WaitCallback) {
 }
 
 $verify = $null
+$verifyAlreadyActive = $false
 try {
   $verify = Invoke-Json -Method POST -Url "$controllerBase/verify/run" -Headers $controllerHeaders -Body @{
     run_date = $Date
@@ -160,6 +169,7 @@ try {
       execution_name = $detail.execution_name
       note = 'verify-v2 already active; waiting existing execution'
     }
+    $verifyAlreadyActive = $true
   } else {
     throw
   }
@@ -174,6 +184,6 @@ if (-not $WaitCallback) {
 }
 
 $verifyDeadline = (Get-Date).AddSeconds($CallbackTimeoutSec)
-$verifyCallback = Wait-SchedulerCallback -Task 'verify-v2' -ExpectedIds $verifyIds -Deadline $verifyDeadline -AllowSkipped
+$verifyCallback = Wait-SchedulerCallback -Task 'verify-v2' -ExpectedIds $verifyIds -Deadline $verifyDeadline -AllowSkipped -AllowAnyRunId:$verifyAlreadyActive
 Write-Host "[OK] Verify callback $($verifyCallback.status): run_id=$($verifyCallback.run_id)"
 Write-Host "[OK] Callback logs landed for pipeline and verify-v2"

@@ -889,6 +889,61 @@ def _row_statements(
     return [(sql, [row.get(column) for column in columns]) for row in rows]
 
 
+def _positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _stock_price_volume(value: Any) -> int | None:
+    parsed = _positive_float(value)
+    if parsed is None:
+        return None
+    return int(parsed)
+
+
+def _stock_price_avg(row: dict[str, Any]) -> float | None:
+    value = _positive_float(row.get("value"))
+    volume = _positive_float(row.get("volume"))
+    if value is not None and volume is not None:
+        return value / volume
+    return _positive_float(row.get("close"))
+
+
+def _stock_price_bridge_statements(rows: list[dict[str, Any]]) -> list[tuple[str, list[Any]]]:
+    sql = (
+        "INSERT INTO stock_prices "
+        "(stock_id, date, open, high, low, close, adj_close, volume, avg_price) "
+        "SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM stocks WHERE symbol = ? "
+        "ON CONFLICT(stock_id, date) DO UPDATE SET "
+        "open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, "
+        "adj_close=excluded.adj_close, volume=excluded.volume, avg_price=excluded.avg_price"
+    )
+    statements: list[tuple[str, list[Any]]] = []
+    for row in rows:
+        symbol = normalize_symbol(row.get("stock_id"))
+        if not symbol or not re.fullmatch(r"\d{3,6}", symbol):
+            continue
+        close = _positive_float(row.get("close"))
+        statements.append((
+            sql,
+            [
+                row.get("date"),
+                _positive_float(row.get("open")),
+                _positive_float(row.get("high")),
+                _positive_float(row.get("low")),
+                close,
+                close,
+                _stock_price_volume(row.get("volume")),
+                _stock_price_avg(row),
+                symbol,
+            ],
+        ))
+    return statements
+
+
 def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[str, list[Any]]]:
     """Build D1 upsert statements for row-level FinLab canonical materialization.
 
@@ -904,6 +959,7 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["stock_id", "date", "source"],
         ["market_segment", "open", "high", "low", "close", "volume", "value", "lineage_json", "as_of_date"],
     ))
+    statements.extend(_stock_price_bridge_statements(outputs.canonical_market_daily))
     statements.extend(_row_statements(
         "canonical_chip_daily",
         outputs.canonical_chip_daily,

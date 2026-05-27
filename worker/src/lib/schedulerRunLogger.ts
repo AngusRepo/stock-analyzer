@@ -69,6 +69,7 @@ const TASK_NAMES: Record<string, string> = {
   'model-artifact-validation': 'Model Artifact Validation',
   'parameter-candidate-validation': 'Parameter Candidate Validation',
   'finlab-v4-backfill': 'FinLab V4 Backfill',
+  'finlab-primary-continuation': 'FinLab Primary Continuation',
   'monthly-retrain': 'Monthly Universal Retrain',
   verify: 'Verify (compat alias)',
 }

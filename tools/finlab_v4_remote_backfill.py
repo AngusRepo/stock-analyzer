@@ -213,11 +213,27 @@ def d1_execute(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
 
 
 def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    if os.environ.get("STOCKVISION_WORKER_URL") and os.environ.get("STOCKVISION_AUTH_TOKEN"):
+        from services.d1_client import query
+
+        return query(sql, params, timeout=120.0)
     return d1_execute(sql, params).get("results") or []
 
 
 def d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
+    if os.environ.get("STOCKVISION_WORKER_URL") and os.environ.get("STOCKVISION_AUTH_TOKEN"):
+        from services.d1_client import execute
+
+        return execute(sql, params, timeout=120.0)
     return d1_execute(sql, params)
+
+
+def d1_required_env_missing() -> list[str]:
+    missing = [key for key in ["FINLAB_API_KEY"] if not os.environ.get(key)]
+    worker_bound = os.environ.get("STOCKVISION_WORKER_URL") and os.environ.get("STOCKVISION_AUTH_TOKEN")
+    if not worker_bound:
+        missing.extend([key for key in ["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"] if not os.environ.get(key)])
+    return missing
 
 
 def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -232,6 +248,10 @@ def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
 def filter_years(df: pd.DataFrame, years: int) -> pd.DataFrame:
     start = pd.Timestamp(start_date_for_years(years))
     return df[df.index >= start]
+
+
+def parse_lanes(raw: str | None) -> set[str]:
+    return {item.strip() for item in str(raw or "").split(",") if item.strip()}
 
 
 def non_null_cells(df: pd.DataFrame) -> int:
@@ -363,13 +383,19 @@ def _source_url(value: Any, fallback: str) -> str:
     return fallback
 
 
-def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def materialize_specs(
+    *,
+    years: int,
+    run_dir: Path,
+    lanes: set[str] | None = None,
+    skip_diff_counts: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from finlab import data, login
 
     api_key = os.environ["FINLAB_API_KEY"]
     login(api_key)
     start = start_date_for_years(years)
-    counts = d1_counts(start)
+    counts = {} if skip_diff_counts else d1_counts(start)
     dataset_summaries: list[dict[str, Any]] = []
     diff_reports: list[dict[str, Any]] = []
 
@@ -377,6 +403,8 @@ def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]
     if os.environ.get("INCLUDE_FINLAB_CNYES_NEWS", "0").lower() in {"1", "true", "yes"}:
         specs.extend(OPTIONAL_NEWS_SPECS)
     specs.extend(optional_fundamental_specs_from_env())
+    if lanes:
+        specs = [spec for spec in specs if spec.lane in lanes]
 
     for spec in specs:
         t0 = time.time()
@@ -855,9 +883,11 @@ def main() -> int:
     parser.add_argument("--canonical-limit-per-dataset", type=int, default=0)
     parser.add_argument("--canonical-d1-chunk-size", type=int, default=250)
     parser.add_argument("--canonical-dry-run", action="store_true")
+    parser.add_argument("--lanes", default="", help="Comma-separated FinLab raw lanes to fetch. Empty means all backfill lanes.")
+    parser.add_argument("--skip-diff-counts", action="store_true", help="Skip StockVision row-count comparisons before fetching FinLab lanes.")
     args = parser.parse_args()
 
-    missing = [key for key in ["FINLAB_API_KEY", "CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"] if not os.environ.get(key)]
+    missing = d1_required_env_missing()
     if missing:
         raise SystemExit(f"missing env vars: {','.join(missing)}")
 
@@ -869,7 +899,12 @@ def main() -> int:
     run_dir = Path(args.output_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     generated_at = utc_now()
-    dataset_summaries, diff_reports = materialize_specs(years=args.years, run_dir=run_dir)
+    dataset_summaries, diff_reports = materialize_specs(
+        years=args.years,
+        run_dir=run_dir,
+        lanes=parse_lanes(args.lanes) or None,
+        skip_diff_counts=args.skip_diff_counts,
+    )
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),

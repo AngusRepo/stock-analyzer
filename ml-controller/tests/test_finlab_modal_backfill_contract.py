@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ml-controller"))
+sys.modules.setdefault("services.modal_client", types.SimpleNamespace(spawn_finlab_v4_backfill=None))
+sys.modules.setdefault(
+    "services.finlab_execution_smoke",
+    types.SimpleNamespace(run_finlab_execution_smoke=lambda **_: {"status": "stubbed"}),
+)
 
 from routers.finlab import (  # noqa: E402
     FinLabBackfillRunRequest,
@@ -30,6 +36,8 @@ def test_finlab_backfill_modal_payload_preserves_full_quality_defaults() -> None
     assert payload["apply_canonical_d1"] is True
     assert payload["canonical_window_days"] == 7
     assert payload["callback_task"] == "finlab-v4-backfill"
+    assert payload["force"] is False
+    assert payload["continue_evening_chain"] is False
 
 
 def test_finlab_backfill_modal_payload_rejects_non_archive_years() -> None:
@@ -52,6 +60,10 @@ def test_modal_app_exposes_finlab_backfill_function_with_same_cloud_run_spec() -
     assert 'payload.get("canonical_end_date") or payload.get("run_date")' in source
     assert 'canonical_start = _date_minus_days(canonical_end, canonical_window_days)' in source
     assert '"task": callback_task' in source
+    assert '"continue_evening_chain": bool(payload.get("continue_evening_chain"))' in source
+    assert '"--lanes"' in source
+    assert '"--skip-diff-counts"' in source
+    assert '"event": "finlab_v4_backfill_callback"' in source
 
 
 def test_controller_route_and_modal_client_have_spawn_boundary() -> None:

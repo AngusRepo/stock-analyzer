@@ -2696,6 +2696,10 @@ def _finlab_backfill_cli_args(payload: dict) -> list[str]:
         args.extend(["--canonical-d1-chunk-size", str(int(payload["canonical_d1_chunk_size"]))])
     if _truthy(payload.get("canonical_dry_run")):
         args.append("--canonical-dry-run")
+    if payload.get("lanes"):
+        args.extend(["--lanes", str(payload["lanes"])])
+    if _truthy(payload.get("skip_diff_counts")):
+        args.append("--skip-diff-counts")
     return args
 
 
@@ -2787,6 +2791,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
             "trigger_source": trigger_source,
             "trigger_id": trigger_id,
             "years": payload.get("years") or 3,
+            "force": bool(payload.get("force")),
+            "continue_evening_chain": bool(payload.get("continue_evening_chain")),
             "gcs_upload": result.get("gcs_upload"),
             "canonical_d1_apply": result.get("canonical_d1_apply"),
             "runtime_table_writeback": result.get("runtime_table_writeback"),
@@ -2799,6 +2805,15 @@ def finlab_v4_backfill(payload: dict) -> dict:
         callback_payload["error"] = error[:1200]
 
     callback = _post_worker_scheduler_callback(callback_payload)
+    print(
+        json.dumps({
+            "event": "finlab_v4_backfill_callback",
+            "run_id": run_id,
+            "status": status,
+            "callback": callback,
+        }, ensure_ascii=False, sort_keys=True),
+        flush=True,
+    )
     return {
         "status": status,
         "executor": "modal",

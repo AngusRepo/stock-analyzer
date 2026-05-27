@@ -31,6 +31,11 @@ function requireServiceToken(c: any) {
   return null
 }
 
+function truthyFlag(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'modal'
+}
+
 const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
 const D1_QUERY_ALLOWED_READ = new Set(['SELECT', 'WITH'])
 const D1_QUERY_MAX_ROWS_CAP = 250000
@@ -384,6 +389,47 @@ async function handleSchedulerCallback(c: any) {
         await logSchedulerResult(c.env.KV, 'post-verify-chain', {
           status: 'error',
           summary: e?.message ?? 'post-verify callback chain failed',
+          duration_ms: 0,
+          error: String(e),
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
+      }
+    })())
+  }
+
+  if (
+    body.task === 'finlab-v4-backfill' &&
+    body.status === 'success' &&
+    truthyFlag(callbackMetadata?.continue_evening_chain)
+  ) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { continueEveningChainAfterFinLabBackfill } = await import('../lib/updateOrchestrator')
+        const summary = await continueEveningChainAfterFinLabBackfill(c.env, callbackRunDate, {
+          force: truthyFlag(callbackMetadata?.force),
+          upstreamRunId: callbackRunId,
+        })
+        await logSchedulerResult(c.env.KV, 'finlab-primary-continuation', {
+          status: 'success',
+          summary,
+          duration_ms: 0,
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
+      } catch (e: any) {
+        const message = e?.message ?? 'FinLab primary evening-chain continuation failed'
+        await logSchedulerResult(c.env.KV, 'finlab-primary-continuation', {
+          status: 'error',
+          summary: message,
+          duration_ms: 0,
+          error: String(e),
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: 'error',
+          summary: `FinLab primary continuation failed: ${message}`,
           duration_ms: 0,
           error: String(e),
           run_id: callbackRunId,

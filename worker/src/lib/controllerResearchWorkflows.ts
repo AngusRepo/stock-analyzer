@@ -310,9 +310,15 @@ function optionalString(value: unknown): string | undefined {
   return text || undefined
 }
 
-function buildFinLabBackfillRequestBody(env: Bindings, runDate?: string): Record<string, unknown> {
+function buildFinLabBackfillRequestBody(
+  env: Bindings,
+  runDate?: string,
+  force = false,
+  options: { continueEveningChain?: boolean } = {},
+): Record<string, unknown> {
   const years = finLabBackfillYears(env)
   const runId = buildFinLabBackfillRunId(years, runDate)
+  const dailyPriceMode = Boolean(options.continueEveningChain)
   return {
     years,
     run_id: runId,
@@ -322,7 +328,9 @@ function buildFinLabBackfillRequestBody(env: Bindings, runDate?: string): Record
     canonical_window_days: finLabCanonicalWindowDays(env),
     canonical_start_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_START_DATE),
     canonical_end_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_END_DATE),
-    canonical_datasets: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_DATASETS),
+    canonical_datasets: dailyPriceMode
+      ? (optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_DATASETS) ?? 'canonical_market_daily')
+      : optionalString((env as any).FINLAB_BACKFILL_CANONICAL_DATASETS),
     canonical_limit_per_dataset: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_LIMIT_PER_DATASET),
     canonical_d1_chunk_size: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_D1_CHUNK_SIZE),
     gcs_bucket: optionalString((env as any).FINLAB_BACKFILL_GCS_BUCKET),
@@ -330,11 +338,24 @@ function buildFinLabBackfillRequestBody(env: Bindings, runDate?: string): Record
     callback_task: 'finlab-v4-backfill',
     trigger_source: 'worker_scheduler',
     trigger_id: runId,
+    force,
+    continue_evening_chain: Boolean(options.continueEveningChain),
+    lanes: dailyPriceMode
+      ? (optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? 'daily_price,emerging_price_diversity')
+      : optionalString((env as any).FINLAB_BACKFILL_LANES),
+    skip_diff_counts: dailyPriceMode
+      ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)
+      : truthyFlag((env as any).FINLAB_BACKFILL_SKIP_DIFF_COUNTS),
     dry_run: false,
   }
 }
 
-export async function runFinLabV4Backfill(env: Bindings, runDate?: string) {
+export async function runFinLabV4Backfill(
+  env: Bindings,
+  runDate?: string,
+  force = false,
+  options: { continueEveningChain?: boolean } = {},
+) {
   if (!finLabBackfillModalTriggerEnabled(env)) {
     return 'skipped: FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED not enabled; Cloud Run Job remains owner'
   }
@@ -342,7 +363,7 @@ export async function runFinLabV4Backfill(env: Bindings, runDate?: string) {
 
   const resp = await controllerFetch(env, '/finlab/backfill/run', {
     method: 'POST',
-    jsonBody: buildFinLabBackfillRequestBody(env, runDate),
+    jsonBody: buildFinLabBackfillRequestBody(env, runDate, force, options),
     timeoutMs: 60_000,
   })
   const text = await resp.text().catch(() => '')

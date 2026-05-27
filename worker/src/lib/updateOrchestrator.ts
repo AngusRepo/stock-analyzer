@@ -37,6 +37,37 @@ function isBulkPriceSourceNotReady(error: unknown): boolean {
   return /Bulk price source incomplete|TWSE source failed|TPEX source failed|price rows=\d+\//i.test(message)
 }
 
+function truthyFlag(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'modal'
+}
+
+export function finLabDailyPricePrimaryEnabled(env: Bindings): boolean {
+  const source = String((env as any).DAILY_PRICE_SOURCE ?? '').trim().toLowerCase()
+  return source === 'finlab' || truthyFlag((env as any).FINLAB_DAILY_PRICE_PRIMARY_ENABLED)
+}
+
+async function triggerFinLabPrimaryMarketData(env: Bindings, runDate: string, force: boolean): Promise<string> {
+  const { runFinLabV4Backfill } = await import('./controllerResearchWorkflows')
+  const summary = await runFinLabV4Backfill(env, runDate, force, { continueEveningChain: true })
+  if (!summary.startsWith('triggered finlab-v4-backfill')) {
+    throw new Error(`FinLab primary market data trigger failed: ${summary}`)
+  }
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'running',
+    summary: `FinLab primary market data triggered; ${summary}`,
+    duration_ms: 0,
+    run_date: runDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `FinLab primary market data triggered; waiting for finlab-v4-backfill callback before indicator queue; ${summary}`,
+    duration_ms: 0,
+    run_date: runDate,
+  })
+  return summary
+}
+
 async function scheduleSourceReadinessRetry(
   env: Bindings,
   runDate: string,
@@ -509,6 +540,11 @@ async function markShardComplete(
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
+  if (finLabDailyPricePrimaryEnabled(env)) {
+    const summary = await triggerFinLabPrimaryMarketData(env, twDate, force)
+    return `triggered evening-chain FinLab primary: ${summary}; callback will continue indicator queue`
+  }
+
   let bulkSummary: string
   try {
     bulkSummary = await runBulkFetch(env, force, twDate)
@@ -520,6 +556,41 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   }
   await runQueueUpdate(env, twDate, force)
   return `triggered evening-chain: ${bulkSummary}; indicator queue accepted`
+}
+
+export async function continueEveningChainAfterFinLabBackfill(
+  env: Bindings,
+  runDate?: string,
+  options: { force?: boolean; upstreamRunId?: string } = {},
+): Promise<string> {
+  const twDate = resolveUpdateDate(runDate)
+  const ready = await assertMarketDataReady(env.DB, twDate, {
+    requireIndicators: false,
+    allowHistoricalLatestAfterTarget: true,
+  })
+  await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed after FinLab backfill:', e))
+  await runQueueUpdate(env, twDate, Boolean(options.force))
+  const summary = [
+    `FinLab primary market data ready`,
+    ready.summary,
+    `indicator queue accepted`,
+    options.upstreamRunId ? `upstream=${options.upstreamRunId}` : '',
+  ].filter(Boolean).join('; ')
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'success',
+    summary,
+    duration_ms: 0,
+    run_id: options.upstreamRunId,
+    run_date: twDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary,
+    duration_ms: 0,
+    run_id: options.upstreamRunId,
+    run_date: twDate,
+  })
+  return summary
 }
 
 export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {

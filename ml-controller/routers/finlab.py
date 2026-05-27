@@ -30,6 +30,10 @@ class FinLabBackfillRunRequest(BaseModel):
     callback_task: str = "finlab-v4-backfill"
     trigger_source: str = "controller"
     trigger_id: str | None = None
+    force: bool = False
+    continue_evening_chain: bool = False
+    lanes: str | None = None
+    skip_diff_counts: bool = False
     dry_run: bool = False
 
 

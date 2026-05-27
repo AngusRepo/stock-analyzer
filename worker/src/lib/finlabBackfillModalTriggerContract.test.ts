@@ -14,6 +14,8 @@ const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', '
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
 const schedulerRunLogger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
+const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const wranglerToml = fs.readFileSync('wrangler.toml', 'utf8')
 
 assert(
   workflows.includes('runFinLabV4Backfill') &&
@@ -56,4 +58,39 @@ assert(
     schedulerStatus.includes("{ id: 'finlab-v4-backfill'") &&
     schedulerStatus.includes("cron: '30 10 * * 1-5'"),
   'FinLab backfill must be registered in scheduler policy and dashboard readback before production scheduler cutover',
+)
+
+assert(
+    wranglerToml.includes('DAILY_PRICE_SOURCE = "finlab"') &&
+    wranglerToml.includes('FINLAB_DAILY_PRICE_PRIMARY_ENABLED = "true"') &&
+    wranglerToml.includes('FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED = "true"') &&
+    wranglerToml.includes('FINLAB_DAILY_PRICE_LANES = "daily_price,emerging_price_diversity"') &&
+    wranglerToml.includes('FINLAB_DAILY_PRICE_CANONICAL_DATASETS = "canonical_market_daily"'),
+  'Worker production vars must make FinLab the primary daily price owner and enable the Modal trigger path',
+)
+
+assert(
+  updateOrchestrator.includes('finLabDailyPricePrimaryEnabled') &&
+    updateOrchestrator.includes('triggerFinLabPrimaryMarketData') &&
+    updateOrchestrator.includes('continueEveningChain: true') &&
+    updateOrchestrator.includes('callback will continue indicator queue') &&
+    updateOrchestrator.includes('continueEveningChainAfterFinLabBackfill'),
+  'evening-chain must route the daily price root through FinLab primary and wait for callback continuation',
+)
+
+assert(
+  workflows.includes("FINLAB_DAILY_PRICE_LANES") &&
+    workflows.includes("'daily_price,emerging_price_diversity'") &&
+    workflows.includes("FINLAB_DAILY_PRICE_CANONICAL_DATASETS") &&
+    workflows.includes("'canonical_market_daily'") &&
+    workflows.includes('skip_diff_counts'),
+  'daily price mode must use a fast FinLab lane/canonical subset instead of full 3y archive backfill',
+)
+
+assert(
+    adminControlRoutes.includes('continueEveningChainAfterFinLabBackfill') &&
+    adminControlRoutes.includes('continue_evening_chain') &&
+    adminControlRoutes.includes("'finlab-primary-continuation'") &&
+    schedulerRunLogger.includes("'finlab-primary-continuation': 'FinLab Primary Continuation'"),
+  'FinLab callback must continue the evening chain only when the trigger explicitly requested continuation',
 )

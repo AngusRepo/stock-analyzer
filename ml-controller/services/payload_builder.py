@@ -30,6 +30,24 @@ DAILY_RECOMMENDATION_PIPELINE_COLUMNS = (
 )
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _price_close(row: dict | None, default: float = 0.0) -> float:
+    if not row:
+        return default
+    value = row.get("close")
+    if value is None:
+        value = row.get("avg_price")
+    return _as_float(value, default)
+
+
 def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, float]:
     """Build legacy PredictRequest lifecycle_weights from model_pool.json.
 
@@ -450,7 +468,11 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
 # Bulk per-stock loaders — pull all active stocks in single queries
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _bulk_load_prices(stock_ids: list[int], limit: int = 500) -> dict[int, list[dict]]:
+def _bulk_load_prices(
+    stock_ids: list[int],
+    limit: int = 500,
+    as_of_date: str | None = None,
+) -> dict[int, list[dict]]:
     """
     Load last `limit` rows of stock_prices for each stock_id.
     Returns: {stock_id: [{date, close, high, low, open, volume}, ...]} (oldest→newest).
@@ -461,12 +483,17 @@ def _bulk_load_prices(stock_ids: list[int], limit: int = 500) -> dict[int, list[
     if not stock_ids:
         return {}
     placeholders = ",".join("?" * len(stock_ids))
+    upper_bound_sql = " AND date <= ?" if as_of_date else ""
+    params: list[Any] = list(stock_ids)
+    if as_of_date:
+        params.append(as_of_date)
     rows = d1_client.query(
         f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
         f"FROM stock_prices "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years') "
+        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years')"
+        f"{upper_bound_sql} "
         f"ORDER BY stock_id ASC, date ASC",
-        list(stock_ids),
+        params,
         timeout=120.0,
     )
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
@@ -486,10 +513,18 @@ def _bulk_load_prices(stock_ids: list[int], limit: int = 500) -> dict[int, list[
     return grouped
 
 
-def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, list[dict]]:
+def _bulk_load_indicators(
+    stock_ids: list[int],
+    limit: int = 500,
+    as_of_date: str | None = None,
+) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
     placeholders = ",".join("?" * len(stock_ids))
+    upper_bound_sql = " AND date <= ?" if as_of_date else ""
+    params: list[Any] = list(stock_ids)
+    if as_of_date:
+        params.append(as_of_date)
     rows = d1_client.query(
         f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
         f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
@@ -499,9 +534,10 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
         f"       adaptive_rsi_midline_50, adaptive_rsi_upper_50, adaptive_rsi_lower_50, "
         f"       adaptive_rsi_overbought, adaptive_rsi_oversold "
         f"FROM technical_indicators "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years') "
+        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years')"
+        f"{upper_bound_sql} "
         f"ORDER BY stock_id ASC, date ASC",
-        list(stock_ids),
+        params,
         timeout=120.0,
     )
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
@@ -538,7 +574,11 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
     return grouped
 
 
-def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dict]]:
+def _bulk_load_chips(
+    symbols: list[str],
+    limit: int = 200,
+    as_of_date: str | None = None,
+) -> dict[str, list[dict]]:
     """Load chip rows with FinLab canonical data first and legacy chip_data fallback.
 
     `chip_data` stores TWSE/TPEX institution flow by symbol. FinLab V4.1 adds
@@ -550,14 +590,19 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
         return {}
     placeholders = ",".join("?" * len(symbols))
     grouped_by_date: dict[str, dict[str, dict]] = {s: {} for s in symbols}
+    upper_bound_sql = " AND date <= ?" if as_of_date else ""
+    params: list[Any] = list(symbols)
+    if as_of_date:
+        params.append(as_of_date)
 
     rows = d1_client.query(
         f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
         f"       margin_balance, short_balance "
         f"FROM chip_data "
-        f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year') "
+        f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year')"
+        f"{upper_bound_sql} "
         f"ORDER BY symbol ASC, date ASC",
-        list(symbols),
+        params,
         timeout=60.0,
     )
     for r in rows:
@@ -578,9 +623,10 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
             f"SELECT stock_id AS symbol, date, market_segment, foreign_net, trust_net, dealer_net, "
             f"       margin_balance, short_balance, source, as_of_date "
             f"FROM canonical_chip_daily "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year')"
+            f"{upper_bound_sql} "
             f"ORDER BY stock_id ASC, date ASC",
-            list(symbols),
+            params,
             timeout=60.0,
         )
         for r in canonical_rows:
@@ -607,9 +653,10 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
             f"SELECT stock_id AS symbol, date, market_segment, net_shares, estimated_amount, "
             f"       broker_count, concentration, source, as_of_date "
             f"FROM canonical_broker_flow_daily "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year')"
+            f"{upper_bound_sql} "
             f"ORDER BY stock_id ASC, date ASC",
-            list(symbols),
+            params,
             timeout=60.0,
         )
         for r in broker_rows:
@@ -640,18 +687,27 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
     return grouped
 
 
-def _bulk_load_sentiment(stock_ids: list[int], limit: int = 90) -> dict[int, list[dict]]:
+def _bulk_load_sentiment(
+    stock_ids: list[int],
+    limit: int = 90,
+    as_of_date: str | None = None,
+) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
     placeholders = ",".join("?" * len(stock_ids))
+    upper_bound_sql = "AND date(published_at) <= ? " if as_of_date else ""
+    params: list[Any] = list(stock_ids)
+    if as_of_date:
+        params.append(as_of_date)
     rows = d1_client.query(
         f"SELECT stock_id, date(published_at) as date, "
         f"       AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score "
         f"FROM news WHERE stock_id IN ({placeholders}) "
         f"AND published_at >= date('now','-180 days') "
+        f"{upper_bound_sql}"
         f"GROUP BY stock_id, date(published_at) "
         f"ORDER BY stock_id ASC, date ASC",
-        list(stock_ids),
+        params,
         timeout=60.0,
     )
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
@@ -704,7 +760,7 @@ def _bulk_load_accuracies(
     return real_acc, model_stats
 
 
-def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
+def _bulk_load_per_stock_misc(stock_ids: list[int], as_of_date: str | None = None) -> dict[int, dict]:
     """
     Per-stock margin / shareholding / monthly_revenue (latest 1 row each).
     Returns: {stock_id: {margin_balance, short_ratio, margin_5d_ago, retail_pct, revenue_yoy}}
@@ -715,6 +771,10 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
         return {}
     out: dict[int, dict] = {sid: {} for sid in stock_ids}
     placeholders = ",".join("?" * len(stock_ids))
+    upper_bound_sql = " AND date <= ?" if as_of_date else ""
+    params: list[Any] = list(stock_ids)
+    if as_of_date:
+        params.append(as_of_date)
 
     # margin: latest
     margin_rows = d1_client.query(
@@ -722,9 +782,10 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
         f"FROM margin_data m1 "
         f"INNER JOIN ("
         f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM margin_data WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+        f"  FROM margin_data WHERE stock_id IN ({placeholders})"
+        f"{upper_bound_sql} GROUP BY stock_id"
         f") m2 ON m1.stock_id = m2.stock_id AND m1.date = m2.max_date",
-        list(stock_ids),
+        params,
         timeout=60.0,
     )
     for r in margin_rows:
@@ -742,9 +803,10 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
         f"FROM shareholding s1 "
         f"INNER JOIN ("
         f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM shareholding WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+        f"  FROM shareholding WHERE stock_id IN ({placeholders})"
+        f"{upper_bound_sql} GROUP BY stock_id"
         f") s2 ON s1.stock_id = s2.stock_id AND s1.date = s2.max_date",
-        list(stock_ids),
+        params,
         timeout=60.0,
     )
     for r in sh_rows:
@@ -758,9 +820,10 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
         f"FROM monthly_revenue r1 "
         f"INNER JOIN ("
         f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM monthly_revenue WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+        f"  FROM monthly_revenue WHERE stock_id IN ({placeholders})"
+        f"{upper_bound_sql} GROUP BY stock_id"
         f") r2 ON r1.stock_id = r2.stock_id AND r1.date = r2.max_date",
-        list(stock_ids),
+        params,
         timeout=60.0,
     )
     for r in rev_rows:
@@ -933,13 +996,13 @@ def _build_stock_meta(
     # Volume bucket
     vol_bucket = 2
     if prices and len(prices) >= 20:
-        avg_vol = sum(float(p.get("volume", 0)) for p in prices[-20:]) / 20
+        avg_vol = sum(_as_float(p.get("volume"), 0.0) for p in prices[-20:]) / 20
         vol_bucket = 4 if avg_vol > 50_000_000 else 3 if avg_vol > 10_000_000 else 2 if avg_vol > 2_000_000 else 1 if avg_vol > 500_000 else 0
     # Cap bucket
     cap_bucket = 2
     if prices and len(prices) >= 20:
-        avg_close = sum(float(p.get("close", 0)) for p in prices[-20:]) / 20
-        avg_vol = sum(float(p.get("volume", 0)) for p in prices[-20:]) / 20
+        avg_close = sum(_price_close(p) for p in prices[-20:]) / 20
+        avg_vol = sum(_as_float(p.get("volume"), 0.0) for p in prices[-20:]) / 20
         proxy = avg_close * avg_vol
         cap_bucket = 4 if proxy > 5e9 else 3 if proxy > 1e9 else 2 if proxy > 2e8 else 1 if proxy > 5e7 else 0
     return {
@@ -959,6 +1022,7 @@ def build_payloads(
     barrier_params: dict,
     lifecycle_weights: dict[str, float],
     trading_config: dict | None = None,
+    as_of_date: str | None = None,
 ) -> list[PredictPayload]:
     """
     Build PredictPayload list for all active stocks.
@@ -974,12 +1038,12 @@ def build_payloads(
     logger.info(f"[payload_builder] Building payloads for {len(stock_ids)} active stocks")
 
     # ── Bulk load all per-stock data ────────────────────────────────────────
-    prices_by_id = _bulk_load_prices(stock_ids)
-    indicators_by_id = _bulk_load_indicators(stock_ids)
-    chips_by_sym = _bulk_load_chips(symbols)
-    sentiment_by_id = _bulk_load_sentiment(stock_ids)
+    prices_by_id = _bulk_load_prices(stock_ids, as_of_date=as_of_date)
+    indicators_by_id = _bulk_load_indicators(stock_ids, as_of_date=as_of_date)
+    chips_by_sym = _bulk_load_chips(symbols, as_of_date=as_of_date)
+    sentiment_by_id = _bulk_load_sentiment(stock_ids, as_of_date=as_of_date)
     real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
-    misc_by_id = _bulk_load_per_stock_misc(stock_ids)
+    misc_by_id = _bulk_load_per_stock_misc(stock_ids, as_of_date=as_of_date)
 
     # ── Stock meta: sector encoding + cross-sectional features ──────────────
     # Sector tags
@@ -999,9 +1063,9 @@ def build_payloads(
     for stock in active_stocks:
         px = prices_by_id.get(stock["id"], [])
         if len(px) >= 6:
-            cl = float(px[-1].get("close", 0))
-            cl1 = float(px[-2].get("close", 0))
-            cl5 = float(px[-6].get("close", 0))
+            cl = _price_close(px[-1])
+            cl1 = _price_close(px[-2])
+            cl5 = _price_close(px[-6])
             r1d = (cl - cl1) / cl1 if cl1 > 0 else 0
             r5d = (cl - cl5) / cl5 if cl5 > 0 else 0
             stock_returns[stock["symbol"]] = (r1d, r5d)

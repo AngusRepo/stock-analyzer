@@ -51,7 +51,22 @@ def test_portfolio_allocation_benchmark_compares_against_rank_topk_with_metrics(
     assert report["challenger"]["metrics"]["sharpe"] > report["baseline"]["metrics"]["sharpe"]
     assert report["decision"]["sharpe_delta"] > 0.20
     assert report["decision"]["eligible_to_replace_rank_topk"] is True
+    assert report["decision"]["historical_replay_days"] == 8
     assert report["decision"]["production_mutation_allowed"] is False
+
+
+def test_portfolio_allocation_accelerated_gate_uses_historical_replay_days():
+    report = build_portfolio_allocation_benchmark(
+        candidates=_candidates(),
+        return_history=_return_history(),
+        top_k=2,
+        max_weight=0.70,
+        min_sharpe_delta=0.20,
+        min_history_days=6,
+    )
+
+    assert report["decision"]["eligible_to_replace_rank_topk"] is True
+    assert report["decision"]["accelerated_historical_replacement_allowed"] is True
 
 
 def test_portfolio_allocation_research_route_is_non_mutating():
@@ -61,8 +76,10 @@ def test_portfolio_allocation_research_route_is_non_mutating():
             return_history=_return_history(),
             top_k=2,
             max_weight=0.70,
+            min_history_days=6,
         )
     ))
 
     assert response["decision"]["production_mutation_allowed"] is False
+    assert response["decision"]["accelerated_historical_replacement_allowed"] is True
     assert response["baseline"]["method"] == "rank_topk_equal_weight"

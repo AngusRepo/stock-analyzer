@@ -45,6 +45,34 @@ export interface AlphaFrameworkConfig {
     slateSize: number
     scoreRoundDecimals: number
     weights: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
+    method?: 'regime_bucket_quota' | 'sparse_tangent_inverse_risk'
+    owner?: string
+    topK?: number
+    selectionPoolSize?: number
+    maxWeight?: number
+    minHistoryDays?: number
+    enforceBuySignalOwner?: boolean
+    activatedBy?: string
+    activationRunId?: string
+  }
+  alphaAgentEvo?: {
+    enabled: boolean
+    owner?: string
+    trainLookbackDays: number
+    priceLookbackDays: number
+    generations: number
+    offspringPerParent: number
+    survivorsPerGeneration: number
+    topK: number
+    minEvaluationDays: number
+    minSharpeDelta: number
+    maxMddDelta: number
+    confidenceFloor: number
+    enforceBuySignalOwner: boolean
+    featureCatalog?: string[]
+    seedExpressions?: unknown[]
+    activatedBy?: string
+    activationRunId?: string
   }
   classification: {
     breakoutNearHighRatio: number
@@ -713,6 +741,13 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     allocation: {
       slateSize: 10,
       scoreRoundDecimals: 1,
+      method: 'regime_bucket_quota',
+      owner: 'regime_bucket_quota',
+      topK: 3,
+      selectionPoolSize: 30,
+      maxWeight: 0.55,
+      minHistoryDays: 20,
+      enforceBuySignalOwner: true,
       weights: {
         bull: {
           trend_following: 0.35,
@@ -739,6 +774,42 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
           trend_following: 0.20,
         },
       },
+    },
+    alphaAgentEvo: {
+      enabled: false,
+      owner: 'alpha_agent_evo',
+      trainLookbackDays: 60,
+      priceLookbackDays: 60,
+      generations: 3,
+      offspringPerParent: 4,
+      survivorsPerGeneration: 2,
+      topK: 3,
+      minEvaluationDays: 10,
+      minSharpeDelta: 0,
+      maxMddDelta: 0.05,
+      confidenceFloor: 0.72,
+      enforceBuySignalOwner: true,
+      featureCatalog: [
+        'score_v2',
+        'ml_edge',
+        'chip_flow',
+        'technical_structure',
+        'fundamental_quality',
+        'news_theme',
+        'confidence',
+        'forecast_pct',
+        'obv_temperature',
+        'squeeze_momentum',
+      ],
+      seedExpressions: [
+        { candidate_id: 'seed-score-v2', expression: 'score_v2', terms: [{ feature: 'score_v2', weight: 1.0 }] },
+        { candidate_id: 'seed-ml-edge', expression: 'ml_edge', terms: [{ feature: 'ml_edge', weight: 1.0 }] },
+        {
+          candidate_id: 'seed-chip-tech',
+          expression: 'chip_flow + technical_structure',
+          terms: [{ feature: 'chip_flow', weight: 0.5 }, { feature: 'technical_structure', weight: 0.5 }],
+        },
+      ],
     },
     classification: {
       breakoutNearHighRatio: 0.995,
@@ -834,6 +905,7 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
   const raw = partial ?? {}
   const rawOverlay = raw.riskOverlay ?? raw.risk_overlay ?? {}
   const rawAllocation = raw.allocation ?? {}
+  const rawAlphaAgentEvo = raw.alphaAgentEvo ?? raw.alpha_agent_evo ?? {}
   const rawClassification = raw.classification ?? {}
   const rawRegimeMultipliers = raw.regimeBucketMultipliers ?? raw.regime_bucket_multipliers ?? {}
   const rawScoring = raw.scoring ?? {}
@@ -888,6 +960,25 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
         volatile: mergeWeights('volatile'),
         sideways: mergeWeights('sideways'),
       },
+    },
+    alphaAgentEvo: {
+      ...d.alphaAgentEvo,
+      ...rawAlphaAgentEvo,
+      enabled: rawAlphaAgentEvo.enabled ?? d.alphaAgentEvo?.enabled ?? false,
+      owner: rawAlphaAgentEvo.owner ?? d.alphaAgentEvo?.owner,
+      trainLookbackDays: rawAlphaAgentEvo.trainLookbackDays ?? rawAlphaAgentEvo.train_lookback_days ?? d.alphaAgentEvo?.trainLookbackDays ?? 60,
+      priceLookbackDays: rawAlphaAgentEvo.priceLookbackDays ?? rawAlphaAgentEvo.price_lookback_days ?? d.alphaAgentEvo?.priceLookbackDays ?? 60,
+      generations: rawAlphaAgentEvo.generations ?? d.alphaAgentEvo?.generations ?? 3,
+      offspringPerParent: rawAlphaAgentEvo.offspringPerParent ?? rawAlphaAgentEvo.offspring_per_parent ?? d.alphaAgentEvo?.offspringPerParent ?? 4,
+      survivorsPerGeneration: rawAlphaAgentEvo.survivorsPerGeneration ?? rawAlphaAgentEvo.survivors_per_generation ?? d.alphaAgentEvo?.survivorsPerGeneration ?? 2,
+      topK: rawAlphaAgentEvo.topK ?? rawAlphaAgentEvo.top_k ?? d.alphaAgentEvo?.topK ?? 3,
+      minEvaluationDays: rawAlphaAgentEvo.minEvaluationDays ?? rawAlphaAgentEvo.min_evaluation_days ?? d.alphaAgentEvo?.minEvaluationDays ?? 10,
+      minSharpeDelta: rawAlphaAgentEvo.minSharpeDelta ?? rawAlphaAgentEvo.min_sharpe_delta ?? d.alphaAgentEvo?.minSharpeDelta ?? 0,
+      maxMddDelta: rawAlphaAgentEvo.maxMddDelta ?? rawAlphaAgentEvo.max_mdd_delta ?? d.alphaAgentEvo?.maxMddDelta ?? 0.05,
+      confidenceFloor: rawAlphaAgentEvo.confidenceFloor ?? rawAlphaAgentEvo.confidence_floor ?? d.alphaAgentEvo?.confidenceFloor ?? 0.72,
+      enforceBuySignalOwner: rawAlphaAgentEvo.enforceBuySignalOwner ?? rawAlphaAgentEvo.enforce_buy_signal_owner ?? d.alphaAgentEvo?.enforceBuySignalOwner ?? true,
+      featureCatalog: rawAlphaAgentEvo.featureCatalog ?? rawAlphaAgentEvo.feature_catalog ?? d.alphaAgentEvo?.featureCatalog,
+      seedExpressions: rawAlphaAgentEvo.seedExpressions ?? rawAlphaAgentEvo.seed_expressions ?? d.alphaAgentEvo?.seedExpressions,
     },
     classification: {
       ...d.classification,

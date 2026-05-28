@@ -62,6 +62,7 @@ interface BuyRecommendationRow {
   latest_avg_price: number | null
   market: string | null
   forecast_data?: string | null
+  alpha_allocation?: string | null
   watch_points?: unknown
 }
 
@@ -94,6 +95,15 @@ interface AlphaForecastContext {
     flags?: string[]
     structure_detail?: Record<string, unknown>
   }
+}
+
+interface AlphaAllocationContext {
+  method?: string
+  owner?: string
+  selected?: boolean
+  selection_rank?: number
+  portfolio_weight?: number
+  risk_pct_multiplier?: number
 }
 
 async function persistPendingDebateFailure(
@@ -161,11 +171,34 @@ function parseAlphaContext(rawForecastData: unknown): AlphaForecastContext | nul
   return ctx && typeof ctx === 'object' ? ctx as AlphaForecastContext : null
 }
 
+function parseAlphaAllocation(rawForecastData: unknown, persistedAlphaAllocation?: unknown): AlphaAllocationContext | null {
+  const forecastData = parsePredictionForecastData(rawForecastData)
+  const fromForecast = forecastData?.alpha_allocation
+  if (fromForecast && typeof fromForecast === 'object') return fromForecast as AlphaAllocationContext
+  if (persistedAlphaAllocation && typeof persistedAlphaAllocation === 'object') return persistedAlphaAllocation as AlphaAllocationContext
+  if (typeof persistedAlphaAllocation !== 'string' || !persistedAlphaAllocation.trim()) return null
+  try {
+    const parsed = JSON.parse(persistedAlphaAllocation)
+    return parsed && typeof parsed === 'object' ? parsed as AlphaAllocationContext : null
+  } catch {
+    return null
+  }
+}
+
 function alphaWatchPoint(ctx: AlphaForecastContext | null): string | null {
   if (!ctx) return null
   const risk = ctx.risk_overlay ?? {}
   const sizing = clampNumber(ctx.sizing_multiplier, 0.25, 1.25, 1.0)
   return `Alpha bucket: ${ctx.edge_bucket ?? 'unknown'}, regime=${ctx.regime ?? 'unknown'}, sizing x${sizing.toFixed(2)}, risk=${risk.volatility_level ?? 'n/a'}/${risk.liquidity_level ?? 'n/a'}`
+}
+
+function alphaAllocationWatchPoint(ctx: AlphaAllocationContext | null): string | null {
+  if (!ctx || ctx.method !== 'sparse_tangent_inverse_risk') return null
+  const weight = typeof ctx.portfolio_weight === 'number' && Number.isFinite(ctx.portfolio_weight)
+    ? `${(ctx.portfolio_weight * 100).toFixed(1)}%`
+    : 'n/a'
+  const rank = typeof ctx.selection_rank === 'number' ? `#${ctx.selection_rank}` : '#?'
+  return `Portfolio allocation: sparse tangent ${rank}, weight=${weight}`
 }
 
 function calcRiskPct(
@@ -660,7 +693,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const candidateLimit = Math.max(12, pendingBuyLimit * 4)
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
-             dr.watch_points, dr.score_components,
+             dr.watch_points, dr.score_components, dr.alpha_allocation,
              s.market AS market,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
@@ -714,7 +747,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             ORDER BY sp_exec.date DESC
             LIMIT 1
          ) IS NOT NULL
-        ORDER BY CASE WHEN json_valid(dr.score_components) THEN
+        ORDER BY CASE WHEN json_valid(dr.alpha_allocation) THEN
+           COALESCE(CAST(json_extract(dr.alpha_allocation, '$.selection_rank') AS REAL), 999)
+           ELSE 999 END ASC,
+           CASE WHEN json_valid(dr.score_components) THEN
            COALESCE(
              CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
              CAST(json_extract(dr.score_components, '$.total') AS REAL),
@@ -823,6 +859,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       if (!rec.ml_entry_price || rec.ml_entry_price <= 0) continue
       const forecastData = parsePredictionForecastData(rec.forecast_data)
       const alphaContext = parseAlphaContext(forecastData)
+      const alphaAllocation = parseAlphaAllocation(forecastData, rec.alpha_allocation)
       const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(rec.stock_id)) ?? [])
       if (alphaContext?.risk_overlay?.skip === true) {
         quadrantFilterLog.push({
@@ -860,7 +897,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       let debateVerdict = 'PENDING'
       let riskPct = calcRiskPct(rec.signal, rec.confidence, undefined, cfg)
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
+      const allocationSizing = clampNumber(alphaAllocation?.risk_pct_multiplier, 0.25, 1.75, 1.0)
       riskPct *= alphaSizing
+      riskPct *= allocationSizing
       if (quadrant?.quadrant === 'Weakening') {
         debateVerdict = 'DOWNGRADE'
         riskPct *= downgradeMultiplier
@@ -983,6 +1022,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           ...parseWatchPoints(rec.watch_points),
           ...([
             alphaWatchPoint(alphaContext),
+            alphaAllocationWatchPoint(alphaAllocation),
             buildMarketStructureWatchPoint(alphaContext),
             buildMlVoteWatchPoint(mlVoteSummary),
           ].filter(Boolean) as string[]),

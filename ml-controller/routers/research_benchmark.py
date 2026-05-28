@@ -9,6 +9,10 @@ from pydantic import BaseModel
 
 from services.adoption_decision import build_adoption_decision_packet
 from services.alpha_agent_evo import build_alpha_agent_evo_trajectory_report
+from services.alpha_agent_evo_runtime import (
+    run_alpha_agent_evo_evolution,
+    run_alpha_agent_evo_historical_evolution,
+)
 from services.code_retirement_approval_manifest import build_code_retirement_approval_manifest
 from services.code_retirement_inventory import build_code_retirement_inventory
 from services.code_retirement_planner import build_code_retirement_plan
@@ -19,6 +23,10 @@ from services.direct_allocation_benchmark import build_direct_allocation_benchma
 from services.finance_llm_eval_gate import build_finance_llm_eval_gate
 from services.market_state_benchmark import build_market_state_benchmark_report
 from services.portfolio_allocation import build_portfolio_allocation_benchmark
+from services.portfolio_allocation_replacement import (
+    activate_sparse_tangent_owner,
+    run_historical_replacement_report,
+)
 from services.research_model_benchmark import build_model_family_benchmark_report
 from services.validation_governance import build_validation_ladder_packet
 
@@ -48,6 +56,8 @@ class PortfolioAllocationBenchmarkRequest(BaseModel):
     max_weight: float = 0.55
     min_sharpe_delta: float = 0.20
     max_mdd_delta: float = 0.02
+    min_history_days: int = 20
+    selection_pool_size: int | None = None
     dry_run: bool = True
     mutation_allowed: bool = False
     persist_results: bool = False
@@ -60,6 +70,57 @@ class AlphaAgentEvoTrajectoryRequest(BaseModel):
     dry_run: bool = True
     mutation_allowed: bool = False
     persist_results: bool = False
+    confirm: bool = False
+
+
+class AlphaAgentEvoEvolutionRunRequest(BaseModel):
+    recommendation_rows: list[dict[str, Any]] = []
+    price_rows: list[dict[str, Any]] = []
+    seed_expressions: list[dict[str, Any]] | None = None
+    feature_catalog: list[str] | None = None
+    generations: int = 3
+    offspring_per_parent: int = 4
+    survivors_per_generation: int = 3
+    top_k: int = 3
+    min_evaluation_days: int = 20
+    min_sharpe_delta: float = 0.20
+    max_mdd_delta: float = 0.02
+    dry_run: bool = True
+    mutation_allowed: bool = False
+    persist_results: bool = False
+    confirm: bool = False
+
+
+class AlphaAgentEvoHistoricalRunRequest(BaseModel):
+    start_date: str
+    end_date: str
+    seed_expressions: list[dict[str, Any]] | None = None
+    feature_catalog: list[str] | None = None
+    generations: int = 3
+    offspring_per_parent: int = 4
+    survivors_per_generation: int = 3
+    top_k: int = 3
+    lookback_days: int = 60
+    min_evaluation_days: int = 20
+    min_sharpe_delta: float = 0.20
+    max_mdd_delta: float = 0.02
+    dry_run: bool = True
+    mutation_allowed: bool = False
+    persist_results: bool = False
+    confirm: bool = False
+
+
+class PortfolioAllocationProductionReplaceRequest(BaseModel):
+    start_date: str
+    end_date: str
+    top_k: int = 3
+    selection_pool_size: int = 30
+    lookback_days: int = 60
+    max_weight: float = 0.55
+    min_history_days: int = 20
+    min_sharpe_delta: float = 0.20
+    max_mdd_delta: float = 0.02
+    mutation_allowed: bool = False
     confirm: bool = False
 
 
@@ -238,6 +299,53 @@ async def research_alpha_agent_evo_dry_run(req: AlphaAgentEvoTrajectoryRequest):
     )
 
 
+@router.post("/research/alpha-agent-evo/evolve/dry-run")
+async def research_alpha_agent_evo_evolve_dry_run(req: AlphaAgentEvoEvolutionRunRequest):
+    """Run the full AlphaAgentEvo trajectory loop over supplied historical rows."""
+    if req.mutation_allowed or req.persist_results or req.confirm:
+        raise HTTPException(status_code=400, detail="AlphaAgentEvo evolution dry-run cannot mutate production state")
+    if req.dry_run is False:
+        raise HTTPException(status_code=400, detail="AlphaAgentEvo production promotion requires reviewed gates")
+    if not req.recommendation_rows:
+        raise HTTPException(status_code=400, detail="recommendation_rows are required")
+    return run_alpha_agent_evo_evolution(
+        recommendation_rows=req.recommendation_rows,
+        price_rows=req.price_rows,
+        seed_expressions=req.seed_expressions,
+        feature_catalog=req.feature_catalog,
+        generations=req.generations,
+        offspring_per_parent=req.offspring_per_parent,
+        survivors_per_generation=req.survivors_per_generation,
+        top_k=req.top_k,
+        min_evaluation_days=req.min_evaluation_days,
+        min_sharpe_delta=req.min_sharpe_delta,
+        max_mdd_delta=req.max_mdd_delta,
+    )
+
+
+@router.post("/research/alpha-agent-evo/historical/dry-run")
+async def research_alpha_agent_evo_historical_dry_run(req: AlphaAgentEvoHistoricalRunRequest):
+    """Load D1 history and run the full AlphaAgentEvo trajectory loop without mutation."""
+    if req.mutation_allowed or req.persist_results or req.confirm:
+        raise HTTPException(status_code=400, detail="AlphaAgentEvo historical dry-run cannot mutate production state")
+    if req.dry_run is False:
+        raise HTTPException(status_code=400, detail="AlphaAgentEvo production promotion requires reviewed gates")
+    return run_alpha_agent_evo_historical_evolution(
+        start_date=req.start_date,
+        end_date=req.end_date,
+        seed_expressions=req.seed_expressions,
+        feature_catalog=req.feature_catalog,
+        generations=req.generations,
+        offspring_per_parent=req.offspring_per_parent,
+        survivors_per_generation=req.survivors_per_generation,
+        top_k=req.top_k,
+        lookback_days=req.lookback_days,
+        min_evaluation_days=req.min_evaluation_days,
+        min_sharpe_delta=req.min_sharpe_delta,
+        max_mdd_delta=req.max_mdd_delta,
+    )
+
+
 @router.post("/research/portfolio-allocation/dry-run")
 async def research_portfolio_allocation_dry_run(req: PortfolioAllocationBenchmarkRequest):
     """Compare rank-topK against sparse-tangent allocation without mutation."""
@@ -252,7 +360,41 @@ async def research_portfolio_allocation_dry_run(req: PortfolioAllocationBenchmar
         max_weight=req.max_weight,
         min_sharpe_delta=req.min_sharpe_delta,
         max_mdd_delta=req.max_mdd_delta,
+        min_history_days=req.min_history_days,
+        selection_pool_size=req.selection_pool_size,
     )
+
+
+@router.post("/research/portfolio-allocation/production-replace/run")
+async def research_portfolio_allocation_production_replace_run(req: PortfolioAllocationProductionReplaceRequest):
+    """Replay history and, if confirmed, replace the production allocation owner."""
+    if req.mutation_allowed and not req.confirm:
+        raise HTTPException(status_code=400, detail="production replacement requires confirm=true")
+    report = run_historical_replacement_report(
+        start_date=req.start_date,
+        end_date=req.end_date,
+        top_k=req.top_k,
+        selection_pool_size=req.selection_pool_size,
+        lookback_days=req.lookback_days,
+        max_weight=req.max_weight,
+        min_history_days=req.min_history_days,
+        min_sharpe_delta=req.min_sharpe_delta,
+        max_mdd_delta=req.max_mdd_delta,
+    )
+    if not req.mutation_allowed:
+        report["activation"] = {
+            "status": "not_requested",
+            "reason": "mutation_allowed=false",
+        }
+        return report
+    report["activation"] = await activate_sparse_tangent_owner(
+        report=report,
+        top_k=req.top_k,
+        selection_pool_size=req.selection_pool_size,
+        max_weight=req.max_weight,
+        min_history_days=req.min_history_days,
+    )
+    return report
 
 
 @router.post("/research/market-state-benchmark/dry-run")

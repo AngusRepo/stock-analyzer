@@ -257,6 +257,26 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
         _camel_or_snake(raw_alloc, "scoreRoundDecimals", "score_round_decimals", alloc_default["score_round_decimals"]),
         alloc_default["score_round_decimals"],
     ))))
+    allocation_method = str(_camel_or_snake(raw_alloc, "method", "method", "regime_bucket_quota") or "regime_bucket_quota").strip()
+    allocation_owner = str(_camel_or_snake(raw_alloc, "owner", "owner", "regime_aware_allocate") or "regime_aware_allocate").strip()
+    selection_pool_size = int(max(slate_size, min(120, _to_float(
+        _camel_or_snake(raw_alloc, "selectionPoolSize", "selection_pool_size", max(slate_size * 4, slate_size)),
+        max(slate_size * 4, slate_size),
+    ))))
+    allocation_top_k = int(max(1, min(30, _to_float(
+        _camel_or_snake(raw_alloc, "topK", "top_k", slate_size),
+        slate_size,
+    ))))
+    allocation_max_weight = max(0.01, min(1.0, _to_float(
+        _camel_or_snake(raw_alloc, "maxWeight", "max_weight", 0.55),
+        0.55,
+    )))
+    min_history_days = int(max(1, min(504, _to_float(
+        _camel_or_snake(raw_alloc, "minHistoryDays", "min_history_days", 20),
+        20,
+    ))))
+    enforce_buy_owner_raw = _camel_or_snake(raw_alloc, "enforceBuySignalOwner", "enforce_buy_signal_owner", True)
+    enforce_buy_signal_owner = False if str(enforce_buy_owner_raw).strip().lower() in {"0", "false", "no", "off"} else bool(enforce_buy_owner_raw)
     raw_scoring = raw.get("scoring") or {}
     scoring_default = default["scoring"]
     raw_bucket_bonus = raw_scoring.get("bucketBonus") or raw_scoring.get("bucket_bonus") or {}
@@ -418,6 +438,13 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
             "slate_size": slate_size,
             "score_round_decimals": score_round_decimals,
             "weights": weights,
+            "method": allocation_method,
+            "owner": allocation_owner,
+            "selection_pool_size": selection_pool_size,
+            "top_k": allocation_top_k,
+            "max_weight": allocation_max_weight,
+            "min_history_days": min_history_days,
+            "enforce_buy_signal_owner": enforce_buy_signal_owner,
         },
         "classification": classification,
         "regime_bucket_multipliers": regime_bucket_multipliers,

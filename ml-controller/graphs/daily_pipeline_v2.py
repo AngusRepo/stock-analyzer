@@ -37,6 +37,14 @@ from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
 from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
+from services.portfolio_allocation_replacement import (
+    SPARSE_TANGENT_METHOD,
+    apply_sparse_tangent_production_allocation,
+)
+from services.alpha_agent_evo_runtime import (
+    apply_alpha_agent_evo_production_selection,
+    run_alpha_agent_evo_historical_evolution,
+)
 from services.state_space_series import build_state_space_series_from_payloads
 from services.recommendation_service import (
     filter_and_score_recommendations,
@@ -1527,6 +1535,84 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
     )
+    alpha_agent_evo_cfg = (
+        alpha_policy.get("alphaAgentEvo")
+        or alpha_policy.get("alpha_agent_evo")
+        or {}
+    ) if isinstance(alpha_policy, dict) else {}
+    alpha_agent_evo_enabled = str(alpha_agent_evo_cfg.get("enabled", False)).strip().lower() in {"1", "true", "yes", "on"}
+    if alpha_agent_evo_enabled:
+        try:
+            train_lookback_days = int(alpha_agent_evo_cfg.get("trainLookbackDays") or alpha_agent_evo_cfg.get("train_lookback_days") or 60)
+            run_dt = datetime.fromisoformat(str(state["run_date"])[:10])
+            start_date = (run_dt - timedelta(days=max(7, train_lookback_days))).strftime("%Y-%m-%d")
+            end_date = (run_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+            evolution_report = await asyncio.to_thread(
+                run_alpha_agent_evo_historical_evolution,
+                start_date=start_date,
+                end_date=end_date,
+                seed_expressions=alpha_agent_evo_cfg.get("seedExpressions") or alpha_agent_evo_cfg.get("seed_expressions"),
+                feature_catalog=alpha_agent_evo_cfg.get("featureCatalog") or alpha_agent_evo_cfg.get("feature_catalog"),
+                generations=int(alpha_agent_evo_cfg.get("generations") or 3),
+                offspring_per_parent=int(alpha_agent_evo_cfg.get("offspringPerParent") or alpha_agent_evo_cfg.get("offspring_per_parent") or 4),
+                survivors_per_generation=int(alpha_agent_evo_cfg.get("survivorsPerGeneration") or alpha_agent_evo_cfg.get("survivors_per_generation") or 2),
+                top_k=int(alpha_agent_evo_cfg.get("topK") or alpha_agent_evo_cfg.get("top_k") or ranking_cfg.get("topK") or 3),
+                lookback_days=int(alpha_agent_evo_cfg.get("priceLookbackDays") or alpha_agent_evo_cfg.get("price_lookback_days") or 60),
+                min_evaluation_days=int(alpha_agent_evo_cfg.get("minEvaluationDays") or alpha_agent_evo_cfg.get("min_evaluation_days") or 10),
+                min_sharpe_delta=float(alpha_agent_evo_cfg.get("minSharpeDelta") or alpha_agent_evo_cfg.get("min_sharpe_delta") or 0.0),
+                max_mdd_delta=float(alpha_agent_evo_cfg.get("maxMddDelta") or alpha_agent_evo_cfg.get("max_mdd_delta") or 0.05),
+            )
+            final, alpha_agent_evo_report = apply_alpha_agent_evo_production_selection(
+                final,
+                evolution_report,
+                top_k=int(alpha_agent_evo_cfg.get("topK") or alpha_agent_evo_cfg.get("top_k") or ranking_cfg.get("topK") or 3),
+                confidence_floor=max(
+                    float(alpha_agent_evo_cfg.get("confidenceFloor") or alpha_agent_evo_cfg.get("confidence_floor") or 0.72),
+                    float(ranking_cfg.get("promoteMinConf", 0.60) or 0.60),
+                ),
+                enforce_buy_signal_owner=str(
+                    alpha_agent_evo_cfg.get("enforceBuySignalOwner")
+                    if alpha_agent_evo_cfg.get("enforceBuySignalOwner") is not None
+                    else alpha_agent_evo_cfg.get("enforce_buy_signal_owner", True)
+                ).strip().lower() not in {"0", "false", "no", "off"},
+            )
+            logger.info("[Pipeline V2] AlphaAgentEvo owner report: %s", alpha_agent_evo_report)
+        except Exception as alpha_agent_evo_error:  # noqa: BLE001 - paper lane must keep evening chain alive.
+            logger.error("[Pipeline V2] AlphaAgentEvo owner failed; keeping prior ranking: %s", alpha_agent_evo_error)
+    allocation_cfg = alpha_policy.get("allocation") if isinstance(alpha_policy, dict) else {}
+    allocation_method = str((allocation_cfg or {}).get("method") or "").strip()
+    if allocation_method == SPARSE_TANGENT_METHOD:
+        top_k = int((allocation_cfg or {}).get("topK") or (allocation_cfg or {}).get("top_k") or ranking_cfg.get("topK") or 3)
+        selection_pool_size = int(
+            (allocation_cfg or {}).get("selectionPoolSize")
+            or (allocation_cfg or {}).get("selection_pool_size")
+            or max(top_k * 4, top_k)
+        )
+        max_weight = float((allocation_cfg or {}).get("maxWeight") or (allocation_cfg or {}).get("max_weight") or 0.55)
+        min_history_days = int(
+            (allocation_cfg or {}).get("minHistoryDays")
+            or (allocation_cfg or {}).get("min_history_days")
+            or 20
+        )
+        enforce_owner = str(
+            (allocation_cfg or {}).get("enforceBuySignalOwner")
+            if (allocation_cfg or {}).get("enforceBuySignalOwner") is not None
+            else (allocation_cfg or {}).get("enforce_buy_signal_owner", True)
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        final, allocation_report = apply_sparse_tangent_production_allocation(
+            final,
+            state.get("payloads") or [],
+            top_k=top_k,
+            max_weight=max_weight,
+            selection_pool_size=selection_pool_size,
+            min_history_days=min_history_days,
+            confidence_floor=max(
+                float(ranking_cfg.get("promoteMinConf", 0.60) or 0.60),
+                float(ev2_cfg.get("topKConfidenceOverride", 0.72) or 0.72),
+            ),
+            enforce_buy_signal_owner=enforce_owner,
+        )
+        logger.info("[Pipeline V2] portfolio allocation owner report: %s", allocation_report)
     for row in final:
         allocation = row.get("alpha_allocation")
         symbol = row.get("symbol")

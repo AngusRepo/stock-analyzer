@@ -47,6 +47,8 @@ def test_alpha_agent_evo_preserves_self_evolving_lineage_and_next_generation_que
     assert child["evolution_path"] == ["alpha-g0-momentum", "alpha-g1-momentum-volume"]
     assert child["decision"] == "NEXT_GENERATION"
     assert report["next_generation_queue"] == ["alpha-g1-momentum-volume"]
+    assert report["decision"]["eligible_to_replace_baseline"] is True
+    assert report["decision"]["accelerated_historical_replacement_allowed"] is True
 
 
 def test_alpha_agent_evo_fails_closed_without_institutional_validation_evidence():
@@ -74,7 +76,36 @@ def test_alpha_agent_evo_fails_closed_without_institutional_validation_evidence(
     assert "reality_check_missing" in node["blockers"]
     assert "pbo_too_high" in node["blockers"]
     assert "paper_trade_days_insufficient" in node["blockers"]
+    assert report["decision"]["eligible_to_replace_baseline"] is False
     assert report["next_generation_queue"] == []
+
+
+def test_alpha_agent_evo_accepts_historical_replay_instead_of_waiting_for_paper_days():
+    report = build_alpha_agent_evo_trajectory_report(
+        candidates=[
+            {
+                "candidate_id": "alpha-g2-history-champion",
+                "generation": 2,
+                "expression": "rank(return_20d) * rank(obv_temperature_60)",
+                "operator": "mutate",
+                "parent_ids": ["alpha-g1-volume"],
+                "metrics": {
+                    "walk_forward_sharpe": 1.32,
+                    "pbo": 0.12,
+                    "reality_check_p": 0.03,
+                    "max_drawdown": 0.09,
+                    "paper_days": 0,
+                    "historical_replay_days": 180,
+                },
+            }
+        ],
+        champion_id="alpha-g2-history-champion",
+    )
+
+    node = report["trajectory"][0]
+    assert node["blockers"] == []
+    assert report["decision"]["eligible_to_replace_baseline"] is True
+    assert report["decision"]["accelerated_historical_replacement_allowed"] is True
 
 
 def test_alpha_agent_evo_report_documents_gap_vs_quantaalpha_gp_openfe_poc():

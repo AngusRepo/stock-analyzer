@@ -32,6 +32,10 @@ def _expected_return(row: dict[str, Any]) -> float:
     explicit = row.get("expected_return")
     if explicit is None:
         explicit = row.get("predicted_return")
+    if explicit is None:
+        explicit = row.get("forecast_pct")
+    if explicit is None:
+        explicit = row.get("ml_forecast_pct")
     if explicit is not None:
         return _to_float(explicit, 0.0)
     return max(0.0, (_score(row) - 50.0) / 5000.0)
@@ -98,23 +102,26 @@ def allocate_sparse_tangent(
     top_k: int,
     max_weight: float = 0.55,
     daily_vol_floor: float = 0.01,
+    selection_pool_size: int | None = None,
 ) -> dict[str, float]:
-    """Sparse tangent approximation over the current rank topK candidate set.
+    """Sparse tangent approximation over a score-prefiltered candidate pool.
 
     Expected return comes from candidate expected_return/predicted_return when
     available. Risk uses realized return variance with a volatility floor so a
     flat low-edge series cannot dominate the portfolio.
     """
-    selected = _ranked_candidates(candidates, top_k)
+    pool_size = max(int(top_k), int(selection_pool_size or top_k))
+    pool = _ranked_candidates(candidates, pool_size)
     raw: dict[str, float] = {}
     var_floor = max(1e-8, daily_vol_floor * daily_vol_floor)
-    for row in selected:
+    for row in pool:
         symbol = _symbol(row)
         history = [_to_float(value) for value in return_history.get(symbol, [])]
         variance = max(var_floor, _sample_variance(history))
         raw[symbol] = max(0.0, _expected_return(row)) / variance
     if not any(value > 0 for value in raw.values()):
         return allocate_rank_topk_equal_weight(candidates, top_k=top_k)
+    raw = dict(sorted(raw.items(), key=lambda item: item[1], reverse=True)[: max(1, int(top_k))])
     return _cap_and_renormalize(raw, max_weight=max_weight)
 
 
@@ -187,6 +194,8 @@ def build_portfolio_allocation_benchmark(
     max_weight: float = 0.55,
     min_sharpe_delta: float = 0.20,
     max_mdd_delta: float = 0.02,
+    min_history_days: int = 20,
+    selection_pool_size: int | None = None,
 ) -> dict[str, Any]:
     baseline_weights = allocate_rank_topk_equal_weight(candidates, top_k=top_k)
     challenger_weights = allocate_sparse_tangent(
@@ -194,9 +203,14 @@ def build_portfolio_allocation_benchmark(
         return_history,
         top_k=top_k,
         max_weight=max_weight,
+        selection_pool_size=selection_pool_size,
     )
     baseline_metrics = portfolio_metrics(portfolio_returns(baseline_weights, return_history))
     challenger_metrics = portfolio_metrics(portfolio_returns(challenger_weights, return_history))
+    historical_replay_days = int(min(
+        baseline_metrics.get("n") or 0,
+        challenger_metrics.get("n") or 0,
+    ))
     sharpe_delta = _metric_delta(challenger_metrics, baseline_metrics, "sharpe")
     max_drawdown_delta = _metric_delta(challenger_metrics, baseline_metrics, "max_drawdown")
     eligible = (
@@ -218,12 +232,16 @@ def build_portfolio_allocation_benchmark(
             "weights": challenger_weights,
             "weight_hhi": _weight_hhi(challenger_weights),
             "metrics": challenger_metrics,
+            "selection_pool_size": max(int(top_k), int(selection_pool_size or top_k)),
         },
         "decision": {
             "eligible_to_replace_rank_topk": eligible,
+            "accelerated_historical_replacement_allowed": eligible and historical_replay_days >= max(1, int(min_history_days)),
             "production_mutation_allowed": False,
             "sharpe_delta": sharpe_delta,
             "max_drawdown_delta": max_drawdown_delta,
+            "historical_replay_days": historical_replay_days,
+            "min_history_days": max(1, int(min_history_days)),
             "min_sharpe_delta": min_sharpe_delta,
             "max_mdd_delta": max_mdd_delta,
         },

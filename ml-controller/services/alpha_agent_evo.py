@@ -46,6 +46,7 @@ def _candidate_blockers(metrics: dict[str, Any]) -> list[str]:
     reality_check_p = _to_float(metrics.get("reality_check_p"))
     max_drawdown = _to_float(metrics.get("max_drawdown"))
     paper_days = _to_int(metrics.get("paper_days"))
+    historical_replay_days = _to_int(metrics.get("historical_replay_days"))
 
     if sharpe is None:
         blockers.append("walk_forward_sharpe_missing")
@@ -67,7 +68,7 @@ def _candidate_blockers(metrics: dict[str, Any]) -> list[str]:
     elif max_drawdown > 0.20:
         blockers.append("max_drawdown_too_high")
 
-    if paper_days < 45:
+    if paper_days < 45 and historical_replay_days < 60:
         blockers.append("paper_trade_days_insufficient")
 
     return blockers
@@ -91,6 +92,7 @@ def build_alpha_agent_evo_trajectory_report(
     by_id = {_clean_id(row.get("candidate_id")): row for row in candidates if _clean_id(row.get("candidate_id"))}
     trajectory: list[dict[str, Any]] = []
     next_generation_queue: list[str] = []
+    champion_blockers: list[str] = ["champion_missing"]
 
     for row in sorted(candidates, key=lambda item: (_to_int(item.get("generation")), _clean_id(item.get("candidate_id")))):
         candidate_id = _clean_id(row.get("candidate_id"))
@@ -99,8 +101,12 @@ def build_alpha_agent_evo_trajectory_report(
         metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
         parent_ids = _clean_ids(row.get("parent_ids"))
         blockers = _candidate_blockers(metrics)
+        if candidate_id == champion_id:
+            champion_blockers = list(blockers)
         if _to_int(row.get("generation")) > 0 and not parent_ids:
             blockers.append("parent_lineage_missing")
+            if candidate_id == champion_id:
+                champion_blockers = list(blockers)
         decision = "NEXT_GENERATION" if not blockers and candidate_id != champion_id else "HOLD_CHAMPION"
         if blockers:
             decision = "REJECT"
@@ -118,6 +124,7 @@ def build_alpha_agent_evo_trajectory_report(
             "blockers": blockers,
         })
 
+    champion_ready = bool(champion_id) and not champion_blockers
     return {
         "schema_version": SCHEMA_VERSION,
         "decision_effect": "research_only",
@@ -128,10 +135,16 @@ def build_alpha_agent_evo_trajectory_report(
             "pbo",
             "reality_check_p",
             "max_drawdown",
-            "paper_days",
+            "paper_days_or_historical_replay_days",
         ],
         "trajectory": trajectory,
         "next_generation_queue": next_generation_queue,
+        "decision": {
+            "eligible_to_replace_baseline": champion_ready,
+            "accelerated_historical_replacement_allowed": champion_ready,
+            "production_mutation_allowed": False,
+            "champion_blockers": champion_blockers,
+        },
         "gap_vs_current_poc": {
             "quantaalpha_gp_openfe_poc": "single_run_candidate_mining",
             "alpha_agent_evo": "lineage_aware_self_evolving_trajectory",

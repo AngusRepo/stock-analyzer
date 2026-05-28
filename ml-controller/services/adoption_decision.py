@@ -1,10 +1,11 @@
 """Research-only adoption decision normalizer.
 
 This service turns benchmark evidence into one of:
-replace, fuse, enhance, hold_paper_validation, or reject.
+replace, accelerated_replace_review, fuse, enhance, hold_paper_validation, or reject.
 
 It never mutates production. Baseline retirement is only a review candidate
-after replacement evidence and L10 paper-trading validation both pass.
+after replacement evidence and either L10 paper-trading validation or an
+explicit accelerated historical replay gate passes.
 """
 
 from __future__ import annotations
@@ -68,12 +69,18 @@ def _enhance_requested(report: dict[str, Any]) -> bool:
     )
 
 
+def _accelerated_historical_replacement_requested(report: dict[str, Any]) -> bool:
+    decision = _decision(report)
+    return bool(decision.get("accelerated_historical_replacement_allowed"))
+
+
 def _material_deltas(report: dict[str, Any]) -> dict[str, Any]:
     decision = _decision(report)
     keep = [
         "sharpe_delta",
         "max_drawdown_delta",
         "turnover_delta",
+        "historical_replay_days",
         "accuracy_delta",
         "transition_recall_delta",
         "brier_delta",
@@ -121,6 +128,7 @@ def build_adoption_decision_packet(
     replacement = _replacement_requested(benchmark_report)
     fuse = _fuse_requested(benchmark_report)
     enhance = _enhance_requested(benchmark_report)
+    accelerated = _accelerated_historical_replacement_requested(benchmark_report)
 
     action = "reject"
     baseline_retirement_status = "keep"
@@ -133,6 +141,11 @@ def build_adoption_decision_packet(
                 action = "replace"
                 baseline_retirement_status = "retirement_candidate"
                 integration_mode = "replace_baseline_after_review"
+                ready_for_review = True
+            elif accelerated and ladder_idx >= 9:
+                action = "accelerated_replace_review"
+                baseline_retirement_status = "retirement_candidate"
+                integration_mode = "accelerated_historical_replace_after_review"
                 ready_for_review = True
             else:
                 action = "hold_paper_validation"
@@ -175,7 +188,7 @@ def build_adoption_decision_packet(
         },
         "integration_plan": {
             "mode": integration_mode,
-            "requires_manual_approval": action in {"replace", "fuse"},
+            "requires_manual_approval": action in {"replace", "accelerated_replace_review", "fuse"},
             "dry_run_only": True,
         },
         "baseline_retirement": _baseline_retirement(baseline_retirement_status, _clean_text(baseline_id, "unknown")),

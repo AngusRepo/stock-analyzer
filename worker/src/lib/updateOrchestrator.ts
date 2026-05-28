@@ -606,11 +606,17 @@ export async function continueEveningChainAfterFinLabBackfill(
   options: { force?: boolean; upstreamRunId?: string } = {},
 ): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
+  await logSchedulerResult(env.KV, 'finlab-primary-continuation', {
+    status: 'running',
+    summary: `FinLab primary continuation started for ${twDate}; upstream=${options.upstreamRunId ?? 'n/a'}`,
+    duration_ms: 0,
+    run_id: options.upstreamRunId,
+    run_date: twDate,
+  })
   const ready = await assertMarketDataReady(env.DB, twDate, {
     requireIndicators: false,
     allowHistoricalLatestAfterTarget: true,
   })
-  await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed after FinLab backfill:', e))
   await runQueueUpdate(env, twDate, Boolean(options.force))
   const summary = [
     `FinLab primary market data ready`,
@@ -618,6 +624,7 @@ export async function continueEveningChainAfterFinLabBackfill(
     `indicator queue accepted`,
     options.upstreamRunId ? `upstream=${options.upstreamRunId}` : '',
   ].filter(Boolean).join('; ')
+  await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed after FinLab backfill:', e))
   await logSchedulerResult(env.KV, 'update', {
     status: 'success',
     summary,

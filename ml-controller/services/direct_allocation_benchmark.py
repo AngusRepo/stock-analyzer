@@ -158,10 +158,12 @@ def build_direct_allocation_benchmark(
         },
         "decision": {
             "eligible_to_replace_predict_then_optimize": eligible,
+            "accelerated_historical_replacement_allowed": eligible,
             "production_mutation_allowed": False,
             "sharpe_delta": sharpe_delta,
             "max_drawdown_delta": max_drawdown_delta,
             "turnover_delta": turnover_delta,
+            "historical_replay_days": len(dates),
             "min_sharpe_delta": min_sharpe_delta,
             "max_mdd_delta": max_mdd_delta,
             "max_turnover_delta": max_turnover_delta,

@@ -71,6 +71,30 @@ def test_adoption_decision_holds_replacement_when_validation_ladder_not_l10():
     assert "validation_ladder_l10_required_for_replacement" in packet["blockers"]
 
 
+def test_adoption_decision_allows_accelerated_historical_replacement_at_l9():
+    ladder = {**_l10_packet(), "current_level": "L9_reality_check", "current_level_index": 9}
+    report = _direct_allocation_win()
+    report["decision"] = {
+        **report["decision"],
+        "accelerated_historical_replacement_allowed": True,
+        "historical_replay_days": 180,
+    }
+
+    packet = build_adoption_decision_packet(
+        candidate_id="signature-transformer-v1",
+        candidate_type="portfolio_allocation",
+        baseline_id="predict_then_optimize",
+        benchmark_report=report,
+        validation_ladder_packet=ladder,
+    )
+
+    assert packet["decision"]["action"] == "accelerated_replace_review"
+    assert packet["decision"]["ready_for_wei_review"] is True
+    assert packet["integration_plan"]["mode"] == "accelerated_historical_replace_after_review"
+    assert packet["baseline_retirement"]["status"] == "retirement_candidate"
+    assert packet["decision"]["production_mutation_allowed"] is False
+
+
 def test_adoption_decision_fuses_jepa_without_retiring_current_regime():
     packet = build_adoption_decision_packet(
         candidate_id="jepa-market-state-v1",

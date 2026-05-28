@@ -56,6 +56,8 @@ def test_direct_allocation_benchmark_compares_signature_transformer_against_pred
     assert report["challenger"]["metrics"]["sharpe"] > report["baseline"]["metrics"]["sharpe"]
     assert report["decision"]["sharpe_delta"] >= 1.0
     assert report["decision"]["eligible_to_replace_predict_then_optimize"] is True
+    assert report["decision"]["accelerated_historical_replacement_allowed"] is True
+    assert report["decision"]["historical_replay_days"] == 8
     assert report["decision"]["production_mutation_allowed"] is False
 
 

@@ -1361,13 +1361,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   applyScreenerScoreCalibration(scored, screenerPolicy.scoreCalibration)
   debugLog.push(
     `[Step 2b] score calibration ${screenerPolicy.scoreCalibration.enabled ? screenerPolicy.scoreCalibration.method : 'disabled'} ` +
-    `pool=${screenerPolicy.sizing.candidatePoolSize} shortlist=${screenerPolicy.sizing.mlShortlistSize} ` +
+    `pool=${screenerPolicy.sizing.candidatePoolSize} coarse=${screenerPolicy.sizing.coarseMlQueueSize} ` +
+    `shortlist=${screenerPolicy.sizing.mlShortlistSize} ` +
     `emerging=${screenerPolicy.sizing.emergingResearchSize}`,
   )
 
   // Step 2 debug: top 30 scored
   debugLog.push(`[Step 2] 多因子評分完成: ${scored.length} 檔 | 大盤 5d return=${(marketReturn5d * 100).toFixed(2)}%`)
   const scoredSorted = [...scored].sort((a, b) => b.score - a.score)
+  const preRankPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
   debugLog.push(`[Step 2] Top 15 (base_score):`)
   for (const c of scoredSorted.slice(0, 15)) {
     debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} | base=${c.score.toFixed(1)} chip=${c.chip_score} tech=${c.tech_score} mom=${c.momentum_score.toFixed(1)} | ${c.reason}`)
@@ -1380,10 +1382,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   ]
   debugLog.push(`[Step 2] 分數分布: ${ranges.map(r => `${r.label}=${scored.filter(c => c.score >= r.min && (r.min === 0 || c.score < r.min + 10)).length}`).join(' ')}`)
 
+  const coarseQueueSize = screenerPolicy.sizing.coarseMlQueueSize
   const maxCandidates = screenerPolicy.sizing.mlShortlistSize
   let strategySelectionTelemetry: Record<string, unknown> | null = null
   let strategySelectionPlan: any | null = null
-  const strategySourceUniverse = dedupeScreenerCandidatesBySymbol(scored as ScreenerCandidate[])
+  const strategySourceUniverse = dedupeScreenerCandidatesBySymbol(preRankPool as ScreenerCandidate[])
+  let overlayEligibleSymbols = new Set(
+    strategySourceUniverse.slice(0, coarseQueueSize).map((candidate) => String(candidate.symbol || '').trim()),
+  )
   try {
     const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, { planStrategyFirstCandidateSelection }] = await Promise.all([
       import('./strategyLearning'),
@@ -1399,8 +1405,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       {
         regime: (adaptiveParams as any)?.provenance?.regime ?? null,
         strategyWeights: policyState?.strategy_weights ?? undefined,
-        mlQueueCapOverride: maxCandidates,
+        mlQueueCapOverride: coarseQueueSize,
       },
+    )
+    overlayEligibleSymbols = new Set(
+      [
+        ...strategySelectionPlan.mlQueue.map((candidate: any) => String(candidate.symbol || '').trim()),
+        ...strategySourceUniverse.slice(0, coarseQueueSize).map((candidate) => String(candidate.symbol || '').trim()),
+      ].filter(Boolean),
     )
     strategySelectionTelemetry = {
       version: strategySelectionPlan.version,
@@ -1420,7 +1432,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
     debugLog.push(
       `[Step 2c] strategy_pool=${strategySelectionPlan.version} source=${source} ` +
-      `ml=${strategySelectionPlan.mlQueue.length}/${maxCandidates} ` +
+      `coarse_ml=${strategySelectionPlan.mlQueue.length}/${coarseQueueSize} core_ml=${maxCandidates} ` +
       `research_only=${strategySelectionPlan.researchOnlyQueue.length} overflow=${strategySelectionPlan.telemetry.overflow_count} ` +
       `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode}`,
     )
@@ -1480,7 +1492,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   if (rrgCfg && scored.length > 0) {
     try {
       // (a) 每檔候選股的 top (highest weight) concept tag
-      const topTagRows = await queryTopConceptTagsForSymbols(env.DB, scored.map(c => c.symbol))
+      const topTagRows = await queryTopConceptTagsForSymbols(env.DB, [...overlayEligibleSymbols])
       const symbolTags = new Map<string, Array<{ tag: string; classification: string }>>()
       for (const r of topTagRows ?? []) {
         const tags = symbolTags.get(r.symbol) ?? []
@@ -1512,6 +1524,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
       // Apply bonus to each scored candidate
       for (const c of scored) {
+        if (!overlayEligibleSymbols.has(c.symbol)) continue
         const tags = symbolTags.get(c.symbol) ?? []
         const matched = tags.find((candidateTag) => latestThemeUniverse.has(`${candidateTag.classification}:${candidateTag.tag}`)) ?? tags[0]
         if (!matched) continue
@@ -1626,6 +1639,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }
 
       for (const c of scored) {
+        if (!overlayEligibleSymbols.has(c.symbol)) continue
         const s = sentimentMap.get(c.symbol)
         if (!s || s.total === 0) continue
         const posRatio = s.pos / s.total
@@ -1642,6 +1656,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // 4b. PTT buzz → 概念 → 個股加分
   const hotConcepts = new Set(combinedBuzz.slice(0, 10).map(b => b.concept))
   for (const c of scored) {
+    if (!overlayEligibleSymbols.has(c.symbol)) continue
     const tags = symbolConceptTags.get(c.symbol) ?? []
     const matchedHot = tags.filter(t => hotConcepts.has(t))
     if (matchedHot.length > 0) {
@@ -1679,11 +1694,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ── Step 5: 排序 + 去重 + 截斷 ──
   try {
-    const evidenceRisk = await loadExternalEvidenceRiskOverlays(env.DB, endDate, scored.map(c => c.symbol))
+    const evidenceRisk = await loadExternalEvidenceRiskOverlays(env.DB, endDate, [...overlayEligibleSymbols])
     let vetoed = 0
     let penalized = 0
     for (let i = scored.length - 1; i >= 0; i--) {
       const c = scored[i]
+      if (!overlayEligibleSymbols.has(c.symbol)) continue
       const overlay = evidenceRisk.get(c.symbol)
       if (!overlay) continue
       if (overlay.action === 'veto') {
@@ -2033,8 +2049,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   )
   if (strategySelectionPlan) {
     const updatedBySymbol = new Map(afterIndustryLimit.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
-    const selectedSymbols = new Set(strategySelectionPlan.mlQueue.map((candidate: any) => String(candidate.symbol || '').trim()))
-    const selectedCandidates = strategySelectionPlan.mlQueue.map((entry: any) => {
+    const coreQueue = strategySelectionPlan.mlQueue.slice(0, maxCandidates)
+    const selectedSymbols = new Set(coreQueue.map((candidate: any) => String(candidate.symbol || '').trim()))
+    const selectedCandidates = coreQueue.map((entry: any) => {
       const symbol = String(entry.symbol || '').trim()
       const updated = updatedBySymbol.get(symbol)
       return {
@@ -2073,6 +2090,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     strategySelectionTelemetry = {
       ...(strategySelectionTelemetry ?? {}),
       post_diversity_universe_count: afterIndustryLimit.length,
+      coarse_queue_count: strategySelectionPlan.mlQueue.length,
       top_up_count: topUpCandidates.length,
       selected_after_overlay_count: selectedCandidates.length,
     }
@@ -2542,6 +2560,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       emergingCount: emergingResearchCandidates.length,
       metadata: {
         candidatePoolSize: screenerPolicy.sizing.candidatePoolSize,
+        coarseMlQueueSize: screenerPolicy.sizing.coarseMlQueueSize,
         mlShortlistSize: screenerPolicy.sizing.mlShortlistSize,
         emergingResearchSize: screenerPolicy.sizing.emergingResearchSize,
         strategyCandidatePool: strategySelectionTelemetry,

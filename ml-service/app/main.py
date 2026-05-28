@@ -2,8 +2,8 @@
 FastAPI ML service entrypoint.
 
 Current ensemble groups:
-  - Time-series alpha models: DLinear / PatchTST / Chronos
-  - Tree and tabular models: XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer
+  - Time-series alpha models: DLinear / PatchTST
+  - Tree models: XGBoost / CatBoost / ExtraTrees / LightGBM
   - State-space overlays: KalmanFilter / MarkovSwitching
 """
 import os
@@ -22,10 +22,9 @@ from .features import (
 )
 from .models import (
     run_kalman_filter, run_dlinear, run_markov_switching, run_patchtst, run_chronos,
-    run_xgboost, run_catboost, run_extra_trees, run_lightgbm, run_ft_transformer,
+    run_xgboost, run_catboost, run_extra_trees, run_lightgbm,
     run_garch_volatility,
 )
-from .ft_transformer import rebuild_ft_transformer_from_bundle
 from .ensemble import weighted_vote
 from .linucb_bandit import linucb_select, load_bandit, build_context, compute_dynamic_alpha
 from .arf_aggregator import (
@@ -305,7 +304,7 @@ async def predict_endpoint(req: PredictRequest, request: Request):
 # 2.0 predict path: regression models + IC-weighted `rank_to_signal`.
 # Shared logic should keep converging toward `prediction_runtime.py`.
 
-_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
 
 
 def predict_stock_v2(req: PredictRequest) -> dict:
@@ -378,7 +377,7 @@ async def train_universal_endpoint(req: CentralUniversalTrainRequest, request: R
 
 # SHAP feature importance audit
 # 2026-04-10: evaluate 5 universal models over 106 features
-# TreeExplainer for tree models, GradientExplainer for FT-Transformer
+# TreeExplainer for active tree models.
 
 def run_shap_audit(shap_samples: int = 5000) -> dict:
     from .universal_training import run_shap_audit as _run_shap_audit

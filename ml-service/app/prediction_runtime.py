@@ -27,14 +27,12 @@ from .arf_aggregator import (
 )
 from .ensemble import weighted_vote
 from .features import build_feature_matrix, close_or_adjusted, close_price, get_catboost_features, get_features, get_lgbm_features, safe_float
-from .ft_transformer import rank_from_ft_regression_output, rebuild_ft_transformer_from_bundle
 from .linucb_bandit import build_context, compute_dynamic_alpha, linucb_select, load_bandit
 from .models import (
     run_catboost,
     run_chronos,
     run_dlinear,
     run_extra_trees,
-    run_ft_transformer,
     run_garch_volatility,
     run_kalman_filter,
     run_lightgbm,
@@ -164,58 +162,10 @@ def update_arf(req: ARFUpdateRequest) -> dict:
     except Exception as e:
         results["conformal"] = {"updated": False, "error": str(e)}
 
-    try:
-        from .ft_online_update import online_update_ft_transformer
-        from .model_store import load_model as _load_model, save_model as _save_model
-
-        ft_stored = _load_model(req.stock_id, "FT-Transformer")
-        if ft_stored and ft_stored[0] is not None:
-            bundle_data, ft_meta = ft_stored
-            if isinstance(bundle_data, dict) and "state_dict" in bundle_data:
-                ft_model, ft_model_type, _ft_arch = rebuild_ft_transformer_from_bundle(
-                    bundle_data
-                )
-                if ft_model_type == "regression":
-                    results["ft_online"] = {
-                        "updated": False,
-                        "reason": "disabled_for_regression_bundle",
-                    }
-                else:
-                    ft_model.eval()
-                    ft_bundle = {"model": ft_model, "scaler": bundle_data.get("scaler")}
-                    y_label = np.array([1 if req.actual_up else 0])
-                    x_new = (
-                        features.reshape(1, -1)
-                        if features.ndim == 1
-                        else features[:1]
-                    )
-                    ft_result = online_update_ft_transformer(ft_bundle, x_new, y_label)
-
-                    if ft_result and ft_result.get("updated"):
-                        bundle_data["state_dict"] = ft_model.state_dict()
-                        _save_model(
-                            req.stock_id,
-                            "FT-Transformer",
-                            bundle_data,
-                            ft_meta.get("feature_names", []),
-                            ft_meta.get("n_samples", 0),
-                        )
-                    results["ft_online"] = ft_result or {
-                        "updated": False,
-                        "reason": "below MIN_NEW_SAMPLES",
-                    }
-            else:
-                results["ft_online"] = {
-                    "updated": False,
-                    "reason": "bundle format mismatch (no state_dict)",
-                }
-        else:
-            results["ft_online"] = {
-                "updated": False,
-                "reason": "no FT model yet (will be created on Sunday retrain)",
-            }
-    except Exception as e:
-        results["ft_online"] = {"error": str(e)}
+    results["ft_online"] = {
+        "updated": False,
+        "reason": "FT-Transformer retired from active alpha path",
+    }
 
     return {
         "updated_at": now_utc_iso(),
@@ -417,7 +367,6 @@ def predict_stock(req: PredictRequest) -> dict:
             ("CatBoost", lambda: run_catboost(x_cb, y_cb, x_cb_latest, prices_arr, req.horizon, stock_id, cb_names)),
             ("ExtraTrees", lambda: run_extra_trees(x, y, x_latest, prices_arr, req.horizon, stock_id, feature_names)),
             ("LightGBM", lambda: run_lightgbm(x_lgbm, y, x_lgbm_latest, prices_arr, req.horizon, stock_id, feature_names)),
-            ("FT-Transformer", lambda: run_ft_transformer(x_scaled, y, x_scaled_latest, prices_arr, req.horizon, stock_id, feature_names)),
         ]
 
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -537,8 +486,8 @@ def predict_stock(req: PredictRequest) -> dict:
     }
 
 
-_FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
-_TIME_SERIES_MODEL_NAMES_V2 = ["Chronos", "DLinear", "PatchTST"]
+_FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
+_TIME_SERIES_MODEL_NAMES_V2 = ["DLinear", "PatchTST"]
 _STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
 _SHADOW_CHALLENGER_MODEL_NAMES = ["ResidualMLP", "GNN"]
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
@@ -714,30 +663,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                     continue
 
                 x_to_predict = _aligned_features(meta)
-                if model_name == "FT-Transformer":
-                    import torch
-
-                    bundle = model_obj
-                    scaler = bundle["scaler"]
-                    n_feat = bundle.get("n_features", x_to_predict.shape[1])
-                    if x_to_predict.shape[1] != n_feat:
-                        model_errors.append(
-                            f"{model_name}: dim mismatch (predict={x_to_predict.shape[1]}, train={n_feat}), skipped"
-                        )
-                        continue
-                    x_scaled = scaler.transform(x_to_predict).astype(np.float32)
-                    x_scaled = np.nan_to_num(x_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-                    ftt, ftt_type, _ftt_arch = rebuild_ft_transformer_from_bundle(bundle)
-                    with torch.no_grad():
-                        raw = ftt(torch.tensor(x_scaled))
-                    if ftt_type == "regression":
-                        pred = rank_from_ft_regression_output(raw.reshape(-1)[0].item())
-                    else:
-                        pred = float(np.clip(torch.softmax(raw, dim=-1)[0, 1].item(), 0.0, 1.0))
-                    rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
-                else:
-                    pred = model_obj.predict(x_to_predict)
-                    rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
+                pred = model_obj.predict(x_to_predict)
+                rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
             except Exception as e:
                 model_errors.append(f"{model_name}: {e}")
 
@@ -749,7 +676,6 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         ts_model_fns = [
             ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
             ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, req.stock_id)),
-            ("Chronos", lambda: run_chronos(adj_prices_arr, req.horizon, req.stock_id)),
         ]
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {}
@@ -822,28 +748,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                     challenger_errors.append(f"{model_name}: challenger artifact missing at {ch_path}")
                     continue
                 x_to_predict = _aligned_features(ch_meta)
-                if model_name == "FT-Transformer":
-                    import torch
-
-                    bundle = ch_obj
-                    scaler = bundle["scaler"]
-                    n_feat = bundle.get("n_features", x_to_predict.shape[1])
-                    if x_to_predict.shape[1] != n_feat:
-                        challenger_errors.append(f"{model_name}: challenger dim mismatch")
-                        continue
-                    x_scaled = scaler.transform(x_to_predict).astype(np.float32)
-                    x_scaled = np.nan_to_num(x_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-                    ftt_ch, ftt_ch_type, _ftt_ch_arch = rebuild_ft_transformer_from_bundle(bundle)
-                    with torch.no_grad():
-                        raw = ftt_ch(torch.tensor(x_scaled))
-                    if ftt_ch_type == "regression":
-                        pred = rank_from_ft_regression_output(raw.reshape(-1)[0].item())
-                    else:
-                        pred = float(np.clip(torch.softmax(raw, dim=-1)[0, 1].item(), 0.0, 1.0))
-                    challenger_rank_scores[model_name] = float(np.clip(pred, 0.0, 1.0))
-                else:
-                    pred = ch_obj.predict(x_to_predict)
-                    challenger_rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
+                pred = ch_obj.predict(x_to_predict)
+                challenger_rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
             except Exception as e:
                 challenger_errors.append(f"{model_name}: challenger {e}")
 
@@ -1021,7 +927,6 @@ def retrain_stock(req: PredictRequest) -> dict:
             ),
         ),
         ("LightGBM", lambda: None),
-        ("FT-Transformer", lambda: None),
     ]
 
     x_latest_rt = x[-1] if len(x) > 0 else np.zeros(max(len(feature_names), 1))
@@ -1030,11 +935,6 @@ def retrain_stock(req: PredictRequest) -> dict:
         try:
             if name == "LightGBM":
                 result = run_lightgbm(
-                    x, y, x_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names
-                )
-                acc = float(result.direction_accuracy)
-            elif name == "FT-Transformer":
-                result = run_ft_transformer(
                     x, y, x_latest_rt, prices_arr, req.horizon, req.stock_id, feature_names
                 )
                 acc = float(result.direction_accuracy)

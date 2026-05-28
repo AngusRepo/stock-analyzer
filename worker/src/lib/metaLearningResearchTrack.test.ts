@@ -52,8 +52,8 @@ const baseExperiment: ResearchExperimentRecord = {
     'NeuralUCB should link matching experiment registry records',
   )
   assert(
-    tracks.find((track) => track.id === 'OnlinePortfolioBandit')?.stage === 'strategy_research',
-    'portfolio bandit should stay in strategy research lane',
+    tracks.find((track) => track.id === 'OnlinePortfolioBandit')?.stage === 'l2_paper_active',
+    'portfolio bandit should move directly to L2 paper-active lane',
   )
   assert(tracks.find((track) => track.id === 'NeuCB')?.stage === 'research_only', 'NeuCB should stay research-only')
   assert(
@@ -69,7 +69,7 @@ const baseExperiment: ResearchExperimentRecord = {
 {
   const packet = buildMetaLearningDecisionPacket([baseExperiment])
   assert(packet.includes('LinUCB remains the interpretable production baseline'), 'packet should clarify LinUCB baseline')
-  assert(packet.includes('portfolio bandit and NeuCB stay in Strategy Lab'), 'packet should clarify non-shadow research tracks')
+  assert(packet.includes('OnlinePortfolioBandit is L2 paper-active only'), 'packet should clarify portfolio bandit L2 scope')
 }
 
 {
@@ -82,6 +82,14 @@ const baseExperiment: ResearchExperimentRecord = {
         context_hash: 'bull:otc',
         samples: 42,
         reward_mean: 0.018,
+        updated_at: '2026-05-08T00:00:00.000Z',
+      },
+      {
+        policy_id: 'OnlinePortfolioBandit',
+        arm_id: 'conservative_diversified',
+        context_hash: 'bull:paper_active',
+        samples: 35,
+        reward_mean: 0.012,
         updated_at: '2026-05-08T00:00:00.000Z',
       },
     ],
@@ -100,7 +108,8 @@ const baseExperiment: ResearchExperimentRecord = {
   const portfolio = matrix.find((row) => row.id === 'OnlinePortfolioBandit')
   assert(linucb?.reward_ledger_status === 'ready', 'LinUCB should become ready when reward ledger has samples')
   assert(neural?.shadow_status === 'partial', 'NeuralUCB should show partial shadow evidence when decisions exist')
-  assert(portfolio?.evidence_status === 'missing', 'portfolio bandit should remain missing without experiment evidence')
+  assert(portfolio?.reward_ledger_status === 'ready', 'portfolio bandit should use warm-start reward ledger evidence')
+  assert(portfolio?.evidence_status === 'partial', 'portfolio bandit should be partial until paper-active experiment evidence exists')
 }
 
 async function assertEnsureMetaLearningResearchRegistry(): Promise<void> {

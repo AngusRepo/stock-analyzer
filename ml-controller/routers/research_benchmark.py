@@ -18,6 +18,7 @@ from services.conformal_risk_gate import build_conformal_risk_gate
 from services.direct_allocation_benchmark import build_direct_allocation_benchmark
 from services.finance_llm_eval_gate import build_finance_llm_eval_gate
 from services.market_state_benchmark import build_market_state_benchmark_report
+from services.online_portfolio_bandit import build_online_portfolio_bandit_l2_packet
 from services.portfolio_allocation import build_portfolio_allocation_benchmark
 from services.research_model_benchmark import build_model_family_benchmark_report
 from services.validation_governance import build_validation_ladder_packet
@@ -48,6 +49,17 @@ class PortfolioAllocationBenchmarkRequest(BaseModel):
     max_weight: float = 0.55
     min_sharpe_delta: float = 0.20
     max_mdd_delta: float = 0.02
+    dry_run: bool = True
+    mutation_allowed: bool = False
+    persist_results: bool = False
+    confirm: bool = False
+
+
+class OnlinePortfolioBanditL2Request(BaseModel):
+    candidates: list[dict[str, Any]]
+    return_history: dict[str, list[float]]
+    reward_ledger: list[dict[str, Any]] = []
+    exploration_alpha: float = 0.05
     dry_run: bool = True
     mutation_allowed: bool = False
     persist_results: bool = False
@@ -252,6 +264,21 @@ async def research_portfolio_allocation_dry_run(req: PortfolioAllocationBenchmar
         max_weight=req.max_weight,
         min_sharpe_delta=req.min_sharpe_delta,
         max_mdd_delta=req.max_mdd_delta,
+    )
+
+
+@router.post("/research/online-portfolio-bandit/l2-dry-run")
+async def research_online_portfolio_bandit_l2_dry_run(req: OnlinePortfolioBanditL2Request):
+    """Run L2 paper-active OPB controller without production mutation."""
+    if req.mutation_allowed or req.persist_results or req.confirm:
+        raise HTTPException(status_code=400, detail="OnlinePortfolioBandit L2 cannot mutate production state")
+    if req.dry_run is False:
+        raise HTTPException(status_code=400, detail="OnlinePortfolioBandit promotion requires paper-active approval gate")
+    return build_online_portfolio_bandit_l2_packet(
+        candidates=req.candidates,
+        return_history=req.return_history,
+        reward_ledger=req.reward_ledger,
+        exploration_alpha=req.exploration_alpha,
     )
 
 

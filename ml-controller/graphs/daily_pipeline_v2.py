@@ -250,7 +250,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     No serial sub-batching: all stocks at once, controller-side parallel.
 
     2026-04-19 ML_POOL Stage 0.1+0.2+0.3 + A:
-    - Parallel batch: 5 feature models + Chronos + DLinear + PatchTST.
+    - Parallel batch: feature models + DLinear + PatchTST.
     - Per-stock merged signal: time_series → rank via sigmoid, weighted by
       ic_weights × lifecycle_weights from model_pool.json.
     - Original signal preserved as r["signal"] for backward compat;
@@ -263,7 +263,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     payloads = state["payloads"]
     n = len(payloads)
-    logger.info(f"[Pipeline V2] node_ml_predict: {n} stocks (batch feature models + Chronos)")
+    logger.info(f"[Pipeline V2] node_ml_predict: {n} stocks (batch feature models + DLinear/PatchTST)")
 
     if not payloads:
         return {"predictions": {}}
@@ -279,11 +279,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         return {"error": reason, "results": []}
 
     feat_task = batch_predict(payloads)
-    chronos_task = (
-        modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
-        if model_status.get("Chronos", "active") in ("active", "degraded")
-        else _skip_batch("Chronos retired by model_pool")
-    )
+    chronos_task = _skip_batch("Chronos retired from alpha vote and production evening-chain batch")
     dlinear_task = (
         modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
         if model_status.get("DLinear", "active") in ("active", "degraded")
@@ -358,7 +354,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # Guard against Chronos total failure (don't let it block feature preds)
     chronos_map: dict[str, dict] = {}
     chronos_errors: list[str] = []
-    chronos_active = model_status.get("Chronos", "active") in ("active", "degraded")
     if isinstance(chronos_raw, BaseException):
         logger.warning(f"[Pipeline V2] Chronos batch failed entirely: {chronos_raw} — skipping Chronos layer")
         chronos_errors.append(f"{type(chronos_raw).__name__}: {chronos_raw}")
@@ -378,13 +373,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     else:
         logger.warning(f"[Pipeline V2] Chronos batch returned error: {chronos_raw}")
         chronos_errors.append(str(chronos_raw))
-    if chronos_active and len(chronos_map) < len(chronos_series):
-        sample = "; ".join(chronos_errors[:5]) or "no error detail"
-        raise RuntimeError(
-            f"Chronos active slot incomplete: {len(chronos_map)}/{len(chronos_series)} succeeded; "
-            f"sample_errors={sample}"
-        )
-
     # Guard against DLinear total failure (Stage 0.2 — may have no trained weights yet)
     dlinear_map: dict[str, dict] = {}
     if isinstance(dlinear_raw, BaseException):
@@ -536,7 +524,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     def _build_alt_only_prediction(sym: str, payload: dict, feature_error: str | None) -> dict | None:
         sources = [
-            ("Chronos", chronos_map.get(sym)),
             ("DLinear", dlinear_map.get(sym)),
             ("PatchTST", patchtst_map.get(sym)),
         ]
@@ -674,7 +661,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         # avg_rank desc, force BUY regardless of absolute threshold. Confidence
         # override gives downstream (paper.ts morning-setup SQL + debate prompt)
         # the margin they need to distinguish promoted signals from edge HOLDs.
-        top_k_enabled = bool(ev2_cfg.get("topKOverrideEnabled", True))
+        top_k_enabled = bool(
+            ev2_cfg.get("topKOverrideEnabled", False)
+            and ev2_cfg.get("allowLegacyTopKOverride", False)
+        )
         top_k_count = int(ev2_cfg.get("topKCount", 3))
         top_k_conf = float(ev2_cfg.get("topKConfidenceOverride", 0.72))
         if top_k_enabled and top_k_count > 0:
@@ -1484,7 +1474,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     regime_surface = regime_contract.get("regime_surface") if isinstance(regime_contract.get("regime_surface"), dict) else {}
     if regime_contract.get("missing") or regime_label == "unknown":
         raise RuntimeError(
-            "market_regime_state missing before recommendation; run regime-compute before pipeline"
+            "ml:regime missing before recommendation; market_regime_state missing before recommendation; "
+            "run regime-compute before pipeline"
         )
 
     from services.trading_config_loader import load_merged_trading_config_with_contract

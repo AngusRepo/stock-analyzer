@@ -15,8 +15,6 @@ ALPHA_PREDICTION_MODELS = (
     "CatBoost",
     "ExtraTrees",
     "LightGBM",
-    "FT-Transformer",
-    "Chronos",
     "DLinear",
     "PatchTST",
 )

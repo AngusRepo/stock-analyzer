@@ -41,15 +41,15 @@ def test_adaptive_params_expose_p8_governance_metadata():
         "CatBoost",
         "ExtraTrees",
         "LightGBM",
-        "FT-Transformer",
-        "Chronos",
         "DLinear",
         "PatchTST",
     ]
+    assert "FT-Transformer" not in meta["alpha_vote_models"]
     assert meta["state_space_overlays"] == ["KalmanFilter", "MarkovSwitching"]
     assert meta["meta_optimizers"] == ["GAOptimizer"]
     for component in ["ARF", "LinUCB", "Conformal", "Stacking", "GAOptimizer", "NeuralUCB", "NeuralTS", "OnlinePortfolioBandit", "NeuCB"]:
         assert component in meta["adaptive_components"]
+    assert "L2 paper-active" in meta["adaptive_components"]["OnlinePortfolioBandit"]
     assert "circuit" not in params
     assert "alphaFramework" not in params
 

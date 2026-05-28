@@ -39,13 +39,15 @@ Schema (model_pool.json):
   }
 }
 
-8 universal models managed in v1 bootstrap:
-  Feature family (5):
-    XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer
-  Time-series family (3):
+6 active alpha prediction models in v1 bootstrap:
+  Feature family (4):
+    XGBoost / CatBoost / ExtraTrees / LightGBM
+  Time-series family (2):
     Chronos (foundation, no weights — version is a config marker)
-    DLinear (learnable)
-    PatchTST (learnable)
+    DLinear / PatchTST (learnable)
+
+Chronos remains a legacy managed artifact/diagnostic runtime, but it is retired
+from production alpha vote and the evening-chain batch path.
 
 State-space (KalmanFilter, MarkovSwitching) handled by Stage 6.
 """
@@ -72,8 +74,6 @@ ALPHA_PREDICTION_MODELS = (
     "CatBoost",
     "ExtraTrees",
     "LightGBM",
-    "FT-Transformer",
-    "Chronos",
     "DLinear",
     "PatchTST",
 )
@@ -136,7 +136,7 @@ RESEARCH_BENCHMARK_MODELS = {
     },
 }
 
-# 8 active alpha prediction models managed by ML_POOL.
+# Active alpha prediction models plus legacy managed artifacts.
 # State-space overlays and meta optimizers live in separate namespaces below.
 MANAGED_MODELS = {
     # name → (model_type, balance_family, gcs_extension)
@@ -144,15 +144,14 @@ MANAGED_MODELS = {
     "CatBoost":         ("feature",                    "feature",     "joblib"),
     "ExtraTrees":       ("feature",                    "feature",     "joblib"),
     "LightGBM":         ("feature",                    "feature",     "joblib"),
-    "FT-Transformer":   ("feature",                    "feature",     "joblib"),
-    "Chronos":          ("time_series_foundation",     "time_series", "json"),
+    "Chronos":          ("time_series_foundation_legacy", "time_series", "json"),
     "DLinear":          ("time_series_learnable",      "time_series", "pt"),
     "PatchTST":         ("time_series_learnable",      "time_series", "pt"),
 }
 
 # Family balance guards for active alpha predictors:
 MIN_ACTIVE_PER_FAMILY = {
-    "feature":     3,    # ≥3 of 5 feature models must stay active
+    "feature":     3,    # at least 3 of 4 feature models must stay active
     "time_series": 2,    # ≥2 of 3 time-series must stay active
 }
 
@@ -255,16 +254,17 @@ def init_default_pool() -> dict:
         "research_benchmarks": {},
     }
     for name, (model_type, balance_family, _ext) in MANAGED_MODELS.items():
+        is_active_alpha = name in ALPHA_PREDICTION_MODELS
         pool["models"][name] = {
-            "status": "active",
+            "status": "active" if is_active_alpha else "retired",
             "version": "v1",
             "gcs_path": gcs_path_for(name, "v1"),
             "model_type": model_type,
             "balance_family": balance_family,
-            "promoted_at": today,
+            "promoted_at": today if is_active_alpha else None,
             "shadow_since": None,
             "degraded_since": None,
-            "retired_at": None,
+            "retired_at": None if is_active_alpha else today,
             "weekly_ic": [],
             "ic_4w_avg": None,
             "consecutive_negative_weeks": 0,

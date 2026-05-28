@@ -81,6 +81,10 @@ assert(
   'meta governance alpha vote models must match recommendation voting contract',
 )
 assert(
+  !ADAPTIVE_META_LAYER_GOVERNANCE.alpha_vote_models.includes('FT-Transformer'),
+  'FT-Transformer must be removed from active alpha vote governance',
+)
+assert(
   JSON.stringify(ADAPTIVE_META_LAYER_GOVERNANCE.state_space_overlays) === JSON.stringify(['KalmanFilter', 'MarkovSwitching']),
   'Kalman/Markov must remain state-space overlays, not alpha voters',
 )
@@ -94,6 +98,10 @@ for (const component of ['ARF', 'LinUCB', 'Conformal', 'Stacking', 'GAOptimizer'
     `${component} must have an explicit P8 meta-layer role`,
   )
 }
+assert(
+  ADAPTIVE_META_LAYER_GOVERNANCE.adaptive_components.OnlinePortfolioBandit.includes('L2 paper-active'),
+  'OnlinePortfolioBandit wording must reflect L2 paper-active controller scope, not research-only',
+)
 
 class FakeKV {
   store = new Map<string, string>()

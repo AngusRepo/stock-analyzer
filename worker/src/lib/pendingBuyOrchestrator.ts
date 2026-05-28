@@ -656,7 +656,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
     const sourceRecoDate = prevDay
-    const pendingBuyLimit = Math.max(1, Math.floor(cfg.ranking?.topK ?? 3))
+    const pendingBuyLimit = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const candidateLimit = Math.max(12, pendingBuyLimit * 4)
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,

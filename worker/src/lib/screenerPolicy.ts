@@ -4,6 +4,7 @@ import type { TradingConfig } from './tradingConfig'
 
 export interface ScreenerSizingPolicy {
   candidatePoolSize: number
+  coarseMlQueueSize: number
   mlShortlistSize: number
   emergingResearchSize: number
 }
@@ -55,6 +56,7 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   const adaptiveScreener = adaptive?.screener ?? {}
 
   const candidatePoolBase = positiveInt(raw.candidatePoolSize, 120, 60, 240)
+  const coarseMlQueueBase = positiveInt(raw.coarseMlQueueSize, 80, 30, 160)
   const mlShortlistBase = positiveInt(raw.mlShortlistSize ?? raw.maxCandidates, 40, 15, 80)
   const emergingResearchBase = positiveInt(raw.emergingResearchSize ?? raw.emergingMaxCandidates, 24, 0, 80)
 
@@ -64,9 +66,13 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
     60,
     240,
   )
+  const coarseMlQueueSize = Math.min(
+    applyAdaptiveDelta(coarseMlQueueBase, adaptiveScreener.coarse_ml_queue_delta, 30, 160),
+    candidatePoolSize,
+  )
   const mlShortlistSize = Math.min(
     applyAdaptiveDelta(mlShortlistBase, adaptiveScreener.ml_shortlist_delta, 15, 80),
-    candidatePoolSize,
+    coarseMlQueueSize,
   )
   const emergingResearchSize = applyAdaptiveDelta(
     emergingResearchBase,
@@ -78,6 +84,7 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   return {
     sizing: {
       candidatePoolSize,
+      coarseMlQueueSize,
       mlShortlistSize,
       emergingResearchSize,
     },

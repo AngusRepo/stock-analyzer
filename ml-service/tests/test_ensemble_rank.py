@@ -120,5 +120,5 @@ def test_load_ic_weights_prefers_market_segment_ic(monkeypatch):
     otc_weights = ensemble.load_ic_weights(market_segment="OTC")
 
     assert 0.023 < listed_weights["LightGBM"] < 0.024
-    assert 0.008 < listed_weights["Chronos"] < 0.009
+    assert "Chronos" not in listed_weights
     assert otc_weights["LightGBM"] == 0.0

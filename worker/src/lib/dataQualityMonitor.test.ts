@@ -203,11 +203,11 @@ void (async () => {
 
 {
   const rows = EXPECTED_V2_MODELS
-    .filter((model) => model !== 'Chronos')
+    .filter((model) => model !== 'PatchTST')
     .map((model) => ({ model_name: model, count: 20, stocks: 20 }))
   const check = buildPredictionCoverageCheck(rows)
   assert(check.status === 'fail', 'missing one of the V2 production models should fail prediction coverage')
-  assert((check.metrics?.missing_models as string[]).includes('Chronos'), 'missing model should be reported')
+  assert((check.metrics?.missing_models as string[]).includes('PatchTST'), 'missing model should be reported')
 }
 
 {
@@ -224,7 +224,7 @@ void (async () => {
 
 {
   const rows = EXPECTED_V2_MODELS
-    .filter((model) => model !== 'FT-Transformer')
+    .filter((model) => model !== 'PatchTST')
     .map((model) => ({
       model_name: model,
       count: 60,
@@ -233,7 +233,7 @@ void (async () => {
     }))
   const check = buildModelIcEvidenceCheck(rows)
   assert(check.status === 'fail', 'missing V2 model IC evidence should fail')
-  assert((check.metrics?.missing_models as string[]).includes('FT-Transformer'), 'missing IC model should be explicit')
+  assert((check.metrics?.missing_models as string[]).includes('PatchTST'), 'missing IC model should be explicit')
 }
 
 {

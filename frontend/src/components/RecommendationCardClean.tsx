@@ -112,8 +112,6 @@ const ALPHA_PREDICTION_MODEL_NAMES = [
   'CatBoost',
   'ExtraTrees',
   'LightGBM',
-  'FT-Transformer',
-  'Chronos',
   'DLinear',
   'PatchTST',
 ] as const

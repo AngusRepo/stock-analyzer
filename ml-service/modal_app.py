@@ -453,13 +453,6 @@ def retrain_orchestrator(payload: dict) -> dict:
             "models": models_for_training_group("tree"),
             "note": training_group_feature_policy("tree").note,
         },
-        "ftt": {
-            "spawn": lambda p: train_ftt_model.spawn(p),
-            "payload": lambda: build_group_train_payload(base_train_payload, "ftt"),
-            "mergeable": training_group_feature_policy("ftt").mergeable_oos,
-            "models": models_for_training_group("ftt"),
-            "note": training_group_feature_policy("ftt").note,
-        },
         "dlinear": {
             "spawn": lambda p: train_dlinear_universal.spawn(p),
             "payload": lambda: {
@@ -1494,6 +1487,11 @@ def train_tree_models(payload: dict) -> dict:
 )
 def train_ftt_model(payload: dict) -> dict:
     """GPU L4: FT-Transformer only (uses all features, skip_feature_pool=True)."""
+    return {
+        "status": "retired",
+        "type": "ftt_model",
+        "reason": "FT-Transformer retired from active training and comparator paths.",
+    }
     _setup_env()
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     from app.training_policy import build_group_train_payload
@@ -1525,6 +1523,11 @@ def ft_transformer_arch_search(payload: dict) -> dict:
       subset_size  (int | null): null = full data, int = subsample X_train
       gcs_prefix   (str, default "universal")
     """
+    return {
+        "status": "retired",
+        "type": "ft_transformer_arch_search",
+        "reason": "FT-Transformer retired from active training and comparator paths.",
+    }
     _setup_env()
     try:
         import json, io
@@ -2883,6 +2886,12 @@ def train_wf_tree_window(payload: dict) -> dict:
 )
 def train_wf_ftt_window(payload: dict) -> dict:
     """GPU walk-forward: FT-Transformer for one window."""
+    return {
+        "status": "retired",
+        "type": "wf_ftt",
+        "window_id": payload.get("window_id"),
+        "reason": "FT-Transformer retired from active training and comparator paths.",
+    }
     _setup_env()
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
@@ -2993,7 +3002,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     windows = payload["windows"]
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
-    models = payload.get("models") or ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+    models = [
+        model
+        for model in (payload.get("models") or ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"])
+        if model != "FT-Transformer"
+    ]
     concurrent = int(payload.get("concurrent_windows", 2))
     start_date = payload["start_date"]
     end_date = payload["end_date"]

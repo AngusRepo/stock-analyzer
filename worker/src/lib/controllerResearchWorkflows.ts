@@ -676,7 +676,6 @@ const MODEL_GROUP_BY_NAME: Record<string, string> = {
   CatBoost: 'tree',
   ExtraTrees: 'tree',
   LightGBM: 'tree',
-  'FT-Transformer': 'ftt',
   Chronos: 'chronos',
   DLinear: 'dlinear',
   PatchTST: 'patchtst',

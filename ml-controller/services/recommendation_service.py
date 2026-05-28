@@ -42,6 +42,7 @@ from services.alpha_framework import (
 )
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
+from services.portfolio_allocation import allocate_sparse_tangent
 
 logger = logging.getLogger(__name__)
 
@@ -306,12 +307,14 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     """Structured ML vote evidence for UI/OBS; text reasons are derived elsewhere."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
     tracked = [
-        "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
-        "Chronos", "DLinear", "PatchTST",
+        "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
+        "DLinear", "PatchTST",
     ]
     weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
     active_weight_count = 0
-    for value in weights.values():
+    for name, value in weights.items():
+        if name not in tracked:
+            continue
         numeric = _sanitize_non_finite(value)[0]
         if isinstance(numeric, Real) and float(numeric) > 0:
             active_weight_count += 1
@@ -323,19 +326,21 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     diagnostics = ev2.get("ic_weight_diagnostics") if isinstance(ev2.get("ic_weight_diagnostics"), dict) else {}
     validation_blocked_models = [
         name for name, detail in diagnostics.items()
-        if isinstance(detail, dict) and str(detail.get("validation_status") or "").upper() == "FAIL"
+        if name in tracked
+        and isinstance(detail, dict)
+        and str(detail.get("validation_status") or "").upper() == "FAIL"
     ]
 
     model_scores: dict[str, float] = {}
     rank_scores = (ml or {}).get("rank_scores") or {}
     if isinstance(rank_scores, dict):
-        for name in tracked[:5]:
+        for name in tracked[:4]:
             try:
                 if rank_scores.get(name) is not None:
                     model_scores[name] = float(rank_scores[name])
             except (TypeError, ValueError):
                 continue
-    for src_key, model_name in (("chronos", "Chronos"), ("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+    for src_key, model_name in (("dlinear", "DLinear"), ("patchtst", "PatchTST")):
         sig = (ml or {}).get(src_key) or {}
         try:
             if sig.get("forecast_pct") is not None:
@@ -370,7 +375,10 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
             "validationBlockedModels": validation_blocked_models,
             "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
             "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
-            "contributingModels": ev2.get("contributing_models") or [],
+            "contributingModels": [
+                name for name in (ev2.get("contributing_models") or [])
+                if name in tracked
+            ],
         }
 
     models = (ml or {}).get("models") or []
@@ -1528,6 +1536,104 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     return True
 
 
+def _allocation_method(policy: dict) -> str:
+    allocation = policy.get("allocation") if isinstance(policy, dict) else {}
+    value = (allocation or {}).get("engine") or (allocation or {}).get("method") or ""
+    return str(value or "").strip()
+
+
+def _row_expected_return(row: dict) -> float:
+    for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
+        try:
+            value = float(row.get(key) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if math.isfinite(value) and value != 0.0:
+            return value
+    return max(0.0, (float(row.get("score") or 0.0) - 50.0) / 5000.0)
+
+
+def _apply_sparse_tangent_buy_selection(
+    scored: list[dict],
+    ranking_config: dict,
+    policy: dict,
+    *,
+    confidence_floor: float,
+) -> list[dict]:
+    allocation = policy.get("allocation") or {}
+    buy_signal_count = int(allocation.get("buy_signal_count") or ranking_config.get("topK") or 3)
+    buy_signal_count = max(1, min(30, buy_signal_count))
+
+    eligible_rows = [
+        row for row in scored
+        if _can_promote_ranking_candidate(row, ranking_config)
+    ]
+    for row in scored:
+        row["has_buy_signal"] = 0
+
+    allocation_candidates = [
+        {
+            "symbol": row.get("symbol"),
+            "score": row.get("score"),
+            "expected_return": _row_expected_return(row),
+        }
+        for row in eligible_rows
+    ]
+    weights = allocate_sparse_tangent(
+        allocation_candidates,
+        {},
+        top_k=buy_signal_count,
+        max_weight=float(allocation.get("max_weight") or allocation.get("maxWeight") or 0.55),
+    )
+    selected_symbols = set(weights)
+    selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
+
+    for symbol, weight in weights.items():
+        row = selected_by_symbol.get(symbol)
+        if not row:
+            continue
+        row["signal_raw"] = row.get("signal")
+        row["signal"] = "BUY"
+        row["signal_source_raw"] = row.get("signal_source")
+        row["signal_source"] = "sparse_tangent_inverse_risk"
+        row["has_buy_signal"] = 1
+        row["confidence"] = max(float(row.get("confidence") or 0.0), confidence_floor)
+        row["allocation_weight"] = round(float(weight), 8)
+        row["ranking_promoted"] = False
+        row["sparse_tangent_selected"] = True
+        alpha_allocation = row.get("alpha_allocation") if isinstance(row.get("alpha_allocation"), dict) else {}
+        row["alpha_allocation"] = {
+            **alpha_allocation,
+            "selected": True,
+            "engine": "sparse_tangent_inverse_risk",
+            "controller": allocation.get("controller") or "OnlinePortfolioBandit",
+            "allocation_weight": round(float(weight), 8),
+            "buy_signal_count": buy_signal_count,
+        }
+        watch_points = row.get("watch_points")
+        if not isinstance(watch_points, list):
+            watch_points = []
+        watch_points.append(f"allocation:sparse_tangent_inverse_risk:{round(float(weight), 6)}")
+        row["watch_points"] = watch_points
+
+    for row in scored:
+        if row.get("symbol") in selected_symbols:
+            continue
+        alpha_allocation = row.get("alpha_allocation")
+        if isinstance(alpha_allocation, dict):
+            row["alpha_allocation"] = {
+                **alpha_allocation,
+                "selected": False,
+                "engine": "sparse_tangent_inverse_risk",
+            }
+
+    logger.info(
+        "[Ranking] sparse_tangent_inverse_risk selected "
+        f"{len(selected_symbols)}/{buy_signal_count} BUY rows: {sorted(selected_symbols)}"
+    )
+    return scored
+
+
 def hybrid_ranking_promotion(
     recommendations: list[dict],
     ranking_config: dict,
@@ -1581,6 +1687,21 @@ def hybrid_ranking_promotion(
         scored.append(r)
 
     current_buy = sum(1 for r in scored if r.get("has_buy_signal") == 1)
+    if _allocation_method(policy) == "sparse_tangent_inverse_risk":
+        allocated = regime_aware_allocate(
+            scored,
+            regime_label,
+            slate_size=max(int(policy["allocation"].get("buy_signal_count") or 3), policy["allocation"]["slate_size"]),
+            policy=policy,
+            regime_surface=regime_surface,
+        )
+        return _apply_sparse_tangent_buy_selection(
+            allocated,
+            ranking_config,
+            policy,
+            confidence_floor=effective_boost,
+        )
+
     controller_policy_syms = [
         r.get("symbol")
         for r in scored
@@ -1803,8 +1924,8 @@ def write_predictions_to_d1(
 # Models whose rank scores we want stored for alpha IC tracking.
 # State-space overlays explain regime/risk context rather than vote as alpha.
 _PER_MODEL_TRACKED = (
-    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
-    "Chronos", "DLinear", "PatchTST",
+    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
+    "DLinear", "PatchTST",
 )
 
 
@@ -1821,7 +1942,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     import math
     out: dict[str, float] = {}
     rank_scores = pred.get("rank_scores") or {}
-    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"):
+    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM"):
         v = rank_scores.get(name)
         if v is not None:
             try:
@@ -1830,7 +1951,6 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
                 pass
     # Time-series alpha predictors: forecast_pct → sigmoid rank.
     _SRC_KEY_MODEL = (
-        ("chronos",          "Chronos"),
         ("dlinear",          "DLinear"),
         ("patchtst",         "PatchTST"),
     )

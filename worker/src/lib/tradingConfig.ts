@@ -42,6 +42,9 @@ export interface AlphaFrameworkConfig {
     fairValueMinPct: number
   }
   allocation: {
+    engine: string
+    controller: string
+    buySignalCount: number
     slateSize: number
     scoreRoundDecimals: number
     weights: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
@@ -288,7 +291,8 @@ export interface TradingConfig {
     buyThreshold: number             // 絕對 BUY 門檻（預設 0.70）
     sellThreshold: number            // 絕對 SELL 門檻（預設 0.30）
     strongSellThreshold: number      // 絕對 STRONG_SELL 門檻（預設 0.15）
-    topKOverrideEnabled: boolean     // Top-K 補救開關（預設 true，解 no-buy）
+    topKOverrideEnabled: boolean     // Top-K 補救開關（預設 false，legacy rollback only）
+    allowLegacyTopKOverride: boolean // rollback-only guard; sparse tangent is production owner
     topKCount: number                // 強制 BUY 的 top-K 數（預設 3，對齊 ranking.topK）
     topKConfidenceOverride: number   // Top-K 強制 BUY 時的 confidence（預設 0.72）
   }
@@ -588,7 +592,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     buyThreshold: 0.70,
     sellThreshold: 0.30,
     strongSellThreshold: 0.15,
-    topKOverrideEnabled: true,
+    topKOverrideEnabled: false,
+    allowLegacyTopKOverride: false,
     topKCount: 3,
     topKConfidenceOverride: 0.72,
   },
@@ -711,6 +716,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
       fairValueMinPct: 0.01,
     },
     allocation: {
+      engine: 'sparse_tangent_inverse_risk',
+      controller: 'OnlinePortfolioBandit',
+      buySignalCount: 3,
       slateSize: 10,
       scoreRoundDecimals: 1,
       weights: {
@@ -880,6 +888,9 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
     allocation: {
       ...d.allocation,
       ...rawAllocation,
+      engine: rawAllocation.engine ?? rawAllocation.method ?? d.allocation.engine,
+      controller: rawAllocation.controller ?? d.allocation.controller,
+      buySignalCount: rawAllocation.buySignalCount ?? rawAllocation.buy_signal_count ?? d.allocation.buySignalCount,
       slateSize: rawAllocation.slateSize ?? rawAllocation.slate_size ?? d.allocation.slateSize,
       scoreRoundDecimals: rawAllocation.scoreRoundDecimals ?? rawAllocation.score_round_decimals ?? d.allocation.scoreRoundDecimals,
       weights: {
@@ -1497,6 +1508,10 @@ export function validateTradingConfig(config: TradingConfig): string[] {
   } else {
     if (!Number.isInteger(allocation.slateSize) || allocation.slateSize < 1 || allocation.slateSize > 30)
       errors.push('alphaFramework.allocation.slateSize must be an integer between 1 and 30')
+    if (allocation.engine !== 'sparse_tangent_inverse_risk')
+      errors.push('alphaFramework.allocation.engine must be sparse_tangent_inverse_risk')
+    if (!Number.isInteger(allocation.buySignalCount) || allocation.buySignalCount < 1 || allocation.buySignalCount > 30)
+      errors.push('alphaFramework.allocation.buySignalCount must be an integer between 1 and 30')
     if (!Number.isInteger(allocation.scoreRoundDecimals) || allocation.scoreRoundDecimals < 0 || allocation.scoreRoundDecimals > 6)
       errors.push('alphaFramework.allocation.scoreRoundDecimals must be an integer between 0 and 6')
     const regimes: AlphaFrameworkRegime[] = ['bull', 'bear', 'volatile', 'sideways']

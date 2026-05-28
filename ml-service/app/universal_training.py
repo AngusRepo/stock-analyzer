@@ -28,6 +28,7 @@ from .artifact_contract import (
 from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
 from .model_store import _get_bucket, save_model
 from .training_policy import (
+    RETIRED_MODEL_NAMES,
     TREE_MODEL_NAMES,
     ValidationGovernancePolicy,
     build_model_feature_policy_metadata,
@@ -288,13 +289,7 @@ def build_validation_split_metadata(
             "additional_fit_count": model_count * split_count,
             "total_fit_count": model_count * (1 + split_count),
             "tree_fit_multiplier": 1 + split_count,
-            "optional_family_adapters": {
-                "FT-Transformer": {
-                    "enabled_by_policy": "model_cpcv_policy.family_adapters.FT-Transformer.enabled",
-                    "additional_fit_count": split_count,
-                    "cost_note": "FT CPCV trains one FT fold per CPCV split; use a small max_epochs policy first.",
-                }
-            },
+            "optional_family_adapters": {},
             "forecast_validation_models": {
                 "Chronos": {
                     "method": "chronos_forecast_rank_ic",
@@ -337,9 +332,7 @@ def build_non_tree_model_cpcv_gap_evidence(
 ) -> dict[str, dict]:
     from .model_validation import build_model_cpcv_adapter_missing_evidence
 
-    family_by_model = {
-        "FT-Transformer": ("tabular_deep", "fit_predict_ft_transformer_cpcv"),
-    }
+    family_by_model: dict[str, tuple[str, str]] = {}
     cost_estimate = (
         validation_split_metadata.get("model_cpcv_cost_estimate")
         if isinstance(validation_split_metadata, dict)
@@ -360,6 +353,8 @@ def build_non_tree_model_cpcv_gap_evidence(
 
 
 def model_cpcv_family_adapter_enabled(model_name: str, policy: dict | None) -> bool:
+    if model_name in RETIRED_MODEL_NAMES:
+        return False
     if not isinstance(policy, dict):
         return False
     adapters = policy.get("family_adapters")
@@ -842,9 +837,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     trained_models: dict[str, object] = {}
     oos_rank_predictions: dict[str, np.ndarray] = {}
     model_cpcv_evidence_by_model: dict[str, dict] = {}
-    _filter = set(req.models_filter) if req.models_filter else None
+    _filter = (
+        {str(model) for model in req.models_filter if str(model) not in RETIRED_MODEL_NAMES}
+        if req.models_filter is not None
+        else None
+    )
 
     def _should_train(name: str) -> bool:
+        if name in RETIRED_MODEL_NAMES:
+            return False
         return _filter is None or name in _filter
 
     class _SkipModel(Exception):

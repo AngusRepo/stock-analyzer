@@ -25,6 +25,7 @@ function assert(condition: unknown, message: string): void {
       ...({} as any),
       screener: {
         candidate_pool_delta: -20,
+        coarse_ml_queue_delta: -10,
         ml_shortlist_delta: 5,
         emerging_research_delta: 6,
       },
@@ -32,7 +33,8 @@ function assert(condition: unknown, message: string): void {
   )
 
   assert(policy.sizing.candidatePoolSize === 100, 'candidate pool size should accept adaptive delta')
-  assert(policy.sizing.mlShortlistSize === 45, 'ML shortlist size should accept adaptive delta')
+  assert(policy.sizing.coarseMlQueueSize === 70, 'coarse ML queue size should accept adaptive delta')
+  assert(policy.sizing.mlShortlistSize === 45, 'core ML shortlist size should accept adaptive delta')
   assert(policy.sizing.emergingResearchSize === 30, 'emerging research size should accept adaptive delta')
 }
 

@@ -5,7 +5,7 @@ ensemble.py — 多模型加權投票引擎（v12 adaptive）
 三層 meta 架構：
   ① HMM Regime → ② Models + LinUCB → ③ Conformal Prediction → ARF
 
-NOTE: 5 feature models (XGBoost, CatBoost, ExtraTrees, LightGBM, FT-Transformer)
+NOTE: 4 active feature models (XGBoost, CatBoost, ExtraTrees, LightGBM)
   share same labels + correlated features. Consensus may be inflated.
   Future: diversify via different label horizons or feature subsets.
 
@@ -26,6 +26,17 @@ from .models import ModelPrediction
 logger = logging.getLogger("ensemble")
 _IC_WEIGHTS_CACHE: dict[str, dict[str, float]] | None = None
 _IC_WEIGHTS_CACHE_LOADED_AT: float = 0.0
+_MODEL_FAMILY = {
+    "XGBoost": "tree_tabular",
+    "CatBoost": "tree_tabular",
+    "ExtraTrees": "tree_tabular",
+    "LightGBM": "tree_tabular",
+    "TabM": "tabular_neural",
+    "DLinear": "sequence_baseline",
+    "PatchTST": "learned_sequence",
+    "iTransformer": "learned_sequence",
+    "TimesFM": "foundation_sequence",
+}
 
 
 def _normalize_market_segment(segment: Any) -> str | None:
@@ -124,7 +135,11 @@ def _extract_model_pool_ic(pool: dict, market_segment: str | None = None) -> dic
     weight zeroed because the same model underperformed on OTC/emerging names.
     """
     weights: dict[str, float] = {}
+    from .model_pool import ALPHA_PREDICTION_MODELS
+    active_alpha_models = set(ALPHA_PREDICTION_MODELS)
     for name, entry in (pool.get("models") or {}).items():
+        if name not in active_alpha_models:
+            continue
         ic_value = _entry_serving_ic(entry, market_segment=market_segment)
         if ic_value is not None:
             sample_count = _entry_ic_sample_count(entry, market_segment=market_segment)
@@ -566,7 +581,7 @@ def merge_with_time_series(
 
     Args:
       feature_rank_scores: {name: rank 0~1} from XGBoost/CatBoost/.../FT-T
-      time_series_signals: {name: {forecast_pct, ...}} for Chronos/DLinear/PatchTST
+      time_series_signals: {name: {forecast_pct, ...}} for DLinear/PatchTST
         (key absent or value None → that model contributes nothing)
       ic_weights: {name: IC} (Grinold-Kahn). None → uniform 1.0 (no IC available).
       model_status: {name: "active"|"degraded"|"challenger"|"retired"} from
@@ -581,7 +596,11 @@ def merge_with_time_series(
       (merged_rank_scores, applied_weights)
     """
     merged: dict[str, float] = dict(feature_rank_scores)
+    from .model_pool import ALPHA_PREDICTION_MODELS
+    active_alpha_models = set(ALPHA_PREDICTION_MODELS)
     for name, ts in (time_series_signals or {}).items():
+        if name not in active_alpha_models:
+            continue
         if not ts or ts.get("forecast_pct") is None:
             continue
         merged[name] = time_series_to_rank(float(ts["forecast_pct"]), scale=forecast_to_rank_scale)
@@ -613,6 +632,45 @@ def weighted_average_rank(rank_scores: dict[str, float], weights: dict[str, floa
         scores = list(rank_scores.values())
         return float(np.mean(scores)) if scores else 0.5
     return weighted_sum / weight_total
+
+
+def family_weighted_average_rank(rank_scores: dict[str, float], weights: dict[str, float]) -> tuple[float, dict]:
+    family_rows: dict[str, dict[str, Any]] = {}
+    for name, score in rank_scores.items():
+        weight = max(0.0, float(weights.get(name, 0.0) or 0.0))
+        if weight <= 0:
+            continue
+        family = _MODEL_FAMILY.get(name, "other")
+        row = family_rows.setdefault(family, {"score_sum": 0.0, "weight_sum": 0.0, "members": []})
+        row["score_sum"] += float(score) * weight
+        row["weight_sum"] += weight
+        row["members"].append(name)
+
+    family_scores: dict[str, float] = {}
+    family_weights: dict[str, float] = {}
+    family_members: dict[str, list[str]] = {}
+    for family, row in family_rows.items():
+        member_count = max(1, len(row["members"]))
+        family_scores[family] = row["score_sum"] / row["weight_sum"] if row["weight_sum"] > 0 else 0.5
+        family_weights[family] = row["weight_sum"] / member_count
+        family_members[family] = sorted(row["members"])
+
+    weight_total = sum(family_weights.values())
+    if weight_total <= 0:
+        scores = list(rank_scores.values())
+        return (float(np.mean(scores)) if scores else 0.5), {
+            "scores": {},
+            "weights": {},
+            "members": {},
+            "contributing_families": [],
+        }
+    avg_rank = sum(family_scores[name] * family_weights[name] for name in family_scores) / weight_total
+    return avg_rank, {
+        "scores": {k: round(float(v), 6) for k, v in family_scores.items()},
+        "weights": {k: round(float(v), 6) for k, v in family_weights.items()},
+        "members": family_members,
+        "contributing_families": sorted(family_scores),
+    }
 
 
 def rank_to_signal(
@@ -648,25 +706,26 @@ def rank_to_signal(
         return _no_signal(current_price, atr, "No rank scores")
 
     # IC-weighted ensemble (Grinold-Kahn: contribution ∝ IC)
+    family_vote: dict[str, Any] = {}
     if ic_weights:
-        weighted_sum = 0.0
         weight_total = 0.0
         has_observed_ic = False
+        effective_weights: dict[str, float] = {}
         for name, score in rank_scores.items():
             raw_ic = float(ic_weights.get(name, 0.0) or 0.0)
             if abs(raw_ic) > 1e-12:
                 has_observed_ic = True
             w = max(0.0, raw_ic)
-            weighted_sum += score * w
             weight_total += w
+            effective_weights[name] = w
         if weight_total > 0:
-            avg_rank = weighted_sum / weight_total
+            avg_rank, family_vote = family_weighted_average_rank(rank_scores, effective_weights)
         elif not has_observed_ic:
-            avg_rank = float(np.mean(list(rank_scores.values())))
+            avg_rank, family_vote = family_weighted_average_rank(rank_scores, {name: 1.0 for name in rank_scores})
         else:
             avg_rank = 0.5
     else:
-        avg_rank = float(np.mean(list(rank_scores.values())))
+        avg_rank, family_vote = family_weighted_average_rank(rank_scores, {name: 1.0 for name in rank_scores})
     avg_rank = float(np.clip(avg_rank, 0.0, 1.0))
     scores = list(rank_scores.values())
     rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0
@@ -719,9 +778,16 @@ def rank_to_signal(
     model_details = [
         {"name": name, "model_name": name, "rank_score": round(score, 4),
          "direction": "up" if score > 0.5 else "down",
-         "confidence": round(score, 3)}
+         "confidence": round(score, 3),
+         "family": _MODEL_FAMILY.get(name, "other")}
         for name, score in rank_scores.items()
     ]
+    model_details.append({
+        "name": "family_vote",
+        "model_name": "family_vote",
+        "rank_score": round(avg_rank, 4),
+        "details": family_vote,
+    })
 
     reasoning_parts = []
     if avg_rank >= 0.70:

@@ -208,8 +208,10 @@ PREDICT_ONLY_MODEL_NOTES = {
 
 
 TREE_MODEL_NAMES = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM")
-FULL_TABULAR_MODEL_NAMES = ("FT-Transformer",)
+FULL_TABULAR_MODEL_NAMES: tuple[str, ...] = ()
 SEQUENCE_MODEL_GROUPS = ("dlinear", "patchtst")
+RETIRED_TRAINING_GROUPS = {"ftt"}
+RETIRED_MODEL_NAMES = {"FT-Transformer"}
 
 
 @dataclass(frozen=True)
@@ -251,14 +253,6 @@ TRAINING_GROUP_FEATURE_POLICIES: dict[str, TrainingGroupFeaturePolicy] = {
         skip_feature_pool=False,
         mergeable_oos=True,
         note="Tree models use selected tabular features from feature_pool.tree_active.",
-    ),
-    "ftt": TrainingGroupFeaturePolicy(
-        group="ftt",
-        models=FULL_TABULAR_MODEL_NAMES,
-        feature_source="feature_pool.ft_active",
-        skip_feature_pool=True,
-        mergeable_oos=True,
-        note="FT-Transformer uses the full tabular feature set declared by feature_pool.ft_active.",
     ),
     "dlinear": TrainingGroupFeaturePolicy(
         group="dlinear",
@@ -309,24 +303,6 @@ MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
         )
         for name in TREE_MODEL_NAMES
     },
-    "FT-Transformer": ModelFeaturePolicy(
-        model="FT-Transformer",
-        family="full_tabular_transformer",
-        feature_policy_type="wide_tabular_with_missingness",
-        feature_source="feature_pool.ft_active",
-        selection_owner="feature_selection_pipeline",
-        selection_required=False,
-        uses_missingness_mask=True,
-        requires_schema_parity=True,
-        mergeable_oos=True,
-        allowed_selection_methods=(
-            "schema_parity",
-            "missingness_mask",
-            "target_permutation_evidence_reference",
-            "ic_icir_evidence_reference",
-        ),
-        note="FT-Transformer keeps the wide tabular schema but must carry missingness/schema parity evidence.",
-    ),
     "DLinear": ModelFeaturePolicy(
         model="DLinear",
         family="sequence",
@@ -407,7 +383,19 @@ def models_for_training_group(group: str) -> list[str]:
 
 
 def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[str, Any]:
-    policy = training_group_feature_policy(group)
+    normalized_group = str(group or "").strip().lower()
+    if normalized_group in RETIRED_TRAINING_GROUPS:
+        payload = dict(base_payload)
+        payload["models_filter"] = ["__retired_ft_transformer__"]
+        payload["skip_feature_pool"] = True
+        payload["feature_policy"] = {
+            "group": normalized_group,
+            "models": [],
+            "retired": True,
+            "note": "FT-Transformer retired from active training and comparator paths.",
+        }
+        return payload
+    policy = training_group_feature_policy(normalized_group)
     if policy is None:
         return dict(base_payload)
     payload = dict(base_payload)
@@ -462,7 +450,7 @@ def build_model_feature_policy_metadata(
 
 @dataclass(frozen=True)
 class UniversalTrainingPolicy:
-    default_train_groups: tuple[str, ...] = ("tree", "ftt", "dlinear", "patchtst")
+    default_train_groups: tuple[str, ...] = ("tree", "dlinear", "patchtst")
     sequence_min_len: int = 65
     ftt_d_model: int = 128
     ftt_n_heads: int = 8
@@ -495,7 +483,8 @@ class UniversalTrainingPolicy:
 
     def requested_groups(self, payload: dict[str, Any] | None = None) -> list[str]:
         payload = payload or {}
-        return _coerce_str_list(payload.get("train_model_groups"), self.default_train_groups)
+        groups = _coerce_str_list(payload.get("train_model_groups"), self.default_train_groups)
+        return [group for group in groups if group not in RETIRED_TRAINING_GROUPS]
 
     def sequence_min_length(self, payload: dict[str, Any] | None = None) -> int:
         payload = payload or {}
@@ -508,17 +497,7 @@ class UniversalTrainingPolicy:
         candidate_version: str,
     ) -> dict[str, float | int | str | bool]:
         payload = payload or {}
-        model_cpcv_policy = payload.get("model_cpcv_policy") or {
-            "family_adapters": {
-                "FT-Transformer": {
-                    "enabled": True,
-                    "explicit_enable": True,
-                    "max_epochs": _coerce_int(payload.get("ftt_cpcv_max_epochs"), 3),
-                    "batch_size": _coerce_int(payload.get("ftt_cpcv_batch_size"), 512),
-                    "seed": _coerce_int(payload.get("ftt_cpcv_seed"), 42),
-                }
-            }
-        }
+        model_cpcv_policy = payload.get("model_cpcv_policy") or {"family_adapters": {}}
         return {
             "batch_count": _coerce_int(payload.get("batch_count"), 5),
             "ftt_d_model": _coerce_int(payload.get("ftt_d_model"), self.ftt_d_model),

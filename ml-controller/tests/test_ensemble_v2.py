@@ -31,6 +31,53 @@ def test_ensemble_v2_uses_equal_weight_when_ic_is_cold_start():
     assert ev2["avg_rank"] > 0.69
     assert ev2["signal"] == "BUY"
     assert ev2["contributing_models"] == ["CatBoost", "ExtraTrees", "XGBoost"]
+    assert ev2["family_vote"]["contributing_families"] == ["tree_tabular"]
+
+
+def test_ensemble_v2_caps_correlated_tree_family_before_sequence_vote():
+    pred = {
+        "rank_scores": {
+            "XGBoost": 0.95,
+            "CatBoost": 0.95,
+            "ExtraTrees": 0.95,
+            "LightGBM": 0.95,
+        },
+        "dlinear": {"forecast_pct": -0.08},
+        "patchtst": {"forecast_pct": -0.08},
+        "chronos": {"forecast_pct": 0.50},
+    }
+
+    attach_ensemble_v2(
+        pred,
+        model_status={
+            "XGBoost": "active",
+            "CatBoost": "active",
+            "ExtraTrees": "active",
+            "LightGBM": "active",
+            "DLinear": "active",
+            "PatchTST": "active",
+            "Chronos": "active",
+        },
+        ic_weights={
+            "XGBoost": 0.03,
+            "CatBoost": 0.03,
+            "ExtraTrees": 0.03,
+            "LightGBM": 0.03,
+            "DLinear": 0.03,
+            "PatchTST": 0.03,
+            "Chronos": 0.03,
+        },
+        degraded_dampening=1.0,
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert "Chronos" not in ev2["contributing_models"]
+    assert set(ev2["family_vote"]["contributing_families"]) == {
+        "tree_tabular",
+        "sequence_baseline",
+        "learned_sequence",
+    }
+    assert ev2["avg_rank"] < 0.75
 
 
 def test_ensemble_v2_keeps_no_positive_weight_when_ic_is_negative():

@@ -48,15 +48,6 @@ def _get_model_cache_stats() -> dict[str, int]:
         return {}
 
 
-def _get_ft_runtime_cache_stats() -> dict[str, int]:
-    try:
-        from .ft_transformer import get_ft_runtime_cache_stats
-
-        return get_ft_runtime_cache_stats()
-    except Exception:
-        return {}
-
-
 def _stats_delta(after: dict, before: dict) -> dict[str, int]:
     return {
         key: int(after.get(key, 0) or 0) - int(before.get(key, 0) or 0)
@@ -188,46 +179,6 @@ def _record_feature_error(
     target.append(message)
 
 
-def _predict_ft_transformer_batch(
-    model_name: str,
-    bundle: dict,
-    rows: list[tuple[_FeatureBatchContext, np.ndarray]],
-    *,
-    challenger: bool = False,
-) -> None:
-    import torch
-
-    scaler = bundle["scaler"]
-    n_feat = bundle.get("n_features", rows[0][1].shape[1])
-    valid_rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
-    for ctx, x_row in rows:
-        if x_row.shape[1] != n_feat:
-            suffix = "challenger dim mismatch" if challenger else (
-                f"dim mismatch (predict={x_row.shape[1]}, train={n_feat}), skipped"
-            )
-            _record_feature_error(ctx, f"{model_name}: {suffix}", challenger=challenger)
-            continue
-        valid_rows.append((ctx, x_row))
-    if not valid_rows:
-        return
-
-    from .ft_transformer import rank_from_ft_regression_output, rebuild_ft_transformer_from_bundle
-
-    x_batch = np.vstack([row for _ctx, row in valid_rows])
-    x_scaled = scaler.transform(x_batch).astype(np.float32)
-    x_scaled = np.nan_to_num(x_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-    ftt, ftt_type, _ftt_arch = rebuild_ft_transformer_from_bundle(bundle)
-    with torch.no_grad():
-        raw = ftt(torch.tensor(x_scaled))
-    if ftt_type == "regression":
-        raw_values = raw.reshape(-1).detach().cpu().numpy()
-        scores = [rank_from_ft_regression_output(float(value)) for value in raw_values]
-    else:
-        scores = torch.softmax(raw, dim=-1)[:, 1].detach().cpu().numpy().tolist()
-    for (ctx, _row), score in zip(valid_rows, scores):
-        _record_feature_score(ctx, model_name, score, challenger=challenger)
-
-
 def _apply_artifact_batch_predictions(
     contexts: list[_FeatureBatchContext],
     model_name: str,
@@ -244,15 +195,6 @@ def _apply_artifact_batch_predictions(
             prefix = "challenger " if challenger else ""
             _record_feature_error(ctx, f"{model_name}: {prefix}{exc}", challenger=challenger)
     if not rows:
-        return
-
-    if model_name == "FT-Transformer":
-        try:
-            _predict_ft_transformer_batch(model_name, model_obj, rows, challenger=challenger)
-        except Exception as exc:  # noqa: BLE001
-            prefix = "challenger " if challenger else ""
-            for ctx, _row in rows:
-                _record_feature_error(ctx, f"{model_name}: {prefix}{exc}", challenger=challenger)
         return
 
     x_batch = np.vstack([row for _ctx, row in rows])
@@ -420,7 +362,7 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
             "errors": [],
         }
 
-    active_models = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+    active_models = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
     errors: list[str] = []
     active_loaded = 0
     challenger_loaded = 0
@@ -514,7 +456,6 @@ def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
 def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
     """Run batch prediction and expose container cache telemetry."""
     before = _get_model_cache_stats()
-    ft_before = _get_ft_runtime_cache_stats()
     preload_t0 = time.time()
     preload = preload_batch_artifacts(payloads or [])
     preload_elapsed_s = round(time.time() - preload_t0, 3)
@@ -523,7 +464,6 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
     results = predict_stock_v2_batch(payloads)
     predict_elapsed_s = round(time.time() - predict_t0, 3)
     after = _get_model_cache_stats()
-    ft_after = _get_ft_runtime_cache_stats()
     total_delta = _stats_delta(after, before)
     return {
         "results": results,
@@ -544,11 +484,6 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
                 "preload_delta": _stats_delta(after_preload, before),
                 "total_delta": total_delta,
                 "after": after,
-            },
-            "ft_runtime_cache": {
-                "hits": int(ft_after.get("hits", 0) or 0) - int(ft_before.get("hits", 0) or 0),
-                "misses": int(ft_after.get("misses", 0) or 0) - int(ft_before.get("misses", 0) or 0),
-                "after": ft_after,
             },
         },
     }

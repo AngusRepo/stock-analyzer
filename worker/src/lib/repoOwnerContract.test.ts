@@ -37,7 +37,7 @@ assert(!modelStore.includes('Legacy flat-file fallback'), 'model_store must not 
 assert(!modelStore.includes('blob_path = f"universal/{model_name.lower()}.joblib"'), 'model_store must not derive production flat-file model paths')
 assert(!modelStore.includes('meta_path = f"universal/metadata_{model_name.lower()}.json"'), 'model_store must not derive production flat-file metadata paths')
 
-assert(universalTraining.includes('_load_active_model_pool_joblib'), 'universal training must load FT artifacts through model_pool')
+assert(universalTraining.includes('_load_active_model_pool_joblib'), 'universal training must load active artifacts through model_pool')
 for (const pattern of legacyFlatArtifactPatterns) {
   assert(!pattern.test(universalTraining), `universal_training must not read legacy artifact path: ${pattern}`)
   assert(!pattern.test(controllerModelPool), `ml-controller model_pool router must not expose legacy artifact path: ${pattern}`)

@@ -603,12 +603,59 @@ def test_hybrid_ranking_promotion_marks_signal_source():
         rows,
         ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        alpha_policy={"allocation": {"engine": "legacy_topk"}},
     )
 
     assert promoted[0]["ranking_promoted"] is True
     assert promoted[0]["signal"] == "BUY"
     assert promoted[0]["signal_raw"] == "HOLD"
     assert promoted[0]["signal_source"] == "ranking_promotion"
+
+
+def test_sparse_tangent_allocator_is_default_buy_signal_owner():
+    rows = [{
+        "symbol": "LOW",
+        "chip_score": 10.0,
+        "tech_score": 10.0,
+        "score": 50.0,
+        "score_seed_inputs": _score_seed_inputs(10.0, 10.0),
+        "score_components": _screener_score_components_with_final(10.0, 10.0, 50.0),
+        "confidence": 0.35,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": 0.002,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+    }, {
+        "symbol": "HIGH",
+        "chip_score": 32.0,
+        "tech_score": 25.0,
+        "score": 82.0,
+        "score_seed_inputs": _score_seed_inputs(32.0, 25.0),
+        "score_components": _screener_score_components_with_final(32.0, 25.0, 82.0),
+        "confidence": 0.48,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": 0.03,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+    }]
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        alpha_policy={"allocation": {"buySignalCount": 1}},
+    )
+
+    selected = next(row for row in promoted if row["symbol"] == "HIGH")
+    bypassed = next(row for row in promoted if row["symbol"] == "LOW")
+    assert selected["has_buy_signal"] == 1
+    assert selected["signal_source"] == "sparse_tangent_inverse_risk"
+    assert selected["alpha_allocation"]["engine"] == "sparse_tangent_inverse_risk"
+    assert bypassed["has_buy_signal"] == 0
 
 
 def test_hybrid_ranking_promotion_blocks_negative_forecast():
@@ -629,6 +676,7 @@ def test_hybrid_ranking_promotion_blocks_negative_forecast():
         rows,
         ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        alpha_policy={"allocation": {"engine": "legacy_topk"}},
     )
 
     assert promoted[0]["signal"] == "HOLD"
@@ -664,6 +712,7 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
         rows,
         ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        alpha_policy={"allocation": {"engine": "legacy_topk"}},
     )
 
     assert promoted[0]["signal_source"] == "ensemble_v2_topk_policy"
@@ -704,6 +753,7 @@ def test_hybrid_ranking_promotion_backfills_tradable_when_controller_topk_is_res
         rows,
         ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        alpha_policy={"allocation": {"engine": "legacy_topk"}},
     )
 
     tradable = next(row for row in promoted if row["symbol"] == "3231")
@@ -747,6 +797,7 @@ def test_hybrid_ranking_promotion_uses_score_v2_final_as_primary_rank_owner():
         rows,
         ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        alpha_policy={"allocation": {"engine": "legacy_topk"}},
     )
 
     selected = next(row for row in promoted if row.get("ranking_promoted"))
@@ -799,7 +850,7 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
     promoted = hybrid_ranking_promotion(
         rows,
         ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        alpha_policy={"allocation": {"slateSize": 2}},
+        alpha_policy={"allocation": {"engine": "legacy_topk", "slateSize": 2}},
         regime_label="sideways",
     )
 
@@ -916,10 +967,10 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
         {"up": 0, "down": 0, "total": 0},
     )
 
-    assert summary["reported"] == 8
+    assert summary["reported"] == 6
     assert summary["missing"] == 0
-    assert summary["activeWeightCount"] == 6
-    assert summary["zeroWeightModels"] == ["FT-Transformer", "DLinear"]
+    assert summary["activeWeightCount"] == 5
+    assert summary["zeroWeightModels"] == ["DLinear"]
 
 
 def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):

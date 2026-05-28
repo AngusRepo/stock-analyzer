@@ -147,10 +147,13 @@ async def test_state_space_blocking_mode_preserves_overlay_attachment(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_active_chronos_incomplete_output_fails_closed(monkeypatch):
+async def test_chronos_is_retired_from_evening_chain_even_if_legacy_pool_marks_active(monkeypatch):
     _patch_common(monkeypatch)
+    chronos_calls = 0
 
     async def broken_chronos(*_args, **_kwargs):
+        nonlocal chronos_calls
+        chronos_calls += 1
         return {
             "results": [
                 {
@@ -178,5 +181,7 @@ async def test_active_chronos_incomplete_output_fails_closed(monkeypatch):
         ),
     )
 
-    with pytest.raises(RuntimeError, match="Chronos active slot incomplete"):
-        await daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]})
+    result = await daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]})
+
+    assert result["predictions"]["2330"]["signal"] == "BUY"
+    assert chronos_calls == 0

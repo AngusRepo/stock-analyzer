@@ -9,6 +9,7 @@ import {
 export type MetaLearningTrackStage =
   | 'production_baseline'
   | 'shadow_challenger'
+  | 'l2_paper_active'
   | 'strategy_research'
   | 'research_only'
 
@@ -36,6 +37,7 @@ export interface MetaLearningTrack {
   decision_queue_status:
     | 'production_baseline_needs_evidence'
     | 'run_shadow'
+    | 'run_l2_paper_active'
     | 'needs_experiment_registry'
     | 'research_only'
   can_influence_production: boolean
@@ -136,22 +138,22 @@ const TRACKS: readonly Omit<MetaLearningTrack, 'registered_experiment_ids'>[] = 
   },
   {
     id: 'OnlinePortfolioBandit',
-    stage: 'strategy_research',
-    role: 'portfolio allocation research layer; decides how many candidates and how much capital after execution realism is stable',
-    learning_targets: ['candidate_count', 'capital_allocation', 'turnover', 'portfolio_risk_budget'],
-    required_evidence: ['strategy_lab_experiment', 'paper_live_parity', 'slippage_model', 'partial_fill_replay', 'portfolio_drawdown'],
+    stage: 'l2_paper_active',
+    role: 'warm-start constrained UCB controller for allocator knobs; sparse_tangent_inverse_risk remains the final weight engine',
+    learning_targets: ['candidate_count', 'max_weight', 'cash_buffer', 'min_trade_weight', 'turnover_budget', 'portfolio_risk_budget'],
+    required_evidence: ['strategy_lab_experiment', 'warm_start_reward_ledger', 'paper_live_parity', 'slippage_model', 'partial_fill_replay', 'portfolio_drawdown'],
     experiment_template: {
-      hypothesis: 'Evaluate an online portfolio bandit for candidate count and capital allocation after paper/live parity, slippage and partial-fill realism are available.',
-      sourceRefs: ['p9-online-portfolio-bandit', 'execution_realism_v1'],
-      strategySpecIds: ['portfolio_bandit_research_v1'],
-      dataSlice: { start_date: '2026-04-01', lane: 'tradable', execution_model: 'paper_realism_v2' },
-      metrics: ['portfolio_return', 'mdd', 'turnover', 'slippage_sensitivity', 'partial_fill_replay', 'capital_utilization'],
-      followUp: ['register Strategy Lab experiment', 'run replay with execution realism', 'do not route production capital'],
+      hypothesis: 'Run OnlinePortfolioBandit as L2 paper-active allocator controller and compare warm-start constrained UCB knob choices against has_buy_signal slot3 cash baseline.',
+      sourceRefs: ['p9-online-portfolio-bandit', 'execution_realism_v1', 'sparse_tangent_inverse_risk'],
+      strategySpecIds: ['portfolio_bandit_l2_paper_active_v1'],
+      dataSlice: { start_date: '2026-04-01', lane: 'paper_active', execution_model: 'paper_realism_v2' },
+      metrics: ['portfolio_return', 'mdd', 'turnover', 'slippage_sensitivity', 'partial_fill_replay', 'capital_utilization', 'baseline_delta'],
+      followUp: ['persist warm-start reward ledger', 'write paper-active attribution', 'do not route production capital without Wei approval'],
     },
-    decision_queue_status: 'needs_experiment_registry',
+    decision_queue_status: 'run_l2_paper_active',
     can_influence_production: false,
     can_vote_alpha: false,
-    next_action: 'create Strategy Lab experiment after paper/live parity and slippage replay evidence are reliable',
+    next_action: 'run L2 paper-active replay/controller beside production baseline; production remains unchanged',
   },
   {
     id: 'NeuCB',
@@ -219,7 +221,7 @@ export function buildMetaLearningDecisionPacket(experiments: ResearchExperimentR
   const tracks = listMetaLearningTracks(experiments)
   const lines = [
     `Meta learning research track: ${META_LEARNING_TRACK_VERSION}`,
-    'Rules: LinUCB remains the interpretable production baseline; NeuralUCB and NeuralTS are shadow challengers; portfolio bandit and NeuCB stay in Strategy Lab until evidence exists.',
+    'Rules: LinUCB remains the interpretable production baseline; NeuralUCB and NeuralTS are shadow challengers; OnlinePortfolioBandit is L2 paper-active only; NeuCB stays research-only.',
   ]
   for (const track of tracks) {
     lines.push(`${track.id}: stage=${track.stage}, status=${track.decision_queue_status}, experiments=${track.registered_experiment_ids.join(',') || 'none'}`)
@@ -249,7 +251,7 @@ export async function ensureMetaLearningResearchRegistry(
     if ((existingByTrack.get(track.id) ?? []).length > 0) continue
     const normalized = normalizeResearchExperimentInput({
       id: `meta-${track.id.toLowerCase()}-${META_LEARNING_TRACK_VERSION}`,
-      status: track.stage === 'production_baseline' || track.stage === 'shadow_challenger'
+      status: track.stage === 'production_baseline' || track.stage === 'shadow_challenger' || track.stage === 'l2_paper_active'
         ? 'running'
         : 'queued',
       hypothesis: track.experiment_template.hypothesis,
@@ -302,7 +304,7 @@ export function buildMetaLearningEvidenceMatrix(
     const registeredExperimentCount = track.registered_experiment_ids.length
 
     const rewardLedgerStatus: MetaLearningEvidenceMatrixRow['reward_ledger_status'] =
-      track.id === 'LinUCB'
+      track.id === 'LinUCB' || track.id === 'OnlinePortfolioBandit'
         ? rewardSamples >= 30 ? 'ready' : 'missing'
         : 'not_applicable'
 
@@ -317,6 +319,8 @@ export function buildMetaLearningEvidenceMatrix(
         ? rewardLedgerStatus === 'ready' ? 'ready' : 'missing'
         : track.stage === 'shadow_challenger'
           ? shadowStatus === 'ready' && hasResearchEvidence ? 'ready' : shadowStatus !== 'missing' || hasResearchEvidence ? 'partial' : 'missing'
+          : track.stage === 'l2_paper_active'
+            ? rewardLedgerStatus === 'ready' && hasResearchEvidence ? 'ready' : rewardLedgerStatus === 'ready' || hasResearchEvidence ? 'partial' : 'missing'
           : hasResearchEvidence ? 'partial' : 'missing'
 
     const missingEvidence = track.required_evidence.filter((item) => {

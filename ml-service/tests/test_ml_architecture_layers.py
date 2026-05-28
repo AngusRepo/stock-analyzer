@@ -8,11 +8,10 @@ def test_alpha_prediction_pool_excludes_state_space_overlays():
         "CatBoost",
         "ExtraTrees",
         "LightGBM",
-        "FT-Transformer",
-        "Chronos",
         "DLinear",
         "PatchTST",
     )
+    assert "FT-Transformer" not in model_pool.ALPHA_PREDICTION_MODELS
     assert "KalmanFilter" not in model_pool.ALPHA_PREDICTION_MODELS
     assert "MarkovSwitching" not in model_pool.ALPHA_PREDICTION_MODELS
 
@@ -29,10 +28,15 @@ def test_shadow_and_meta_layers_are_not_active_alpha_models():
 
 def test_default_pool_bootstraps_only_active_alpha_models():
     pool = model_pool.init_default_pool()
-    assert set(pool["models"]) == set(model_pool.ALPHA_PREDICTION_MODELS)
+    active = {
+        name for name, entry in pool["models"].items()
+        if entry["status"] in {"active", "degraded"}
+    }
+    assert active == set(model_pool.ALPHA_PREDICTION_MODELS)
+    assert pool["models"]["Chronos"]["status"] == "retired"
     assert set(pool["shadow_models"]) == {"ResidualMLP", "GNN"}
     assert set(pool["meta_optimizers"]) == {"GAOptimizer"}
-    assert all(entry["status"] == "active" for entry in pool["models"].values())
+    assert all(pool["models"][name]["status"] == "active" for name in model_pool.ALPHA_PREDICTION_MODELS)
     assert all(entry["status"] == "challenger" for entry in pool["shadow_models"].values())
 
 

@@ -157,7 +157,7 @@ def test_model_cpcv_cost_multiplier_is_visible_in_validation_metadata():
         "ExtraTrees",
         "LightGBM",
     ]
-    assert "FT-Transformer" in metadata["model_cpcv_cost_estimate"]["optional_family_adapters"]
+    assert metadata["model_cpcv_cost_estimate"]["optional_family_adapters"] == {}
     assert metadata["model_cpcv_cost_estimate"]["forecast_validation_models"]["Chronos"]["method"] == (
         "chronos_forecast_rank_ic"
     )
@@ -183,8 +183,7 @@ def test_non_tree_model_cpcv_gap_evidence_is_fail_visible():
     )
 
     assert "XGBoost" not in evidence
-    assert evidence["FT-Transformer"]["decision"] == "FAIL"
-    assert evidence["FT-Transformer"]["family"] == "tabular_deep"
+    assert "FT-Transformer" not in evidence
     assert "DLinear" not in evidence
     assert "PatchTST" not in evidence
     assert "Chronos" not in evidence
@@ -195,7 +194,7 @@ def test_ft_model_cpcv_adapter_requires_explicit_policy_enable():
     assert model_cpcv_family_adapter_enabled(
         "FT-Transformer",
         {"family_adapters": {"FT-Transformer": {"enabled": True}}},
-    ) is True
+    ) is False
     assert model_cpcv_family_adapter_enabled(
         "DLinear",
         {"family_adapters": {"FT-Transformer": {"enabled": True}}},
@@ -234,7 +233,7 @@ def test_build_ft_model_cpcv_params_uses_request_and_policy_overrides():
 def test_universal_training_policy_keeps_current_defaults():
     policy = UniversalTrainingPolicy.from_env()
 
-    assert policy.requested_groups({}) == ["tree", "ftt", "dlinear", "patchtst"]
+    assert policy.requested_groups({}) == ["tree", "dlinear", "patchtst"]
     assert policy.sequence_min_length({}) == 65
     assert policy.to_base_train_payload({}, candidate_version="v-test") == {
         "batch_count": 5,
@@ -249,17 +248,7 @@ def test_universal_training_policy_keeps_current_defaults():
         "ftt_margin": 0.0,
         "output_model_version": "v-test",
         "register_challengers": False,
-        "model_cpcv_policy": {
-            "family_adapters": {
-                "FT-Transformer": {
-                    "enabled": True,
-                    "explicit_enable": True,
-                    "max_epochs": 3,
-                    "batch_size": 512,
-                    "seed": 42,
-                }
-            }
-        },
+        "model_cpcv_policy": {"family_adapters": {}},
     }
 
 
@@ -271,7 +260,7 @@ def test_universal_training_policy_reads_env_and_payload_overrides(monkeypatch):
 
     policy = UniversalTrainingPolicy.from_env()
 
-    assert policy.requested_groups({}) == ["tree", "ftt"]
+    assert policy.requested_groups({}) == ["tree"]
     assert policy.sequence_min_length({}) == 88
     assert policy.to_base_train_payload(
         {
@@ -289,7 +278,7 @@ def test_universal_training_policy_reads_env_and_payload_overrides(monkeypatch):
 def test_universal_training_policy_accepts_payload_group_string():
     policy = UniversalTrainingPolicy(default_train_groups=("tree", "ftt"))
 
-    assert policy.requested_groups({"train_model_groups": "tree,patchtst"}) == ["tree", "patchtst"]
+    assert policy.requested_groups({"train_model_groups": "tree,ftt,patchtst"}) == ["tree", "patchtst"]
 
 
 def test_universal_train_without_version_should_become_model_pool_challenger():
@@ -320,10 +309,8 @@ def test_training_group_feature_policies_are_single_source_of_truth():
     assert tree.mergeable_oos is True
     assert models_for_training_group("tree") == ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
 
-    assert ftt.feature_source == "feature_pool.ft_active"
-    assert ftt.skip_feature_pool is True
-    assert ftt.mergeable_oos is True
-    assert models_for_training_group("ftt") == ["FT-Transformer"]
+    assert ftt is None
+    assert models_for_training_group("ftt") == []
 
     assert dlinear.feature_source == "sequence_records.close_only"
     assert dlinear.skip_feature_pool is True
@@ -343,9 +330,9 @@ def test_group_train_payload_enforces_tree_vs_ft_feature_policy():
     assert tree_payload["skip_feature_pool"] is False
     assert tree_payload["feature_policy"]["feature_source"] == "feature_pool.tree_active"
 
-    assert ftt_payload["models_filter"] == ["FT-Transformer"]
+    assert ftt_payload["models_filter"] == ["__retired_ft_transformer__"]
     assert ftt_payload["skip_feature_pool"] is True
-    assert ftt_payload["feature_policy"]["feature_source"] == "feature_pool.ft_active"
+    assert ftt_payload["feature_policy"]["retired"] is True
 
 
 def test_tree_model_child_payloads_keep_tree_policy_and_unique_manifest_suffixes():
@@ -364,27 +351,25 @@ def test_tree_model_child_payloads_keep_tree_policy_and_unique_manifest_suffixes
 
 
 def test_ft_transformer_filter_forces_full_feature_pool_defensively():
-    assert should_force_full_feature_pool(["FT-Transformer"]) is True
+    assert should_force_full_feature_pool(["FT-Transformer"]) is False
     assert should_force_full_feature_pool(["XGBoost", "LightGBM"]) is False
     assert should_force_full_feature_pool(["FT-Transformer", "XGBoost"]) is False
     assert should_force_full_feature_pool(None) is False
 
 
-def test_model_feature_policy_contract_covers_eight_alpha_slots():
+def test_model_feature_policy_contract_covers_active_alpha_slots():
     expected = {
         "XGBoost",
         "CatBoost",
         "ExtraTrees",
         "LightGBM",
-        "FT-Transformer",
-        "Chronos",
         "DLinear",
         "PatchTST",
     }
 
     assert expected.issubset(set(MODEL_FEATURE_POLICIES))
     assert feature_policy_for_model("XGBoost").feature_source == "feature_pool.tree_active"
-    assert feature_policy_for_model("FT-Transformer").uses_missingness_mask is True
+    assert "FT-Transformer" not in MODEL_FEATURE_POLICIES
     assert feature_policy_for_model("DLinear").feature_source == "sequence_records.close_only"
     assert feature_policy_for_model("PatchTST").feature_source == "sequence_records.close_only"
     assert feature_policy_for_model("Chronos").feature_source == "chronos2.context.close_series"
@@ -401,14 +386,14 @@ def test_feature_selection_governance_has_no_planned_p3_methods_left():
 
 def test_model_feature_policy_metadata_records_feature_count_and_evidence():
     meta = build_model_feature_policy_metadata(
-        "FT-Transformer",
+        "LightGBM",
         ["rsi14", "macd", "bias20"],
         selection_evidence={"feature_pool_path": "universal/feature_pool.json"},
     )
 
     assert meta["feature_policy_schema_version"] == "model-feature-policy-v1"
     assert meta["feature_count"] == 3
-    assert meta["feature_policy"]["model"] == "FT-Transformer"
+    assert meta["feature_policy"]["model"] == "LightGBM"
     assert meta["feature_policy"]["requires_schema_parity"] is True
     assert meta["selection_evidence"]["feature_pool_path"] == "universal/feature_pool.json"
 

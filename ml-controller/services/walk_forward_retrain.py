@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 ML_SERVICE_URL    = os.environ.get("ML_SERVICE_URL", "")
 ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 
-MODELS_ALL = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+MODELS_ALL = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
 
 
 @dataclass
@@ -306,6 +306,7 @@ async def _train_one_window(
     HMM is trained first because it's fast and later windows may not need
     re-training if the market_env hasn't changed much.
     """
+    models = [model for model in models if model != "FT-Transformer"]
     result = WalkForwardWindowResult(
         window_id=window.window_id,
         train_range=(window.train_start, window.train_end),
@@ -399,7 +400,7 @@ async def run_walk_forward(
                        max_containers — tree=3, ftt=2). Default 2 to respect
                        FT-T's tighter cap.
     """
-    models = models or MODELS_ALL
+    models = [model for model in (models or MODELS_ALL) if model != "FT-Transformer"]
     trading_days = [d for d in dataset.trading_days if start_date <= d <= end_date]
     if len(trading_days) < train_window_days + test_window_days:
         raise ValueError(

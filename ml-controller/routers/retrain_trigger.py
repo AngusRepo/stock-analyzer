@@ -69,7 +69,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     candidate_type: str | None = Field(default=None, description="Release-train candidate type, e.g. monthly_release or weekly_drift.")
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
-    train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "ftt", "dlinear", "patchtst"])
+    train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "dlinear", "patchtst"])
     ftt_d_model: int = 128
     ftt_n_heads: int = 8
     ftt_n_layers: int = 3

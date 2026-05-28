@@ -126,7 +126,6 @@ def _model_artifact_path(model_name: str, version: str) -> str:
         "CatBoost": "joblib",
         "ExtraTrees": "joblib",
         "LightGBM": "joblib",
-        "FT-Transformer": "joblib",
         "Chronos": "json",
         "DLinear": "pt",
         "PatchTST": "pt",
@@ -248,9 +247,6 @@ def _lifecycle_diagnosis(
         blockers.append(str(root_cause))
     if sample_count <= 0:
         blockers.append("ic_sample_missing")
-    if model_name == "FT-Transformer" and metadata_exists and not metadata_feature_count:
-        blockers.append("ft_feature_metadata_missing")
-
     if is_challenger and sample_count <= 0 and metadata_exists:
         status = "awaiting_live_shadow"
         reason = "Challenger artifact exists, but live shadow predictions have not accumulated verified outcomes yet."
@@ -2069,8 +2065,7 @@ async def init_pool(req: InitPoolRequest):
         ("CatBoost",        "feature",                "feature",     "joblib"),
         ("ExtraTrees",      "feature",                "feature",     "joblib"),
         ("LightGBM",        "feature",                "feature",     "joblib"),
-        ("FT-Transformer",  "feature",                "feature",     "joblib"),
-        ("Chronos",         "time_series_foundation", "time_series", "json"),
+        ("Chronos",         "time_series_foundation_legacy", "time_series", "json"),
         ("DLinear",         "time_series_learnable",  "time_series", "pt"),
         ("PatchTST",        "time_series_learnable",  "time_series", "pt"),
     ]
@@ -2082,16 +2077,17 @@ async def init_pool(req: InitPoolRequest):
     state_overlays = ["KalmanFilter", "MarkovSwitching"]
     models = {}
     for name, mt, bf, _ext in managed:
+        is_active_alpha = name != "Chronos"
         models[name] = {
-            "status": "active",
+            "status": "active" if is_active_alpha else "retired",
             "version": "v1",
             "gcs_path": _model_artifact_path(name, "v1"),
             "model_type": mt,
             "balance_family": bf,
-            "promoted_at": today,
+            "promoted_at": today if is_active_alpha else None,
             "shadow_since": None,
             "degraded_since": None,
-            "retired_at": None,
+            "retired_at": None if is_active_alpha else today,
             "weekly_ic": [],
             "ic_4w_avg": None,
             "consecutive_negative_weeks": 0,

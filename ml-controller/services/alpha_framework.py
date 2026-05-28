@@ -39,6 +39,9 @@ DEFAULT_ALPHA_POLICY: dict[str, Any] = {
         "optimistic_value_atr_multiplier": 1.25,
     },
     "allocation": {
+        "engine": "sparse_tangent_inverse_risk",
+        "controller": "OnlinePortfolioBandit",
+        "buy_signal_count": 3,
         "slate_size": 10,
         "score_round_decimals": 1,
         "weights": {
@@ -253,6 +256,10 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
         _camel_or_snake(raw_alloc, "slateSize", "slate_size", alloc_default["slate_size"]),
         alloc_default["slate_size"],
     ))))
+    buy_signal_count = int(max(1, min(30, _to_float(
+        _camel_or_snake(raw_alloc, "buySignalCount", "buy_signal_count", alloc_default["buy_signal_count"]),
+        alloc_default["buy_signal_count"],
+    ))))
     score_round_decimals = int(max(0, min(6, _to_float(
         _camel_or_snake(raw_alloc, "scoreRoundDecimals", "score_round_decimals", alloc_default["score_round_decimals"]),
         alloc_default["score_round_decimals"],
@@ -415,6 +422,9 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
     return {
         "risk_overlay": overlay,
         "allocation": {
+            "engine": str(_camel_or_snake(raw_alloc, "engine", "engine", alloc_default["engine"]) or alloc_default["engine"]),
+            "controller": str(_camel_or_snake(raw_alloc, "controller", "controller", alloc_default["controller"]) or alloc_default["controller"]),
+            "buy_signal_count": buy_signal_count,
             "slate_size": slate_size,
             "score_round_decimals": score_round_decimals,
             "weights": weights,

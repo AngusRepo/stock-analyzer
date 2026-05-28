@@ -38,20 +38,20 @@ def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
 def test_attach_ensemble_v2_can_use_alpha_alternate_models_when_feature_models_fail():
     pred = {
         "rank_scores": {},
-        "chronos": {"forecast_pct": 0.04},
+        "dlinear": {"forecast_pct": 0.04},
         "kalman_filter": {"forecast_pct": 0.03},
     }
 
     attach_ensemble_v2(
         pred,
-        model_status={"Chronos": "active", "KalmanFilter": "active"},
-        ic_weights={"Chronos": 0.03, "KalmanFilter": 0.02},
+        model_status={"DLinear": "active", "KalmanFilter": "active"},
+        ic_weights={"DLinear": 0.03, "KalmanFilter": 0.02},
         degraded_dampening=1.0,
     )
 
     ev2 = pred["ensemble_v2"]
     assert ev2["avg_rank"] > 0.5
-    assert ev2["contributing_models"] == ["Chronos"]
+    assert ev2["contributing_models"] == ["DLinear"]
     assert ev2["weight_total"] > 0
 
 

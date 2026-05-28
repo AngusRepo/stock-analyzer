@@ -4,10 +4,21 @@ import math
 
 
 _SRC_KEY_MODEL = (
-    ("chronos", "Chronos"),
     ("dlinear", "DLinear"),
     ("patchtst", "PatchTST"),
 )
+
+_MODEL_FAMILY = {
+    "XGBoost": "tree_tabular",
+    "CatBoost": "tree_tabular",
+    "ExtraTrees": "tree_tabular",
+    "LightGBM": "tree_tabular",
+    "TabM": "tabular_neural",
+    "DLinear": "sequence_baseline",
+    "PatchTST": "learned_sequence",
+    "iTransformer": "learned_sequence",
+    "TimesFM": "foundation_sequence",
+}
 
 
 def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
@@ -89,6 +100,54 @@ def _cold_start_weight(status: str, degraded_dampening: float) -> float:
     return 1.0
 
 
+def _family_weighted_rank(merged: dict[str, float], weights: dict[str, float]) -> tuple[float, dict]:
+    """Aggregate inside each model family before combining families.
+
+    Tree models can coexist, but they should not count as four independent
+    alpha families. Each family first forms an IC-weighted local rank; family
+    weights then use the average positive member weight.
+    """
+    family_rows: dict[str, dict] = {}
+    for name, score in merged.items():
+        weight = max(0.0, float(weights.get(name, 0.0) or 0.0))
+        if weight <= 0:
+            continue
+        family = _MODEL_FAMILY.get(name, "other")
+        row = family_rows.setdefault(
+            family,
+            {"score_sum": 0.0, "weight_sum": 0.0, "members": []},
+        )
+        row["score_sum"] += float(score) * weight
+        row["weight_sum"] += weight
+        row["members"].append(name)
+
+    family_scores: dict[str, float] = {}
+    family_weights: dict[str, float] = {}
+    family_members: dict[str, list[str]] = {}
+    for family, row in family_rows.items():
+        member_count = max(1, len(row["members"]))
+        score = row["score_sum"] / row["weight_sum"] if row["weight_sum"] > 0 else 0.5
+        family_scores[family] = score
+        family_weights[family] = row["weight_sum"] / member_count
+        family_members[family] = sorted(row["members"])
+
+    total = sum(family_weights.values())
+    if total <= 0:
+        return 0.5, {
+            "scores": {},
+            "weights": {},
+            "members": {},
+            "contributing_families": [],
+        }
+    avg = sum(family_scores[name] * family_weights[name] for name in family_scores) / total
+    return avg, {
+        "scores": {k: round(v, 6) for k, v in family_scores.items()},
+        "weights": {k: round(v, 6) for k, v in family_weights.items()},
+        "members": family_members,
+        "contributing_families": sorted(family_scores),
+    }
+
+
 def attach_ensemble_v2(
     pred: dict,
     model_status: dict,
@@ -125,7 +184,7 @@ def attach_ensemble_v2(
             }
             weight_total = sum(weights.values())
         if weight_total > 0:
-            avg = sum(merged[name] * weights[name] for name in merged) / weight_total
+            avg, family_vote = _family_weighted_rank(merged, weights)
             cfg = ev2_cfg or {}
             sb_th = float(cfg.get("strongBuyThreshold", 0.85))
             b_th = float(cfg.get("buyThreshold", 0.70))
@@ -149,10 +208,11 @@ def attach_ensemble_v2(
                 "confidence": _rank_confidence(avg),
                 "signal_source": "ensemble_v2",
                 "contributing_models": sorted([name for name, weight in weights.items() if weight > 0]),
+                "family_vote": family_vote,
                 "weights": {k: round(v, 6) for k, v in weights.items()},
                 "weight_total": round(weight_total, 6),
                 "reason": "cold_start_equal_weight",
-                "weight_formula": "cold_start_equal_weight_until_ic_available",
+                "weight_formula": "family_vote_then_ic_weighted_rank:cold_start_equal_weight_until_ic_available",
                 **_forecast_fields(avg, ev2_cfg),
             }
             return
@@ -167,11 +227,11 @@ def attach_ensemble_v2(
             "weights": {k: round(v, 6) for k, v in weights.items()},
             "weight_total": 0.0,
             "reason": "no_positive_lifecycle_weight",
-            "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded",
+            "weight_formula": "family_vote_then_ic_weighted_rank:max(0,shrunk_ic) * status_filter * dampening_if_degraded",
         }
         return
 
-    avg = sum(merged[name] * weights[name] for name in merged) / weight_total
+    avg, family_vote = _family_weighted_rank(merged, weights)
     cfg = ev2_cfg or {}
     sb_th = float(cfg.get("strongBuyThreshold", 0.85))
     b_th = float(cfg.get("buyThreshold", 0.70))
@@ -195,8 +255,9 @@ def attach_ensemble_v2(
         "confidence": _rank_confidence(avg),
         "signal_source": "ensemble_v2",
         "contributing_models": sorted([name for name, weight in weights.items() if weight > 0]),
+        "family_vote": family_vote,
         "weights": {k: round(v, 6) for k, v in weights.items()},
         "weight_total": round(weight_total, 6),
-        "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded",
+        "weight_formula": "family_vote_then_ic_weighted_rank:max(0,shrunk_ic) * status_filter * dampening_if_degraded",
         **_forecast_fields(avg, ev2_cfg),
     }

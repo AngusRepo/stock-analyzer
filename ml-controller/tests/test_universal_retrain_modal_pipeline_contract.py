@@ -12,6 +12,10 @@ from routers.retrain_trigger import (  # noqa: E402
 )
 
 
+def test_universal_retrain_default_groups_retire_ft_transformer() -> None:
+    assert UniversalRetrainRunRequest().train_model_groups == ["tree", "dlinear", "patchtst"]
+
+
 def test_universal_retrain_modal_payload_preserves_no_downgrade_contract() -> None:
     payload = build_universal_retrain_modal_payload(
         UniversalRetrainRunRequest(
@@ -19,7 +23,7 @@ def test_universal_retrain_modal_payload_preserves_no_downgrade_contract() -> No
             force_monthly=True,
             run_date="2026-05-24",
             candidate_type="monthly_release",
-            train_model_groups=["tree", "ftt", "dlinear", "patchtst"],
+            train_model_groups=["tree", "dlinear", "patchtst"],
             ftt_d_model=128,
             ftt_n_heads=8,
             ftt_n_layers=3,
@@ -51,7 +55,7 @@ def test_universal_retrain_modal_payload_preserves_no_downgrade_contract() -> No
     assert request["limit"] == 2500
     assert request["force_monthly"] is True
     assert request["candidate_type"] == "monthly_release"
-    assert request["train_model_groups"] == ["tree", "ftt", "dlinear", "patchtst"]
+    assert request["train_model_groups"] == ["tree", "dlinear", "patchtst"]
     assert request["ftt_d_model"] == 128
     assert request["ftt_n_heads"] == 8
     assert request["ftt_n_layers"] == 3

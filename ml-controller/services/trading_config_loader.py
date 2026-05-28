@@ -38,12 +38,20 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
         "buyThreshold": 0.70,
         "sellThreshold": 0.30,
         "strongSellThreshold": 0.15,
-        "topKOverrideEnabled": True,
+        "topKOverrideEnabled": False,
+        "allowLegacyTopKOverride": False,
         "topKCount": 3,
         "topKConfidenceOverride": 0.72,
     },
     "alphaFramework": {
-        "allocation": {"slateSize": 8, "scoreRoundDecimals": 1, "weights": {}},
+        "allocation": {
+            "engine": "sparse_tangent_inverse_risk",
+            "controller": "OnlinePortfolioBandit",
+            "buySignalCount": 3,
+            "slateSize": 8,
+            "scoreRoundDecimals": 1,
+            "weights": {},
+        },
         "quality": {
             "outcomeLimit": 1000,
             "minSamples": 30,

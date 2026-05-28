@@ -100,8 +100,6 @@ export const EXPECTED_V2_MODELS = [
   'LightGBM',
   'CatBoost',
   'ExtraTrees',
-  'FT-Transformer',
-  'Chronos',
   'DLinear',
   'PatchTST',
 ] as const

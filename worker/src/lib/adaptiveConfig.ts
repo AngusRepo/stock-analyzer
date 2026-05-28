@@ -16,6 +16,7 @@ export interface AdaptiveParamProvenance {
 
 export interface AdaptiveScreenerDelta {
   candidate_pool_delta?: number
+  coarse_ml_queue_delta?: number
   ml_shortlist_delta?: number
   emerging_research_delta?: number
 }
@@ -51,8 +52,6 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     'CatBoost',
     'ExtraTrees',
     'LightGBM',
-    'FT-Transformer',
-    'Chronos',
     'DLinear',
     'PatchTST',
   ],
@@ -66,7 +65,7 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     GAOptimizer: 'meta optimizer for ensemble weights, strategy params, and risk params',
     NeuralUCB: 'shadow meta-router for nonlinear model-weight and threshold policy comparison',
     NeuralTS: 'shadow Thompson sampler to audit NeuralUCB optimism before production consideration',
-    OnlinePortfolioBandit: 'research-layer allocation policy; waits for execution/slippage parity',
+    OnlinePortfolioBandit: 'L2 paper-active allocator controller; controls allocator knobs only while sparse_tangent_inverse_risk remains the final weight engine',
     NeuCB: 'research-only neural contextual bandit benchmark until experiment registry evidence exists',
   },
   immutable_risk_boundaries: [
@@ -190,7 +189,7 @@ function normalizeScreenerDelta(value: unknown): AdaptiveScreenerDelta {
   if (!value || typeof value !== 'object') return {}
   const raw = value as Record<string, unknown>
   const out: AdaptiveScreenerDelta = {}
-  for (const key of ['candidate_pool_delta', 'ml_shortlist_delta', 'emerging_research_delta'] as const) {
+  for (const key of ['candidate_pool_delta', 'coarse_ml_queue_delta', 'ml_shortlist_delta', 'emerging_research_delta'] as const) {
     const n = optionalNumber(raw[key])
     if (n != null) out[key] = n
   }

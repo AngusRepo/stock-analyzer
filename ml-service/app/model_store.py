@@ -1,6 +1,6 @@
 """
 model_store.py — 模型持久化框架
-訓練好的 XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer 序列化存入 GCS
+訓練好的 XGBoost / CatBoost / ExtraTrees / LightGBM 序列化存入 GCS
 下次 predict 直接載入，不用重新 fit
 
 結構：

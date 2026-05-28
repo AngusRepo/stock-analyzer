@@ -228,3 +228,55 @@ def test_prepare_verification_updates_counts_missing_bars(monkeypatch):
 
     assert result["verify_updates"] == []
     assert result["metrics"]["skipped_no_bars"] == 1
+
+
+def test_prepare_verification_updates_skips_incomplete_price_bars(monkeypatch):
+    monkeypatch.setattr(
+        verify_service,
+        "load_bars_for_predictions",
+        lambda pending: {
+            1: [
+                {"date": "2026-05-26", "open": 100.0, "high": 101.0, "low": 99.0, "close": None},
+            ]
+        },
+    )
+
+    result = verify_service.prepare_verification_updates(
+        [
+            {
+                "id": 8,
+                "stock_id": 1,
+                "symbol": "5267",
+                "model_name": "XGBoost",
+                "generated_at": "2026-05-25T10:00:00Z",
+                "prediction_date": "2026-05-25",
+                "entry_price": 100.0,
+                "forecast_data": json.dumps({"signal": "BUY", "rank_score": 0.5}),
+            }
+        ],
+        market_risk={"risk_level": "low", "risk_score": 10},
+    )
+
+    assert result["verify_updates"] == []
+    assert result["errors"] == []
+    assert result["metrics"]["skipped_incomplete_price_bars"] == 1
+
+
+def test_verify_single_prediction_returns_none_for_incomplete_actual_bar():
+    result = verify_service.verify_single_prediction(
+        {
+            "id": 9,
+            "stock_id": 1,
+            "symbol": "5267",
+            "generated_at": "2026-05-25T10:00:00Z",
+            "prediction_date": "2026-05-25",
+            "entry_price": 100.0,
+            "forecast_data": json.dumps({"signal": "BUY", "rank_score": 0.5}),
+        },
+        market_risk={"risk_level": "low", "risk_score": 10},
+        bars_override=[
+            {"date": "2026-05-26", "open": 100.0, "high": 101.0, "low": 99.0, "close": None},
+        ],
+    )
+
+    assert result is None

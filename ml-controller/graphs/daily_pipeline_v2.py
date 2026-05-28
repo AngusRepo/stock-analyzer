@@ -41,6 +41,10 @@ from services.portfolio_allocation_replacement import (
     SPARSE_TANGENT_METHOD,
     apply_sparse_tangent_production_allocation,
 )
+from services.signature_informed_allocation import (
+    SIT_METHOD,
+    apply_signature_informed_production_allocation,
+)
 from services.alpha_agent_evo_runtime import (
     apply_alpha_agent_evo_production_selection,
     run_alpha_agent_evo_historical_evolution,
@@ -1581,7 +1585,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             logger.error("[Pipeline V2] AlphaAgentEvo owner failed; keeping prior ranking: %s", alpha_agent_evo_error)
     allocation_cfg = alpha_policy.get("allocation") if isinstance(alpha_policy, dict) else {}
     allocation_method = str((allocation_cfg or {}).get("method") or "").strip()
-    if allocation_method == SPARSE_TANGENT_METHOD:
+    if allocation_method in {SPARSE_TANGENT_METHOD, SIT_METHOD}:
         top_k = int((allocation_cfg or {}).get("topK") or (allocation_cfg or {}).get("top_k") or ranking_cfg.get("topK") or 3)
         selection_pool_size = int(
             (allocation_cfg or {}).get("selectionPoolSize")
@@ -1599,7 +1603,12 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             if (allocation_cfg or {}).get("enforceBuySignalOwner") is not None
             else (allocation_cfg or {}).get("enforce_buy_signal_owner", True)
         ).strip().lower() not in {"0", "false", "no", "off"}
-        final, allocation_report = apply_sparse_tangent_production_allocation(
+        allocation_apply = (
+            apply_signature_informed_production_allocation
+            if allocation_method == SIT_METHOD
+            else apply_sparse_tangent_production_allocation
+        )
+        final, allocation_report = allocation_apply(
             final,
             state.get("payloads") or [],
             top_k=top_k,

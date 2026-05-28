@@ -9,7 +9,14 @@ def test_apply_sparse_tangent_production_allocation_owns_buy_signals_and_weights
     rows = [
         {"symbol": "A", "score": 99, "confidence": 0.50, "has_buy_signal": 1, "signal": "BUY"},
         {"symbol": "B", "score": 98, "confidence": 0.50, "has_buy_signal": 1, "signal": "BUY"},
-        {"symbol": "C", "score": 90, "confidence": 0.50, "has_buy_signal": 0, "signal": "HOLD", "expected_return": 0.03},
+        {
+            "symbol": "D",
+            "score": 90,
+            "confidence": 0.50,
+            "has_buy_signal": 0,
+            "signal": "HOLD",
+            "alpha_allocation": {"selection_rank": 1, "alpha_agent_evo_rank": 3},
+        },
     ]
     payloads = [
         {"symbol": "A", "prices": [{"close": v} for v in [100, 120, 90, 125, 95, 130, 100]]},
@@ -32,6 +39,12 @@ def test_apply_sparse_tangent_production_allocation_owns_buy_signals_and_weights
     assert all(row["alpha_allocation"]["method"] == SPARSE_TANGENT_METHOD for row in selected)
     assert sum(row["alpha_allocation"]["portfolio_weight"] for row in selected) == 1.0
     assert len(selected) == 2
+    rejected = next(row for row in allocated if row["symbol"] == "D")
+    assert rejected["alpha_allocation"]["selected"] is False
+    assert rejected["alpha_allocation"]["portfolio_selected"] is False
+    assert rejected["alpha_allocation"]["portfolio_selection_rank"] is None
+    assert "selection_rank" not in rejected["alpha_allocation"]
+    assert rejected["alpha_allocation"]["alpha_agent_evo_rank"] == 3
 
 
 def test_historical_replacement_report_decides_direct_production_owner():

@@ -45,7 +45,7 @@ export interface AlphaFrameworkConfig {
     slateSize: number
     scoreRoundDecimals: number
     weights: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
-    method?: 'regime_bucket_quota' | 'sparse_tangent_inverse_risk'
+    method?: 'regime_bucket_quota' | 'sparse_tangent_inverse_risk' | 'signature_informed_transformer_direct_allocation'
     owner?: string
     topK?: number
     selectionPoolSize?: number

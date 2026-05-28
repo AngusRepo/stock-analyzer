@@ -28,6 +28,10 @@ from services.portfolio_allocation_replacement import (
     run_historical_replacement_report,
 )
 from services.research_model_benchmark import build_model_family_benchmark_report
+from services.signature_informed_allocation import (
+    build_historical_sit_vs_sparse_report,
+    run_historical_sit_vs_sparse_report,
+)
 from services.validation_governance import build_validation_ladder_packet
 
 
@@ -121,6 +125,22 @@ class PortfolioAllocationProductionReplaceRequest(BaseModel):
     min_sharpe_delta: float = 0.20
     max_mdd_delta: float = 0.02
     mutation_allowed: bool = False
+    confirm: bool = False
+
+
+class SignatureInformedAllocationBenchmarkRequest(BaseModel):
+    start_date: str | None = None
+    end_date: str | None = None
+    recommendation_rows: list[dict[str, Any]] = []
+    price_rows: list[dict[str, Any]] = []
+    top_k: int = 3
+    selection_pool_size: int = 30
+    lookback_days: int = 60
+    max_weight: float = 0.55
+    min_history_days: int = 20
+    dry_run: bool = True
+    mutation_allowed: bool = False
+    persist_results: bool = False
     confirm: bool = False
 
 
@@ -395,6 +415,43 @@ async def research_portfolio_allocation_production_replace_run(req: PortfolioAll
         min_history_days=req.min_history_days,
     )
     return report
+
+
+@router.post("/research/signature-informed-allocation/dry-run")
+async def research_signature_informed_allocation_dry_run(req: SignatureInformedAllocationBenchmarkRequest):
+    """Compare SIT direct allocation against sparse tangent without mutation."""
+    if req.mutation_allowed or req.persist_results or req.confirm:
+        raise HTTPException(status_code=400, detail="signature-informed allocation benchmark cannot mutate production state")
+    if req.dry_run is False:
+        raise HTTPException(status_code=400, detail="signature-informed allocation replacement requires reviewed promotion gate")
+    if req.recommendation_rows and req.price_rows:
+        row_dates = sorted({
+            str(row.get("date") or "").strip()[:10]
+            for row in req.recommendation_rows
+            if str(row.get("date") or "").strip()
+        })
+        return build_historical_sit_vs_sparse_report(
+            recommendation_rows=req.recommendation_rows,
+            price_rows=req.price_rows,
+            start_date=req.start_date or (row_dates[0] if row_dates else ""),
+            end_date=req.end_date or (row_dates[-1] if row_dates else ""),
+            top_k=req.top_k,
+            selection_pool_size=req.selection_pool_size,
+            lookback_days=req.lookback_days,
+            max_weight=req.max_weight,
+            min_history_days=req.min_history_days,
+        )
+    if not req.start_date or not req.end_date:
+        raise HTTPException(status_code=400, detail="start_date and end_date are required when rows are not supplied")
+    return run_historical_sit_vs_sparse_report(
+        start_date=req.start_date,
+        end_date=req.end_date,
+        top_k=req.top_k,
+        selection_pool_size=req.selection_pool_size,
+        lookback_days=req.lookback_days,
+        max_weight=req.max_weight,
+        min_history_days=req.min_history_days,
+    )
 
 
 @router.post("/research/market-state-benchmark/dry-run")

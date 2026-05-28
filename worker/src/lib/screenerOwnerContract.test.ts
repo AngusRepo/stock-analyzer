@@ -109,6 +109,8 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(pendingBuyOrchestrator.includes("from './boardTradability'"), 'pending-buy setup must consume the board/tradability contract')
   assert(pendingBuyOrchestrator.includes("NOT IN ('EMERGING', 'ESB')"), 'pending-buy setup must exclude explicit emerging-board stocks')
   assert(pendingBuyOrchestrator.includes('sp_exec.open'), 'pending-buy setup must reject emerging-style rows without an executable open price')
+  assert(pendingBuyOrchestrator.includes("$.portfolio_weight') AS REAL"), 'pending-buy setup must require positive portfolio weight for portfolio-allocation owner rows')
+  assert(pendingBuyOrchestrator.includes("$.portfolio_selection_rank'"), 'pending-buy setup must order by explicit portfolio selection rank before legacy selection_rank')
   assert(pendingBuyOrchestrator.includes('latest_avg_price'), 'pending-buy setup must inspect avg-price-only emerging-style rows')
   assert(pendingBuyOrchestrator.includes('candidateLimit'), 'pending-buy setup must fetch enough candidates before board/restriction filtering')
   assert(pendingBuyOrchestrator.includes('themeUniverse'), 'pending-buy RRG gate must align taxonomy tags to the latest sector_flow universe')

@@ -101,7 +101,9 @@ interface AlphaAllocationContext {
   method?: string
   owner?: string
   selected?: boolean
+  portfolio_selected?: boolean
   selection_rank?: number
+  portfolio_selection_rank?: number
   portfolio_weight?: number
   risk_pct_multiplier?: number
 }
@@ -193,12 +195,18 @@ function alphaWatchPoint(ctx: AlphaForecastContext | null): string | null {
 }
 
 function alphaAllocationWatchPoint(ctx: AlphaAllocationContext | null): string | null {
-  if (!ctx || ctx.method !== 'sparse_tangent_inverse_risk') return null
+  if (!ctx || !['sparse_tangent_inverse_risk', 'signature_informed_transformer_direct_allocation'].includes(String(ctx.method ?? ''))) return null
+  const label = ctx.method === 'signature_informed_transformer_direct_allocation'
+    ? 'signature-informed transformer'
+    : 'sparse tangent'
   const weight = typeof ctx.portfolio_weight === 'number' && Number.isFinite(ctx.portfolio_weight)
     ? `${(ctx.portfolio_weight * 100).toFixed(1)}%`
     : 'n/a'
-  const rank = typeof ctx.selection_rank === 'number' ? `#${ctx.selection_rank}` : '#?'
-  return `Portfolio allocation: sparse tangent ${rank}, weight=${weight}`
+  const selectedRank = typeof ctx.portfolio_selection_rank === 'number'
+    ? ctx.portfolio_selection_rank
+    : ctx.selection_rank
+  const rank = typeof selectedRank === 'number' ? `#${selectedRank}` : '#?'
+  return `Portfolio allocation: ${label} ${rank}, weight=${weight}`
 }
 
 function calcRiskPct(
@@ -740,6 +748,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          AND dr.confidence >= ?
          AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
          AND (
+           NOT json_valid(dr.alpha_allocation)
+           OR json_extract(dr.alpha_allocation, '$.owner') IS NULL
+           OR json_extract(dr.alpha_allocation, '$.owner') != 'portfolio_allocation'
+           OR (
+             COALESCE(CAST(json_extract(dr.alpha_allocation, '$.selected') AS INTEGER), 0) = 1
+             AND COALESCE(CAST(json_extract(dr.alpha_allocation, '$.portfolio_weight') AS REAL), 0) > 0
+           )
+         )
+         AND (
            SELECT sp_exec.open
              FROM stock_prices sp_exec
             WHERE sp_exec.stock_id = s.id
@@ -748,7 +765,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             LIMIT 1
          ) IS NOT NULL
         ORDER BY CASE WHEN json_valid(dr.alpha_allocation) THEN
-           COALESCE(CAST(json_extract(dr.alpha_allocation, '$.selection_rank') AS REAL), 999)
+           COALESCE(
+             CAST(json_extract(dr.alpha_allocation, '$.portfolio_selection_rank') AS REAL),
+             CAST(json_extract(dr.alpha_allocation, '$.selection_rank') AS REAL),
+             999
+           )
            ELSE 999 END ASC,
            CASE WHEN json_valid(dr.score_components) THEN
            COALESCE(

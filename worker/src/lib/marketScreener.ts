@@ -919,7 +919,6 @@ export function scoreMultiFactor(
 
   }
 
-  // P3-5: NATR 低波動加分（低波動 + 趨勢中 = 穩健上漲）
   if (prices.length >= 14) {
     const trueRanges = prices.slice(-15).map((p, i, arr) => {
       if (i === 0) return p.max - p.min
@@ -927,7 +926,6 @@ export function scoreMultiFactor(
       return Math.max(p.max - p.min, Math.abs(p.max - prev.close), Math.abs(p.min - prev.close))
     }).slice(1)
     const atr14 = trueRanges.reduce((s, v) => s + v, 0) / trueRanges.length
-    const natr = latestClose > 0 ? (atr14 / latestClose) * 100 : 0
 
     // 肯特納通道突破
     const ma20 = prices.slice(-Math.min(20, prices.length)).reduce((s, p) => s + p.close, 0) / Math.min(20, prices.length)
@@ -937,8 +935,6 @@ export function scoreMultiFactor(
       reasons.push('突破肯特納')
     }
 
-    // NATR 低波動：< threshold 且在均線上方 = 穩健趨勢（FinLab IC 驗證）
-    if (natr < (sc?.natrThreshold ?? 3) && latest.close > ma20) tech_score += 1
   }
   tech_score = clamp(tech_score, 0, 30)
 

@@ -194,6 +194,12 @@ def apply_sparse_tangent_production_allocation(
     for row in recommendations:
         symbol = _symbol(row)
         allocation = dict(row.get("alpha_allocation") or {})
+        allocation.pop("selection_rank", None)
+        allocation.pop("portfolio_selection_rank", None)
+        allocation.pop("portfolio_selected", None)
+        allocation.pop("equal_weight_baseline", None)
+        allocation.pop("risk_pct_multiplier", None)
+        allocation.pop("max_weight", None)
         if symbol in selected_symbols:
             rank = selected_order[symbol]
             weight = float(weights[symbol])
@@ -210,7 +216,9 @@ def apply_sparse_tangent_production_allocation(
             row["alpha_allocation"] = {
                 **allocation,
                 "selected": True,
+                "portfolio_selected": True,
                 "selection_rank": rank,
+                "portfolio_selection_rank": rank,
                 "method": SPARSE_TANGENT_METHOD,
                 "owner": "portfolio_allocation",
                 "portfolio_weight": round(weight, 8),
@@ -227,6 +235,8 @@ def apply_sparse_tangent_production_allocation(
             row["alpha_allocation"] = {
                 **allocation,
                 "selected": False,
+                "portfolio_selected": False,
+                "portfolio_selection_rank": None,
                 "method": SPARSE_TANGENT_METHOD,
                 "owner": "portfolio_allocation",
                 "portfolio_weight": 0.0,

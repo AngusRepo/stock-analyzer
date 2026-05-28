@@ -818,17 +818,23 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
     if squeeze_momentum is not None:
         raw["trendStructure"] += 1.0 if squeeze_momentum > 0 else 0.0
 
-    if natr is not None:
-        if 1.0 <= natr <= 4.0:
-            raw["volatilityStructure"] += 5.0
-        elif 0.5 <= natr <= 6.0:
-            raw["volatilityStructure"] += 3.0
-        elif natr > 0:
-            raw["volatilityStructure"] += 1.0
+    has_squeeze_state = (
+        squeeze_release is not None
+        or squeeze_on is not None
+        or squeeze_momentum is not None
+    )
     if squeeze_release is not None and squeeze_release > 0:
         raw["volatilityStructure"] += 3.0
     elif squeeze_on is not None and squeeze_on > 0:
         raw["volatilityStructure"] += 1.5
+    elif not has_squeeze_state and natr is not None:
+        # Legacy fallback only. TTM Squeeze owns volatility structure when available.
+        if 1.0 <= natr <= 4.0:
+            raw["volatilityStructure"] += 2.0
+        elif 0.5 <= natr <= 6.0:
+            raw["volatilityStructure"] += 1.0
+        elif natr > 0:
+            raw["volatilityStructure"] += 0.5
 
     if sar is not None and current_price is not None and current_price > sar:
         raw["reversalExtreme"] += 2.0
@@ -851,8 +857,6 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
             raw["volumeConfirmation"] += 3.0
         elif 45 <= obv_temperature < 60 or 85 < obv_temperature <= 95:
             raw["volumeConfirmation"] += 1.5
-    if vmd is not None and vmd > 0:
-        raw["volumeConfirmation"] += 1.0 if obv_temperature is not None else 2.0
     if vw_rsi is not None:
         raw["volumeConfirmation"] += 2.0 if 55 <= vw_rsi <= 80 else 1.0 if vw_rsi > 80 else 0.0
     raw["volumeConfirmation"] += _rescale_score(seeds["screenerMomentumSeed20"], 20, 1.0)
@@ -1179,9 +1183,10 @@ def build_watch_points(s: dict) -> list[str]:
         points.append("價格站上月線但 MACD 偏弱，需確認量能延續")
     adx = _float_or_none(s.get("adx14"))
     vmd = _float_or_none(s.get("volume_momentum_divergence_13_27_10"))
+    obv_temperature = _float_or_none(s.get("obv_temperature_60") or s.get("obvTemperature60"))
     if adx is not None and adx < 15:
         points.append("ADX 顯示趨勢強度不足，避免只看突破追價")
-    if vmd is not None and vmd < 0:
+    if obv_temperature is None and vmd is not None and vmd < 0:
         points.append("量能動量偏離轉弱，需確認資金熱度是否降溫")
     if float(s.get("foreign_net_5d") or 0.0) < 0:
         points.append("外資近 5 日偏賣，籌碼需再確認")

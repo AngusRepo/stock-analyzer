@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 VERIFIABLE_MARKETS = {"TWSE", "OTC", "TPEX", "EMERGING"}
 
 
+def _finite_price(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main entry point
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -241,12 +249,14 @@ def verify_single_prediction(
 
     # ── Derive entry/stop/targets (fall back to defaults if null) ────────────
     actual_bar = bars[min(4, len(bars) - 1)]
-    actual_price = actual_bar["close"]
-    entry_price = pred.get("entry_price") or bars[0].get("open") or actual_price
+    actual_price = _finite_price(actual_bar.get("close"))
+    entry_price = _finite_price(pred.get("entry_price")) or _finite_price(bars[0].get("open")) or actual_price
+    if actual_price is None or entry_price is None:
+        return None
     is_long = predicted_direction == "up"
-    stop_loss = pred.get("stop_loss") or (entry_price * (0.95 if is_long else 1.05))
-    target1 = pred.get("target1") or (entry_price * (1.05 if is_long else 0.95))
-    target2 = pred.get("target2") or (entry_price * (1.08 if is_long else 0.92))
+    stop_loss = _finite_price(pred.get("stop_loss")) or (entry_price * (0.95 if is_long else 1.05))
+    target1 = _finite_price(pred.get("target1")) or (entry_price * (1.05 if is_long else 0.95))
+    target2 = _finite_price(pred.get("target2")) or (entry_price * (1.08 if is_long else 0.92))
 
     actual_return_pct = (actual_price - entry_price) / entry_price
 
@@ -352,6 +362,7 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
     errors: list[str] = []
     skipped_no_bars = 0
     skipped_no_update = 0
+    skipped_incomplete_price_bars = 0
     bars_by_stock = load_bars_for_predictions(pending)
 
     for pred in pending:
@@ -363,6 +374,10 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
             ][:7]
             if not pred_bars:
                 skipped_no_bars += 1
+                continue
+            actual_bar = pred_bars[min(4, len(pred_bars) - 1)]
+            if _finite_price(actual_bar.get("close")) is None:
+                skipped_incomplete_price_bars += 1
                 continue
             result = verify_single_prediction(
                 pred,
@@ -387,6 +402,7 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
         "metrics": {
             "skipped_no_bars": skipped_no_bars,
             "skipped_no_update": skipped_no_update,
+            "skipped_incomplete_price_bars": skipped_incomplete_price_bars,
         },
     }
 

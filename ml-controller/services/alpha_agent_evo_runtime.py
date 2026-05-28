@@ -978,7 +978,7 @@ def apply_alpha_agent_evo_production_selection(
         alpha_context["alpha_agent_evo"] = {
             "owner": "alpha_agent_evo",
             "selected": symbol in selected_symbols,
-            "selection_rank": selected_order.get(symbol),
+            "alpha_agent_evo_rank": selected_order.get(symbol),
             "score": alpha_score,
             "raw_score": round(raw_score, 8),
             "champion_id": champion.get("candidate_id"),

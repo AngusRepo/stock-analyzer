@@ -36,6 +36,25 @@ function truthyFlag(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'modal'
 }
 
+function metadataText(value: unknown): string {
+  return Array.isArray(value) ? value.map((item) => String(item)).join(',') : String(value ?? '')
+}
+
+function finLabDailyPriceModeCallback(metadata: any): boolean {
+  const mode = String(metadata?.mode ?? '').trim().toLowerCase()
+  if (mode === 'daily_price_primary') return true
+
+  const lanes = metadataText(metadata?.lanes).toLowerCase().split(',').map((item) => item.trim())
+  const canonicalDatasets = metadataText(metadata?.canonical_datasets).toLowerCase().split(',').map((item) => item.trim())
+  return lanes.includes('daily_price') && canonicalDatasets.includes('canonical_market_daily')
+}
+
+function shouldContinueEveningChainAfterFinLabCallback(body: any, metadata: any): boolean {
+  if (String(body?.task) !== 'finlab-v4-backfill') return false
+  if (body?.status !== 'success') return false
+  return truthyFlag(metadata?.continue_evening_chain) || finLabDailyPriceModeCallback(metadata)
+}
+
 const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
 const D1_QUERY_ALLOWED_READ = new Set(['SELECT', 'WITH'])
 const D1_QUERY_MAX_ROWS_CAP = 250000
@@ -398,11 +417,8 @@ async function handleSchedulerCallback(c: any) {
     })())
   }
 
-  if (
-    body.task === 'finlab-v4-backfill' &&
-    body.status === 'success' &&
-    truthyFlag(callbackMetadata?.continue_evening_chain)
-  ) {
+  const finlabContinuationQueued = shouldContinueEveningChainAfterFinLabCallback(body, callbackMetadata)
+  if (finlabContinuationQueued) {
     c.executionCtx.waitUntil((async () => {
       try {
         const { continueEveningChainAfterFinLabBackfill } = await import('../lib/updateOrchestrator')
@@ -444,7 +460,13 @@ async function handleSchedulerCallback(c: any) {
     `run_id=${body.run_id ?? '-'} duration=${body.duration_ms}ms`,
   )
 
-  return c.json({ ok: true, task: body.task, status: body.status, optuna_closure: optunaClosure })
+  return c.json({
+    ok: true,
+    task: body.task,
+    status: body.status,
+    optuna_closure: optunaClosure,
+    finlab_continuation_queued: finlabContinuationQueued,
+  })
 }
 
 adminControlRoutes.post('/api/admin/scheduler-callback', handleSchedulerCallback)

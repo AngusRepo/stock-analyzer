@@ -23,6 +23,7 @@ assert(
     workflows.includes('FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED') &&
     workflows.includes("callback_task: 'finlab-v4-backfill'") &&
     workflows.includes("trigger_source: 'worker_scheduler'") &&
+    workflows.includes("mode: dailyPriceMode ? 'daily_price_primary' : 'archive_backfill'") &&
     workflows.includes('timeoutMs: 60_000'),
   'FinLab V4 backfill must have a short Worker -> controller Modal trigger path, gated by an explicit env flag',
 )
@@ -56,8 +57,10 @@ assert(
 assert(
   schedulerPolicy.includes("'finlab-v4-backfill'") &&
     schedulerStatus.includes("{ id: 'finlab-v4-backfill'") &&
-    schedulerStatus.includes("cron: '30 10 * * 1-5'"),
-  'FinLab backfill must be registered in scheduler policy and dashboard readback before production scheduler cutover',
+    schedulerStatus.includes("schedule: 'Inside evening-chain (22:00 callback)'") &&
+    schedulerStatus.includes("cron: 'callback'") &&
+    schedulerStatus.includes("'finlab-v4-backfill',"),
+  'FinLab backfill must be visible as an evening-chain callback, not as a standalone 18:30 Scheduler job',
 )
 
 assert(
@@ -89,8 +92,11 @@ assert(
 
 assert(
     adminControlRoutes.includes('continueEveningChainAfterFinLabBackfill') &&
+    adminControlRoutes.includes('shouldContinueEveningChainAfterFinLabCallback') &&
+    adminControlRoutes.includes('finLabDailyPriceModeCallback') &&
     adminControlRoutes.includes('continue_evening_chain') &&
+    adminControlRoutes.includes('finlab_continuation_queued') &&
     adminControlRoutes.includes("'finlab-primary-continuation'") &&
     schedulerRunLogger.includes("'finlab-primary-continuation': 'FinLab Primary Continuation'"),
-  'FinLab callback must continue the evening chain only when the trigger explicitly requested continuation',
+  'FinLab callback must continue the evening chain for explicit daily-price callbacks and expose whether continuation was queued',
 )

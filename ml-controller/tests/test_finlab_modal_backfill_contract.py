@@ -61,6 +61,9 @@ def test_modal_app_exposes_finlab_backfill_function_with_same_cloud_run_spec() -
     assert 'canonical_start = _date_minus_days(canonical_end, canonical_window_days)' in source
     assert '"task": callback_task' in source
     assert '"continue_evening_chain": bool(payload.get("continue_evening_chain"))' in source
+    assert '"mode": payload.get("mode")' in source
+    assert '"lanes": payload.get("lanes")' in source
+    assert '"canonical_datasets": payload.get("canonical_datasets")' in source
     assert '"--lanes"' in source
     assert '"--skip-diff-counts"' in source
     assert '"event": "finlab_v4_backfill_callback"' in source

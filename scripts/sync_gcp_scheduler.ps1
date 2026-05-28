@@ -24,11 +24,33 @@ $managedIds = [System.Collections.Generic.HashSet[string]]::new()
 $currentIds = [System.Collections.Generic.HashSet[string]]::new()
 
 $currentJobs = @()
-if (-not $DryRun) {
-  $currentJobs = gcloud scheduler jobs list --project $Project --location $Location --format 'value(name.basename())'
-  if ($LASTEXITCODE -ne 0) { throw 'gcloud scheduler jobs list failed' }
-  foreach ($jobId in $currentJobs) {
-    if ($jobId) { [void]$currentIds.Add([string]$jobId) }
+$currentJobs = gcloud scheduler jobs list --project $Project --location $Location --format 'value(name.basename())'
+if ($LASTEXITCODE -ne 0) { throw 'gcloud scheduler jobs list failed' }
+foreach ($jobId in $currentJobs) {
+  if ($jobId) { [void]$currentIds.Add([string]$jobId) }
+}
+
+$deprecatedHits = @()
+if ($manifest.PSObject.Properties.Name -contains 'deprecatedJobs') {
+  foreach ($deprecated in @($manifest.deprecatedJobs)) {
+    $deprecatedId = [string]$deprecated.id
+    if (-not $deprecatedId) { continue }
+    if (@($manifest.jobs | Where-Object { [string]$_.id -eq $deprecatedId }).Count -gt 0) {
+      throw "[scheduler-sync] deprecated job is still managed by manifest jobs: $deprecatedId"
+    }
+    if ($currentIds.Contains($deprecatedId)) {
+      $reason = [string]$deprecated.reason
+      $deprecatedHits += if ($reason) { "$deprecatedId ($reason)" } else { $deprecatedId }
+    }
+  }
+}
+
+if ($deprecatedHits.Count -gt 0) {
+  if (-not $DeleteStale) {
+    throw "[scheduler-sync] deprecated live Scheduler job(s) still exist: $($deprecatedHits -join '; '). Re-run with -DeleteStale only after production approval."
+  }
+  foreach ($hit in $deprecatedHits) {
+    Write-Host "[scheduler-sync] deprecated live job will be deleted by -DeleteStale: $hit"
   }
 }
 
@@ -41,7 +63,7 @@ foreach ($job in $manifest.jobs) {
   }
   $description = [string]$job.description
   $timeZone = if ($job.timeZone) { [string]$job.timeZone } else { [string]$manifest.timeZone }
-  $exists = $DryRun -or $currentIds.Contains([string]$job.id)
+  $exists = $currentIds.Contains([string]$job.id)
 
   if ($exists) {
     $args = @(

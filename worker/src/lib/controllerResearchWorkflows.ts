@@ -338,6 +338,7 @@ function buildFinLabBackfillRequestBody(
     callback_task: 'finlab-v4-backfill',
     trigger_source: 'worker_scheduler',
     trigger_id: runId,
+    mode: dailyPriceMode ? 'daily_price_primary' : 'archive_backfill',
     force,
     continue_evening_chain: Boolean(options.continueEveningChain),
     lanes: dailyPriceMode

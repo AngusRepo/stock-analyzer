@@ -3,6 +3,12 @@
   "timeZone": "UTC",
   "workerBaseUrlEnv": "STOCKVISION_WORKER_BASE_URL",
   "authTokenEnv": "SCHEDULER_AUTH_TOKEN",
+  "deprecatedJobs": [
+    {
+      "id": "finlab-v4-backfill",
+      "reason": "Deprecated direct TW 18:30 FinLab backfill. Evening-chain owns FinLab daily-price materialization at TW 22:00 and continues the DAG by callback."
+    }
+  ],
   "jobs": [
     { "id": "intraday-check", "schedule": "* 1-5 * * 1-5", "task": "intraday-check", "description": "TW 09:00-13:30 intraday paper trading heartbeat" },
     { "id": "rescore-10", "schedule": "0 2 * * 1-5", "task": "intraday-rescore", "query": "sync=1", "description": "TW 10:00 intraday ML re-score" },

@@ -28,6 +28,12 @@ assert(
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 assert(manifest.owner === 'gcp-scheduler', 'scheduler manifest must declare gcp-scheduler owner')
 assert(Array.isArray(manifest.jobs) && manifest.jobs.length >= 20, 'scheduler manifest should cover daily, intraday, weekly, and monthly jobs')
+assert(!manifest.jobs.some((job: any) => job.id === 'finlab-v4-backfill'), 'finlab-v4-backfill must not be a fixed-time Scheduler job')
+assert(
+  Array.isArray(manifest.deprecatedJobs) &&
+    manifest.deprecatedJobs.some((job: any) => job.id === 'finlab-v4-backfill'),
+  'deprecated direct FinLab backfill scheduler must stay declared so sync can fail on stale live jobs',
+)
 
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const cronGcpDomainTasks = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
@@ -113,6 +119,9 @@ assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler 
 assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')
 assert(syncScript.includes('$job.timeZone'), 'scheduler sync must support per-job time zones for groc monthly schedules')
 assert(syncScript.includes('[switch]$DeleteStale'), 'scheduler sync must support explicit stale GCP job deletion')
+assert(syncScript.includes('$deprecatedHits'), 'scheduler sync must detect manifest-deprecated live jobs')
+assert(syncScript.includes('deprecated live Scheduler job(s) still exist'), 'scheduler sync must fail fast when deprecated live jobs remain')
+assert(syncScript.includes('Re-run with -DeleteStale only after production approval'), 'scheduler sync must require production approval before deleting deprecated jobs')
 assert(syncScript.includes('scheduler jobs delete'), 'scheduler sync must delete stale GCP jobs when DeleteStale is approved')
 
 const cloudflareScheduleSync = fs.readFileSync('../scripts/sync_cloudflare_worker_schedules.ps1', 'utf8')

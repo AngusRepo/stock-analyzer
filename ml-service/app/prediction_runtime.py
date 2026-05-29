@@ -557,7 +557,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     """2.0 predict: universal regression models + IC-weighted rank ensemble."""
     from .ensemble import load_ic_weights, merge_with_time_series, rank_to_signal
     from .model_store import load_model
-    from .model_pool import get_challenger_path, load_pool as _load_pool
+    from .model_pool import load_pool as _load_pool
 
     if len(req.prices) < 60:
         raise ValueError("至少需要 60 筆價格資料")
@@ -727,33 +727,11 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     else:
         model_errors.append("embedded state-space skipped: owned by daily_pipeline_v2 batch predictors")
 
+    # Production prediction no longer loads model-pool challenger side paths.
+    # Formal Layer 3 candidates must enter through artifact promotion and
+    # explicit family slots, not a hidden shadow/challenger channel.
     challenger_rank_scores: dict[str, float] = {}
     challenger_errors: list[str] = []
-
-    precomputed_challenger_scores = runtime_options.get(_BATCH_CHALLENGER_RANK_SCORES_KEY)
-    precomputed_challenger_errors = runtime_options.get(_BATCH_CHALLENGER_MODEL_ERRORS_KEY)
-    if isinstance(precomputed_challenger_scores, dict):
-        allowed_challengers = set(_FEATURE_MODEL_NAMES_V2) | set(_SHADOW_CHALLENGER_MODEL_NAMES)
-        for model_name, score in precomputed_challenger_scores.items():
-            if model_name in allowed_challengers:
-                challenger_rank_scores[model_name] = float(np.clip(float(score), 0.0, 1.0))
-        if isinstance(precomputed_challenger_errors, list):
-            challenger_errors.extend(str(err) for err in precomputed_challenger_errors if err)
-    elif pool_snapshot:
-        for model_name in _FEATURE_MODEL_NAMES_V2:
-            try:
-                ch_path = get_challenger_path(model_name, pool=pool_snapshot)
-                if not ch_path:
-                    continue
-                ch_obj, ch_meta = load_model(0, model_name, explicit_path=ch_path)
-                if ch_obj is None:
-                    challenger_errors.append(f"{model_name}: challenger artifact missing at {ch_path}")
-                    continue
-                x_to_predict = _aligned_features(ch_meta)
-                pred = ch_obj.predict(x_to_predict)
-                challenger_rank_scores[model_name] = float(np.clip(pred[0], 0.0, 1.0))
-            except Exception as e:
-                challenger_errors.append(f"{model_name}: challenger {e}")
 
     rank_scores, effective_ic_weights = merge_with_time_series(
         rank_scores,

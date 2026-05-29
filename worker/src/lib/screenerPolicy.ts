@@ -55,7 +55,7 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   const raw = config.screener as Record<string, unknown>
   const adaptiveScreener = adaptive?.screener ?? {}
 
-  const candidatePoolBase = positiveInt(raw.candidatePoolSize, 200, 60, 240)
+  const candidatePoolBase = positiveInt(raw.candidatePoolSize, 200, 180, 240)
   const coarseMlQueueBase = positiveInt(raw.coarseMlQueueSize, 80, 30, 160)
   const mlShortlistBase = positiveInt(raw.mlShortlistSize ?? raw.maxCandidates, 35, 15, 80)
   const emergingResearchBase = positiveInt(raw.emergingResearchSize ?? raw.emergingMaxCandidates, 24, 0, 80)
@@ -63,7 +63,7 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   const candidatePoolSize = applyAdaptiveDelta(
     candidatePoolBase,
     adaptiveScreener.candidate_pool_delta,
-    60,
+    180,
     240,
   )
   const coarseMlQueueSize = Math.min(

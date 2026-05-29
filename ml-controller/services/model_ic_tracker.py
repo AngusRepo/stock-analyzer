@@ -30,8 +30,7 @@ PRODUCTION_IC_SEGMENTS = {"LISTED", "OTC", "UNKNOWN"}
 
 
 def tracked_model_names() -> tuple[str, ...]:
-    version_candidates = tuple(f"{name}::challenger" for name in ALPHA_PREDICTION_MODELS)
-    return ALPHA_PREDICTION_MODELS + FORMAL_LAYER3_MODELS + version_candidates
+    return ALPHA_PREDICTION_MODELS + FORMAL_LAYER3_MODELS
 
 
 def _as_float(value: Any) -> float | None:

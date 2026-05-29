@@ -195,8 +195,8 @@ def test_legacy_layer3_side_channel_pool_is_ignored_by_batch_runtime(monkeypatch
 
     overrides = batch_prediction._build_feature_model_batch_runtime_overrides(requests)
 
-    assert overrides[0][_BATCH_CHALLENGER_RANK_SCORES_KEY] == {}
-    assert overrides[1][_BATCH_CHALLENGER_RANK_SCORES_KEY] == {}
+    assert _BATCH_CHALLENGER_RANK_SCORES_KEY not in overrides[0]
+    assert _BATCH_CHALLENGER_RANK_SCORES_KEY not in overrides[1]
 
 
 def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
@@ -267,7 +267,7 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
     result = prediction_runtime.predict_stock_v2(PredictRequest(**payload))
 
     assert result["rank_scores"]["XGBoost"] == pytest.approx(0.82)
-    assert result["challenger_rank_scores"]["XGBoost"] == pytest.approx(0.64)
+    assert result["challenger_rank_scores"] == {}
     assert "LightGBM: not found in GCS" in result["model_errors"]
     assert _BATCH_FEATURE_RANK_SCORES_KEY not in result["runtime_options"]
     assert result["runtime_options"]["owner"] == "daily_pipeline_v2.batch_predict"

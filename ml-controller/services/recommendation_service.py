@@ -1960,17 +1960,9 @@ def write_predictions_to_d1(
         inserted_rows += 1
 
         # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
-        # Active rows use model_name='{name}'. Version-candidate rows still use
-        # the legacy '{name}::challenger' storage suffix for compatibility.
+        # Screener refactor: production writes only formal active/family slots;
+        # legacy challenger side-channel scores are intentionally ignored.
         per_model_scores = _extract_per_model_scores_for_d1(data)
-        # Extract version-candidate scores from feature and pipeline_v2
-        # time-series alpha candidate predictions.
-        challenger_scores = data.get("challenger_rank_scores") or {}
-        for ch_name, ch_score in (challenger_scores or {}).items():
-            try:
-                per_model_scores[f"{ch_name}::challenger"] = float(ch_score)
-            except (TypeError, ValueError):
-                pass
         for model_name, model_score in per_model_scores.items():
             safe_model_score, replaced = _sanitize_non_finite(model_score)
             sanitized_count += replaced

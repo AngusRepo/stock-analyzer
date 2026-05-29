@@ -24,8 +24,6 @@ class _FeatureBatchContext:
     feature_names: list[str]
     rank_scores: dict[str, float] = field(default_factory=dict)
     model_errors: list[str] = field(default_factory=list)
-    challenger_rank_scores: dict[str, float] = field(default_factory=dict)
-    challenger_errors: list[str] = field(default_factory=list)
 
 
 def _runtime():
@@ -76,12 +74,6 @@ def _load_model_pool() -> dict | None:
     from .model_pool import load_pool
 
     return load_pool()
-
-
-def _get_pool_challenger_path(model_name: str, pool: dict | None) -> str | None:
-    from .model_pool import get_challenger_path
-
-    return get_challenger_path(model_name, pool=pool)
 
 
 def _load_feature_artifact(model_name: str, explicit_path: str | None = None) -> tuple[Any, dict | None]:
@@ -149,21 +141,15 @@ def _record_feature_score(
     ctx: _FeatureBatchContext,
     model_name: str,
     score: Any,
-    *,
-    challenger: bool = False,
 ) -> None:
-    target = ctx.challenger_rank_scores if challenger else ctx.rank_scores
-    target[model_name] = _clip_rank(score)
+    ctx.rank_scores[model_name] = _clip_rank(score)
 
 
 def _record_feature_error(
     ctx: _FeatureBatchContext,
     message: str,
-    *,
-    challenger: bool = False,
 ) -> None:
-    target = ctx.challenger_errors if challenger else ctx.model_errors
-    target.append(message)
+    ctx.model_errors.append(message)
 
 
 def _apply_artifact_batch_predictions(
@@ -171,16 +157,13 @@ def _apply_artifact_batch_predictions(
     model_name: str,
     model_obj: Any,
     meta: dict | None,
-    *,
-    challenger: bool = False,
 ) -> None:
     rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
     for ctx in contexts:
         try:
             rows.append((ctx, _align_latest_features(ctx, meta)))
         except Exception as exc:  # noqa: BLE001 - keep one bad symbol/model local.
-            prefix = "challenger " if challenger else ""
-            _record_feature_error(ctx, f"{model_name}: {prefix}{exc}", challenger=challenger)
+            _record_feature_error(ctx, f"{model_name}: {exc}")
     if not rows:
         return
 
@@ -188,18 +171,16 @@ def _apply_artifact_batch_predictions(
     try:
         preds = np.asarray(model_obj.predict(x_batch)).reshape(-1)
         for (ctx, _row), pred in zip(rows, preds):
-            _record_feature_score(ctx, model_name, pred, challenger=challenger)
+            _record_feature_score(ctx, model_name, pred)
     except Exception as batch_exc:  # noqa: BLE001
-        prefix = "challenger " if challenger else ""
         for ctx, x_row in rows:
             try:
                 pred = np.asarray(model_obj.predict(x_row)).reshape(-1)[0]
-                _record_feature_score(ctx, model_name, pred, challenger=challenger)
+                _record_feature_score(ctx, model_name, pred)
             except Exception as row_exc:  # noqa: BLE001
                 _record_feature_error(
                     ctx,
-                    f"{model_name}: {prefix}{type(batch_exc).__name__}: {batch_exc}; row fallback: {row_exc}",
-                    challenger=challenger,
+                    f"{model_name}: {type(batch_exc).__name__}: {batch_exc}; row fallback: {row_exc}",
                 )
 
 
@@ -215,8 +196,6 @@ def _model_pool_status(pool: dict | None) -> dict[str, str]:
 
 def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[dict]:
     from .prediction_runtime import (
-        _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
-        _BATCH_CHALLENGER_RANK_SCORES_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
         _FEATURE_MODEL_NAMES_V2,
@@ -244,38 +223,10 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
             continue
         _apply_artifact_batch_predictions(contexts, model_name, model_obj, meta)
 
-    if pool:
-        for model_name in _FEATURE_MODEL_NAMES_V2:
-            try:
-                ch_path = _get_pool_challenger_path(model_name, pool=pool)
-            except Exception as exc:  # noqa: BLE001
-                for ctx in contexts:
-                    _record_feature_error(ctx, f"{model_name}: challenger {exc}", challenger=True)
-                continue
-            if not ch_path:
-                continue
-            try:
-                model_obj, meta = _load_feature_artifact(model_name, explicit_path=ch_path)
-            except Exception as exc:  # noqa: BLE001
-                for ctx in contexts:
-                    _record_feature_error(ctx, f"{model_name}: challenger {exc}", challenger=True)
-                continue
-            if model_obj is None:
-                for ctx in contexts:
-                    _record_feature_error(
-                        ctx,
-                        f"{model_name}: challenger artifact missing at {ch_path}",
-                        challenger=True,
-                    )
-                continue
-            _apply_artifact_batch_predictions(contexts, model_name, model_obj, meta, challenger=True)
-
     return [
         {
             _BATCH_FEATURE_RANK_SCORES_KEY: dict(ctx.rank_scores),
             _BATCH_FEATURE_MODEL_ERRORS_KEY: list(ctx.model_errors),
-            _BATCH_CHALLENGER_RANK_SCORES_KEY: dict(ctx.challenger_rank_scores),
-            _BATCH_CHALLENGER_MODEL_ERRORS_KEY: list(ctx.challenger_errors),
         }
         for ctx in contexts
     ]
@@ -319,26 +270,19 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
         return {
             "active_attempted": 0,
             "active_loaded": 0,
-            "challenger_attempted": 0,
-            "challenger_loaded": 0,
             "errors": [],
         }
 
     active_models = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
     errors: list[str] = []
     active_loaded = 0
-    challenger_loaded = 0
-    challenger_attempted = 0
 
     try:
         from .model_store import load_model
-        from .model_pool import get_challenger_path, load_pool
     except Exception as exc:  # noqa: BLE001 - telemetry must not block prediction.
         return {
             "active_attempted": len(active_models),
             "active_loaded": 0,
-            "challenger_attempted": 0,
-            "challenger_loaded": 0,
             "errors": [f"preload_import_failed: {type(exc).__name__}: {exc}"],
         }
 
@@ -350,29 +294,9 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{model_name}: {type(exc).__name__}: {exc}")
 
-    try:
-        pool = load_pool() or {}
-    except Exception as exc:  # noqa: BLE001
-        pool = {}
-        errors.append(f"model_pool: {type(exc).__name__}: {exc}")
-
-    for model_name in active_models:
-        try:
-            ch_path = get_challenger_path(model_name, pool=pool) if pool else None
-            if not ch_path:
-                continue
-            challenger_attempted += 1
-            model_obj, _meta = load_model(0, model_name, explicit_path=ch_path)
-            if model_obj is not None:
-                challenger_loaded += 1
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{model_name} challenger: {type(exc).__name__}: {exc}")
-
     return {
         "active_attempted": len(active_models),
         "active_loaded": active_loaded,
-        "challenger_attempted": challenger_attempted,
-        "challenger_loaded": challenger_loaded,
         "errors": errors,
     }
 

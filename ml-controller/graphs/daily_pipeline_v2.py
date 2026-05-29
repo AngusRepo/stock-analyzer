@@ -272,7 +272,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     # Layer 2 runs cheap feature models first. Heavy sequence/state-space work
     # only runs on the Layer 3 core shortlist selected from coarse rank scores.
-    model_status, active_versions, challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+    model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
@@ -398,28 +398,14 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         )
 
     state_space_task = _shadow_state_space_overlays()
-    dlinear_ch_task = (
-        modal_client.dlinear_batch_predict(sequence_series, horizon_used=5, version=challenger_versions["DLinear"])
-        if challenger_versions.get("DLinear")
-        else _skip_batch("DLinear challenger absent")
-    )
-    patchtst_ch_task = (
-        modal_client.patchtst_batch_predict(sequence_series, horizon_used=5, version=challenger_versions["PatchTST"])
-        if challenger_versions.get("PatchTST")
-        else _skip_batch("PatchTST challenger absent")
-    )
     (
         dlinear_raw,
         patchtst_raw,
         state_space_raw,
-        dlinear_ch_raw,
-        patchtst_ch_raw,
     ) = await asyncio.gather(
         dlinear_task,
         patchtst_task,
         state_space_task,
-        dlinear_ch_task,
-        patchtst_ch_task,
         return_exceptions=True,
     )
 
@@ -526,9 +512,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
 
-    dlinear_ch_map = _drain_ts_result(dlinear_ch_raw, "DLinear::challenger", sequence_series)
-    patchtst_ch_map = _drain_ts_result(patchtst_ch_raw, "PatchTST::challenger", sequence_series)
-
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -544,14 +527,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym in markov_map:
             row["markov_switching"] = markov_map[sym]
 
-    def _attach_version_candidate_scores(row: dict, sym: str) -> None:
-        challenger_scores = row.setdefault("challenger_rank_scores", {})
-        if sym in dlinear_ch_map and dlinear_ch_map[sym].get("forecast_pct") is not None:
-            challenger_scores["DLinear"] = _ts_to_rank(float(dlinear_ch_map[sym]["forecast_pct"]))
-        if sym in patchtst_ch_map and patchtst_ch_map[sym].get("forecast_pct") is not None:
-            challenger_scores["PatchTST"] = _ts_to_rank(float(patchtst_ch_map[sym]["forecast_pct"]))
-        if not challenger_scores:
-            row.pop("challenger_rank_scores", None)
+    def _drop_legacy_version_candidate_scores(row: dict) -> None:
+        row.pop("challenger_rank_scores", None)
+        row.pop("challenger_errors", None)
 
     def _last_close(payload: dict) -> float:
         prices = payload.get("prices") or []
@@ -652,15 +630,12 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             "source": "LightGBM+XGBoost+ExtraTrees",
         })
         _attach_alt_sources(row, sym)
-        _attach_version_candidate_scores(row, sym)
+        _drop_legacy_version_candidate_scores(row)
         pred_map[sym] = row
 
     degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
-    degenerate_challengers = drop_degenerate_rank_scores(pred_map, score_field="challenger_rank_scores")
     if degenerate_scores:
         logger.warning(f"[Pipeline V2] Dropped degenerate active rank_scores: {degenerate_scores}")
-    if degenerate_challengers:
-        logger.warning(f"[Pipeline V2] Dropped degenerate challenger rank_scores: {degenerate_challengers}")
 
     error_count = sum(1 for r in results if r.get("error"))
     if error_count:
@@ -677,7 +652,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
         f"alt_fallback={alt_fallback_count}, "
         f"pool_versions={'ok' if pool_versions_loaded else 'fallback'}, "
-        f"version_candidate_scores={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
+        "version_candidate_scores=disabled"
     )
 
     # ── A: ML_POOL ensemble merge (formal alpha slots with lifecycle) ──

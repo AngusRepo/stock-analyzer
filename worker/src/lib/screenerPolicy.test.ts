@@ -16,7 +16,7 @@ function assert(condition: unknown, message: string): void {
       ...DEFAULT_TRADING_CONFIG,
       screener: {
         ...DEFAULT_TRADING_CONFIG.screener,
-        candidatePoolSize: 120,
+        candidatePoolSize: 200,
         mlShortlistSize: 40,
         emergingResearchSize: 24,
       } as typeof DEFAULT_TRADING_CONFIG.screener,
@@ -32,10 +32,30 @@ function assert(condition: unknown, message: string): void {
     },
   )
 
-  assert(policy.sizing.candidatePoolSize === 100, 'candidate pool size should accept adaptive delta')
+  assert(policy.sizing.candidatePoolSize === 180, 'candidate pool size should accept bounded adaptive delta')
   assert(policy.sizing.coarseMlQueueSize === 70, 'coarse ML queue size should accept adaptive delta')
   assert(policy.sizing.mlShortlistSize === 45, 'core ML shortlist size should accept adaptive delta')
   assert(policy.sizing.emergingResearchSize === 30, 'emerging research size should accept adaptive delta')
+}
+
+{
+  const policy = resolveScreenerPolicy(
+    {
+      ...DEFAULT_TRADING_CONFIG,
+      screener: {
+        ...DEFAULT_TRADING_CONFIG.screener,
+        candidatePoolSize: 120,
+      } as typeof DEFAULT_TRADING_CONFIG.screener,
+    },
+    {
+      ...({} as any),
+      screener: {
+        candidate_pool_delta: -80,
+      },
+    },
+  )
+
+  assert(policy.sizing.candidatePoolSize === 180, 'Layer1 breadth gate must not collapse below the production 180 floor')
 }
 
 {

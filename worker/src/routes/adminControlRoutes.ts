@@ -419,6 +419,13 @@ async function handleSchedulerCallback(c: any) {
 
   const finlabContinuationQueued = shouldContinueEveningChainAfterFinLabCallback(body, callbackMetadata)
   if (finlabContinuationQueued) {
+    await logSchedulerResult(c.env.KV, 'finlab-primary-continuation', {
+      status: 'running',
+      summary: 'FinLab primary backfill callback accepted; evening-chain continuation queued',
+      duration_ms: 0,
+      run_id: callbackRunId,
+      run_date: callbackRunDate,
+    }, c.env as any)
     c.executionCtx.waitUntil((async () => {
       try {
         const { continueEveningChainAfterFinLabBackfill } = await import('../lib/updateOrchestrator')

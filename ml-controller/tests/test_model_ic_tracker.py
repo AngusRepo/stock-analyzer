@@ -168,7 +168,7 @@ def test_tracked_model_names_exclude_retired_shadow_paths_and_include_formal_slo
     assert "GNN" in tracked
     assert "iTransformer" in tracked
     assert "TimesFM" in tracked
-    assert "XGBoost::challenger" in tracked
+    assert "XGBoost::challenger" not in tracked
 
 
 def test_apply_weekly_ic_updates_active_and_challenger_histories():

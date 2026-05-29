@@ -27,7 +27,6 @@ REQUIRED_MONTHLY_RETRAIN_STAGES = [
     "optuna_k_sweep",
     "target_permutation",
     "signal_sanity_gate",
-    "ft_transformer",
     "patchtst",
     "shap_audit",
 ]

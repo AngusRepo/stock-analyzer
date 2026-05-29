@@ -116,7 +116,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   embeds.push({
     title: 'ML 訊號總覽',
     color: 0x3498db,
-    description: `${totalStocks} 檔完成 ensemble 判斷，採 8 alpha models + state-space overlays 治理。`,
+    description: `${totalStocks} 檔完成 ensemble 判斷，採 10 formal alpha slots + state-space overlays 治理。`,
     fields: [
       { name: 'BUY', value: `${buyCount?.cnt ?? 0} 檔 | 平均信心 ${fmtPct(buyCount?.avg_conf)}`, inline: true },
       { name: 'HOLD', value: `${holdCount?.cnt ?? 0} 檔`, inline: true },
@@ -266,7 +266,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   `).bind(reportDate).all<any>().catch(() => ({ results: [] as any[] }))
 
   embeds.push({
-    description: '_StockVision ML Pipeline | 8 alpha models | state-space overlays | governed feature set_',
+    description: '_StockVision ML Pipeline | 10 formal alpha slots | state-space overlays | governed feature set_',
     color: 0x95a5a6,
     footer: { text: `StockVision v12 | ${totalStocks} stocks | ${reportDate}` },
   })

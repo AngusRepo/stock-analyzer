@@ -75,6 +75,10 @@ function wantsModelBenchmark(record: ResearchExperimentRecord): boolean {
     ...record.source_refs,
   ].join(' ').toLowerCase()
   return [
+    'layer3',
+    'layer 3',
+    'formal slot',
+    'model_family_evaluation',
     'model_benchmark',
     'model-family',
     'model family',
@@ -89,15 +93,15 @@ function wantsModelBenchmark(record: ResearchExperimentRecord): boolean {
 function benchmarkCandidateIds(record: ResearchExperimentRecord): ModelUpgradeCandidateId[] {
   const dataSlice = cleanObject(record.data_slice)
   const requested = new Set([
+    ...cleanStringArray(dataSlice.layer3_candidates),
+    ...cleanStringArray(dataSlice.formal_family_candidates),
     ...cleanStringArray(dataSlice.benchmark_candidates),
     ...cleanStringArray(dataSlice.shadow_candidates),
   ])
-  const benchmarkOnly = listModelUpgradeCandidates('benchmark_only')
-  const shadowChallengers = listModelUpgradeCandidates('shadow_challenger')
-  const eligible = [...benchmarkOnly, ...shadowChallengers]
+  const eligible = listModelUpgradeCandidates('layer3_formal_family_slot')
   if (!requested.size) {
     return wantsModelBenchmark(record)
-      ? benchmarkOnly.map((candidate) => candidate.id)
+      ? eligible.map((candidate) => candidate.id)
       : []
   }
   return eligible
@@ -132,7 +136,7 @@ export function buildResearchEvaluationPlan(record: ResearchExperimentRecord): R
       start_date: startDate,
       end_date: endDate,
       source: 'research_experiment',
-      research_mode: 'model_family_benchmark',
+      research_mode: 'layer3_formal_family_evaluation',
       persist_results: false,
       persist_confirm: false,
     },

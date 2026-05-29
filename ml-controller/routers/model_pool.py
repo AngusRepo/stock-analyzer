@@ -118,9 +118,10 @@ def _model_artifact_path(model_name: str, version: str) -> str:
     if model_name == "MarkovSwitching":
         return f"per_stock_state_space/markov_switching/hyperparams_{version}.json"
     if model_name in {"ResidualMLP", "GNN"}:
-        ext = "joblib" if model_name == "ResidualMLP" else "json"
-        folder = model_name.lower().replace("-", "_")
-        return f"experimental_shadow/{folder}/{version}.{ext}"
+        raise HTTPException(
+            status_code=400,
+            detail=f"{model_name} is not a managed model_pool artifact path; use formal Layer 3 artifact promotion",
+        )
     ext_map = {
         "XGBoost": "joblib",
         "CatBoost": "joblib",
@@ -760,7 +761,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
 
     Reads:
       D1 predictions WHERE
-        model_name IN (8 alpha prediction models + shadow challenger rows)
+        model_name IN (production alpha rows + selected artifact evidence rows)
         AND verified_at IS NOT NULL
         AND prediction business date >= date('now','-7 days')
 
@@ -1289,7 +1290,7 @@ async def promote_check(req: PromoteCheckRequest):
 
             shadow_ab_by_model = load_shadow_ab_by_model(lookback_days=req.shadow_ab_lookback_days)
         except Exception as e:
-            logger.exception("[Stage 4] shadow AB evidence load failed")
+            logger.exception("[Stage 4] version-candidate AB evidence load failed")
             shadow_ab_by_model = {}
             if promotion_gate is None:
                 promotion_gate = {
@@ -1535,9 +1536,13 @@ async def status(bypass_cache: bool = False):
         if not blob.exists():
             return {"status": "not_initialized", "note": "Run POST /model_pool/init first"}
         pool = _json.loads(blob.download_as_text())
-        pool.setdefault("research_benchmarks", build_research_benchmark_manifest(
-            datetime.now(timezone.utc).date().isoformat(),
-        ))
+        formal_slots = (
+            pool.get("formal_layer3_slots")
+            or pool.get("research_benchmarks")
+            or build_research_benchmark_manifest(datetime.now(timezone.utc).date().isoformat())
+        )
+        pool["formal_layer3_slots"] = formal_slots
+        pool.setdefault("research_benchmarks", formal_slots)
         return pool
 
     try:
@@ -1989,6 +1994,11 @@ async def lineage(bypass_cache: bool = False):
                 "challenger": challenger_out,
             }
 
+        formal_slots = (
+            pool.get("formal_layer3_slots")
+            or pool.get("research_benchmarks")
+            or build_research_benchmark_manifest(datetime.now(timezone.utc).date().isoformat())
+        )
         result = {
             "status": "ok",
             "schema_version": pool.get("schema_version"),
@@ -1996,9 +2006,8 @@ async def lineage(bypass_cache: bool = False):
             "models": out,
             "state_overlays": pool.get("state_overlays") or {},
             "meta_optimizers": pool.get("meta_optimizers") or {},
-            "research_benchmarks": pool.get("research_benchmarks") or build_research_benchmark_manifest(
-                datetime.now(timezone.utc).date().isoformat(),
-            ),
+            "formal_layer3_slots": formal_slots,
+            "research_benchmarks": formal_slots,
             "events": (pool.get("lifecycle_events") or [])[-100:],
         }
         if ttl > 0:
@@ -2069,11 +2078,6 @@ async def init_pool(req: InitPoolRequest):
         ("DLinear",         "time_series_learnable",  "time_series", "pt"),
         ("PatchTST",        "time_series_learnable",  "time_series", "pt"),
     ]
-    shadow_managed = [
-        # (name, model_type, balance_family, ext)
-        ("ResidualMLP", "experimental_mlp", "experimental", "joblib"),
-        ("GNN", "experimental_graph", "experimental", "json"),
-    ]
     state_overlays = ["KalmanFilter", "MarkovSwitching"]
     models = {}
     for name, mt, bf, _ext in managed:
@@ -2091,20 +2095,6 @@ async def init_pool(req: InitPoolRequest):
             "weekly_ic": [],
             "ic_4w_avg": None,
             "consecutive_negative_weeks": 0,
-        }
-    shadow_models = {}
-    for name, mt, bf, _ext in shadow_managed:
-        shadow_models[name] = {
-            "status": "challenger",
-            "version": "v1",
-            "gcs_path": _model_artifact_path(name, "v1"),
-            "model_type": mt,
-            "balance_family": bf,
-            "vote_weight": 0.0,
-            "shadow_since": today,
-            "weekly_ic": [],
-            "ic_4w_avg": None,
-            "note": "Experimental alpha challenger; shadow predicts but does not vote.",
         }
     overlays = {}
     for name in state_overlays:
@@ -2133,15 +2123,16 @@ async def init_pool(req: InitPoolRequest):
             "note": "Optimizer layer only; learns policy/search state directly and never votes as a predictor.",
         }
     }
-    research_benchmarks = build_research_benchmark_manifest(today)
+    formal_layer3_slots = build_research_benchmark_manifest(today)
     pool = {
         "schema_version": "1.0",
         "last_updated": iso_now,
         "models": models,
-        "shadow_models": shadow_models,
+        "shadow_models": {},
         "state_overlays": overlays,
         "meta_optimizers": meta_optimizers,
-        "research_benchmarks": research_benchmarks,
+        "formal_layer3_slots": formal_layer3_slots,
+        "research_benchmarks": formal_layer3_slots,
     }
     pool_blob.upload_from_string(
         _json.dumps(pool, indent=2, ensure_ascii=False),
@@ -2151,16 +2142,17 @@ async def init_pool(req: InitPoolRequest):
     return {
         "status": "initialized",
         "model_count": len(models),
-        "shadow_model_count": len(shadow_models),
+        "shadow_model_count": 0,
+        "formal_layer3_slot_count": len(formal_layer3_slots),
         "state_overlay_count": len(overlays),
         "meta_optimizer_count": len(meta_optimizers),
-        "research_benchmark_count": len(research_benchmarks),
+        "research_benchmark_count": len(formal_layer3_slots),
         "last_updated": iso_now,
     }
 
 
 # ---------------------------------------------------------------------------
-# Chronos config marker (foundation model, no weights, just a version stub)
+# Chronos config marker (retired foundation model, historical audit only)
 # ---------------------------------------------------------------------------
 
 
@@ -2174,11 +2166,10 @@ class WriteChronosConfigRequest(BaseModel):
 
 @router.post("/write_chronos_config")
 async def write_chronos_config(req: WriteChronosConfigRequest):
-    """Write Chronos version config to GCS (foundation model, no weights).
+    """Write Chronos version config to GCS (retired foundation model, no weights).
 
-    Stage 1 needs every managed model to have an artifact at its versioned
-    path so model_pool.json entries stay valid. For Chronos the artifact is
-    a config JSON capturing which HuggingFace model_id is in production.
+    This remains for legacy audit snapshots. Chronos is not part of the
+    production alpha vote or evening-chain batch in the screener refactor.
     """
     if not req.confirm:
         raise HTTPException(status_code=400, detail="write_chronos_config requires confirm=true")
@@ -2191,7 +2182,7 @@ async def write_chronos_config(req: WriteChronosConfigRequest):
         "model_id": req.model_id,
         "horizon_default": req.horizon_default,
         "num_samples_default": req.num_samples_default,
-        "strategy": "Chronos-2 production replacement; zero-shot plus optional LoRA member",
+        "strategy": "Chronos-2 retired audit config; not part of alpha vote",
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     path = f"universal/chronos/{req.version}.json"

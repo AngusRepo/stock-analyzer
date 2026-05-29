@@ -70,8 +70,12 @@ export const ALPHA_PREDICTION_MODEL_NAMES = [
   'CatBoost',
   'ExtraTrees',
   'LightGBM',
+  'TabM',
+  'GNN',
   'DLinear',
   'PatchTST',
+  'iTransformer',
+  'TimesFM',
 ] as const
 
 const TRACKED_MODEL_NAMES = [...ALPHA_PREDICTION_MODEL_NAMES]

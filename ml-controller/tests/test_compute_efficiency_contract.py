@@ -560,7 +560,7 @@ def test_build_compute_efficiency_report_from_events_blocks_quality_regression()
     assert report["quality_gates"]["feature_spec_preserved"]["passed"] is False
 
 
-def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_required_stages():
+def test_monthly_stage_timing_flags_runtime_regression_and_preserves_required_stages_without_ft():
     report = build_monthly_retrain_stage_timing_report(
         run_id="monthly-2026-05-17",
         generated_at="2026-05-18T00:00:00Z",
@@ -569,7 +569,6 @@ def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_require
             "optuna_k_sweep": 1014.3,
             "target_permutation": 758.6,
             "signal_sanity_gate": 478.7,
-            "ft_transformer": 862.0,
             "patchtst": 506.2,
             "shap_audit": 288.4,
         },
@@ -578,7 +577,6 @@ def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_require
             "optuna_k_sweep": 1014.3,
             "target_permutation": 758.6,
             "signal_sanity_gate": 478.7,
-            "ft_transformer": 862.0,
             "patchtst": 506.2,
             "shap_audit": 288.4,
         },
@@ -586,7 +584,7 @@ def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_require
 
     assert report["status"] == "warn"
     assert report["severity"] == "warn"
-    assert report["total_sec"] == 8103.0
+    assert report["total_sec"] == 7241.0
     assert report["reason"] == "monthly_retrain_runtime_regression"
     assert "feature_selection" in report["regressed_stages"]
     assert report["missing_required_stages"] == []

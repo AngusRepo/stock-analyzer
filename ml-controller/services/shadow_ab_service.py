@@ -1,4 +1,4 @@
-"""Verified shadow AB evidence for model-pool challenger promotion."""
+"""Verified AB evidence for model-pool version-candidate promotion."""
 
 from __future__ import annotations
 
@@ -87,11 +87,11 @@ def evaluate_shadow_ab_rows(
         ic_lift = challenger_ic - active_ic
         failed: list[str] = []
         if len(triples) < min_samples:
-            failed.append("shadow_min_samples")
+            failed.append("candidate_min_samples")
         if challenger_ic < min_challenger_ic:
-            failed.append("shadow_challenger_ic")
+            failed.append("candidate_ic_floor")
         if ic_lift <= min_ic_lift:
-            failed.append("shadow_ic_lift")
+            failed.append("candidate_ic_lift")
         out[model] = {
             "decision": "PASS" if not failed else "FAIL",
             "failed_gates": failed,

@@ -19,17 +19,19 @@ ALPHA_PREDICTION_MODELS = (
     "PatchTST",
 )
 
-EXPERIMENTAL_SHADOW_MODELS = (
-    "ResidualMLP",
+FORMAL_LAYER3_MODELS = (
+    "TabM",
     "GNN",
+    "iTransformer",
+    "TimesFM",
 )
 
 PRODUCTION_IC_SEGMENTS = {"LISTED", "OTC", "UNKNOWN"}
 
 
 def tracked_model_names() -> tuple[str, ...]:
-    challengers = tuple(f"{name}::challenger" for name in ALPHA_PREDICTION_MODELS + EXPERIMENTAL_SHADOW_MODELS)
-    return ALPHA_PREDICTION_MODELS + challengers
+    version_candidates = tuple(f"{name}::challenger" for name in ALPHA_PREDICTION_MODELS)
+    return ALPHA_PREDICTION_MODELS + FORMAL_LAYER3_MODELS + version_candidates
 
 
 def _as_float(value: Any) -> float | None:
@@ -242,6 +244,8 @@ def apply_weekly_ic_to_pool(
         is_challenger = tracked_name.endswith("::challenger")
         base_name = tracked_name.replace("::challenger", "")
         entry = (pool.get("models") or {}).get(base_name)
+        if not entry and not is_challenger:
+            entry = (pool.get("formal_layer3_slots") or {}).get(base_name)
         if not entry:
             continue
         target = entry.get("challenger") if is_challenger else entry

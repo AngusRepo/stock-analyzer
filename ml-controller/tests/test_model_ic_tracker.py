@@ -10,6 +10,7 @@ from services.model_ic_tracker import (  # noqa: E402
     compute_weekly_ic_from_rows,
     market_segment_from_prediction_row,
     rank_score_from_prediction_row,
+    tracked_model_names,
 )
 
 
@@ -157,6 +158,19 @@ def test_compute_weekly_ic_reports_actionable_root_causes():
     assert result["DLinear"]["diagnostics"]["raw_rows"] == 0
 
 
+def test_tracked_model_names_exclude_retired_shadow_paths_and_include_formal_slots():
+    tracked = tracked_model_names()
+
+    assert "ResidualMLP" not in tracked
+    assert ("ResidualMLP" + "::" + "challenger") not in tracked
+    assert "GNN::challenger" not in tracked
+    assert "TabM" in tracked
+    assert "GNN" in tracked
+    assert "iTransformer" in tracked
+    assert "TimesFM" in tracked
+    assert "XGBoost::challenger" in tracked
+
+
 def test_apply_weekly_ic_updates_active_and_challenger_histories():
     pool = {
         "models": {
@@ -188,6 +202,31 @@ def test_apply_weekly_ic_updates_active_and_challenger_histories():
     assert pool["models"]["XGBoost"]["challenger"]["consecutive_negative_weeks"] == 0
     assert changes["XGBoost"]["score_sources"] == {"forecast_data.rank_score": 10}
     assert changes["XGBoost::challenger"]["history_len"] == 2
+
+
+def test_apply_weekly_ic_updates_formal_layer3_slot_without_shadow_entry():
+    pool = {
+        "models": {},
+        "formal_layer3_slots": {
+            "TabM": {
+                "weekly_ic": [],
+                "ic_4w_avg": None,
+                "consecutive_negative_weeks": 0,
+            }
+        },
+    }
+    per_model_ic = {
+        "TabM": {"ic": 0.07, "n_samples": 64, "score_sources": {"forecast_data.rank_score": 64}},
+        "GNN::challenger": {"ic": 0.2, "n_samples": 64},
+    }
+
+    changes, changed = apply_weekly_ic_to_pool(pool, per_model_ic, history_max=26)
+
+    assert changed is True
+    assert pool["formal_layer3_slots"]["TabM"]["weekly_ic"] == [0.07]
+    assert pool["formal_layer3_slots"]["TabM"]["ic_4w_avg"] == 0.07
+    assert "TabM" in changes
+    assert "GNN::challenger" not in changes
 
 
 def test_apply_weekly_ic_records_sample_diagnostics_even_when_insufficient():

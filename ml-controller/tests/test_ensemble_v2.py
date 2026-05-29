@@ -44,7 +44,8 @@ def test_ensemble_v2_caps_correlated_tree_family_before_sequence_vote():
         },
         "dlinear": {"forecast_pct": -0.08},
         "patchtst": {"forecast_pct": -0.08},
-        "chronos": {"forecast_pct": 0.50},
+        "itransformer": {"forecast_pct": -0.08},
+        "timesfm": {"forecast_pct": -0.02},
     }
 
     attach_ensemble_v2(
@@ -56,7 +57,8 @@ def test_ensemble_v2_caps_correlated_tree_family_before_sequence_vote():
             "LightGBM": "active",
             "DLinear": "active",
             "PatchTST": "active",
-            "Chronos": "active",
+            "iTransformer": "active",
+            "TimesFM": "active",
         },
         ic_weights={
             "XGBoost": 0.03,
@@ -65,17 +67,20 @@ def test_ensemble_v2_caps_correlated_tree_family_before_sequence_vote():
             "LightGBM": 0.03,
             "DLinear": 0.03,
             "PatchTST": 0.03,
-            "Chronos": 0.03,
+            "iTransformer": 0.03,
+            "TimesFM": 0.03,
         },
         degraded_dampening=1.0,
     )
 
     ev2 = pred["ensemble_v2"]
-    assert "Chronos" not in ev2["contributing_models"]
+    assert "iTransformer" in ev2["contributing_models"]
+    assert "TimesFM" in ev2["contributing_models"]
     assert set(ev2["family_vote"]["contributing_families"]) == {
         "tree_tabular",
         "sequence_baseline",
         "learned_sequence",
+        "foundation_sequence",
     }
     assert ev2["avg_rank"] < 0.75
 

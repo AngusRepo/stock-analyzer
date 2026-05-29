@@ -269,11 +269,11 @@ async def research_portfolio_allocation_dry_run(req: PortfolioAllocationBenchmar
 
 @router.post("/research/online-portfolio-bandit/l2-dry-run")
 async def research_online_portfolio_bandit_l2_dry_run(req: OnlinePortfolioBanditL2Request):
-    """Run L2 paper-active OPB controller without production mutation."""
+    """Run OPB allocator-controller evidence packet without production mutation."""
     if req.mutation_allowed or req.persist_results or req.confirm:
-        raise HTTPException(status_code=400, detail="OnlinePortfolioBandit L2 cannot mutate production state")
+        raise HTTPException(status_code=400, detail="OnlinePortfolioBandit dry-run cannot mutate production state")
     if req.dry_run is False:
-        raise HTTPException(status_code=400, detail="OnlinePortfolioBandit promotion requires paper-active approval gate")
+        raise HTTPException(status_code=400, detail="OnlinePortfolioBandit knob-policy change requires reviewed approval gate")
     return build_online_portfolio_bandit_l2_packet(
         candidates=req.candidates,
         return_history=req.return_history,

@@ -8,8 +8,8 @@ import {
 
 export type MetaLearningTrackStage =
   | 'production_baseline'
-  | 'shadow_challenger'
-  | 'l2_paper_active'
+  | 'counterfactual_audit'
+  | 'production_controller'
   | 'strategy_research'
   | 'research_only'
 
@@ -36,8 +36,8 @@ export interface MetaLearningTrack {
   }
   decision_queue_status:
     | 'production_baseline_needs_evidence'
-    | 'run_shadow'
-    | 'run_l2_paper_active'
+    | 'run_counterfactual_audit'
+    | 'controller_evidence_active'
     | 'needs_experiment_registry'
     | 'research_only'
   can_influence_production: boolean
@@ -100,60 +100,60 @@ const TRACKS: readonly Omit<MetaLearningTrack, 'registered_experiment_ids'>[] = 
   },
   {
     id: 'NeuralUCB',
-    stage: 'shadow_challenger',
-    role: 'nonlinear shadow meta-router to compare against LinUCB without changing production decisions',
+    stage: 'counterfactual_audit',
+    role: 'nonlinear counterfactual meta-router to compare against LinUCB without changing production decisions',
     learning_targets: ['model_family_weights', 'alpha_bucket_weights', 'threshold_delta', 'regime_exploration'],
-    required_evidence: ['shadow_decisions', 'counterfactual_rewards', 'replay_simulation', 'regime_slice', 'pbo'],
+    required_evidence: ['counterfactual_decisions', 'counterfactual_rewards', 'replay_simulation', 'regime_slice', 'pbo'],
     experiment_template: {
-      hypothesis: 'Run NeuralUCB as a shadow meta-router beside LinUCB and compare counterfactual model weights, threshold deltas and regime-sliced reward.',
-      sourceRefs: ['p9-neuralucb-shadow', 'meta_shadow_decisions'],
-      strategySpecIds: ['meta_router_neuralucb_shadow_v1'],
+      hypothesis: 'Run NeuralUCB as a counterfactual meta-router beside LinUCB and compare model weights, threshold deltas and regime-sliced reward.',
+      sourceRefs: ['p9-neuralucb-counterfactual', 'meta_shadow_decisions'],
+      strategySpecIds: ['meta_router_neuralucb_counterfactual_v1'],
       dataSlice: { start_date: '2026-04-01', lane: 'tradable', regime: 'bull|sideways|volatile' },
       metrics: ['counterfactual_reward', 'regime_slice_reward', 'pbo', 'drawdown_slice', 'decision_disagreement_rate'],
-      followUp: ['write shadow decisions', 'compare against LinUCB reward ledger', 'keep production unchanged'],
+      followUp: ['write counterfactual decisions', 'compare against LinUCB reward ledger', 'keep production unchanged'],
     },
-    decision_queue_status: 'run_shadow',
+    decision_queue_status: 'run_counterfactual_audit',
     can_influence_production: false,
     can_vote_alpha: false,
-    next_action: 'run shadow decisions beside LinUCB and compare counterfactual reward distribution',
+    next_action: 'run counterfactual decisions beside LinUCB and compare reward distribution',
   },
   {
     id: 'NeuralTS',
-    stage: 'shadow_challenger',
-    role: 'Thompson sampling shadow challenger used to audit whether NeuralUCB is too optimistic',
+    stage: 'counterfactual_audit',
+    role: 'Thompson sampling counterfactual audit used to check whether NeuralUCB is too optimistic',
     learning_targets: ['model_family_weights', 'threshold_delta', 'uncertainty_calibration'],
-    required_evidence: ['shadow_decisions', 'posterior_uncertainty', 'counterfactual_rewards', 'replay_simulation', 'drawdown_slice'],
+    required_evidence: ['counterfactual_decisions', 'posterior_uncertainty', 'counterfactual_rewards', 'replay_simulation', 'drawdown_slice'],
     experiment_template: {
-      hypothesis: 'Run Neural Thompson Sampling as a second shadow policy to test uncertainty calibration and prevent over-optimistic NeuralUCB exploration.',
-      sourceRefs: ['p9-neuralts-shadow', 'meta_shadow_decisions'],
-      strategySpecIds: ['meta_router_neuralts_shadow_v1'],
+      hypothesis: 'Run Neural Thompson Sampling as a second counterfactual policy to test uncertainty calibration and prevent over-optimistic NeuralUCB exploration.',
+      sourceRefs: ['p9-neuralts-counterfactual', 'meta_shadow_decisions'],
+      strategySpecIds: ['meta_router_neuralts_counterfactual_v1'],
       dataSlice: { start_date: '2026-04-01', lane: 'tradable', uncertainty_bucket: 'all' },
       metrics: ['counterfactual_reward', 'posterior_uncertainty', 'calibration_error', 'drawdown_slice', 'decision_disagreement_rate'],
-      followUp: ['write shadow decisions', 'compare NeuralTS vs NeuralUCB disagreement', 'keep production unchanged'],
+      followUp: ['write counterfactual decisions', 'compare NeuralTS vs NeuralUCB disagreement', 'keep production unchanged'],
     },
-    decision_queue_status: 'run_shadow',
+    decision_queue_status: 'run_counterfactual_audit',
     can_influence_production: false,
     can_vote_alpha: false,
-    next_action: 'run second shadow policy and require disagreement/evidence report before any promotion proposal',
+    next_action: 'run second counterfactual policy and require disagreement/evidence report before any promotion proposal',
   },
   {
     id: 'OnlinePortfolioBandit',
-    stage: 'l2_paper_active',
+    stage: 'production_controller',
     role: 'warm-start constrained UCB controller for allocator knobs; sparse_tangent_inverse_risk remains the final weight engine',
     learning_targets: ['candidate_count', 'max_weight', 'cash_buffer', 'min_trade_weight', 'turnover_budget', 'portfolio_risk_budget'],
     required_evidence: ['strategy_lab_experiment', 'warm_start_reward_ledger', 'paper_live_parity', 'slippage_model', 'partial_fill_replay', 'portfolio_drawdown'],
     experiment_template: {
-      hypothesis: 'Run OnlinePortfolioBandit as L2 paper-active allocator controller and compare warm-start constrained UCB knob choices against has_buy_signal slot3 cash baseline.',
+      hypothesis: 'Run OnlinePortfolioBandit as sparse_tangent_inverse_risk allocator controller and compare warm-start constrained UCB knob choices against the approved allocation baseline.',
       sourceRefs: ['p9-online-portfolio-bandit', 'execution_realism_v1', 'sparse_tangent_inverse_risk'],
-      strategySpecIds: ['portfolio_bandit_l2_paper_active_v1'],
-      dataSlice: { start_date: '2026-04-01', lane: 'paper_active', execution_model: 'paper_realism_v2' },
+      strategySpecIds: ['portfolio_bandit_allocator_controller_v1'],
+      dataSlice: { start_date: '2026-04-01', lane: 'production_controller', execution_model: 'paper_realism_v2' },
       metrics: ['portfolio_return', 'mdd', 'turnover', 'slippage_sensitivity', 'partial_fill_replay', 'capital_utilization', 'baseline_delta'],
-      followUp: ['persist warm-start reward ledger', 'write paper-active attribution', 'do not route production capital without Wei approval'],
+      followUp: ['persist warm-start reward ledger', 'write allocator-controller attribution', 'do not change production knobs without Wei approval'],
     },
-    decision_queue_status: 'run_l2_paper_active',
-    can_influence_production: false,
+    decision_queue_status: 'controller_evidence_active',
+    can_influence_production: true,
     can_vote_alpha: false,
-    next_action: 'run L2 paper-active replay/controller beside production baseline; production remains unchanged',
+    next_action: 'use as allocator knob controller only; sparse_tangent_inverse_risk remains the final weight engine and knob-policy changes require evidence',
   },
   {
     id: 'NeuCB',
@@ -162,7 +162,7 @@ const TRACKS: readonly Omit<MetaLearningTrack, 'registered_experiment_ids'>[] = 
     learning_targets: ['nonlinear_context_embedding', 'model_family_weights', 'exploration_policy'],
     required_evidence: ['strategy_lab_experiment', 'benchmark_report', 'oos_reward', 'pbo', 'cost_profile'],
     experiment_template: {
-      hypothesis: 'Benchmark NeuCB as a research-only neural contextual bandit against LinUCB, NeuralUCB shadow and NeuralTS shadow on OOS reward and cost.',
+      hypothesis: 'Benchmark NeuCB as a research-only neural contextual bandit against LinUCB plus NeuralUCB/NeuralTS counterfactual audits on OOS reward and cost.',
       sourceRefs: ['p9-neucb-research', 'strategy_lab_benchmark'],
       strategySpecIds: ['neucb_research_benchmark_v1'],
       dataSlice: { start_date: '2026-04-01', lane: 'all', context_family: 'expanded_meta_context' },
@@ -172,7 +172,7 @@ const TRACKS: readonly Omit<MetaLearningTrack, 'registered_experiment_ids'>[] = 
     decision_queue_status: 'research_only',
     can_influence_production: false,
     can_vote_alpha: false,
-    next_action: 'keep research-only until benchmark report proves it improves LinUCB/NeuralUCB shadow results',
+    next_action: 'keep research-only until benchmark report proves it improves LinUCB and counterfactual-audit results',
   },
 ] as const
 
@@ -221,7 +221,7 @@ export function buildMetaLearningDecisionPacket(experiments: ResearchExperimentR
   const tracks = listMetaLearningTracks(experiments)
   const lines = [
     `Meta learning research track: ${META_LEARNING_TRACK_VERSION}`,
-    'Rules: LinUCB remains the interpretable production baseline; NeuralUCB and NeuralTS are shadow challengers; OnlinePortfolioBandit is L2 paper-active only; NeuCB stays research-only.',
+    'Rules: LinUCB remains the interpretable meta baseline; NeuralUCB and NeuralTS are counterfactual audits; OnlinePortfolioBandit controls allocator knobs with evidence and approval gates; NeuCB stays research-only.',
   ]
   for (const track of tracks) {
     lines.push(`${track.id}: stage=${track.stage}, status=${track.decision_queue_status}, experiments=${track.registered_experiment_ids.join(',') || 'none'}`)
@@ -251,7 +251,7 @@ export async function ensureMetaLearningResearchRegistry(
     if ((existingByTrack.get(track.id) ?? []).length > 0) continue
     const normalized = normalizeResearchExperimentInput({
       id: `meta-${track.id.toLowerCase()}-${META_LEARNING_TRACK_VERSION}`,
-      status: track.stage === 'production_baseline' || track.stage === 'shadow_challenger' || track.stage === 'l2_paper_active'
+      status: track.stage === 'production_baseline' || track.stage === 'counterfactual_audit' || track.stage === 'production_controller'
         ? 'running'
         : 'queued',
       hypothesis: track.experiment_template.hypothesis,
@@ -309,7 +309,7 @@ export function buildMetaLearningEvidenceMatrix(
         : 'not_applicable'
 
     const shadowStatus: MetaLearningEvidenceMatrixRow['shadow_status'] =
-      track.stage === 'shadow_challenger'
+      track.stage === 'counterfactual_audit'
         ? shadowSamples >= 30 ? 'ready' : shadowSamples > 0 ? 'partial' : 'missing'
         : 'not_applicable'
 
@@ -317,9 +317,9 @@ export function buildMetaLearningEvidenceMatrix(
     const evidenceStatus: MetaLearningEvidenceMatrixRow['evidence_status'] =
       track.stage === 'production_baseline'
         ? rewardLedgerStatus === 'ready' ? 'ready' : 'missing'
-        : track.stage === 'shadow_challenger'
+        : track.stage === 'counterfactual_audit'
           ? shadowStatus === 'ready' && hasResearchEvidence ? 'ready' : shadowStatus !== 'missing' || hasResearchEvidence ? 'partial' : 'missing'
-          : track.stage === 'l2_paper_active'
+          : track.stage === 'production_controller'
             ? rewardLedgerStatus === 'ready' && hasResearchEvidence ? 'ready' : rewardLedgerStatus === 'ready' || hasResearchEvidence ? 'partial' : 'missing'
           : hasResearchEvidence ? 'partial' : 'missing'
 
@@ -406,7 +406,11 @@ export function validateMetaLearningTrack(): { ok: boolean; errors: string[] } {
     if (seen.has(track.id)) errors.push(`duplicate_track:${track.id}`)
     seen.add(track.id)
     if (track.can_vote_alpha !== false) errors.push(`meta_track_can_vote_alpha:${track.id}`)
-    if (track.stage !== 'production_baseline' && track.can_influence_production) {
+    if (
+      track.stage !== 'production_baseline'
+      && !(track.id === 'OnlinePortfolioBandit' && track.stage === 'production_controller')
+      && track.can_influence_production
+    ) {
       errors.push(`non_baseline_can_influence_production:${track.id}`)
     }
     if (track.stage === 'production_baseline' && track.id !== 'LinUCB') {

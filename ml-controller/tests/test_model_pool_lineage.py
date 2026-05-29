@@ -2,13 +2,42 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+if "httpx" not in sys.modules:
+    httpx_stub = types.ModuleType("httpx")
+    httpx_stub.RequestError = RuntimeError
+
+    class AsyncClient:  # pragma: no cover - lineage tests do not use real HTTP.
+        pass
+
+    httpx_stub.AsyncClient = AsyncClient
+    sys.modules["httpx"] = httpx_stub
+
+if "google.cloud.storage" not in sys.modules:
+    google_stub = sys.modules.setdefault("google", types.ModuleType("google"))
+    cloud_stub = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
+    storage_stub = types.ModuleType("google.cloud.storage")
+
+    class Client:  # pragma: no cover - tests monkeypatch this client.
+        pass
+
+    storage_stub.Client = Client
+    cloud_stub.storage = storage_stub
+    google_stub.cloud = cloud_stub
+    sys.modules["google.cloud.storage"] = storage_stub
+
 from routers import model_pool  # noqa: E402
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +82,7 @@ class _FakeStorageClient:
         return self._bucket
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
     pool = {
         "schema_version": "1.0",
@@ -116,18 +145,20 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
     assert model["challenger"]["metadata_exists"] is True
     assert model["challenger"]["last_ic_root_cause"] == "ok"
     assert model["challenger"]["last_ic_sample_count"] == 88
+    assert set(result["formal_layer3_slots"]) == {"TabM", "GNN", "iTransformer", "TimesFM"}
+    assert result["research_benchmarks"] == result["formal_layer3_slots"]
     assert result["events"] == [{"model": "XGBoost", "transition": "register"}]
 
 
-@pytest.mark.asyncio
-async def test_lineage_marks_ft_transformer_artifact_mismatch(monkeypatch):
+@pytest.mark.anyio
+async def test_lineage_marks_tabm_artifact_mismatch(monkeypatch):
     pool = {
         "schema_version": "1.0",
         "models": {
-            "FT-Transformer": {
+            "TabM": {
                 "status": "active",
                 "version": "v1",
-                "gcs_path": "universal/ft_transformer/v1.joblib",
+                "gcs_path": "universal/tabm/v1.joblib",
                 "model_type": "feature",
                 "balance_family": "feature",
                 "weekly_ic": [],
@@ -147,13 +178,13 @@ async def test_lineage_marks_ft_transformer_artifact_mismatch(monkeypatch):
 
     result = await model_pool.lineage()
 
-    diagnosis = result["models"]["FT-Transformer"]["lifecycle_diagnosis"]
+    diagnosis = result["models"]["TabM"]["lifecycle_diagnosis"]
     assert diagnosis["status"] == "artifact_mismatch"
     assert "metadata_missing" in diagnosis["blockers"]
     assert "prediction_missing" in diagnosis["blockers"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_lineage_marks_verification_missing_as_actionable_root_cause(monkeypatch):
     pool = {
         "schema_version": "1.0",
@@ -195,7 +226,7 @@ async def test_lineage_marks_verification_missing_as_actionable_root_cause(monke
     assert "verify-v2" in diagnosis["reason"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_lineage_preserves_artifact_diff_metadata(monkeypatch):
     pool = {
         "schema_version": "1.0",
@@ -256,7 +287,7 @@ async def test_lineage_preserves_artifact_diff_metadata(monkeypatch):
     assert model["challenger"]["metadata"]["sequence_report"]["oos_windows"] == 130
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_lineage_reuses_short_ttl_read_cache(monkeypatch):
     pool = {
         "schema_version": "1.0",
@@ -295,7 +326,7 @@ async def test_lineage_reuses_short_ttl_read_cache(monkeypatch):
     assert bucket.downloads["universal/xgboost/metadata_v1.json"] == 2
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_artifact_registry_read_cache_reuses_query_and_invalidates(monkeypatch):
     calls = {"count": 0}
 

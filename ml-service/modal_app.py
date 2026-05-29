@@ -3502,7 +3502,7 @@ def state_space_universal_predict(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "state_space_universal_predict"}
 
 
-# 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
+# 2026-04-19 ML_POOL Stage 0.1: retired Chronos diagnostic batch predictor
 @app.function(
     cpu=2,
     memory=8192,              # Chronos-2 production baseline

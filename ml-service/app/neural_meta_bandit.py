@@ -1,4 +1,4 @@
-"""Neural meta-bandit shadow challengers for LinUCB.
+"""Neural meta-bandit counterfactual audits for LinUCB.
 
 These policies are not alpha models and must not vote in production. They train
 on expanded meta context + arm reward evidence and emit shadow decisions for

@@ -39,6 +39,8 @@ from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
 from services.state_space_series import build_state_space_series_from_payloads
 from services.recommendation_service import (
+    apply_core_ml_gate,
+    build_return_history_from_payloads,
     filter_and_score_recommendations,
     hybrid_ranking_promotion,
     load_fundamental_quality_by_symbol,
@@ -268,25 +270,99 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     if not payloads:
         return {"predictions": {}}
 
-    # Build shared close-price series once for time-series predictors.
-    chronos_series = build_state_space_series_from_payloads(payloads)
-
-    # Parallel: alpha predictors + state overlays.
-    # Kalman/Markov are state overlays only; they do not enter alpha challenger.
+    # Layer 2 runs cheap feature models first. Heavy sequence/state-space work
+    # only runs on the Layer 3 core shortlist selected from coarse rank scores.
     model_status, active_versions, challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
 
-    feat_task = batch_predict(payloads)
-    chronos_task = _skip_batch("Chronos retired from alpha vote and production evening-chain batch")
+    results = await batch_predict(payloads)
+    if isinstance(results, BaseException):
+        logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
+        return {"predictions": {}}
+
+    def _coarse_model_score(row: dict) -> float:
+        rank_scores = row.get("rank_scores") if isinstance(row.get("rank_scores"), dict) else {}
+        values: list[float] = []
+        for model_name in ("LightGBM", "XGBoost", "ExtraTrees"):
+            try:
+                value = float(rank_scores.get(model_name))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                values.append(value)
+        if values:
+            return sum(values) / len(values)
+        try:
+            confidence = float(row.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return max(0.0, min(1.0, confidence))
+
+    def _core_ml_target_size() -> int:
+        trading_cfg = state.get("trading_config") or {}
+        screener_cfg = trading_cfg.get("screener") if isinstance(trading_cfg.get("screener"), dict) else {}
+        raw = screener_cfg.get("mlShortlistSize", screener_cfg.get("ml_shortlist_size", 35))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 35
+        return max(15, min(80, value))
+
+    feature_by_symbol_for_gate = {
+        str(row.get("symbol")): row
+        for row in results
+        if isinstance(row, dict) and row.get("symbol") and not row.get("error")
+    }
+    core_target_size = _core_ml_target_size()
+    coarse_ranked = sorted(
+        (
+            {
+                "symbol": str(payload.get("symbol")),
+                "payload": payload,
+                "feature": feature_by_symbol_for_gate.get(str(payload.get("symbol"))) or {},
+            }
+            for payload in payloads
+            if payload.get("symbol")
+        ),
+        key=lambda item: _coarse_model_score(item["feature"]),
+        reverse=True,
+    )
+    selected_core_symbols = {
+        row["symbol"]
+        for row in coarse_ranked[: min(core_target_size, len(coarse_ranked))]
+    }
+    core_ml_gate_by_symbol = {
+        row["symbol"]: {
+            "schema_version": "core-ml-gate-v1",
+            "selected": row["symbol"] in selected_core_symbols,
+            "rank": index + 1,
+            "target_size": core_target_size,
+            "source": "LightGBM+XGBoost+ExtraTrees",
+            "coarse_score": round(_coarse_model_score(row["feature"]), 6),
+            "coarse_models": ["LightGBM", "XGBoost", "ExtraTrees"],
+        }
+        for index, row in enumerate(coarse_ranked)
+    }
+    core_payloads = [
+        payload for payload in payloads
+        if str(payload.get("symbol")) in selected_core_symbols
+    ]
+    sequence_series = build_state_space_series_from_payloads(core_payloads)
+    logger.info(
+        "[Pipeline V2] Layer2 coarse ML gate selected "
+        f"{len(core_payloads)}/{len(payloads)} core payloads "
+        f"(target={core_target_size}, models=LightGBM/XGBoost/ExtraTrees)"
+    )
+
     dlinear_task = (
-        modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
+        modal_client.dlinear_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
         if model_status.get("DLinear", "active") in ("active", "degraded")
         else _skip_batch("DLinear retired by model_pool")
     )
     patchtst_task = (
-        modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version=active_versions.get("PatchTST", "v1"))
+        modal_client.patchtst_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("PatchTST", "v1"))
         if model_status.get("PatchTST", "active") in ("active", "degraded")
         else _skip_batch("PatchTST retired by model_pool")
     )
@@ -306,7 +382,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             try:
                 spawn_info = await asyncio.to_thread(
                     modal_client.spawn_state_space_overlays_batch_predict,
-                    chronos_series,
+                    sequence_series,
                     horizon=5,
                     version_by_model=state_space_models,
                 )
@@ -316,33 +392,29 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 logger.warning(f"[Pipeline V2] State-space overlays shadow spawn failed: {exc}")
                 return {"error": f"state-space overlays shadow spawn failed: {exc}", "results": []}
         return await modal_client.state_space_overlays_batch_predict(
-            chronos_series,
+            sequence_series,
             horizon=5,
             version_by_model=state_space_models,
         )
 
     state_space_task = _shadow_state_space_overlays()
     dlinear_ch_task = (
-        modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["DLinear"])
+        modal_client.dlinear_batch_predict(sequence_series, horizon_used=5, version=challenger_versions["DLinear"])
         if challenger_versions.get("DLinear")
         else _skip_batch("DLinear challenger absent")
     )
     patchtst_ch_task = (
-        modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["PatchTST"])
+        modal_client.patchtst_batch_predict(sequence_series, horizon_used=5, version=challenger_versions["PatchTST"])
         if challenger_versions.get("PatchTST")
         else _skip_batch("PatchTST challenger absent")
     )
     (
-        results,
-        chronos_raw,
         dlinear_raw,
         patchtst_raw,
         state_space_raw,
         dlinear_ch_raw,
         patchtst_ch_raw,
     ) = await asyncio.gather(
-        feat_task,
-        chronos_task,
         dlinear_task,
         patchtst_task,
         state_space_task,
@@ -351,28 +423,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         return_exceptions=True,
     )
 
-    # Guard against Chronos total failure (don't let it block feature preds)
-    chronos_map: dict[str, dict] = {}
-    chronos_errors: list[str] = []
-    if isinstance(chronos_raw, BaseException):
-        logger.warning(f"[Pipeline V2] Chronos batch failed entirely: {chronos_raw} — skipping Chronos layer")
-        chronos_errors.append(f"{type(chronos_raw).__name__}: {chronos_raw}")
-    elif isinstance(chronos_raw, dict) and not chronos_raw.get("error"):
-        for cr in chronos_raw.get("results") or []:
-            sym = cr.get("symbol")
-            if sym and not cr.get("error"):
-                chronos_map[sym] = cr
-            elif sym:
-                chronos_errors.append(f"{sym}: {cr.get('error', 'unknown_error')}")
-        logger.info(
-            f"[Pipeline V2] Chronos universal: {len(chronos_map)}/{len(chronos_series)} succeeded"
-        )
-    elif isinstance(chronos_raw, dict) and chronos_raw.get("results") == []:
-        logger.debug(f"[Pipeline V2] Chronos skipped: {chronos_raw.get('error')}")
-        chronos_errors.append(str(chronos_raw.get("error") or "empty_results"))
-    else:
-        logger.warning(f"[Pipeline V2] Chronos batch returned error: {chronos_raw}")
-        chronos_errors.append(str(chronos_raw))
     # Guard against DLinear total failure (Stage 0.2 — may have no trained weights yet)
     dlinear_map: dict[str, dict] = {}
     if isinstance(dlinear_raw, BaseException):
@@ -384,7 +434,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 dlinear_map[sym] = dr
         if dlinear_map:
             logger.info(
-                f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(chronos_series)} succeeded"
+                f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series)} succeeded"
             )
         else:
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
@@ -404,7 +454,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 patchtst_map[sym] = pr
         if patchtst_map:
             logger.info(
-                f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(chronos_series)} succeeded"
+                f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series)} succeeded"
             )
         else:
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
@@ -449,7 +499,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                         fallback_count += 1
                         if reason:
                             fallback_reasons[str(reason)] = fallback_reasons.get(str(reason), 0) + 1
-            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded fallback={fallback_count}"
+            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(sequence_series)} succeeded fallback={fallback_count}"
             if fallback_count:
                 logger.warning(f"{log_msg} reasons={fallback_reasons}")
             else:
@@ -476,8 +526,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
 
-    dlinear_ch_map = _drain_ts_result(dlinear_ch_raw, "DLinear::challenger", chronos_series)
-    patchtst_ch_map = _drain_ts_result(patchtst_ch_raw, "PatchTST::challenger", chronos_series)
+    dlinear_ch_map = _drain_ts_result(dlinear_ch_raw, "DLinear::challenger", sequence_series)
+    patchtst_ch_map = _drain_ts_result(patchtst_ch_raw, "PatchTST::challenger", sequence_series)
 
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
@@ -485,8 +535,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         return {"predictions": {}}
 
     def _attach_alt_sources(row: dict, sym: str) -> None:
-        if sym in chronos_map:
-            row["chronos"] = chronos_map[sym]
         if sym in dlinear_map:
             row["dlinear"] = dlinear_map[sym]
         if sym in patchtst_map:
@@ -496,7 +544,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym in markov_map:
             row["markov_switching"] = markov_map[sym]
 
-    def _attach_challenger_shadow(row: dict, sym: str) -> None:
+    def _attach_version_candidate_scores(row: dict, sym: str) -> None:
         challenger_scores = row.setdefault("challenger_rank_scores", {})
         if sym in dlinear_ch_map and dlinear_ch_map[sym].get("forecast_pct") is not None:
             challenger_scores["DLinear"] = _ts_to_rank(float(dlinear_ch_map[sym]["forecast_pct"]))
@@ -596,8 +644,15 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             alt_fallback_count += 1
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
+        row["core_ml_gate"] = core_ml_gate_by_symbol.get(sym, {
+            "schema_version": "core-ml-gate-v1",
+            "selected": False,
+            "rank": None,
+            "target_size": core_target_size,
+            "source": "LightGBM+XGBoost+ExtraTrees",
+        })
         _attach_alt_sources(row, sym)
-        _attach_challenger_shadow(row, sym)
+        _attach_version_candidate_scores(row, sym)
         pred_map[sym] = row
 
     degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
@@ -615,17 +670,17 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         logger.warning(f"[Pipeline V2] Feature batch returned {error_count} row errors; sample={sample_errors}")
     logger.info(
         f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
-        f"{error_count} errors, chronos={sum(1 for v in pred_map.values() if 'chronos' in v)}, "
+        f"{error_count} errors, "
         f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
         f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}, "
         f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
         f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
         f"alt_fallback={alt_fallback_count}, "
         f"pool_versions={'ok' if pool_versions_loaded else 'fallback'}, "
-        f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
+        f"version_candidate_scores={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
-    # ── A: ML_POOL ensemble merge (8 alpha models with lifecycle) ──
+    # ── A: ML_POOL ensemble merge (formal alpha slots with lifecycle) ──
     # 2026-05-06: IC is lane-aware and empirical-Bayes shrunk before serving.
     # Short-sample negative IC no longer hard-zeros a model; confirmed negative
     # IC plus failed validation still fail-closed.
@@ -1504,6 +1559,14 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy=alpha_policy,
         fundamental_quality_by_symbol=fundamental_quality_by_symbol,
     )
+    screener_cfg = trading_cfg.get("screener", {}) if isinstance(trading_cfg.get("screener"), dict) else {}
+    core_ml_target_size = int(screener_cfg.get("mlShortlistSize") or screener_cfg.get("ml_shortlist_size") or 35)
+    final = apply_core_ml_gate(
+        final,
+        state["predictions"],
+        fallback_size=core_ml_target_size,
+    )
+    return_history = build_return_history_from_payloads(state["payloads"])
 
     # Hybrid ranking from KV trading:config.ranking
     ranking_cfg = trading_cfg.get("ranking", {"enabled": True, "topK": 3,
@@ -1517,6 +1580,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         regime_label=regime_label,
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
+        return_history=return_history,
     )
     for row in final:
         allocation = row.get("alpha_allocation")

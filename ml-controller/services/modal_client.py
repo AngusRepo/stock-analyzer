@@ -988,7 +988,7 @@ def _spawn_wf_tree_window(payload: dict):
     return fn.spawn(payload)
 
 
-# 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
+# 2026-04-19 ML_POOL Stage 0.1: retired Chronos diagnostic batch predictor
 async def _modal_chronos_universal_predict(payload: dict) -> dict:
     return await _modal_remote_call("chronos_universal_predict", payload)
 

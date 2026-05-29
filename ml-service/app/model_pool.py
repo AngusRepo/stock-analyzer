@@ -39,12 +39,13 @@ Schema (model_pool.json):
   }
 }
 
-6 active alpha prediction models in v1 bootstrap:
+Current bootstrap:
   Feature family (4):
     XGBoost / CatBoost / ExtraTrees / LightGBM
   Time-series family (2):
-    Chronos (foundation, no weights — version is a config marker)
     DLinear / PatchTST (learnable)
+  Formal Layer 3 slots pending artifact promotion:
+    TabM / GNN / iTransformer / TimesFM
 
 Chronos remains a legacy managed artifact/diagnostic runtime, but it is retired
 from production alpha vote and the evening-chain batch path.
@@ -83,10 +84,7 @@ STATE_SPACE_OVERLAY_MODELS = (
     "MarkovSwitching",
 )
 
-EXPERIMENTAL_CHALLENGER_MODELS = {
-    "ResidualMLP": ("tabular_neural_shadow", "experimental", "joblib"),
-    "GNN": ("cross_stock_graph_shadow", "experimental", "json"),
-}
+EXPERIMENTAL_CHALLENGER_MODELS: dict[str, tuple[str, str, str]] = {}
 
 META_OPTIMIZERS = {
     "GAOptimizer": {
@@ -97,44 +95,45 @@ META_OPTIMIZERS = {
     },
 }
 
-RESEARCH_BENCHMARK_MODELS = {
+FORMAL_LAYER3_PENDING_MODELS = {
     "TabM": {
-        "status": "benchmark_only",
-        "model_type": "tabular_deep_learning",
-        "family": "tabular",
+        "status": "formal_slot_pending_artifact",
+        "model_type": "tabular_neural",
+        "family": "tabular_neural",
         "direct_prediction": False,
         "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["feature_policy", "walk_forward", "pbo", "cost_profile"],
+        "promotion_state": "artifact_required",
+        "evidence_required": ["artifact_manifest", "feature_policy", "walk_forward", "pbo", "cpcv", "cost_profile"],
+    },
+    "GNN": {
+        "status": "formal_slot_pending_artifact",
+        "model_type": "cross_stock_graph",
+        "family": "graph",
+        "direct_prediction": False,
+        "vote_weight": 0.0,
+        "promotion_state": "artifact_required",
+        "evidence_required": ["graph_spec", "leakage_controls", "artifact_manifest", "walk_forward", "pbo", "cpcv"],
     },
     "iTransformer": {
-        "status": "benchmark_only",
+        "status": "formal_slot_pending_artifact",
         "model_type": "time_series_transformer",
         "family": "time_series",
         "direct_prediction": False,
         "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["sequence_policy", "walk_forward", "pbo", "cost_profile"],
+        "promotion_state": "artifact_required",
+        "evidence_required": ["sequence_policy", "artifact_manifest", "walk_forward", "pbo", "cpcv", "cost_profile"],
     },
     "TimesFM": {
-        "status": "benchmark_only",
+        "status": "formal_slot_pending_artifact",
         "model_type": "foundation_time_series",
         "family": "time_series",
         "direct_prediction": False,
         "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
-    },
-    "Moirai": {
-        "status": "benchmark_only",
-        "model_type": "foundation_time_series",
-        "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
+        "promotion_state": "artifact_required",
+        "evidence_required": ["forecast_validation", "artifact_manifest", "walk_forward", "pbo", "cost_profile"],
     },
 }
+RESEARCH_BENCHMARK_MODELS = FORMAL_LAYER3_PENDING_MODELS
 
 # Active alpha prediction models plus legacy managed artifacts.
 # State-space overlays and meta optimizers live in separate namespaces below.
@@ -182,10 +181,6 @@ def gcs_path_for(model_name: str, version: str) -> str:
     if model_name in DEFAULT_STATE_SPACE_HYPERPARAMS:
         folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
         return f"{GCS_STATE_SPACE_PREFIX}/{folder}/hyperparams_{version}.json"
-    if model_name in EXPERIMENTAL_CHALLENGER_MODELS:
-        _model_type, _family, ext = EXPERIMENTAL_CHALLENGER_MODELS[model_name]
-        folder = model_name.lower().replace("-", "_")
-        return f"experimental_shadow/{folder}/{version}.{ext}"
     if model_name not in MANAGED_MODELS:
         raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
     _, _, ext = MANAGED_MODELS[model_name]
@@ -252,6 +247,7 @@ def init_default_pool() -> dict:
         "state_overlays": {},
         "meta_optimizers": {},
         "research_benchmarks": {},
+        "formal_layer3_slots": {},
     }
     for name, (model_type, balance_family, _ext) in MANAGED_MODELS.items():
         is_active_alpha = name in ALPHA_PREDICTION_MODELS
@@ -268,19 +264,6 @@ def init_default_pool() -> dict:
             "weekly_ic": [],
             "ic_4w_avg": None,
             "consecutive_negative_weeks": 0,
-        }
-    for name, (model_type, balance_family, _ext) in EXPERIMENTAL_CHALLENGER_MODELS.items():
-        pool["shadow_models"][name] = {
-            "status": "challenger",
-            "version": "v1",
-            "gcs_path": gcs_path_for(name, "v1"),
-            "model_type": model_type,
-            "balance_family": balance_family,
-            "shadow_since": today,
-            "weekly_ic": [],
-            "ic_4w_avg": None,
-            "consecutive_negative_weeks": 0,
-            "vote_weight": 0.0,
         }
     for name in STATE_SPACE_OVERLAY_MODELS:
         pool["state_overlays"][name] = {
@@ -299,12 +282,13 @@ def init_default_pool() -> dict:
             "promotion_gate": "walk_forward+pbo+transaction_cost_sensitivity",
         }
     for name, meta in RESEARCH_BENCHMARK_MODELS.items():
-        pool["research_benchmarks"][name] = {
+        pool["formal_layer3_slots"][name] = {
             **meta,
             "created_at": today,
-            "approval_gate": "research_review_packet_required",
-            "note": "Benchmark-only candidate; not a model_pool challenger and never votes until promoted by a separate reviewed lifecycle path.",
+            "approval_gate": "artifact_review_packet_required",
+            "note": "Formal Layer 3 slot; no production prediction or vote until artifact promotion is approved.",
         }
+    pool["research_benchmarks"] = dict(pool["formal_layer3_slots"])
     return pool
 
 
@@ -431,17 +415,6 @@ def get_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optiona
     return gcs_path_for(model_name, version)
 
 
-def get_shadow_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
-    """Return registered experimental shadow path for MLP/GNN-style candidates."""
-    pool = pool or load_pool()
-    if not pool:
-        return None
-    entry = pool.get("shadow_models", {}).get(model_name)
-    if not entry or entry.get("status") not in ("challenger", "shadow"):
-        return None
-    return entry.get("gcs_path") or gcs_path_for(model_name, entry.get("version", "v1"))
-
-
 def register_challenger(
     model_name: str,
     version: str,
@@ -490,42 +463,6 @@ def register_challenger(
     if save:
         save_pool(pool)
     return entry
-
-
-def register_shadow_challenger(
-    model_name: str,
-    version: str,
-    pool: Optional[dict] = None,
-    save: bool = True,
-) -> dict:
-    """Register an experimental predictor that must not vote until promoted.
-
-    This is for ResidualMLP/GNN. GAOptimizer is deliberately excluded because
-    it belongs to the meta_optimizer layer and does not emit stock forecasts.
-    """
-    if model_name not in EXPERIMENTAL_CHALLENGER_MODELS:
-        raise ValueError(f"{model_name} is not an experimental shadow predictor")
-    pool = pool or load_pool()
-    if not pool:
-        raise RuntimeError("model_pool.json not initialized; run /model_pool/init first")
-    shadow_models = pool.setdefault("shadow_models", {})
-    model_type, balance_family, _ext = EXPERIMENTAL_CHALLENGER_MODELS[model_name]
-    today = datetime.now(timezone.utc).date().isoformat()
-    shadow_models[model_name] = {
-        "status": "challenger",
-        "version": version,
-        "gcs_path": gcs_path_for(model_name, version),
-        "model_type": model_type,
-        "balance_family": balance_family,
-        "shadow_since": today,
-        "weekly_ic": [],
-        "ic_4w_avg": None,
-        "consecutive_negative_weeks": 0,
-        "vote_weight": 0.0,
-    }
-    if save:
-        save_pool(pool)
-    return shadow_models[model_name]
 
 
 def discard_challenger(model_name: str, pool: Optional[dict] = None, save: bool = True) -> dict:

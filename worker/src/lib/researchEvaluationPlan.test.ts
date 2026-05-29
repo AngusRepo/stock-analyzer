@@ -51,16 +51,16 @@ function assert(condition: unknown, message: string): void {
     id: 'exp-model-upgrade',
     version: 'research-registry-v1',
     status: 'draft',
-    hypothesis: '評估 TabM iTransformer TimesFM 是否值得進 challenger pool',
+    hypothesis: 'evaluate TabM iTransformer TimesFM as formal Layer 3 family slots',
     source_refs: ['model-upgrade-track'],
-    strategy_spec_ids: ['model_family_benchmark_v1'],
+    strategy_spec_ids: ['layer3_model_family_evaluation_v1'],
     data_slice: {
       start_date: '2025-01-01',
       end_date: '2026-04-30',
-      benchmark_candidates: ['TabM', 'iTransformer', 'TimesFM'],
+      layer3_candidates: ['TabM', 'iTransformer', 'TimesFM'],
     },
-    metrics: ['model_benchmark', 'oos_ic', 'pbo', 'cost_sensitivity'],
-    follow_up: ['produce benchmark review packet'],
+    metrics: ['model_family_evaluation', 'oos_ic', 'pbo', 'cost_sensitivity'],
+    follow_up: ['produce formal Layer 3 review packet'],
     approval_gate: {
       can_research: true,
       can_generate_patch_or_report: true,
@@ -74,18 +74,18 @@ function assert(condition: unknown, message: string): void {
   })
 
   const benchmarkSteps = plan.steps.filter((step) => step.kind === 'model_benchmark')
-  assert(benchmarkSteps.length === 3, 'model upgrade research should create one benchmark step per supported requested candidate')
+  assert(benchmarkSteps.length === 3, 'model upgrade research should create one evaluation step per supported requested formal slot')
   assert(
     benchmarkSteps.every((step) => step.controller_endpoint === '/research/model-benchmark/dry-run'),
     'model benchmark steps should call the research benchmark endpoint',
   )
   assert(
     benchmarkSteps.every((step) => step.mutation_allowed === false && step.body.persist_results === false),
-    'model benchmark steps must stay non-mutating',
+    'model evaluation steps must stay non-mutating',
   )
   assert(
     benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'TabM,iTransformer,TimesFM',
-    'model benchmark steps should preserve supported benchmark candidates',
+    'model evaluation steps should preserve supported Layer 3 candidates',
   )
 }
 

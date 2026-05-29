@@ -57,12 +57,15 @@ const forecastData = {
       CatBoost: 0.1,
       ExtraTrees: 0.1,
       LightGBM: 0.2,
-      DLinear: 0.1,
+      TabM: 0.1,
+      GNN: 0.1,
+      DLinear: 0.0,
       PatchTST: 0.1,
+      iTransformer: 0.1,
+      TimesFM: 0.1,
       KalmanFilter: 0.5,
       MarkovSwitching: 0.5,
       ResidualMLP: 0.5,
-      GNN: 0.5,
     },
   },
   dispersion_diagnostics: {
@@ -80,21 +83,21 @@ const forecastData = {
     { model_name: 'CatBoost', forecast_data: { rank_score: 0.7 } },
     { model_name: 'KalmanFilter', forecast_data: { rank_score: 0.9 } },
     { model_name: 'MarkovSwitching', forecast_data: { rank_score: 0.1 } },
-    { model_name: 'ResidualMLP::challenger', forecast_data: { rank_score: 0.9 } },
+    { model_name: 'ResidualMLP', forecast_data: { rank_score: 0.9 } },
   ])
 
-  assert(summary?.total === 6, 'ML vote denominator must stay at 6 active alpha prediction voters')
-  assert(summary?.reported === 2, 'state-space overlays and challengers must not count as reported alpha votes')
+  assert(summary?.total === 10, 'ML vote denominator must include formal Layer 3 alpha prediction slots')
+  assert(summary?.reported === 2, 'state-space overlays and retired models must not count as reported alpha votes')
   assert(summary?.forecastPct === 1.2, 'Worker card contract must expose forecastPct as display percent points')
-  assert(summary?.activeWeightCount === 6, 'active weight count must ignore overlays and shadow models')
-  assert(summary?.zeroWeightModels?.length === 0, 'all active alpha models have positive lifecycle weights in this fixture')
+  assert(summary?.activeWeightCount === 9, 'active weight count must ignore overlays and retired models')
+  assert(summary?.zeroWeightModels?.[0] === 'DLinear', 'zero weight root-cause list should be visible to UI')
 }
 
 {
   const diagnostics = buildMlDiagnostics(forecastData)
 
-  assert(diagnostics?.totalAlphaModels === 6, 'diagnostics must use the six production alpha voters')
-  assert(diagnostics?.activeWeightCount === 6, 'active weights must ignore overlays and challenger models')
+  assert(diagnostics?.totalAlphaModels === 10, 'diagnostics must include formal Layer 3 alpha prediction slots')
+  assert(diagnostics?.activeWeightCount === 9, 'active weights must ignore overlays and retired models')
   assert(diagnostics?.icWeightScope === 'tpex', 'diagnostics should expose the lane-aware IC scope')
   assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic', 'forecast calibration method should be visible to UI')
   assert((diagnostics?.rankSignalThresholds as any)?.buyThreshold === 0.58, 'dynamic rank thresholds should be visible to UI')

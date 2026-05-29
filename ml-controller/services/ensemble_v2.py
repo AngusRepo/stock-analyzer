@@ -6,6 +6,8 @@ import math
 _SRC_KEY_MODEL = (
     ("dlinear", "DLinear"),
     ("patchtst", "PatchTST"),
+    ("itransformer", "iTransformer"),
+    ("timesfm", "TimesFM"),
 )
 
 _MODEL_FAMILY = {

@@ -12,6 +12,7 @@ const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
 const DataQualityPage = lazy(() => import('./pages/DataQualityPage'))
 const StrategyLabPage = lazy(() => import('./pages/StrategyLabPage'))
 const ObservabilityPage = lazy(() => import('./pages/ObservabilityPage'))
+const DailyFocusPrototypePage = lazy(() => import('./pages/DailyFocusPrototypePage'))
 
 function PageLoader({ label }: { label: string }) {
   return (
@@ -67,6 +68,11 @@ export default function App() {
         <Route path="/obs">
           <Suspense fallback={<PageLoader label="OBS" />}>
             <ObservabilityPage />
+          </Suspense>
+        </Route>
+        <Route path="/preview/daily-focus">
+          <Suspense fallback={<PageLoader label="Daily Focus Preview" />}>
+            <DailyFocusPrototypePage />
           </Suspense>
         </Route>
         <Route>

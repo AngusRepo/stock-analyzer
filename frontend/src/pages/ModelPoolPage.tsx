@@ -9,6 +9,8 @@ import { DecisionPacketCell, StatusPill, WeightBar } from '@/components/workstat
 import { modelPoolApi, strategyLabApi, type ModelArtifactActionContext, type ModelArtifactPromotionControllerResponse, type ModelArtifactPromotionQueueResponse, type ModelArtifactRegistryResponse, type ModelArtifactRegistryRow, type ModelArtifactSelectionResponse, type ModelChampionPointersResponse, type ModelPoolLineageModel, type ModelUpgradeResearchStatusRow, type ResearchExperiment } from '@/lib/api'
 import { MODEL_UPGRADE_CANDIDATES, MODEL_UPGRADE_STAGE_LABELS, type ModelUpgradeStage } from '@/lib/modelUpgradeTrack'
 
+const FORMAL_ALPHA_SLOT_COUNT = 10
+
 function fmt(value: unknown): string {
   if (value === null || value === undefined || value === '') return 'N/A'
   if (typeof value === 'number') return value.toFixed(4)
@@ -24,14 +26,6 @@ function toneFromStatus(status?: string): WorkstationTone {
 
 function isServingAlphaModel(model: ModelPoolLineageModel): boolean {
   return model.status === 'active' || model.status === 'degraded'
-}
-
-function lifecycleBucket(model: ModelPoolLineageModel): 'serving' | 'shadow' | 'retired' | 'research' | 'other' {
-  if (isServingAlphaModel(model)) return 'serving'
-  if (model.status === 'retired') return 'retired'
-  if (model.challenger || model.status === 'challenger') return 'shadow'
-  if (model.status === 'research' || model.status === 'benchmark') return 'research'
-  return 'other'
 }
 
 function effectiveVoteWeight(model: ModelPoolLineageModel): number {
@@ -903,14 +897,13 @@ function artifactRowsWithExcluded(
 }
 
 function stageTone(stage: ModelUpgradeStage): WorkstationTone {
-  if (stage === 'shadow_challenger') return 'info'
-  if (stage === 'benchmark_only') return 'warn'
-  if (stage === 'production_slot_member') return 'ok'
+  if (stage === 'layer3_formal_family_slot') return 'info'
+  if (stage === 'retired') return 'warn'
   return 'neutral'
 }
 
 function modelUpgradeNeedsExperiment(stage: ModelUpgradeStage): boolean {
-  return stage === 'shadow_challenger' || stage === 'benchmark_only'
+  return stage === 'layer3_formal_family_slot'
 }
 
 function TinyBar({ label, value, tone = 'info' }: { label: string; value: number; tone?: WorkstationTone }) {
@@ -1034,7 +1027,7 @@ function UnifiedModelHealthMatrix({
                           </div>
                           {name === 'Chronos' && (
                             <div className="mt-2 rounded border border-cyan-400/20 bg-cyan-400/[0.04] px-2 py-1 text-[11px] leading-4 text-cyan-100">
-                              Chronos2 Zero-shot / LoRA 是 Chronos slot 內部版本，不新增 alpha vote。
+                              Chronos is retired from alpha vote and evening-chain batch inference.
                             </div>
                           )}
                         </div>
@@ -1173,12 +1166,9 @@ function candidateExperiments(candidateId: string, experiments: ResearchExperime
     .slice(0, 3)
 }
 
-function modelUpgradeNextAction(stage: ModelUpgradeStage, hasEvidence: boolean) {
-  if (hasEvidence) return '下一步：由 Strategy Lab 檢查 evidence matrix，通過後才可進 promotion / challenger gate。'
-  if (stage === 'shadow_challenger') {
-    return '下一步：到 Strategy Lab 建立 experiment，跑 shadow evaluation，產出 OOS IC、CPCV/PBO、cost profile；通過 review 前不投 production vote。'
-  }
-  return '下一步：到 Strategy Lab 建立 benchmark experiment，跑 /research/model-benchmark/dry-run；通過後才討論是否升級成 shadow challenger。'
+function modelUpgradeNextAction(_stage: ModelUpgradeStage, hasEvidence: boolean) {
+  if (hasEvidence) return '下一步：由 Strategy Lab 檢查 evidence matrix，通過後才可建立 artifact intent。'
+  return '下一步：建立 Strategy Lab experiment，跑 model-family dry-run evaluation；Wei 核准前不投 production vote。'
 }
 
 function upgradeRegistryLabel(label: string) {
@@ -1196,14 +1186,13 @@ function UpgradeTrackPanel({ experiments = [], statusRows = [] }: { experiments?
     return acc
   }, {})
   const stageOrder: ModelUpgradeStage[] = [
-    'shadow_challenger',
-    'benchmark_only',
+    'layer3_formal_family_slot',
   ]
 
   return (
-    <WorkstationPanel title="Model Research Tracks / 模型研究軌道" kicker="only experiment-gated model-family challengers and benchmarks">
+    <WorkstationPanel title="Layer 3 Formal Slots / 模型正式分支" kicker="experiment-gated family slots">
       <div className="border-b border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
-        這裡只顯示需要 Strategy Lab experiment 的模型研究項目。Chronos2 Zero-shot / LoRA 屬於 Chronos 內部版本；GAOptimizer 已移到 OBS adaptive meta；Kalman / Markov 只在下方 State-space Overlays 顯示 live lineage。
+        這裡只顯示需要 Strategy Lab experiment 的 Layer 3 formal family slot。TabM、GNN、iTransformer、TimesFM 都要先有 artifact/evidence/review packet；Wei 核准前不投 production vote。
       </div>
       <div className="grid gap-px bg-[#263247] lg:grid-cols-2">
         {stageOrder.map((stage) => (
@@ -1212,9 +1201,7 @@ function UpgradeTrackPanel({ experiments = [], statusRows = [] }: { experiments?
               <div>
                 <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">{MODEL_UPGRADE_STAGE_LABELS[stage]}</p>
                 <p className="mt-1 text-xs leading-5 text-[#8a92a6]">
-                  {stage === 'shadow_challenger'
-                    ? '這裡只放 ResidualMLP / GNN 這種新模型家族。它們應該先產生 shadow evidence，但 promotion 前不投 production vote。'
-                    : '只做研究 benchmark，不跑 production inference，避免成本暴增。'}
+                  Formal slot 是架構位置，不代表已有 production artifact。沒有 artifact promotion 前只做 dry-run evaluation。
                 </p>
               </div>
               <WorkstationPill tone={stageTone(stage)}>{byStage[stage]?.length ?? 0}</WorkstationPill>
@@ -1273,9 +1260,9 @@ function UpgradeTrackPanel({ experiments = [], statusRows = [] }: { experiments?
                   <p className="mt-2 rounded-lg border border-sky-400/20 bg-sky-400/[0.04] p-2 text-[11px] leading-5 text-sky-100">
                     {modelUpgradeNextAction(candidate.stage, evidence.isEvidenceReady)}
                   </p>
-                  {candidate.stage === 'benchmark_only' && (
+                  {candidate.stage === 'layer3_formal_family_slot' && (
                     <p className="mt-2 text-[11px] leading-5 text-amber-200">
-                      benchmark report required：必須先進 experiment registry，產出 OOS IC、CPCV/PBO、成本敏感度與資料切片報告，通過後才可升級成 shadow challenger。
+                      review packet required：必須先進 experiment registry，產出 OOS IC、CPCV/PBO、成本敏感度與資料切片報告；通過後才可建立 artifact intent。
                     </p>
                   )}
                 </div>
@@ -1472,7 +1459,7 @@ function RemovedStandaloneFamilyPanel({ counts, total }: { counts: Record<string
         <div className="border border-[#263247] bg-[#05070c] p-3">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200">How to read / 怎麼看</p>
           <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
-            Alpha models 是會投票的 8 個 production slots；Kalman/Markov 是 state-space overlay，不算 alpha vote；MLP/GNN 是 shadow challenger；TabM、iTransformer、TimesFM 是 benchmark research。
+            Alpha models 是正式投票 slot；Kalman/Markov 是 state-space overlay，不算 alpha vote；TabM/GNN/iTransformer/TimesFM 是 Layer 3 formal family slot，但沒有 artifact promotion 前不投 production vote。
           </p>
         </div>
       </div>
@@ -1617,8 +1604,8 @@ function ArtifactMiniCard({
 function missingArtifactExplanation(modelName: string, slot: 'monthly_release_candidate' | 'weekly_drift_candidate') {
   if (modelName === 'Chronos' && slot === 'monthly_release_candidate') {
     return {
-      title: 'Chronos is not in monthly retrain',
-      body: 'Chronos is a foundation forecast slot. Monthly retrain owns tree / FT / DLinear / PatchTST artifacts; Chronos is validated by forecast outcome evidence inside the single Chronos slot.',
+      title: 'Chronos retired from alpha vote',
+      body: 'Monthly retrain owns active tree and sequence artifacts. Chronos is retained only as historical audit context in this refactor.',
     }
   }
   return null
@@ -1953,7 +1940,7 @@ function ServingDiagnosticsPanel({ payload }: { payload: any }) {
     .map((rec) => rec?.ml_diagnostics)
     .filter((diag) => diag && typeof diag === 'object')
   const total = diagnostics.length
-  const alphaTotal = Number(diagnostics[0]?.totalAlphaModels ?? 8)
+  const alphaTotal = Number(diagnostics[0]?.totalAlphaModels ?? FORMAL_ALPHA_SLOT_COUNT)
   const avgActive = total
     ? diagnostics.reduce((sum, diag) => sum + Number(diag.activeWeightCount ?? 0), 0) / total
     : 0
@@ -2115,9 +2102,9 @@ export default function ModelPoolPage() {
 
   const counts = familyCounts(modelList)
   const servingAlphaModels = modelList.filter(([, model]) => isServingAlphaModel(model))
-  const shadowLineageCount = modelList.filter(([, model]) => !!model.challenger).length
-  const plannedShadowCount = MODEL_UPGRADE_CANDIDATES.filter((candidate) => candidate.stage === 'shadow_challenger').length
-  const benchmarkCount = MODEL_UPGRADE_CANDIDATES.filter((candidate) => candidate.stage === 'benchmark_only').length
+  const legacyLineageArtifactCount = modelList.filter(([, model]) => !!model.challenger).length
+  const formalSlotCount = MODEL_UPGRADE_CANDIDATES.filter((candidate) => candidate.stage === 'layer3_formal_family_slot').length
+  const retiredSlotCount = MODEL_UPGRADE_CANDIDATES.filter((candidate) => candidate.stage === 'retired').length
   const missingMetadata = modelList.filter(([, model]) => !model.metadata_exists).length
   const weakIc = modelList.filter(([, model]) => {
     const ic = icValue(model)
@@ -2128,11 +2115,11 @@ export default function ModelPoolPage() {
   const degradedModels = servingAlphaModels.filter(([, model]) => model.status === 'degraded').length
 
   const traceSteps = useMemo(() => [
-    { label: 'Alpha Vote', detail: '8 個 production slots 才會進 user-facing ML 投票。', tone: 'ok' as WorkstationTone },
-    { label: 'Shadow', detail: 'MLP / GNN 只產生 evidence；promotion 前不投票。', tone: plannedShadowCount || shadowLineageCount ? 'info' as WorkstationTone : 'warn' as WorkstationTone },
-    { label: 'Benchmark', detail: 'TabM / iTransformer / TimesFM 只做研究比較，避免成本暴增。', tone: 'warn' as WorkstationTone },
+    { label: 'Alpha Vote', detail: 'Production slots are the current voting denominator.', tone: 'ok' as WorkstationTone },
+    { label: 'Formal L3', detail: 'TabM / GNN / iTransformer / TimesFM are formal slots; artifact approval is required before voting.', tone: 'info' as WorkstationTone },
+    { label: 'Retired', detail: 'FT-Transformer / ResidualMLP / Chronos do not seed new model lanes.', tone: 'warn' as WorkstationTone },
     { label: 'Overlay', detail: 'Kalman / Markov 提供 regime、noise、risk context，不算 alpha model。', tone: 'neutral' as WorkstationTone },
-  ], [plannedShadowCount, shadowLineageCount])
+  ], [])
 
   return (
     <AppShell>
@@ -2140,7 +2127,7 @@ export default function ModelPoolPage() {
         <WorkstationPageTitle
           kicker="Model care"
           title="模型池"
-          description="用一頁看 production alpha、shadow challenger、研究基準、狀態 overlay、IC 根因與 artifact metadata，避免模型健康只藏在 log 裡。"
+          description="用一頁看 production alpha、formal Layer 3 slots、retired paths、狀態 overlay、IC 根因與 artifact metadata，避免模型健康只藏在 log 裡。"
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
@@ -2166,9 +2153,9 @@ export default function ModelPoolPage() {
             <DecisionTraceRail title="模型生命週期規則" compact steps={traceSteps} />
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-              <SignalInsightCard title="Serving Alpha Slots" value={`${servingAlphaModels.length}/8`} detail={`active ${activeModels}; degraded ${degradedModels}; family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone={degradedModels ? 'warn' : 'info'} />
-              <SignalInsightCard title="影子挑戰者" value={`${shadowLineageCount}+${plannedShadowCount}`} detail="左邊是 lineage 已掛載；右邊是 P7 upgrade track 計畫中的 MLP/GNN。" tone={shadowLineageCount || plannedShadowCount ? 'ok' : 'warn'} />
-              <SignalInsightCard title="Research Benchmarks / 研究基準" value={String(benchmarkCount)} detail="TabM、iTransformer、TimesFM 不投票，只做 benchmark evidence。" tone="warn" />
+              <SignalInsightCard title="Serving Alpha Slots" value={String(servingAlphaModels.length)} detail={`active ${activeModels}; degraded ${degradedModels}; formal L3 pending ${formalSlotCount}; family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone={degradedModels ? 'warn' : 'info'} />
+              <SignalInsightCard title="Formal L3 Slots" value={String(formalSlotCount)} detail="TabM、GNN、iTransformer、TimesFM 有正式分支位置；未核准前不投票。" tone="info" />
+              <SignalInsightCard title="Retired Paths" value={String(retiredSlotCount)} detail={`FT / ResidualMLP / Chronos retired; legacy lineage artifacts ${legacyLineageArtifactCount}`} tone="warn" />
               <SignalInsightCard title="IC 缺口" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
             </div>
 
@@ -2188,7 +2175,7 @@ export default function ModelPoolPage() {
             <WorkstationPanel title="State-space Overlays / 狀態空間 Overlay" kicker="regime risk overlay, not alpha vote model">
               <div className="space-y-2 p-3 text-xs text-muted-foreground">
                 <p>
-                  Kalman / Markov 只扮演 regime、noise、risk overlay：協助市場狀態、波動雜訊、sizing 與風控判斷；不進 8 alpha model 投票分母，也不進 alpha IC promote gate。
+                  Kalman / Markov 只扮演 regime、noise、risk overlay：協助市場狀態、波動雜訊、sizing 與風控判斷；不進 formal alpha slot 投票分母，也不進 alpha IC promote gate。
                 </p>
                 <div className="grid gap-2 md:grid-cols-2">
                   {overlayList.map(([name, overlay]) => (

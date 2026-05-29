@@ -54,7 +54,7 @@ def test_evaluate_shadow_ab_rows_fails_when_samples_are_insufficient():
     out = evaluate_shadow_ab_rows(rows, min_samples=5)
 
     assert out["XGBoost"]["decision"] == "FAIL"
-    assert "shadow_min_samples" in out["XGBoost"]["failed_gates"]
+    assert "candidate_min_samples" in out["XGBoost"]["failed_gates"]
 
 
 def test_evaluate_shadow_ab_rows_fails_when_challenger_ic_does_not_improve():
@@ -68,4 +68,4 @@ def test_evaluate_shadow_ab_rows_fails_when_challenger_ic_does_not_improve():
     out = evaluate_shadow_ab_rows(rows, min_samples=5, min_ic_lift=0.0)
 
     assert out["XGBoost"]["decision"] == "FAIL"
-    assert "shadow_ic_lift" in out["XGBoost"]["failed_gates"]
+    assert "candidate_ic_lift" in out["XGBoost"]["failed_gates"]

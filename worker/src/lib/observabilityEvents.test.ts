@@ -27,9 +27,10 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
         regime: 'volatile',
       },
       meta_layer: {
-        alpha_vote_models: ['XGBoost', 'CatBoost', 'ExtraTrees', 'LightGBM', 'DLinear', 'PatchTST'],
+        alpha_vote_models: ['XGBoost', 'CatBoost', 'ExtraTrees', 'LightGBM', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM'],
         state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
         meta_optimizers: ['GAOptimizer'],
+        formal_layer3_slots: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
       },
     },
   })
@@ -38,7 +39,7 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events[0].severity === 'ok', 'v2 adaptive meta payload should be ok')
   assert(events[0].domain === 'adaptive_meta', 'adaptive meta should have a dedicated OBS domain')
   assert(events[0].summary.includes('regime=volatile'), 'adaptive meta event should expose effective regime')
-  assert((events[0].evidence.meta_layer as any).alpha_vote_count === 6, 'adaptive meta evidence should expose 6 alpha voters')
+  assert((events[0].evidence.meta_layer as any).alpha_vote_count === 10, 'adaptive meta evidence should expose 10 alpha slots')
 }
 
 {

@@ -1,7 +1,8 @@
-"""L2 paper-active OnlinePortfolioBandit controller.
+"""OnlinePortfolioBandit allocator-knob controller.
 
 The bandit chooses allocator knobs only. Final weights still come from the
-sparse tangent inverse-risk allocator, and the packet cannot mutate production.
+sparse tangent inverse-risk allocator, and the packet cannot mutate production
+configuration by itself.
 """
 
 from __future__ import annotations
@@ -117,6 +118,8 @@ def build_online_portfolio_bandit_l2_packet(
     reward_ledger: list[dict[str, Any]] | None = None,
     exploration_alpha: float = 0.05,
     arms: tuple[PortfolioBanditArm, ...] = DEFAULT_ARMS,
+    stage: str = "L2_paper_active",
+    candidate_cap_limit: int | None = None,
 ) -> dict[str, Any]:
     """Select allocator knobs with warm-start UCB and compute paper weights."""
 
@@ -133,6 +136,11 @@ def build_online_portfolio_bandit_l2_packet(
         arm = row["arm"]
         stats = row["stats"]
         score = _ucb_score(stats, total_samples, exploration_alpha)
+        effective_candidate_cap = arm.candidate_cap
+        if candidate_cap_limit is not None:
+            effective_candidate_cap = max(1, min(arm.candidate_cap, int(candidate_cap_limit)))
+        feasible_floor = min(0.70, 1.0 / effective_candidate_cap + 0.05)
+        effective_max_weight = max(arm.max_weight, feasible_floor)
         scored.append({
             "arm_id": arm.arm_id,
             "ucb_score": score,
@@ -141,8 +149,8 @@ def build_online_portfolio_bandit_l2_packet(
             "prior_samples": int(stats["prior_samples"]),
             "live_samples": int(stats["live_samples"]),
             "knobs": {
-                "candidate_cap": arm.candidate_cap,
-                "max_weight": arm.max_weight,
+                "candidate_cap": effective_candidate_cap,
+                "max_weight": effective_max_weight,
                 "cash_buffer": arm.cash_buffer,
                 "min_trade_weight": arm.min_trade_weight,
                 "turnover_budget": arm.turnover_budget,
@@ -160,8 +168,8 @@ def build_online_portfolio_bandit_l2_packet(
         raw_weights = allocate_sparse_tangent(
             ranked_candidates,
             return_history,
-            top_k=selected_arm.candidate_cap,
-            max_weight=selected_arm.max_weight,
+            top_k=int((selected or {}).get("knobs", {}).get("candidate_cap") or selected_arm.candidate_cap),
+            max_weight=float((selected or {}).get("knobs", {}).get("max_weight") or selected_arm.max_weight),
         )
         final_weights = _normalize_to_exposure(
             raw_weights,
@@ -172,7 +180,7 @@ def build_online_portfolio_bandit_l2_packet(
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "stage": "L2_paper_active",
+        "stage": stage,
         "controller": "OnlinePortfolioBandit",
         "selection_policy": "warm_start_constrained_ucb",
         "allocator_engine": "sparse_tangent_inverse_risk",

@@ -206,7 +206,7 @@ async def factor_ic_audit(req: FactorAuditRequest, request: Request):
 
 @app.post("/meta-learning/neural-shadow/train")
 async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, request: Request):
-    """Train NeuralUCB/NeuralTS shadow challenger and return evidence only."""
+    """Train NeuralUCB/NeuralTS counterfactual policy and return evidence only."""
     await verify_service_token(request)
     from .neural_meta_bandit import (
         NeuralMetaBanditConfig,

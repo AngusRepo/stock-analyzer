@@ -349,10 +349,9 @@ def predict_stock(req: PredictRequest) -> dict:
         ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
         ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, stock_id)),
         ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, stock_id)),
-        ("Chronos", lambda: run_chronos(adj_prices_arr, req.horizon, stock_id)),
     ]
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(fn): name for name, fn in price_model_fns}
         for future in as_completed(futures):
             name = futures[future]
@@ -468,7 +467,7 @@ def predict_stock(req: PredictRequest) -> dict:
         "forecasts": best_model.forecasts,
         "features_used": feature_names,
         "feature_importance": _extract_feature_importance(predictions, feature_names),
-        "feature_version": "v4_9models",
+        "feature_version": "v4_formal_layer3_refactor",
         "regime": regime_label,
         "garch_vol": round(garch_vol, 4) if garch_vol else None,
         "anomaly_score": round(anomaly_score, 4),
@@ -489,7 +488,10 @@ def predict_stock(req: PredictRequest) -> dict:
 _FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
 _TIME_SERIES_MODEL_NAMES_V2 = ["DLinear", "PatchTST"]
 _STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
-_SHADOW_CHALLENGER_MODEL_NAMES = ["ResidualMLP", "GNN"]
+# Legacy shadow model names are intentionally disabled after the screener
+# refactor. Formal Layer 3 slots enter through artifact promotion, not this
+# side-channel.
+_SHADOW_CHALLENGER_MODEL_NAMES: list[str] = []
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 _BATCH_FEATURE_RANK_SCORES_KEY = "__batch_feature_rank_scores"
 _BATCH_FEATURE_MODEL_ERRORS_KEY = "__batch_feature_model_errors"

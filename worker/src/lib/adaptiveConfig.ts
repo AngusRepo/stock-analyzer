@@ -40,6 +40,7 @@ export interface AdaptiveRegimeOverride {
 
 export interface AdaptiveMetaLayerGovernance {
   alpha_vote_models: string[]
+  formal_layer3_slots: string[]
   state_space_overlays: string[]
   meta_optimizers: string[]
   adaptive_components: Record<string, string>
@@ -52,9 +53,14 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     'CatBoost',
     'ExtraTrees',
     'LightGBM',
+    'TabM',
+    'GNN',
     'DLinear',
     'PatchTST',
+    'iTransformer',
+    'TimesFM',
   ],
+  formal_layer3_slots: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
   state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
   meta_optimizers: ['GAOptimizer'],
   adaptive_components: {
@@ -63,9 +69,9 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     Conformal: 'prediction uncertainty calibration and coverage guard',
     Stacking: 'meta learner for ensemble blending after base-model predictions',
     GAOptimizer: 'meta optimizer for ensemble weights, strategy params, and risk params',
-    NeuralUCB: 'shadow meta-router for nonlinear model-weight and threshold policy comparison',
-    NeuralTS: 'shadow Thompson sampler to audit NeuralUCB optimism before production consideration',
-    OnlinePortfolioBandit: 'L2 paper-active allocator controller; controls allocator knobs only while sparse_tangent_inverse_risk remains the final weight engine',
+    NeuralUCB: 'counterfactual meta-router for nonlinear model-weight and threshold policy comparison',
+    NeuralTS: 'counterfactual Thompson sampler to audit NeuralUCB optimism before production consideration',
+    OnlinePortfolioBandit: 'production allocator controller for sparse_tangent_inverse_risk knobs; production-capable without replacing the final weight engine',
     NeuCB: 'research-only neural contextual bandit benchmark until experiment registry evidence exists',
   },
   immutable_risk_boundaries: [

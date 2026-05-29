@@ -12,15 +12,15 @@ function assert(condition: unknown, message: string): void {
 }
 
 const baseExperiment: ResearchExperimentRecord = {
-  id: 'exp-neuralucb-shadow',
+  id: 'exp-neuralucb-counterfactual',
   version: 'research-registry-v1',
   status: 'queued',
-  hypothesis: 'Run NeuralUCB shadow decisions beside LinUCB and compare counterfactual reward',
+  hypothesis: 'Run NeuralUCB counterfactual decisions beside LinUCB and compare reward',
   source_refs: ['p9-meta-learning'],
-  strategy_spec_ids: ['meta_learning_shadow_v1'],
+  strategy_spec_ids: ['meta_learning_counterfactual_v1'],
   data_slice: { start_date: '2026-04-01', end_date: '2026-05-07' },
   metrics: ['counterfactual_reward', 'pbo', 'regime_slice'],
-  follow_up: ['run shadow replay'],
+  follow_up: ['run counterfactual replay'],
   approval_gate: {
     can_research: true,
     can_generate_patch_or_report: true,
@@ -44,16 +44,16 @@ const baseExperiment: ResearchExperimentRecord = {
   assert(ids.join(',') === 'LinUCB,NeuralUCB,NeuralTS,OnlinePortfolioBandit,NeuCB', 'track order should be stable')
   assert(tracks.every((track) => track.can_vote_alpha === false), 'meta learners must not vote as alpha models')
   assert(
-    tracks.filter((track) => track.can_influence_production).map((track) => track.id).join(',') === 'LinUCB',
-    'only LinUCB baseline may influence production before promotion evidence',
+    tracks.filter((track) => track.can_influence_production).map((track) => track.id).join(',') === 'LinUCB,OnlinePortfolioBandit',
+    'LinUCB and OnlinePortfolioBandit may influence production only through their governed meta/allocation roles',
   )
   assert(
-    tracks.find((track) => track.id === 'NeuralUCB')?.registered_experiment_ids.includes('exp-neuralucb-shadow'),
+    tracks.find((track) => track.id === 'NeuralUCB')?.registered_experiment_ids.includes('exp-neuralucb-counterfactual'),
     'NeuralUCB should link matching experiment registry records',
   )
   assert(
-    tracks.find((track) => track.id === 'OnlinePortfolioBandit')?.stage === 'l2_paper_active',
-    'portfolio bandit should move directly to L2 paper-active lane',
+    tracks.find((track) => track.id === 'OnlinePortfolioBandit')?.stage === 'production_controller',
+    'portfolio bandit should be the governed allocator-controller lane',
   )
   assert(tracks.find((track) => track.id === 'NeuCB')?.stage === 'research_only', 'NeuCB should stay research-only')
   assert(
@@ -68,8 +68,8 @@ const baseExperiment: ResearchExperimentRecord = {
 
 {
   const packet = buildMetaLearningDecisionPacket([baseExperiment])
-  assert(packet.includes('LinUCB remains the interpretable production baseline'), 'packet should clarify LinUCB baseline')
-  assert(packet.includes('OnlinePortfolioBandit is L2 paper-active only'), 'packet should clarify portfolio bandit L2 scope')
+  assert(packet.includes('LinUCB remains the interpretable meta baseline'), 'packet should clarify LinUCB baseline')
+  assert(packet.includes('OnlinePortfolioBandit controls allocator knobs'), 'packet should clarify portfolio bandit allocator-controller scope')
 }
 
 {
@@ -107,9 +107,9 @@ const baseExperiment: ResearchExperimentRecord = {
   const neural = matrix.find((row) => row.id === 'NeuralUCB')
   const portfolio = matrix.find((row) => row.id === 'OnlinePortfolioBandit')
   assert(linucb?.reward_ledger_status === 'ready', 'LinUCB should become ready when reward ledger has samples')
-  assert(neural?.shadow_status === 'partial', 'NeuralUCB should show partial shadow evidence when decisions exist')
+  assert(neural?.shadow_status === 'partial', 'NeuralUCB should show partial counterfactual evidence when decisions exist')
   assert(portfolio?.reward_ledger_status === 'ready', 'portfolio bandit should use warm-start reward ledger evidence')
-  assert(portfolio?.evidence_status === 'partial', 'portfolio bandit should be partial until paper-active experiment evidence exists')
+  assert(portfolio?.evidence_status === 'partial', 'portfolio bandit should be partial until controller experiment evidence exists')
 }
 
 async function assertEnsureMetaLearningResearchRegistry(): Promise<void> {

@@ -1,12 +1,44 @@
 from __future__ import annotations
 
 import sys
+import types
+import asyncio
 from datetime import date, timedelta
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+if "langgraph.graph" not in sys.modules:
+    langgraph_mod = types.ModuleType("langgraph")
+    graph_mod = types.ModuleType("langgraph.graph")
+    types_mod = types.ModuleType("langgraph.types")
+
+    class StateGraph:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def add_node(self, *_args, **_kwargs):
+            pass
+
+        def set_entry_point(self, *_args, **_kwargs):
+            pass
+
+        def add_edge(self, *_args, **_kwargs):
+            pass
+
+        def compile(self):
+            return self
+
+    class RetryPolicy:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    graph_mod.StateGraph = StateGraph
+    graph_mod.END = "__end__"
+    types_mod.RetryPolicy = RetryPolicy
+    sys.modules["langgraph"] = langgraph_mod
+    sys.modules["langgraph.graph"] = graph_mod
+    sys.modules["langgraph.types"] = types_mod
 
 from graphs import daily_pipeline_v2  # noqa: E402
 from services import modal_client  # noqa: E402
@@ -93,8 +125,7 @@ def test_state_space_shadow_or_disabled_requires_explicit_quality_escape_hatch(m
     assert daily_pipeline_v2._state_space_overlay_mode() == "blocking"
 
 
-@pytest.mark.asyncio
-async def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch):
+def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch):
     monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "shadow")
     monkeypatch.setenv("PIPELINE_ALLOW_STATE_SPACE_OVERLAY_DEGRADE", "1")
     spawn_calls = []
@@ -110,7 +141,7 @@ async def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkey
     _patch_common(monkeypatch)
     monkeypatch.setattr(modal_client, "spawn_state_space_overlays_batch_predict", fake_spawn)
 
-    result = await daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]})
+    result = asyncio.run(daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]}))
 
     pred = result["predictions"]["2330"]
     assert pred["signal"] == "BUY"
@@ -123,8 +154,7 @@ async def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkey
     }]
 
 
-@pytest.mark.asyncio
-async def test_state_space_blocking_mode_preserves_overlay_attachment(monkeypatch):
+def test_state_space_blocking_mode_preserves_overlay_attachment(monkeypatch):
     monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "blocking")
     state_space_result = {
         "overlays": {
@@ -139,15 +169,14 @@ async def test_state_space_blocking_mode_preserves_overlay_attachment(monkeypatc
     }
     _patch_common(monkeypatch, state_space_result=state_space_result)
 
-    result = await daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]})
+    result = asyncio.run(daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]}))
 
     pred = result["predictions"]["2330"]
     assert pred["kalman_filter"]["forecast_pct"] == 0.01
     assert pred["markov_switching"]["forecast_pct"] == -0.01
 
 
-@pytest.mark.asyncio
-async def test_chronos_is_retired_from_evening_chain_even_if_legacy_pool_marks_active(monkeypatch):
+def test_chronos_is_retired_from_evening_chain_even_if_legacy_pool_marks_active(monkeypatch):
     _patch_common(monkeypatch)
     chronos_calls = 0
 
@@ -181,7 +210,7 @@ async def test_chronos_is_retired_from_evening_chain_even_if_legacy_pool_marks_a
         ),
     )
 
-    result = await daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]})
+    result = asyncio.run(daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]}))
 
     assert result["predictions"]["2330"]["signal"] == "BUY"
     assert chronos_calls == 0

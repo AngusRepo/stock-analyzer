@@ -455,7 +455,7 @@ adminWriteRoutes.post('/api/admin/meta-learning/neural-shadow/run', async (c) =>
   })
   return c.json({
     ...report,
-    note: 'Neural meta shadow challenger evidence only; production LinUCB / trading config remain unchanged.',
+    note: 'Neural meta counterfactual evidence only; production LinUCB / trading config remain unchanged.',
   })
 })
 

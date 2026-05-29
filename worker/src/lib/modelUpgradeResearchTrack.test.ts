@@ -14,30 +14,23 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const benchmark = listModelUpgradeCandidates('benchmark_only')
-  const ids = benchmark.map((candidate) => String(candidate.id))
-  assert(ids.includes('TabM'), 'TabM should be tracked as benchmark-only')
-  assert(ids.includes('iTransformer'), 'iTransformer should be tracked as benchmark-only')
-  assert(ids.includes('TimesFM'), 'TimesFM should be tracked as benchmark-only')
-  assert(!ids.includes('Moirai'), 'Moirai should be removed because HF weights are non-commercial')
-  assert(benchmark.every((candidate) => !candidate.can_predict), 'benchmark candidates must not run production prediction')
-  assert(benchmark.every((candidate) => !candidate.can_vote), 'benchmark candidates must not vote')
-  assert(benchmark.every((candidate) => candidate.vote_weight === 0), 'benchmark candidates must have zero vote weight')
+  const formal = listModelUpgradeCandidates('layer3_formal_family_slot')
+  const ids = formal.map((candidate) => String(candidate.id))
+  assert(ids.join(',') === 'TabM,GNN,iTransformer,TimesFM', 'Layer 3 formal slots should be the only experiment-seeded model-upgrade lane')
+  assert(formal.every((candidate) => candidate.parent_slot?.startsWith('Layer3.CoreFamily.')), 'formal slots must declare their Layer 3 family branch')
+  assert(formal.every((candidate) => candidate.requires_review_packet), 'formal slots require review packets before artifact promotion')
+  assert(formal.every((candidate) => !candidate.can_promote_directly), 'formal slots must not bypass promotion governance')
+  assert(formal.every((candidate) => !candidate.can_vote), 'formal slots must not vote until an artifact is approved and registered')
 }
 
 {
-  const shadow = listModelUpgradeCandidates('shadow_challenger')
-  assert(shadow.some((candidate) => candidate.id === 'ResidualMLP'), 'ResidualMLP should stay in shadow challenger track')
-  assert(shadow.some((candidate) => candidate.id === 'GNN'), 'GNN should stay in shadow challenger track')
-  assert(shadow.every((candidate) => candidate.can_predict), 'shadow challengers may produce shadow predictions')
-  assert(shadow.every((candidate) => !candidate.can_vote), 'shadow challengers must not vote')
-}
-
-{
-  const chronosMembers = listModelUpgradeCandidates('production_slot_member')
-  assert(chronosMembers.length === 2, 'Chronos-2 zero-shot and LoRA should be the only production slot members')
-  assert(chronosMembers.every((candidate) => candidate.parent_slot === 'Chronos'), 'Chronos members must stay inside one Chronos slot')
-  assert(chronosMembers.every((candidate) => !candidate.can_promote_directly), 'Chronos members must not bypass lifecycle evidence')
+  const retired = listModelUpgradeCandidates('retired')
+  const ids = retired.map((candidate) => String(candidate.id))
+  assert(ids.includes('FT-Transformer'), 'FT-Transformer should be explicitly retired')
+  assert(ids.includes('ResidualMLP'), 'ResidualMLP should be retired after TabM was selected for the tabular-neural branch')
+  assert(ids.includes('Chronos'), 'Chronos should be retired from alpha vote after the sequence-family refactor')
+  assert(retired.every((candidate) => !candidate.requires_review_packet), 'retired models must not seed new review lanes')
+  assert(retired.every((candidate) => !candidate.can_predict && !candidate.can_vote), 'retired models must not predict or vote')
 }
 
 {
@@ -48,7 +41,13 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const overlays = listModelUpgradeCandidates('state_space_overlay')
+  assert(overlays.map((candidate) => candidate.id).join(',') === 'KalmanFilter,MarkovSwitching', 'only Kalman/Markov belong to state-space overlays')
+  assert(overlays.every((candidate) => candidate.vote_weight === 0), 'state-space overlays must not count as alpha votes')
+}
+
+{
   const packet = buildP7ModelUpgradeReviewPacket()
-  assert(packet.includes('benchmark-only is not challenger'), 'review packet should clarify benchmark vs challenger')
-  assert(packet.includes('Chronos members keep one Chronos slot'), 'review packet should clarify Chronos denominator')
+  assert(packet.includes('formal Layer 3 slots require artifact promotion before voting'), 'review packet should clarify formal slot governance')
+  assert(packet.includes('retired models do not seed new experiments'), 'review packet should clarify retired model behavior')
 }

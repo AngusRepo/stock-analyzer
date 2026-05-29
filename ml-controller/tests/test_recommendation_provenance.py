@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+if "httpx" not in sys.modules:
+    httpx_stub = types.ModuleType("httpx")
+    httpx_stub.RequestError = RuntimeError
+
+    class AsyncClient:  # pragma: no cover - tests monkeypatch modal_client HTTP calls.
+        pass
+
+    httpx_stub.AsyncClient = AsyncClient
+    sys.modules["httpx"] = httpx_stub
+
 from services import recommendation_service  # noqa: E402
 from services import modal_client  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
+    apply_core_ml_gate,
+    build_return_history_from_payloads,
     build_reason,
     build_ml_vote_summary_data,
     filter_and_score_recommendations,
@@ -658,6 +672,86 @@ def test_sparse_tangent_allocator_is_default_buy_signal_owner():
     assert bypassed["has_buy_signal"] == 0
 
 
+def test_hybrid_ranking_promotion_uses_payload_return_history_and_opb_controller():
+    rows = [{
+        "symbol": "NOISY",
+        "chip_score": 34.0,
+        "tech_score": 26.0,
+        "score": 95.0,
+        "score_seed_inputs": _score_seed_inputs(34.0, 26.0),
+        "score_components": _screener_score_components_with_final(34.0, 26.0, 95.0),
+        "confidence": 0.6,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": 0.015,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+    }, {
+        "symbol": "STEADY",
+        "chip_score": 32.0,
+        "tech_score": 25.0,
+        "score": 94.0,
+        "score_seed_inputs": _score_seed_inputs(32.0, 25.0),
+        "score_components": _screener_score_components_with_final(32.0, 25.0, 94.0),
+        "confidence": 0.58,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": 0.014,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+    }]
+    history = {
+        "NOISY": [0.08, -0.10, 0.07, -0.09, 0.06, -0.08],
+        "STEADY": [0.010, 0.011, 0.010, 0.012, 0.011, 0.010],
+    }
+
+    promoted = hybrid_ranking_promotion(
+        rows,
+        ranking_config={"enabled": True, "topK": 2, "promoteMinForecastPct": 0.0},
+        alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "controller": "OnlinePortfolioBandit", "buySignalCount": 2}},
+        return_history=history,
+    )
+
+    selected = [row for row in promoted if row.get("has_buy_signal") == 1]
+    by_symbol = {row["symbol"]: row for row in selected}
+    assert len(selected) == 2
+    assert by_symbol["STEADY"]["allocation_weight"] > by_symbol["NOISY"]["allocation_weight"]
+    assert by_symbol["STEADY"]["alpha_allocation"]["return_history_coverage"] == 2
+    assert by_symbol["STEADY"]["alpha_allocation"]["opb_controller"]["stage"] == "L3_production_allocation_controller"
+
+
+def test_core_ml_gate_filters_recommendations_to_selected_family_rank_symbols():
+    rows = [{"symbol": "A", "score": 80}, {"symbol": "B", "score": 90}, {"symbol": "C", "score": 70}]
+    predictions = {
+        "A": {"core_ml_gate": {"selected": True, "rank": 2, "target_size": 2}},
+        "B": {"core_ml_gate": {"selected": True, "rank": 1, "target_size": 2}},
+        "C": {"core_ml_gate": {"selected": False, "rank": 3, "target_size": 2}},
+    }
+
+    gated = apply_core_ml_gate(rows, predictions, fallback_size=2)
+
+    assert [row["symbol"] for row in gated] == ["B", "A"]
+    assert gated[0]["core_ml_gate"]["rank"] == 1
+    assert any(point.startswith("core_ml_gate:") for point in gated[0]["watch_points"])
+
+
+def test_build_return_history_from_payloads_uses_close_to_close_returns():
+    history = build_return_history_from_payloads([
+        {
+            "symbol": "2330",
+            "prices": [
+                {"date": "2026-05-25", "close": 100.0},
+                {"date": "2026-05-26", "close": 102.0},
+                {"date": "2026-05-27", "close": 101.0},
+            ],
+        }
+    ])
+
+    assert history["2330"] == [0.02, -0.00980392]
+
+
 def test_hybrid_ranking_promotion_blocks_negative_forecast():
     rows = [{
         "symbol": "5292",
@@ -877,8 +971,7 @@ def test_hybrid_ranking_promotion_requires_canonical_score_v2_components():
         )
 
 
-@pytest.mark.asyncio
-async def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
+def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
     monkeypatch.setattr(modal_client, "_USE_MODAL", False)
     monkeypatch.setattr(modal_client, "_ML_SERVICE_URL", "https://ml.example.com")
 
@@ -892,7 +985,7 @@ async def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
 
     monkeypatch.setattr(modal_client, "_http_batch", _fake_http_batch)
 
-    result = await modal_client.batch_predict([{"symbol": "2330"}])
+    result = asyncio.run(modal_client.batch_predict([{"symbol": "2330"}]))
 
     assert result == [{"ok": True}]
     assert observed["path"] == "/predict/v2"
@@ -944,11 +1037,13 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
                 "CatBoost": 0.58,
                 "ExtraTrees": 0.52,
                 "LightGBM": 0.47,
-                "FT-Transformer": 0.56,
+                "TabM": 0.56,
+                "GNN": 0.49,
             },
-            "chronos": {"forecast_pct": 0.02},
             "dlinear": {"forecast_pct": -0.01},
             "patchtst": {"forecast_pct": 0.015},
+            "itransformer": {"forecast_pct": 0.01},
+            "timesfm": {"forecast_pct": 0.02},
             "ensemble_v2": {
                 "forecast_pct": 0.0066,
                 "weights": {
@@ -956,20 +1051,22 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
                     "CatBoost": 0.03,
                     "ExtraTrees": 0.02,
                     "LightGBM": 0.06,
-                    "FT-Transformer": 0.0,
-                    "Chronos": 0.24,
+                    "TabM": 0.04,
+                    "GNN": 0.01,
                     "DLinear": 0.0,
                     "PatchTST": 0.17,
+                    "iTransformer": 0.03,
+                    "TimesFM": 0.02,
                 },
-                "contributing_models": ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "Chronos", "PatchTST"],
+                "contributing_models": ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "TabM", "GNN", "PatchTST", "iTransformer", "TimesFM"],
             },
         },
         {"up": 0, "down": 0, "total": 0},
     )
 
-    assert summary["reported"] == 6
+    assert summary["reported"] == 10
     assert summary["missing"] == 0
-    assert summary["activeWeightCount"] == 5
+    assert summary["activeWeightCount"] == 9
     assert summary["zeroWeightModels"] == ["DLinear"]
 
 

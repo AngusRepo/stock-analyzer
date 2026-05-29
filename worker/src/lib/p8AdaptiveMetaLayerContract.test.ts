@@ -85,6 +85,10 @@ assert(
   'FT-Transformer must be removed from active alpha vote governance',
 )
 assert(
+  JSON.stringify(ADAPTIVE_META_LAYER_GOVERNANCE.formal_layer3_slots) === JSON.stringify(['TabM', 'GNN', 'iTransformer', 'TimesFM']),
+  'formal Layer 3 slots must be explicit and not hidden as shadow/challenger tracks',
+)
+assert(
   JSON.stringify(ADAPTIVE_META_LAYER_GOVERNANCE.state_space_overlays) === JSON.stringify(['KalmanFilter', 'MarkovSwitching']),
   'Kalman/Markov must remain state-space overlays, not alpha voters',
 )
@@ -99,8 +103,8 @@ for (const component of ['ARF', 'LinUCB', 'Conformal', 'Stacking', 'GAOptimizer'
   )
 }
 assert(
-  ADAPTIVE_META_LAYER_GOVERNANCE.adaptive_components.OnlinePortfolioBandit.includes('L2 paper-active'),
-  'OnlinePortfolioBandit wording must reflect L2 paper-active controller scope, not research-only',
+  ADAPTIVE_META_LAYER_GOVERNANCE.adaptive_components.OnlinePortfolioBandit.includes('production-capable'),
+  'OnlinePortfolioBandit wording must reflect allocator-controller scope, not research-only',
 )
 
 class FakeKV {

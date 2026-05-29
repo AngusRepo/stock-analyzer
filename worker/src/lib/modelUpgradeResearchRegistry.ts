@@ -80,7 +80,7 @@ function cleanText(value: unknown): string {
 }
 
 function requiresExperimentRegistry(candidate: ModelUpgradeCandidate): boolean {
-  return candidate.stage === 'shadow_challenger' || candidate.stage === 'benchmark_only'
+  return candidate.stage === 'layer3_formal_family_slot'
 }
 
 function candidateAliases(candidate: ModelUpgradeCandidate): string[] {
@@ -99,6 +99,8 @@ export function experimentMatchesModelUpgradeCandidate(
 ): boolean {
   const dataSlice = record.data_slice ?? {}
   const explicit = [
+    ...(Array.isArray(dataSlice.layer3_candidates) ? dataSlice.layer3_candidates : []),
+    ...(Array.isArray(dataSlice.formal_family_candidates) ? dataSlice.formal_family_candidates : []),
     ...(Array.isArray(dataSlice.benchmark_candidates) ? dataSlice.benchmark_candidates : []),
     ...(Array.isArray(dataSlice.shadow_candidates) ? dataSlice.shadow_candidates : []),
   ].map((item) => cleanText(item).toLowerCase())
@@ -117,29 +119,20 @@ export function experimentMatchesModelUpgradeCandidate(
 }
 
 function seedInputForCandidate(candidate: ModelUpgradeCandidate): Parameters<typeof normalizeResearchExperimentInput>[0] {
-  const isBenchmark = candidate.stage === 'benchmark_only'
-  const isShadow = candidate.stage === 'shadow_challenger'
   return {
     id: `model-upgrade-${candidate.id.toLowerCase()}-${P7_MODEL_UPGRADE_TRACK_VERSION}`,
-    status: isShadow ? 'running' : 'queued',
-    hypothesis: isBenchmark
-      ? `${candidate.id} model_benchmark: use Strategy Lab dry-run to evaluate ${candidate.family} as benchmark-only evidence before any shadow challenger promotion.`
-      : `${candidate.id} shadow evaluation: run Strategy Lab shadow evidence checks for OOS IC, CPCV/PBO, cost profile, and data-slice readiness before any production vote.`,
+    status: 'queued',
+    hypothesis: `${candidate.id} formal Layer 3 slot evaluation: run Strategy Lab dry-run evidence checks for OOS IC, CPCV/PBO, cost profile, and data-slice readiness before any production vote.`,
     sourceRefs: ['strategy-lab-ui', 'model-upgrade-track', P7_MODEL_UPGRADE_TRACK_VERSION],
-    strategySpecIds: [isBenchmark ? 'model_family_benchmark_v1' : 'model_family_shadow_v1'],
+    strategySpecIds: ['layer3_model_family_evaluation_v1'],
     dataSlice: {
       start_date: '2026-04-01',
-      lane: isShadow ? 'tradable_shadow' : 'research_benchmark',
-      benchmark_candidates: isBenchmark ? [candidate.id] : [],
-      shadow_candidates: isShadow ? [candidate.id] : [],
+      lane: 'layer3_formal_family_evaluation',
+      layer3_candidates: [candidate.id],
       production_mutation_allowed: false,
     },
-    metrics: isBenchmark
-      ? ['model_benchmark', 'oos_ic', 'cpcv_pbo', 'cost_sensitivity', 'data_slice_report']
-      : ['shadow_rank_ic', 'oos_ic', 'cpcv_pbo', 'cost_profile', 'data_slice_report'],
-    followUp: isBenchmark
-      ? ['run model_benchmark dry-run plan', 'inspect blockers', 'decide whether to promote to shadow challenger or reject']
-      : ['run shadow evaluation dry-run plan', 'inspect shadow rows and rank IC', 'keep production unchanged until review packet passes'],
+    metrics: ['model_family_evaluation', 'oos_ic', 'cpcv_pbo', 'cost_profile', 'data_slice_report'],
+    followUp: ['run formal Layer 3 dry-run plan', 'inspect blockers', 'create artifact intent only after review', 'keep production unchanged until Wei approval'],
   }
 }
 
@@ -149,8 +142,7 @@ export async function ensureModelUpgradeResearchRegistry(
 ): Promise<{ created: string[]; existing: string[]; total: number }> {
   assertOwnerCanOwn('research', 'experiment_registry')
   const candidates = [
-    ...listModelUpgradeCandidates('shadow_challenger'),
-    ...listModelUpgradeCandidates('benchmark_only'),
+    ...listModelUpgradeCandidates('layer3_formal_family_slot'),
   ]
   const experiments = await listResearchExperiments(kv, 100)
   const created: string[] = []
@@ -182,7 +174,6 @@ function missingEvidenceFor(candidate: ModelUpgradeCandidate, latestRun: StoredR
   const review = latestRun.review_packet.toLowerCase()
   return candidate.evidence_required.filter((item) => {
     const compact = item.toLowerCase().replace(/\s+/g, '_')
-    if (compact.includes('shadow')) return !review.includes('shadow') && !review.includes('ok=')
     if (compact.includes('oos') || compact.includes('ic')) return !review.includes('oos_ic')
     if (compact.includes('pbo') || compact.includes('cpcv')) return !review.includes('pbo')
     if (compact.includes('cost')) return !review.includes('cost')
@@ -209,7 +200,7 @@ function nextActionFor(
   latestIntentStatus: ModelUpgradeResearchStatusRow['latest_artifact_intent_status'],
 ): string {
   if (!requiresExperimentRegistry(candidate)) {
-    if (candidate.stage === 'production_slot_member') return 'track_inside_existing_production_slot_no_new_alpha_denominator'
+    if (candidate.stage === 'retired') return 'retired_no_new_experiment_or_production_vote'
     if (candidate.stage === 'meta_optimizer') return 'track_meta_optimizer_governance_no_stock_alpha_vote'
     if (candidate.stage === 'state_space_overlay') return 'track_regime_risk_overlay_no_alpha_vote'
     return 'track_governance_only'
@@ -223,8 +214,8 @@ function nextActionFor(
     return 'manual_registry_owner_can_review_intent'
   }
   if (!latestRun) return 'run_strategy_lab_dry_run_evaluation_plan'
-  if (registryStatus === 'ready_for_review') return 'manual_review_then_decide_shadow_or_reject'
-  return 'inspect_benchmark_or_shadow_blockers'
+  if (registryStatus === 'ready_for_review') return 'manual_review_then_create_artifact_intent_or_reject'
+  return 'inspect_layer3_formal_slot_blockers'
 }
 
 export async function buildModelUpgradeResearchStatus(kv: KVNamespace): Promise<ModelUpgradeResearchStatusReport> {

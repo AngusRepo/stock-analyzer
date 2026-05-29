@@ -17,7 +17,7 @@ def test_research_model_benchmark_fails_closed_without_executor_evidence():
         data_slice={"universe": "twse_tpex"},
     )
 
-    assert report["schema_version"] == "model-family-benchmark-report-v1"
+    assert report["schema_version"] == "layer3-family-evaluation-report-v1"
     assert report["candidate_id"] == "TabM"
     assert report["status"] == "blocked"
     assert "missing_executor_result" in report["blockers"]

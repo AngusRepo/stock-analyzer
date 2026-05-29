@@ -57,8 +57,8 @@ const EMPTY_ARTIFACT_INTENT_DRAFT: ArtifactIntentDraft = {
 }
 
 const ARTIFACT_INTENT_FIELDS: Array<{ key: keyof ArtifactIntentDraft; label: string; placeholder: string; required?: boolean }> = [
-  { key: 'model_name', label: 'model name', placeholder: 'ResidualMLP / GNN' },
-  { key: 'artifact_version', label: 'artifact version', placeholder: 'v20260519-shadow-a' },
+  { key: 'model_name', label: 'model name', placeholder: 'TabM / GNN / iTransformer / TimesFM' },
+  { key: 'artifact_version', label: 'artifact version', placeholder: 'v20260519-layer3-a' },
   { key: 'artifact_path', label: 'artifact path', placeholder: 'gs://stockvision-models/...' , required: true },
   { key: 'training_manifest_path', label: 'training manifest', placeholder: 'gs://.../training_manifest.json', required: true },
   { key: 'feature_policy_version', label: 'feature policy', placeholder: 'model-feature-policy-v1', required: true },
@@ -151,7 +151,7 @@ function applyModelUpgradeSeedFeedback(
         registry_status: 'evaluation_pending',
         registered_experiment_ids: [experimentId, ...row.registered_experiment_ids.filter((id) => id !== experimentId)].slice(0, 5),
         latest_experiment_id: experimentId,
-        latest_experiment_status: row.stage === 'shadow_challenger' ? 'running' : 'queued',
+        latest_experiment_status: row.stage === 'layer3_formal_family_slot' ? 'queued' : null,
         next_action: 'run_strategy_lab_dry_run_evaluation_plan',
         missing_evidence: ['evaluation_run_missing'],
       }
@@ -280,7 +280,7 @@ function ModelUpgradeLaunchpad({
           <div aria-live="polite" className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
             {busy === 'model-upgrade-seed'
               ? '正在寫入 Strategy Lab experiment registry metadata；完成後會更新 missing / pending counters 與右側 Registry Inspector。'
-              : '正在執行 shadow/benchmark dry-run evaluation；完成後會更新 review-ready / needs-attention evidence。'}
+              : '正在執行 Layer 3 formal family dry-run evaluation；完成後會更新 review-ready / needs-attention evidence。'}
           </div>
         )}
         {actionResult && (
@@ -319,7 +319,7 @@ function ModelUpgradeLaunchpad({
           </div>
         </div>
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-          這裡只列需要 Strategy Lab experiment registry 的模型研究項目。Dry-run 每次只跑下一個 pending experiment，避免 backtest / walk-forward / verify / benchmark 整批 sequential timeout。
+          這裡只列需要 Strategy Lab experiment registry 的 Layer 3 formal family slot。Dry-run 每次只跑下一個 pending experiment，避免 backtest / walk-forward / verify / family evaluation 整批 sequential timeout。
         </div>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-5">
           {registryRows.map((row) => (
@@ -377,7 +377,7 @@ function ModelUpgradeLaunchpad({
           ))}
         </div>
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-          這裡只建立 Strategy Lab experiment 與 evaluation packet。ResidualMLP/GNN 是 shadow challenger，TabM/iTransformer/TimesFM 是 benchmark-only；兩者都不會進 production vote，通過 review 後才可能進下一層 promotion gate。
+          這裡只建立 Strategy Lab experiment 與 evaluation packet。TabM、GNN、iTransformer、TimesFM 是 Layer 3 formal family slot；未完成 artifact/evidence/review packet 與 Wei approval 前不投 production vote。
         </div>
       </CardContent>
     </Card>
@@ -588,7 +588,8 @@ function StrategyLearningPanel({
 
 function metaStageClass(stage: string) {
   if (stage === 'production_baseline') return 'border-emerald-500/25 bg-emerald-500/15 text-emerald-200'
-  if (stage === 'shadow_challenger') return 'border-sky-500/25 bg-sky-500/15 text-sky-200'
+  if (stage === 'counterfactual_audit') return 'border-sky-500/25 bg-sky-500/15 text-sky-200'
+  if (stage === 'production_controller') return 'border-cyan-500/25 bg-cyan-500/15 text-cyan-200'
   if (stage === 'strategy_research') return 'border-amber-500/25 bg-amber-500/15 text-amber-200'
   return 'border-slate-600/50 bg-slate-800/40 text-slate-300'
 }
@@ -596,7 +597,8 @@ function metaStageClass(stage: string) {
 function decisionZhClean(status: string) {
   const map: Record<string, string> = {
     production_baseline_needs_evidence: 'Production baseline 需要補 evidence',
-    run_shadow: '執行 shadow 驗證',
+    run_counterfactual_audit: '執行 counterfactual audit',
+    controller_evidence_active: 'Allocator controller evidence active',
     needs_experiment_registry: '需要 experiment registry',
     research_only: '研究層，不影響 production',
   }
@@ -695,7 +697,7 @@ function MetaLearningDecisionDesk({
                   <div className={evidenceTone(evidence?.reward_ledger_status)}>{evidenceLabel(evidence?.reward_ledger_status)}</div>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2">
-                  <div className="text-slate-500">Shadow</div>
+                  <div className="text-slate-500">Counterfactual</div>
                   <div className={evidenceTone(evidence?.shadow_status)}>{evidenceLabel(evidence?.shadow_status)}</div>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2">
@@ -768,7 +770,7 @@ function MetaLearningDecisionDesk({
                       <td className="border-b border-slate-900 py-3 pr-3 font-semibold text-slate-100">{track.id}</td>
                       <td className="border-b border-slate-900 py-3 pr-3 text-slate-400">{evidence?.missing_evidence.slice(0, 5).join(' / ') || 'ready'}</td>
                       <td className="border-b border-slate-900 py-3 pr-3 text-slate-300">{track.registered_experiment_ids.join(', ') || 'missing'} / latest {evidence?.latest_evidence_at ?? '-'}</td>
-                      <td className="border-b border-slate-900 py-3 pr-3 text-amber-200">{decisionZhClean(track.decision_queue_status)} / ledger {evidenceLabel(evidence?.reward_ledger_status)} / shadow {evidenceLabel(evidence?.shadow_status)}</td>
+                      <td className="border-b border-slate-900 py-3 pr-3 text-amber-200">{decisionZhClean(track.decision_queue_status)} / ledger {evidenceLabel(evidence?.reward_ledger_status)} / counterfactual {evidenceLabel(evidence?.shadow_status)}</td>
                     </tr>
                     )
                   })}
@@ -909,7 +911,7 @@ function RegistryInspectorPanel({
 
         {!selected && (
           <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm leading-6 text-slate-400">
-            先從左側 Action Lanes 選擇 Meta track、Model challenger，或從上方 ledger list 選一筆 experiment；這裡只顯示該項目的 registry details、history、approval 與下一步。
+            先從左側 Action Lanes 選擇 Meta track、Model family slot，或從上方 ledger list 選一筆 experiment；這裡只顯示該項目的 registry details、history、approval 與下一步。
           </div>
         )}
 
@@ -929,7 +931,7 @@ function RegistryInspectorPanel({
                 <div className={evidenceTone(selectedMetaEvidence?.reward_ledger_status)}>{evidenceLabel(selectedMetaEvidence?.reward_ledger_status)}</div>
               </div>
               <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
-                <div className="text-slate-500">Shadow</div>
+                <div className="text-slate-500">Counterfactual</div>
                 <div className={evidenceTone(selectedMetaEvidence?.shadow_status)}>{evidenceLabel(selectedMetaEvidence?.shadow_status)}</div>
               </div>
             </div>
@@ -1395,20 +1397,22 @@ export default function StrategyLabPage() {
     }
   }
 
-  async function createModelBenchmarkExperiment() {
+  async function createModelFamilyEvaluationExperiment() {
     try {
       setDraftPersisting(true)
       setDraftError(null)
       const today = new Date().toISOString().slice(0, 10)
       const res = await strategyLabApi.createExperiment({
-        id: `model-family-benchmark-${today.replace(/-/g, '')}`,
-        hypothesis: 'model_benchmark：評估 TabM、iTransformer、TimesFM 是否值得從 benchmark-only 升級成 shadow challenger，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
-        strategySpecIds: ['model_family_benchmark_v1'],
+        id: `model-family-evaluation-${today.replace(/-/g, '')}`,
+        hypothesis: 'layer3_model_family_evaluation：評估 TabM、GNN、iTransformer、TimesFM 是否具備正式 Layer 3 分支 artifact 條件，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
+        strategySpecIds: ['layer3_model_family_evaluation_v1'],
         metrics: ['oos_ic', 'cpcv_pbo', 'cost_sensitivity', 'data_slice_report', 'latency_cost'],
-        followUp: ['run model_benchmark dry-run', 'inspect benchmark report', 'decide promote to shadow challenger or reject'],
+        followUp: ['run layer3 formal family dry-run', 'inspect family evaluation report', 'decide artifact intent or reject'],
         sourceRefs: ['strategy-lab-ui', 'model-upgrade-track'],
         dataSlice: {
-          benchmark_candidates: ['TabM', 'iTransformer', 'TimesFM'],
+          layer3_candidates: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
+          formal_family_candidates: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
+          benchmark_candidates: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
           start_date: '2026-04-01',
           end_date: today,
           market_lanes: ['listed', 'otc', 'emerging'],
@@ -1418,11 +1422,11 @@ export default function StrategyLabPage() {
         confirm: true,
       })
       setDraftResult(res.review_packet)
-      setMetaActionResult(`Model Benchmark 已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
+      setMetaActionResult(`Layer 3 family evaluation 已寫入 registry：${res.experiment.id}，狀態 ${res.experiment.status}。`)
       setRegistrySelection({ kind: 'experiment', id: res.experiment.id })
       await load()
     } catch (e: unknown) {
-      setDraftError(getErrorMessage(e, 'model benchmark experiment write failed'))
+      setDraftError(getErrorMessage(e, 'model family evaluation experiment write failed'))
     } finally {
       setDraftPersisting(false)
     }
@@ -1822,12 +1826,12 @@ export default function StrategyLabPage() {
                   <Button size="sm" variant="outline" disabled={draftPersisting || draftHypothesis.trim().length < 12} onClick={persistDraftExperiment}>
                     {draftPersisting ? 'Saving...' : '寫入 Registry'}
                   </Button>
-                  <Button size="sm" className="bg-amber-400 text-slate-950 hover:bg-amber-300" disabled={draftPersisting} onClick={createModelBenchmarkExperiment}>
-                    建立 Model Benchmark
+                  <Button size="sm" className="bg-amber-400 text-slate-950 hover:bg-amber-300" disabled={draftPersisting} onClick={createModelFamilyEvaluationExperiment}>
+                    建立 Family Evaluation
                   </Button>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-                  觸發順序：先寫入 experiment registry，下面卡片會出現 evaluation plan，再按 Run dry-run plan；model_benchmark step 會呼叫 /research/model-benchmark/dry-run，不是 Scheduler job。
+                  觸發順序：先寫入 experiment registry，下面卡片會出現 evaluation plan，再按 Run dry-run plan；Layer 3 family evaluation step 會呼叫 /research/model-benchmark/dry-run 相容端點，不是 Scheduler job。
                 </div>
                 {draftError && <div className="text-xs text-red-300">{draftError}</div>}
                 {draftResult && (

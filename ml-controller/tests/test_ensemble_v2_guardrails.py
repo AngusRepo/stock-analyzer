@@ -9,7 +9,7 @@ def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
             "XGBoost": 0.95,
             "CatBoost": 0.92,
         },
-        "chronos": {"forecast_pct": 0.04},
+        "dlinear": {"forecast_pct": 0.04},
     }
 
     attach_ensemble_v2(
@@ -17,12 +17,12 @@ def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
         model_status={
             "XGBoost": "active",
             "CatBoost": "retired",
-            "Chronos": "active",
+            "DLinear": "active",
         },
         ic_weights={
             "XGBoost": -0.02,
             "CatBoost": 0.30,
-            "Chronos": 0.0,
+            "DLinear": 0.0,
         },
         degraded_dampening=0.5,
     )
@@ -200,7 +200,7 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
 
     pool = {
         "models": {
-            "FT-Transformer": {
+            "TabM": {
                 "status": "active",
                 "rolling_ic": 0.12,
                 "last_ic_status": "insufficient_samples",
@@ -244,8 +244,8 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
 
     status, ic_weights, *_ = daily_pipeline_v2._load_pool_and_ic()
 
-    assert status["FT-Transformer"] == "active"
-    assert "FT-Transformer" not in ic_weights
+    assert status["TabM"] == "active"
+    assert "TabM" not in ic_weights
     assert "DLinear" not in ic_weights
     assert ic_weights["PatchTST"] == 0.07
 

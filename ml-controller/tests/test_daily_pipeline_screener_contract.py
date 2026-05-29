@@ -10,6 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 if "httpx" not in sys.modules:
     httpx_stub = types.ModuleType("httpx")
     httpx_stub.RequestError = RuntimeError
+
+    class AsyncClient:  # pragma: no cover - contract tests do not use real HTTP.
+        pass
+
+    httpx_stub.AsyncClient = AsyncClient
     sys.modules["httpx"] = httpx_stub
 
 from services.payload_builder import build_ml_universe  # noqa: E402
@@ -46,6 +51,19 @@ def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():
     )
     assert "_load_market_env_with_backoff" in source
     assert "D1_RETRYABLE_MARKERS" in source
+
+
+def test_daily_pipeline_runs_coarse_feature_gate_before_heavy_sequence_models():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    feature_call = source.index("results = await batch_predict(payloads)")
+    core_gate = source.index("Layer2 coarse ML gate selected")
+    sequence_call = source.index("modal_client.dlinear_batch_predict(sequence_series")
+    assert feature_call < core_gate < sequence_call
+    assert "core_ml_gate_by_symbol" in source
+    assert "LightGBM+XGBoost+ExtraTrees" in source
+    assert "apply_core_ml_gate(" in source
+    assert "build_return_history_from_payloads(state[\"payloads\"])" in source
 
 
 def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():

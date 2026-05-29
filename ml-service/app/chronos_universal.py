@@ -445,7 +445,7 @@ def chronos_batch_predict(
             return [
                 batch_results.get(str(s.get("symbol") or "?"))
                 or invalid_by_symbol.get(str(s.get("symbol") or "?"))
-                or {"symbol": s.get("symbol", "?"), "error": "Chronos batch result missing"}
+                or {"symbol": s.get("symbol", "?"), "error": "Chronos diagnostic result missing"}
                 for s in series_list
             ]
         logger.warning(

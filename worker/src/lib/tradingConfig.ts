@@ -220,7 +220,8 @@ export interface TradingConfig {
     maxCandidates: number        // Bottom-up 最終候選上限（預設 25）
     emergingMaxCandidates: number // 興櫃研究觀察候選上限（不進 pending buys，預設 24）
     candidatePoolSize?: number   // Screener enrichment top pool（預設由 screenerPolicy 解析）
-    mlShortlistSize?: number     // 送入 ML/recommendation 的上市櫃 shortlist（預設由 screenerPolicy 解析）
+    coarseMlQueueSize?: number   // 送入 ml-controller Layer 2 coarse ML gate 的上市櫃 queue
+    mlShortlistSize?: number     // Layer 3 core family ML shortlist（預設由 screenerPolicy 解析）
     emergingResearchSize?: number // 興櫃研究 shortlist（預設由 screenerPolicy 解析）
     scoreCalibrationEnabled?: boolean
     scoreCalibrationMinSize?: number
@@ -535,8 +536,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     topNMomentum: 15,
     maxCandidates: 25,
     emergingMaxCandidates: 24,
-    candidatePoolSize: 120,
-    mlShortlistSize: 40,
+    candidatePoolSize: 200,
+    coarseMlQueueSize: 80,
+    mlShortlistSize: 35,
     emergingResearchSize: 24,
     scoreCalibrationEnabled: true,
     scoreCalibrationMinSize: 30,

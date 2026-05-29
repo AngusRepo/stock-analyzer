@@ -7,18 +7,18 @@ def test_prediction_dispersion_flags_low_active_weights_and_annotates_symbols():
     predictions = {
         "2330": {
             "rank_scores": {"XGBoost": 0.82, "CatBoost": 0.81, "LightGBM": 0.80},
-            "chronos": {"forecast_pct": 0.02},
+            "patchtst": {"forecast_pct": 0.02},
             "ensemble_v2": {
                 "avg_rank": 0.80,
-                "weights": {"XGBoost": 0.03, "CatBoost": 0.0, "LightGBM": 0.0, "Chronos": 0.0},
+                "weights": {"XGBoost": 0.03, "CatBoost": 0.0, "LightGBM": 0.0, "PatchTST": 0.0},
             },
         },
         "2317": {
             "rank_scores": {"XGBoost": 0.22, "CatBoost": 0.21, "LightGBM": 0.20},
-            "chronos": {"forecast_pct": -0.02},
+            "patchtst": {"forecast_pct": -0.02},
             "ensemble_v2": {
                 "avg_rank": 0.22,
-                "weights": {"XGBoost": 0.04, "CatBoost": 0.0, "LightGBM": 0.0, "Chronos": 0.0},
+                "weights": {"XGBoost": 0.04, "CatBoost": 0.0, "LightGBM": 0.0, "PatchTST": 0.0},
             },
         },
     }

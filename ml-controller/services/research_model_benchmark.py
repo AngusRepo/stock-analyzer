@@ -1,7 +1,7 @@
-"""Research model-family benchmark evidence contract.
+"""Formal Layer 3 model-family evaluation evidence contract.
 
-This service intentionally does not invent benchmark numbers. A benchmark
-candidate is reviewable only when an executor returns real fold metrics,
+This service intentionally does not invent evaluation numbers. A formal Layer 3
+slot is reviewable only when an executor returns real fold metrics,
 PBO/CPCV evidence, cost sensitivity, and data-slice coverage.
 """
 
@@ -15,7 +15,7 @@ from typing import Any
 from services.model_cpcv_evidence import build_model_cpcv_evidence
 
 
-MODEL_BENCHMARK_REPORT_SCHEMA_VERSION = "model-family-benchmark-report-v1"
+MODEL_BENCHMARK_REPORT_SCHEMA_VERSION = "layer3-family-evaluation-report-v1"
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,15 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
         runtime_package="tabm",
         adapter_module="app.research_benchmarks.tabm_adapter",
         expected_evidence=("oos_ic", "cpcv_pbo", "cost_sensitivity", "data_slice_report"),
-        notes="Tabular neural benchmark; must compare against tree/FT on the same train/serve feature policy.",
+        notes="Formal tabular-neural slot; must compare against the tree family on the same train/serve feature policy.",
+    ),
+    "GNN": BenchmarkCandidateSpec(
+        candidate_id="GNN",
+        family="cross_stock_graph",
+        runtime_package="torch",
+        adapter_module="app.gnn_model",
+        expected_evidence=("graph_spec", "leakage_controls", "oos_ic", "cpcv_pbo", "cost_sensitivity", "data_slice_report"),
+        notes="Formal graph slot; graph construction and leakage controls must be explicit before artifact promotion.",
     ),
     "iTransformer": BenchmarkCandidateSpec(
         candidate_id="iTransformer",
@@ -43,7 +51,7 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
         runtime_package="torch",
         adapter_module="app.research_benchmarks.itransformer_adapter",
         expected_evidence=("oos_ic", "cpcv_pbo", "cost_sensitivity", "data_slice_report"),
-        notes="Sequence benchmark; must use sequence policy, not tabular all-features.",
+        notes="Formal learned-sequence slot; must use sequence policy, not tabular all-features.",
     ),
     "TimesFM": BenchmarkCandidateSpec(
         candidate_id="TimesFM",
@@ -51,7 +59,7 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
         runtime_package="timesfm",
         adapter_module="app.research_benchmarks.timesfm_adapter",
         expected_evidence=("oos_ic", "forecast_validation", "cost_sensitivity", "data_slice_report"),
-        notes="Foundation time-series benchmark against Chronos; should not enter production without review.",
+        notes="Formal foundation-sequence slot; compare against DLinear, PatchTST, and iTransformer, not retired Chronos.",
     ),
 }
 
@@ -125,7 +133,7 @@ def build_model_family_benchmark_report(
             "status": "blocked",
             "candidate_id": candidate_id,
             "experiment_id": experiment_id,
-            "blockers": ["unknown_benchmark_candidate"],
+            "blockers": ["unknown_formal_family_candidate"],
             "supported_candidates": sorted(BENCHMARK_CANDIDATES),
         }
 

@@ -308,7 +308,8 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     ev2 = (ml or {}).get("ensemble_v2") or {}
     tracked = [
         "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
-        "DLinear", "PatchTST",
+        "TabM", "GNN",
+        "DLinear", "PatchTST", "iTransformer", "TimesFM",
     ]
     weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
     active_weight_count = 0
@@ -334,13 +335,18 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     model_scores: dict[str, float] = {}
     rank_scores = (ml or {}).get("rank_scores") or {}
     if isinstance(rank_scores, dict):
-        for name in tracked[:4]:
+        for name in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"]:
             try:
                 if rank_scores.get(name) is not None:
                     model_scores[name] = float(rank_scores[name])
             except (TypeError, ValueError):
                 continue
-    for src_key, model_name in (("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+    for src_key, model_name in (
+        ("dlinear", "DLinear"),
+        ("patchtst", "PatchTST"),
+        ("itransformer", "iTransformer"),
+        ("timesfm", "TimesFM"),
+    ):
         sig = (ml or {}).get(src_key) or {}
         try:
             if sig.get("forecast_pct") is not None:
@@ -379,6 +385,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
                 name for name in (ev2.get("contributing_models") or [])
                 if name in tracked
             ],
+            "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
         }
 
     models = (ml or {}).get("models") or []
@@ -433,6 +440,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
         "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
         "contributingModels": ev2.get("contributing_models") or [],
+        "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
     }
 
 
@@ -1245,8 +1253,8 @@ def filter_and_score_recommendations(
     sell_count = 0
 
     # ML_POOL Plan A migration (2026-04-19): toggle which signal drives the
-    # BUY/SELL gate. Default True = use ensemble_v2 (8 alpha models
-    # with R1+R3 lifecycle weights). KV override:
+    # BUY/SELL gate. Default True = use ensemble_v2 formal alpha slots
+    # with lifecycle weights). KV override:
     # trading:config.mlPool.useEnsembleV2=false → fall back to legacy feature-model signal.
     use_ev2 = _is_use_ensemble_v2()
 
@@ -1536,6 +1544,72 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     return True
 
 
+def build_return_history_from_payloads(payloads: list[dict], *, lookback: int = 60) -> dict[str, list[float]]:
+    """Build close-to-close return history for allocator risk estimates."""
+    history: dict[str, list[float]] = {}
+    safe_lookback = max(2, min(int(lookback or 60), 252))
+    for payload in payloads or []:
+        symbol = str(payload.get("symbol") or payload.get("stock_id") or "").strip()
+        if not symbol:
+            continue
+        prices = _sorted_payload_rows(payload, "prices")[-(safe_lookback + 1):]
+        closes: list[float] = []
+        for row in prices:
+            close = _float_or_none(row.get("close"))
+            if close is None:
+                close = _float_or_none(row.get("adj_close"))
+            if close is not None and close > 0:
+                closes.append(close)
+        returns: list[float] = []
+        for idx in range(1, len(closes)):
+            prev = closes[idx - 1]
+            cur = closes[idx]
+            if prev > 0:
+                value = cur / prev - 1.0
+                if math.isfinite(value):
+                    returns.append(round(value, 8))
+        if returns:
+            history[symbol] = returns
+    return history
+
+
+def apply_core_ml_gate(
+    recommendations: list[dict],
+    predictions: dict[str, dict],
+    *,
+    fallback_size: int | None = None,
+) -> list[dict]:
+    """Keep only rows selected by the Layer 3 core-family ML gate."""
+    selected_ranks: dict[str, int] = {}
+    for symbol, pred in (predictions or {}).items():
+        gate = pred.get("core_ml_gate") if isinstance(pred, dict) else None
+        if not isinstance(gate, dict) or not gate.get("selected"):
+            continue
+        try:
+            rank = int(gate.get("rank") or 999_999)
+        except (TypeError, ValueError):
+            rank = 999_999
+        selected_ranks[str(symbol)] = rank
+    if not selected_ranks:
+        if fallback_size is None:
+            return recommendations
+        safe_size = max(1, min(80, int(fallback_size)))
+        return sorted(recommendations, key=lambda row: float(row.get("score") or 0.0), reverse=True)[:safe_size]
+
+    gated = [
+        row for row in recommendations
+        if str(row.get("symbol") or "") in selected_ranks
+    ]
+    for row in gated:
+        gate = (predictions.get(str(row.get("symbol") or "")) or {}).get("core_ml_gate") or {}
+        row["core_ml_gate"] = gate
+        row["watch_points"] = [
+            *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
+            f"core_ml_gate:{gate.get('rank')}/{gate.get('target_size')}",
+        ]
+    return sorted(gated, key=lambda row: selected_ranks.get(str(row.get("symbol") or ""), 999_999))
+
+
 def _allocation_method(policy: dict) -> str:
     allocation = policy.get("allocation") if isinstance(policy, dict) else {}
     value = (allocation or {}).get("engine") or (allocation or {}).get("method") or ""
@@ -1559,10 +1633,12 @@ def _apply_sparse_tangent_buy_selection(
     policy: dict,
     *,
     confidence_floor: float,
+    return_history: dict[str, list[float]] | None = None,
 ) -> list[dict]:
     allocation = policy.get("allocation") or {}
     buy_signal_count = int(allocation.get("buy_signal_count") or ranking_config.get("topK") or 3)
     buy_signal_count = max(1, min(30, buy_signal_count))
+    risk_history = return_history or {}
 
     eligible_rows = [
         row for row in scored
@@ -1579,14 +1655,37 @@ def _apply_sparse_tangent_buy_selection(
         }
         for row in eligible_rows
     ]
-    weights = allocate_sparse_tangent(
-        allocation_candidates,
-        {},
-        top_k=buy_signal_count,
-        max_weight=float(allocation.get("max_weight") or allocation.get("maxWeight") or 0.55),
-    )
+    opb_packet: dict[str, Any] | None = None
+    controller = str(allocation.get("controller") or "OnlinePortfolioBandit").strip()
+    if controller == "OnlinePortfolioBandit":
+        try:
+            from services.online_portfolio_bandit import build_online_portfolio_bandit_l2_packet
+
+            opb_packet = build_online_portfolio_bandit_l2_packet(
+                candidates=allocation_candidates,
+                return_history=risk_history,
+                stage="L3_production_allocation_controller",
+                candidate_cap_limit=(
+                    None if allocation.get("allow_controller_candidate_cap") else buy_signal_count
+                ),
+            )
+            weights = dict(((opb_packet.get("paper_allocation") or {}).get("weights") or {}))
+        except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
+            logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
+            weights = {}
+    else:
+        weights = {}
+
+    if not weights:
+        weights = allocate_sparse_tangent(
+            allocation_candidates,
+            risk_history,
+            top_k=buy_signal_count,
+            max_weight=float(allocation.get("max_weight") or allocation.get("maxWeight") or 0.55),
+        )
     selected_symbols = set(weights)
     selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
+    history_coverage = sum(1 for symbol in selected_symbols if risk_history.get(symbol))
 
     for symbol, weight in weights.items():
         row = selected_by_symbol.get(symbol)
@@ -1606,9 +1705,17 @@ def _apply_sparse_tangent_buy_selection(
             **alpha_allocation,
             "selected": True,
             "engine": "sparse_tangent_inverse_risk",
-            "controller": allocation.get("controller") or "OnlinePortfolioBandit",
+            "controller": controller,
             "allocation_weight": round(float(weight), 8),
             "buy_signal_count": buy_signal_count,
+            "return_history_coverage": history_coverage,
+            "return_history_symbols": sorted(symbol for symbol in selected_symbols if risk_history.get(symbol)),
+            "opb_controller": {
+                "enabled": opb_packet is not None,
+                "stage": opb_packet.get("stage") if opb_packet else None,
+                "selection_policy": opb_packet.get("selection_policy") if opb_packet else None,
+                "selected_arm": opb_packet.get("selected_arm") if opb_packet else None,
+            },
         }
         watch_points = row.get("watch_points")
         if not isinstance(watch_points, list):
@@ -1641,6 +1748,7 @@ def hybrid_ranking_promotion(
     regime_label: str | None = None,
     regime_surface: dict | None = None,
     alpha_policy: dict | None = None,
+    return_history: dict[str, list[float]] | None = None,
 ) -> list[dict]:
     """
     Sprint 3 P0-4: 若 has_buy_signal < topK，從 has_buy_signal=0 pool 挑 top promote。
@@ -1700,6 +1808,7 @@ def hybrid_ranking_promotion(
             ranking_config,
             policy,
             confidence_floor=effective_boost,
+            return_history=return_history,
         )
 
     controller_policy_syms = [
@@ -1851,11 +1960,11 @@ def write_predictions_to_d1(
         inserted_rows += 1
 
         # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
-        # Stages 2+3: active rows model_name='{name}'; challenger rows
-        # model_name='{name}::challenger' (Stage 3 shadow IC tracking).
+        # Active rows use model_name='{name}'. Version-candidate rows still use
+        # the legacy '{name}::challenger' storage suffix for compatibility.
         per_model_scores = _extract_per_model_scores_for_d1(data)
-        # Stage 3: extract challenger scores from feature and pipeline_v2
-        # time-series alpha challenger shadow predictions.
+        # Extract version-candidate scores from feature and pipeline_v2
+        # time-series alpha candidate predictions.
         challenger_scores = data.get("challenger_rank_scores") or {}
         for ch_name, ch_score in (challenger_scores or {}).items():
             try:
@@ -1942,7 +2051,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     import math
     out: dict[str, float] = {}
     rank_scores = pred.get("rank_scores") or {}
-    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM"):
+    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"):
         v = rank_scores.get(name)
         if v is not None:
             try:
@@ -1953,6 +2062,8 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     _SRC_KEY_MODEL = (
         ("dlinear",          "DLinear"),
         ("patchtst",         "PatchTST"),
+        ("itransformer",     "iTransformer"),
+        ("timesfm",          "TimesFM"),
     )
     for src_key, model_name in _SRC_KEY_MODEL:
         sig = pred.get(src_key) or {}

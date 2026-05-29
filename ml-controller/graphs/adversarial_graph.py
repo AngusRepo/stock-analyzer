@@ -80,7 +80,7 @@ def _generate_model_co_error(seed: int = 42) -> dict:
     returns.extend([rng.uniform(-0.01, 0.02) for _ in range(5)])  # recovery
     return {
         "name": "Model Co-Error",
-            "description": "8 alpha models all predict wrong for 5 consecutive days",
+            "description": "formal alpha family slots all predict wrong for 5 consecutive days",
         "daily_returns": returns,
     }
 

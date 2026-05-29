@@ -1,20 +1,19 @@
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
 
 export type ModelUpgradeStage =
-  | 'production_slot_member'
-  | 'shadow_challenger'
-  | 'benchmark_only'
+  | 'layer3_formal_family_slot'
+  | 'retired'
   | 'meta_optimizer'
   | 'state_space_overlay'
 
 export type ModelUpgradeCandidateId =
-  | 'Chronos2ZeroShot'
-  | 'Chronos2LoRA'
-  | 'ResidualMLP'
-  | 'GNN'
   | 'TabM'
+  | 'GNN'
   | 'iTransformer'
   | 'TimesFM'
+  | 'ResidualMLP'
+  | 'FT-Transformer'
+  | 'Chronos'
   | 'GAOptimizer'
   | 'KalmanFilter'
   | 'MarkovSwitching'
@@ -34,101 +33,103 @@ export interface ModelUpgradeCandidate {
   notes: string
 }
 
-export const P7_MODEL_UPGRADE_TRACK_VERSION = 'p7-model-upgrade-track-v1'
+export const P7_MODEL_UPGRADE_TRACK_VERSION = 'p7-model-upgrade-track-v2'
 
 export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
   {
-    id: 'Chronos2ZeroShot',
-    stage: 'production_slot_member',
-    parent_slot: 'Chronos',
-    family: 'foundation_time_series',
-    role: 'production Chronos member; contributes through the single Chronos alpha slot',
-    vote_weight: 1,
-    can_predict: true,
-    can_vote: true,
-    can_promote_directly: false,
-    requires_review_packet: false,
-    evidence_required: ['forecast_validation', 'outcome_join', 'rank_ic'],
-    notes: 'Does not increase the alpha denominator; the user-facing model remains Chronos.',
-  },
-  {
-    id: 'Chronos2LoRA',
-    stage: 'production_slot_member',
-    parent_slot: 'Chronos',
-    family: 'foundation_time_series_adapter',
-    role: 'optional fine-tuned Chronos member; contributes through the single Chronos alpha slot when configured',
-    vote_weight: 1,
-    can_predict: true,
-    can_vote: true,
-    can_promote_directly: false,
-    requires_review_packet: false,
-    evidence_required: ['adapter_metadata', 'forecast_validation', 'outcome_join', 'rank_ic'],
-    notes: 'Adapter evidence belongs to the Chronos slot, not a new production model count.',
-  },
-  {
-    id: 'ResidualMLP',
-    stage: 'shadow_challenger',
-    family: 'tabular_neural_shadow',
-    role: 'shadow prediction challenger for stacking residuals',
+    id: 'TabM',
+    stage: 'layer3_formal_family_slot',
+    parent_slot: 'Layer3.CoreFamily.TabularNeural',
+    family: 'tabular_neural',
+    role: 'formal Layer 3 tabular-neural family slot; replaces FT-Transformer and ResidualMLP as the neural tabular direction',
     vote_weight: 0,
-    can_predict: true,
+    can_predict: false,
     can_vote: false,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['shadow_ab', 'walk_forward', 'pbo', 'deflated_sharpe', 'model_cpcv'],
-    notes: 'May produce predictions, but must stay out of production voting until lifecycle promotion passes.',
+    evidence_required: ['artifact_manifest', 'feature_policy', 'walk_forward', 'pbo', 'cpcv', 'cost_profile'],
+    notes: 'No production vote until a reviewed artifact is registered and promoted. This is a formal slot, not a shadow/challenger bucket.',
   },
   {
     id: 'GNN',
-    stage: 'shadow_challenger',
-    family: 'cross_stock_graph_shadow',
-    role: 'shadow prediction challenger for cross-stock graph relation evidence',
-    vote_weight: 0,
-    can_predict: true,
-    can_vote: false,
-    can_promote_directly: false,
-    requires_review_packet: true,
-    evidence_required: ['graph_spec', 'shadow_ab', 'walk_forward', 'pbo', 'deflated_sharpe', 'model_cpcv'],
-    notes: 'Graph spec and leakage controls must be explicit before promotion review.',
-  },
-  {
-    id: 'TabM',
-    stage: 'benchmark_only',
-    family: 'tabular_deep_learning',
-    role: 'research benchmark candidate for tabular neural performance',
+    stage: 'layer3_formal_family_slot',
+    parent_slot: 'Layer3.CoreFamily.Graph',
+    family: 'cross_stock_graph',
+    role: 'formal Layer 3 graph family slot for cross-stock relation evidence',
     vote_weight: 0,
     can_predict: false,
     can_vote: false,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['experiment_registry', 'feature_policy', 'walk_forward', 'pbo', 'cost_profile'],
-    notes: 'Benchmark is not a challenger until a reviewed experiment produces repeatable evidence.',
+    evidence_required: ['graph_spec', 'leakage_controls', 'artifact_manifest', 'walk_forward', 'pbo', 'cpcv'],
+    notes: 'Graph inference must prove relation construction and leakage controls before production scoring.',
   },
   {
     id: 'iTransformer',
-    stage: 'benchmark_only',
-    family: 'time_series_transformer',
-    role: 'research benchmark candidate for inverted time-series transformer evidence',
+    stage: 'layer3_formal_family_slot',
+    parent_slot: 'Layer3.CoreFamily.LearnedSequence',
+    family: 'learned_sequence',
+    role: 'formal Layer 3 learned-sequence candidate to compare with PatchTST and DLinear',
     vote_weight: 0,
     can_predict: false,
     can_vote: false,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['experiment_registry', 'sequence_policy', 'walk_forward', 'pbo', 'cost_profile'],
-    notes: 'Benchmark-only prevents accidental production inference cost growth.',
+    evidence_required: ['sequence_policy', 'artifact_manifest', 'walk_forward', 'pbo', 'cpcv', 'cost_profile'],
+    notes: 'Eligible for the learned sequence branch after artifact promotion; evaluated as a formal family slot.',
   },
   {
     id: 'TimesFM',
-    stage: 'benchmark_only',
-    family: 'foundation_time_series',
-    role: 'research benchmark candidate against the Chronos family',
+    stage: 'layer3_formal_family_slot',
+    parent_slot: 'Layer3.CoreFamily.FoundationSequence',
+    family: 'foundation_sequence',
+    role: 'formal Layer 3 foundation-sequence candidate to compare with DLinear, PatchTST, and iTransformer',
     vote_weight: 0,
     can_predict: false,
     can_vote: false,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['experiment_registry', 'forecast_validation', 'walk_forward', 'cost_profile'],
-    notes: 'Useful for evidence comparison; not a production replacement without a review packet.',
+    evidence_required: ['forecast_validation', 'artifact_manifest', 'walk_forward', 'pbo', 'cost_profile'],
+    notes: 'Chronos is retired from alpha vote; TimesFM belongs to the sequence-family promotion lane, not a Chronos comparator lane.',
+  },
+  {
+    id: 'ResidualMLP',
+    stage: 'retired',
+    family: 'tabular_neural_retired',
+    role: 'retired neural tabular path replaced by TabM',
+    vote_weight: 0,
+    can_predict: false,
+    can_vote: false,
+    can_promote_directly: false,
+    requires_review_packet: false,
+    evidence_required: [],
+    notes: 'Kept only as historical audit context; no new production or evaluation lane should be seeded.',
+  },
+  {
+    id: 'FT-Transformer',
+    stage: 'retired',
+    family: 'tabular_neural_retired',
+    role: 'retired tabular transformer path removed from active alpha vote and training policy',
+    vote_weight: 0,
+    can_predict: false,
+    can_vote: false,
+    can_promote_directly: false,
+    requires_review_packet: false,
+    evidence_required: [],
+    notes: 'Do not use as comparator or active production model in this screener refactor.',
+  },
+  {
+    id: 'Chronos',
+    stage: 'retired',
+    family: 'foundation_sequence_retired',
+    role: 'retired foundation sequence slot removed from alpha vote and evening-chain batch inference',
+    vote_weight: 0,
+    can_predict: false,
+    can_vote: false,
+    can_promote_directly: false,
+    requires_review_packet: false,
+    evidence_required: [],
+    notes: 'Use DLinear, PatchTST, iTransformer, and TimesFM for the sequence-family roadmap.',
   },
   {
     id: 'GAOptimizer',
@@ -141,7 +142,7 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     can_promote_directly: false,
     requires_review_packet: true,
     evidence_required: ['walk_forward', 'pbo', 'monte_carlo_plateau', 'transaction_cost_sensitivity'],
-    notes: 'GA belongs to meta optimizer learning, not challenger shadow or alpha model voting.',
+    notes: 'GA belongs to proposal/evidence generation for AlphaAgentEvo and adaptive params, not direct production mutation.',
   },
   {
     id: 'KalmanFilter',
@@ -185,8 +186,8 @@ export function buildP7ModelUpgradeReviewPacket(): string {
     byStage.set(candidate.stage, [...(byStage.get(candidate.stage) ?? []), candidate])
   }
   const lines = [
-    `P7 Model Upgrade Research Track: ${P7_MODEL_UPGRADE_TRACK_VERSION}`,
-    'Rules: benchmark-only is not challenger; shadow challenger does not vote; GA is meta optimizer; Chronos members keep one Chronos slot.',
+    `P7 Model Upgrade Track: ${P7_MODEL_UPGRADE_TRACK_VERSION}`,
+    'Rules: formal Layer 3 slots require artifact promotion before voting; retired models do not seed new experiments; GA is meta-only; Kalman/Markov are overlays.',
   ]
   for (const [stage, candidates] of byStage.entries()) {
     lines.push(`${stage}: ${candidates.map((candidate) => candidate.id).join(', ')}`)
@@ -200,17 +201,17 @@ export function validateP7ModelUpgradeTrack(): { ok: boolean; errors: string[] }
   for (const candidate of P7_MODEL_UPGRADE_CANDIDATES) {
     if (seen.has(candidate.id)) errors.push(`duplicate_candidate:${candidate.id}`)
     seen.add(candidate.id)
-    if (candidate.stage === 'benchmark_only' && (candidate.can_predict || candidate.can_vote || candidate.vote_weight !== 0)) {
-      errors.push(`benchmark_candidate_not_passive:${candidate.id}`)
+    if (candidate.stage === 'layer3_formal_family_slot' && (!candidate.parent_slot || !candidate.requires_review_packet)) {
+      errors.push(`formal_slot_missing_gate:${candidate.id}`)
     }
-    if (candidate.stage === 'shadow_challenger' && (candidate.can_vote || candidate.vote_weight !== 0)) {
-      errors.push(`shadow_candidate_can_vote:${candidate.id}`)
+    if (candidate.stage === 'retired' && (candidate.can_predict || candidate.can_vote || candidate.vote_weight !== 0 || candidate.requires_review_packet)) {
+      errors.push(`retired_candidate_still_active:${candidate.id}`)
     }
     if (candidate.stage === 'meta_optimizer' && (candidate.can_predict || candidate.can_vote)) {
       errors.push(`meta_optimizer_misclassified:${candidate.id}`)
     }
-    if (candidate.stage === 'production_slot_member' && candidate.parent_slot !== 'Chronos') {
-      errors.push(`production_member_without_parent_slot:${candidate.id}`)
+    if (candidate.stage === 'state_space_overlay' && (candidate.can_vote || candidate.vote_weight !== 0)) {
+      errors.push(`overlay_counted_as_alpha_vote:${candidate.id}`)
     }
     if (candidate.can_promote_directly) errors.push(`direct_promote_not_allowed:${candidate.id}`)
   }

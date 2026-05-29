@@ -112,8 +112,12 @@ const ALPHA_PREDICTION_MODEL_NAMES = [
   'CatBoost',
   'ExtraTrees',
   'LightGBM',
+  'TabM',
+  'GNN',
   'DLinear',
   'PatchTST',
+  'iTransformer',
+  'TimesFM',
 ] as const
 
 const ALPHA_PREDICTION_MODEL_SET = new Set<string>(ALPHA_PREDICTION_MODEL_NAMES)
@@ -480,7 +484,7 @@ function mlMetadataGapText(rec: any, summary: MlVoteSummary | null): string | nu
   const reported = Number(summary?.reported ?? 0)
   const votes = Number(summary?.bullish ?? 0) + Number(summary?.bearish ?? 0) + Number(summary?.flat ?? 0)
   if (summary && (reported > 0 || votes > 0)) return null
-  return `ML 分數 ${fmtNumber(mlScore, 1)} 來自後端 scalar score，但投票明細尚未對齊 business date，暫不顯示 0/8 這種誤導訊息。`
+  return `ML 分數 ${fmtNumber(mlScore, 1)} 來自後端 scalar score，但投票明細尚未對齊 business date，暫不顯示 0/N 這種誤導訊息。`
 }
 
 function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {

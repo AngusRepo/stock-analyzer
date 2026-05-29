@@ -88,14 +88,14 @@ def apply_promotion_gate_to_actions(
             evidence = (shadow_ab_by_model or {}).get(model)
             if not evidence:
                 action["transition"] = "promote_blocked"
-                action["reason"] = "shadow AB evidence missing"
+                action["reason"] = "version-candidate AB evidence missing"
                 action["preconditions_failed"] = [f"missing_shadow_ab:{model}"]
                 action["shadow_ab_decision"] = "FAIL"
                 action["original_promote_reason"] = original_reason
                 continue
             if str(evidence.get("decision") or "").upper() != "PASS":
                 action["transition"] = "promote_blocked"
-                action["reason"] = "shadow AB evidence failed"
+                action["reason"] = "version-candidate AB evidence failed"
                 action["preconditions_failed"] = [
                     f"shadow_ab:{name}"
                     for name in (evidence.get("failed_gates") or ["unavailable"])

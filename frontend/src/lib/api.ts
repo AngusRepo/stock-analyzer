@@ -712,13 +712,14 @@ export type ResearchExperimentsResponse = {
   experiments: ResearchExperiment[]
   meta_learning_tracks?: Array<{
     id: 'LinUCB' | 'NeuralUCB' | 'NeuralTS' | 'OnlinePortfolioBandit' | 'NeuCB'
-    stage: 'production_baseline' | 'shadow_challenger' | 'strategy_research' | 'research_only'
+    stage: 'production_baseline' | 'counterfactual_audit' | 'production_controller' | 'strategy_research' | 'research_only'
     role: string
     learning_targets: string[]
     required_evidence: string[]
     decision_queue_status:
       | 'production_baseline_needs_evidence'
-      | 'run_shadow'
+      | 'run_counterfactual_audit'
+      | 'controller_evidence_active'
       | 'needs_experiment_registry'
       | 'research_only'
     can_influence_production: boolean
@@ -736,7 +737,7 @@ export type ResearchExperimentsResponse = {
   }>
   meta_learning_evidence_matrix?: Array<{
     id: 'LinUCB' | 'NeuralUCB' | 'NeuralTS' | 'OnlinePortfolioBandit' | 'NeuCB'
-    stage: 'production_baseline' | 'shadow_challenger' | 'strategy_research' | 'research_only'
+    stage: 'production_baseline' | 'counterfactual_audit' | 'production_controller' | 'strategy_research' | 'research_only'
     decision_queue_status: string
     evidence_status: 'ready' | 'partial' | 'missing'
     reward_ledger_status: 'ready' | 'missing' | 'not_applicable'
@@ -752,7 +753,7 @@ export type ResearchExperimentsResponse = {
 
 export type ModelUpgradeResearchStatusRow = {
   candidate_id: string
-  stage: 'production_slot_member' | 'shadow_challenger' | 'benchmark_only' | 'meta_optimizer' | 'state_space_overlay'
+  stage: 'layer3_formal_family_slot' | 'retired' | 'meta_optimizer' | 'state_space_overlay'
   family: string
   role: string
   registry_status: 'track_only' | 'experiment_missing' | 'evaluation_pending' | 'needs_attention' | 'ready_for_review' | 'approved_for_patch' | 'rejected'
@@ -1102,6 +1103,8 @@ export type ModelPoolLineage = {
   models: Record<string, ModelPoolLineageModel>
   state_overlays?: Record<string, ModelPoolStateOverlay>
   meta_optimizers?: Record<string, Record<string, unknown>>
+  formal_layer3_slots?: Record<string, Record<string, unknown>>
+  research_benchmarks?: Record<string, Record<string, unknown>>
   events: Array<Record<string, unknown>>
   error?: string
 }

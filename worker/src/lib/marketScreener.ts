@@ -1370,6 +1370,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   debugLog.push(`[Step 2] 多因子評分完成: ${scored.length} 檔 | 大盤 5d return=${(marketReturn5d * 100).toFixed(2)}%`)
   const scoredSorted = [...scored].sort((a, b) => b.score - a.score)
   const preRankPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
+  preRankPool.forEach((candidate, index) => {
+    pushFunnelItem(funnelItems, {
+      symbol: candidate.symbol,
+      name: candidate.name,
+      stage: 'layer1_strategy_breadth_gate',
+      decision: 'pass',
+      reasonCode: 'strategy_breadth_seed',
+      scoreAfter: candidate.score,
+      rank: index + 1,
+      evidence: {
+        target_size: screenerPolicy.sizing.candidatePoolSize,
+        coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
+        core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
+        chip_score: candidate.chip_score,
+        tech_score: candidate.tech_score,
+        momentum_score: candidate.momentum_score,
+        market_segment: candidate.market_segment ?? null,
+        layer_contract: 'L1 keeps breadth; RRG/news/PTT/heavy ML are not selection owners here',
+      },
+    })
+  })
   debugLog.push(`[Step 2] Top 15 (base_score):`)
   for (const c of scoredSorted.slice(0, 15)) {
     debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} | base=${c.score.toFixed(1)} chip=${c.chip_score} tech=${c.tech_score} mom=${c.momentum_score.toFixed(1)} | ${c.reason}`)
@@ -2017,7 +2038,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     industryCount.set(c.industry, cnt + 1)
     return true
   })
-  const selectionTargetSize = screenerPolicy.sizing.mlShortlistSize
+  const selectionTargetSize = screenerPolicy.sizing.coarseMlQueueSize
   const dynamicThemeCap = Number((sc as any).maxPerIndustryTheme ?? Math.max(3, Math.ceil(selectionTargetSize * 0.18)))
   const dynamicSubindustryCap = Number((sc as any).maxPerSubindustry ?? Math.max(2, Math.ceil(selectionTargetSize * 0.14)))
   const beforeTaxonomyCap = afterIndustryLimit.length
@@ -2045,13 +2066,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // 5d: top N 截斷；strategy pool 已在 Step 2c（安全硬篩後、RRG/去重前）完成。
   let finalCandidates = dedupeScreenerCandidatesBySymbol(
-    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, maxCandidates) as ScreenerCandidate[]),
+    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, coarseQueueSize) as ScreenerCandidate[]),
   )
   if (strategySelectionPlan) {
     const updatedBySymbol = new Map(afterIndustryLimit.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
-    const coreQueue = strategySelectionPlan.mlQueue.slice(0, maxCandidates)
-    const selectedSymbols = new Set(coreQueue.map((candidate: any) => String(candidate.symbol || '').trim()))
-    const selectedCandidates = coreQueue.map((entry: any) => {
+    const coarseQueue = strategySelectionPlan.mlQueue.slice(0, coarseQueueSize)
+    const selectedSymbols = new Set(coarseQueue.map((candidate: any) => String(candidate.symbol || '').trim()))
+    const selectedCandidates = coarseQueue.map((entry: any) => {
       const symbol = String(entry.symbol || '').trim()
       const updated = updatedBySymbol.get(symbol)
       return {
@@ -2069,7 +2090,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     })
     const topUpCandidates = afterIndustryLimit
       .filter((candidate) => !selectedSymbols.has(String(candidate.symbol || '').trim()))
-      .slice(0, Math.max(0, maxCandidates - selectedCandidates.length))
+      .slice(0, Math.max(0, coarseQueueSize - selectedCandidates.length))
       .map((candidate, index) => ({
         ...candidate,
         strategy_pool_decision: 'ml_queue',
@@ -2093,15 +2114,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       coarse_queue_count: strategySelectionPlan.mlQueue.length,
       top_up_count: topUpCandidates.length,
       selected_after_overlay_count: selectedCandidates.length,
+      core_ml_shortlist_size: maxCandidates,
     }
     debugLog.push(
-      `[Step 5] strategy_pool pre-RRG selection applied: selected=${selectedCandidates.length}+topup=${topUpCandidates.length}/${maxCandidates} ` +
-      `post_diversity_universe=${afterIndustryLimit.length}`,
+      `[Step 5] layer2 coarse queue seed applied: selected=${selectedCandidates.length}+topup=${topUpCandidates.length}/${coarseQueueSize} ` +
+      `core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
     )
   } else {
-    debugLog.push(`[Step 5] strategy_pool unavailable; fallback to score top ${maxCandidates}`)
+    debugLog.push(`[Step 5] strategy_pool unavailable; fallback to score top coarse queue ${coarseQueueSize}`)
   }
-  const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → top ${maxCandidates} → ${finalCandidates.length} 檔`
+  const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → coarse ${coarseQueueSize} → ${finalCandidates.length} 檔 → core target ${maxCandidates}`
   debugLog.push(step5Msg)
 
   // 被產業上限篩掉的
@@ -2117,7 +2139,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const afterDedupSet = new Set(afterIndustryLimit.map(c => c.symbol))
   const removedByDedup = afterIndustryLimit.filter(c => !afterDedupSet.has(c.symbol))
   // 被截斷的
-  const truncated = afterIndustryLimit.slice(maxCandidates)
+  const truncated = afterIndustryLimit.slice(coarseQueueSize)
   const emergingMaxCandidates = screenerPolicy.sizing.emergingResearchSize
   const emergingResearchCandidates: ScreenerCandidate[] = []
   const emergingData = buildStockData(emergingResearchPrices, allChips)
@@ -2253,6 +2275,23 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     pushFunnelItem(funnelItems, {
       symbol: c.symbol,
       name: c.name,
+      stage: 'layer2_coarse_ml_gate',
+      decision: 'selected',
+      reasonCode: 'selected_for_coarse_ml_queue',
+      scoreAfter: Number(sc.score ?? 0),
+      rank: index + 1,
+      evidence: {
+        layer_contract: 'ml-controller runs LightGBM/XGBoost/ExtraTrees coarse rank before core family ML',
+        coarse_ml_queue_size: coarseQueueSize,
+        core_ml_shortlist_size: maxCandidates,
+        strategy_pool_ids: sc.strategy_pool_ids ?? [],
+        strategy_pool_score: sc.strategy_pool_score ?? null,
+        strategy_pool_reason: sc.strategy_pool_reason ?? null,
+      },
+    })
+    pushFunnelItem(funnelItems, {
+      symbol: c.symbol,
+      name: c.name,
       stage: 'final_selection',
       decision: 'selected',
       reasonCode: 'selected_for_ml_shortlist',
@@ -2270,6 +2309,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategy_pool_ids: sc.strategy_pool_ids ?? [],
         strategy_pool_score: sc.strategy_pool_score ?? null,
         strategy_pool_reason: sc.strategy_pool_reason ?? null,
+        layer2_coarse_queue_size: coarseQueueSize,
+        layer3_core_ml_target_size: maxCandidates,
       },
     })
   })

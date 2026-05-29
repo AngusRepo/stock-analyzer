@@ -84,19 +84,6 @@ def _get_pool_challenger_path(model_name: str, pool: dict | None) -> str | None:
     return get_challenger_path(model_name, pool=pool)
 
 
-def _get_pool_shadow_challenger_path(model_name: str, pool: dict | None) -> str | None:
-    from .model_pool import get_shadow_challenger_path
-
-    return get_shadow_challenger_path(model_name, pool=pool)
-
-
-def _shadow_challenger_names(pool: dict | None) -> tuple[str, ...]:
-    shadow_models = (pool or {}).get("shadow_models", {}) if pool else {}
-    if isinstance(shadow_models, dict) and shadow_models:
-        return tuple(str(name) for name in shadow_models.keys())
-    return ("ResidualMLP", "GNN")
-
-
 def _load_feature_artifact(model_name: str, explicit_path: str | None = None) -> tuple[Any, dict | None]:
     from .model_store import load_model
 
@@ -278,31 +265,6 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
                     _record_feature_error(
                         ctx,
                         f"{model_name}: challenger artifact missing at {ch_path}",
-                        challenger=True,
-                    )
-                continue
-            _apply_artifact_batch_predictions(contexts, model_name, model_obj, meta, challenger=True)
-
-        for model_name in _shadow_challenger_names(pool):
-            try:
-                shadow_path = _get_pool_shadow_challenger_path(model_name, pool=pool)
-            except Exception as exc:  # noqa: BLE001
-                for ctx in contexts:
-                    _record_feature_error(ctx, f"{model_name}: shadow {exc}", challenger=True)
-                continue
-            if not shadow_path:
-                continue
-            try:
-                model_obj, meta = _load_feature_artifact(model_name, explicit_path=shadow_path)
-            except Exception as exc:  # noqa: BLE001
-                for ctx in contexts:
-                    _record_feature_error(ctx, f"{model_name}: shadow {exc}", challenger=True)
-                continue
-            if model_obj is None:
-                for ctx in contexts:
-                    _record_feature_error(
-                        ctx,
-                        f"{model_name}: shadow artifact missing at {shadow_path}",
                         challenger=True,
                     )
                 continue

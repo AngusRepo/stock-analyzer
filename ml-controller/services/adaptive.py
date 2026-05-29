@@ -15,9 +15,14 @@ ALPHA_VOTE_MODELS = [
     "CatBoost",
     "ExtraTrees",
     "LightGBM",
+    "TabM",
+    "GNN",
     "DLinear",
     "PatchTST",
+    "iTransformer",
+    "TimesFM",
 ]
+FORMAL_LAYER3_SLOTS = ["TabM", "GNN", "iTransformer", "TimesFM"]
 STATE_SPACE_OVERLAYS = ["KalmanFilter", "MarkovSwitching"]
 META_OPTIMIZERS = ["GAOptimizer"]
 REGIME_KEYS = ("bull", "bear", "volatile", "sideways")
@@ -406,6 +411,7 @@ def compute_adaptive_params(
         },
         "meta_layer": {
             "alpha_vote_models": ALPHA_VOTE_MODELS,
+            "formal_layer3_slots": FORMAL_LAYER3_SLOTS,
             "state_space_overlays": STATE_SPACE_OVERLAYS,
             "meta_optimizers": META_OPTIMIZERS,
             "adaptive_components": {
@@ -414,9 +420,9 @@ def compute_adaptive_params(
                 "Conformal": "prediction uncertainty calibration and coverage guard",
                 "Stacking": "meta learner for ensemble blending after base-model predictions",
                 "GAOptimizer": "meta optimizer for ensemble weights, strategy params, and risk params",
-                "NeuralUCB": "shadow meta-router for nonlinear model-weight and threshold policy comparison",
-                "NeuralTS": "shadow Thompson sampler to audit NeuralUCB optimism before production consideration",
-                "OnlinePortfolioBandit": "L2 paper-active allocator controller; controls allocator knobs only while sparse_tangent_inverse_risk remains the final weight engine",
+                "NeuralUCB": "counterfactual meta-router for nonlinear model-weight and threshold policy comparison",
+                "NeuralTS": "counterfactual Thompson sampler to audit NeuralUCB optimism before production consideration",
+                "OnlinePortfolioBandit": "production allocator controller for sparse_tangent_inverse_risk knobs; production-capable without replacing the final weight engine",
                 "NeuCB": "research-only neural contextual bandit benchmark until experiment registry evidence exists",
             },
             "immutable_risk_boundaries": [

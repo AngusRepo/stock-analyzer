@@ -198,6 +198,34 @@ def _prediction_bar_window(pred: dict) -> tuple[str, str]:
     )
 
 
+def _positive_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
+def _normalized_price_bar(bar: dict) -> dict | None:
+    close = _positive_float(bar.get("close"))
+    if close is None:
+        return None
+    open_price = _positive_float(bar.get("open")) or close
+    high = _positive_float(bar.get("high")) or max(open_price, close)
+    low = _positive_float(bar.get("low")) or min(open_price, close)
+    return {
+        **bar,
+        "open": open_price,
+        "high": max(high, open_price, close),
+        "low": min(low, open_price, close),
+        "close": close,
+    }
+
+
+def _normalized_price_bars(bars: list[dict]) -> list[dict]:
+    return [normalized for bar in bars if (normalized := _normalized_price_bar(bar)) is not None]
+
+
 def verify_single_prediction(
     pred: dict,
     market_risk: dict,
@@ -229,7 +257,7 @@ def verify_single_prediction(
     if forecasts:
         mid = forecasts[4] if len(forecasts) > 4 else forecasts[-1]
         if isinstance(mid, dict):
-            predicted_price = mid.get("forecast")
+            predicted_price = _positive_float(mid.get("forecast"))
 
     # ── Load bars ────────────────────────────────────────────────────────────
     if bars_override is None:
@@ -238,15 +266,18 @@ def verify_single_prediction(
         bars = bars_override
     if not bars:
         return None  # data not arrived yet
+    bars = _normalized_price_bars(bars)
+    if not bars:
+        return None  # follow-up OHLC rows exist but are not price-complete yet
 
     # ── Derive entry/stop/targets (fall back to defaults if null) ────────────
     actual_bar = bars[min(4, len(bars) - 1)]
     actual_price = actual_bar["close"]
-    entry_price = pred.get("entry_price") or bars[0].get("open") or actual_price
+    entry_price = _positive_float(pred.get("entry_price")) or bars[0].get("open") or actual_price
     is_long = predicted_direction == "up"
-    stop_loss = pred.get("stop_loss") or (entry_price * (0.95 if is_long else 1.05))
-    target1 = pred.get("target1") or (entry_price * (1.05 if is_long else 0.95))
-    target2 = pred.get("target2") or (entry_price * (1.08 if is_long else 0.92))
+    stop_loss = _positive_float(pred.get("stop_loss")) or (entry_price * (0.95 if is_long else 1.05))
+    target1 = _positive_float(pred.get("target1")) or (entry_price * (1.05 if is_long else 0.95))
+    target2 = _positive_float(pred.get("target2")) or (entry_price * (1.08 if is_long else 0.92))
 
     actual_return_pct = (actual_price - entry_price) / entry_price
 
@@ -351,6 +382,7 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
     arf_batch: list[dict] = []
     errors: list[str] = []
     skipped_no_bars = 0
+    skipped_bad_bars = 0
     skipped_no_update = 0
     bars_by_stock = load_bars_for_predictions(pending)
 
@@ -363,6 +395,9 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
             ][:7]
             if not pred_bars:
                 skipped_no_bars += 1
+                continue
+            if not _normalized_price_bars(pred_bars):
+                skipped_bad_bars += 1
                 continue
             result = verify_single_prediction(
                 pred,
@@ -386,6 +421,7 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
         "errors": errors,
         "metrics": {
             "skipped_no_bars": skipped_no_bars,
+            "skipped_bad_bars": skipped_bad_bars,
             "skipped_no_update": skipped_no_update,
         },
     }

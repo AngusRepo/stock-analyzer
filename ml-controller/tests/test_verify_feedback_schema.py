@@ -18,6 +18,7 @@ except ModuleNotFoundError:
     )
 
 from services import verify_service  # noqa: E402
+from verify_job_main import classify_verify_callback_status  # noqa: E402
 
 
 def test_verify_feedback_keeps_return_pct_and_pnl_r_separate(monkeypatch):
@@ -228,3 +229,55 @@ def test_prepare_verification_updates_counts_missing_bars(monkeypatch):
 
     assert result["verify_updates"] == []
     assert result["metrics"]["skipped_no_bars"] == 1
+
+
+def test_prepare_verification_updates_counts_incomplete_price_bars(monkeypatch):
+    monkeypatch.setattr(
+        verify_service,
+        "load_bars_for_predictions",
+        lambda pending: {
+            1: [
+                {"date": "2026-05-26", "open": None, "high": None, "low": None, "close": None},
+                {"date": "2026-05-27", "open": None, "high": None, "low": None, "close": None},
+            ]
+        },
+    )
+
+    result = verify_service.prepare_verification_updates(
+        [
+            {
+                "id": 52459,
+                "stock_id": 1,
+                "symbol": "5267",
+                "model_name": "XGBoost",
+                "generated_at": "2026-05-25T10:00:00Z",
+                "prediction_date": "2026-05-25",
+                "entry_price": None,
+                "forecast_data": json.dumps({"signal": "HOLD", "rank_score": 0.5}),
+            }
+        ],
+        market_risk={"risk_level": "low", "risk_score": 10},
+    )
+
+    assert result["verify_updates"] == []
+    assert result["errors"] == []
+    assert result["metrics"]["skipped_bad_bars"] == 1
+
+
+def test_verify_callback_skips_when_all_pending_price_bars_incomplete():
+    status, reason = classify_verify_callback_status(
+        {
+            "status": "ok",
+            "pending": 3,
+            "verified": 0,
+            "metrics": {
+                "verified_rows_written": 0,
+                "skipped_no_bars": 1,
+                "skipped_bad_bars": 2,
+                "skipped_no_update": 0,
+            },
+        }
+    )
+
+    assert status == "skipped"
+    assert "incomplete" in reason

@@ -34,6 +34,14 @@ assert(
     manifest.deprecatedJobs.some((job: any) => job.id === 'finlab-v4-backfill'),
   'deprecated direct FinLab backfill scheduler must stay declared so sync can fail on stale live jobs',
 )
+const intradayCheckJob = manifest.jobs.find((job: any) => job.id === 'intraday-check')
+assert(intradayCheckJob?.baseUrlEnv === 'ML_CONTROLLER_URL', 'intraday-check scheduler should target ML Controller for real 10s execution loop')
+assert(intradayCheckJob?.path === '/finlab/execution/production-simulated-loop', 'intraday-check scheduler should call production-simulated execution loop route')
+assert(intradayCheckJob?.authHeaderName === 'X-Controller-Token', 'ML Controller scheduler job should use controller token header')
+assert(intradayCheckJob?.authTokenEnv === 'ML_CONTROLLER_SECRET', 'ML Controller scheduler job should load token from env')
+assert(intradayCheckJob?.body?.dry_run === false, 'intraday-check scheduler should run real loop, not plan-only dry-run')
+assert(intradayCheckJob?.body?.duration_seconds === 50, 'intraday-check scheduler should run bounded 50s loops inside a 60s cadence')
+assert(intradayCheckJob?.body?.poll_seconds === 10, 'intraday-check scheduler should poll every 10 seconds')
 
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const cronGcpDomainTasks = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
@@ -114,6 +122,13 @@ assert(!cronGcpDomainTasks.includes("runWithLog('obsidian-daily'"), 'obsidian-da
 const syncScript = fs.readFileSync('../scripts/sync_gcp_scheduler.ps1', 'utf8')
 assert(syncScript.includes('SCHEDULER_AUTH_TOKEN'), 'scheduler sync must load auth token from env, not source')
 assert(syncScript.includes('STOCKVISION_WORKER_BASE_URL'), 'scheduler sync must load worker base URL from env')
+assert(syncScript.includes('$job.baseUrlEnv'), 'scheduler sync must support per-job base URL env for controller jobs')
+assert(syncScript.includes('$job.path'), 'scheduler sync must support per-job direct paths')
+assert(syncScript.includes('$job.authHeaderName'), 'scheduler sync must support per-job auth header names')
+assert(syncScript.includes('$job.authTokenEnv'), 'scheduler sync must support per-job auth token env names')
+assert(syncScript.includes('--message-body'), 'scheduler sync must support JSON request bodies')
+assert(syncScript.includes('$nativeBodyJson') && syncScript.includes(".Replace('\"', '\\\"')"), 'scheduler sync must escape JSON quotes for Windows PowerShell native args')
+assert(syncScript.includes('Content-Type=application/json'), 'scheduler sync must set JSON content type for body jobs')
 assert(syncScript.includes("'scheduler', 'jobs', 'update', 'http'"), 'scheduler sync must update existing jobs')
 assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler sync must create missing jobs')
 assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')

@@ -68,6 +68,17 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     operatorRisk: 'high',
     recommendation: 'Do not delete first; convert into a pre-open chain step after parity tests pass.',
   },
+  'intraday-check': {
+    task: 'intraday-check',
+    owner: 'gcp_scheduler',
+    consolidationClass: 'keep_scheduler',
+    currentFunction: 'Triggers ML Controller production-simulated execution loop every minute; controller runs 10-second polling and calls Worker paper intraday-check.',
+    upstream: ['pre-market-warmup', 'morning-setup'],
+    downstream: ['paper-orders', 'paper-execution-events', 'scheduler-dashboard'],
+    requiredBeforeDisable: [],
+    operatorRisk: 'high',
+    recommendation: 'Keep as the production intraday simulated-order loop owner until Small Real-Order Pilot has separate approval.',
+  },
   'daily-snapshot': {
     task: 'daily-snapshot',
     owner: 'gcp_scheduler',

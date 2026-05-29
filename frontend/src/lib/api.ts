@@ -340,6 +340,7 @@ export type DashboardV4ChartPacket = {
   dataQuality: DataQualityReport | { overall: string; checks: unknown[] }
   finlabDiff: { mode: 'shadow_audit_only'; rows: Array<Record<string, unknown>>; empty: boolean }
   previewBlockedReasons: Array<{ status: string; reason: string; source: string; created_at: string }>
+  executionPrePilotEvidence: Array<{ event_type: string; status: string; reason: string; created_at: string }>
   sourceOwnership: Record<string, string>
 }
 

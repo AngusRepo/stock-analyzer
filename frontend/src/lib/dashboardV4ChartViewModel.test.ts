@@ -24,7 +24,7 @@ const packet: DashboardV4ChartPacket = {
   dataOwner: 'stockvision_owned',
   externalWidgetUrls: [],
   stock: { id: 1, symbol: '2330', name: 'TSMC', market: 'TWSE' },
-  panels: ['price', 'model_signals', 'regime', 'sector_flow', 'data_quality', 'finlab_diff', 'preview_blocked_reasons'],
+  panels: ['price', 'model_signals', 'regime', 'sector_flow', 'data_quality', 'finlab_diff', 'preview_blocked_reasons', 'execution_pre_pilot_evidence'],
   series: {
     priceCandles: [
       { time: '2026-05-15', open: 100, high: 110, low: 99, close: 108 },
@@ -71,6 +71,11 @@ const packet: DashboardV4ChartPacket = {
     { status: 'blocked', reason: 'insufficient_settlement_cash', source: 'finlab_preview', created_at: '2026-05-15T01:00:00Z' },
     { status: 'warning', reason: 'broker caution', source: 'finlab_execution_preview', created_at: '2026-05-15T02:00:00Z' },
   ],
+  executionPrePilotEvidence: [
+    { event_type: 'finlab_l5_market_data', status: 'pass', reason: 'l5_market_data_pass', created_at: '2026-05-15T03:00:10Z' },
+    { event_type: 'intraday_technical_decision', status: 'constructive', reason: 'intraday_dynamic_decision', created_at: '2026-05-15T03:00:20Z' },
+    { event_type: 'paper_broker_reconciliation', status: 'matched', reason: 'paper_order_created', created_at: '2026-05-15T03:00:30Z' },
+  ],
   sourceOwnership: {
     price: 'stockvision_d1',
     model_signals: 'stockvision_d1',
@@ -79,6 +84,7 @@ const packet: DashboardV4ChartPacket = {
     data_quality: 'stockvision_worker_quality_report',
     finlab_diff: 'stockvision_finlab_shadow_diff',
     preview_blocked_reasons: 'stockvision_d1_paper_execution_events',
+    execution_pre_pilot_evidence: 'stockvision_d1_paper_execution_events',
   },
 }
 
@@ -98,7 +104,9 @@ const packet: DashboardV4ChartPacket = {
     ['data_quality', 'warn', 'warn'],
     ['finlab_diff', 'warn', '2'],
     ['preview_blocked_reasons', 'error', '2'],
+    ['execution_pre_pilot_evidence', 'ok', '3/3'],
   ], 'summary lanes should make key evidence scan-friendly')
+  assert(viewModel.executionPrePilotEvidence.length === 3, 'view model should expose production-simulated execution evidence')
 }
 
 {

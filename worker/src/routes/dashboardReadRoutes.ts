@@ -155,7 +155,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
   const signalLimit = parseDashboardPosInt(c.req.query('signals'), 80, 300)
   const flowLimit = parseDashboardPosInt(c.req.query('flow'), 90, 300)
 
-  const [prices, signals, regimeState, dataQuality, previewEvents, finlabDiff, sectorFlow] = await Promise.all([
+  const [prices, signals, regimeState, dataQuality, executionEvents, finlabDiff, sectorFlow] = await Promise.all([
     c.env.DB.prepare(
       'SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id=? AND date>=? ORDER BY date',
     ).bind(id, since).all<any>().then((r) => r.results ?? []),
@@ -174,10 +174,19 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
       SELECT event_type, status, reason, detail_json, created_at
       FROM paper_execution_events
       WHERE symbol=?
-        AND event_type IN ('finlab_preview', 'finlab_execution_preview')
-        AND status IN ('blocked', 'warning', 'error')
+        AND event_type IN (
+          'finlab_preview',
+          'finlab_execution_preview',
+          'finlab_l5_market_data',
+          'intraday_technical_decision',
+          'paper_broker_reconciliation'
+        )
+        AND (
+          event_type IN ('finlab_l5_market_data', 'intraday_technical_decision', 'paper_broker_reconciliation')
+          OR status IN ('blocked', 'warning', 'error')
+        )
       ORDER BY created_at DESC
-      LIMIT 50
+      LIMIT 80
     `).bind(stock.symbol).all<any>().then((r) => r.results ?? []).catch(() => []),
     c.env.KV.get('finlab:v4:latest_diff', 'json')
       .then((raw: any) => Array.isArray(raw?.rows) ? raw.rows : [])
@@ -201,7 +210,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
     sectorFlowRows: sectorFlow,
     dataQuality: dataQuality as any,
     finlabDiffRows: finlabDiff as any[],
-    previewEvents,
+    previewEvents: executionEvents,
   }))
 })
 

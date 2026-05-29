@@ -9,6 +9,7 @@ type DashboardV4Panel =
   | 'data_quality'
   | 'finlab_diff'
   | 'preview_blocked_reasons'
+  | 'execution_pre_pilot_evidence'
 
 export interface DashboardV4Input {
   stock: Record<string, unknown>
@@ -58,6 +59,7 @@ export function buildDashboardV4Policy() {
       'data_quality',
       'finlab_diff',
       'preview_blocked_reasons',
+      'execution_pre_pilot_evidence',
     ] satisfies DashboardV4Panel[],
   } as const
 }
@@ -164,6 +166,23 @@ function previewReasonRows(rows: Array<Record<string, unknown>>) {
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
 }
 
+function executionPrePilotEvidenceRows(rows: Array<Record<string, unknown>>) {
+  const allowedTypes = new Set([
+    'finlab_l5_market_data',
+    'intraday_technical_decision',
+    'paper_broker_reconciliation',
+  ])
+  return rows
+    .filter((row) => allowedTypes.has(String(row.event_type ?? row.eventType ?? '')))
+    .map((row) => ({
+      event_type: String(row.event_type ?? row.eventType ?? 'unknown'),
+      status: String(row.status ?? 'unknown').toLowerCase(),
+      reason: String(row.reason ?? 'unknown'),
+      created_at: String(row.created_at ?? row.createdAt ?? ''),
+    }))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+}
+
 function stockIdentity(stock: Record<string, unknown>) {
   return {
     id: Number(stock.id ?? 0),
@@ -221,6 +240,7 @@ export function buildDashboardV4ChartPacket(input: DashboardV4Input) {
       empty: finlabRows.length === 0,
     },
     previewBlockedReasons: previewReasonRows(input.previewEvents ?? []),
+    executionPrePilotEvidence: executionPrePilotEvidenceRows(input.previewEvents ?? []),
     sourceOwnership: {
       price: 'stockvision_d1',
       model_signals: 'stockvision_d1',
@@ -229,6 +249,7 @@ export function buildDashboardV4ChartPacket(input: DashboardV4Input) {
       data_quality: 'stockvision_worker_quality_report',
       finlab_diff: 'stockvision_finlab_shadow_diff',
       preview_blocked_reasons: 'stockvision_d1_paper_execution_events',
+      execution_pre_pilot_evidence: 'stockvision_d1_paper_execution_events',
     },
   }
 }

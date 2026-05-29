@@ -122,6 +122,18 @@ adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
   }))
 })
 
+adminReadRoutes.get('/api/admin/execution/pre-pilot-evidence', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildExecutionPrePilotEvidenceReport } = await import('../lib/executionPrePilotEvidence')
+  return c.json(await buildExecutionPrePilotEvidenceReport(c.env.DB, {
+    date: c.req.query('date') ?? twToday(),
+    sinceUtc: c.req.query('since_utc') ?? c.req.query('sinceUtc'),
+    limit: Number.parseInt(c.req.query('limit') ?? '30', 10),
+  }))
+})
+
 adminReadRoutes.get('/api/admin/observability/events', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

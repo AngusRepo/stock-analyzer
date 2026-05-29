@@ -18,8 +18,6 @@ if (-not $WorkerBaseUrl) { throw 'Missing STOCKVISION_WORKER_BASE_URL.' }
 if (-not $AuthToken) { throw 'Missing SCHEDULER_AUTH_TOKEN.' }
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
-$base = $WorkerBaseUrl.TrimEnd('/')
-$headers = "Authorization=Bearer $AuthToken"
 $managedIds = [System.Collections.Generic.HashSet[string]]::new()
 $currentIds = [System.Collections.Generic.HashSet[string]]::new()
 
@@ -56,10 +54,31 @@ if ($deprecatedHits.Count -gt 0) {
 
 foreach ($job in $manifest.jobs) {
   [void]$managedIds.Add([string]$job.id)
-  $uri = "$base/api/admin/trigger/$($job.task)"
+  $jobBaseUrlEnv = [string]$job.baseUrlEnv
+  $jobBaseUrl = if ($jobBaseUrlEnv) { [Environment]::GetEnvironmentVariable($jobBaseUrlEnv) } else { $WorkerBaseUrl }
+  if (-not $jobBaseUrl) { throw "Missing base URL for $($job.id). Set $jobBaseUrlEnv." }
+  $base = $jobBaseUrl.TrimEnd('/')
+  $path = if ($job.path) { [string]$job.path } else { "/api/admin/trigger/$($job.task)" }
+  if (-not $path.StartsWith('/')) { $path = "/$path" }
+  $uri = "$base$path"
   $query = [string]$job.query
   if ($query) {
     $uri = "$uri`?$query"
+  }
+  $jobAuthTokenEnv = [string]$job.authTokenEnv
+  $jobAuthToken = if ($jobAuthTokenEnv) { [Environment]::GetEnvironmentVariable($jobAuthTokenEnv) } else { $AuthToken }
+  if (-not $jobAuthToken) { throw "Missing auth token for $($job.id). Set $jobAuthTokenEnv." }
+  $authHeaderName = if ($job.authHeaderName) { [string]$job.authHeaderName } else { 'Authorization' }
+  $authHeaderValue = if ($authHeaderName -eq 'Authorization') { "Bearer $jobAuthToken" } else { $jobAuthToken }
+  $headers = "$authHeaderName=$authHeaderValue"
+  $bodyJson = $null
+  $nativeBodyJson = $null
+  if ($job.PSObject.Properties.Name -contains 'body') {
+    $bodyJson = $job.body | ConvertTo-Json -Compress -Depth 20
+    # Windows PowerShell strips embedded JSON quotes when passing native args.
+    # Escape quotes so gcloud receives a valid JSON string, not {dry_run:false}.
+    $nativeBodyJson = $bodyJson.Replace('"', '\"')
+    $headers = "$headers,Content-Type=application/json"
   }
   $description = [string]$job.description
   $timeZone = if ($job.timeZone) { [string]$job.timeZone } else { [string]$manifest.timeZone }
@@ -79,6 +98,9 @@ foreach ($job in $manifest.jobs) {
       '--description', $description,
       '--format', 'none'
     )
+    if ($bodyJson) {
+      $args += @('--message-body', $nativeBodyJson)
+    }
   } else {
     $args = @(
       'scheduler', 'jobs', 'create', 'http', $job.id,
@@ -93,6 +115,9 @@ foreach ($job in $manifest.jobs) {
       '--description', $description,
       '--format', 'none'
     )
+    if ($bodyJson) {
+      $args += @('--message-body', $nativeBodyJson)
+    }
   }
 
   $action = if ($exists) { 'update' } else { 'create' }

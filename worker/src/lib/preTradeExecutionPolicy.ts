@@ -38,6 +38,12 @@ export interface PreTradeOhlcvTradePlan {
   optimisticHigh?: number | null
 }
 
+export interface PreTradeTechnicalContext {
+  action: 'pass' | 'defer' | 'skip' | string
+  reason: string
+  detail?: string | null
+}
+
 export interface PreTradeExecutionInput {
   symbol: string
   currentPrice: number
@@ -52,6 +58,7 @@ export interface PreTradeExecutionInput {
   marketRiskLevel?: string | null
   momentum?: PreTradeMomentumContext | null
   tradePlan?: PreTradeOhlcvTradePlan | null
+  technical?: PreTradeTechnicalContext | null
   policy: PreTradePolicyConfig
 }
 
@@ -126,6 +133,16 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
   const risk = String(input.marketRiskLevel ?? 'unknown').toLowerCase()
   if (!risk || risk === 'unknown') {
     return { action: 'DEFER', reason: 'market_risk_unknown' }
+  }
+
+  const technical = input.technical
+  if (technical && String(technical.action).toLowerCase() !== 'pass') {
+    const action = String(technical.action).toLowerCase() === 'skip' ? 'SKIP' : 'DEFER'
+    return {
+      action,
+      reason: technical.reason,
+      detail: technical.detail ?? null,
+    }
   }
 
   if (DANGEROUS_RISK_LEVELS.has(risk)) {

@@ -39,6 +39,7 @@ import { adminConfigCoreRoutes } from './routes/adminConfigCoreRoutes'
 import { adminConfigWorkflowRoutes } from './routes/adminConfigWorkflowRoutes'
 import { adminConfigLifecycleRoutes } from './routes/adminConfigLifecycleRoutes'
 import { adminOptunaRoutes } from './routes/adminOptunaRoutes'
+import { finlabExecutionLoopRoutes } from './routes/finlabExecutionLoopRoutes'
 import { buildAdminTriggerTaskMap } from './lib/adminTriggerTaskMap'
 import { createAdminTriggerRoutes } from './routes/adminTriggerRoutes'
 import { buildWorkerHealthPayload } from './lib/runtimeVersion'
@@ -142,6 +143,7 @@ app.route('/',                    adminConfigCoreRoutes)
 app.route('/',                    adminConfigWorkflowRoutes)
 app.route('/',                    adminConfigLifecycleRoutes)
 app.route('/',                    adminOptunaRoutes)
+app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)
 app.get('/api/health', (c) => c.json(buildWorkerHealthPayload()))
 export default {

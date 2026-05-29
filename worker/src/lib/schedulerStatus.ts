@@ -50,7 +50,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'finlab-v4-backfill', name: 'FinLab Primary Materialization', schedule: 'Inside evening-chain (22:00 callback)', cron: 'callback', group: 'pipeline_chain', chainIndex: 1.5 },
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
 
-  { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
+  { id: 'intraday-check', name: 'FinLab 10s Execution Loop', schedule: 'Mon-Fri 09:00-13:30 per-min controller loop', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
   { id: 'intraday-rescore', name: 'Intraday Re-score (10/11/12/12:30)', schedule: '10:00 / 11:00 / 12:00 / 12:30', cron: '0 2,3,4 * * 1-5 + 30 4 * * 1-5', group: 'intraday' },
   { id: 'eod-exit', name: 'EOD Exit', schedule: 'Weekdays 13:25', cron: '25 5 * * 1-5', group: 'intraday' },
 

@@ -32,6 +32,7 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
     'data_quality',
     'finlab_diff',
     'preview_blocked_reasons',
+    'execution_pre_pilot_evidence',
   ], 'Dashboard V4 should expose all required panels')
 }
 
@@ -77,6 +78,9 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
       { event_type: 'finlab_preview', status: 'blocked', reason: 'insufficient_settlement_cash', created_at: '2026-05-15T01:00:00Z' },
       { event_type: 'paper_order', status: 'filled', reason: 'stockvision_fill', created_at: '2026-05-15T02:00:00Z' },
       { event_type: 'finlab_execution_preview', status: 'warning', reason: 'broker preview caution', created_at: '2026-05-15T03:00:00Z' },
+      { event_type: 'finlab_l5_market_data', status: 'pass', reason: 'l5_market_data_pass', created_at: '2026-05-15T03:00:10Z' },
+      { event_type: 'intraday_technical_decision', status: 'constructive', reason: 'intraday_dynamic_decision', created_at: '2026-05-15T03:00:20Z' },
+      { event_type: 'paper_broker_reconciliation', status: 'matched', reason: 'paper_order_created', created_at: '2026-05-15T03:00:30Z' },
     ],
   })
 
@@ -94,6 +98,12 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
     'broker preview caution',
     'insufficient_settlement_cash',
   ], 'FinLab preview blocked/warning reasons should be visible without duplicating fills')
+  assertDeepEqual(packet.executionPrePilotEvidence.map((row) => row.event_type), [
+    'paper_broker_reconciliation',
+    'intraday_technical_decision',
+    'finlab_l5_market_data',
+  ], 'production-simulated execution evidence should be visible in newest-first order')
+  assert(packet.sourceOwnership.execution_pre_pilot_evidence === 'stockvision_d1_paper_execution_events', 'execution pre-pilot evidence should be StockVision D1 owned')
   assert(validateDashboardV4Contract(packet).length === 0, 'valid Dashboard V4 packet should pass contract validation')
 }
 

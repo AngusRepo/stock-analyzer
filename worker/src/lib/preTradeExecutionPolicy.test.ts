@@ -44,6 +44,31 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
 }
 
 {
+  const decision = evaluatePreTradeExecution(baseInput({
+    marketRiskLevel: 'high',
+    technical: {
+      action: 'skip',
+      reason: 'technical_distribution',
+      detail: 'adaptive_rsi=weak;obv_temp=34;range_position=0',
+    },
+  }))
+  assert(decision.action === 'SKIP', 'dynamic technical distribution should stop before generic risk requote')
+  assert(decision.reason === 'technical_distribution', 'technical gate should own the visible skip reason')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    technical: {
+      action: 'defer',
+      reason: 'weak_no_reclaim',
+      detail: 'adaptive_rsi=weak;price_vwap_pct=-0.004',
+    },
+  }))
+  assert(decision.action === 'DEFER', 'weak intraday technicals should defer even when legacy momentum is clean')
+  assert(decision.detail?.includes('price_vwap_pct'), 'technical defer should expose the actual snapshot fields')
+}
+
+{
   const decision = evaluatePreTradeExecution(baseInput({ momentum: { error: 'trend unavailable' } }))
   assert(decision.action === 'DEFER', 'momentum errors must not proceed with buy')
 }

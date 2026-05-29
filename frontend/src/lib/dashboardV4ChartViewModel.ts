@@ -10,6 +10,7 @@ export type ChartEvidenceLane = {
     | 'data_quality'
     | 'finlab_diff'
     | 'preview_blocked_reasons'
+    | 'execution_pre_pilot_evidence'
   label: string
   value: string
   status: ChartLaneStatus
@@ -27,6 +28,7 @@ export type DashboardV4ChartViewModel = {
   regimeLabel: string
   dataQualityStatus: string
   previewReasons: DashboardV4ChartPacket['previewBlockedReasons']
+  executionPrePilotEvidence: DashboardV4ChartPacket['executionPrePilotEvidence']
 }
 
 export type DashboardV4PacketSummary = {
@@ -62,6 +64,15 @@ function previewStatus(reasons: DashboardV4ChartPacket['previewBlockedReasons'])
   return reasons.length ? 'warn' : 'ok'
 }
 
+function executionPrePilotStatus(rows: DashboardV4ChartPacket['executionPrePilotEvidence']): ChartLaneStatus {
+  if (rows.some((row) => ['blocked', 'error'].includes(String(row.status).toLowerCase()))) return 'error'
+  const observed = new Set(rows.map((row) => row.event_type))
+  return ['finlab_l5_market_data', 'intraday_technical_decision', 'paper_broker_reconciliation']
+    .every((eventType) => observed.has(eventType))
+    ? 'ok'
+    : 'warn'
+}
+
 function lane(
   id: ChartEvidenceLane['id'],
   label: string,
@@ -84,6 +95,8 @@ export function buildDashboardV4ChartViewModel(packet: DashboardV4ChartPacket): 
   const dataQualityStatus = dataQualityOverall(packet)
   const finlabDiffCount = packet.finlabDiff.rows.length
   const previewReasons = packet.previewBlockedReasons
+  const executionPrePilotEvidence = packet.executionPrePilotEvidence ?? []
+  const executionPrePilotObserved = new Set(executionPrePilotEvidence.map((row) => row.event_type))
 
   return {
     title: `${packet.stock.symbol} ${packet.stock.name}`.trim(),
@@ -99,19 +112,28 @@ export function buildDashboardV4ChartViewModel(packet: DashboardV4ChartPacket): 
       lane('data_quality', 'Quality', dataQualityStatus, qualityStatus(dataQualityStatus), 'Worker data-quality gate'),
       lane('finlab_diff', 'FinLab', String(finlabDiffCount), finlabDiffCount ? 'warn' : 'ok', 'shadow/audit rows'),
       lane('preview_blocked_reasons', 'Preview', String(previewReasons.length), previewStatus(previewReasons), 'FinLab preview warnings'),
+      lane(
+        'execution_pre_pilot_evidence',
+        'Execution',
+        `${executionPrePilotObserved.size}/3`,
+        executionPrePilotStatus(executionPrePilotEvidence),
+        'production-simulated evidence',
+      ),
     ],
     regimeLabel,
     dataQualityStatus,
     previewReasons,
+    executionPrePilotEvidence,
   }
 }
 export function summarizeDashboardV4Packet(packet: DashboardV4ChartPacket): DashboardV4PacketSummary {
   const qualityWarning = qualityStatus(dataQualityOverall(packet)) === 'warn' || qualityStatus(dataQualityOverall(packet)) === 'error'
     ? 1
     : 0
+  const executionStatus = executionPrePilotStatus(packet.executionPrePilotEvidence ?? [])
   return {
     mainQuestion: 'price_model_regime_quality',
     hasExternalWidget: packet.externalWidgetUrls.length > 0,
-    warningCount: qualityWarning + packet.previewBlockedReasons.length,
+    warningCount: qualityWarning + packet.previewBlockedReasons.length + (executionStatus === 'warn' || executionStatus === 'error' ? 1 : 0),
   }
 }

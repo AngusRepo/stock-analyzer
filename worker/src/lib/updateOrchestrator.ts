@@ -610,12 +610,13 @@ export async function continueEveningChainAfterFinLabBackfill(
     requireIndicators: false,
     allowHistoricalLatestAfterTarget: true,
   })
-  await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed after FinLab backfill:', e))
   await runQueueUpdate(env, twDate, Boolean(options.force))
+  const wave2Status = await runWave2BestEffortAfterFinLabBackfill(env, twDate)
   const summary = [
     `FinLab primary market data ready`,
     ready.summary,
     `indicator queue accepted`,
+    wave2Status,
     options.upstreamRunId ? `upstream=${options.upstreamRunId}` : '',
   ].filter(Boolean).join('; ')
   await logSchedulerResult(env.KV, 'update', {
@@ -633,6 +634,22 @@ export async function continueEveningChainAfterFinLabBackfill(
     run_date: twDate,
   })
   return summary
+}
+
+async function runWave2BestEffortAfterFinLabBackfill(env: Bindings, twDate: string): Promise<string> {
+  const timeoutMs = 8_000
+  try {
+    await Promise.race([
+      fetchWave2Data(env, twDate),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`wave2 best-effort timeout after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+    return 'wave2=ok'
+  } catch (e) {
+    console.warn('[Wave2] best-effort after FinLab backfill did not complete:', e)
+    return 'wave2=skipped_or_timeout'
+  }
 }
 
 export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {

@@ -77,8 +77,10 @@ assert(
     updateOrchestrator.includes('triggerFinLabPrimaryMarketData') &&
     updateOrchestrator.includes('continueEveningChain: true') &&
     updateOrchestrator.includes('callback will continue indicator queue') &&
-    updateOrchestrator.includes('continueEveningChainAfterFinLabBackfill'),
-  'evening-chain must route the daily price root through FinLab primary and wait for callback continuation',
+    updateOrchestrator.includes('continueEveningChainAfterFinLabBackfill') &&
+    updateOrchestrator.includes('runWave2BestEffortAfterFinLabBackfill') &&
+    updateOrchestrator.includes('wave2 best-effort timeout after'),
+  'evening-chain must route the daily price root through FinLab primary and keep Wave2 best-effort bounded so callback continuation cannot block the main chain',
 )
 
 assert(

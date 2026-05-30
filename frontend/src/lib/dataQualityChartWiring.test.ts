@@ -29,6 +29,8 @@ assert(page.includes('FinLab Dagster Data Quality'), 'DataQualityPage should exp
 assert(page.includes('dataQualityApi.v41RuntimeStatus'), 'DataQualityPage should fetch V4.1 data runtime status')
 assert(page.includes('source_quality_metrics'), 'DataQualityPage should show source quality metrics')
 assert(page.includes('canonical_rows'), 'DataQualityPage should show canonical row coverage')
+assert(page.includes('institutional_amount_daily'), 'DataQualityPage should show FinLab institutional amount canonical row coverage')
+assert(page.includes('broker_flow_daily'), 'DataQualityPage should show FinLab broker-flow canonical row coverage')
 assert(!page.includes('鞈??釭'), 'DataQualityPage visible title should not contain mojibake')
 
 const packageLock = JSON.parse(fs.readFileSync(packageLockPath, 'utf8')) as {

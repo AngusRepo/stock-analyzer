@@ -7,6 +7,8 @@ export interface MarketDataReadinessStats {
   chipLatestDate: string | null
   chipRowsOnLatest: number
   chipSourceTable?: string
+  institutionalAmountLatestDate?: string | null
+  institutionalAmountRowsOnLatest?: number
   indicatorLatestDate?: string | null
   indicatorRowsOnLatest?: number
 }
@@ -16,8 +18,10 @@ export interface MarketDataReadinessOptions {
   minPriceTwseRows?: number
   minPriceOtcRows?: number
   minChipRows?: number
+  minInstitutionalAmountRows?: number
   minIndicatorRows?: number
   requireIndicators?: boolean
+  requireInstitutionalAmount?: boolean
   allowHistoricalLatestAfterTarget?: boolean
 }
 
@@ -32,6 +36,7 @@ const DEFAULT_MIN_PRICE_ROWS = 1000
 const DEFAULT_MIN_PRICE_TWSE_ROWS = 900
 const DEFAULT_MIN_PRICE_OTC_ROWS = 700
 const DEFAULT_MIN_CHIP_ROWS = 1000
+const DEFAULT_MIN_INSTITUTIONAL_AMOUNT_ROWS = 8
 const DEFAULT_MIN_INDICATOR_ROWS = 1000
 
 function normalizeRows(value: unknown): number {
@@ -52,8 +57,10 @@ export function evaluateMarketDataReadiness(
   const minPriceTwseRows = options.minPriceTwseRows ?? DEFAULT_MIN_PRICE_TWSE_ROWS
   const minPriceOtcRows = options.minPriceOtcRows ?? DEFAULT_MIN_PRICE_OTC_ROWS
   const minChipRows = options.minChipRows ?? DEFAULT_MIN_CHIP_ROWS
+  const minInstitutionalAmountRows = options.minInstitutionalAmountRows ?? DEFAULT_MIN_INSTITUTIONAL_AMOUNT_ROWS
   const minIndicatorRows = options.minIndicatorRows ?? DEFAULT_MIN_INDICATOR_ROWS
   const requireIndicators = options.requireIndicators ?? true
+  const requireInstitutionalAmount = Boolean(options.requireInstitutionalAmount)
   const allowHistorical = Boolean(options.allowHistoricalLatestAfterTarget)
   const errors: string[] = []
 
@@ -76,6 +83,18 @@ export function evaluateMarketDataReadiness(
     errors.push(`chip rows=${stats.chipRowsOnLatest}/${minChipRows}`)
   }
   if (
+    requireInstitutionalAmount &&
+    !dateIsReadyForTarget(stats.institutionalAmountLatestDate, stats.targetDate, allowHistorical)
+  ) {
+    errors.push(`institutional_amount latest=${stats.institutionalAmountLatestDate ?? 'none'} expected=${stats.targetDate}`)
+  }
+  if (
+    requireInstitutionalAmount &&
+    normalizeRows(stats.institutionalAmountRowsOnLatest) < minInstitutionalAmountRows
+  ) {
+    errors.push(`institutional_amount rows=${stats.institutionalAmountRowsOnLatest ?? 0}/${minInstitutionalAmountRows}`)
+  }
+  if (
     requireIndicators &&
     stats.indicatorLatestDate !== undefined &&
     !dateIsReadyForTarget(stats.indicatorLatestDate, stats.targetDate, allowHistorical)
@@ -95,6 +114,7 @@ export function evaluateMarketDataReadiness(
         (stats.priceOtcRowsOnLatest !== undefined ? ` OTC=${stats.priceOtcRowsOnLatest}` : '') +
         `, chip=${stats.chipRowsOnLatest}` +
         (stats.chipSourceTable ? ` source=${stats.chipSourceTable}` : '') +
+        (stats.institutionalAmountRowsOnLatest !== undefined ? `, institutional_amount=${stats.institutionalAmountRowsOnLatest}` : '') +
         (stats.indicatorRowsOnLatest !== undefined ? `, indicators=${stats.indicatorRowsOnLatest}` : ''),
     errors,
     stats,
@@ -151,9 +171,10 @@ export async function loadMarketDataReadinessStats(
   options: MarketDataReadinessOptions = {},
 ): Promise<MarketDataReadinessStats> {
   const historicalTargetDate = options.allowHistoricalLatestAfterTarget ? targetDate : undefined
-  const [price, chip, indicators] = await Promise.all([
+  const [price, chip, institutionalAmount, indicators] = await Promise.all([
     latestTableStats(db, 'stock_prices', historicalTargetDate),
     latestChipStats(db, historicalTargetDate),
+    latestTableStats(db, 'canonical_institutional_amount_daily', historicalTargetDate).catch(() => ({ latestDate: null, rowsOnLatest: 0 })),
     latestTableStats(db, 'technical_indicators', historicalTargetDate),
   ])
   const priceSegmentDate = historicalTargetDate && price.latestDate && price.latestDate >= historicalTargetDate
@@ -169,6 +190,8 @@ export async function loadMarketDataReadinessStats(
     chipLatestDate: chip.latestDate,
     chipRowsOnLatest: chip.rowsOnLatest,
     chipSourceTable: chip.sourceTable,
+    institutionalAmountLatestDate: institutionalAmount.latestDate,
+    institutionalAmountRowsOnLatest: institutionalAmount.rowsOnLatest,
     indicatorLatestDate: indicators.latestDate,
     indicatorRowsOnLatest: indicators.rowsOnLatest,
   }

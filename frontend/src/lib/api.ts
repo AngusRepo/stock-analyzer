@@ -123,8 +123,21 @@ export const notificationsApi = {
   readAll: () => post<any>('/notifications/read-all'),
 }
 
+export type SystemStatusReport = {
+  overall: 'ok' | 'warning' | 'stale'
+  updatedAt: string
+  data: {
+    prices: { lastDate: string | null; isRecent: boolean; rowCount?: number }
+    chips: { lastDate: string | null; isRecent: boolean; source?: string | null }
+    news: { lastDate: string | null; isRecent: boolean; rowCount?: number }
+    predictions: { lastDate: string | null; isRecent: boolean }
+    marketRisk: { lastDate: string | null; isRecent: boolean; riskLevel?: string | null; riskScore?: number | null; calculatedAt?: string | null }
+  }
+  meta: { activeStocks: number; dbSizeBytes: number | null }
+}
+
 export const systemApi = {
-  status: () => get<any>('/system/status'),
+  status: () => get<SystemStatusReport>('/system/status'),
 }
 
 export const accuracyApi = {
@@ -296,7 +309,13 @@ export type V41DataRuntimeStatus = {
   finlab_backfill?: Record<string, unknown> | null
   source_diff?: { total: number; missing_in_stockvision: number; value_conflicts: number; latest_generated_at: string | null }
   gap_fill_candidates?: { total: number; candidates: number; quarantined: number; latest_generated_at: string | null }
-  canonical_rows?: { market_daily: number; chip_daily: number; revenue_monthly: number }
+  canonical_rows?: {
+    market_daily: number
+    chip_daily: number
+    institutional_amount_daily?: number
+    broker_flow_daily?: number
+    revenue_monthly: number
+  }
   source_quality_metrics?: Array<{
     source: string
     dataset: string

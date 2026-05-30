@@ -17,7 +17,6 @@ from app.training_finalizer import (
 
 def test_derive_oos_artifact_group_for_split_training_filters():
     assert derive_oos_artifact_group(["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]) == "tree"
-    assert derive_oos_artifact_group(["FT-Transformer"]) == "ftt"
     assert derive_oos_artifact_group(None) == "full"
     assert derive_oos_artifact_group(["XGBoost"]) == "custom_xgboost"
 
@@ -29,7 +28,7 @@ def test_build_oos_artifact_path_is_versioned_and_grouped():
     )
 
 
-def test_merge_oos_rank_payloads_aligns_tree_and_ft_predictions():
+def test_merge_oos_rank_payloads_aligns_tree_predictions():
     rows, y, model_order = merge_oos_rank_payloads(
         [
             {
@@ -40,21 +39,14 @@ def test_merge_oos_rank_payloads_aligns_tree_and_ft_predictions():
                     "CatBoost": np.array([0.3, 0.7]),
                 },
             },
-            {
-                "group": "ftt",
-                "y_test": np.array([0.1, 0.9]),
-                "predictions": {
-                    "FT-Transformer": np.array([0.4, 0.6]),
-                },
-            },
         ]
     )
 
-    assert model_order == ["XGBoost", "CatBoost", "FT-Transformer"]
+    assert model_order == ["XGBoost", "CatBoost"]
     assert y.tolist() == [0.1, 0.9]
     assert rows == [
-        {"XGBoost": 0.2, "CatBoost": 0.3, "FT-Transformer": 0.4},
-        {"XGBoost": 0.8, "CatBoost": 0.7, "FT-Transformer": 0.6},
+        {"XGBoost": 0.2, "CatBoost": 0.3},
+        {"XGBoost": 0.8, "CatBoost": 0.7},
     ]
 
 
@@ -62,7 +54,6 @@ def test_summarize_training_stage_status_marks_sequence_skip_degraded():
     status = summarize_training_stage_status(
         {
             "tree": {"status": "ok"},
-            "ftt": {"status": "ok"},
             "dlinear": {"status": "skipped", "reason": "missing_series_close_artifact"},
         }
     )
@@ -71,10 +62,10 @@ def test_summarize_training_stage_status_marks_sequence_skip_degraded():
 
 
 def test_missing_expected_oos_groups_blocks_partial_stacker_overwrite():
-    expected = expected_oos_artifact_groups(["tree", "ftt", "dlinear"])
+    expected = expected_oos_artifact_groups(["tree", "dlinear", "patchtst"])
 
-    assert expected == ["tree", "ftt"]
-    assert missing_expected_oos_groups(expected, [{"group": "tree"}]) == ["ftt"]
+    assert expected == ["tree"]
+    assert missing_expected_oos_groups(expected, [{"group": "patchtst"}]) == ["tree"]
     assert missing_expected_oos_groups(expected_oos_artifact_groups(["tree"]), [{"group": "tree"}]) == []
 
 
@@ -111,34 +102,24 @@ def test_reduce_training_group_results_merges_ic_and_candidate_models():
             },
         },
         {
-            "total_samples": 120,
-            "results": {
-                "FT-Transformer": {"oos_ic": 0.01},
-            },
-            "ic_tracking": {
-                "FT-Transformer": {"passed": False, "oos_ic": -0.01},
-            },
-        },
-        {
             "dlinear": {
                 "training_run_id": "run-dl",
-                "ic_tracking": {"DLinear": {"passed": True, "oos_ic": 0.02}},
+                "ic_tracking": {"DLinear": {"passed": False, "oos_ic": -0.02}},
             },
         },
     )
 
-    assert reduced["total_samples"] == 120
-    assert sorted(reduced["merged_results"]) == ["FT-Transformer", "XGBoost"]
-    assert sorted(reduced["merged_ic"]) == ["DLinear", "FT-Transformer", "XGBoost"]
+    assert reduced["total_samples"] == 100
+    assert sorted(reduced["merged_results"]) == ["XGBoost"]
+    assert sorted(reduced["merged_ic"]) == ["DLinear", "XGBoost"]
     assert reduced["circuit_breaker"] is True
-    assert reduced["candidate_models"] == ["DLinear", "FT-Transformer", "XGBoost"]
+    assert reduced["candidate_models"] == ["DLinear", "XGBoost"]
     assert reduced["sequence_candidate_models"] == {"dlinear": "DLinear"}
 
 
 def test_reduce_training_group_results_records_partial_errors():
     reduced = reduce_training_group_results(
         {"error": "tree failed"},
-        {},
         {"patchtst": {"error": "missing sequence"}},
     )
 
@@ -238,7 +219,7 @@ def test_build_retrain_followup_payload_preserves_callback_schema():
         elapsed_s=123.4,
         partial_results={
             "tree": {"train_samples": 100, "feature_count": 80, "trained_at": "2026-05-18T01:00:00Z"},
-            "ftt": {"train_samples": 90, "feature_count": 106},
+            "patchtst": {"train_samples": 90, "feature_count": 106},
         },
         result={
             "stages": {

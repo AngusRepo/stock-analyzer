@@ -74,7 +74,11 @@ interface CountRow {
   funnel_created_at?: string | null
   manifest_total?: number
   price_hot_window_manifest?: number
+  canonical_market_daily_hot_window_manifest?: number
   technical_indicator_hot_window_manifest?: number
+  canonical_chip_daily_hot_window_manifest?: number
+  canonical_institutional_amount_daily_hot_window_manifest?: number
+  canonical_broker_flow_daily_hot_window_manifest?: number
   chip_hot_window_manifest?: number
   backtest_compute_snapshot_manifest?: number
   price_history_compute_snapshot_manifest?: number
@@ -816,7 +820,11 @@ function buildSchemaCheck(columns: string[]): DataQualityCheck {
 export function buildDatasetSnapshotManifestCheck(input: {
   targetDate: string
   priceHotWindow: number
+  canonicalMarketDailyHotWindow?: number
   technicalHotWindow: number
+  canonicalChipDailyHotWindow?: number
+  canonicalInstitutionalAmountDailyHotWindow?: number
+  canonicalBrokerFlowDailyHotWindow?: number
   chipHotWindow: number
   backtestComputeSnapshot: number
   priceHistoryComputeSnapshot: number
@@ -866,7 +874,11 @@ export function buildDatasetSnapshotManifestCheck(input: {
         r2_report: input.latestR2ReportManifestAt ?? null,
       },
       price_hot_window_manifest: input.priceHotWindow,
+      canonical_market_daily_hot_window_manifest: input.canonicalMarketDailyHotWindow ?? 0,
       technical_indicator_hot_window_manifest: input.technicalHotWindow,
+      canonical_chip_daily_hot_window_manifest: input.canonicalChipDailyHotWindow ?? 0,
+      canonical_institutional_amount_daily_hot_window_manifest: input.canonicalInstitutionalAmountDailyHotWindow ?? 0,
+      canonical_broker_flow_daily_hot_window_manifest: input.canonicalBrokerFlowDailyHotWindow ?? 0,
       chip_hot_window_manifest: input.chipHotWindow,
       backtest_compute_snapshot_manifest: input.backtestComputeSnapshot,
       price_history_compute_snapshot_manifest: input.priceHistoryComputeSnapshot,
@@ -928,9 +940,10 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, themeSignalStats, stockThemeFeatureStats, retrainFollowupStats] = await Promise.all([
+  const [priceStats, chipStats, institutionalAmountStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, themeSignalStats, stockThemeFeatureStats, retrainFollowupStats] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestChipStats(env.DB),
+    latestTableStats(env.DB, 'canonical_institutional_amount_daily').catch((): CountRow => ({ latest_date: null, rows_on_latest: 0 })),
     latestTableStats(env.DB, 'technical_indicators'),
     firstCount(
       env.DB,
@@ -1152,7 +1165,11 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       env.DB,
       `SELECT COUNT(*) AS manifest_total,
               SUM(CASE WHEN kind = 'price_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS price_hot_window_manifest,
+              SUM(CASE WHEN kind = 'canonical_market_daily_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS canonical_market_daily_hot_window_manifest,
               SUM(CASE WHEN kind = 'technical_indicator_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS technical_indicator_hot_window_manifest,
+              SUM(CASE WHEN kind = 'canonical_chip_daily_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS canonical_chip_daily_hot_window_manifest,
+              SUM(CASE WHEN kind = 'canonical_institutional_amount_daily_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS canonical_institutional_amount_daily_hot_window_manifest,
+              SUM(CASE WHEN kind = 'canonical_broker_flow_daily_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS canonical_broker_flow_daily_hot_window_manifest,
               SUM(CASE WHEN kind = 'chip_hot_window' AND access_tier = 'serving' AND status = 'ready' THEN 1 ELSE 0 END) AS chip_hot_window_manifest,
               SUM(CASE WHEN kind = 'backtest_dataset' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS backtest_compute_snapshot_manifest,
               SUM(CASE WHEN kind = 'price_history' AND access_tier = 'compute' AND status = 'ready' THEN 1 ELSE 0 END) AS price_history_compute_snapshot_manifest,
@@ -1218,6 +1235,17 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       failLagDays: 0,
       minRows: 1000,
       source: chipStats.source_table ?? 'chip_data',
+    }),
+    buildFreshnessCheck({
+      id: 'institutional_amount_freshness',
+      label: 'Institutional amount data',
+      latestDate: institutionalAmountStats.latest_date,
+      targetDate,
+      rowsOnLatest: institutionalAmountStats.rows_on_latest,
+      warnLagDays: 0,
+      failLagDays: 0,
+      minRows: 8,
+      source: 'canonical_institutional_amount_daily',
     }),
     buildFreshnessCheck({
       id: 'technical_indicator_freshness',
@@ -1321,7 +1349,11 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       targetDate,
       total: Number(datasetManifestStats.manifest_total ?? 0),
       priceHotWindow: Number(datasetManifestStats.price_hot_window_manifest ?? 0),
+      canonicalMarketDailyHotWindow: Number(datasetManifestStats.canonical_market_daily_hot_window_manifest ?? 0),
       technicalHotWindow: Number(datasetManifestStats.technical_indicator_hot_window_manifest ?? 0),
+      canonicalChipDailyHotWindow: Number(datasetManifestStats.canonical_chip_daily_hot_window_manifest ?? 0),
+      canonicalInstitutionalAmountDailyHotWindow: Number(datasetManifestStats.canonical_institutional_amount_daily_hot_window_manifest ?? 0),
+      canonicalBrokerFlowDailyHotWindow: Number(datasetManifestStats.canonical_broker_flow_daily_hot_window_manifest ?? 0),
       chipHotWindow: Number(datasetManifestStats.chip_hot_window_manifest ?? 0),
       backtestComputeSnapshot: Number(datasetManifestStats.backtest_compute_snapshot_manifest ?? 0),
       priceHistoryComputeSnapshot: Number(datasetManifestStats.price_history_compute_snapshot_manifest ?? 0),

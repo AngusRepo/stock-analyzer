@@ -480,7 +480,7 @@ def test_build_compute_efficiency_report_from_events_accepts_high_spec_speedup()
         baseline_events=[
             {
                 "provider": "modal",
-                "job_name": "train_ftt_model",
+                "job_name": "train_patchtst_universal",
                 "wall_sec": 3310,
                 "compute_sec": 3310,
                 "est_usd": 0.8,
@@ -500,7 +500,7 @@ def test_build_compute_efficiency_report_from_events_accepts_high_spec_speedup()
         optimized_events=[
             {
                 "provider": "modal",
-                "job_name": "train_ftt_model",
+                "job_name": "train_patchtst_universal",
                 "wall_sec": 2400,
                 "compute_sec": 2400,
                 "est_usd": 0.58,

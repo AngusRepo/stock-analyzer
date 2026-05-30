@@ -25,9 +25,7 @@ from app import universal_training  # noqa: E402
 from app import model_pool  # noqa: E402
 from app.universal_training import (  # noqa: E402
     UniversalTrainRequest,
-    build_ft_model_cpcv_params,
     build_non_tree_model_cpcv_gap_evidence,
-    model_cpcv_family_adapter_enabled,
 )
 
 
@@ -189,47 +187,6 @@ def test_non_tree_model_cpcv_gap_evidence_is_fail_visible():
     assert "Chronos" not in evidence
 
 
-def test_ft_model_cpcv_adapter_requires_explicit_policy_enable():
-    assert model_cpcv_family_adapter_enabled("FT-Transformer", None) is False
-    assert model_cpcv_family_adapter_enabled(
-        "FT-Transformer",
-        {"family_adapters": {"FT-Transformer": {"enabled": True}}},
-    ) is False
-    assert model_cpcv_family_adapter_enabled(
-        "DLinear",
-        {"family_adapters": {"FT-Transformer": {"enabled": True}}},
-    ) is False
-
-
-def test_build_ft_model_cpcv_params_uses_request_and_policy_overrides():
-    req = UniversalTrainRequest(
-        ftt_d_model=64,
-        ftt_n_heads=4,
-        ftt_n_layers=2,
-        ftt_dropout=0.2,
-        ftt_lr=0.0003,
-        ftt_batch_size=256,
-        ftt_margin=0.1,
-        model_cpcv_policy={
-            "family_adapters": {
-                "FT-Transformer": {
-                    "max_epochs": 3,
-                    "batch_size": 128,
-                    "seed": 99,
-                }
-            }
-        },
-    )
-
-    params = build_ft_model_cpcv_params(req)
-
-    assert params["d_model"] == 64
-    assert params["n_heads"] == 4
-    assert params["max_epochs"] == 3
-    assert params["batch_size"] == 128
-    assert params["seed"] == 99
-
-
 def test_universal_training_policy_keeps_current_defaults():
     policy = UniversalTrainingPolicy.from_env()
 
@@ -237,15 +194,6 @@ def test_universal_training_policy_keeps_current_defaults():
     assert policy.sequence_min_length({}) == 65
     assert policy.to_base_train_payload({}, candidate_version="v-test") == {
         "batch_count": 5,
-        "ftt_d_model": 128,
-        "ftt_n_heads": 8,
-        "ftt_n_layers": 3,
-        "ftt_dropout": 0.12,
-        "ftt_max_epochs": 120,
-        "ftt_lr": 2e-4,
-        "ftt_patience": 16,
-        "ftt_batch_size": 1024,
-        "ftt_margin": 0.0,
         "output_model_version": "v-test",
         "register_challengers": False,
         "model_cpcv_policy": {"family_adapters": {}},
@@ -255,24 +203,15 @@ def test_universal_training_policy_keeps_current_defaults():
 def test_universal_training_policy_reads_env_and_payload_overrides(monkeypatch):
     monkeypatch.setenv("UNIVERSAL_TRAIN_MODEL_GROUPS", "tree,ftt")
     monkeypatch.setenv("UNIVERSAL_SEQUENCE_MIN_LEN", "88")
-    monkeypatch.setenv("UNIVERSAL_FTT_D_MODEL", "256")
-    monkeypatch.setenv("UNIVERSAL_FTT_LR", "0.0003")
 
     policy = UniversalTrainingPolicy.from_env()
 
     assert policy.requested_groups({}) == ["tree"]
     assert policy.sequence_min_length({}) == 88
-    assert policy.to_base_train_payload(
-        {
-            "batch_count": "7",
-            "ftt_lr": "0.0001",
-            "ftt_dropout": "0.2",
-        },
-        candidate_version="v-env",
-    )["ftt_lr"] == 0.0001
-    assert policy.to_base_train_payload({"ftt_dropout": "0.2"}, candidate_version="v-env")[
-        "ftt_d_model"
-    ] == 256
+    payload = policy.to_base_train_payload({"batch_count": "7"}, candidate_version="v-env")
+    assert payload["batch_count"] == 7
+    assert "ftt_lr" not in payload
+    assert "ftt_d_model" not in payload
 
 
 def test_universal_training_policy_accepts_payload_group_string():
@@ -320,19 +259,17 @@ def test_training_group_feature_policies_are_single_source_of_truth():
     assert patchtst.mergeable_oos is False
 
 
-def test_group_train_payload_enforces_tree_vs_ft_feature_policy():
+def test_group_train_payload_enforces_known_training_group_policy():
     base = {"batch_count": 5, "skip_feature_pool": True, "models_filter": ["Legacy"]}
 
     tree_payload = build_group_train_payload(base, "tree")
-    ftt_payload = build_group_train_payload(base, "ftt")
+    unknown_payload = build_group_train_payload(base, "ftt")
 
     assert tree_payload["models_filter"] == ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
     assert tree_payload["skip_feature_pool"] is False
     assert tree_payload["feature_policy"]["feature_source"] == "feature_pool.tree_active"
 
-    assert ftt_payload["models_filter"] == ["__retired_ft_transformer__"]
-    assert ftt_payload["skip_feature_pool"] is True
-    assert ftt_payload["feature_policy"]["retired"] is True
+    assert unknown_payload == base
 
 
 def test_tree_model_child_payloads_keep_tree_policy_and_unique_manifest_suffixes():

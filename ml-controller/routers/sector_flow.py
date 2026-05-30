@@ -30,7 +30,6 @@ _USER_AGENT = "StockVision/12.3 (sector-flow)"
 # ─── Request / Response Models ────────────────────────────────────────────────
 
 class SectorFlowRequest(BaseModel):
-    finmind_token: str | None = None
     date: str | None = None
 
 class SectorSummary(BaseModel):
@@ -102,7 +101,7 @@ async def compute_sector_flow(req: SectorFlowRequest):
             fetch_tpex_chips(client, target_date),
             fetch_twse_prices(client, target_date),
             fetch_tpex_prices(client, target_date),
-            fetch_sector_mapping(client, req.finmind_token),
+            fetch_sector_mapping(client),
             return_exceptions=True,
         )
 

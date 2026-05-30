@@ -205,6 +205,8 @@ function dataQualityImpact(check: DataQualityCheck): string {
     return 'Classification coverage affects sector/theme grouping and recommendation lane explanations; tradable lane should be evaluated separately from emerging research lane.'
   }
   if (check.id.includes('price')) return 'Cards, quote sanity, fills, and recommendations may use stale or incomplete price data.'
+  if (check.id === 'chip_freshness') return 'Chip, market-risk, screener foreign-flow overlays, and recommendation context may be using stale canonical_chip_daily or legacy fallback data.'
+  if (check.id === 'institutional_amount_freshness') return 'Official institutional amount context may be stale; homepage market regime, chips tile, and allocation risk context should be treated as degraded.'
   if (check.id.includes('prediction') || check.id.includes('model')) return 'ML votes, IC weighting, and recommendation confidence may be degraded.'
   return check.status === 'fail'
     ? 'Serving data may be stale or structurally unsafe; downstream recommendations should be treated as degraded.'
@@ -216,6 +218,8 @@ function dataQualityNextAction(check: DataQualityCheck): string {
     return 'Inspect tradable_missing_industry_tags first; if zero, treat emerging research mapping as taxonomy backlog, not a trading blocker.'
   }
   if (check.id.includes('price')) return 'Open price freshness drilldown, compare latest stock_prices date with the data update run, then rerun evening chain only after update completes.'
+  if (check.id === 'chip_freshness') return 'Check FINLAB_DAILY_PRICE_LANES includes chip_diversity and emerging_chip_diversity, verify canonical_chip_daily row counts, then rerun evening chain only after FinLab primary materialization is fresh.'
+  if (check.id === 'institutional_amount_freshness') return 'Check FINLAB_DAILY_PRICE_LANES includes institutional_amount_summary and verify canonical_institutional_amount_daily freshness before rerunning dependent schedulers.'
   if (check.id.includes('prediction')) return 'Open model/prediction coverage and compare expected model rows vs actual prediction rows for the target date.'
   return 'Inspect evidence metrics, then trace the owner pipeline that writes this dataset.'
 }

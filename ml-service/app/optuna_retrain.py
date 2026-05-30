@@ -142,7 +142,6 @@ def search_best_params(
 ) -> Optional[dict]:
     """
     Run Optuna search for a model. Returns best_params dict or None.
-    FT-Transformer is excluded (PyTorch, needs different optimization).
     """
     searcher = OPTUNA_SEARCHERS.get(model_name)
     if not searcher:

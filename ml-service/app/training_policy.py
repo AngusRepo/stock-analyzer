@@ -210,8 +210,6 @@ PREDICT_ONLY_MODEL_NOTES = {
 TREE_MODEL_NAMES = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM")
 FULL_TABULAR_MODEL_NAMES: tuple[str, ...] = ()
 SEQUENCE_MODEL_GROUPS = ("dlinear", "patchtst")
-RETIRED_TRAINING_GROUPS = {"ftt"}
-RETIRED_MODEL_NAMES = {"FT-Transformer"}
 
 
 @dataclass(frozen=True)
@@ -384,17 +382,6 @@ def models_for_training_group(group: str) -> list[str]:
 
 def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[str, Any]:
     normalized_group = str(group or "").strip().lower()
-    if normalized_group in RETIRED_TRAINING_GROUPS:
-        payload = dict(base_payload)
-        payload["models_filter"] = ["__retired_ft_transformer__"]
-        payload["skip_feature_pool"] = True
-        payload["feature_policy"] = {
-            "group": normalized_group,
-            "models": [],
-            "retired": True,
-            "note": "FT-Transformer retired from active training and comparator paths.",
-        }
-        return payload
     policy = training_group_feature_policy(normalized_group)
     if policy is None:
         return dict(base_payload)
@@ -452,15 +439,6 @@ def build_model_feature_policy_metadata(
 class UniversalTrainingPolicy:
     default_train_groups: tuple[str, ...] = ("tree", "dlinear", "patchtst")
     sequence_min_len: int = 65
-    ftt_d_model: int = 128
-    ftt_n_heads: int = 8
-    ftt_n_layers: int = 3
-    ftt_dropout: float = 0.12
-    ftt_max_epochs: int = 120
-    ftt_lr: float = 2e-4
-    ftt_patience: int = 16
-    ftt_batch_size: int = 1024
-    ftt_margin: float = 0.0
 
     @classmethod
     def from_env(cls) -> "UniversalTrainingPolicy":
@@ -470,21 +448,12 @@ class UniversalTrainingPolicy:
                 cls.default_train_groups,
             ),
             sequence_min_len=_env_int("UNIVERSAL_SEQUENCE_MIN_LEN", cls.sequence_min_len),
-            ftt_d_model=_env_int("UNIVERSAL_FTT_D_MODEL", cls.ftt_d_model),
-            ftt_n_heads=_env_int("UNIVERSAL_FTT_N_HEADS", cls.ftt_n_heads),
-            ftt_n_layers=_env_int("UNIVERSAL_FTT_N_LAYERS", cls.ftt_n_layers),
-            ftt_dropout=_env_float("UNIVERSAL_FTT_DROPOUT", cls.ftt_dropout),
-            ftt_max_epochs=_env_int("UNIVERSAL_FTT_MAX_EPOCHS", cls.ftt_max_epochs),
-            ftt_lr=_env_float("UNIVERSAL_FTT_LR", cls.ftt_lr),
-            ftt_patience=_env_int("UNIVERSAL_FTT_PATIENCE", cls.ftt_patience),
-            ftt_batch_size=_env_int("UNIVERSAL_FTT_BATCH_SIZE", cls.ftt_batch_size),
-            ftt_margin=_env_float("UNIVERSAL_FTT_MARGIN", cls.ftt_margin),
         )
 
     def requested_groups(self, payload: dict[str, Any] | None = None) -> list[str]:
         payload = payload or {}
         groups = _coerce_str_list(payload.get("train_model_groups"), self.default_train_groups)
-        return [group for group in groups if group not in RETIRED_TRAINING_GROUPS]
+        return [group for group in groups if group in TRAINING_GROUP_FEATURE_POLICIES]
 
     def sequence_min_length(self, payload: dict[str, Any] | None = None) -> int:
         payload = payload or {}
@@ -500,15 +469,6 @@ class UniversalTrainingPolicy:
         model_cpcv_policy = payload.get("model_cpcv_policy") or {"family_adapters": {}}
         return {
             "batch_count": _coerce_int(payload.get("batch_count"), 5),
-            "ftt_d_model": _coerce_int(payload.get("ftt_d_model"), self.ftt_d_model),
-            "ftt_n_heads": _coerce_int(payload.get("ftt_n_heads"), self.ftt_n_heads),
-            "ftt_n_layers": _coerce_int(payload.get("ftt_n_layers"), self.ftt_n_layers),
-            "ftt_dropout": _coerce_float(payload.get("ftt_dropout"), self.ftt_dropout),
-            "ftt_max_epochs": _coerce_int(payload.get("ftt_max_epochs"), self.ftt_max_epochs),
-            "ftt_lr": _coerce_float(payload.get("ftt_lr"), self.ftt_lr),
-            "ftt_patience": _coerce_int(payload.get("ftt_patience"), self.ftt_patience),
-            "ftt_batch_size": _coerce_int(payload.get("ftt_batch_size"), self.ftt_batch_size),
-            "ftt_margin": _coerce_float(payload.get("ftt_margin"), self.ftt_margin),
             "output_model_version": candidate_version,
             "register_challengers": False,
             "model_cpcv_policy": model_cpcv_policy,

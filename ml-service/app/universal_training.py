@@ -18,7 +18,6 @@ import polars as pl
 from joblib import load as joblib_load
 from pydantic import BaseModel
 
-from .ft_transformer import rank_from_ft_regression_output, rebuild_ft_transformer_from_bundle
 from .artifact_contract import (
     build_model_artifact_metadata,
     build_training_run_manifest,
@@ -28,7 +27,6 @@ from .artifact_contract import (
 from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
 from .model_store import _get_bucket, save_model
 from .training_policy import (
-    RETIRED_MODEL_NAMES,
     TREE_MODEL_NAMES,
     ValidationGovernancePolicy,
     build_model_feature_policy_metadata,
@@ -66,15 +64,6 @@ class UniversalTrainRequest(BaseModel):
     window_id: int | None = None
     skip_weekly_backup: bool = False
     feature_pool_path: str | None = None
-    ftt_d_model: int = 128
-    ftt_n_heads: int = 8
-    ftt_n_layers: int = 3
-    ftt_dropout: float = 0.12
-    ftt_max_epochs: int = 120
-    ftt_lr: float = 2e-4
-    ftt_patience: int = 16
-    ftt_batch_size: int = 1024
-    ftt_margin: float = 0.0
     followup_webhook_url: str | None = None
     output_model_version: str | None = None
     register_challengers: bool = False
@@ -123,33 +112,6 @@ def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | Non
         return None, None
     values.sort()
     return values[0], values[-1]
-
-
-def _ftt_tensor_loader(
-    torch_module,
-    X: np.ndarray,
-    y: np.ndarray | None = None,
-    *,
-    batch_size: int,
-    shuffle: bool,
-    pin_memory: bool,
-):
-    """Build an FT-Transformer DataLoader without per-batch NumPy conversion."""
-    from torch.utils.data import DataLoader, TensorDataset
-
-    x_tensor = torch_module.as_tensor(np.asarray(X, dtype=np.float32))
-    if y is None:
-        dataset = TensorDataset(x_tensor)
-    else:
-        y_tensor = torch_module.as_tensor(np.asarray(y, dtype=np.float32))
-        dataset = TensorDataset(x_tensor, y_tensor)
-    return DataLoader(
-        dataset,
-        batch_size=max(1, int(batch_size)),
-        shuffle=shuffle and len(dataset) > 0,
-        num_workers=0,
-        pin_memory=pin_memory,
-    )
 
 
 def normalize_universal_lifecycle_request(
@@ -350,41 +312,6 @@ def build_non_tree_model_cpcv_gap_evidence(
             cost_estimate=dict(cost_estimate or {}),
         )
     return evidence
-
-
-def model_cpcv_family_adapter_enabled(model_name: str, policy: dict | None) -> bool:
-    if model_name in RETIRED_MODEL_NAMES:
-        return False
-    if not isinstance(policy, dict):
-        return False
-    adapters = policy.get("family_adapters")
-    if not isinstance(adapters, dict):
-        return False
-    cfg = adapters.get(model_name)
-    return bool(isinstance(cfg, dict) and cfg.get("enabled") is True)
-
-
-def build_ft_model_cpcv_params(req: UniversalTrainRequest) -> dict[str, object]:
-    adapter_policy = {}
-    if isinstance(req.model_cpcv_policy, dict):
-        family_adapters = req.model_cpcv_policy.get("family_adapters")
-        if isinstance(family_adapters, dict):
-            adapter_policy = family_adapters.get("FT-Transformer") or {}
-    params = {
-        "d_model": int(req.ftt_d_model),
-        "n_heads": int(req.ftt_n_heads),
-        "n_layers": int(req.ftt_n_layers),
-        "dropout": float(req.ftt_dropout),
-        "lr": float(req.ftt_lr),
-        "batch_size": int(req.ftt_batch_size),
-        "margin": float(req.ftt_margin),
-        "max_epochs": 3,
-        "seed": 42,
-    }
-    for key in ("max_epochs", "batch_size", "seed", "lr", "dropout", "margin"):
-        if isinstance(adapter_policy, dict) and key in adapter_policy and adapter_policy[key] is not None:
-            params[key] = adapter_policy[key]
-    return params
 
 
 def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dict]:
@@ -694,15 +621,6 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         if force_full_feature_pool and not req.skip_feature_pool:
             reason = f"models_filter={req.models_filter} -> full-feature policy"
         print(f"[TrainUniversal] {reason} -> using all {len(feature_names)} features")
-        ft_active = set(feature_pool_contract.get("ft_active") or [])
-        if ft_active:
-            missing_from_prep = sorted(ft_active - set(feature_names))[:10]
-            extra_in_prep = sorted(set(feature_names) - ft_active)[:10]
-            print(
-                "[TrainUniversal] Full-feature schema parity: "
-                f"ft_active={len(ft_active)} prep={len(feature_names)} "
-                f"missing_sample={missing_from_prep} extra_sample={extra_in_prep}"
-            )
     else:
         try:
             if feature_pool_contract:
@@ -837,15 +755,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     trained_models: dict[str, object] = {}
     oos_rank_predictions: dict[str, np.ndarray] = {}
     model_cpcv_evidence_by_model: dict[str, dict] = {}
-    _filter = (
-        {str(model) for model in req.models_filter if str(model) not in RETIRED_MODEL_NAMES}
-        if req.models_filter is not None
-        else None
-    )
+    _filter = {str(model) for model in req.models_filter} if req.models_filter is not None else None
 
     def _should_train(name: str) -> bool:
-        if name in RETIRED_MODEL_NAMES:
-            return False
         return _filter is None or name in _filter
 
     class _SkipModel(Exception):
@@ -971,280 +883,6 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         results["LightGBM"] = {"skipped": True}
     except Exception as exc:
         results["LightGBM"] = {"error": str(exc)}
-
-    try:
-        if not _should_train("FT-Transformer"):
-            raise _SkipModel()
-        import torch
-        import torch.nn as nn
-        from sklearn.preprocessing import StandardScaler
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[TrainUniversal] FT-T device={device}")
-
-        n_features = X_train.shape[1]
-        D_MODEL = int(req.ftt_d_model)
-        N_HEADS = int(req.ftt_n_heads)
-        N_LAYERS = int(req.ftt_n_layers)
-        MAX_EPOCHS = int(req.ftt_max_epochs)
-        LR = float(req.ftt_lr)
-        PATIENCE = int(req.ftt_patience)
-        BATCH_SIZE = int(req.ftt_batch_size)
-        FTT_DROPOUT = float(req.ftt_dropout)
-
-        class _FTT(nn.Module):
-            def __init__(self, n_feat, d_model, n_heads, n_layers):
-                super().__init__()
-                self.feat_embed = nn.Linear(1, d_model, bias=True)
-                self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
-                encoder_layer = nn.TransformerEncoderLayer(
-                    d_model=d_model,
-                    nhead=n_heads,
-                    dim_feedforward=int(d_model * 4 / 3),
-                    dropout=0.12,
-                    batch_first=True,
-                )
-                self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-                for layer in self.encoder.layers:
-                    for attr in ("dropout", "dropout1", "dropout2"):
-                        if hasattr(layer, attr):
-                            setattr(layer, attr, nn.Dropout(FTT_DROPOUT))
-                self.head = nn.Linear(d_model, 1)
-
-            def forward(self, x):
-                batch_size = x.shape[0]
-                tokens = self.feat_embed(x.unsqueeze(-1))
-                cls = self.cls_token.expand(batch_size, -1, -1)
-                tokens = torch.cat([cls, tokens], dim=1)
-                out = self.encoder(tokens)
-                return self.head(out[:, 0, :]).squeeze(-1)
-
-        feat_scaler = StandardScaler()
-        Xt = feat_scaler.fit_transform(X_train).astype(np.float32)
-        zero_var_count = int((feat_scaler.scale_ <= 1e-10).sum())
-        Xt = np.nan_to_num(Xt, nan=0.0, posinf=0.0, neginf=0.0)
-        yt = y_train.astype(np.float32)
-        print(
-            f"[TrainUniversal] FT-T scaler: "
-            f"{len(feat_scaler.scale_) - zero_var_count}/{len(feat_scaler.scale_)} columns with variance "
-            f"(zero-var={zero_var_count})"
-        )
-        print(f"[TrainUniversal] FT-T using all {len(Xt)} samples (L4 24GB + batched val)")
-
-        if len(Xt) >= 1000:
-            _unique_td = np.sort(np.unique(np.array([str(d) for d in dates_train])))
-            _n_td = len(_unique_td)
-            _val_start_idx = int(_n_td * 0.8)
-            _embargo_end_idx = min(_val_start_idx + 5, _n_td)
-            _trn_date_set = set(_unique_td[:_val_start_idx].tolist())
-            _val_date_set = set(_unique_td[_embargo_end_idx:].tolist())
-            _dates_str = np.array([str(d) for d in dates_train])
-            _trn_mask = np.array([d in _trn_date_set for d in _dates_str])
-            _val_mask = np.array([d in _val_date_set for d in _dates_str])
-            Xt_trn, yt_trn = Xt[_trn_mask], yt[_trn_mask]
-            Xt_val, yt_val = Xt[_val_mask], yt[_val_mask]
-            print(f"[TrainUniversal] FT-T embargo split: trn={_trn_mask.sum()}, val={_val_mask.sum()}, embargo=5d")
-            if len(Xt_val) == 0:
-                val_size = max(int(len(Xt) * 0.2), 256)
-                Xt_val, yt_val = Xt[-val_size:], yt[-val_size:]
-                Xt_trn, yt_trn = Xt[:-val_size], yt[:-val_size]
-                print("[TrainUniversal] FT-T embargo fallback: not enough val dates, using simple split")
-        else:
-            val_size = max(int(len(Xt) * 0.2), 256)
-            Xt_val, yt_val = Xt[-val_size:], yt[-val_size:]
-            Xt_trn, yt_trn = Xt[:-val_size], yt[:-val_size]
-            print(f"[TrainUniversal] FT-T simple split (data < 1000): trn={len(Xt_trn)}, val={len(Xt_val)}")
-
-        model_ftt = _FTT(n_features, D_MODEL, N_HEADS, N_LAYERS).to(device)
-        opt = torch.optim.AdamW(model_ftt.parameters(), lr=LR, weight_decay=5e-5)
-        _global_step = 0
-        _ftt_margin = float(req.ftt_margin)
-        _margin_loss = nn.MarginRankingLoss(margin=_ftt_margin)
-        _n_pairs = 1024
-
-        def crit(preds: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-            batch_size = preds.shape[0]
-            if batch_size < 2:
-                return torch.tensor(0.0, device=preds.device)
-            n = min(_n_pairs, batch_size * (batch_size - 1) // 2)
-            idx_i = torch.randint(0, batch_size, (n,), device=preds.device)
-            idx_j = torch.randint(0, batch_size, (n,), device=preds.device)
-            mask = idx_i != idx_j
-            idx_i, idx_j = idx_i[mask], idx_j[mask]
-            if len(idx_i) == 0:
-                return torch.tensor(0.0, device=preds.device)
-            target = torch.sign(labels[idx_i] - labels[idx_j])
-            non_tie = target != 0
-            if non_tie.sum() == 0:
-                return torch.tensor(0.0, device=preds.device)
-            return _margin_loss(preds[idx_i[non_tie]], preds[idx_j[non_tie]], target[non_tie])
-
-        use_amp = device.type == "cuda"
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        grad_scaler = torch.amp.GradScaler(enabled=(use_amp and amp_dtype == torch.float16))
-        print(f"[TrainUniversal] AMP={'ON' if use_amp else 'OFF'} dtype={amp_dtype if use_amp else 'fp32'}")
-
-        best_val_ic = -float("inf")
-        best_state = None
-        no_improve = 0
-        last_epoch = 0
-
-        def _run_ftt_training(batch_sz: int, grad_accum: int = 1) -> None:
-            nonlocal best_val_ic, best_state, no_improve, _global_step, last_epoch
-
-            # CPU tensors are pinned only to feed CUDA with non-blocking copies;
-            # the model, forward/backward pass, and AMP stay on `device`.
-            pin_batches = device.type == "cuda"
-            train_loader = _ftt_tensor_loader(
-                torch,
-                Xt_trn,
-                yt_trn,
-                batch_size=batch_sz,
-                shuffle=True,
-                pin_memory=pin_batches,
-            )
-            val_loader = _ftt_tensor_loader(
-                torch,
-                Xt_val,
-                None,
-                batch_size=batch_sz,
-                shuffle=False,
-                pin_memory=pin_batches,
-            )
-            for epoch in range(MAX_EPOCHS):
-                model_ftt.train()
-                opt.zero_grad()
-                mini_step = 0
-                for xb_cpu, yb_cpu in train_loader:
-                    xb = xb_cpu.to(device, non_blocking=pin_batches)
-                    yb = yb_cpu.to(device, non_blocking=pin_batches)
-                    with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                        preds_amp = model_ftt(xb)
-                    loss = crit(preds_amp.float(), yb.float()) / grad_accum
-                    grad_scaler.scale(loss).backward()
-                    mini_step += 1
-                    if mini_step % grad_accum == 0:
-                        grad_scaler.step(opt)
-                        grad_scaler.update()
-                        opt.zero_grad()
-                        _global_step += 1
-                if mini_step % grad_accum != 0:
-                    grad_scaler.step(opt)
-                    grad_scaler.update()
-                    opt.zero_grad()
-                    _global_step += 1
-
-                model_ftt.eval()
-                with torch.no_grad():
-                    val_preds = []
-                    for (xvb_cpu,) in val_loader:
-                        xvb = xvb_cpu.to(device, non_blocking=pin_batches)
-                        with torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                            val_preds.append(model_ftt(xvb).float().cpu().numpy())
-                    val_preds_arr = np.concatenate(val_preds)
-                val_ic = 0.0
-                nan_count = int(np.isnan(val_preds_arr).sum())
-                if nan_count > 0:
-                    print(f"[TrainUniversal] FT-T val preds contain {nan_count} NaN -> skipping IC")
-                elif np.std(val_preds_arr) > 1e-10 and np.std(yt_val) > 1e-10:
-                    rho, _ = _spearmanr(val_preds_arr, yt_val)
-                    val_ic = float(rho) if not np.isnan(rho) else 0.0
-
-                if val_ic > best_val_ic:
-                    best_val_ic = val_ic
-                    best_state = {k: v.cpu().clone() for k, v in model_ftt.state_dict().items()}
-                    no_improve = 0
-                else:
-                    no_improve += 1
-
-                if (epoch + 1) % 10 == 0:
-                    print(
-                        f"[TrainUniversal] FT-T epoch {epoch+1} "
-                        f"val_IC={val_ic:.6f} best={best_val_ic:.6f} "
-                        f"patience={no_improve}/{PATIENCE}"
-                    )
-
-                last_epoch = epoch + 1
-                if no_improve >= PATIENCE:
-                    print(f"[TrainUniversal] FT-T early stop at epoch {epoch+1} (val_IC={best_val_ic:.6f})")
-                    break
-
-        try:
-            _run_ftt_training(BATCH_SIZE, grad_accum=1)
-        except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache()
-            print("[TrainUniversal] FT-T OOM with BATCH_SIZE=1024, retrying BATCH_SIZE=512 + grad_accum=2")
-            best_val_ic = -float("inf")
-            best_state = None
-            no_improve = 0
-            _global_step = 0
-            _run_ftt_training(512, grad_accum=2)
-
-        if best_state is not None:
-            model_ftt.load_state_dict(best_state)
-        model_ftt.to("cpu").eval()
-
-        Xt_test = feat_scaler.transform(X_test).astype(np.float32)
-        Xt_test = np.nan_to_num(Xt_test, nan=0.0, posinf=0.0, neginf=0.0)
-        all_preds = []
-        with torch.no_grad():
-            for ts in range(0, len(Xt_test), BATCH_SIZE):
-                xb = torch.tensor(Xt_test[ts:ts + BATCH_SIZE])
-                all_preds.append(model_ftt(xb).numpy())
-        raw_preds = np.asarray(np.concatenate(all_preds), dtype=float).reshape(-1)
-        rank_preds = np.asarray([rank_from_ft_regression_output(v) for v in raw_preds], dtype=float)
-        raw_std = float(np.nanstd(raw_preds))
-        rank_std = float(np.nanstd(rank_preds))
-        if rank_std < 1e-6:
-            raise ValueError(
-                "FT-Transformer degenerate rank output "
-                f"(rank_std={rank_std:.8f}, raw_std={raw_std:.8f}); artifact not saved"
-            )
-        ic = _oos_ic(raw_preds, y_test)
-        oos_rank_predictions["FT-Transformer"] = rank_preds
-
-        stopped_epoch = last_epoch
-        bundle = {
-            "state_dict": model_ftt.state_dict(),
-            "scaler": feat_scaler,
-            "n_features": n_features,
-            "model_type": "regression",
-            "arch": {
-                "d_model": D_MODEL,
-                "n_heads": N_HEADS,
-                "n_layers": N_LAYERS,
-                "dropout": FTT_DROPOUT,
-                "head_type": "regression",
-            },
-        }
-        trained_models["FT-Transformer"] = (model_ftt, feat_scaler, None, bundle)
-        results["FT-Transformer"] = {
-            "oos_ic": round(ic, 4),
-            "train": len(X_train),
-            "test": len(X_test),
-            "stopped_epoch": stopped_epoch,
-            "best_val_ic": round(best_val_ic, 6),
-            "raw_pred_std": round(raw_std, 8),
-            "rank_pred_std": round(rank_std, 8),
-            "device": str(device),
-            "saved": True,
-            "arch": {
-                "d_model": D_MODEL,
-                "n_heads": N_HEADS,
-                "n_layers": N_LAYERS,
-                "dropout": FTT_DROPOUT,
-                "margin": _ftt_margin,
-                "lr": LR,
-                "batch_size": BATCH_SIZE,
-                "patience": PATIENCE,
-                "max_epochs": MAX_EPOCHS,
-            },
-        }
-        print(f"[TrainUniversal] FT-Transformer IC={ic:.4f} stopped={stopped_epoch} device={device}")
-    except _SkipModel:
-        results["FT-Transformer"] = {"skipped": True}
-    except Exception as exc:
-        results["FT-Transformer"] = {"error": str(exc)}
 
     can_update_active_stacker = (
         req.models_filter is None
@@ -1403,52 +1041,6 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 results.setdefault(model_name, {})["model_cpcv"] = evidence
                 print(
                     f"[TrainUniversal] {model_name} CPCV decision={evidence['decision']} "
-                    f"folds={evidence['folds']} ic={evidence['oos_ic_mean']}"
-                )
-            if (
-                "FT-Transformer" in trained_models
-                and model_cpcv_family_adapter_enabled("FT-Transformer", req.model_cpcv_policy)
-            ):
-                from .model_validation import (
-                    build_model_cpcv_adapter_error_evidence,
-                    evaluate_model_cpcv_rank_ic,
-                    fit_predict_ft_transformer_cpcv,
-                )
-
-                try:
-                    ft_params = build_ft_model_cpcv_params(req)
-                    evidence = evaluate_model_cpcv_rank_ic(
-                        model="FT-Transformer",
-                        X=X,
-                        y=y,
-                        dates=dates_arr,
-                        fit_predict=lambda train_idx, test_idx: fit_predict_ft_transformer_cpcv(
-                            X,
-                            y,
-                            train_idx,
-                            test_idx,
-                            params=ft_params,
-                        ),
-                        n_groups=int(validation_policy["cpcv_n_groups"]),
-                        n_test_groups=int(validation_policy["cpcv_n_test_groups"]),
-                        embargo_days=int(validation_policy["embargo_base_days"]),
-                        min_train_groups=int(validation_policy["cpcv_min_train_groups"]),
-                        embargo_pct=float(validation_policy["embargo_pct"]),
-                        max_embargo_days=int(validation_policy["max_embargo_days"]),
-                        policy=req.model_cpcv_policy,
-                    )
-                except Exception as ft_exc:
-                    evidence = build_model_cpcv_adapter_error_evidence(
-                        model="FT-Transformer",
-                        family="tabular_deep",
-                        adapter="fit_predict_ft_transformer_cpcv",
-                        error=str(ft_exc),
-                        cost_estimate=validation_split_metadata.get("model_cpcv_cost_estimate", {}),
-                    )
-                model_cpcv_evidence_by_model["FT-Transformer"] = evidence
-                results.setdefault("FT-Transformer", {})["model_cpcv"] = evidence
-                print(
-                    f"[TrainUniversal] FT-Transformer CPCV decision={evidence['decision']} "
                     f"folds={evidence['folds']} ic={evidence['oos_ic_mean']}"
                 )
         except Exception as exc:
@@ -1624,7 +1216,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     "feature_median_count": len(feature_medians or {}),
                 },
                 "missingness_mask": {
-                    "enabled": model_name == "FT-Transformer",
+                    "enabled": False,
                     "zero_fill_after_median_alignment": True,
                     "prep_missingness_by_feature": prep_missingness_by_feature,
                     "source": "universal/prep/*.npz:missingness_rates",
@@ -1641,11 +1233,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 )
             )
             if req.output_model_version and not walk_forward_mode and gcs_prefix == "universal":
-                artifact = model_obj[3] if model_name == "FT-Transformer" else model_obj
                 model_path = _save_universal_versioned_model(
                     bucket=bucket,
                     model_name=model_name,
-                    model=artifact,
+                    model=model_obj,
                     feature_names=feature_names,
                     sample_count=len(X_train),
                     version=req.output_model_version,
@@ -1669,31 +1260,17 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 )
                 continue
 
-            if model_name == "FT-Transformer":
-                _, _, _, ftt_bundle = model_obj
-                save_model(
-                    0,
-                    "FT-Transformer",
-                    ftt_bundle,
-                    feature_names,
-                    len(X_train),
-                    feature_medians=feature_medians,
-                    gcs_prefix=req.gcs_prefix,
-                    extra_metadata=model_extra_meta or None,
-                    skip_weekly_backup=req.skip_weekly_backup,
-                )
-            else:
-                save_model(
-                    0,
-                    model_name,
-                    model_obj,
-                    feature_names,
-                    len(X_train),
-                    feature_medians=feature_medians,
-                    gcs_prefix=req.gcs_prefix,
-                    extra_metadata=model_extra_meta or None,
-                    skip_weekly_backup=req.skip_weekly_backup,
-                )
+            save_model(
+                0,
+                model_name,
+                model_obj,
+                feature_names,
+                len(X_train),
+                feature_medians=feature_medians,
+                gcs_prefix=req.gcs_prefix,
+                extra_metadata=model_extra_meta or None,
+                skip_weekly_backup=req.skip_weekly_backup,
+            )
             print(f"[TrainUniversal] Saved {model_name} to GCS (prefix={req.gcs_prefix or 'universal'})")
         except Exception as exc:
             print(f"[TrainUniversal] Failed to save {model_name}: {exc}")
@@ -1865,91 +1442,6 @@ def run_shap_audit(shap_samples: int = 5000) -> dict:
             print(f"[SHAP] {name} failed: {exc}")
             model_importance[name] = np.zeros(n_features)
 
-    try:
-        import torch
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        bundle, ftt_meta = _load_active_model_pool_joblib(bucket, "FT-Transformer")
-
-        ftt_n_features = bundle.get("n_features", n_features)
-        model_ftt, _ftt_type, _ftt_arch = rebuild_ft_transformer_from_bundle(bundle)
-        model_ftt.to(device).eval()
-        ftt_scaler = bundle.get("scaler")
-        ftt_valid_cols = bundle.get("valid_cols_mask")
-
-        X_shap_ftt = X_shap
-        ftt_keep_idx = list(range(n_features))
-        if ftt_n_features != n_features:
-            try:
-                ftt_fnames = ftt_meta.get("feature_names", [])
-                name_to_idx_ftt = {n: i for i, n in enumerate(feature_names)}
-                ftt_keep_idx = [name_to_idx_ftt[n] for n in ftt_fnames if n in name_to_idx_ftt]
-                if not ftt_keep_idx:
-                    raise RuntimeError("FT-Transformer metadata has no matching feature_names")
-                X_shap_ftt = X_shap[:, ftt_keep_idx]
-                print(
-                    f"[SHAP] FT-T feature align: {len(ftt_keep_idx)} features "
-                    f"(model={ftt_n_features}, prep={n_features})"
-                )
-            except Exception as feature_err:
-                print(f"[SHAP] FT-T meta load failed: {feature_err}")
-                X_shap_ftt = X_shap[:, :ftt_n_features]
-                ftt_keep_idx = list(range(ftt_n_features))
-
-        if ftt_scaler and ftt_valid_cols is not None:
-            X_shap_scaled = X_shap_ftt.copy().astype(np.float32)
-            if hasattr(ftt_valid_cols, "dtype") and ftt_valid_cols.dtype == bool:
-                vc = (
-                    ftt_valid_cols
-                    if ftt_valid_cols.shape[0] == X_shap_ftt.shape[1]
-                    else ftt_valid_cols[: X_shap_ftt.shape[1]]
-                )
-                X_shap_scaled[:, vc] = ftt_scaler.transform(X_shap_ftt)[:, vc].astype(np.float32)
-            else:
-                X_shap_scaled = ftt_scaler.transform(X_shap_ftt).astype(np.float32)
-                X_shap_scaled = np.nan_to_num(X_shap_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-        elif ftt_scaler:
-            X_shap_scaled = ftt_scaler.transform(X_shap_ftt).astype(np.float32)
-            X_shap_scaled = np.nan_to_num(X_shap_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-        else:
-            X_shap_scaled = X_shap_ftt.astype(np.float32)
-
-        bg_size = min(500, len(X_shap_scaled))
-        bg = torch.tensor(X_shap_scaled[:bg_size], device=device)
-        data_tensor = torch.tensor(X_shap_scaled, device=device)
-
-        print(f"[SHAP] Computing GradientExplainer for FT-Transformer on {device} ({ftt_n_features} features)...")
-        t1 = time.time()
-        explainer = shap.GradientExplainer(model_ftt, bg)
-        shap_values = explainer.shap_values(data_tensor)
-        if isinstance(shap_values, list):
-            sv = np.abs(shap_values[0])
-        elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
-            sv = np.abs(shap_values[:, :, 0])
-        else:
-            sv = np.abs(shap_values)
-        local_importance = sv.mean(axis=0)
-        if local_importance.ndim > 1:
-            local_importance = local_importance.ravel()
-        local_importance = local_importance.astype(np.float64)
-
-        full_importance = np.zeros(n_features, dtype=np.float64)
-        for local_i, global_i in enumerate(ftt_keep_idx):
-            if local_i < len(local_importance):
-                full_importance[global_i] = local_importance[local_i]
-        total = full_importance.sum()
-        if total > 0:
-            full_importance = full_importance / total
-        model_importance["ft-transformer"] = full_importance
-        top_idx = int(full_importance.argmax())
-        print(
-            f"[SHAP] FT-Transformer done in {time.time() - t1:.1f}s, "
-            f"top feature: {feature_names[top_idx]} ({full_importance[top_idx]:.4f})"
-        )
-    except Exception as exc:
-        print(f"[SHAP] FT-Transformer failed: {exc}")
-        model_importance["ft-transformer"] = np.zeros(n_features)
-
     valid_models = [v.ravel() for v in model_importance.values() if v.sum() > 0]
     if not valid_models:
         return {"error": "All models failed SHAP computation"}
@@ -2035,7 +1527,6 @@ __all__ = [
     "UniversalTrainRequest",
     "build_ft_model_cpcv_params",
     "build_non_tree_model_cpcv_gap_evidence",
-    "model_cpcv_family_adapter_enabled",
     "prep_universal_batch",
     "train_universal_from_gcs",
     "run_shap_audit",

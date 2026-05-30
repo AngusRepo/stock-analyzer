@@ -281,7 +281,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
                 trend = 0.0
             # normalize ADL to ~[-1, 1] range (divide by typical daily count ~2000)
             adl_by_date[row["date"]] = (round(cumulative_adl / 2000, 4), trend)
-            # advance_ratio for Wave 2 time-series
+            # advance_ratio for supplemental official/global time-series
             total = advances + declines
             advance_ratio_by_date[row["date"]] = round(advances / total, 4) if total > 0 else 0.5
         logger.info(f"[payload_builder] ADL computed for {len(adl_by_date)} dates from stock_prices")
@@ -382,7 +382,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             }
         logger.info(f"[payload_builder] Market history: {len(history_rows)} from market_risk + {len(etf_rows)} from 0050 ETF = {len(history_map)} total dates")
 
-    # ── 3e. Merge US signals + advance_ratio into history_map (Wave 2 time-series) ──
+    # ── 3e. Merge US signals + advance_ratio into history_map (supplemental official/global time-series) ──
     us_sent_map = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
     merged_us = 0
     for date_str, us_data in us_history_by_date.items():

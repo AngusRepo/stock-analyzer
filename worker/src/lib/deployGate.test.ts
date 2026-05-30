@@ -38,15 +38,34 @@ function assert(condition: unknown, message: string): void {
 
 {
   const check = buildFinLabCanonicalD1FreshnessCheck({
+    canonical_market_date: '2026-05-21',
+    canonical_market_rows: 2718,
     canonical_chip_date: '2026-05-21',
     canonical_chip_rows: 2629,
-    legacy_chip_date: '2026-05-21',
-    legacy_chip_rows: 15256,
-    margin_date: '2026-05-21',
-    margin_rows: 1839,
-  })
+    institutional_amount_date: '2026-05-19',
+    institutional_amount_rows: 14,
+    broker_flow_date: '2026-05-21',
+    broker_flow_rows: 1600,
+  } as any)
+
+  assert(check.status === 'fail', 'deploy gate should block when official institutional amount canonical data lags market/chip data')
+  assert(check.summary.includes('canonical_institutional_amount_daily'), 'institutional amount lag should be explicit in gate summary')
+}
+
+{
+  const check = buildFinLabCanonicalD1FreshnessCheck({
+    canonical_market_date: '2026-05-21',
+    canonical_market_rows: 2718,
+    canonical_chip_date: '2026-05-21',
+    canonical_chip_rows: 2629,
+    institutional_amount_date: '2026-05-21',
+    institutional_amount_rows: 14,
+    broker_flow_date: '2026-05-21',
+    broker_flow_rows: 1600,
+  } as any)
 
   assert(check.status === 'ok', 'deploy gate should pass when FinLab canonical D1 is aligned with daily source tables')
+  assert(Array.isArray(check.metrics?.required_canonical_datasets), 'deploy gate should expose the required FinLab canonical datasets')
 }
 
 {

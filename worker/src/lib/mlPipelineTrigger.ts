@@ -44,6 +44,7 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
         await upsertMarketRegimeFactorPacket(env.DB, packet)
         await env.KV.delete('market:risk:latest')
         await env.KV.delete('market:risk:latest:v4-context')
+        await env.KV.delete('market:risk:latest:v6-null-safe-factor-packet')
         console.log(`[ML V2] Market regime factor packet refreshed from preserved row: ${packet.level} (${packet.score}/100) date=${packet.date}`)
       } else {
         const risk = await calcMarketRisk(
@@ -98,6 +99,7 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
         await upsertMarketRegimeFactorPacket(env.DB, packet)
         await env.KV.delete('market:risk:latest')
         await env.KV.delete('market:risk:latest:v4-context')
+        await env.KV.delete('market:risk:latest:v6-null-safe-factor-packet')
         console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
       }
     } catch (e) {

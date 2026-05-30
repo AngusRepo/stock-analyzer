@@ -751,6 +751,12 @@ export default function ObservabilityPage() {
                 <a href={`/data-quality?focus=price_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 font-mono text-amber-200 hover:border-amber-300/50">
                   Price Data <ExternalLink className="h-3 w-3" />
                 </a>
+                <a href={`/data-quality?focus=chip_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 font-mono text-amber-200 hover:border-amber-300/50">
+                  Chip Data <ExternalLink className="h-3 w-3" />
+                </a>
+                <a href={`/data-quality?focus=institutional_amount_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 font-mono text-amber-200 hover:border-amber-300/50">
+                  Institutional <ExternalLink className="h-3 w-3" />
+                </a>
               </div>
             </div>
           </div>

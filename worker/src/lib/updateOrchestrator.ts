@@ -2,7 +2,6 @@ import type { Bindings, UpdateQueueMsg } from '../types'
 import { checkAlerts } from './localMaintenance'
 import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
-import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
@@ -210,7 +209,9 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
       allowHistoricalLatestAfterTarget: true,
     })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
-    await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
+    await fetchSupplementalOfficialData(env, twDate).catch((e) =>
+      console.warn('[SupplementalOfficialData] failed:', e),
+    )
     return `${ready.summary}; fetched price=${priceCount} chip=${chipCount} margin=${marginCount}`
   } catch (e) {
     console.warn('[Cron] Bulk fetch failed:', e)
@@ -608,15 +609,16 @@ export async function continueEveningChainAfterFinLabBackfill(
   const twDate = resolveUpdateDate(runDate)
   const ready = await assertMarketDataReady(env.DB, twDate, {
     requireIndicators: false,
+    requireInstitutionalAmount: true,
     allowHistoricalLatestAfterTarget: true,
   })
   await runQueueUpdate(env, twDate, Boolean(options.force))
-  const wave2Status = await runWave2BestEffortAfterFinLabBackfill(env, twDate)
+  const supplementalOfficialDataStatus = await runSupplementalOfficialDataBestEffortAfterFinLabBackfill(env, twDate)
   const summary = [
     `FinLab primary market data ready`,
     ready.summary,
     `indicator queue accepted`,
-    wave2Status,
+    supplementalOfficialDataStatus,
     options.upstreamRunId ? `upstream=${options.upstreamRunId}` : '',
   ].filter(Boolean).join('; ')
   await logSchedulerResult(env.KV, 'update', {
@@ -636,23 +638,29 @@ export async function continueEveningChainAfterFinLabBackfill(
   return summary
 }
 
-async function runWave2BestEffortAfterFinLabBackfill(env: Bindings, twDate: string): Promise<string> {
+async function runSupplementalOfficialDataBestEffortAfterFinLabBackfill(
+  env: Bindings,
+  twDate: string,
+): Promise<string> {
   const timeoutMs = 8_000
   try {
     await Promise.race([
-      fetchWave2Data(env, twDate),
+      fetchSupplementalOfficialData(env, twDate),
       new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`wave2 best-effort timeout after ${timeoutMs}ms`)), timeoutMs)
+        setTimeout(
+          () => reject(new Error(`supplemental official data best-effort timeout after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
       }),
     ])
-    return 'wave2=ok'
+    return 'supplemental_official_data=ok'
   } catch (e) {
-    console.warn('[Wave2] best-effort after FinLab backfill did not complete:', e)
-    return 'wave2=skipped_or_timeout'
+    console.warn('[SupplementalOfficialData] best-effort after FinLab backfill did not complete:', e)
+    return 'supplemental_official_data=skipped_or_timeout'
   }
 }
 
-export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
+export async function fetchSupplementalOfficialData(env: Bindings, today: string): Promise<void> {
   const {
     fetchTwseValuation,
     fetchTpexValuation,
@@ -682,11 +690,11 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
         breadth.advance_ratio,
       ).run()
       console.log(
-        `[Wave2] Market breadth: ${breadth.advance_count}/${breadth.decline_count}/${breadth.unchanged_count} (${(breadth.advance_ratio * 100).toFixed(0)}%)`,
+        `[SupplementalOfficialData] Market breadth: ${breadth.advance_count}/${breadth.decline_count}/${breadth.unchanged_count} (${(breadth.advance_ratio * 100).toFixed(0)}%)`,
       )
     }
   } catch (e) {
-    console.warn('[Wave2] Market breadth failed:', e)
+    console.warn('[SupplementalOfficialData] Market breadth failed:', e)
   }
 
   try {
@@ -729,11 +737,11 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
       }
 
       console.log(
-        `[Wave2] PER/PBR: ${valRows.length} stocks (TWSE ${twseVal.status === 'fulfilled' ? twseVal.value.length : 0} + TPEX ${tpexVal.status === 'fulfilled' ? tpexVal.value.length : 0})`,
+        `[SupplementalOfficialData] PER/PBR: ${valRows.length} stocks (TWSE ${twseVal.status === 'fulfilled' ? twseVal.value.length : 0} + TPEX ${tpexVal.status === 'fulfilled' ? tpexVal.value.length : 0})`,
       )
     }
   } catch (e) {
-    console.warn('[Wave2] PER/PBR failed:', e)
+    console.warn('[SupplementalOfficialData] PER/PBR failed:', e)
   }
 
   const day = parseInt(today.slice(8, 10), 10)
@@ -763,11 +771,11 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
         }
 
         console.log(
-          `[Wave2] Monthly revenue: ${revData.length} entries (TWSE ${twseRev.status === 'fulfilled' ? twseRev.value.length : 0} + TPEX ${tpexRev.status === 'fulfilled' ? tpexRev.value.length : 0})`,
+          `[SupplementalOfficialData] Monthly revenue: ${revData.length} entries (TWSE ${twseRev.status === 'fulfilled' ? twseRev.value.length : 0} + TPEX ${tpexRev.status === 'fulfilled' ? tpexRev.value.length : 0})`,
         )
       }
     } catch (e) {
-      console.warn('[Wave2] Monthly revenue failed:', e)
+      console.warn('[SupplementalOfficialData] Monthly revenue failed:', e)
     }
   }
 
@@ -812,10 +820,10 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
         await env.DB.batch(stmts.slice(i, i + 50))
       }
 
-      console.log(`[Wave2] Financials: ${finRows.length} entries (TWSE+TPEX EPS+ROE)`)
+      console.log(`[SupplementalOfficialData] Financials: ${finRows.length} entries (TWSE+TPEX EPS+ROE)`)
     }
   } catch (e) {
-    console.warn('[Wave2] Financials failed:', e)
+    console.warn('[SupplementalOfficialData] Financials failed:', e)
   }
 
   if (env.ML_CONTROLLER_URL) {
@@ -831,11 +839,11 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
         const exDivRows = await res.json() as any[]
         if (exDivRows.length) {
           await env.KV.put('market:ex_dividend_forecast', JSON.stringify(exDivRows), { expirationTtl: 86400 })
-          console.log(`[Wave2] Ex-dividend (via controller): ${exDivRows.length} entries`)
+          console.log(`[SupplementalOfficialData] Ex-dividend (via controller): ${exDivRows.length} entries`)
         }
       }
     } catch (e) {
-      console.warn('[Wave2] Ex-dividend proxy failed:', e)
+      console.warn('[SupplementalOfficialData] Ex-dividend proxy failed:', e)
     }
 
     try {
@@ -847,11 +855,11 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
         const attentionSymbols = await res.json() as string[]
         if (attentionSymbols.length) {
           await env.KV.put('market:attention_stocks', JSON.stringify(attentionSymbols), { expirationTtl: 86400 })
-          console.log(`[Wave2] Attention stocks (via controller): ${attentionSymbols.length} symbols`)
+          console.log(`[SupplementalOfficialData] Attention stocks (via controller): ${attentionSymbols.length} symbols`)
         }
       }
     } catch (e) {
-      console.warn('[Wave2] Attention stocks proxy failed:', e)
+      console.warn('[SupplementalOfficialData] Attention stocks proxy failed:', e)
     }
 
     try {
@@ -859,10 +867,10 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
       if (punishedSymbols.length) {
         await env.KV.put('market:punished_stocks', JSON.stringify(punishedSymbols), { expirationTtl: 86400 })
         await env.KV.put('market:punished_stocks:checked_at', new Date().toISOString(), { expirationTtl: 86400 })
-        console.log(`[Wave2] Punished stocks (TWSE): ${punishedSymbols.length} symbols`)
+        console.log(`[SupplementalOfficialData] Punished stocks (TWSE): ${punishedSymbols.length} symbols`)
       }
     } catch (e) {
-      console.warn('[Wave2] Punished stocks fetch failed:', e)
+      console.warn('[SupplementalOfficialData] Punished stocks fetch failed:', e)
     }
   }
 }
@@ -1006,7 +1014,9 @@ export async function processUpdateBatch(
       const priceMeta = priceMetaByStockId.get(Number(stock.id))
 
       if ((priceMeta?.count ?? 0) < 20 && Number(stock.in_current_watchlist ?? 0) === 1) {
-        await fetchAndStoreStockData(env.DB, env.KV, stock, env.FINMIND_TOKEN)
+        console.warn(
+          `[Queue] ${stock.symbol} has insufficient FinLab primary price history (${priceMeta?.count ?? 0} rows); data repair required.`,
+        )
       }
 
       await computeAndStoreIndicators(env.DB, stock.id)

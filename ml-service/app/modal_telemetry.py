@@ -10,7 +10,6 @@ from typing import Any
 
 _TRAIN_GROUP_TO_FUNCTION = {
     "tree": "train_tree_models",
-    "ftt": "train_ftt_model",
     "dlinear": "train_dlinear_universal",
     "patchtst": "train_patchtst_universal",
 }
@@ -78,7 +77,7 @@ def _feature_selection_scope_meta(stage: dict[str, Any]) -> dict[str, Any]:
     if active_count is not None:
         meta["active_count"] = active_count
         meta["feature_count"] = active_count
-    for key in ("reserve_count", "tree_active_count", "ft_active_count", "target_permutation_n", "objective_cache_hits"):
+    for key in ("reserve_count", "tree_active_count", "target_permutation_n", "objective_cache_hits"):
         value = _positive_int(stage.get(key))
         if value is not None:
             meta[key] = value

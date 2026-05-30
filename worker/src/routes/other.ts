@@ -14,8 +14,6 @@ import type { Bindings, Variables } from '../types'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import { withCache, TTL } from '../lib/cache'
-import { fetchAndStoreStockData } from './stocks'
-import { computeAndStoreIndicators } from '../lib/technicalIndicators'
 import {
   generateTechnicalAnalysis,
   generateTradingAdvice,
@@ -44,6 +42,63 @@ import {
   serializeScoreV2Snapshot,
   type ScoreV2StorageRow,
 } from '../lib/scoreV2Taxonomy'
+
+async function loadLatestCanonicalStockChip(db: D1Database, symbol: string): Promise<any | null> {
+  const canonical = await db.prepare(`
+    SELECT date,
+           stock_id AS symbol,
+           foreign_net,
+           trust_net,
+           dealer_net,
+           margin_balance,
+           short_balance,
+           source,
+           as_of_date,
+           'canonical-first' AS source_path
+      FROM canonical_chip_daily
+     WHERE stock_id=?
+     ORDER BY date DESC
+     LIMIT 1
+  `).bind(symbol).first<any>().catch(() => null)
+  if (canonical) return canonical
+  return await db.prepare(`
+    SELECT *,
+           'legacy.chip_data' AS source_path
+      FROM chip_data
+     WHERE symbol=?
+     ORDER BY date DESC
+     LIMIT 1
+  `).bind(symbol).first<any>().catch(() => null)
+}
+
+async function loadCanonicalStockChipSeries(db: D1Database, symbol: string, limit: number): Promise<{ results: any[] }> {
+  const canonical = await db.prepare(`
+    SELECT date,
+           foreign_net,
+           trust_net,
+           dealer_net,
+           source,
+           as_of_date,
+           'canonical-first' AS source_path
+      FROM canonical_chip_daily
+     WHERE stock_id=?
+     ORDER BY date DESC
+     LIMIT ?
+  `).bind(symbol, limit).all<any>().catch(() => ({ results: [] as any[] }))
+  if ((canonical.results ?? []).length) return { results: canonical.results ?? [] }
+  const legacy = await db.prepare(`
+    SELECT date,
+           foreign_net,
+           trust_net,
+           dealer_net,
+           'legacy.chip_data' AS source_path
+      FROM chip_data
+     WHERE symbol=?
+     ORDER BY date DESC
+     LIMIT ?
+  `).bind(symbol, limit).all<any>().catch(() => ({ results: [] as any[] }))
+  return { results: legacy.results ?? [] }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -181,7 +236,7 @@ llm.post('/analyst-summary', authMiddleware, async (c) => {
 
   const [latestFin, latestChip] = await Promise.all([
     c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
-    c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
+    loadLatestCanonicalStockChip(c.env.DB, result.stock.symbol),
   ])
 
   const financials = latestFin ? { eps: latestFin.eps, pe: latestFin.pe, pb: latestFin.pb, roe: latestFin.roe, dividendYield: latestFin.dividend_yield, revenueGrowth: latestFin.revenue_growth_yoy ? latestFin.revenue_growth_yoy / 100 : null } : null
@@ -201,7 +256,7 @@ llm.post('/ask', authMiddleware, async (c) => {
 
   const [latestFin, latestChip] = await Promise.all([
     c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
-    c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
+    loadLatestCanonicalStockChip(c.env.DB, result.stock.symbol),
   ])
 
   const answer = await answerStockQuestion(c.env.ANTHROPIC_API_KEY, {
@@ -421,7 +476,7 @@ ml.post('/predict/:stockId', async (c) => {
   const [prices, indicators, chips, news, modelAccRows, marketRiskRow] = await Promise.all([
     c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
     c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710, squeeze_on as squeezeOn, squeeze_release as squeezeRelease, squeeze_momentum as squeezeMomentum, obv_temperature_60 as obvTemperature60, adaptive_rsi_midline_50 as adaptiveRsiMidline50, adaptive_rsi_upper_50 as adaptiveRsiUpper50, adaptive_rsi_lower_50 as adaptiveRsiLower50, adaptive_rsi_overbought as adaptiveRsiOverbought, adaptive_rsi_oversold as adaptiveRsiOversold FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-    c.env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(stock.symbol).all<any>(),
+    loadCanonicalStockChipSeries(c.env.DB, stock.symbol, 200),
     c.env.DB.prepare('SELECT date(published_at) as date, AVG(CASE sentiment WHEN \'positive\' THEN 1 WHEN \'negative\' THEN -1 ELSE 0 END) as score FROM news WHERE stock_id=? GROUP BY date(published_at) ORDER BY date DESC LIMIT 90').bind(stockId).all<any>(),
     // 各模型 30d 準確率（供 weighted_vote 動態加權）
     c.env.DB.prepare("SELECT model_name, accuracy FROM model_accuracy WHERE stock_id=? AND period='30d'").bind(stockId).all<any>(),
@@ -434,36 +489,14 @@ ml.post('/predict/:stockId', async (c) => {
   let indRows   = indicators.results ?? []
 
   if (priceRows.length < 60) {
-    console.log(`[ML predict] ${stock.symbol} 資料不足（${priceRows.length} 筆），自動觸發初始化...`)
-    try {
-      // 從 FinMind / Yahoo 抓最近 365 天資料（約 3-5 秒）
-      await fetchAndStoreStockData(c.env.DB, c.env.KV, stock, (c.env as any).FINMIND_TOKEN)
-      // 計算技術指標（約 1 秒）
-      await computeAndStoreIndicators(c.env.DB, stockId)
-
-      // 重新查詢
-      const [p2, i2] = await Promise.all([
-        c.env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-        c.env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710, squeeze_on as squeezeOn, squeeze_release as squeezeRelease, squeeze_momentum as squeezeMomentum, obv_temperature_60 as obvTemperature60, adaptive_rsi_midline_50 as adaptiveRsiMidline50, adaptive_rsi_upper_50 as adaptiveRsiUpper50, adaptive_rsi_lower_50 as adaptiveRsiLower50, adaptive_rsi_overbought as adaptiveRsiOverbought, adaptive_rsi_oversold as adaptiveRsiOversold FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
-      ])
-      priceRows = p2.results ?? []
-      indRows   = i2.results ?? []
-    } catch (e) {
-      console.error(`[ML predict] 自動初始化失敗 ${stock.symbol}:`, e)
-    }
-
-    // 初始化後仍不足，代表市場無此資料或 FinMind 額度耗盡
-    if (priceRows.length < 60) {
-      return c.json({
-        error: `${stock.symbol} 歷史資料不足（取得 ${priceRows.length} 筆，需 60+ 筆）。` +
-               `可能原因：股票代碼錯誤、FinMind Token 未設定、或資料來源暫無資料。`,
-        symbol: stock.symbol,
-        data_count: priceRows.length,
-      }, 422)
-    }
-
-    // 初始化成功 → 繼續往下執行 ML 預測（不 early return，讓流程一次完成）
-    console.log(`[ML predict] ${stock.symbol} 初始化完成（${priceRows.length} 筆），繼續 ML 預測...`)
+    return c.json({
+      error: 'finlab_primary_price_history_insufficient',
+      message: `${stock.symbol} has ${priceRows.length} price rows; ML prediction requires at least 60 rows from the FinLab primary closed loop.`,
+      symbol: stock.symbol,
+      data_count: priceRows.length,
+      required_count: 60,
+      source: 'finlab_primary_closed_loop',
+    }, 422)
   }
 
   // ── Step 3：組裝完整 payload（含動態加權欄位）───────────────────────────────
@@ -684,14 +717,14 @@ market.get('/risk/history', async (c) => {
   return c.json(results ?? [])
 })
 
-// GET /api/market/ex-dividend — 除權除息預告（KV 快取，Wave2 每日更新）
+// GET /api/market/ex-dividend — 除權除息預告（KV 快取，supplemental official data 每日更新）
 market.get('/ex-dividend', async (c) => {
   const raw = await c.env.KV.get('market:ex_dividend_forecast')
   if (!raw) return c.json([])
   return c.json(JSON.parse(raw))
 })
 
-// GET /api/market/attention-stocks — 注意股清單（KV 快取，Wave2 每日更新）
+// GET /api/market/attention-stocks — 注意股清單（KV 快取，supplemental official data 每日更新）
 market.get('/attention-stocks', async (c) => {
   const raw = await c.env.KV.get('market:attention_stocks')
   if (!raw) return c.json([])
@@ -965,7 +998,21 @@ system.get('/status', async (c) => {
     dbSize,
   ] = await Promise.all([
     db.prepare('SELECT MAX(date) as d, COUNT(*) as cnt FROM stock_prices').first<any>(),
-    db.prepare('SELECT MAX(date) as d FROM chip_data').first<any>(),
+    db.prepare(`
+      WITH canonical_chip_latest AS (
+        SELECT MAX(date) AS d FROM canonical_chip_daily
+      ),
+      legacy_chip_latest AS (
+        SELECT MAX(date) AS d FROM chip_data
+      )
+      SELECT
+        COALESCE((SELECT d FROM canonical_chip_latest), (SELECT d FROM legacy_chip_latest)) AS d,
+        CASE
+          WHEN (SELECT d FROM canonical_chip_latest) IS NOT NULL THEN 'canonical_chip_daily'
+          WHEN (SELECT d FROM legacy_chip_latest) IS NOT NULL THEN 'legacy.chip_data'
+          ELSE NULL
+        END AS chip_source
+    `).first<any>(),
     db.prepare('SELECT MAX(published_at) as d, COUNT(*) as cnt FROM news').first<any>(),
     db.prepare('SELECT MAX(generated_at) as d FROM predictions').first<any>(),
     db.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
@@ -1011,6 +1058,7 @@ system.get('/status', async (c) => {
       chips: {
         lastDate:  chipDate,
         isRecent:  chipOk,
+        source:    latestChip?.chip_source ?? null,
       },
       news: {
         lastDate:  newsDate,

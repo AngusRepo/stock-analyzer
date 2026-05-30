@@ -441,8 +441,8 @@ interface SectorMap {
 }
 
 /**
- * 從 D1 stocks 表取已有的 sector mapping，
- * 再用 FinMind TaiwanStockInfo 補全未知股票的 sector。
+ * 從 D1 stocks 表取已有的 sector mapping。
+ * Sector 欄位由 canonical stock metadata / official TWSE/TPEX refresh 寫入。
  * 結果快取到 KV（每週刷新一次）。
  */
 async function getSectorMapping(env: Bindings): Promise<SectorMap> {
@@ -1841,12 +1841,30 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // ── P2-10: 外資淨買超天數佔比（大盤層級 risk overlay）──
   // P3-11: ATR V 轉指標
   try {
-    const { results: foreignRows } = await env.DB.prepare(`
-      SELECT date, SUM(foreign_net) as total_foreign_net
-      FROM chip_data
-      WHERE date >= date('now', '-40 days')
-      GROUP BY date ORDER BY date
-    `).all<{ date: string; total_foreign_net: number }>()
+    let foreignSource = 'canonical_chip_daily'
+    let foreignRows: Array<{ date: string; total_foreign_net: number }> = []
+    try {
+      const canonical = await env.DB.prepare(`
+        SELECT date, SUM(foreign_net) as total_foreign_net
+        FROM canonical_chip_daily
+        WHERE date >= date('now', '-40 days')
+        GROUP BY date ORDER BY date
+      `).all<{ date: string; total_foreign_net: number }>()
+      foreignRows = canonical.results ?? []
+    } catch {
+      foreignRows = []
+    }
+
+    if (foreignRows.length < 10) {
+      const legacy = await env.DB.prepare(`
+        SELECT date, SUM(foreign_net) as total_foreign_net
+        FROM chip_data
+        WHERE date >= date('now', '-40 days')
+        GROUP BY date ORDER BY date
+      `).all<{ date: string; total_foreign_net: number }>()
+      foreignRows = legacy.results ?? []
+      foreignSource = 'legacy.chip_data'
+    }
 
     if (foreignRows && foreignRows.length >= 10) {
       const buyDays = foreignRows.filter(r => r.total_foreign_net > 0).length
@@ -1854,11 +1872,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       // < 0.4 = 外資持續賣超 → 全體候選扣分
       if (foreignBuyRatio < 0.35) {
         for (const c of scored) c.score -= 3
-        debugLog.push(`[Step 4b] 外資避險: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}% < 35% → 全體 -3`)
+        debugLog.push(`[Step 4b] 外資避險: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}% < 35% → 全體 -3 source=${foreignSource}`)
       } else if (foreignBuyRatio > 0.65) {
-        debugLog.push(`[Step 4b] 外資偏多: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}%`)
+        debugLog.push(`[Step 4b] 外資偏多: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}% source=${foreignSource}`)
       } else {
-        debugLog.push(`[Step 4b] 外資中性: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}%`)
+        debugLog.push(`[Step 4b] 外資中性: 買超天數佔比 ${(foreignBuyRatio * 100).toFixed(0)}% source=${foreignSource}`)
       }
     }
   } catch (e) {

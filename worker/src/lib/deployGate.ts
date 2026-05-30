@@ -17,8 +17,14 @@ export function summarizeGateChecks(checks: GateCheck[]): DataQualityStatus {
 }
 
 interface FinLabCanonicalFreshnessRow {
+  canonical_market_date?: string | null
+  canonical_market_rows?: number | null
   canonical_chip_date?: string | null
   canonical_chip_rows?: number | null
+  institutional_amount_date?: string | null
+  institutional_amount_rows?: number | null
+  broker_flow_date?: string | null
+  broker_flow_rows?: number | null
   legacy_chip_date?: string | null
   legacy_chip_rows?: number | null
   margin_date?: string | null
@@ -48,43 +54,83 @@ function latestDate(...values: Array<string | null | undefined>): string | null 
 }
 
 export function buildFinLabCanonicalD1FreshnessCheck(row: FinLabCanonicalFreshnessRow): GateCheck {
+  const canonicalMarketDate = row.canonical_market_date?.slice(0, 10) ?? null
   const canonicalDate = row.canonical_chip_date?.slice(0, 10) ?? null
-  const sourceLatestDate = latestDate(row.legacy_chip_date, row.margin_date)
-  const lagDays = sourceLatestDate ? daysBetweenDates(canonicalDate, sourceLatestDate) : null
+  const institutionalAmountDate = row.institutional_amount_date?.slice(0, 10) ?? null
+  const brokerFlowDate = row.broker_flow_date?.slice(0, 10) ?? null
+  const sourceLatestDate = canonicalMarketDate ?? latestDate(row.legacy_chip_date, row.margin_date)
   const canonicalRows = Number(row.canonical_chip_rows ?? 0)
+  const canonicalMarketRows = Number(row.canonical_market_rows ?? 0)
+  const institutionalAmountRows = Number(row.institutional_amount_rows ?? 0)
+  const brokerFlowRows = Number(row.broker_flow_rows ?? 0)
   const legacyRows = Number(row.legacy_chip_rows ?? 0)
   const marginRows = Number(row.margin_rows ?? 0)
+  const requiredDatasets = [
+    {
+      table: 'canonical_market_daily',
+      date: canonicalMarketDate,
+      rows: canonicalMarketRows,
+      minRows: 1000,
+    },
+    {
+      table: 'canonical_chip_daily',
+      date: canonicalDate,
+      rows: canonicalRows,
+      minRows: 1000,
+    },
+    {
+      table: 'canonical_institutional_amount_daily',
+      date: institutionalAmountDate,
+      rows: institutionalAmountRows,
+      minRows: 8,
+    },
+    {
+      table: 'canonical_broker_flow_daily',
+      date: brokerFlowDate,
+      rows: brokerFlowRows,
+      minRows: 1,
+    },
+  ]
 
   if (!sourceLatestDate) {
     return {
       id: 'finlab_canonical_d1_freshness',
       status: 'warn',
-      summary: 'FinLab legacy daily source tables have no latest date for canonical comparison',
-      metrics: { ...row, source_latest_date: null },
+      summary: 'FinLab daily-primary canonical tables have no latest date for comparison',
+      metrics: { ...row, source_latest_date: null, required_canonical_datasets: requiredDatasets.map((dataset) => dataset.table) },
     }
   }
 
-  if (!canonicalDate) {
-    return {
-      id: 'finlab_canonical_d1_freshness',
-      status: 'fail',
-      summary: `canonical_chip_daily missing while source_latest=${sourceLatestDate}`,
-      metrics: { ...row, source_latest_date: sourceLatestDate, lag_days: lagDays },
+  const failures: string[] = []
+  for (const dataset of requiredDatasets) {
+    if (!dataset.date) {
+      failures.push(`${dataset.table} missing`)
+      continue
+    }
+    const lagDays = daysBetweenDates(dataset.date, sourceLatestDate)
+    if (lagDays != null && lagDays > 0) {
+      failures.push(`${dataset.table} latest=${dataset.date} expected=${sourceLatestDate} lag=${lagDays}d`)
+    }
+    if (dataset.rows < dataset.minRows) {
+      failures.push(`${dataset.table} rows=${dataset.rows}/${dataset.minRows}`)
     }
   }
 
-  const stale = lagDays != null && lagDays > 0
-  const tooFewRows = canonicalRows < 1000
-  const status: DataQualityStatus = stale || tooFewRows ? 'fail' : 'ok'
+  const status: DataQualityStatus = failures.length > 0 ? 'fail' : 'ok'
   return {
     id: 'finlab_canonical_d1_freshness',
     status,
-    summary: `canonical_chip_daily latest=${canonicalDate} source_latest=${sourceLatestDate} lag=${lagDays ?? 'n/a'}d rows=${canonicalRows}`,
+    summary: status === 'ok'
+      ? `FinLab daily-primary canonical datasets aligned date=${sourceLatestDate} market_rows=${canonicalMarketRows} chip_rows=${canonicalRows} institutional_amount_rows=${institutionalAmountRows} broker_flow_rows=${brokerFlowRows}`
+      : `FinLab daily-primary canonical dataset gaps: ${failures.join('; ')}`,
     metrics: {
       ...row,
       source_latest_date: sourceLatestDate,
-      lag_days: lagDays,
-      min_canonical_rows: 1000,
+      required_canonical_datasets: requiredDatasets.map((dataset) => dataset.table),
+      canonical_dates: Object.fromEntries(requiredDatasets.map((dataset) => [dataset.table, dataset.date])),
+      canonical_rows: Object.fromEntries(requiredDatasets.map((dataset) => [dataset.table, dataset.rows])),
+      min_rows: Object.fromEntries(requiredDatasets.map((dataset) => [dataset.table, dataset.minRows])),
+      failures,
       source_rows: { chip_data: legacyRows, margin_data: marginRows },
       required_job_arg: '--apply-canonical-d1',
     },
@@ -117,8 +163,17 @@ export function buildComputeProfileWaitColumnsCheck(rows: TableInfoRow[]): GateC
 
 async function readFinLabCanonicalD1Freshness(db: D1Database): Promise<FinLabCanonicalFreshnessRow> {
   return await db.prepare(`
-    WITH canonical_latest AS (
+    WITH canonical_market_latest AS (
+      SELECT MAX(date) AS date FROM canonical_market_daily
+    ),
+    canonical_chip_latest AS (
       SELECT MAX(date) AS date FROM canonical_chip_daily
+    ),
+    institutional_amount_latest AS (
+      SELECT MAX(date) AS date FROM canonical_institutional_amount_daily
+    ),
+    broker_flow_latest AS (
+      SELECT MAX(date) AS date FROM canonical_broker_flow_daily
     ),
     legacy_chip_latest AS (
       SELECT MAX(date) AS date FROM chip_data
@@ -127,15 +182,24 @@ async function readFinLabCanonicalD1Freshness(db: D1Database): Promise<FinLabCan
       SELECT MAX(date) AS date FROM margin_data
     )
     SELECT
-      (SELECT date FROM canonical_latest) AS canonical_chip_date,
-      (SELECT COUNT(*) FROM canonical_chip_daily WHERE date = (SELECT date FROM canonical_latest)) AS canonical_chip_rows,
+      (SELECT date FROM canonical_market_latest) AS canonical_market_date,
+      (SELECT COUNT(*) FROM canonical_market_daily WHERE date = (SELECT date FROM canonical_market_latest)) AS canonical_market_rows,
+      (SELECT date FROM canonical_chip_latest) AS canonical_chip_date,
+      (SELECT COUNT(*) FROM canonical_chip_daily WHERE date = (SELECT date FROM canonical_chip_latest)) AS canonical_chip_rows,
+      (SELECT date FROM institutional_amount_latest) AS institutional_amount_date,
+      (SELECT COUNT(*) FROM canonical_institutional_amount_daily WHERE date = (SELECT date FROM institutional_amount_latest)) AS institutional_amount_rows,
+      (SELECT date FROM broker_flow_latest) AS broker_flow_date,
+      (SELECT COUNT(*) FROM canonical_broker_flow_daily WHERE date = (SELECT date FROM broker_flow_latest)) AS broker_flow_rows,
       (SELECT date FROM legacy_chip_latest) AS legacy_chip_date,
       (SELECT COUNT(*) FROM chip_data WHERE date = (SELECT date FROM legacy_chip_latest)) AS legacy_chip_rows,
       (SELECT date FROM margin_latest) AS margin_date,
       (SELECT COUNT(*) FROM margin_data WHERE date = (SELECT date FROM margin_latest)) AS margin_rows,
       (SELECT MAX(generated_at)
          FROM finlab_materialization_manifest
-        WHERE json_extract(row_counts_json, '$.canonical_chip_daily') IS NOT NULL) AS manifest_generated_at
+        WHERE json_extract(row_counts_json, '$.canonical_market_daily') IS NOT NULL
+          AND json_extract(row_counts_json, '$.canonical_chip_daily') IS NOT NULL
+          AND json_extract(row_counts_json, '$.canonical_institutional_amount_daily') IS NOT NULL
+          AND json_extract(row_counts_json, '$.canonical_broker_flow_daily') IS NOT NULL) AS manifest_generated_at
   `).first<FinLabCanonicalFreshnessRow>() ?? {}
 }
 

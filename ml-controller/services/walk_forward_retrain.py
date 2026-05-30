@@ -24,11 +24,9 @@ Produces per-window model bank + HMM snapshots. Downstream consumers:
 
 Compute
 ───────
-12 windows × (tree [CPU] + FT-T [GPU]) = 24 Modal jobs
-With tree max_containers=3 and FT-T max_containers=2 parallel, wall clock:
-  ~12 × max(tree_time_per_window, ftt_time_per_window) / parallel_factor
-  ≈ 12 × 15min / 2 ≈ 90 min if parallel
-  Sequential fallback: 12 × 15min = 3 hr
+12 windows x tree [CPU] + HMM [CPU] Modal jobs.
+With tree max_containers=3, wall clock is roughly:
+  ~12 x tree_time_per_window / parallel_factor
 
 HMM training is fast (~1 min per window on CPU, max_containers=3).
 """
@@ -66,7 +64,6 @@ class WalkForwardWindowResult:
     test_range: tuple[str, str]
     hmm_result: Optional[dict] = None
     tree_result: Optional[dict] = None
-    ftt_result: Optional[dict] = None
     model_metrics: dict[str, dict] = field(default_factory=dict)
     error: Optional[str] = None
 
@@ -306,7 +303,7 @@ async def _train_one_window(
     HMM is trained first because it's fast and later windows may not need
     re-training if the market_env hasn't changed much.
     """
-    models = [model for model in models if model != "FT-Transformer"]
+    models = [model for model in models if model in MODELS_ALL]
     result = WalkForwardWindowResult(
         window_id=window.window_id,
         train_range=(window.train_start, window.train_end),
@@ -340,16 +337,9 @@ async def _train_one_window(
         "skip_feature_pool": False,
     }
 
-    need_tree = any(m in models for m in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"])
-    need_ftt = "FT-Transformer" in models
-
     tasks = []
-    if need_tree:
+    if any(m in models for m in MODELS_ALL):
         tasks.append(("tree", modal_client._modal_train_wf_tree_window(dict(train_payload))))
-    if need_ftt:
-        ftt_payload = dict(train_payload)
-        ftt_payload["skip_feature_pool"] = True
-        tasks.append(("ftt", modal_client._modal_train_wf_ftt_window(ftt_payload)))
 
     # Run both concurrently
     if tasks:
@@ -359,16 +349,12 @@ async def _train_one_window(
                 logger.error(f"[WalkForward] w{window.window_id} {kind} crashed: {r}")
                 if kind == "tree":
                     result.tree_result = {"error": f"exception: {r}"}
-                else:
-                    result.ftt_result = {"error": f"exception: {r}"}
             else:
                 if kind == "tree":
                     result.tree_result = r
-                else:
-                    result.ftt_result = r
 
     # Consolidate per-model metrics
-    for partial in (result.tree_result or {}, result.ftt_result or {}):
+    for partial in (result.tree_result or {},):
         if not partial or partial.get("error"):
             continue
         for model_name, model_info in (partial.get("results") or {}).items():
@@ -396,11 +382,10 @@ async def run_walk_forward(
 ) -> WalkForwardRun:
     """Real walk-forward orchestrator — triggers Modal retrains per window.
 
-    concurrent_windows: how many windows to train concurrently (bounded by Modal
-                       max_containers — tree=3, ftt=2). Default 2 to respect
-                       FT-T's tighter cap.
+    concurrent_windows: how many windows to train concurrently, bounded by
+                       Modal tree max_containers.
     """
-    models = [model for model in (models or MODELS_ALL) if model != "FT-Transformer"]
+    models = [model for model in (models or MODELS_ALL) if model in MODELS_ALL]
     trading_days = [d for d in dataset.trading_days if start_date <= d <= end_date]
     if len(trading_days) < train_window_days + test_window_days:
         raise ValueError(

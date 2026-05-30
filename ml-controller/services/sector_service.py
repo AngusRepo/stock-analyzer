@@ -234,7 +234,7 @@ async def fetch_tpex_prices(client: httpx.AsyncClient, date: str) -> dict[str, f
     return prices
 
 
-async def fetch_sector_mapping(client: httpx.AsyncClient, finmind_token: str | None = None) -> dict[str, str]:
+async def fetch_sector_mapping(client: httpx.AsyncClient) -> dict[str, str]:
     """取得 stock_id → 產業名稱 mapping（TWSE + TPEX opendata）。"""
     sector_of: dict[str, str] = {}
 

@@ -83,17 +83,17 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
 }
 
 export interface AdaptiveParams {
-  /** @deprecated Use confidence_delta. Absolute thresholds double-count trading:config baselines. */
+  /** Compatibility readback; prefer confidence_delta for new logic. */
   confidence_threshold?: number
-  /** @deprecated Use trading:config.sltp plus sltp_add. */
+  /** Compatibility readback; prefer trading:config.sltp plus sltp_add. */
   sl_mult_base?: number
-  /** @deprecated Use trading:config.sltp plus sltp_add. */
+  /** Compatibility readback; prefer trading:config.sltp plus sltp_add. */
   tp_mult_base?: number
-  /** @deprecated Use trading:config.signal. */
+  /** Compatibility readback; prefer trading:config.signal. */
   strong_signal_score?: number
-  /** @deprecated Use trading:config.signal.buySignalScore plus confidence_delta. */
+  /** Compatibility readback; prefer trading:config.signal.buySignalScore plus confidence_delta. */
   buy_signal_score?: number
-  /** @deprecated Use trading:config.signal.holdSignalScore. */
+  /** Compatibility readback; prefer trading:config.signal.holdSignalScore. */
   hold_signal_score?: number
 
   confidence_delta: number
@@ -117,7 +117,7 @@ export interface AdaptiveParams {
   meta_layer: AdaptiveMetaLayerGovernance
   version: number
 
-  /** @deprecated Use sltp_add. */
+  /** Compatibility readback; prefer sltp_add. */
   sl_tp_override?: { sl_add: number; tp_add: number } | null
 }
 

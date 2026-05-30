@@ -391,7 +391,6 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "active_count": len(fs_pool.get("active", [])),
                 "reserve_count": len(fs_pool.get("reserve", [])),
                 "tree_active_count": len(fs_pool.get("tree_active", []) or fs_pool.get("active", [])),
-                "ft_active_count": len(fs_pool.get("ft_active", [])),
                 "target_permutation_n": fs_target_perm.get("n_permutations"),
                 "k_sweep_trials": fs_k_sweep.get("actual_trials") or fs_k_sweep.get("n_trials"),
                 "objective_cache_hits": fs_k_sweep.get("objective_cache_hits"),
@@ -406,7 +405,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         print("[Orchestrator] Non-monthly -> skip feature selection")
         result["stages"]["feature_selection"] = {"status": "skipped"}
 
-    # Stage 2: Train via two containers in parallel: CPU tree models + GPU FT-T.
+    # Stage 2: Train via separate containers for tree and sequence model groups.
     from app.training_finalizer import (
         build_retrain_followup_payload,
         expected_oos_artifact_groups,
@@ -509,7 +508,6 @@ def retrain_orchestrator(payload: dict) -> dict:
             print(f"[Orchestrator] Spawned group={group} models={spec['models']}")
 
         tree_result = {}
-        ftt_result = {}
         aux_train = {}
         if handles.get("tree") is not None:
             tree_result = handles["tree"].get()
@@ -520,16 +518,6 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "elapsed_s": tree_result.get("elapsed_s"),
                 "error": tree_result.get("error"),
                 "gcs_io": tree_result.get("gcs_io"),
-            }
-        if handles.get("ftt") is not None:
-            ftt_result = handles["ftt"].get()
-            partial_results["ftt"] = ftt_result
-            coverage["ftt"] = {
-                **coverage.get("ftt", {}),
-                "status": "error" if ftt_result.get("error") else "ok",
-                "elapsed_s": ftt_result.get("elapsed_s"),
-                "error": ftt_result.get("error"),
-                "gcs_io": ftt_result.get("gcs_io"),
             }
         for group in ("dlinear", "patchtst"):
             if handles.get(group) is not None:
@@ -546,7 +534,7 @@ def retrain_orchestrator(payload: dict) -> dict:
 
         # Merge results + IC tracking from spawned groups. Kept side-effect free
         # so a detached finalizer can reuse the same contract later.
-        reduced_train = reduce_training_group_results(tree_result, ftt_result, aux_train)
+        reduced_train = reduce_training_group_results(tree_result, aux_train)
         merged_results = reduced_train["merged_results"]
         merged_ic = reduced_train["merged_ic"]
         circuit_breaker = reduced_train["circuit_breaker"]
@@ -564,8 +552,6 @@ def retrain_orchestrator(payload: dict) -> dict:
             candidate_models = set(reduced_train["candidate_models"])
             for model_name in sorted(candidate_models):
                 if model_name in (tree_result.get("challenger_registrations") or {}):
-                    continue
-                if model_name in (ftt_result.get("challenger_registrations") or {}):
                     continue
                 try:
                     version = candidate_version
@@ -600,11 +586,9 @@ def retrain_orchestrator(payload: dict) -> dict:
             "circuit_breaker": circuit_breaker,
             "challenger_registrations": {
                 **(tree_result.get("challenger_registrations") or {}),
-                **(ftt_result.get("challenger_registrations") or {}),
                 **challenger_registrations,
             },
             "tree_elapsed_s": tree_result.get("elapsed_s"),
-            "ftt_elapsed_s": ftt_result.get("elapsed_s"),
             "aux_train": {
                 k: {
                     "status": "ok" if "error" not in v else "error",
@@ -620,7 +604,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             from app.stacking import save_meta_learner, train_rank_stacker_oof
 
             oos_payloads = []
-            for group, partial in (("tree", tree_result), ("ftt", ftt_result)):
+            for group, partial in (("tree", tree_result),):
                 artifact = (partial or {}).get("oos_artifact") or {}
                 artifact_path = artifact.get("path")
                 if not artifact_path:
@@ -1476,94 +1460,6 @@ def train_tree_models(payload: dict) -> dict:
         return _train(req)
     except Exception as e:
         return {"error": str(e), "type": "tree_models"}
-
-
-@app.function(
-    gpu="L4",
-    memory=4096,
-    timeout=10800,               # 180 min for FT-T on full samples.
-    scaledown_window=60,
-    max_containers=1,
-)
-def train_ftt_model(payload: dict) -> dict:
-    """GPU L4: FT-Transformer only (uses all features, skip_feature_pool=True)."""
-    return {
-        "status": "retired",
-        "type": "ftt_model",
-        "reason": "FT-Transformer retired from active training and comparator paths.",
-    }
-    _setup_env()
-    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
-    from app.training_policy import build_group_train_payload
-    try:
-        req = UniversalTrainRequest(**build_group_train_payload(payload, "ftt"))
-        return _train(req)
-    except Exception as e:
-        return {"error": str(e), "type": "ftt_model"}
-
-
-@app.function(
-    gpu="L4",
-    memory=4096,
-    timeout=21600,               # 360 min for architecture search trials plus buffer.
-    scaledown_window=60,
-    max_containers=1,
-)
-def ft_transformer_arch_search(payload: dict) -> dict:
-    """GPU L4: FT-Transformer architecture Optuna search (#29).
-
-    LOCKED (see feedback_ft_transformer_tuning.md): no warmup / no cosine decay /
-    PATIENCE stays 16 in production. Search only varies d_model / n_heads /
-    n_layers / dropout with shorter patience=8 for throughput. Winning config is
-    manually applied to main.py FTTransformer then re-trained with production
-    settings. DO NOT auto-push to KV.
-
-    Payload:
-      n_trials     (int, default 20): coarse=20, full=50
-      subset_size  (int | null): null = full data, int = subsample X_train
-      gcs_prefix   (str, default "universal")
-    """
-    return {
-        "status": "retired",
-        "type": "ft_transformer_arch_search",
-        "reason": "FT-Transformer retired from active training and comparator paths.",
-    }
-    _setup_env()
-    try:
-        import json, io
-        from datetime import datetime
-        import numpy as np
-        from google.cloud import storage
-        from app.optuna_fttransformer_arch import load_prep_data_from_gcs, run_search
-
-        gcs_prefix  = payload.get("gcs_prefix", "universal")
-        n_trials    = int(payload.get("n_trials", 20))
-        subset_size = payload.get("subset_size")
-
-        X_tr, y_tr, X_val, y_val = load_prep_data_from_gcs(gcs_prefix)
-
-        if isinstance(subset_size, int) and 0 < subset_size < len(X_tr):
-            rng = np.random.RandomState(42)
-            idx = np.sort(rng.choice(len(X_tr), subset_size, replace=False))
-            X_tr, y_tr = X_tr[idx], y_tr[idx]
-
-        result = run_search(X_tr, y_tr, X_val, y_val, n_trials=n_trials,
-                            save_path="/tmp/ft_arch_optuna.json")
-
-        # Audit trail to GCS for traceability
-        now_iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        gcs_key = f"{gcs_prefix}/ft_arch_optuna_{now_iso}.json"
-        bucket_name = _get_gcs_bucket_name()
-        if not bucket_name:
-            raise RuntimeError("GCS bucket not configured")
-        bucket = storage.Client().bucket(bucket_name)
-        bucket.blob(gcs_key).upload_from_string(
-            json.dumps(result, indent=2), content_type="application/json",
-        )
-        result["gcs_audit_path"] = f"gs://{bucket.name}/{gcs_key}"
-        return result
-    except Exception as e:
-        return {"error": str(e), "type": "ft_arch_search"}
 
 
 @app.function(
@@ -2878,48 +2774,6 @@ def train_wf_tree_window(payload: dict) -> dict:
 
 
 @app.function(
-    gpu="L4",
-    memory=4096,
-    timeout=3600,  # 60 min per window for FT-T on short train windows.
-    scaledown_window=60,
-    max_containers=2,   # allow 2 windows on GPU in parallel
-)
-def train_wf_ftt_window(payload: dict) -> dict:
-    """GPU walk-forward: FT-Transformer for one window."""
-    return {
-        "status": "retired",
-        "type": "wf_ftt",
-        "window_id": payload.get("window_id"),
-        "reason": "FT-Transformer retired from active training and comparator paths.",
-    }
-    _setup_env()
-    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
-    try:
-        gcs_prefix = f"walk_forward/w{payload['window_id']}"
-        req = UniversalTrainRequest(
-            batch_count=payload.get("batch_count", 5),
-            models_filter=["FT-Transformer"],
-            skip_feature_pool=True,   # FT-T benefits from full features
-            train_start=payload["train_start"],
-            train_end=payload["train_end"],
-            test_start=payload["test_start"],
-            test_end=payload["test_end"],
-            gcs_prefix=gcs_prefix,
-            window_id=payload["window_id"],
-            skip_weekly_backup=True,
-        )
-        return _train(req)
-    except Exception as e:
-        import traceback
-        return {
-            "error": str(e),
-            "trace": traceback.format_exc()[:2000],
-            "window_id": payload.get("window_id"),
-            "type": "wf_ftt",
-        }
-
-
-@app.function(
     cpu=1,
     memory=2048,
     timeout=300,   # 5 min for market-level HMM.
@@ -2978,7 +2832,7 @@ def train_wf_hmm_window(payload: dict) -> dict:
 )
 def walk_forward_orchestrator(payload: dict) -> dict:
     """Walk-forward orchestrator that runs the full pipeline across windows.
-    all windows, calling train_wf_tree_window / train_wf_ftt_window / train_wf_hmm_window
+    all windows, calling train_wf_tree_window / train_wf_hmm_window
     internally. Persists aggregate result to GCS walk_forward/runs/{start}_{end}.json.
 
     payload:
@@ -3024,7 +2878,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     fs_force_refresh = bool(payload.get("fs_force_refresh", False))
 
     async def _run_one(window: dict) -> dict:
-        """Run feature selection, HMM, and tree/FT-T training for one window."""
+        """Run feature selection, HMM, and tree training for one window."""
         wid = window["window_id"]
         gcs_prefix = f"walk_forward/w{wid}"
         result = {
@@ -3035,7 +2889,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         }
 
         # Step 0: per-window feature selection prevents future leakage in the tree path.
-        # Tree training waits for this; FT-T (skip_feature_pool=True) does not need pool.
+        # Tree training waits for this pool.
         # On FS error, fallback to running tree without pool (skip_feature_pool=True)
         # so the run does not abort entirely.
         fs_ok = False
@@ -3077,7 +2931,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             print(f"[WF-Orchestrator] w{wid} HMM crashed: {e}")
             result["hmm_result"] = {"error": str(e)}
 
-        # Step 2+3: tree + ftt in parallel
+        # Step 2+3: tree models
         train_payload = {
             "window_id": wid,
             "train_start": window["train_start"],
@@ -3089,7 +2943,6 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         }
 
         need_tree = any(m in models for m in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"])
-        need_ftt = "FT-Transformer" in models
         tasks = []
         if need_tree:
             tree_payload = dict(train_payload)
@@ -3101,11 +2954,6 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 # If FS failed, do not use a stale global pool that can leak across windows.
                 tree_payload["skip_feature_pool"] = True
             tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
-        if need_ftt:
-            ftt_payload = dict(train_payload)
-            ftt_payload["skip_feature_pool"] = True
-            tasks.append(("ftt", train_wf_ftt_window.remote.aio(ftt_payload)))
-
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
@@ -3116,7 +2964,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     result[f"{kind}_result"] = r
 
         # Consolidate per-model metrics
-        for partial in [result.get("tree_result") or {}, result.get("ftt_result") or {}]:
+        for partial in [result.get("tree_result") or {}]:
             if not partial or partial.get("error"):
                 continue
             for model_name, m in (partial.get("results") or {}).items():

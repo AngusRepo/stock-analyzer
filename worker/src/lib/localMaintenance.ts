@@ -34,6 +34,33 @@ export async function runMorningWarmup(env: Bindings) {
   console.log('[Cron] Morning warmup done.')
 }
 
+async function readCanonicalFirstStockChips(
+  env: Pick<Bindings, 'DB'>,
+  symbol: string,
+  limit: number,
+): Promise<{ results: any[] }> {
+  const cap = Math.min(Math.max(Math.trunc(limit), 1), 500)
+  const canonical = await env.DB.prepare(`
+    SELECT date, foreign_net, trust_net, dealer_net, margin_balance, short_balance,
+           source, as_of_date, 'canonical_chip_daily' AS source_path
+      FROM canonical_chip_daily
+     WHERE stock_id=?
+     ORDER BY date DESC
+     LIMIT ${cap}
+  `).bind(symbol).all<any>().catch(() => ({ results: [] }))
+  if ((canonical.results ?? []).length > 0) return { results: canonical.results ?? [] }
+
+  const legacy = await env.DB.prepare(`
+    SELECT date, foreign_net, trust_net, dealer_net,
+           'legacy.chip_data' AS source_path
+      FROM chip_data
+     WHERE symbol=?
+     ORDER BY date DESC
+     LIMIT ${cap}
+  `).bind(symbol).all<any>()
+  return { results: legacy.results ?? [] }
+}
+
 export async function runWeeklyICAudit(env: Bindings) {
   const mlUrl = env.ML_SERVICE_URL
   if (!mlUrl) return
@@ -49,7 +76,7 @@ export async function runWeeklyICAudit(env: Bindings) {
   const [prices, indicators, chips] = await Promise.all([
     env.DB.prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
     env.DB.prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710, squeeze_on as squeezeOn, squeeze_release as squeezeRelease, squeeze_momentum as squeezeMomentum, obv_temperature_60 as obvTemperature60, adaptive_rsi_midline_50 as adaptiveRsiMidline50, adaptive_rsi_upper_50 as adaptiveRsiUpper50, adaptive_rsi_lower_50 as adaptiveRsiLower50, adaptive_rsi_overbought as adaptiveRsiOverbought, adaptive_rsi_oversold as adaptiveRsiOversold FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(topStock.id).all<any>(),
-    env.DB.prepare('SELECT date, foreign_net, trust_net, dealer_net FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 200').bind(topStock.symbol).all<any>(),
+    readCanonicalFirstStockChips(env, topStock.symbol, 200),
   ])
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -102,7 +129,7 @@ export async function runWeeklyDriftCheck(env: Bindings) {
   const [prices, indicators, chips] = await Promise.all([
     env.DB.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
     env.DB.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 252').bind(topStock.id).all<any>(),
-    env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 252').bind(topStock.symbol).all<any>(),
+    readCanonicalFirstStockChips(env, topStock.symbol, 252),
   ])
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }

@@ -109,7 +109,18 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
         </div>
         <aside className="grid gap-2 bg-[#070a10] p-3 text-xs">
           <DataQualityMetric label="Theme Signals" value={String(runtime?.theme_signals?.total ?? 0)} tone={(runtime?.theme_signals?.total ?? 0) > 0 ? 'ok' : 'warn'} detail={`${runtime?.theme_signals?.sources ?? 0} sources`} />
-          <DataQualityMetric label="Canonical Rows" value={String((canonical?.market_daily ?? 0) + (canonical?.chip_daily ?? 0) + (canonical?.revenue_monthly ?? 0))} tone={(canonical?.market_daily ?? 0) > 0 ? 'ok' : 'warn'} detail={`price ${canonical?.market_daily ?? 0} / chip ${canonical?.chip_daily ?? 0} / revenue ${canonical?.revenue_monthly ?? 0}`} />
+          <DataQualityMetric
+            label="Canonical Rows"
+            value={String(
+              (canonical?.market_daily ?? 0) +
+              (canonical?.chip_daily ?? 0) +
+              (canonical?.institutional_amount_daily ?? 0) +
+              (canonical?.broker_flow_daily ?? 0) +
+              (canonical?.revenue_monthly ?? 0),
+            )}
+            tone={(canonical?.market_daily ?? 0) > 0 && (canonical?.chip_daily ?? 0) > 0 && (canonical?.institutional_amount_daily ?? 0) > 0 ? 'ok' : 'warn'}
+            detail={`price ${canonical?.market_daily ?? 0} / chip ${canonical?.chip_daily ?? 0} / institutional_amount_daily ${canonical?.institutional_amount_daily ?? 0} / broker_flow_daily ${canonical?.broker_flow_daily ?? 0} / revenue ${canonical?.revenue_monthly ?? 0}`}
+          />
           <DataQualityMetric label="Gap Fill" value={String(runtime?.gap_fill_candidates?.total ?? 0)} tone={(runtime?.gap_fill_candidates?.quarantined ?? 0) > 0 ? 'warn' : 'info'} detail={`candidate ${runtime?.gap_fill_candidates?.candidates ?? 0} / quarantine ${runtime?.gap_fill_candidates?.quarantined ?? 0}`} />
         </aside>
       </div>

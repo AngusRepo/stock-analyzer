@@ -65,6 +65,102 @@ function shapeStockAiRecommendation(row: StockAiRecommendationRow, extra: Record
   }
 }
 
+async function latestStockChipDate(db: D1Database, symbol: string): Promise<string | null> {
+  const canonical = await db.prepare(
+    'SELECT date FROM canonical_chip_daily WHERE stock_id=? ORDER BY date DESC LIMIT 1',
+  ).bind(symbol).first<{ date: string }>().catch(() => null)
+  if (canonical?.date) return canonical.date
+  const legacy = await db.prepare(
+    'SELECT date FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1',
+  ).bind(symbol).first<{ date: string }>().catch(() => null)
+  return legacy?.date ?? null
+}
+
+async function loadCanonicalStockChips(db: D1Database, symbol: string, since: string): Promise<any[]> {
+  const { results } = await db.prepare(`
+    SELECT date,
+           stock_id AS symbol,
+           foreign_net,
+           trust_net,
+           dealer_net,
+           margin_balance,
+           short_balance,
+           source,
+           as_of_date,
+           'canonical-first' AS source_path,
+           NULL AS fallback_reason
+      FROM canonical_chip_daily
+     WHERE stock_id=?
+       AND date>=?
+     ORDER BY date
+  `).bind(symbol, since).all<any>()
+  return results ?? []
+}
+
+async function loadCanonicalStockMargin(db: D1Database, symbol: string, limit: number): Promise<any[]> {
+  const { results } = await db.prepare(`
+    SELECT date,
+           NULL AS margin_buy,
+           NULL AS margin_sell,
+           margin_balance,
+           NULL AS short_buy,
+           NULL AS short_sell,
+           short_balance,
+           NULL AS margin_usage_pct,
+           CASE
+             WHEN margin_balance IS NOT NULL AND margin_balance > 0 AND short_balance IS NOT NULL
+             THEN short_balance / margin_balance
+             ELSE NULL
+           END AS short_ratio,
+           source,
+           as_of_date,
+           'canonical-first' AS source_path,
+           NULL AS fallback_reason
+      FROM canonical_chip_daily
+     WHERE stock_id=?
+       AND (margin_balance IS NOT NULL OR short_balance IS NOT NULL)
+     ORDER BY date DESC
+     LIMIT ?
+  `).bind(symbol, limit).all<any>()
+  return results ?? []
+}
+
+async function loadCanonicalStockChipNetSummary(db: D1Database, symbol: string, limit: number): Promise<any | null> {
+  const canonical = await db.prepare(`
+    SELECT SUM(foreign_net) AS foreign_net,
+           SUM(trust_net) AS trust_net,
+           SUM(dealer_net) AS dealer_net,
+           'canonical-first' AS source_path
+      FROM (
+        SELECT foreign_net,
+               trust_net,
+               dealer_net
+          FROM canonical_chip_daily
+         WHERE stock_id=?
+         ORDER BY date DESC
+         LIMIT ?
+      )
+  `).bind(symbol, limit).first<any>().catch(() => null)
+  if (canonical && (canonical.foreign_net != null || canonical.trust_net != null || canonical.dealer_net != null)) {
+    return canonical
+  }
+  return await db.prepare(`
+    SELECT SUM(foreign_net) as foreign_net,
+           SUM(trust_net) as trust_net,
+           SUM(dealer_net) as dealer_net,
+           'legacy.chip_data' AS source_path
+      FROM (
+        SELECT foreign_buy - foreign_sell as foreign_net,
+               trust_buy - trust_sell as trust_net,
+               dealer_buy - dealer_sell as dealer_net
+          FROM chip_data
+         WHERE symbol=?
+         ORDER BY date DESC
+         LIMIT ?
+      )
+  `).bind(symbol, limit).first<any>().catch(() => null)
+}
+
 // ─── GET /api/stocks  →  list all active stocks ───────────────────────────────
 stocks.get('/', async (c) => {
   const { results } = await c.env.DB.prepare(
@@ -93,14 +189,14 @@ stocks.get('/:id', async (c) => {
   // 附帶各資料表最新日期（讓前端顯示更新狀態）
   const [latestPrice, latestChip, latestPred] = await Promise.all([
     c.env.DB.prepare('SELECT date FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(id).first<any>(),
-    c.env.DB.prepare('SELECT date FROM chip_data    WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(row.symbol).first<any>(),
+    latestStockChipDate(c.env.DB, row.symbol),
     c.env.DB.prepare('SELECT generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(id).first<any>(),
   ])
 
   return c.json({
     ...row,
     latestPriceDate:      latestPrice?.date ?? null,
-    latestChipDate:       latestChip?.date ?? null,
+    latestChipDate:       latestChip ?? null,
     latestPredictionDate: latestPred?.generated_at ?? null,
   })
 })
@@ -217,10 +313,18 @@ stocks.get('/:id/chips', async (c) => {
   const days = parsePosInt(c.req.query('days'), 60)
   const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
+  const canonical = await loadCanonicalStockChips(c.env.DB, stock.symbol, since).catch(() => [])
+  if (canonical.length) return c.json(canonical)
+
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM chip_data WHERE symbol=? AND date>=? ORDER BY date'
+    `SELECT *,
+            'legacy.chip_data' AS source_path,
+            'canonical_chip_daily missing for requested stock/date window' AS fallback_reason
+       FROM chip_data
+      WHERE symbol=? AND date>=?
+      ORDER BY date`
   ).bind(stock.symbol, since).all()
-  return c.json(results)
+  return c.json(results ?? [])
 })
 
 // ─── GET /api/stocks/:id/broker-flow?days=60 ─────────────────────────────────
@@ -327,69 +431,46 @@ stocks.get('/:id/valuations', async (c) => {
 })
 
 // ─── POST /api/stocks/:id/refresh (admin only) ────────────────────────────────
-// [CODE-REVIEW-FIX] 2026-03-23: 加回 adminMiddleware，防止非 admin 觸發 FinMind API 配額消耗
 stocks.post('/:id/refresh', authMiddleware, adminMiddleware, async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
-  // Fetch from Yahoo Finance
-  await fetchAndStoreStockData(c.env.DB, c.env.KV, stock, c.env.FINMIND_TOKEN)
-  return c.json({ success: true, message: `已更新 ${stock.symbol}` })
+  return c.json({
+    error: 'finlab_primary_manual_refresh_disabled',
+    message: 'Manual per-stock Yahoo/FinMind refresh is disabled. Use the FinLab daily primary backfill or canonical D1 repair path.',
+    symbol: stock.symbol,
+  }, 410)
 })
-
-// ─── 資料更新總入口：Yahoo Finance（台股 + 美股）─────────────────────────────
-// 台股每日收盤股價已由 bulkFetchAndStorePrices (TWSE STOCK_DAY_ALL) 寫入；
-// Queue per-stock 呼叫此函式補充 Yahoo 歷史 + 觸發指標計算。
-// 籌碼：bulkFetchAndStoreChipData (TWSE/TPEX)
-// 財報：Wave2 bulk TWSE opendata
-export async function fetchAndStoreStockData(
-  db: D1Database, kv: KVNamespace, stock: any, _finmindToken?: string,
-) {
-  await fetchAndStoreYahoo(db, stock)
-}
-
-// ─── Yahoo Finance：美股（或 token 未設定時的 fallback）─────────────────────
-async function fetchAndStoreYahoo(db: D1Database, stock: any) {
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(stock.symbol)}?interval=1d&range=1y`
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-    if (!res.ok) return
-
-    const data  = await res.json() as any
-    const result = data.chart?.result?.[0]
-    if (!result) return
-
-    const timestamps: number[] = result.timestamp ?? []
-    const q = result.indicators?.quote?.[0]
-    if (!q || !timestamps.length) return
-
-    const batch: D1PreparedStatement[] = []
-    for (let i = 0; i < timestamps.length; i++) {
-      const date = new Date(timestamps[i] * 1000).toISOString().split('T')[0]
-      const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], cl = q.close?.[i], v = q.volume?.[i]
-      if (cl == null) continue
-      batch.push(db.prepare(
-        `INSERT OR REPLACE INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume)
-         VALUES (?,?,?,?,?,?,?,?)`
-      ).bind(stock.id, date, o??null, h??null, l??null, cl, cl, v??null))
-    }
-    if (batch.length) await db.batch(batch)
-    // 指標計算已移至 computeAndStoreIndicators()，由 Queue consumer 呼叫（SRP）
-  } catch (e) {
-    console.error(`[Yahoo] Failed for ${stock.symbol}:`, e)
-  }
-}
 
 // ─── GET /api/stocks/:id/margin?days=60 ─────────────────────────────────────
 stocks.get('/:id/margin', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const days = parsePosInt(c.req.query('days'), 60)
+  const stock = await c.env.DB.prepare('SELECT symbol FROM stocks WHERE id=?').bind(id).first<any>()
+  if (!stock) return c.json({ error: '找不到股票' }, 404)
+
+  const canonical = await loadCanonicalStockMargin(c.env.DB, stock.symbol, days).catch(() => [])
+  if (canonical.length) return c.json(canonical)
 
   const { results } = await c.env.DB.prepare(
-    'SELECT date, margin_buy, margin_sell, margin_balance, short_buy, short_sell, short_balance, margin_usage_pct, short_ratio FROM margin_data WHERE stock_id=? ORDER BY date DESC LIMIT ?'
+    `SELECT date,
+            margin_buy,
+            margin_sell,
+            margin_balance,
+            short_buy,
+            short_sell,
+            short_balance,
+            margin_usage_pct,
+            short_ratio,
+            'legacy.margin_data' AS source_path,
+            'canonical_chip_daily margin/short missing for requested stock/date window' AS fallback_reason
+       FROM margin_data
+      WHERE stock_id=?
+      ORDER BY date DESC
+      LIMIT ?`
   ).bind(id, days).all()
   return c.json(results ?? [])
 })
@@ -418,17 +499,7 @@ stocks.get('/:id/ai-summary', async (c) => {
       'SELECT tag, weight FROM stock_tags WHERE symbol=? ORDER BY weight DESC'
     ).bind(stock.symbol).all<any>().then(r => r.results ?? []).catch(() => []),
     // 近 5 日法人
-    c.env.DB.prepare(`
-      SELECT SUM(foreign_net) as foreign_net,
-             SUM(trust_net) as trust_net,
-             SUM(dealer_net) as dealer_net
-      FROM (
-        SELECT foreign_buy - foreign_sell as foreign_net,
-               trust_buy - trust_sell as trust_net,
-               dealer_buy - dealer_sell as dealer_net
-        FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 5
-      )
-    `).bind(stock.symbol).first<any>().catch(() => null),
+    loadCanonicalStockChipNetSummary(c.env.DB, stock.symbol, 5),
     // 公司概況
     c.env.DB.prepare(
       'SELECT business_desc, key_customers, key_suppliers FROM stock_profiles WHERE symbol=?'

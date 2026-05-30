@@ -192,7 +192,11 @@ export const D1_COLD_ARCHIVE_KIND = 'd1_cold_archive'
 
 const D1_HOT_WINDOW_MANIFESTS: D1ManifestSpec[] = [
   { kind: 'price_hot_window', table: 'stock_prices', dateColumn: 'date' },
+  { kind: 'canonical_market_daily_hot_window', table: 'canonical_market_daily', dateColumn: 'date' },
   { kind: 'technical_indicator_hot_window', table: 'technical_indicators', dateColumn: 'date' },
+  { kind: 'canonical_chip_daily_hot_window', table: 'canonical_chip_daily', dateColumn: 'date' },
+  { kind: 'canonical_institutional_amount_daily_hot_window', table: 'canonical_institutional_amount_daily', dateColumn: 'date' },
+  { kind: 'canonical_broker_flow_daily_hot_window', table: 'canonical_broker_flow_daily', dateColumn: 'date' },
   { kind: 'chip_hot_window', table: 'chip_data', dateColumn: 'date' },
   { kind: 'margin_hot_window', table: 'margin_data', dateColumn: 'date' },
   { kind: 'monthly_revenue_hot_window', table: 'monthly_revenue', dateColumn: 'date' },
@@ -200,7 +204,11 @@ const D1_HOT_WINDOW_MANIFESTS: D1ManifestSpec[] = [
 
 const D1_RETENTION_TABLES: D1ManifestSpec[] = [
   { kind: 'price_hot_window', table: 'stock_prices', dateColumn: 'date', archiveRequired: true },
+  { kind: 'canonical_market_daily_hot_window', table: 'canonical_market_daily', dateColumn: 'date', archiveRequired: true },
   { kind: 'technical_indicator_hot_window', table: 'technical_indicators', dateColumn: 'date', archiveRequired: true },
+  { kind: 'canonical_chip_daily_hot_window', table: 'canonical_chip_daily', dateColumn: 'date', archiveRequired: true },
+  { kind: 'canonical_institutional_amount_daily_hot_window', table: 'canonical_institutional_amount_daily', dateColumn: 'date', archiveRequired: true },
+  { kind: 'canonical_broker_flow_daily_hot_window', table: 'canonical_broker_flow_daily', dateColumn: 'date', archiveRequired: true },
   { kind: 'chip_hot_window', table: 'chip_data', dateColumn: 'date', archiveRequired: true },
   { kind: 'margin_hot_window', table: 'margin_data', dateColumn: 'date', archiveRequired: true },
   { kind: 'prediction_hot_window', table: 'predictions', dateColumn: 'prediction_date', archiveRequired: true },

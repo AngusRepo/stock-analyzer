@@ -34,14 +34,11 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "universal_retrain_pipeline": {"cpu": 4.0, "memory_mb": 16384, "gpu": None},
     "train_universal_from_gcs": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_tree_models": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
-    "train_ftt_model": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
-    "ft_transformer_arch_search": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "finlab_v4_backfill": {"cpu": 4.0, "memory_mb": 16384, "gpu": None},
     "regime_compute": {"cpu": 4.0, "memory_mb": 16384, "gpu": None},
     "optuna_research_sweep": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
     "optuna_per_regime_robust": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
     "train_wf_tree_window": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
-    "train_wf_ftt_window": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_wf_hmm_window": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "walk_forward_orchestrator": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "shap_feature_audit": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
@@ -944,11 +941,6 @@ async def _modal_shap_audit(payload: dict) -> dict:
     return await _modal_remote_call("shap_feature_audit", payload)
 
 
-async def _modal_ft_arch_search(payload: dict) -> dict:
-    """#29 FT-T architecture Optuna on GPU L4 (2026-04-20)."""
-    return await _modal_remote_call("ft_transformer_arch_search", payload)
-
-
 async def _modal_batch_arf(payloads: list[dict]) -> list[dict]:
     function_name = "update_arf_reward"
     t0 = time.time()
@@ -972,10 +964,6 @@ async def _modal_batch_arf(payloads: list[dict]) -> list[dict]:
 
 async def _modal_train_wf_tree_window(payload: dict) -> dict:
     return await _modal_remote_call("train_wf_tree_window", payload)
-
-
-async def _modal_train_wf_ftt_window(payload: dict) -> dict:
-    return await _modal_remote_call("train_wf_ftt_window", payload)
 
 
 async def _modal_train_wf_hmm_window(payload: dict) -> dict:
@@ -1201,12 +1189,6 @@ def spawn_state_space_overlays_batch_predict(
         "n_input": len(series_list),
         "version_by_model": version_by_model or {},
     }
-
-
-def _spawn_wf_ftt_window(payload: dict):
-    """Spawn FT-T training (returns handle)."""
-    fn = _lookup("train_wf_ftt_window")
-    return fn.spawn(payload)
 
 
 def spawn_walk_forward_orchestrator(payload: dict):

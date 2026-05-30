@@ -49,10 +49,10 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
                 "meta": {"stage": "orchestrator"},
             },
             {
-                "function_name": "train_ftt_model",
+                "function_name": "train_patchtst_universal",
                 "compute_sec": 125.7,
                 "wall_sec": 125.7,
-                "meta": {"group": "ftt", "artifact_count": 1, "model_artifacts": ["FT-Transformer"]},
+                "meta": {"group": "patchtst", "artifact_count": 1, "model_artifacts": ["PatchTST"]},
             },
             {
                 "function_name": "feature_selection_pipeline",
@@ -74,15 +74,15 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     assert result["artifact_registry"]["attempted"] == 0
     assert [c["function_name"] for c in calls] == [
         "retrain_orchestrator",
-        "train_ftt_model",
+        "train_patchtst_universal",
         "feature_selection_pipeline",
     ]
     assert calls[0]["source"] == "modal_followup"
     assert calls[1]["gpu"] == "L4"
-    assert calls[1]["memory_mb"] == 4096
-    assert calls[1]["meta"]["group"] == "ftt"
+    assert calls[1]["memory_mb"] == 8192
+    assert calls[1]["meta"]["group"] == "patchtst"
     assert calls[1]["meta"]["artifact_count"] == 1
-    assert calls[1]["meta"]["model_artifacts"] == ["FT-Transformer"]
+    assert calls[1]["meta"]["model_artifacts"] == ["PatchTST"]
     assert calls[2]["meta"]["feature_count"] == 106
     assert calls[2]["meta"]["trials"] == 150
     assert registry_records == []

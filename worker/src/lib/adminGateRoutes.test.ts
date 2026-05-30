@@ -22,8 +22,14 @@ class FakeStatement {
     if (sql.includes('MAX(date) AS latest_date')) return { latest_date: '2026-04-30' } as T
     if (sql.includes('canonical_chip_date')) {
       return {
+        canonical_market_date: '2026-04-30',
+        canonical_market_rows: 2300,
         canonical_chip_date: '2026-04-30',
         canonical_chip_rows: 2300,
+        institutional_amount_date: '2026-04-30',
+        institutional_amount_rows: 14,
+        broker_flow_date: '2026-04-30',
+        broker_flow_rows: 1200,
         legacy_chip_date: '2026-04-30',
         legacy_chip_rows: 2300,
         margin_date: '2026-04-30',
@@ -33,6 +39,7 @@ class FakeStatement {
     }
     if (sql.includes('COUNT(*) AS count FROM stock_prices')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM canonical_chip_daily')) return { count: 2300 } as T
+    if (sql.includes('COUNT(*) AS count FROM canonical_institutional_amount_daily')) return { count: 14 } as T
     if (sql.includes('COUNT(*) AS count FROM chip_data')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM technical_indicators')) return { count: 2300 } as T
     if (sql.includes('score_v2_count')) {

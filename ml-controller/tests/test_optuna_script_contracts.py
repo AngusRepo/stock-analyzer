@@ -19,7 +19,6 @@ def test_optuna_script_contracts_cover_all_legacy_scripts():
         "conformal",
         "feature_window",
         "ga_optimizer",
-        "ft_arch",
         "l2_sensitivity",
         "per_regime_robust",
         "risk_params",
@@ -50,7 +49,6 @@ def test_optuna_script_contract_classifies_kv_primary_bootstrap_ranges():
 
 def test_optuna_script_contract_classifies_non_live_research_and_sandbox():
     assert get_optuna_script_contract("alpha_framework").production_effect == "sandbox_challenger"
-    assert get_optuna_script_contract("ft_arch").production_effect == "research_only"
     ga = get_optuna_script_contract("ga_optimizer")
     assert ga.production_effect == "meta_optimizer_learning"
     assert ga.push_target == "worker_kv_ga_optimizer_state"

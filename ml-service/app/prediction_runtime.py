@@ -162,11 +162,6 @@ def update_arf(req: ARFUpdateRequest) -> dict:
     except Exception as e:
         results["conformal"] = {"updated": False, "error": str(e)}
 
-    results["ft_online"] = {
-        "updated": False,
-        "reason": "FT-Transformer retired from active alpha path",
-    }
-
     return {
         "updated_at": now_utc_iso(),
         "actual_up": req.actual_up,

@@ -701,14 +701,14 @@ def build_feature_matrix(
             pl.lit(0.0).alias("CORD_10"),
         ])
 
-    # ── 10. Wave 2/3 defaults + per_stock_ts join ────────────────────────────
-    wave2_defaults = {
+    # ── 10. Supplemental official/global defaults + per_stock_ts join ────────
+    supplemental_context_defaults = {
         "us_sox_return": 0.0, "us_gspc_return": 0.0, "us_dxy_return": 0.0,
         "us_hy_spread": 3.5, "us_hy_spread_chg": 0.0, "us_vix": 20.0,
         "advance_ratio": 0.5, "bull_alignment_pct": 50.0,
         "us_sentiment_score": 0.0,
     }
-    for col, default in wave2_defaults.items():
+    for col, default in supplemental_context_defaults.items():
         if col not in df.columns:
             df = df.with_columns(pl.lit(default).alias(col))
         else:
@@ -919,7 +919,7 @@ FEATURE_COLS = [
     "stock_vs_market",
     # FinLab 策略因子
     "linear_factor", "rsi5_dulling", "keltner_position",
-    # Wave 2
+    # Supplemental official/global context
     "us_sox_return", "us_gspc_return", "us_dxy_return",
     "us_hy_spread", "us_hy_spread_chg", "us_vix",
     "us_sentiment_score", "advance_ratio", "bull_alignment_pct",

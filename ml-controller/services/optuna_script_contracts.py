@@ -73,15 +73,6 @@ OPTUNA_SCRIPT_CONTRACTS: dict[str, OptunaScriptContract] = {
         requires_external_gate=False,
         notes=("Learns optimizer state directly; applying learned params to trading config still requires a separate gate.",),
     ),
-    "ft_arch": OptunaScriptContract(
-        source="ft_arch",
-        script="modal_ft_arch_search",
-        production_effect="research_only",
-        range_role="research_bootstrap_seeded_range",
-        push_target="none_manual_apply_only",
-        requires_external_gate=True,
-        notes=("Winning params require manual application and retrain before any production effect.",),
-    ),
     "l2_sensitivity": OptunaScriptContract(
         source="l2_sensitivity",
         script="optuna_l2_sensitivity.py",

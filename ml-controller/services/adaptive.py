@@ -40,19 +40,6 @@ def _tw_now() -> str:
 
 # ── 1. 信心門檻自適應 ──────────────────────────────────────────────────────────
 
-def compute_confidence_threshold(risk_score: float, accuracy_30d: float) -> float:
-    """
-    @deprecated 用 compute_confidence_delta 取代
-
-    Legacy: 回傳 absolute (0.55~0.75)
-    保留供 backwards compat 期間使用，Phase 2 後移除
-    """
-    base     = 0.60
-    risk_adj = (risk_score / 100) * 0.15
-    perf_adj = (0.6 - accuracy_30d) * 0.20
-    return round(_clip(base + risk_adj + perf_adj, 0.55, 0.75), 4)
-
-
 def compute_confidence_delta(
     risk_score: float,
     accuracy_30d: float,
@@ -352,7 +339,7 @@ def compute_adaptive_params(
     Phase A 改造：
     - 全部 compute function 從 L2_formula 讀係數（不再 hardcode）
     - 回傳 confidence_delta 而非 absolute confidence_threshold
-    - 同時回傳 legacy confidence_threshold = baseline + delta + clip（backwards compat）
+    - 同時回傳 compatibility confidence_threshold = baseline + delta + clip，供 Worker/UI 舊讀取點過渡使用
 
     Args:
         L2_formula: trading:config.L2_formula dict（從 Worker KV 讀後 POST 過來），None 用 hardcoded fallback
@@ -382,7 +369,7 @@ def compute_adaptive_params(
         risk_level=risk_level,
     )
 
-    # legacy backwards compat: 計算 effective absolute confidence threshold
+    # Compatibility readback for Worker/UI paths that still consume absolute thresholds.
     eff_lo = float(L2.get("confidence_effective_clip_lo", 0.45))
     eff_hi = float(L2.get("confidence_effective_clip_hi", 0.75))
     legacy_conf_threshold = round(_clip(baseline_buy + conf_delta, eff_lo, eff_hi), 4)
@@ -434,7 +421,7 @@ def compute_adaptive_params(
         },
         "version":               current_version + 1,
 
-        # legacy fields (Phase 2 後移除)
+        # Compatibility fields consumed by current Worker/UI read paths.
         "confidence_threshold":  legacy_conf_threshold,
         "sl_tp_override":        sl_tp_add,
     }

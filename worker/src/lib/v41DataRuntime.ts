@@ -413,6 +413,8 @@ export async function readV41DataRuntimeStatus(db: D1Database, date: string) {
       SELECT
         (SELECT COUNT(*) FROM canonical_market_daily) AS market_daily_rows,
         (SELECT COUNT(*) FROM canonical_chip_daily) AS chip_daily_rows,
+        (SELECT COUNT(*) FROM canonical_institutional_amount_daily) AS institutional_amount_daily_rows,
+        (SELECT COUNT(*) FROM canonical_broker_flow_daily) AS broker_flow_daily_rows,
         (SELECT COUNT(*) FROM canonical_revenue_monthly) AS revenue_monthly_rows
     `).first<any>().catch(() => ({})),
   ])
@@ -452,6 +454,8 @@ export async function readV41DataRuntimeStatus(db: D1Database, date: string) {
     canonical_rows: {
       market_daily: Number(canonical?.market_daily_rows ?? 0),
       chip_daily: Number(canonical?.chip_daily_rows ?? 0),
+      institutional_amount_daily: Number(canonical?.institutional_amount_daily_rows ?? 0),
+      broker_flow_daily: Number(canonical?.broker_flow_daily_rows ?? 0),
       revenue_monthly: Number(canonical?.revenue_monthly_rows ?? 0),
     },
     source_quality_metrics: (quality?.results ?? []).map((row: any) => ({

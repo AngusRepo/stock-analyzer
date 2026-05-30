@@ -6,7 +6,7 @@
  *   TWII 歷史    → Yahoo Finance ^TWII（免費）
  *   外資籌碼     → D1 chip_data SUM（TWSE T86 每日寫入）
  *   融資使用率   → TWSE MI_MARGN selectType=MS（市場整體）
- *   ADL 騰落線  → D1 market_breadth（Wave2 每日寫入）
+ *   ADL 騰落線  → D1 market_breadth（supplemental official data 每日寫入）
  *   多空排列    → D1 stock_prices MA5/MA20/MA60 計算
  *
  * 風險等級邏輯：
@@ -67,35 +67,71 @@ async function fetchTWIIHistory(): Promise<number[]> {
 }
 
 // ── 3. 外資整體買賣超（D1 chip_data SUM，TWSE T86 已每日寫入）──────────────────
-async function fetchMarketForeignChip(db: D1Database): Promise<{
+function summarizeForeignChipRows(rows: Array<{ date: string; daily_net: number | null }>): {
+  net5d: number | null
+  consecutiveSell: number
+} {
+  if (!rows.length) return { net5d: null, consecutiveSell: 0 }
+  const last5 = rows.slice(-5)
+  const net5d = last5.reduce((sum, row) => sum + (row.daily_net ?? 0), 0)
+
+  let consecutive = 0
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const net = rows[i].daily_net ?? 0
+    if (net < 0) consecutive--
+    else if (net > 0) {
+      if (consecutive === 0) consecutive = 1
+      break
+    } else {
+      break
+    }
+  }
+
+  return { net5d: Math.round(net5d * 100) / 100, consecutiveSell: consecutive }
+}
+
+async function fetchCanonicalMarketForeignChip(db: D1Database, asOfDate: string): Promise<{
+  net5d: number | null
+  consecutiveSell: number
+}> {
+  const { results } = await db.prepare(`
+    SELECT c.date,
+           SUM(COALESCE(c.foreign_net, 0) * COALESCE(m.close, 0)) / 1e8 AS daily_net
+      FROM canonical_chip_daily c
+      JOIN canonical_market_daily m
+        ON m.stock_id = c.stock_id
+       AND m.date = c.date
+     WHERE c.date <= ?
+       AND c.date >= date(?, '-25 days')
+       AND c.source LIKE 'finlab.%'
+       AND m.source LIKE 'finlab.%'
+     GROUP BY c.date
+     ORDER BY c.date
+  `).bind(asOfDate, asOfDate).all<{ date: string; daily_net: number | null }>()
+  return summarizeForeignChipRows(results ?? [])
+}
+
+// FinLab canonical first; legacy.chip_data fallback remains for older snapshots.
+async function fetchMarketForeignChip(db: D1Database, asOfDate: string): Promise<{
   net5d: number | null
   consecutiveSell: number
 }> {
   try {
+    const canonical = await fetchCanonicalMarketForeignChip(db, asOfDate).catch(() => ({ net5d: null, consecutiveSell: 0 }))
+    if (canonical.net5d != null) return canonical
+
     const { results } = await db.prepare(`
       SELECT c.date, SUM(COALESCE(c.foreign_net, 0) * COALESCE(sp.close, 0)) / 1e8 AS daily_net
       FROM chip_data c
       JOIN stocks s ON s.symbol = c.symbol
       JOIN stock_prices sp ON sp.stock_id = s.id AND sp.date = c.date
-      WHERE c.date >= date('now', '-25 days')
+      WHERE c.date <= ?
+        AND c.date >= date(?, '-25 days')
       GROUP BY c.date
       ORDER BY c.date
-    `).all<{ date: string; daily_net: number }>()
+    `).bind(asOfDate, asOfDate).all<{ date: string; daily_net: number | null }>()
 
-    if (!results?.length) return { net5d: null, consecutiveSell: 0 }
-
-    const last5 = results.slice(-5)
-    const net5d = last5.reduce((s, r) => s + (r.daily_net ?? 0), 0)
-
-    let consecutive = 0
-    for (let i = results.length - 1; i >= 0; i--) {
-      const net = results[i].daily_net ?? 0
-      if (net < 0) consecutive--
-      else if (net > 0) { if (consecutive === 0) consecutive = 1; break }
-      else break
-    }
-
-    return { net5d: Math.round(net5d * 100) / 100, consecutiveSell: consecutive }
+    return summarizeForeignChipRows(results ?? [])
   } catch { return { net5d: null, consecutiveSell: 0 } }
 }
 
@@ -128,7 +164,37 @@ async function fetchMarginRatio(controllerUrl?: string, controllerSecret?: strin
   return Math.round((data.balance / data.limit) * 10000) / 100
 }
 
-// ── 5. ADL 騰落線（D1 market_breadth table，Wave2 每日寫入）─────────────────
+async function fetchCanonicalMarginStress(db: D1Database, asOfDate: string): Promise<{
+  marginRatio: number | null
+  marginMaintenanceRate: number | null
+}> {
+  try {
+    const row = await db.prepare(`
+      WITH latest AS (
+        SELECT MAX(date) AS date
+          FROM canonical_chip_daily
+         WHERE date <= ?
+           AND source LIKE 'finlab.%'
+      )
+      SELECT SUM(COALESCE(margin_balance, 0)) AS margin_balance,
+             SUM(COALESCE(short_balance, 0)) AS short_balance
+        FROM canonical_chip_daily
+       WHERE date = (SELECT date FROM latest)
+         AND source LIKE 'finlab.%'
+    `).bind(asOfDate).first<{ margin_balance: number | null; short_balance: number | null }>()
+    const marginBalance = Number(row?.margin_balance ?? 0)
+    const shortBalance = Number(row?.short_balance ?? 0)
+    if (marginBalance <= 0) return { marginRatio: null, marginMaintenanceRate: null }
+    return {
+      marginRatio: Math.round((shortBalance / marginBalance) * 10000) / 100,
+      marginMaintenanceRate: shortBalance > 0 ? Math.round((marginBalance / shortBalance) * 10000) / 100 : null,
+    }
+  } catch {
+    return { marginRatio: null, marginMaintenanceRate: null }
+  }
+}
+
+// ── 5. ADL 騰落線（D1 market_breadth table，supplemental official data 每日寫入）─────────────────
 async function fetchADL(db: D1Database): Promise<{
   adlValue: number | null
   adlTrend: 'up' | 'down' | 'flat' | null
@@ -331,15 +397,18 @@ export async function calcMarketRisk(
   _marginCache = null  // 清除快取
 
   // 平行抓所有資料（Phase 2: 加入 ADL + 融資維持率 + 多空排列）
-  const [vix, twiiHistory, foreignChip, marginRatio, adlData, marginMaintenance, bullAlignment] = await Promise.all([
+  const [vix, twiiHistory, foreignChip, finlabLeverage, legacyMarginRatio, adlData, legacyMarginMaintenance, bullAlignment] = await Promise.all([
     fetchVIX(),
     fetchTWIIHistory(),
-    fetchMarketForeignChip(db),
+    fetchMarketForeignChip(db, today),
+    fetchCanonicalMarginStress(db, today),
     fetchMarginRatio(controllerUrl, controllerSecret),
     fetchADL(db),
     fetchMarginMaintenanceRate(controllerUrl, controllerSecret),
     fetchBullAlignmentCount(db),
   ])
+  const marginRatio = finlabLeverage.marginRatio ?? legacyMarginRatio
+  const marginMaintenance = finlabLeverage.marginMaintenanceRate ?? legacyMarginMaintenance
 
   const twiiClose  = twiiHistory.length ? twiiHistory[twiiHistory.length - 1] : null
   const twiiVol20  = annualizedVol(twiiHistory)

@@ -18,7 +18,6 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
             "status": "ok",
             "group_coverage": {
                 "tree": {"status": "ok", "elapsed_s": 30.0},
-                "ftt": {"status": "ok", "elapsed_s": 45.0, "gcs_io": {"prep_objects": 5, "prep_bytes": 100}},
                 "dlinear": {"status": "skipped", "elapsed_s": None},
                 "patchtst": {"status": "ok", "elapsed_s": 60.0},
             },
@@ -43,11 +42,11 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
                 "test_samples": 250,
                 "feature_count": 106,
             },
-            "ftt": {
-                "results": {"FT-Transformer": {"saved": True}},
+            "patchtst": {
+                "results": {"PatchTST": {"saved": True}},
                 "train_samples": 1000,
                 "test_samples": 250,
-                "feature_count": 106,
+                "feature_count": 1,
             },
         },
     )
@@ -56,7 +55,6 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
         "retrain_orchestrator",
         "feature_selection_pipeline",
         "train_tree_models",
-        "train_ftt_model",
         "train_patchtst_universal",
         "shap_feature_audit",
     ]
@@ -66,8 +64,7 @@ def test_build_retrain_orchestrator_telemetry_includes_billable_children():
     assert telemetry[1]["meta"]["trials"] == 150
     assert telemetry[1]["meta"]["target_permutation_n"] == 100
     assert telemetry[1]["meta"]["objective_cache_hits"] == 12
-    assert telemetry[3]["meta"]["group"] == "ftt"
-    assert telemetry[3]["meta"]["gcs_io"]["prep_objects"] == 5
+    assert telemetry[3]["meta"]["group"] == "patchtst"
     assert telemetry[2]["meta"]["artifact_count"] == 4
     assert telemetry[2]["meta"]["model_artifacts"] == ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
     assert telemetry[2]["meta"]["train_samples"] == 1000

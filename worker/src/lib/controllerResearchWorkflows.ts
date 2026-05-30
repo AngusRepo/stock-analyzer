@@ -298,6 +298,9 @@ function finLabCanonicalWindowDays(env: Bindings): number {
   return windowDays
 }
 
+const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,emerging_price_diversity,chip_diversity,institutional_amount_summary,emerging_chip_diversity'
+const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_broker_flow_daily'
+
 function buildFinLabBackfillRunId(years: number, runDate?: string): string {
   const day = (runDate && /^\d{4}-\d{2}-\d{2}$/.test(runDate))
     ? runDate
@@ -329,7 +332,7 @@ function buildFinLabBackfillRequestBody(
     canonical_start_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_START_DATE),
     canonical_end_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_END_DATE),
     canonical_datasets: dailyPriceMode
-      ? (optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_DATASETS) ?? 'canonical_market_daily')
+      ? (optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_DATASETS) ?? FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT)
       : optionalString((env as any).FINLAB_BACKFILL_CANONICAL_DATASETS),
     canonical_limit_per_dataset: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_LIMIT_PER_DATASET),
     canonical_d1_chunk_size: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_D1_CHUNK_SIZE),
@@ -342,7 +345,7 @@ function buildFinLabBackfillRequestBody(
     force,
     continue_evening_chain: Boolean(options.continueEveningChain),
     lanes: dailyPriceMode
-      ? (optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? 'daily_price,emerging_price_diversity')
+      ? (optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
       : optionalString((env as any).FINLAB_BACKFILL_LANES),
     skip_diff_counts: dailyPriceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)

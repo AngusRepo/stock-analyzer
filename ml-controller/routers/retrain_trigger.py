@@ -70,15 +70,6 @@ class UniversalRetrainTriggerRequest(BaseModel):
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
     train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "dlinear", "patchtst"])
-    ftt_d_model: int = 128
-    ftt_n_heads: int = 8
-    ftt_n_layers: int = 3
-    ftt_dropout: float = 0.12
-    ftt_max_epochs: int = 120
-    ftt_lr: float = 2e-4
-    ftt_patience: int = 16
-    ftt_batch_size: int = 1024
-    ftt_margin: float = 0.0
 
 
 class UniversalRetrainRunRequest(UniversalRetrainTriggerRequest):
@@ -1160,15 +1151,6 @@ async def trigger_universal_retrain(
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),
                 "dataset_snapshot": dataset_snapshot_info,
-                "ftt_d_model": req.ftt_d_model,
-                "ftt_n_heads": req.ftt_n_heads,
-                "ftt_n_layers": req.ftt_n_layers,
-                "ftt_dropout": req.ftt_dropout,
-                "ftt_max_epochs": req.ftt_max_epochs,
-                "ftt_lr": req.ftt_lr,
-                "ftt_patience": req.ftt_patience,
-                "ftt_batch_size": req.ftt_batch_size,
-                "ftt_margin": req.ftt_margin,
                 "followup_webhook_url": followup_webhook_url,
                 "gcs_prefix": "universal",
                 "run_id": run_id,

@@ -1,7 +1,7 @@
 /**
  * twseApi.ts — TWSE/TPEX 官方 API bulk fetcher
  *
- * 替代 FinMind 逐股 API：一次 request 取全市場資料
+ * Daily official-source bulk fetch: one request family covers the broad market.
  * - 三大法人: TWSE T86 + TPEX 3itrade
  * - 融資融券: TWSE MI_MARGN + TPEX openapi margin_balance
  *
@@ -654,7 +654,7 @@ export async function fetchMarketBreadth(): Promise<MarketBreadthData | null> {
   }
 }
 
-// ─── TWSE 財報（EPS + ROE，替代 FinMind）─────────────────────────────────────
+// ─── TWSE 財報（EPS + ROE）───────────────────────────────────────────────────
 
 export interface BulkFinancialRow {
   symbol: string
@@ -978,7 +978,7 @@ export async function bulkFetchAndStoreChipData(
   return { chipCount, marginCount }
 }
 
-// ─── TWSE STOCK_DAY_ALL: 全市場每日股價（替代 FinMind per-stock fetchTWPrice）──
+// ─── TWSE STOCK_DAY_ALL: 全市場每日股價 ───────────────────────────────────────
 
 export interface StockDayAllRow {
   symbol: string
@@ -1174,7 +1174,7 @@ export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
 }
 
 /**
- * 每日股價 bulk 寫入（TWSE + TPEX + 興櫃，替代 FinMind per-stock TaiwanStockPrice）
+ * 每日股價 bulk 寫入（TWSE + TPEX + 興櫃）。
  * 在 runDailyUpdate 與 bulkFetchAndStoreChipData 同步呼叫。
  */
 export async function bulkFetchAndStorePrices(

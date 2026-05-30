@@ -1,6 +1,4 @@
-const fs = require('fs')
-
-export {}
+import fs from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -67,9 +65,9 @@ assert(
     wranglerToml.includes('DAILY_PRICE_SOURCE = "finlab"') &&
     wranglerToml.includes('FINLAB_DAILY_PRICE_PRIMARY_ENABLED = "true"') &&
     wranglerToml.includes('FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED = "true"') &&
-    wranglerToml.includes('FINLAB_DAILY_PRICE_LANES = "daily_price,emerging_price_diversity"') &&
-    wranglerToml.includes('FINLAB_DAILY_PRICE_CANONICAL_DATASETS = "canonical_market_daily"'),
-  'Worker production vars must make FinLab the primary daily price owner and enable the Modal trigger path',
+    wranglerToml.includes('FINLAB_DAILY_PRICE_LANES = "daily_price,emerging_price_diversity,chip_diversity,institutional_amount_summary,emerging_chip_diversity"') &&
+    wranglerToml.includes('FINLAB_DAILY_PRICE_CANONICAL_DATASETS = "canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_broker_flow_daily"'),
+  'Worker production vars must make FinLab the primary daily market-data owner for price, chips, institutional amount, and broker-flow closure',
 )
 
 assert(
@@ -78,18 +76,25 @@ assert(
     updateOrchestrator.includes('continueEveningChain: true') &&
     updateOrchestrator.includes('callback will continue indicator queue') &&
     updateOrchestrator.includes('continueEveningChainAfterFinLabBackfill') &&
-    updateOrchestrator.includes('runWave2BestEffortAfterFinLabBackfill') &&
-    updateOrchestrator.includes('wave2 best-effort timeout after'),
-  'evening-chain must route the daily price root through FinLab primary and keep Wave2 best-effort bounded so callback continuation cannot block the main chain',
+    updateOrchestrator.includes('runSupplementalOfficialDataBestEffortAfterFinLabBackfill') &&
+    updateOrchestrator.includes('supplemental official data best-effort timeout after'),
+  'evening-chain must route the daily price root through FinLab primary and keep supplemental official data best-effort bounded so callback continuation cannot block the main chain',
+)
+
+assert(
+  !updateOrchestrator.includes('Wave2') &&
+    !updateOrchestrator.includes('wave2=') &&
+    !updateOrchestrator.includes('fetchWave2Data'),
+  'legacy Wave2 naming must not remain in update orchestrator because FinLab primary owns daily market-data roots',
 )
 
 assert(
   workflows.includes("FINLAB_DAILY_PRICE_LANES") &&
-    workflows.includes("'daily_price,emerging_price_diversity'") &&
+    workflows.includes("'daily_price,emerging_price_diversity,chip_diversity,institutional_amount_summary,emerging_chip_diversity'") &&
     workflows.includes("FINLAB_DAILY_PRICE_CANONICAL_DATASETS") &&
-    workflows.includes("'canonical_market_daily'") &&
+    workflows.includes("'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_broker_flow_daily'") &&
     workflows.includes('skip_diff_counts'),
-  'daily price mode must use a fast FinLab lane/canonical subset instead of full 3y archive backfill',
+  'daily primary mode must use the FinLab post-market lane/canonical subset needed by readiness, homepage, screener, and risk',
 )
 
 assert(

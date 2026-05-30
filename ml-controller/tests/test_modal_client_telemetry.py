@@ -10,12 +10,12 @@ from services.modal_client import _aggregate_map_compute_sec, _modal_resource_sp
 from services import modal_client  # noqa: E402
 
 
-def test_modal_resource_spec_knows_expensive_gpu_functions():
-    spec = _modal_resource_spec("train_ftt_model")
+def test_modal_resource_spec_knows_active_expensive_gpu_functions():
+    spec = _modal_resource_spec("train_patchtst_universal")
 
     assert spec["gpu"] == "L4"
     assert spec["cpu"] == 1
-    assert spec["memory_mb"] == 4096
+    assert spec["memory_mb"] == 8192
 
 
 def test_modal_map_compute_uses_aggregate_container_seconds():

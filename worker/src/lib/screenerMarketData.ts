@@ -1,8 +1,7 @@
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
 
-// Types originally from finmind.ts. FinMind fetcher is retired; screener keeps
-// this normalized shape internally for scoring parity.
+// Screener keeps this normalized market-data shape internally for scoring parity.
 export interface FMStockPrice {
   date: string
   stock_id: string

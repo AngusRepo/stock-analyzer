@@ -68,7 +68,7 @@ export default function SystemStatusBar({ mode = 'compact' }: Props) {
           </p>
           <div className="space-y-1.5">
             <Row label="價格 / 指標" date={d.prices.lastDate} ok={d.prices.isRecent} />
-            <Row label="籌碼資料" date={d.chips.lastDate} ok={d.chips.isRecent} />
+            <Row label="籌碼資料" date={d.chips.lastDate} ok={d.chips.isRecent} source={d.chips.source} />
             <Row label="新聞事件" date={d.news.lastDate} ok={d.news.isRecent} />
             <Row label="ML 預測" date={d.predictions.lastDate} ok={d.predictions.isRecent} />
             <Row label="市場風險" date={d.marketRisk.lastDate} ok={d.marketRisk.isRecent} />
@@ -88,7 +88,7 @@ export default function SystemStatusBar({ mode = 'compact' }: Props) {
     <div className="space-y-2 rounded-xl border border-border bg-card p-4">
       <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">資料健康度</p>
       <Row label="價格 / 指標" date={d.prices.lastDate} ok={d.prices.isRecent} />
-      <Row label="籌碼資料" date={d.chips.lastDate} ok={d.chips.isRecent} />
+      <Row label="籌碼資料" date={d.chips.lastDate} ok={d.chips.isRecent} source={d.chips.source} />
       <Row label="新聞事件" date={d.news.lastDate} ok={d.news.isRecent} />
       <Row label="ML 預測" date={d.predictions.lastDate} ok={d.predictions.isRecent} />
       <Row label="市場風險" date={d.marketRisk.lastDate} ok={d.marketRisk.isRecent} />
@@ -96,15 +96,26 @@ export default function SystemStatusBar({ mode = 'compact' }: Props) {
   )
 }
 
-function Row({ label, date, ok }: { label: string; date: string | null; ok: boolean }) {
+function formatSource(source?: string | null): string | null {
+  if (!source) return null
+  if (source === 'canonical_chip_daily') return 'canonical_chip_daily'
+  if (source === 'legacy.chip_data') return 'legacy.chip_data'
+  return source
+}
+
+function Row({ label, date, ok, source }: { label: string; date: string | null; ok: boolean; source?: string | null }) {
+  const sourceText = formatSource(source)
   return (
     <div className="flex items-center justify-between gap-2">
       <div className="flex items-center gap-1.5">
         <Dot ok={ok} />
         <span className="text-[11px] text-muted-foreground">{label}</span>
       </div>
-      <span className={`font-mono text-[11px] tabular-nums ${ok ? 'text-foreground' : 'text-yellow-400'}`}>
-        {formatDate(date)}
+      <span className="min-w-0 text-right">
+        <span className={`block font-mono text-[11px] tabular-nums ${ok ? 'text-foreground' : 'text-yellow-400'}`}>
+          {formatDate(date)}
+        </span>
+        {sourceText ? <span className="block max-w-32 truncate font-mono text-[9px] text-muted-foreground/60">{sourceText}</span> : null}
       </span>
     </div>
   )

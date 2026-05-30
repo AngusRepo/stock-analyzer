@@ -24,15 +24,6 @@ def test_universal_retrain_modal_payload_preserves_no_downgrade_contract() -> No
             run_date="2026-05-24",
             candidate_type="monthly_release",
             train_model_groups=["tree", "dlinear", "patchtst"],
-            ftt_d_model=128,
-            ftt_n_heads=8,
-            ftt_n_layers=3,
-            ftt_dropout=0.12,
-            ftt_max_epochs=120,
-            ftt_lr=2e-4,
-            ftt_patience=16,
-            ftt_batch_size=1024,
-            ftt_margin=0.0,
             trigger_source="unit-test",
             trigger_id="trigger-1",
         ),
@@ -56,11 +47,7 @@ def test_universal_retrain_modal_payload_preserves_no_downgrade_contract() -> No
     assert request["force_monthly"] is True
     assert request["candidate_type"] == "monthly_release"
     assert request["train_model_groups"] == ["tree", "dlinear", "patchtst"]
-    assert request["ftt_d_model"] == 128
-    assert request["ftt_n_heads"] == 8
-    assert request["ftt_n_layers"] == 3
-    assert request["ftt_max_epochs"] == 120
-    assert request["ftt_batch_size"] == 1024
+    assert all(not key.startswith("ftt_") for key in request)
 
     assert payload["quality_contract"] == {
         "stock_universe_reduced": False,

@@ -9,7 +9,6 @@ export type Bindings = {
   GOOGLE_CLIENT_SECRET: string
   ANTHROPIC_API_KEY: string
   GEMINI_API_KEY: string
-  FINMIND_TOKEN: string
   ML_SERVICE_URL: string
   UPDATE_QUEUE: Queue<UpdateQueueMsg>
   NEWS_QUEUE: Queue<UpdateQueueMsg>

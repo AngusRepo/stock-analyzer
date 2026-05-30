@@ -72,7 +72,7 @@ export function prefetchWorkstationRoute(
   if (href === '/' || href.startsWith('/stock/')) {
     prefetchMany(queryClient, [
       { queryKey: ['market', 'indices'], queryFn: marketApi.indices, staleTime: queryTtl.dashboard },
-      { queryKey: recommendationDailyKey(date), queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }), staleTime: queryTtl.dailyDecision },
+      { queryKey: recommendationDailyKey(date), queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }), staleTime: queryTtl.intraday },
     ])
     return
   }
@@ -81,7 +81,7 @@ export function prefetchWorkstationRoute(
     prefetchMany(queryClient, [
       { queryKey: ['paper', 'account'], queryFn: paperApi.account, staleTime: queryTtl.intraday },
       { queryKey: ['paper', 'pending-buys'], queryFn: paperApi.pendingBuys, staleTime: queryTtl.dashboard },
-      { queryKey: recommendationDailyKey(date), queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }), staleTime: queryTtl.dailyDecision },
+      { queryKey: recommendationDailyKey(date), queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }), staleTime: queryTtl.intraday },
     ])
     return
   }

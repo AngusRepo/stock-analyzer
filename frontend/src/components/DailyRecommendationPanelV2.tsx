@@ -32,7 +32,9 @@ export function DailyRecommendationPanelV2() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: recommendationDailyKey(today),
     queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
-    staleTime: queryTtl.dailyDecision,
+    staleTime: queryTtl.intraday,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
     select: selectRecommendationLanes,
   })
   const payload = data?.payload

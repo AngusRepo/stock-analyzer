@@ -368,6 +368,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   const buys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
   const showingDate = pbData?.date ?? ''
   const isStalePending = Boolean(pbData?.is_stale)
+  const activeBuys = isStalePending ? [] : buys
   const pendingState = pbData?.state
   const pendingMeta = pbData?.meta
 
@@ -385,7 +386,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
 
   // 如果沒有 pending buys，fallback 到 daily recommendations
-  if (!buys.length) {
+  if (!activeBuys.length) {
     return (
       <div className="space-y-3">
         <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
@@ -402,7 +403,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     <div className="space-y-2">
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
-      {buys.map((b: any, idx: number) => {
+      {activeBuys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
         const executionBadge = formatExecutionStatusBadge(b.execution_status)
         const partialRemaining = formatPartialFillRemaining(b.watch_points)
@@ -1017,7 +1018,7 @@ function PerformanceChart() {
     staleTime: 60_000,
   })
   const orders = paperOrdersFromPayload(ordersData)
-  const pendingBuys = paperPendingBuysFromPayload(pendingData)
+  const pendingBuys = (pendingData as any)?.is_stale ? [] : paperPendingBuysFromPayload(pendingData)
 
   return (
     <PaperTradePerformanceChart

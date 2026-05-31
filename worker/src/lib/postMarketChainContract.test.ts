@@ -44,10 +44,12 @@ assert(
 assert(
   adminTriggerRoutes.includes("'finlab-ai-skill-discovery'") &&
     adminTriggerRoutes.includes("'strategy-learning'") &&
+    adminTriggerRoutes.includes("'post-verify-chain'") &&
     adminTriggerWorkerTasks.includes("'finlab-ai-skill-discovery': () => runFinLabAiSkillDiscoveryTask") &&
     adminTriggerWorkerTasks.includes("'strategy-learning': () => runStrategyLearningTask") &&
+    adminTriggerWorkerTasks.includes("'post-verify-chain': () => runPostVerifyChainTask") &&
     adminTriggerWorkerTasks.includes("'/finlab/ai-factor-discovery'"),
-  'FinLab discovery and strategy-learning must be explicit admin-triggerable scheduler tasks for historical rerun closure',
+  'post-verify learning closure tasks must be explicit admin-triggerable scheduler tasks for historical rerun closure',
 )
 assert(
   postMarketChain.includes("if (historicalLearningCatchup)") &&

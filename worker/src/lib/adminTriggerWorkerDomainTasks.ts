@@ -111,6 +111,20 @@ async function runStrategyLearningTask(c: any, runDate?: string): Promise<string
   return runStrategyLearningClosure(c.env.DB, runDate ?? twToday())
 }
 
+async function runPostVerifyChainTask(c: any, runDate?: string): Promise<string> {
+  const { runPostVerifyCallbackChain } = await import('./postMarketChain')
+  const date = runDate ?? twToday()
+  await runPostVerifyCallbackChain(c.env, {
+    runDate: date,
+    upstreamRunId: c.req.query('run_id') || `manual-post-verify-${date}`,
+    metadata: {
+      allow_historical_learning_catchup: c.req.query('learning_catchup') !== '0',
+      source: 'admin_trigger_post_verify_chain',
+    },
+  })
+  return `post_verify_chain=completed run_date=${date} learning_catchup=${c.req.query('learning_catchup') !== '0'}`
+}
+
 export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
@@ -118,6 +132,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'evening-chain': () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     'finlab-ai-skill-discovery': () => runFinLabAiSkillDiscoveryTask(c, requestedRunDate()),
     'strategy-learning': () => runStrategyLearningTask(c, requestedRunDate()),
+    'post-verify-chain': () => runPostVerifyChainTask(c, requestedRunDate()),
     screener: () => deps.runMarketScreener(requestedRunDate()),
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),

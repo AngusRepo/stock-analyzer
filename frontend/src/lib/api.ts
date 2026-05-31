@@ -1320,6 +1320,8 @@ export const costsApi = {
 export const paperApi = {
   account:         () => get<any>('/paper/account'),
   positions:       () => get<any>('/paper/positions'),
+  exitLearning:    () => get<any>('/paper/exit-learning'),
+  exitOutcomes:    (days = 60) => get<any>(`/paper/exit-outcomes?days=${days}`),
   orders:          (limit = 50) => get<any>(`/paper/orders?limit=${limit}`),
   pnl:             () => get<any>('/paper/pnl'),
   realized:        () => get<any>('/paper/realized'),

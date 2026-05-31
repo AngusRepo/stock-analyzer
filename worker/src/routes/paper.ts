@@ -26,6 +26,8 @@ import {
 import { batchGetIntradayOHLC } from '../lib/paperIntradayData'
 import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
+import { getHoldingExitLearningState } from '../lib/holdingExitLearning'
+import { loadHoldingExitOutcomeAnalytics } from '../lib/holdingExitOutcomeAnalytics'
 import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
 import { loadPendingBuyRunHistory, loadPendingBuySnapshot } from '../lib/pendingBuyStore'
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
@@ -345,6 +347,46 @@ paper.get('/positions', async (c) => {
     'SELECT * FROM paper_positions WHERE account_id=? AND shares>0 ORDER BY symbol'
   ).bind(ACCOUNT_ID).all<any>()
 
+  const exitReviewMap = new Map<string, Record<string, unknown>>()
+  if (positions?.length) {
+    const placeholders = positions.map(() => '?').join(',')
+    const { results: reviewEvents } = await c.env.DB.prepare(`
+      SELECT symbol, status, reason, detail_json, created_at
+        FROM paper_execution_events
+       WHERE account_id=?
+         AND event_type='holding_exit_review'
+         AND symbol IN (${placeholders})
+       ORDER BY datetime(created_at) DESC
+    `).bind(ACCOUNT_ID, ...positions.map((p: any) => p.symbol)).all<any>().catch(() => ({ results: [] as any[] }))
+
+    for (const event of reviewEvents ?? []) {
+      if (!event.symbol || exitReviewMap.has(event.symbol)) continue
+      let detail: Record<string, unknown> = {}
+      if (event.detail_json) {
+        try {
+          const parsed = JSON.parse(String(event.detail_json))
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) detail = parsed as Record<string, unknown>
+        } catch {
+          detail = {}
+        }
+      }
+      exitReviewMap.set(event.symbol, {
+        active_action: event.status,
+        active_reason: event.reason,
+        score: detail.score ?? null,
+        confidence: detail.confidence ?? null,
+        reasons: detail.reasons ?? [],
+        factors: detail.factors ?? null,
+        features: detail.features ?? null,
+        suggested_trailing_stop: detail.suggested_trailing_stop ?? null,
+        moving_tp_target: detail.moving_tp_target ?? null,
+        baseline_counterfactual: detail.baseline_counterfactual ?? null,
+        final_candidate: detail.final_candidate ?? null,
+        reviewed_at: event.created_at,
+      })
+    }
+  }
+
 // Intraday pricing ladder during TW market hours (09:00-13:30).
   const isMarketOpen = isTwIntradayTradingMinute()
 
@@ -388,6 +430,7 @@ paper.get('/positions', async (c) => {
       tp1_price:        pos.tp1_price ? Math.round(pos.tp1_price * 10) / 10 : null,
       tp2_price:        pos.tp2_price ? Math.round(pos.tp2_price * 10) / 10 : null,
       tp1_hit:          !!pos.tp1_hit,
+      exit_review:      exitReviewMap.get(pos.symbol) ?? null,
     }
   }))
 
@@ -415,6 +458,22 @@ paper.get('/positions', async (c) => {
       total_pnl_pct:    Math.round(totalPnlPct * 100) / 100,
     },
   })
+})
+
+// GET /api/paper/exit-learning — adaptive holding-exit learning state.
+
+paper.get('/exit-learning', async (c) => {
+  const learning = await getHoldingExitLearningState(c.env.KV)
+  return c.json({ status: 'success', learning })
+})
+
+// GET /api/paper/exit-outcomes — active exit vs baseline counterfactual analytics.
+
+paper.get('/exit-outcomes', async (c) => {
+  const rawDays = Number.parseInt(c.req.query('days') ?? '60', 10)
+  const days = Math.max(1, Math.min(Number.isFinite(rawDays) ? rawDays : 60, 365))
+  const analytics = await loadHoldingExitOutcomeAnalytics(c.env.DB, { accountId: ACCOUNT_ID, days })
+  return c.json({ status: 'success', analytics })
 })
 
 // GET /api/paper/pnl — PnL snapshots for the recent window.

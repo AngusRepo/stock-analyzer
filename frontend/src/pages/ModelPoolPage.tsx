@@ -1190,7 +1190,7 @@ function UpgradeTrackPanel({ experiments = [], statusRows = [] }: { experiments?
   ]
 
   return (
-    <WorkstationPanel title="Layer 3 Formal Slots / 模型正式分支" kicker="experiment-gated family slots">
+    <WorkstationPanel title="Model Research Tracks / Layer 3 Formal Slots" kicker="experiment-gated family slots">
       <div className="border-b border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
         這裡只顯示需要 Strategy Lab experiment 的 Layer 3 formal family slot。TabM、GNN、iTransformer、TimesFM 都要先有 artifact/evidence/review packet；Wei 核准前不投 production vote。
       </div>
@@ -2127,7 +2127,7 @@ export default function ModelPoolPage() {
         <WorkstationPageTitle
           kicker="Model care"
           title="模型池"
-          description="用一頁看 production alpha、formal Layer 3 slots、retired paths、狀態 overlay、IC 根因與 artifact metadata，避免模型健康只藏在 log 裡。"
+          description="用一頁看 production alpha、formal Layer 3 slots、retired paths、狀態 overlay、IC 根因與 artifact metadata，避免模型健康只藏在 log 裡。GAOptimizer 已移到 OBS adaptive meta。"
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
@@ -2175,7 +2175,7 @@ export default function ModelPoolPage() {
             <WorkstationPanel title="State-space Overlays / 狀態空間 Overlay" kicker="regime risk overlay, not alpha vote model">
               <div className="space-y-2 p-3 text-xs text-muted-foreground">
                 <p>
-                  Kalman / Markov 只扮演 regime、noise、risk overlay：協助市場狀態、波動雜訊、sizing 與風控判斷；不進 formal alpha slot 投票分母，也不進 alpha IC promote gate。
+                  Kalman / Markov 只在下方 State-space Overlays：協助市場狀態、波動雜訊、sizing 與風控判斷；不進 formal alpha slot 投票分母，也不進 alpha IC promote gate。
                 </p>
                 <div className="grid gap-2 md:grid-cols-2">
                   {overlayList.map(([name, overlay]) => (

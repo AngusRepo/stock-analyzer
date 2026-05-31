@@ -46,12 +46,15 @@ function cleanStringArray(value: unknown): string[] {
 }
 
 function artifactBridge(record: ResearchExperimentRecord): ResearchPatchHandoff['artifact_bridge'] {
+  const layer3Candidates = cleanStringArray(record.data_slice?.layer3_candidates)
+  const formalFamilyCandidates = cleanStringArray(record.data_slice?.formal_family_candidates)
   const shadowCandidates = cleanStringArray(record.data_slice?.shadow_candidates)
   const benchmarkCandidates = cleanStringArray(record.data_slice?.benchmark_candidates)
-  if (shadowCandidates.length) {
+  const modelFamilyCandidates = [...new Set([...layer3Candidates, ...formalFamilyCandidates, ...shadowCandidates])]
+  if (modelFamilyCandidates.length) {
     return {
       candidate_type: 'model_family_shadow',
-      candidate_ids: shadowCandidates,
+      candidate_ids: modelFamilyCandidates,
       requires_external_artifact: true,
       target_registry: 'model_artifact_registry',
     }

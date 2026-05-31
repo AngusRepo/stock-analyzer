@@ -1,6 +1,6 @@
 import type { Bindings } from '../types'
 import { formatTradeNotification, sendDiscordNotification } from './notify'
-import { checkExitConditions } from './paperExitPolicy'
+import { checkExitConditions, type ExitDecision } from './paperExitPolicy'
 import { batchGetIntradayOHLC, type IntradayOHLC } from './paperIntradayData'
 import {
   batchGetATR,
@@ -13,6 +13,11 @@ import {
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
+import { arbitratePaperExit, paperExitCandidateFromDecision, type PaperExitCandidate } from './paperExitArbiter'
+import { buildHoldingExitReview, buildHoldingExitReviewCandidate, type HoldingExitReview } from './holdingExitReview'
+import { loadHoldingExitFeatureMap } from './holdingExitFeatureLoader'
+import { getHoldingExitAdaptiveParams, recordHoldingExitSellOutcome } from './holdingExitLearning'
+import { buildMovingTakeProfitTarget, type MovingTakeProfitTargetDecision } from './holdingExitTarget'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
   getCurrentRegime as getCurrentSltpRegime,
@@ -50,6 +55,131 @@ function resolveExitSellFill(quote: IntradayOHLC): { fillable: boolean; price?: 
       quote_time: quote.quoteTime ?? null,
       quote_source: quote.source ?? null,
     },
+  }
+}
+
+function candidateToExitDecision(candidate: PaperExitCandidate, baseline: ExitDecision): ExitDecision {
+  if (candidate.source === 'current_policy') return baseline
+  if (candidate.action === 'full_sell') return { action: 'full_sell', reason: candidate.reason }
+  if (candidate.action === 'partial_sell') {
+    return { action: 'partial_sell', reason: candidate.reason, sellShares: candidate.sellShares }
+  }
+  return {
+    action: 'hold',
+    reason: candidate.reason,
+    newTrailingStop: candidate.newTrailingStop,
+    newHighest: candidate.newHighest,
+  }
+}
+
+async function recordHoldingExitReviewEvent(
+  env: Bindings,
+  tradeDate: string,
+  pos: any,
+  review: HoldingExitReview,
+  finalCandidate: PaperExitCandidate,
+  movingTarget?: MovingTakeProfitTargetDecision,
+): Promise<void> {
+  await recordPaperExecutionEvent(env, {
+    tradeDate,
+    symbol: pos.symbol,
+    side: null,
+    eventType: 'holding_exit_review',
+    status: review.action,
+    reason: review.reasons.join(',') || 'holding_exit_review',
+    detail: {
+      score: review.score,
+      confidence: review.confidence,
+      reasons: review.reasons,
+      factors: review.factors,
+      features: review.features,
+      suggested_trailing_stop: review.suggestedTrailingStop ?? null,
+      moving_tp_target: movingTarget ?? null,
+      baseline_counterfactual: review.baselineCounterfactual,
+      final_candidate: finalCandidate,
+    },
+    source: 'adaptive_exit',
+  })
+}
+
+async function applyTightenTrailCandidate(
+  env: Bindings,
+  pos: any,
+  candidate: PaperExitCandidate,
+): Promise<boolean> {
+  if (candidate.action !== 'tighten_trail') return false
+  const nextTrail = Number(candidate.newTrailingStop)
+  if (!Number.isFinite(nextTrail) || nextTrail <= 0) return false
+  const nextHighest = candidate.newHighest ?? pos.highest_since_entry
+  await env.DB.prepare(`
+    UPDATE paper_positions SET trailing_stop=?, highest_since_entry=?, updated_at=datetime('now')
+    WHERE account_id=? AND symbol=?
+  `).bind(
+    nextTrail,
+    nextHighest,
+    ACCOUNT_ID,
+    pos.symbol,
+  ).run()
+  return true
+}
+
+async function applyMovingTp2Target(
+  env: Bindings,
+  tradeDate: string,
+  pos: any,
+  decision: MovingTakeProfitTargetDecision,
+): Promise<any> {
+  if (decision.action !== 'move_tp2' || decision.nextTp2Price == null) return pos
+  await env.DB.prepare(`
+    UPDATE paper_positions SET tp2_price=?, updated_at=datetime('now')
+    WHERE account_id=? AND symbol=?
+  `).bind(
+    decision.nextTp2Price,
+    ACCOUNT_ID,
+    pos.symbol,
+  ).run()
+  await recordPaperExecutionEvent(env, {
+    tradeDate,
+    symbol: pos.symbol,
+    side: null,
+    eventType: 'holding_exit_target_update',
+    status: 'move_tp2',
+    reason: decision.reason,
+    detail: { ...decision },
+    source: 'adaptive_exit',
+  })
+  return { ...pos, tp2_price: decision.nextTp2Price }
+}
+
+async function recordExitLearningOutcome(input: {
+  env: Bindings
+  tradeDate: string
+  pos: any
+  entryDate?: string | null
+  entryPrice: number
+  exitPrice: number
+  shares: number
+  positionSharesBeforeExit?: number | null
+  exitReason: string
+  exitSource: string
+  orderId?: number | null
+}): Promise<void> {
+  try {
+    await recordHoldingExitSellOutcome({
+      env: input.env,
+      tradeDate: input.tradeDate,
+      symbol: input.pos.symbol,
+      entryDate: input.entryDate ?? input.pos.entry_date ?? null,
+      entryPrice: input.entryPrice,
+      exitPrice: input.exitPrice,
+      shares: input.shares,
+      positionSharesBeforeExit: input.positionSharesBeforeExit ?? input.pos.shares ?? null,
+      exitReason: input.exitReason,
+      exitSource: input.exitSource,
+      orderId: input.orderId ?? null,
+    })
+  } catch (error) {
+    console.warn(`[HoldingExitLearning] outcome record failed for ${input.pos.symbol}: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -190,6 +320,17 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       orderId,
       source: 'daytrade_force_close',
     })
+    await recordExitLearningOutcome({
+      env,
+      tradeDate: today,
+      pos,
+      entryPrice,
+      exitPrice: fillPrice,
+      shares,
+      exitReason: decision.reason,
+      exitSource: 'daytrade_force_close',
+      orderId,
+    })
     const pnl = (fillPrice - entryPrice) / entryPrice
     console.log(`[DayTrade] 13:25 force close ${pos.symbol} ${shares} @ ${fillPrice} ${(pnl * 100).toFixed(1)}%`)
     void sendDiscordNotification(
@@ -247,6 +388,19 @@ export async function runEODExit(env: Bindings): Promise<void> {
   }
 
   const eodToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const eodPriceMap = new Map<string, number>()
+  for (const pos of exitPositions) {
+    const quote = exitQuoteMap.get(pos.symbol)
+    if (quote) eodPriceMap.set(pos.symbol, quote.last)
+  }
+  const eodHoldingExitFeatures = await loadHoldingExitFeatureMap(
+    env.DB,
+    exitPositions,
+    eodPriceMap,
+    eodToday,
+    eodRegime ?? null,
+  )
+  const eodHoldingExitParams = await getHoldingExitAdaptiveParams(env.KV)
 
   for (const pos of exitPositions) {
     const quote = exitQuoteMap.get(pos.symbol)
@@ -254,7 +408,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
     const currentPrice = quote.last
 
     const atr14 = exitAtrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    const decision = checkExitConditions(
+    const staticBaselineDecision = checkExitConditions(
       pos,
       currentPrice,
       atr14,
@@ -264,7 +418,64 @@ export async function runEODExit(env: Bindings): Promise<void> {
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       eodRegime ?? undefined,
     )
+    const holdingFeatures = eodHoldingExitFeatures.get(pos.symbol)
+    const preliminaryReview = buildHoldingExitReview({
+      position: pos,
+      currentPrice,
+      atr14,
+      baseline: staticBaselineDecision,
+      features: holdingFeatures,
+      params: eodHoldingExitParams,
+    })
+    const movingTarget = buildMovingTakeProfitTarget({
+      position: pos,
+      currentPrice,
+      atr14,
+      review: preliminaryReview,
+      staticBaseline: staticBaselineDecision,
+      params: eodHoldingExitParams,
+    })
+    const activePos = await applyMovingTp2Target(env, eodToday, pos, movingTarget)
+    const activeBaselineDecision = movingTarget.action === 'move_tp2'
+      ? checkExitConditions(
+        activePos,
+        currentPrice,
+        atr14,
+        sellRecMap.has(pos.symbol),
+        true,
+        cfg,
+        resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
+        eodRegime ?? undefined,
+      )
+      : staticBaselineDecision
+    const holdingReview = movingTarget.action === 'move_tp2'
+      ? buildHoldingExitReview({
+        position: activePos,
+        currentPrice,
+        atr14,
+        baseline: staticBaselineDecision,
+        features: holdingFeatures,
+        params: eodHoldingExitParams,
+      })
+      : preliminaryReview
+    const holdingCandidate = buildHoldingExitReviewCandidate(holdingReview, {
+      allowSellActions: eodHoldingExitParams.sellActions.enabled,
+      position: activePos,
+      sellActions: eodHoldingExitParams.sellActions,
+      dataQuality: eodHoldingExitParams.dataQuality,
+    })
+    const finalCandidate = arbitratePaperExit(
+      [paperExitCandidateFromDecision(activeBaselineDecision), holdingCandidate],
+      { currentTrailingStop: activePos.trailing_stop },
+    )
+    await recordHoldingExitReviewEvent(env, eodToday, activePos, holdingReview, finalCandidate, movingTarget)
+    const decision = candidateToExitDecision(finalCandidate, activeBaselineDecision)
     if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason, env.DB)
+
+    if (await applyTightenTrailCandidate(env, pos, finalCandidate)) {
+      console.log(`[EODExit] tighten trail ${pos.symbol} -> ${finalCandidate.newTrailingStop} (${finalCandidate.reason})`)
+      continue
+    }
 
     let dayTradeSell = false
     if (pos.entry_date === eodToday && decision.action !== 'hold') {
@@ -338,6 +549,17 @@ export async function runEODExit(env: Bindings): Promise<void> {
         orderId,
         source: 'eod_exit',
       })
+      await recordExitLearningOutcome({
+        env,
+        tradeDate: eodToday,
+        pos,
+        entryPrice: entryPx,
+        exitPrice: fillPrice,
+        shares,
+        exitReason: decision.reason,
+        exitSource: 'eod_exit',
+        orderId,
+      })
       const exitPnl = (fillPrice - entryPx) / entryPx
       console.log(`[EODExit] full sell ${pos.symbol} ${shares} @ ${fillPrice} entry=${entryPx} days=${daysHeld} pnl=${(exitPnl * 100).toFixed(1)}% ${decision.reason}`)
       void sendDiscordNotification(
@@ -399,6 +621,17 @@ export async function runEODExit(env: Bindings): Promise<void> {
         orderId,
         source: 'eod_tp1',
       })
+      await recordExitLearningOutcome({
+        env,
+        tradeDate: eodToday,
+        pos,
+        entryPrice: entryPx,
+        exitPrice: fillPrice,
+        shares: sellShares,
+        exitReason: decision.reason,
+        exitSource: 'eod_tp1',
+        orderId,
+      })
       const tp1Pnl = (fillPrice - entryPx) / entryPx
       console.log(`[EODExit] TP1 ${pos.symbol} ${sellShares} @ ${fillPrice}`)
       void sendDiscordNotification(
@@ -441,6 +674,16 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   )
 
   const intradayToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const intradayPriceMap = new Map<string, number>()
+  for (const [symbol, quote] of quoteMap) intradayPriceMap.set(symbol, quote.last)
+  const intradayHoldingExitFeatures = await loadHoldingExitFeatureMap(
+    env.DB,
+    positions,
+    intradayPriceMap,
+    intradayToday,
+    intraRegime ?? null,
+  )
+  const intradayHoldingExitParams = await getHoldingExitAdaptiveParams(env.KV)
   const prevCloseMapSell = new Map<string, number>()
   if (symbols.length > 0) {
     const ph = symbols.map(() => '?').join(',')
@@ -461,7 +704,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     const currentPrice = quote.last
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    const decision = checkExitConditions(
+    const staticBaselineDecision = checkExitConditions(
       pos,
       currentPrice,
       atr14,
@@ -471,7 +714,64 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       intraRegime ?? undefined,
     )
+    const holdingFeatures = intradayHoldingExitFeatures.get(pos.symbol)
+    const preliminaryReview = buildHoldingExitReview({
+      position: pos,
+      currentPrice,
+      atr14,
+      baseline: staticBaselineDecision,
+      features: holdingFeatures,
+      params: intradayHoldingExitParams,
+    })
+    const movingTarget = buildMovingTakeProfitTarget({
+      position: pos,
+      currentPrice,
+      atr14,
+      review: preliminaryReview,
+      staticBaseline: staticBaselineDecision,
+      params: intradayHoldingExitParams,
+    })
+    const activePos = await applyMovingTp2Target(env, intradayToday, pos, movingTarget)
+    const activeBaselineDecision = movingTarget.action === 'move_tp2'
+      ? checkExitConditions(
+        activePos,
+        currentPrice,
+        atr14,
+        false,
+        false,
+        cfg,
+        resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
+        intraRegime ?? undefined,
+      )
+      : staticBaselineDecision
+    const holdingReview = movingTarget.action === 'move_tp2'
+      ? buildHoldingExitReview({
+        position: activePos,
+        currentPrice,
+        atr14,
+        baseline: staticBaselineDecision,
+        features: holdingFeatures,
+        params: intradayHoldingExitParams,
+      })
+      : preliminaryReview
+    const holdingCandidate = buildHoldingExitReviewCandidate(holdingReview, {
+      allowSellActions: intradayHoldingExitParams.sellActions.enabled,
+      position: activePos,
+      sellActions: intradayHoldingExitParams.sellActions,
+      dataQuality: intradayHoldingExitParams.dataQuality,
+    })
+    const finalCandidate = arbitratePaperExit(
+      [paperExitCandidateFromDecision(activeBaselineDecision), holdingCandidate],
+      { currentTrailingStop: activePos.trailing_stop },
+    )
+    await recordHoldingExitReviewEvent(env, intradayToday, activePos, holdingReview, finalCandidate, movingTarget)
+    const decision = candidateToExitDecision(finalCandidate, activeBaselineDecision)
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, env.DB)
+
+    if (await applyTightenTrailCandidate(env, pos, finalCandidate)) {
+      console.log(`[Intraday] tighten trail ${pos.symbol} -> ${finalCandidate.newTrailingStop} (${finalCandidate.reason})`)
+      continue
+    }
 
     if (decision.action !== 'hold') {
       const prevC = prevCloseMapSell.get(pos.symbol)
@@ -555,6 +855,17 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         orderId,
         source: 'intraday_exit',
       })
+      await recordExitLearningOutcome({
+        env,
+        tradeDate: intradayToday,
+        pos,
+        entryPrice: entryPx,
+        exitPrice: sellFillPrice,
+        shares,
+        exitReason: decision.reason,
+        exitSource: 'intraday_exit',
+        orderId,
+      })
       console.warn(`[Intraday] full sell ${pos.symbol} ${shares} @ ${sellFillPrice} (mkt ${currentPrice}) ${decision.reason}`)
       const intradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax }).realized_pnl_pct / 100
       void sendDiscordNotification(
@@ -625,6 +936,17 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         detail: { shares: sellShares, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_tp1',
+      })
+      await recordExitLearningOutcome({
+        env,
+        tradeDate: intradayToday,
+        pos,
+        entryPrice: entryPx,
+        exitPrice: fillPrice,
+        shares: sellShares,
+        exitReason: decision.reason,
+        exitSource: 'intraday_tp1',
+        orderId,
       })
       console.log(`[Intraday] TP1 ${pos.symbol} ${sellShares} 股 @ ${fillPrice} | ${decision.reason}`)
       const tp1IntradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax }).realized_pnl_pct / 100

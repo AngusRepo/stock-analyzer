@@ -6,7 +6,7 @@ export interface PaperExecutionEventInput {
   tradeDate?: string
   symbol?: string | null
   side?: 'buy' | 'sell' | null
-  eventType: 'pending_buy' | 'paper_order' | 'debate' | 'snapshot_audit' | 'finlab_preview' | 'finlab_l5_market_data' | 'finlab_execution_preview' | 'paper_broker_reconciliation' | 'intraday_technical_decision'
+  eventType: 'pending_buy' | 'paper_order' | 'debate' | 'snapshot_audit' | 'finlab_preview' | 'finlab_l5_market_data' | 'finlab_execution_preview' | 'paper_broker_reconciliation' | 'intraday_technical_decision' | 'holding_exit_review' | 'holding_exit_outcome' | 'holding_exit_target_update'
   status: string
   reason?: string | null
   detail?: Record<string, unknown> | null

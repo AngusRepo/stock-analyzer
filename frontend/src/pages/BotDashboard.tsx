@@ -55,6 +55,320 @@ function pctClass(pct: number): string {
   return 'text-muted-foreground'
 }
 
+type ExitOutcomeSlice = {
+  count?: number
+  avgReward?: number
+  counterfactualRewardCount?: number
+  absoluteRewardCount?: number
+  unknownRewardCount?: number
+  avgCounterfactualRewardScore?: number | null
+  featureQualitySampleCount?: number
+  avgFeatureQualityCoverage?: number | null
+  avgFlowEvidenceCoverage?: number | null
+  lowQualityOutcomeCount?: number
+  learningEligibleCount?: number
+  learningSkippedCount?: number
+  avgExitShareRatio?: number | null
+  avgLearningImpactWeight?: number | null
+  avgRealizedReturnPct?: number
+  avgActiveVsBaselineReturnDeltaPct?: number | null
+  activeVsBaselineDeltaCount?: number
+  avgProfitRetention?: number
+  positiveRewardRate?: number
+}
+
+function exitOutcomeEntries(record: unknown): Array<[string, ExitOutcomeSlice]> {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return []
+  return Object.entries(record as Record<string, ExitOutcomeSlice>)
+    .sort(([, a], [, b]) => Number(b?.count ?? 0) - Number(a?.count ?? 0))
+}
+
+function formatExitPct(value: unknown, decimals = 0): string {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '-'
+  return `${(n * 100).toFixed(decimals)}%`
+}
+
+function formatExitMetric(value: unknown, decimals = 3): string {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '-'
+  return n.toFixed(decimals)
+}
+
+function formatExitScaleAmount(value: unknown): string {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '-'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`
+  return fmt(n)
+}
+
+function exitRewardClass(value: unknown): string {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 'text-muted-foreground'
+  if (n > 0) return 'text-red-300'
+  if (n < 0) return 'text-emerald-300'
+  return 'text-muted-foreground'
+}
+
+function exitLabel(value: string): string {
+  return value.replace(/_/g, ' ')
+}
+
+function numericEntries(record: unknown): Array<[string, number]> {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return []
+  return Object.entries(record as Record<string, unknown>)
+    .map(([key, value]) => [key, Number(value)] as [string, number])
+    .filter(([, value]) => Number.isFinite(value))
+}
+
+function ExitOutcomeSliceRows({ rows }: { rows: Array<[string, ExitOutcomeSlice]> }) {
+  if (!rows.length) return <div className="text-xs text-muted-foreground/60">No outcome samples</div>
+  return (
+    <div className="space-y-1.5">
+      {rows.map(([label, slice]) => (
+        <div key={label} className="grid grid-cols-[1fr_44px_58px_58px_58px] items-center gap-2 text-[11px]">
+          <span className="truncate text-muted-foreground/85">{exitLabel(label)}</span>
+          <span className="text-right font-mono text-foreground/70">x{fmt(Number(slice.count ?? 0))}</span>
+          <span className={`text-right font-mono ${exitRewardClass(slice.avgReward)}`}>{formatExitMetric(slice.avgReward, 2)}</span>
+          <span className={`text-right font-mono ${exitRewardClass(slice.avgActiveVsBaselineReturnDeltaPct)}`}>{formatExitPct(slice.avgActiveVsBaselineReturnDeltaPct, 1)}</span>
+          <span className="text-right font-mono text-foreground/70">{formatExitPct(slice.avgProfitRetention)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ExitLearningStatePanel({ learning }: { learning: any }) {
+  if (!learning) return null
+
+  const regime = String(learning.lastObservation?.regime ?? 'default')
+  const params = learning.params ?? {}
+  const weights = numericEntries(params.weights)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 6)
+  const utilities = numericEntries(learning.factorUtility)
+    .sort(([, a], [, b]) => Math.abs(b) - Math.abs(a))
+    .slice(0, 6)
+  const thresholds = params.thresholds?.[regime] ?? params.thresholds?.default ?? {}
+  const trailMultiplier = params.trailAtrMultiplier?.[regime] ?? params.trailAtrMultiplier?.default
+  const movingTarget = params.movingTarget ?? {}
+  const movingAtr = movingTarget.atrMultiplier?.[regime] ?? movingTarget.atrMultiplier?.default
+  const sellActions = params.sellActions ?? {}
+  const actionGates = params.actionGates ?? {}
+  const dataQuality = params.dataQuality ?? {}
+
+  return (
+    <div className="mb-3 rounded border border-border/60 bg-muted/10 px-3 py-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-mono text-xs text-foreground">Exit Adaptive State</div>
+          <div className="text-[11px] text-muted-foreground">
+            learned params v{fmt(Number(learning.paramsVersion ?? 0))}, samples {fmt(Number(learning.sampleCount ?? 0))}, regime {exitLabel(regime)}
+          </div>
+        </div>
+        <div className="font-mono text-[11px] text-muted-foreground">
+          sell guard {sellActions.enabled === false ? 'off' : 'on'}
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">factor utility</div>
+          <div className="space-y-1.5">
+            {utilities.map(([key, value]) => (
+              <div key={key} className="grid grid-cols-[1fr_64px] items-center gap-2 text-[11px]">
+                <span className="truncate text-muted-foreground/85">{exitLabel(key)}</span>
+                <span className={`text-right font-mono ${exitRewardClass(value)}`}>{formatExitMetric(value, 3)}</span>
+              </div>
+            ))}
+            {!utilities.length && <div className="text-xs text-muted-foreground/60">No learned samples</div>}
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">learned weights</div>
+          <div className="space-y-1.5">
+            {weights.map(([key, value]) => (
+              <div key={key} className="grid grid-cols-[1fr_64px] items-center gap-2 text-[11px]">
+                <span className="truncate text-muted-foreground/85">{exitLabel(key)}</span>
+                <span className="text-right font-mono text-foreground/75">{formatExitPct(value)}</span>
+              </div>
+            ))}
+            {!weights.length && <div className="text-xs text-muted-foreground/60">No adaptive weights</div>}
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">active knobs</div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+            {[
+              ['warn', thresholds.warn],
+              ['tighten', thresholds.tighten],
+              ['partial', thresholds.partial],
+              ['full', thresholds.full],
+              ['trail ATR', trailMultiplier],
+              ['TP2 ATR', movingAtr],
+              ['TP2 trigger', movingTarget.activationRatio],
+              ['TP2 risk', movingTarget.maxExitRiskScore],
+              ['TP2 conf', movingTarget.minConfidence],
+              ['TP2 ext', movingTarget.maxExtensionPct],
+              ['sell conf', sellActions.minConfidence],
+              ['partial sell', sellActions.partialSellRatio],
+              ['Q move', dataQuality.minCoverageForMoveTarget],
+              ['Q move flow', dataQuality.minFlowCoverageForMoveTarget],
+              ['Q sell', dataQuality.minCoverageForSellAction],
+              ['Q sell flow', dataQuality.minFlowCoverageForSellAction],
+              ['full gate', actionGates.fullExitStructureMin],
+              ['partial S', actionGates.partialExitStructureMin],
+              ['partial G', actionGates.partialExitGivebackMin],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="flex items-center justify-between gap-2">
+                <span className="truncate text-muted-foreground/85">{String(label)}</span>
+                <span className="font-mono text-foreground/75">{formatExitMetric(value, 2)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ExitOutcomeAnalyticsPanel({ analytics }: { analytics: any }) {
+  const total = Number(analytics?.totalOutcomes ?? 0)
+  const skippedOutcomeCount = Number(analytics?.skippedOutcomeCount ?? 0)
+  if (!analytics || total + skippedOutcomeCount <= 0) return null
+
+  const actionRows = exitOutcomeEntries(analytics.byAction).slice(0, 4)
+  const regimeRows = exitOutcomeEntries(analytics.byRegime).slice(0, 4)
+  const rewardBasisRows = exitOutcomeEntries(analytics.byRewardBasis).slice(0, 3)
+  const sourceRows = exitOutcomeEntries(analytics.byActiveDecisionSource).slice(0, 4)
+  const skipReasonRows = exitOutcomeEntries(analytics.bySkipReason).slice(0, 4)
+  const changed = analytics.changedVsBaseline?.changed
+  const unchanged = analytics.changedVsBaseline?.unchanged
+  const counterfactualRewardCount = Number(analytics.summary?.counterfactualRewardCount ?? 0)
+  const recentOutcomes = Array.isArray(analytics.recent) ? analytics.recent.slice(0, 5) : []
+  const recentSkipped = Array.isArray(analytics.recentSkipped) ? analytics.recentSkipped.slice(0, 4) : []
+
+  return (
+    <div className="mb-3 rounded border border-border/60 bg-muted/10 px-3 py-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-mono text-xs text-foreground">Exit Outcome Analytics</div>
+          <div className="text-[11px] text-muted-foreground">active exit vs baseline counterfactual, last {fmt(Number(analytics.days ?? 60))} days</div>
+        </div>
+        <div className="font-mono text-[11px] text-muted-foreground">
+          changed {fmt(Number(analytics.changedActionCount ?? 0))} / total {fmt(total)} / audit skips {fmt(skippedOutcomeCount)}
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {[
+          { label: 'avg reward', value: formatExitMetric(analytics.summary?.avgReward), cls: exitRewardClass(analytics.summary?.avgReward) },
+          { label: 'avg vs base', value: formatExitPct(analytics.summary?.avgActiveVsBaselineReturnDeltaPct, 1), cls: exitRewardClass(analytics.summary?.avgActiveVsBaselineReturnDeltaPct) },
+          { label: 'cf samples', value: `${fmt(counterfactualRewardCount)}/${fmt(total)}`, cls: 'text-foreground/80' },
+          { label: 'cf score', value: formatExitMetric(analytics.summary?.avgCounterfactualRewardScore, 2), cls: exitRewardClass(analytics.summary?.avgCounterfactualRewardScore) },
+          { label: 'avg Q', value: formatExitPct(analytics.summary?.avgFeatureQualityCoverage, 0), cls: 'text-foreground/80' },
+          { label: 'flow Q', value: formatExitPct(analytics.summary?.avgFlowEvidenceCoverage, 0), cls: 'text-foreground/80' },
+          { label: 'low Q', value: fmt(Number(analytics.summary?.lowQualityOutcomeCount ?? 0)), cls: 'text-amber-200' },
+          { label: 'eligible', value: fmt(Number(analytics.summary?.learningEligibleCount ?? 0)), cls: 'text-foreground/80' },
+          { label: 'skipped', value: fmt(Number(analytics.summary?.learningSkippedCount ?? 0)), cls: 'text-amber-200' },
+          { label: 'audit skips', value: fmt(skippedOutcomeCount), cls: 'text-amber-200' },
+          { label: 'avg share', value: formatExitPct(analytics.summary?.avgExitShareRatio, 0), cls: 'text-foreground/80' },
+          { label: 'avg impact', value: formatExitPct(analytics.summary?.avgLearningImpactWeight, 0), cls: 'text-foreground/80' },
+          { label: 'retention', value: formatExitPct(analytics.summary?.avgProfitRetention), cls: 'text-foreground/80' },
+          { label: 'positive', value: formatExitPct(analytics.summary?.positiveRewardRate), cls: 'text-foreground/80' },
+          { label: 'realized', value: formatExitPct(analytics.summary?.avgRealizedReturnPct, 1), cls: exitRewardClass(analytics.summary?.avgRealizedReturnPct) },
+        ].map((item) => (
+          <div key={item.label} className="rounded bg-background/50 px-2 py-1.5">
+            <div className="text-[10px] uppercase text-muted-foreground/60">{item.label}</div>
+            <div className={`font-mono text-sm ${item.cls}`}>{item.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-6">
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">by active action</div>
+          <ExitOutcomeSliceRows rows={actionRows} />
+        </div>
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">by regime</div>
+          <ExitOutcomeSliceRows rows={regimeRows} />
+        </div>
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">by reward basis</div>
+          <ExitOutcomeSliceRows rows={rewardBasisRows} />
+        </div>
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">by source</div>
+          <ExitOutcomeSliceRows rows={sourceRows} />
+        </div>
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">by skip reason</div>
+          <ExitOutcomeSliceRows rows={skipReasonRows} />
+        </div>
+        <div>
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">changed vs baseline</div>
+          <ExitOutcomeSliceRows rows={[
+            ['changed', changed ?? {}],
+            ['unchanged', unchanged ?? {}],
+          ]} />
+        </div>
+      </div>
+
+      {recentOutcomes.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">recent outcomes</div>
+          <div className="overflow-x-auto">
+            <div className="min-w-[980px] space-y-1.5">
+              {recentOutcomes.map((row: any, idx: number) => {
+                const key = `${row.symbol ?? 'unknown'}-${row.createdAt ?? row.tradeDate ?? idx}`
+                const missing = Array.isArray(row.missingFeatureGroups) ? row.missingFeatureGroups : []
+                return (
+                  <div key={key} className="grid grid-cols-[54px_1fr_92px_86px_62px_54px_64px_64px_54px_54px_90px] items-center gap-2 text-[11px]">
+                    <span className="font-mono text-foreground/85">{String(row.symbol ?? '-')}</span>
+                    <span className="truncate text-muted-foreground/85">{exitLabel(String(row.finalAction ?? 'unknown'))} / {exitLabel(String(row.baselineAction ?? 'unknown'))}</span>
+                    <span className="truncate font-mono text-muted-foreground/75">basis {exitLabel(String(row.rewardBasis ?? 'unknown'))}</span>
+                    <span className="truncate font-mono text-muted-foreground/75">source {exitLabel(String(row.activeDecisionSource ?? 'unknown'))}</span>
+                    <span className="text-right font-mono text-foreground/70">impact {formatExitPct(row.learningImpactWeight, 0)}</span>
+                    <span className={`text-right font-mono ${exitRewardClass(row.reward)}`}>{formatExitMetric(row.reward, 2)}</span>
+                    <span className={`text-right font-mono ${exitRewardClass(row.activeVsBaselineReturnDeltaPct)}`}>{formatExitPct(row.activeVsBaselineReturnDeltaPct, 1)}</span>
+                    <span className="text-right font-mono text-foreground/70">base px {fmt(Number(row.baselineExitPrice), 1)}</span>
+                    <span className={`text-right font-mono ${exitRewardClass(row.counterfactualRewardScore)}`}>cf {formatExitMetric(row.counterfactualRewardScore, 2)}</span>
+                    <span className="text-right font-mono text-foreground/70">Q {formatExitPct(row.featureQualityCoverage, 0)}</span>
+                    <span className="truncate text-right font-mono text-amber-200">missing Q {missing.length ? missing.slice(0, 2).map(exitLabel).join(', ') : '-'}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {recentSkipped.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">recent skips</div>
+          <div className="space-y-1.5">
+            {recentSkipped.map((row: any, idx: number) => {
+              const key = `${row.symbol ?? 'unknown'}-${row.createdAt ?? row.tradeDate ?? idx}`
+              return (
+                <div key={key} className="grid grid-cols-[54px_1fr_110px_110px] items-center gap-2 text-[11px]">
+                  <span className="font-mono text-foreground/85">{String(row.symbol ?? '-')}</span>
+                  <span className="truncate text-amber-200">{exitLabel(String(row.skipReason ?? 'unknown'))}</span>
+                  <span className="truncate font-mono text-muted-foreground/75">entry {String(row.entryDate ?? '-')}</span>
+                  <span className="truncate font-mono text-muted-foreground/75">review {String(row.reviewCreatedAt ?? '-')}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function signalBadge(signal: string) {
   const s = signal?.toUpperCase() ?? ''
   // 台股慣例：紅=買/漲, 綠=賣/跌
@@ -609,10 +923,35 @@ function PositionsTable() {
     queryFn: () => paperApi.orders(200),
     staleTime: 60_000,
   })
+  const { data: exitLearningData } = useQuery({
+    queryKey: ['paper', 'exit-learning'],
+    queryFn: paperApi.exitLearning,
+    staleTime: 60_000,
+  })
+  const { data: exitOutcomesData } = useQuery({
+    queryKey: ['paper', 'exit-outcomes', 60],
+    queryFn: () => paperApi.exitOutcomes(60),
+    staleTime: 60_000,
+  })
 
   const positions = paperPositionsFromPayload(data)
   const summary = (data as any)?.summary
   const orders = paperOrdersFromPayload(ordersData)
+  const exitLearning = (exitLearningData as any)?.learning
+  const exitOutcomes = (exitOutcomesData as any)?.analytics
+  const learningReward = exitLearning?.lastObservation?.reward
+  const exitLearningStrip = exitLearning ? (
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <span className="font-mono text-foreground">Exit Learning</span>
+      <span>samples {fmt(exitLearning.sampleCount ?? 0)}</span>
+      <span>params v{fmt(exitLearning.paramsVersion ?? 0)}</span>
+      {typeof learningReward === 'number' && <span>last reward {learningReward.toFixed(3)}</span>}
+      {exitOutcomes && <span>outcomes {fmt(exitOutcomes.totalOutcomes ?? 0)}</span>}
+      {exitOutcomes && <span>changed {fmt(exitOutcomes.changedActionCount ?? 0)}</span>}
+      {typeof exitOutcomes?.summary?.avgReward === 'number' && <span>avg reward {exitOutcomes.summary.avgReward.toFixed(3)}</span>}
+      {typeof exitOutcomes?.summary?.avgProfitRetention === 'number' && <span>retention {(exitOutcomes.summary.avgProfitRetention * 100).toFixed(0)}%</span>}
+    </div>
+  ) : null
 
   // 已實現損益 = 所有 sell orders 的 (proceeds - cost)
   const realizedPnl = orders
@@ -632,6 +971,9 @@ function PositionsTable() {
 
     return (
       <div className="p-4">
+        {exitLearningStrip}
+        <ExitLearningStatePanel learning={exitLearning} />
+        <ExitOutcomeAnalyticsPanel analytics={exitOutcomes} />
         <div className="grid gap-3 lg:grid-cols-[0.8fr_1.2fr]">
           <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4">
             <Wallet className="mb-3 h-8 w-8 text-[#d6a85f]/70" />
@@ -723,10 +1065,14 @@ function PositionsTable() {
 
   return (
     <div>
+      {exitLearningStrip}
+      <ExitLearningStatePanel learning={exitLearning} />
+      <ExitOutcomeAnalyticsPanel analytics={exitOutcomes} />
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-muted-foreground text-xs uppercase border-b border-border">
+              <th className="text-right p-2">Exit Review</th>
               <th className="text-left p-2">股票</th>
               <th className="text-right p-2">張數</th>
               <th className="text-right p-2">買入價</th>
@@ -746,6 +1092,19 @@ function PositionsTable() {
               const pnlAmt = (current - entry) * shares
               const marketValue = current * shares
               const costBasis = entry * shares
+              const exitReview = p.exit_review
+              const baselineAction = exitReview?.baseline_counterfactual?.action ?? 'n/a'
+              const movingTarget = exitReview?.moving_tp_target
+              const featureQuality = exitReview?.features?.featureQuality
+              const factorScale = exitReview?.features?.factorScale
+              const featureCoverage = Number(featureQuality?.coverage)
+              const missingFeatures = Array.isArray(featureQuality?.missing) ? featureQuality.missing : []
+              const brokerScale = Number(factorScale?.brokerNetAmount5d)
+              const institutionalScale = Number(factorScale?.institutionalNetAmount5d)
+              const moneyFlowScale = Number(factorScale?.moneyFlowWeakThreshold)
+              const supportScale = Number(factorScale?.supportBreakPct)
+              const givebackScale = Number(factorScale?.givebackRatio)
+              const reviewScore = typeof exitReview?.score === 'number' ? exitReview.score.toFixed(2) : null
               totalUnrealized += pnlAmt
               totalCostBasis += costBasis
 
@@ -756,6 +1115,25 @@ function PositionsTable() {
 
               return (
                 <tr key={p.symbol} className="border-b border-border/50 hover:bg-muted/30">
+                  <td className="p-2 text-right">
+                    {exitReview ? (
+                      <div className="space-y-0.5">
+                        <div className="font-mono text-xs text-amber-300">{String(exitReview.active_action ?? 'HOLD')}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">Base {String(baselineAction)}</div>
+                        {movingTarget?.action === 'move_tp2' && <div className="font-mono text-[10px] text-red-300">TP2 {fmt(movingTarget.nextTp2Price, 1)}</div>}
+                        {Number.isFinite(featureCoverage) && <div className="font-mono text-[10px] text-muted-foreground">Q {(featureCoverage * 100).toFixed(0)}%</div>}
+                        {Number.isFinite(brokerScale) && <div className="font-mono text-[10px] text-muted-foreground">B-scale {formatExitScaleAmount(brokerScale)}</div>}
+                        {Number.isFinite(institutionalScale) && <div className="font-mono text-[10px] text-muted-foreground">I-scale {formatExitScaleAmount(institutionalScale)}</div>}
+                        {Number.isFinite(moneyFlowScale) && <div className="font-mono text-[10px] text-muted-foreground">M-scale {moneyFlowScale.toFixed(0)}</div>}
+                        {Number.isFinite(supportScale) && <div className="font-mono text-[10px] text-muted-foreground">S-scale {(supportScale * 100).toFixed(1)}%</div>}
+                        {Number.isFinite(givebackScale) && <div className="font-mono text-[10px] text-muted-foreground">G-scale {(givebackScale * 100).toFixed(0)}%</div>}
+                        {missingFeatures.length > 0 && <div className="font-mono text-[10px] text-amber-200">Miss {missingFeatures.slice(0, 2).map(exitLabel).join(', ')}</div>}
+                        {reviewScore && <div className="font-mono text-[10px] text-muted-foreground">S {reviewScore}</div>}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground/60">-</span>
+                    )}
+                  </td>
                   <td className="p-2">
                     <div className="font-mono text-foreground">{p.symbol}</div>
                     <div className="text-xs text-muted-foreground">
@@ -1096,7 +1474,7 @@ function BacktestCard() {
   const mcBadge = mcVerdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-400'
     : mcVerdict === 'CAUTION' ? 'bg-yellow-500/20 text-yellow-400'
     : mcVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
-  const mcTailStatus = (mcData as any)?.tail_risk_status
+  const mcTailStatus = (mcData as any)?.tail_risk_status ?? ((mcData as any)?.low_sample_tail_risk ? 'LOW_SAMPLE_TAIL_RISK' : null)
   const mcMethod = (mcData as any)?.simulation_method
   const mcSource = (mcData as any)?.source
   const mcRegimeClosed = (mcData as any)?.regime_closed_loop

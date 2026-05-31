@@ -19,7 +19,7 @@ FINLAB_AI_FACTOR_MINER_VERSION = "finlab-ai-factor-miner-v1"
 
 
 class FinLabDataLike(Protocol):
-    def search(self, query: str) -> Any: ...
+    def search(self, query: str, market: str | None = None) -> Any: ...
 
 
 LANE_SEARCH_TERMS: dict[str, tuple[str, ...]] = {
@@ -135,7 +135,25 @@ def _rows_from_search_result(result: Any) -> list[dict[str, Any]]:
             except Exception:
                 return []
     if isinstance(result, list):
-        return [row for row in result if isinstance(row, dict)]
+        rows: list[dict[str, Any]] = []
+        for row in result:
+            if isinstance(row, dict):
+                rows.append(row)
+            else:
+                dataset = _clean_text(row)
+                if dataset:
+                    rows.append({"dataset": dataset, "display_name": dataset})
+        return rows
+    if isinstance(result, (tuple, set)):
+        rows = []
+        for row in result:
+            if isinstance(row, dict):
+                rows.append(row)
+            else:
+                dataset = _clean_text(row)
+                if dataset:
+                    rows.append({"dataset": dataset, "display_name": dataset})
+        return rows
     if isinstance(result, dict):
         if all(isinstance(value, dict) for value in result.values()):
             rows: list[dict[str, Any]] = []
@@ -146,6 +164,13 @@ def _rows_from_search_result(result: Any) -> list[dict[str, Any]]:
             return rows
         return [result]
     return []
+
+
+def _search_finlab_data(data_client: FinLabDataLike, query: str) -> Any:
+    try:
+        return data_client.search(query, market="tw")
+    except TypeError:
+        return data_client.search(query)
 
 
 def _dataset_key(row: dict[str, Any]) -> str:
@@ -244,7 +269,7 @@ def discover_finlab_raw_factor_candidates(
             if len(seen) >= max_rows:
                 break
             try:
-                rows = _rows_from_search_result(data_client.search(str(query)))
+                rows = _rows_from_search_result(_search_finlab_data(data_client, str(query)))
             except Exception as exc:  # pragma: no cover - external SDK surface
                 errors.append(f"{lane}:{query}:{str(exc)[:160]}")
                 continue

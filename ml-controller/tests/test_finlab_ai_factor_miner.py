@@ -9,26 +9,31 @@ from services.finlab_ai_factor_miner import discover_finlab_raw_factor_candidate
 
 
 class FakeFinLabData:
-    def search(self, query: str):
+    def __init__(self):
+        self.markets: list[str | None] = []
+
+    def search(self, query: str, market: str | None = None):
+        self.markets.append(market)
         rows = {
             "RSI": [
-                {"dataset": "technical:rsi14", "display_name": "RSI 14"},
+                "technical:rsi14",
                 {"dataset": "technical:volume_expansion", "display_name": "Volume expansion"},
             ],
             "外資": [
-                {"dataset": "institutional:foreign_net_buy", "display_name": "foreign net buy"},
+                "institutional:foreign_net_buy",
             ],
             "ROE": [
                 {"dataset": "fundamental:roe", "display_name": "ROE"},
-                {"dataset": "fundamental:eps", "display_name": "EPS"},
+                "fundamental:eps",
             ],
         }
         return rows.get(query, [])
 
 
 def test_finlab_ai_factor_miner_searches_raw_factor_lanes():
+    fake_data = FakeFinLabData()
     payload = discover_finlab_raw_factor_candidates(
-        finlab_data=FakeFinLabData(),
+        finlab_data=fake_data,
         lane_search_terms={
             "technical": ["RSI"],
             "chip": ["外資"],
@@ -39,6 +44,7 @@ def test_finlab_ai_factor_miner_searches_raw_factor_lanes():
     )
 
     assert payload["version"] == "finlab-ai-factor-miner-v1"
+    assert set(fake_data.markets) == {"tw"}
     assert payload["closure_ready"] is True
     assert payload["registry_target"] == "strategy_spec_registry"
     assert payload["production_effect"] is False

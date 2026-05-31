@@ -39,7 +39,7 @@ def test_build_artifact_records_from_monthly_followup_strong_pass():
         "training_manifest_path": "universal/manifests/monthly-202605.json",
         "status": "completed",
         "ic_summary": {"XGBoost": 0.061},
-        "challenger_registrations": {
+        "candidate_registrations": {
             "XGBoost": {
                 "status": "registered",
                 "version": "v20260508",

@@ -68,7 +68,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       const decision = await shouldRunScheduledTask({ task, kv: c.env.KV })
       if (!decision.shouldRun) {
         const summary = `skipped by scheduler policy: ${decision.reason}`
-        await logSchedulerResult(c.env.KV, task, { status: 'skipped', summary, duration_ms: 0, run_date: requestedRunDate })
+        await logSchedulerResult(c.env.KV, task, { status: 'skipped', summary, duration_ms: 0, run_date: requestedRunDate }, c.env as any)
         return c.json({
           success: true,
           skipped: true,
@@ -127,7 +127,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         run_id: runId,
         run_date: requestedRunDate,
         strict: true,
-      })
+      }, c.env as any)
       await putRunLog(c.env.KV, task, runId, {
         status: 'running',
         summary: 'started (background)',
@@ -144,7 +144,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
             duration_ms: Date.now() - t0,
             run_id: runId,
             run_date: requestedRunDate,
-          })
+          }, c.env as any)
           await putRunLog(c.env.KV, task, runId, {
             status: classifySchedulerSummary(summary),
             summary,
@@ -192,7 +192,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         summary,
         duration_ms: Date.now() - t0,
         run_date: requestedRunDate,
-      })
+      }, c.env as any)
       return c.json({ success: true, message: `${task} 執行成功`, triggered_at: new Date().toISOString(), result })
     } catch (e: any) {
       await logSchedulerResult(

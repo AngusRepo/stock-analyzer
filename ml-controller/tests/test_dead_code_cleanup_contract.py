@@ -131,11 +131,83 @@ def test_retired_ft_transformer_has_no_dead_training_or_validation_helpers() -> 
         assert token not in retrain_trigger_source
 
 
+def test_retired_ft_transformer_is_absent_from_production_facing_ui_and_tracks() -> None:
+    production_facing_paths = [
+        ROOT / "frontend" / "src" / "components" / "StockAIReport.tsx",
+        ROOT / "frontend" / "src" / "pages" / "StockReportPage.tsx",
+        ROOT / "frontend" / "src" / "pages" / "ModelPoolPage.tsx",
+        ROOT / "frontend" / "src" / "lib" / "modelUpgradeTrack.ts",
+        ROOT / "worker" / "src" / "lib" / "modelUpgradeResearchTrack.ts",
+        ROOT / "ml-service" / "app" / "chronos_universal.py",
+        ROOT / "ml-service" / "app" / "training_policy.py",
+        ROOT / "ml-service" / "app" / "prediction_runtime.py",
+        ROOT / "ml-service" / "modal_app.py",
+    ]
+    for path in production_facing_paths:
+        source = path.read_text(encoding="utf-8")
+        for token in ("FT-Transformer", "FT-T", "tree/FT", "FT /", "LinUCB/FT"):
+            assert token not in source
+
+
+def test_legacy_topk_runtime_promotion_is_removed() -> None:
+    pipeline_source = (ROOT / "ml-controller" / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
+    recommendation_source = (
+        ROOT / "ml-controller" / "services" / "recommendation_service.py"
+    ).read_text(encoding="utf-8")
+    backtest_source = (ROOT / "ml-controller" / "services" / "backtest_engine.py").read_text(encoding="utf-8")
+    optuna_screener_source = (ROOT / "ml-controller" / "optuna_scripts" / "optuna_screener.py").read_text(encoding="utf-8")
+    trading_config_source = (ROOT / "worker" / "src" / "lib" / "tradingConfig.ts").read_text(encoding="utf-8")
+
+    for token in ("topKOverrideEnabled", "allowLegacyTopKOverride", "topk_forced", "ensemble_v2_topk_policy"):
+        assert token not in pipeline_source
+        assert token not in trading_config_source
+    assert "hybrid_ranking_promotion" not in pipeline_source
+    assert "def hybrid_ranking_promotion" not in recommendation_source
+    assert '"signal_source"] = "ranking_promotion"' not in recommendation_source
+    assert "legacy_topk_allocation_retired" in recommendation_source
+    assert 'rk.get("topK"' not in backtest_source
+    assert '"topK"' not in optuna_screener_source
+    assert "buy_signal_count" in backtest_source
+
+
 def test_unreferenced_shadow_wrappers_are_removed_but_formal_benchmark_adapters_remain() -> None:
+    requirements = (ROOT / "ml-service" / "requirements.txt").read_text(encoding="utf-8")
+    universal_training = (ROOT / "ml-service" / "app" / "universal_training.py").read_text(encoding="utf-8")
+    modal_app = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    modal_model_pool_router = (ROOT / "ml-controller" / "routers" / "model_pool.py").read_text(encoding="utf-8")
+    service_model_pool = (ROOT / "ml-service" / "app" / "model_pool.py").read_text(encoding="utf-8")
+
     assert not (ROOT / "ml-service" / "app" / "gnn_shadow.py").exists()
     assert not (ROOT / "ml-service" / "app" / "rl_shadow.py").exists()
     assert not (ROOT / "ml-service" / "app" / "rl_env.py").exists()
     assert (ROOT / "ml-service" / "app" / "gnn_model.py").exists()
+    assert "gymnasium" not in requirements
+    assert "stable-baselines3" not in requirements
+    assert "from .model_pool import register_challenger" not in universal_training
+    assert "from app.model_pool import register_challenger" not in modal_app
+    assert '@router.post("/register_challenger")' not in modal_model_pool_router
+    assert '@router.post("/discard_challenger")' not in modal_model_pool_router
+    assert "def register_challenger(" not in service_model_pool
+    assert "def discard_challenger(" not in service_model_pool
+
+
+def test_legacy_challenger_prediction_namespace_is_quarantined() -> None:
+    allowed = ROOT / "ml-controller" / "services" / "legacy_prediction_namespace.py"
+    scanned_roots = [
+        ROOT / "ml-controller" / "services",
+        ROOT / "ml-controller" / "routers",
+        ROOT / "ml-service" / "app",
+        ROOT / "worker" / "src",
+    ]
+    offenders: list[str] = []
+    for base in scanned_roots:
+        for path in base.rglob("*"):
+            if path == allowed or path.suffix not in {".py", ".ts", ".tsx"}:
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "::challenger" in source:
+                offenders.append(str(path.relative_to(ROOT)))
+    assert offenders == []
 
 
 def test_generated_shadow_research_json_snapshots_are_not_tracked_as_runtime_state() -> None:

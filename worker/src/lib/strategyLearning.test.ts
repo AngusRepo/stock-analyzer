@@ -14,7 +14,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS[0]
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const row = strategySpecToRegistryRow(spec, '2026-05-19T00:00:00.000Z')
   const restored = registryRowToStrategySpec(row)
   assert(restored.id === spec.id, 'registry conversion should preserve strategy id')
@@ -134,7 +134,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS[0]
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
     version: 'strategy-learning-v1',
     date: '2026-05-19',
@@ -171,7 +171,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS[0]
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
     version: 'strategy-learning-v1',
     date: '2026-05-19',

@@ -67,6 +67,26 @@ def _trade_returns_and_regimes(metrics: Any) -> tuple[list[float], list[str] | N
     return returns, regimes if len(regimes) == len(returns) and returns else None
 
 
+def _per_regime_from_trades(metrics: Any) -> dict[str, dict[str, Any]]:
+    returns, regimes = _trade_returns_and_regimes(metrics)
+    if not returns or not regimes:
+        return {}
+
+    buckets: dict[str, list[float]] = {}
+    for value, regime in zip(returns, regimes):
+        buckets.setdefault(str(regime or "unknown"), []).append(_as_float(value))
+
+    return {
+        regime: {
+            "trades": len(values),
+            "return": round(sum(values), 8),
+            "avg_return": round(sum(values) / len(values), 8),
+        }
+        for regime, values in buckets.items()
+        if values
+    }
+
+
 def _backtest_row(metrics: Any, *, parity_audit: dict[str, Any] | None) -> dict[str, Any]:
     summary = {
         "total_trades": _metric_attr(metrics, "total_trades", 0),
@@ -92,6 +112,7 @@ def _backtest_row(metrics: Any, *, parity_audit: dict[str, Any] | None) -> dict[
         "absolute_confidence": _metric_attr(metrics, "absolute_confidence", "moderate"),
         "sanity_flags": _metric_attr(metrics, "sanity_flags", []) or [],
         "parity_audit": parity_audit or {},
+        "per_regime": _metric_attr(metrics, "per_regime", None) or _per_regime_from_trades(metrics),
     }
     return {
         "run_date": _metric_attr(metrics, "end_date", None),

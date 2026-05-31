@@ -297,9 +297,8 @@ async def _train_one_window(
     models: list[str],
     batch_count: int,
 ) -> WalkForwardWindowResult:
-    """Execute full pipeline for one window: HMM → tree train → FT-T train.
+    """Execute full pipeline for one window: HMM then active training lanes.
 
-    Tree and FT-T are spawned in parallel (two separate Modal containers).
     HMM is trained first because it's fast and later windows may not need
     re-training if the market_env hasn't changed much.
     """
@@ -326,7 +325,7 @@ async def _train_one_window(
         result.error = f"hmm: {e}"
         return result
 
-    # Step 2 & 3: Tree + FT-T in parallel
+    # Step 2: active train lanes
     train_payload = {
         "window_id": window.window_id,
         "train_start": window.train_start,
@@ -341,7 +340,7 @@ async def _train_one_window(
     if any(m in models for m in MODELS_ALL):
         tasks.append(("tree", modal_client._modal_train_wf_tree_window(dict(train_payload))))
 
-    # Run both concurrently
+    # Run active lanes concurrently
     if tasks:
         raw_results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
         for (kind, _), r in zip(tasks, raw_results):

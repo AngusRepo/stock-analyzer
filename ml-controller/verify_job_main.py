@@ -12,12 +12,24 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("verify_job")
+
+
+def tw_today() -> str:
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+
+
+def build_verify_callback_metadata(run_date: str, today: str | None = None) -> dict[str, object]:
+    return {
+        "allow_historical_learning_catchup": bool(run_date and run_date != (today or tw_today())),
+        "learning_catchup_scope": "meta_learning_shadow_and_strategy_learning_only",
+    }
 
 
 def format_verify_summary(result: dict) -> str:
@@ -110,6 +122,7 @@ async def _run() -> int:
         "summary": summary,
         "duration_ms": elapsed_ms,
         "run_id": run_id,
+        "metadata": build_verify_callback_metadata(run_date),
     }
     if run_date:
         payload["run_date"] = run_date

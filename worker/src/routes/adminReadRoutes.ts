@@ -582,6 +582,6 @@ adminReadRoutes.get('/api/admin/cron-logs', async (c) => {
 
   const date = c.req.query('date') ?? twToday()
   const { getCronLogs } = await import('../lib/schedulerRunLogger')
-  const logs = await getCronLogs(c.env.KV, date)
+  const logs = await getCronLogs(c.env.KV, date, c.env)
   return c.json({ date, logs })
 })

@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+import sys
+import types
+
+if "httpx" not in sys.modules:
+    httpx_stub = types.ModuleType("httpx")
+    httpx_stub.RequestError = RuntimeError
+    httpx_stub.TimeoutException = RuntimeError
+    httpx_stub.AsyncClient = object
+    sys.modules["httpx"] = httpx_stub
+
 from services import trading_config_loader as loader
 
 
@@ -13,11 +23,13 @@ def test_partial_kv_config_is_merged_with_required_defaults(monkeypatch):
 
     result = loader.load_merged_trading_config_with_contract()
 
-    assert result.config["ranking"]["topK"] == 5
+    assert "topK" not in result.config["ranking"]
     assert result.config["ranking"]["enabled"] is True
     assert result.config["ensemble_v2"]["buyThreshold"] == 0.68
     assert result.config["signal"]["buySignalScore"] == 0.52
     assert result.config["sltp"]["slMultBase"] == 2.0
+    assert result.config["screener"]["coarseMlQueueSize"] == 80
+    assert result.config["screener"]["mlShortlistSize"] == 35
     assert result.contract.degraded is True
     assert set(result.contract.missing_sections) >= {"alphaFramework", "signal", "sltp", "L2_formula"}
     assert result.contract.source == "direct_kv_merged_required_defaults"
@@ -54,7 +66,7 @@ def test_worker_merged_config_is_preferred_and_raw_missing_sections_are_default_
 
 def test_full_worker_config_is_not_degraded(monkeypatch):
     full = {
-        "ranking": {"topK": 3, "enabled": True},
+        "ranking": {"enabled": True},
         "ensemble_v2": {"buyThreshold": 0.70},
         "alphaFramework": {"quality": {"minSamples": 30}},
         "signal": {"buySignalScore": 0.52},

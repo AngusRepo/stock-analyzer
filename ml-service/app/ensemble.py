@@ -580,7 +580,7 @@ def merge_with_time_series(
         retired:    0  (excluded)
 
     Args:
-      feature_rank_scores: {name: rank 0~1} from XGBoost/CatBoost/.../FT-T
+      feature_rank_scores: {name: rank 0~1} from the active alpha model pool
       time_series_signals: {name: {forecast_pct, ...}} for DLinear/PatchTST
         (key absent or value None → that model contributes nothing)
       ic_weights: {name: IC} (Grinold-Kahn). None → uniform 1.0 (no IC available).

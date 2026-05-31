@@ -41,7 +41,11 @@ from services.alpha_quality import evaluate_alpha_quality
 from services.alpha_quality_policy import resolve_alpha_quality_inputs
 from services.config_pool_policy import DEFAULT_CONFIG_POOL_POLICY, ConfigPoolPolicy
 from services.market_structure_validation import load_market_structure_rows, validate_market_structure
-from services.promotion_service import evaluate_alpha_policy_evidence_gate, evaluate_latest_alpha_policy_gate
+from services.promotion_service import (
+    classify_parameter_candidate_validation_status,
+    evaluate_alpha_policy_evidence_gate,
+    evaluate_latest_alpha_policy_gate,
+)
 from services.worker_config_client import WorkerConfigClientError, worker_fetch
 
 logger = logging.getLogger(__name__)
@@ -310,7 +314,14 @@ def _load_parameter_candidate_rows(candidate_ids: list[str], limit: int) -> list
             SELECT candidate_id, source, config_hash, sandbox_id, cadence, run_id, status,
                    metadata_json, latest_evidence_json, promotion_packet_id, created_at, updated_at
             FROM parameter_candidate_registry
-            WHERE status IN ('SHADOW_COLLECTING', 'VALIDATION_BLOCKED', 'APPROVAL_REQUIRED')
+            WHERE status IN (
+                'SHADOW_COLLECTING',
+                'VALIDATION_BLOCKED',
+                'NOT_PROMOTION_READY',
+                'EVIDENCE_INSUFFICIENT',
+                'INFRA_BLOCKED',
+                'APPROVAL_REQUIRED'
+            )
               AND source != 'ga_optimizer'
             ORDER BY updated_at DESC
             LIMIT ?
@@ -343,6 +354,7 @@ async def _persist_parameter_candidate_evidence(
     *,
     source: str = "unknown",
     validation_run_id: str | None = None,
+    validation_status: str | None = None,
 ) -> str | None:
     import json as _json
 
@@ -352,11 +364,12 @@ async def _persist_parameter_candidate_evidence(
         if decision == "PASS"
         else None
     )
-    status = "PROMOTION_READY" if decision == "PASS" else "VALIDATION_BLOCKED"
+    status = validation_status or ("PROMOTION_READY" if decision == "PASS" else "NOT_PROMOTION_READY")
     persisted = {
         **evidence,
         "candidate_id": candidate_id,
         "decision": decision,
+        "validation_status": status,
         "promotion_packet_id": promotion_packet_id,
         "validation_run_id": validation_run_id,
     }
@@ -600,11 +613,12 @@ async def parameter_candidates_validation_chain(
                 "FAIL",
                 source=source,
                 validation_run_id=validation_run_id,
+                validation_status="INFRA_BLOCKED",
             )
             results.append({
                 "candidate_id": candidate_id,
                 "source": source,
-                "status": "VALIDATION_BLOCKED",
+                "status": "INFRA_BLOCKED",
                 "reason": "sandbox_missing_or_non_config_shadow_state",
                 "decision": "FAIL",
                 "proxy_pbo_blocked": True,
@@ -633,11 +647,12 @@ async def parameter_candidates_validation_chain(
                 "FAIL",
                 source=source,
                 validation_run_id=validation_run_id,
+                validation_status="INFRA_BLOCKED",
             )
             results.append({
                 "candidate_id": candidate_id,
                 "source": source,
-                "status": "VALIDATION_BLOCKED",
+                "status": "INFRA_BLOCKED",
                 "reason": "sandbox_body_unavailable",
                 "detail": exc.detail,
                 "decision": "FAIL",
@@ -687,27 +702,39 @@ async def parameter_candidates_validation_chain(
             evidence["gate"] = gate
             decision = "FAIL"
 
+        validation_status = classify_parameter_candidate_validation_status(
+            gate,
+            evidence,
+            proxy_pbo_blocked=proxy_pbo_blocked,
+        )
         promotion_packet_id = await _persist_parameter_candidate_evidence(
             candidate_id,
             evidence,
             decision,
             source=source,
             validation_run_id=validation_run_id,
+            validation_status=str(validation_status.get("status") or "NOT_PROMOTION_READY"),
         ) if req.persist else None
         results.append({
             "candidate_id": candidate_id,
             "source": source,
-            "status": "PROMOTION_READY" if decision == "PASS" else "VALIDATION_BLOCKED",
+            "status": validation_status.get("status"),
+            "reason": validation_status.get("reason"),
             "decision": decision,
             "promotion_packet_id": promotion_packet_id,
             "failed_gates": gate.get("failed_gates") or [],
             "validation_packet_decision": validation_packet.get("decision"),
             "pbo_method": pbo_method,
             "proxy_pbo_blocked": proxy_pbo_blocked,
+            "promotion_ready": validation_status.get("promotion_ready"),
+            "sample": validation_status.get("sample"),
         })
 
     ready = sum(1 for item in results if item.get("status") == "PROMOTION_READY")
-    blocked = sum(1 for item in results if item.get("status") == "VALIDATION_BLOCKED")
+    evidence_insufficient = sum(1 for item in results if item.get("status") == "EVIDENCE_INSUFFICIENT")
+    not_promotion_ready = sum(1 for item in results if item.get("status") == "NOT_PROMOTION_READY")
+    infra_blocked = sum(1 for item in results if item.get("status") == "INFRA_BLOCKED")
+    blocked = infra_blocked
     return {
         "status": "completed",
         "mode": "candidate-specific",
@@ -727,6 +754,15 @@ async def parameter_candidates_validation_chain(
         "total": len(results),
         "ready": ready,
         "blocked": blocked,
+        "evidence_insufficient": evidence_insufficient,
+        "not_promotion_ready": not_promotion_ready,
+        "infra_blocked": infra_blocked,
+        "status_breakdown": {
+            "PROMOTION_READY": ready,
+            "EVIDENCE_INSUFFICIENT": evidence_insufficient,
+            "NOT_PROMOTION_READY": not_promotion_ready,
+            "INFRA_BLOCKED": infra_blocked,
+        },
         "results": results,
     }
 

@@ -12,7 +12,7 @@ from services.payload_builder import (  # noqa: E402
 )
 from services.recommendation_service import (  # noqa: E402
     filter_and_score_recommendations,
-    hybrid_ranking_promotion,
+    apply_sparse_tangent_allocation,
     update_recommendations_in_d1,
     write_predictions_to_d1,
 )
@@ -137,10 +137,10 @@ def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted():
     assert final[0]["eligible_for_pending_buy"] is False
     assert "research_only:emerging_not_for_auto_trade" in final[0]["watch_points"]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         final,
-        {"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2, "screenerDenominator": 60, "promoteMinConf": 0.6},
-        {"topKConfidenceOverride": 0.72},
+        {"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2, "screenerDenominator": 60, "promoteMinConf": 0.6},
+        alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "buySignalCount": 1}},
     )
     assert promoted[0]["has_buy_signal"] == 0
 

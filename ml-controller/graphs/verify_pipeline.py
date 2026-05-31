@@ -129,6 +129,25 @@ async def node_arf_feedback(state: VerifyStateV2) -> dict:
 _verify_graph_singleton: Any = None
 
 
+class _LinearVerifyGraph:
+    """Fallback for tests or slim runtimes where LangGraph is stubbed."""
+
+    async def ainvoke(self, initial_state: VerifyStateV2) -> VerifyStateV2:
+        state = dict(initial_state)
+        for node in (
+            node_load_pending,
+            node_simulate_predictions,
+            node_write_verified,
+            node_update_model_accuracy,
+            node_update_trade_performance,
+            node_arf_feedback,
+        ):
+            update = await node(state)
+            if isinstance(update, dict):
+                state.update(update)
+        return state
+
+
 def build_verify_graph():
     g = StateGraph(VerifyStateV2)
     g.add_node("load_pending", node_load_pending)
@@ -148,7 +167,7 @@ def build_verify_graph():
 
     compiled = g.compile()
     logger.info("[Verify V2] Compiled")
-    return compiled
+    return compiled if hasattr(compiled, "ainvoke") else _LinearVerifyGraph()
 
 
 def get_verify_graph():

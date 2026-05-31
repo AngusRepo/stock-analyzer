@@ -6,9 +6,9 @@ ML Model Pool management endpoints (Plan A).
 
 Future ML_POOL Stage 1+:
   GET  /model_pool/status           -> read model_pool.json
-  POST /model_pool/promote/{name}   -> manual challenger -> active
   POST /model_pool/retire/{name}    -> manual active -> retired
-  POST /model_pool/promote_check    -> apply lifecycle transitions in model_pool.json
+  POST /model_pool/promote_check    -> dry-run legacy side-slot audit; apply=true cannot promote challengers
+  POST /model_pool/artifact_registry/confirm_promotion -> registry-owned production promotion
 """
 from __future__ import annotations
 import copy
@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from services import modal_client
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
+from services.legacy_prediction_namespace import base_model_name, is_legacy_model_candidate_name
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 from services.model_artifact_registry import (
     apply_promoted_artifact_to_model_pool,
@@ -615,130 +616,6 @@ async def train_patchtst(req: TrainPatchTSTRequest):
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: Challenger registration / discard (manual triggers; auto-register
-# on retrain success will be wired in Stage 4 promote-gate work)
-# ---------------------------------------------------------------------------
-
-
-class RegisterChallengerRequest(BaseModel):
-    model_name: str            # one of MANAGED_MODELS keys
-    version: str               # e.g. "v2" -> must differ from active
-    confirm: bool = False
-
-
-@router.post("/register_challenger")
-async def register_challenger(req: RegisterChallengerRequest):
-    """Mark a model version as challenger (shadow mode).
-
-    Caller must have already trained + saved the artifact at the implied
-    GCS path. This endpoint only
-    writes the bookkeeping entry to model_pool.json so predict_stock_v2
-    knows to also load + inference with the challenger.
-
-    Inference behavior after registration:
-      - Active version still drives ensemble vote (status_filter=1.0)
-      - Challenger predicts in parallel; result written to D1 as
-        model_name='{name}::challenger'
-      - Stage 4 promote gate compares challenger vs active weekly_ic
-    """
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="register_challenger requires confirm=true")
-    import json as _json
-    from datetime import datetime, timezone
-    from google.cloud import storage
-
-    bucket = storage.Client().bucket(_bucket_name())
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if not pool_blob.exists():
-        raise HTTPException(status_code=400, detail="model_pool.json not initialized; run /init first")
-    pool = _json.loads(pool_blob.download_as_text())
-    entry = pool.get("models", {}).get(req.model_name)
-    if not entry:
-        raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
-    if entry.get("version") == req.version:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{req.model_name} active is already {req.version}; challenger must differ",
-        )
-
-    target_path = _model_artifact_path(req.model_name, req.version)
-
-    # Verify artifact exists at expected path
-    if not bucket.blob(target_path).exists():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Challenger artifact missing at {target_path}; train it first",
-        )
-
-    today = datetime.now(timezone.utc).date().isoformat()
-    entry["challenger"] = {
-        "version": req.version,
-        "gcs_path": target_path,
-        "shadow_since": today,
-        "weekly_ic": [],
-        "ic_4w_avg": None,
-        "consecutive_negative_weeks": 0,
-    }
-    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-    pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
-    _invalidate_model_pool_read_cache("register_challenger")
-
-    # Stage 5 alert (graceful no-op if DISCORD_WEBHOOK_URL absent)
-    try:
-        discord_alert.alert_lifecycle(
-            event="register",
-            model_name=req.model_name,
-            from_status=None, to_status=f"challenger:{req.version}",
-            reason=f"New shadow version registered. Active stays {entry.get('version')}.",
-            metrics={"gcs_path": target_path, "shadow_since": today},
-        )
-    except Exception as _e:
-        logger.debug(f"[ModelPool] register alert skipped: {_e}")
-    return {"status": "registered", "model": req.model_name, "challenger": entry["challenger"]}
-
-
-class DiscardChallengerRequest(BaseModel):
-    model_name: str
-    confirm: bool = False
-
-
-@router.post("/discard_challenger")
-async def discard_challenger(req: DiscardChallengerRequest):
-    """Remove challenger entry (used for rollback or Stage 4 retire-not-promote)."""
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="discard_challenger requires confirm=true")
-    import json as _json
-    from datetime import datetime, timezone
-    from google.cloud import storage
-    bucket = storage.Client().bucket(_bucket_name())
-    pool_blob = bucket.blob("universal/model_pool.json")
-    if not pool_blob.exists():
-        raise HTTPException(status_code=400, detail="model_pool.json not initialized")
-    pool = _json.loads(pool_blob.download_as_text())
-    entry = pool.get("models", {}).get(req.model_name)
-    if not entry:
-        raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
-    removed = entry.pop("challenger", None)
-    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-    pool_blob.upload_from_string(_json.dumps(pool, indent=2, ensure_ascii=False), content_type="application/json")
-    _invalidate_model_pool_read_cache("discard_challenger")
-    try:
-        if removed:
-            discord_alert.alert_lifecycle(
-                event="discard",
-                model_name=req.model_name,
-                from_status=f"challenger:{removed.get('version')}",
-                to_status=None,
-                reason="Manual discard or Stage 4 retire-not-promote.",
-                metrics={"weekly_ic_count": len(removed.get("weekly_ic") or []),
-                          "ic_4w_avg": removed.get("ic_4w_avg")},
-            )
-    except Exception as _e:
-        logger.debug(f"[ModelPool] discard alert skipped: {_e}")
-    return {"status": "discarded", "model": req.model_name, "removed": removed}
-
-
-# ---------------------------------------------------------------------------
 # Stage 2: Weekly IC tracker (cron-driven)
 # ---------------------------------------------------------------------------
 
@@ -896,8 +773,8 @@ def _emit_decay_alerts(pool_changes: dict) -> None:
         return
     pool = _json.loads(pool_blob.download_as_text())
     for tracked_name, change in pool_changes.items():
-        is_challenger = tracked_name.endswith("::challenger")
-        base_name = tracked_name.replace("::challenger", "")
+        is_challenger = is_legacy_model_candidate_name(tracked_name)
+        base_name = base_model_name(tracked_name)
         entry = pool.get("models", {}).get(base_name)
         if not entry:
             continue
@@ -1114,7 +991,8 @@ async def promote_check(req: PromoteCheckRequest):
         weekly_ic = entry.get("weekly_ic") or []
         challenger = entry.get("challenger") or {}
 
-        # Promote check (challenger -> active)
+        # Legacy side-slot audit only. apply=true promotion is blocked below;
+        # production promotion is owned by model_artifact_registry confirmation.
         if challenger:
             ch_4w = challenger.get("ic_4w_avg")
             shadow_since_str = challenger.get("shadow_since")
@@ -1248,23 +1126,13 @@ async def promote_check(req: PromoteCheckRequest):
     promotion_gate = None
     has_promote_action = any(a.get("transition") == "promote" for a in actions)
     if req.apply and has_promote_action:
-        disabled_governance = []
-        if not req.require_promotion_gate:
-            disabled_governance.append("promotion_gate")
-        if not req.require_shadow_ab:
-            disabled_governance.append("shadow_ab")
-        if not req.require_paper_order_ab:
-            disabled_governance.append("paper_order_ab")
-        if not req.require_model_cpcv:
-            disabled_governance.append("model_cpcv")
-        if disabled_governance:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "apply=true with promote actions cannot disable production promotion "
-                    f"governance: {', '.join(disabled_governance)}"
-                ),
-            )
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "legacy model_pool challenger promotion is disabled; "
+                "use model_artifact_registry selected candidate confirmation"
+            ),
+        )
     shadow_ab_by_model = None
     paper_order_ab_by_model = None
     model_cpcv_by_model = {}
@@ -1382,7 +1250,8 @@ async def promote_check(req: PromoteCheckRequest):
             name = action["model"]
             entry = pool["models"][name]
             if t == "promote":
-                # Move challenger -> active; keep history of v_old as "retired" sub-entry
+                # Unreachable unless the HTTP 410 guard above is deliberately changed.
+                # Kept only so dry-run action generation remains easy to inspect.
                 ch = entry["challenger"]
                 model_cpcv = ch.get("model_cpcv") if isinstance(ch.get("model_cpcv"), dict) else None
                 _retired_history = entry.setdefault("retired_versions", [])

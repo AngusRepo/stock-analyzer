@@ -121,8 +121,6 @@ def test_default_v2_rank_model_order_covers_alpha_prediction_models_only():
         "CatBoost",
         "ExtraTrees",
         "LightGBM",
-        "FT-Transformer",
-        "Chronos",
         "DLinear",
         "PatchTST",
     ]
@@ -138,10 +136,10 @@ def test_build_oos_rank_rows_aligns_model_predictions():
         target_len=2,
     )
 
-    assert model_order == ["XGBoost", "CatBoost", "Chronos"]
+    assert model_order == ["XGBoost", "CatBoost"]
     assert rows == [
-        {"XGBoost": 0.1, "CatBoost": 0.2, "Chronos": 0.3},
-        {"XGBoost": 0.9, "CatBoost": 0.8, "Chronos": 0.7},
+        {"XGBoost": 0.1, "CatBoost": 0.2},
+        {"XGBoost": 0.9, "CatBoost": 0.8},
     ]
 
 

@@ -151,8 +151,6 @@ def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> 
         ev2_reason = str(ev2.get("reason") or "")
         if weight_total <= 0 or ev2_reason == "no_positive_lifecycle_weight":
             return 0.0
-        if source in {"ensemble_v2_topk_policy", "ranking_promotion"} and not contributors:
-            return 0.0
     sig = (prediction.get("signal") or "").upper()
     score = 0.0
     if "STRONG_BUY" in sig:
@@ -263,12 +261,6 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
         else f"{float(forecast_raw) * 100:+.1f}%"
     )
     ev2 = (ml or {}).get("ensemble_v2") or {}
-
-    if source in {"ranking_promotion", "ensemble_v2_topk_policy"} or (ml or {}).get("topk_forced"):
-        raw = eff_ml.get("signal_raw") or ev2.get("signal_raw") or "HOLD"
-        avg_rank = ev2.get("avg_rank")
-        avg_rank_text = f"{float(avg_rank):.3f}" if isinstance(avg_rank, Real) else "n/a"
-        return f"排名補位候選（原始訊號 {raw}，V2 rank={avg_rank_text}，校準預期 {forecast_text}），需等 T2/debate 與盤前價格確認"
 
     contributors = ev2.get("contributing_models") or []
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
@@ -1579,7 +1571,7 @@ def apply_core_ml_gate(
     *,
     fallback_size: int | None = None,
 ) -> list[dict]:
-    """Keep only rows selected by the Layer 3 core-family ML gate."""
+    """Keep only rows selected by the Layer 2 coarse ML gate."""
     selected_ranks: dict[str, int] = {}
     for symbol, pred in (predictions or {}).items():
         gate = pred.get("core_ml_gate") if isinstance(pred, dict) else None
@@ -1610,6 +1602,182 @@ def apply_core_ml_gate(
     return sorted(gated, key=lambda row: selected_ranks.get(str(row.get("symbol") or ""), 999_999))
 
 
+_CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
+    "tree": ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM"),
+    "tabular_neural": ("TabM",),
+    "graph": ("GNN",),
+    "learned_sequence": ("DLinear", "PatchTST", "iTransformer"),
+    "foundation_sequence": ("TimesFM",),
+}
+
+_SEQUENCE_MODEL_SOURCE_KEYS: dict[str, str] = {
+    "DLinear": "dlinear",
+    "PatchTST": "patchtst",
+    "iTransformer": "itransformer",
+    "TimesFM": "timesfm",
+}
+
+
+def _finite_rank_score(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return max(0.0, min(1.0, numeric))
+
+
+def _forecast_pct_to_rank_score(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    try:
+        return 1.0 / (1.0 + math.exp(-numeric * 12.0))
+    except OverflowError:
+        return 1.0 if numeric > 0 else 0.0
+
+
+def _model_rank_score(prediction: dict, model_name: str) -> float | None:
+    if model_name in _SEQUENCE_MODEL_SOURCE_KEYS:
+        signal = prediction.get(_SEQUENCE_MODEL_SOURCE_KEYS[model_name])
+        if not isinstance(signal, dict):
+            return None
+        return _forecast_pct_to_rank_score(signal.get("forecast_pct"))
+    rank_scores = prediction.get("rank_scores")
+    if not isinstance(rank_scores, dict):
+        return None
+    return _finite_rank_score(rank_scores.get(model_name))
+
+
+def build_core_family_vote(prediction: dict | None) -> dict[str, Any]:
+    """Layer 3 formal family vote from production model outputs only."""
+    pred = prediction if isinstance(prediction, dict) else {}
+    families: dict[str, dict[str, Any]] = {}
+    active_families: list[str] = []
+    family_scores: list[float] = []
+    inactive_models: list[str] = []
+
+    for family_name, model_names in _CORE_FAMILY_MODEL_GROUPS.items():
+        model_scores: dict[str, float] = {}
+        for model_name in model_names:
+            score = _model_rank_score(pred, model_name)
+            if score is not None:
+                model_scores[model_name] = round(score, 6)
+            else:
+                inactive_models.append(model_name)
+        if model_scores:
+            family_score = sum(model_scores.values()) / len(model_scores)
+            active_families.append(family_name)
+            family_scores.append(family_score)
+            families[family_name] = {
+                "status": "active",
+                "score": round(family_score, 6),
+                "models": model_scores,
+                "model_count": len(model_scores),
+            }
+        else:
+            families[family_name] = {
+                "status": "inactive_missing_artifact",
+                "score": None,
+                "models": {},
+                "expected_models": list(model_names),
+            }
+
+    family_score = sum(family_scores) / len(family_scores) if family_scores else 0.0
+    return {
+        "schema_version": "core_family_vote_v1",
+        "rank_source": "formal_core_family_vote",
+        "family_score": round(family_score, 6),
+        "active_family_count": len(active_families),
+        "active_families": active_families,
+        "families": families,
+        "inactive_formal_models": sorted(set(inactive_models)),
+    }
+
+
+def _merge_core_family_vote_evidence(row: dict, vote: dict[str, Any], rank: int, target_size: int) -> None:
+    row["core_family_vote"] = vote
+    row["watch_points"] = [
+        *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
+        f"core_family_rank:{rank}/{target_size}:score={vote.get('family_score')}",
+    ]
+
+    summary = row.get("ml_vote_summary")
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except json.JSONDecodeError:
+            summary = {"text": row.get("ml_vote_summary")}
+    if not isinstance(summary, dict):
+        summary = {}
+    summary["coreFamilyVote"] = {
+        "schema_version": vote.get("schema_version"),
+        "family_score": vote.get("family_score"),
+        "active_family_count": vote.get("active_family_count"),
+        "active_families": vote.get("active_families"),
+        "inactive_formal_models": vote.get("inactive_formal_models"),
+    }
+    row["ml_vote_summary"] = summary
+
+    components = row.get("score_components")
+    if isinstance(components, str):
+        components = _parse_score_components_payload(components) or {"raw": row.get("score_components")}
+    if isinstance(components, dict):
+        components["coreFamilyVote"] = vote
+        row["score_components"] = components
+
+
+def apply_core_family_rank(
+    recommendations: list[dict],
+    predictions: dict[str, dict],
+    *,
+    target_size: int | None = None,
+    min_active_families: int = 2,
+    strict: bool = True,
+) -> list[dict]:
+    """Rank Layer 2 shortlist with formal family votes and persist evidence."""
+    if not recommendations:
+        return []
+    safe_target = target_size or len(recommendations)
+    safe_target = max(1, min(80, int(safe_target)))
+
+    ranked_rows: list[tuple[float, float, dict]] = []
+    insufficient: list[str] = []
+    for row in recommendations:
+        symbol = str(row.get("symbol") or "")
+        pred = predictions.get(symbol) if isinstance(predictions, dict) else None
+        vote = build_core_family_vote(pred)
+        if isinstance(pred, dict):
+            pred["core_family_vote"] = vote
+        if int(vote.get("active_family_count") or 0) < min_active_families:
+            insufficient.append(symbol)
+            continue
+        ranked_rows.append((
+            float(vote.get("family_score") or 0.0),
+            float(row.get("score") or 0.0),
+            {**row, "core_family_vote": vote},
+        ))
+
+    if strict and insufficient and len(insufficient) == len(recommendations):
+        raise ValueError(
+            "core_family_rank_requires_2_active_families: "
+            f"{len(insufficient)}/{len(recommendations)} rows lack production family breadth"
+        )
+    if not ranked_rows:
+        return sorted(recommendations, key=lambda row: float(row.get("score") or 0.0), reverse=True)[:safe_target]
+
+    ranked_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = [row for _, _, row in ranked_rows[:safe_target]]
+    for idx, row in enumerate(selected, start=1):
+        row["rank"] = idx
+        _merge_core_family_vote_evidence(row, row["core_family_vote"], idx, safe_target)
+    return selected
+
+
 def _allocation_method(policy: dict) -> str:
     allocation = policy.get("allocation") if isinstance(policy, dict) else {}
     value = (allocation or {}).get("engine") or (allocation or {}).get("method") or ""
@@ -1636,7 +1804,7 @@ def _apply_sparse_tangent_buy_selection(
     return_history: dict[str, list[float]] | None = None,
 ) -> list[dict]:
     allocation = policy.get("allocation") or {}
-    buy_signal_count = int(allocation.get("buy_signal_count") or ranking_config.get("topK") or 3)
+    buy_signal_count = int(allocation.get("buy_signal_count") or 3)
     buy_signal_count = max(1, min(30, buy_signal_count))
     risk_history = return_history or {}
 
@@ -1644,8 +1812,26 @@ def _apply_sparse_tangent_buy_selection(
         row for row in scored
         if _can_promote_ranking_candidate(row, ranking_config)
     ]
+    controller = str(allocation.get("controller") or "OnlinePortfolioBandit").strip()
     for row in scored:
+        had_buy_signal = str(row.get("signal") or "").upper() == "BUY" or int(row.get("has_buy_signal") or 0) == 1
         row["has_buy_signal"] = 0
+        if had_buy_signal:
+            if "signal_raw" not in row:
+                row["signal_raw"] = row.get("signal")
+            if "signal_source_raw" not in row:
+                row["signal_source_raw"] = row.get("signal_source")
+            row["signal"] = "HOLD"
+            row["signal_source"] = "sparse_tangent_inverse_risk"
+            row["ranking_promoted"] = False
+            row["sparse_tangent_selected"] = False
+            alpha_allocation = row.get("alpha_allocation") if isinstance(row.get("alpha_allocation"), dict) else {}
+            row["alpha_allocation"] = {
+                **alpha_allocation,
+                "selected": False,
+                "engine": "sparse_tangent_inverse_risk",
+                "controller": controller,
+            }
 
     allocation_candidates = [
         {
@@ -1656,7 +1842,6 @@ def _apply_sparse_tangent_buy_selection(
         for row in eligible_rows
     ]
     opb_packet: dict[str, Any] | None = None
-    controller = str(allocation.get("controller") or "OnlinePortfolioBandit").strip()
     if controller == "OnlinePortfolioBandit":
         try:
             from services.online_portfolio_bandit import build_online_portfolio_bandit_l2_packet
@@ -1669,7 +1854,7 @@ def _apply_sparse_tangent_buy_selection(
                     None if allocation.get("allow_controller_candidate_cap") else buy_signal_count
                 ),
             )
-            weights = dict(((opb_packet.get("paper_allocation") or {}).get("weights") or {}))
+            weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
         except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
             logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
             weights = {}
@@ -1691,9 +1876,11 @@ def _apply_sparse_tangent_buy_selection(
         row = selected_by_symbol.get(symbol)
         if not row:
             continue
-        row["signal_raw"] = row.get("signal")
+        if "signal_raw" not in row:
+            row["signal_raw"] = row.get("signal")
         row["signal"] = "BUY"
-        row["signal_source_raw"] = row.get("signal_source")
+        if "signal_source_raw" not in row:
+            row["signal_source_raw"] = row.get("signal_source")
         row["signal_source"] = "sparse_tangent_inverse_risk"
         row["has_buy_signal"] = 1
         row["confidence"] = max(float(row.get("confidence") or 0.0), confidence_floor)
@@ -1713,6 +1900,7 @@ def _apply_sparse_tangent_buy_selection(
             "opb_controller": {
                 "enabled": opb_packet is not None,
                 "stage": opb_packet.get("stage") if opb_packet else None,
+                "allocation_role": opb_packet.get("allocation_role") if opb_packet else None,
                 "selection_policy": opb_packet.get("selection_policy") if opb_packet else None,
                 "selected_arm": opb_packet.get("selected_arm") if opb_packet else None,
             },
@@ -1741,7 +1929,7 @@ def _apply_sparse_tangent_buy_selection(
     return scored
 
 
-def hybrid_ranking_promotion(
+def apply_sparse_tangent_allocation(
     recommendations: list[dict],
     ranking_config: dict,
     ensemble_v2_cfg: dict | None = None,
@@ -1750,27 +1938,17 @@ def hybrid_ranking_promotion(
     alpha_policy: dict | None = None,
     return_history: dict[str, list[float]] | None = None,
 ) -> list[dict]:
-    """
-    Sprint 3 P0-4: 若 has_buy_signal < topK，從 has_buy_signal=0 pool 挑 top promote。
-    Score V2 is the ranking owner; ML confidence/signal tier are tie-breakers,
-    not a second legacy scoring formula.
+    """Run the production allocation owner after Score V2 + ML ranking.
 
-    #B Option 1 (2026-04-21): promoted rows now also get signal="BUY" and a
-    higher conf floor (ensemble_v2.topKConfidenceOverride, default 0.72). Prior
-    code only flipped has_buy_signal=1 and nudged conf to 0.60 while leaving
-    signal="HOLD" — downstream batch debate saw HOLD+0.60 edge candidates and
-    mostly REJECTed, producing 0 pending buys for 4 consecutive trading days.
+    Legacy top-K promotion is retired. BUY rows are now owned by
+    sparse_tangent_inverse_risk, optionally controlled by OnlinePortfolioBandit.
     """
     if not ranking_config or not ranking_config.get("enabled", True):
         return recommendations
 
-    top_k = ranking_config.get("topK", 3)
     policy = normalize_alpha_policy(alpha_policy)
     promote_min_conf = ranking_config.get("promoteMinConf", 0.60)
-    boost_conf = float((ensemble_v2_cfg or {}).get("topKConfidenceOverride", 0.72))
-    # Always use the higher of KV-driven ranking.promoteMinConf and ensemble_v2
-    # boost — pick max so neither config can silently regress the other.
-    effective_boost = max(float(promote_min_conf), boost_conf)
+    effective_boost = float(promote_min_conf)
 
     promotion_weights = ranking_config.get("scoreV2PromotionWeights") or {}
     score_v2_weight = float(promotion_weights.get("scoreV2", 0.80))
@@ -1794,69 +1972,26 @@ def hybrid_ranking_promotion(
         r["_combined_score_source"] = "score_v2_final_score_plus_ml_tiebreak"
         scored.append(r)
 
-    current_buy = sum(1 for r in scored if r.get("has_buy_signal") == 1)
-    if _allocation_method(policy) == "sparse_tangent_inverse_risk":
-        allocated = regime_aware_allocate(
-            scored,
-            regime_label,
-            slate_size=max(int(policy["allocation"].get("buy_signal_count") or 3), policy["allocation"]["slate_size"]),
-            policy=policy,
-            regime_surface=regime_surface,
-        )
-        return _apply_sparse_tangent_buy_selection(
-            allocated,
-            ranking_config,
-            policy,
-            confidence_floor=effective_boost,
-            return_history=return_history,
+    if _allocation_method(policy) != "sparse_tangent_inverse_risk":
+        raise ValueError(
+            "legacy_topk_allocation_retired: "
+            "production recommendations require sparse_tangent_inverse_risk"
         )
 
-    controller_policy_syms = [
-        r.get("symbol")
-        for r in scored
-        if r.get("signal_source") == "ensemble_v2_topk_policy" or r.get("topk_forced")
-    ]
-    if controller_policy_syms and current_buy >= top_k:
-        logger.info(
-            f"[Ranking] controller top-K policy already supplied {current_buy}/{top_k} buy rows; "
-            f"skip recommendation-layer promotion: {controller_policy_syms}"
-        )
-        return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
-    if controller_policy_syms and current_buy < top_k:
-        logger.warning(
-            f"[Ranking] controller top-K policy rows are not enough eligible buys "
-            f"({current_buy}/{top_k}); backfilling tradable recommendation-layer promotion. "
-            f"controller_policy_syms={controller_policy_syms}"
-        )
-    if current_buy >= top_k:
-        logger.info(f"[Ranking] has_buy_signal={current_buy} >= topK={top_k}, no promotion")
-        return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
-
-    need_promote = top_k - current_buy
-    pool = sorted(
-        [r for r in scored if r.get("has_buy_signal") == 0 and _can_promote_ranking_candidate(r, ranking_config)],
-        key=lambda x: x.get("_combined_score", 0),
-        reverse=True,
-    )[:need_promote]
-
-    promoted_syms = []
-    for r in pool:
-        r["signal_raw"] = r.get("signal")  # preserve pre-promotion for audit
-        r["signal"] = "BUY"                 # make downstream "BUY" checks pass
-        r["signal_source_raw"] = r.get("signal_source")
-        r["signal_source"] = "ranking_promotion"
-        r["has_buy_signal"] = 1
-        r["confidence"] = max(r.get("confidence") or 0, effective_boost)
-        r["ranking_promoted"] = True
-        promoted_syms.append(r["symbol"])
-
-    if promoted_syms:
-        logger.info(
-            f"[Ranking] Promoted {len(promoted_syms)} to signal=BUY "
-            f"has_buy_signal=1 conf>={effective_boost} "
-            f"(current={current_buy} < topK={top_k}): {promoted_syms}"
-        )
-    return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
+    allocated = regime_aware_allocate(
+        scored,
+        regime_label,
+        slate_size=max(int(policy["allocation"].get("buy_signal_count") or 3), policy["allocation"]["slate_size"]),
+        policy=policy,
+        regime_surface=regime_surface,
+    )
+    return _apply_sparse_tangent_buy_selection(
+        allocated,
+        ranking_config,
+        policy,
+        confidence_floor=effective_boost,
+        return_history=return_history,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1909,6 +2044,8 @@ def write_predictions_to_d1(
             "signal_source": ev2_signal_source if (use_ev2 and ev2_signal) else "legacy",
             "alpha_context": data.get("alpha_context"),
             "alpha_allocation": data.get("alpha_allocation"),
+            "core_ml_gate": data.get("core_ml_gate"),
+            "core_family_vote": data.get("core_family_vote"),
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),
@@ -2026,7 +2163,8 @@ def write_predictions_to_d1(
 # State-space overlays explain regime/risk context rather than vote as alpha.
 _PER_MODEL_TRACKED = (
     "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
-    "DLinear", "PatchTST",
+    "TabM", "GNN",
+    "DLinear", "PatchTST", "iTransformer", "TimesFM",
 )
 
 
@@ -2038,7 +2176,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     For 3 time-series alpha predictors: sigmoid-map .forecast_pct → 0~1
       (mirror of pipeline_v2._ts_to_rank with scale=12).
 
-    Returns subset of _PER_MODEL_TRACKED that have a usable score in the dict.
+    Returns formal active/family slots that have a usable score in the dict.
     """
     import math
     out: dict[str, float] = {}

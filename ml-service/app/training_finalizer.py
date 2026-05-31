@@ -13,6 +13,8 @@ from typing import Iterable
 
 import numpy as np
 
+from .candidate_lifecycle_payload import candidate_registrations_from_payload
+
 TREE_MODELS = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
 SEQUENCE_GROUPS = {"dlinear", "patchtst"}
 OOS_ARTIFACT_GROUPS = {"tree"}
@@ -181,7 +183,7 @@ def reduce_tree_model_child_results(
 
     merged_results: dict[str, dict] = {}
     merged_ic: dict[str, dict] = {}
-    challenger_registrations: dict[str, dict] = {}
+    candidate_registrations: dict[str, dict] = {}
     child_elapsed_s: dict[str, float] = {}
     child_manifests: dict[str, str] = {}
     child_errors: list[dict] = []
@@ -230,9 +232,10 @@ def reduce_tree_model_child_results(
             merged_ic[name] = metrics
             if not metrics.get("passed", True):
                 circuit_breaker = True
-        for name, registration in (partial.get("challenger_registrations") or {}).items():
+        partial_registrations = candidate_registrations_from_payload(partial)
+        for name, registration in partial_registrations.items():
             if isinstance(registration, dict):
-                challenger_registrations[name] = registration
+                candidate_registrations[name] = registration
         if partial.get("training_manifest_path"):
             child_manifests[model_key] = str(partial["training_manifest_path"])
         if partial.get("trained_at"):
@@ -260,7 +263,7 @@ def reduce_tree_model_child_results(
         "ic_tracking": merged_ic,
         "circuit_breaker": circuit_breaker,
         "candidate_version": _first_present(*(partial.get("candidate_version") for partial in (child_results or {}).values())),
-        "challenger_registrations": challenger_registrations,
+        "candidate_registrations": candidate_registrations,
         "oos_artifact": combined_oos_artifact,
         "child_manifests": dict(sorted(child_manifests.items())),
         "child_errors": child_errors,
@@ -332,7 +335,9 @@ def build_retrain_followup_payload(
         "batch_count": int(batch_count),
         "gcs_prefix": gcs_prefix,
         "candidate_version": train_stage.get("candidate_version") or candidate_version,
-        "challenger_registrations": train_stage.get("challenger_registrations") or {},
+        "candidate_registrations": (
+            candidate_registrations_from_payload(train_stage)
+        ),
         "window_id": window_id,
         "total_samples": int(train_stage.get("total_samples", 0) or 0),
         "train_samples": _max_partial_int(partial_results, "train_samples"),
@@ -433,8 +438,8 @@ def merge_oos_rank_payloads(
       - y_test: 1d array-like
 
     The reducer requires identical y length and values across payloads. In the
-    current split architecture tree and FT read the same prep batches and split
-    config, so mismatches indicate a broken training contract.
+    current split architecture active training lanes read the same prep batches
+    and split config, so mismatches indicate a broken training contract.
     """
 
     merged_predictions: dict[str, np.ndarray] = {}

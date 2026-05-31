@@ -10,6 +10,8 @@ import json
 import math
 from typing import Any
 
+from services.legacy_prediction_namespace import base_model_name, is_legacy_model_candidate_name
+
 ALPHA_PREDICTION_MODELS = (
     "XGBoost",
     "CatBoost",
@@ -240,8 +242,8 @@ def apply_weekly_ic_to_pool(
     changed = False
 
     for tracked_name, info in per_model_ic.items():
-        is_challenger = tracked_name.endswith("::challenger")
-        base_name = tracked_name.replace("::challenger", "")
+        is_challenger = is_legacy_model_candidate_name(tracked_name)
+        base_name = base_model_name(tracked_name)
         entry = (pool.get("models") or {}).get(base_name)
         if not entry and not is_challenger:
             entry = (pool.get("formal_layer3_slots") or {}).get(base_name)

@@ -60,6 +60,8 @@ function pickAllByStage(steps: ScreenerFunnelStep[], stage: string): ScreenerFun
 
 function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown> {
   const finalSelection = pickLastByStage(steps, 'final_selection')
+  const layer1 = pickLastByStage(steps, 'layer1_strategy_breadth_gate')
+  const layer2 = pickLastByStage(steps, 'layer2_coarse_ml_gate')
   const rrg = pickLastByStage(steps, 'rrg_overlay')
   const buzz = pickLastByStage(steps, 'buzz_evidence')
   const strategyPool = [
@@ -83,6 +85,8 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   }
 
   if (scoring) evidence.base_scoring = scoring.evidence
+  if (layer1) evidence.layer1_breadth = { reason_code: layer1.reason_code, rank: layer1.rank, score_after: layer1.score_after, ...layer1.evidence }
+  if (layer2) evidence.layer2_coarse_ml = { reason_code: layer2.reason_code, rank: layer2.rank, score_after: layer2.score_after, ...layer2.evidence }
   if (rrg) evidence.rrg_overlay = { reason_code: rrg.reason_code, ...rrg.evidence }
   if (buzz) evidence.buzz_evidence = { reason_code: buzz.reason_code, ...buzz.evidence }
   if (strategyPool.length) {

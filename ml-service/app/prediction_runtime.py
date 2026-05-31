@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 from pydantic import BaseModel
 
+from .legacy_prediction_namespace import LEGACY_DISABLED_BATCH_KEYS
 from .artifact_contract import ArtifactValidationError, now_utc_iso, validate_serving_feature_compatibility
 from .arf_aggregator import (
     ARF_STATE_DIR,
@@ -69,7 +70,7 @@ def _actual_return_pct(req: ARFUpdateRequest) -> float:
 
 
 def update_arf(req: ARFUpdateRequest) -> dict:
-    """Core ARF/LinUCB/FT online update logic."""
+    """Core ARF/LinUCB online update logic."""
     if len(req.arf_features) == 0:
         raise ValueError("arf_features 不可為空")
 
@@ -483,21 +484,13 @@ def predict_stock(req: PredictRequest) -> dict:
 _FEATURE_MODEL_NAMES_V2 = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
 _TIME_SERIES_MODEL_NAMES_V2 = ["DLinear", "PatchTST"]
 _STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
-# Legacy shadow model names are intentionally disabled after the screener
-# refactor. Formal Layer 3 slots enter through artifact promotion, not this
-# side-channel.
-_SHADOW_CHALLENGER_MODEL_NAMES: list[str] = []
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 _BATCH_FEATURE_RANK_SCORES_KEY = "__batch_feature_rank_scores"
 _BATCH_FEATURE_MODEL_ERRORS_KEY = "__batch_feature_model_errors"
-_BATCH_CHALLENGER_RANK_SCORES_KEY = "__batch_challenger_rank_scores"
-_BATCH_CHALLENGER_MODEL_ERRORS_KEY = "__batch_challenger_model_errors"
 _BATCH_RUNTIME_OPTION_KEYS = {
     _BATCH_FEATURE_RANK_SCORES_KEY,
     _BATCH_FEATURE_MODEL_ERRORS_KEY,
-    _BATCH_CHALLENGER_RANK_SCORES_KEY,
-    _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
-}
+} | LEGACY_DISABLED_BATCH_KEYS
 
 
 def _normalize_market_segment_for_serving(req: PredictRequest) -> str | None:
@@ -722,12 +715,6 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     else:
         model_errors.append("embedded state-space skipped: owned by daily_pipeline_v2 batch predictors")
 
-    # Production prediction no longer loads model-pool challenger side paths.
-    # Formal Layer 3 candidates must enter through artifact promotion and
-    # explicit family slots, not a hidden shadow/challenger channel.
-    challenger_rank_scores: dict[str, float] = {}
-    challenger_errors: list[str] = []
-
     rank_scores, effective_ic_weights = merge_with_time_series(
         rank_scores,
         time_series_signals,
@@ -794,8 +781,6 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "time_series_signals": time_series_signals if time_series_signals else None,
         "state_space_overlays": state_space_overlays if state_space_overlays else None,
         "rank_stacker": rank_stacker_info,
-        "challenger_rank_scores": {k: round(float(v), 6) for k, v in challenger_rank_scores.items()},
-        "challenger_errors": challenger_errors if challenger_errors else None,
         "atr": float(atr),
         "runtime_options": public_runtime_options,
     }

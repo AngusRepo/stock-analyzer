@@ -6,6 +6,17 @@ function assert(condition: unknown, message: string): void {
 
 const rows: ScreenerPriceRow[] = [
   {
+    symbol: '0050',
+    market: 'TWSE',
+    date: '2026-05-04',
+    open: 190,
+    high: 192,
+    low: 189,
+    close: 191,
+    volume: 30000000,
+    avg_price: null,
+  },
+  {
     symbol: '3585',
     market: 'OTC',
     date: '2026-04-30',
@@ -58,5 +69,10 @@ assert(
   !result.emergingResearchPrices.some((row) => row.stock_id === '7820'),
   '7820 historical emerging-style rows must not leak into emerging lane after OTC listing',
 )
+assert(
+  !result.allPrices.some((row) => row.stock_id === '0050'),
+  'ETF-like symbols must be excluded from the tradable screener hard gate',
+)
 assert(result.laneCounts.tradable === 1, 'only 7820 should count as tradable')
 assert(result.laneCounts.emerging_watchlist === 1, 'only 3585 should count as emerging research')
+assert(result.laneCounts.research_only === 1, 'ETF should count as research-only hard-gate exclusion')

@@ -290,7 +290,7 @@ export async function handleScheduledCron(
           status,
           summary,
           duration_ms: Date.now() - startedAt,
-        })
+        }, env as any)
       } catch (e: any) {
         await logCronResult(env.KV, task, {
           status: 'error',

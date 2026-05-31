@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'wouter'
 import { ArrowRight, Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
@@ -838,13 +839,6 @@ function featurePolicyCopy(modelName: string, version?: string | null) {
       schema,
     }
   }
-  if (modelName === 'FT-Transformer') {
-    return {
-      label: 'Wide tabular + missing mask',
-      detail: 'Keeps the broad tabular matrix and carries missingness/schema parity.',
-      schema,
-    }
-  }
   if (modelName === 'DLinear') {
     return {
       label: 'Close-price sequence',
@@ -862,7 +856,7 @@ function featurePolicyCopy(modelName: string, version?: string | null) {
   if (modelName === 'Chronos') {
     return {
       label: 'Chronos context series',
-      detail: 'Foundation forecast slot; does not consume tree/FT feature selection.',
+      detail: 'Foundation forecast slot; does not consume tabular feature selection.',
       schema,
     }
   }
@@ -935,6 +929,131 @@ function selectedCandidateForModel(row?: ModelArtifactSelectionResponse['models'
       ? 'weekly_drift_candidate'
       : null
   return { artifact, context, slot }
+}
+
+function ModelGovernanceVisualMap({
+  models,
+  selection,
+  pointers,
+  queue,
+}: {
+  models: Array<[string, ModelPoolLineageModel]>
+  selection?: ModelArtifactSelectionResponse
+  pointers?: ModelChampionPointersResponse
+  queue?: ModelArtifactPromotionQueueResponse
+}) {
+  const queueByModel = new Map((queue?.queue ?? []).map((row) => [String(row.model_name ?? ''), row]))
+  const rows = models.map(([name, model]) => {
+    const selected = selectedCandidateForModel(selection?.models?.[name])
+    const artifact = selected.artifact
+    const pointer = pointers?.models?.[name]
+    const promotion = queueByModel.get(name)
+    const decision = promotion ? promotionDecisionDisplay(promotion) : null
+    const ic = icValue(model)
+    const championReady = Boolean(pointer?.d1_pointer_artifact_id || pointer?.serving_version || model.artifact_uri || model.gcs_path)
+    const offlineReady = artifact?.offline_gate_decision === 'passed' || artifact?.offline_gate_status === 'passed'
+    const liveReady = artifact?.live_gate_status === 'passed'
+    const blocked = decision?.pointerBlocked || artifact?.live_gate_status === 'failed' || artifact?.offline_gate_decision === 'failed'
+    const tone: WorkstationTone = blocked ? 'warn' : liveReady || model.status === 'active' ? 'ok' : artifact ? 'info' : 'neutral'
+    const gates = [
+      { label: 'champion', ready: championReady, tone: championReady ? 'ok' : 'warn' },
+      { label: 'offline', ready: offlineReady, tone: offlineReady ? 'ok' : artifact ? 'warn' : 'neutral' },
+      { label: 'live', ready: liveReady, tone: liveReady ? 'ok' : artifact ? 'warn' : 'neutral' },
+      { label: 'promote', ready: decision && !decision.pointerBlocked, tone: decision ? decision.tone : 'neutral' },
+    ] as Array<{ label: string; ready?: boolean; tone: WorkstationTone }>
+    return {
+      name,
+      model,
+      artifact,
+      pointer,
+      promotion,
+      decision,
+      ic,
+      tone,
+      gates,
+      policy: featurePolicyCopy(name, artifact?.feature_policy_version),
+    }
+  })
+
+  return (
+    <WorkstationPanel
+      title="Governance Visual Map / 模型治理地圖"
+      kicker="champion pointer -> registry candidate -> offline/live gate -> promotion"
+      action={
+        <Button asChild size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]">
+          <Link href="/model-pool/inspector">
+            Raw inspector <ArrowRight className="ml-1 h-3.5 w-3.5" />
+          </Link>
+        </Button>
+      }
+    >
+      <div className="space-y-3 p-3">
+        <div className="grid gap-2 md:grid-cols-4">
+          {[
+            { label: 'models', value: rows.length, detail: 'governance lanes', tone: 'info' as WorkstationTone },
+            { label: 'linked', value: rows.filter((row) => row.pointer?.d1_pointer_artifact_id || row.pointer?.serving_version).length, detail: 'champion pointers', tone: 'ok' as WorkstationTone },
+            { label: 'candidates', value: rows.filter((row) => row.artifact).length, detail: 'monthly / weekly selected', tone: 'info' as WorkstationTone },
+            { label: 'blocked', value: rows.filter((row) => row.decision?.pointerBlocked).length, detail: 'promotion blockers', tone: rows.some((row) => row.decision?.pointerBlocked) ? 'warn' as WorkstationTone : 'ok' as WorkstationTone },
+          ].map((tile) => (
+            <SignalInsightCard key={tile.label} title={tile.label} value={String(tile.value)} detail={tile.detail} tone={tile.tone} />
+          ))}
+        </div>
+
+        <div className="grid gap-3 xl:grid-cols-2">
+          {rows.map((row) => (
+            <div key={row.name} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`h-10 w-1.5 ${familyAccentClass(modelFamily(row.model))}`} />
+                    <div>
+                      <p className="font-['Space_Grotesk'] text-base font-semibold text-[#f2ead8]">{row.name}</p>
+                      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{modelFamily(row.model)} · {row.policy.label}</p>
+                    </div>
+                  </div>
+                </div>
+                <WorkstationPill tone={row.tone}>{row.model.status ?? 'unknown'}</WorkstationPill>
+              </div>
+
+              <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                {row.gates.map((gate) => (
+                  <div key={gate.label} className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">{gate.label}</span>
+                      <WorkstationPill tone={gate.tone}>{gate.ready ? 'ready' : 'wait'}</WorkstationPill>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-[#172033]">
+                      <div className={`h-full rounded-full ${gate.ready ? 'bg-emerald-300' : gate.tone === 'warn' ? 'bg-amber-300' : 'bg-slate-500'}`} style={{ width: gate.ready ? '100%' : '35%' }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+                <div className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
+                  <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">prod IC 4W</p>
+                  <p className="mt-1 text-[#f2ead8]">{row.ic == null ? 'N/A' : row.ic.toFixed(4)}</p>
+                </div>
+                <div className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
+                  <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">candidate</p>
+                  <p className="mt-1 truncate text-[#f2ead8]">{row.artifact?.version ?? row.artifact?.artifact_id ?? 'none'}</p>
+                </div>
+                <div className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
+                  <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">decision</p>
+                  <p className="mt-1 truncate text-[#f2ead8]">{row.decision?.label ?? row.artifact?.live_gate_status ?? 'observe'}</p>
+                </div>
+              </div>
+            </div>
+          ))}
+          {!rows.length && (
+            <div className="rounded-xl border border-[#263247] bg-[#070a10] p-4 text-sm text-[#8b9bab]">
+              尚未讀到 lineage model；請先確認 ml-controller / Worker proxy。
+            </div>
+          )}
+        </div>
+      </div>
+    </WorkstationPanel>
+  )
 }
 
 function UnifiedModelHealthMatrix({
@@ -2117,7 +2236,7 @@ export default function ModelPoolPage() {
   const traceSteps = useMemo(() => [
     { label: 'Alpha Vote', detail: 'Production slots are the current voting denominator.', tone: 'ok' as WorkstationTone },
     { label: 'Formal L3', detail: 'TabM / GNN / iTransformer / TimesFM are formal slots; artifact approval is required before voting.', tone: 'info' as WorkstationTone },
-    { label: 'Retired', detail: 'FT-Transformer / ResidualMLP / Chronos do not seed new model lanes.', tone: 'warn' as WorkstationTone },
+    { label: 'Retired', detail: 'ResidualMLP / Chronos do not seed new model lanes.', tone: 'warn' as WorkstationTone },
     { label: 'Overlay', detail: 'Kalman / Markov 提供 regime、noise、risk context，不算 alpha model。', tone: 'neutral' as WorkstationTone },
   ], [])
 
@@ -2155,10 +2274,32 @@ export default function ModelPoolPage() {
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <SignalInsightCard title="Serving Alpha Slots" value={String(servingAlphaModels.length)} detail={`active ${activeModels}; degraded ${degradedModels}; formal L3 pending ${formalSlotCount}; family ${Object.entries(counts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'N/A'}`} tone={degradedModels ? 'warn' : 'info'} />
               <SignalInsightCard title="Formal L3 Slots" value={String(formalSlotCount)} detail="TabM、GNN、iTransformer、TimesFM 有正式分支位置；未核准前不投票。" tone="info" />
-              <SignalInsightCard title="Retired Paths" value={String(retiredSlotCount)} detail={`FT / ResidualMLP / Chronos retired; legacy lineage artifacts ${legacyLineageArtifactCount}`} tone="warn" />
+              <SignalInsightCard title="Retired Paths" value={String(retiredSlotCount)} detail={`ResidualMLP / Chronos retired; legacy lineage artifacts ${legacyLineageArtifactCount}`} tone="warn" />
               <SignalInsightCard title="IC 缺口" value={String(weakIc)} detail={`0/NaN IC 或 sample 不足；sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
             </div>
 
+            <ModelGovernanceVisualMap
+              models={modelList}
+              selection={artifactSelection.data}
+              pointers={championPointers.data}
+              queue={artifactPromotionQueue.data}
+            />
+            <ArtifactLifecycleSummaryPanel
+              selection={artifactSelection.data}
+              pointers={championPointers.data}
+              queue={artifactPromotionQueue.data}
+            />
+
+            <details data-testid="modelpool-governance-drilldown" className="group border border-[#263247] bg-[#05070c]">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 border-b border-[#263247] px-3 py-3 text-sm text-[#cbd5e1] marker:hidden">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Governance drilldown</p>
+                  <p className="mt-1 text-xs text-[#8a92a6]">health matrix, promotion queue, upgrade lanes, overlays, lifecycle audit</p>
+                </div>
+                <span className="font-mono text-[11px] text-[#f1c16f] group-open:hidden">open</span>
+                <span className="hidden font-mono text-[11px] text-[#f1c16f] group-open:inline">close</span>
+              </summary>
+              <div className="space-y-6 p-3">
             <UnifiedModelHealthMatrix
               models={modelList}
               selection={artifactSelection.data}
@@ -2213,6 +2354,8 @@ export default function ModelPoolPage() {
                 )}
               </div>
             </WorkstationPanel>
+              </div>
+            </details>
           </>
         )}
       </div>

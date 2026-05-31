@@ -26,7 +26,7 @@ function assert(condition: unknown, message: string): void {
 {
   const retired = listModelUpgradeCandidates('retired')
   const ids = retired.map((candidate) => String(candidate.id))
-  assert(ids.includes('FT-Transformer'), 'FT-Transformer should be explicitly retired')
+  assert(!ids.includes('FT-Transformer'), 'FT-Transformer should be removed instead of kept as comparator')
   assert(ids.includes('ResidualMLP'), 'ResidualMLP should be retired after TabM was selected for the tabular-neural branch')
   assert(ids.includes('Chronos'), 'Chronos should be retired from alpha vote after the sequence-family refactor')
   assert(retired.every((candidate) => !candidate.requires_review_packet), 'retired models must not seed new review lanes')

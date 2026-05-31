@@ -958,9 +958,9 @@ class ScreenerParams:
 
 @dataclass
 class RankingParams:
-    """Subset of trading:config.ranking (Sprint 3 P0-4 Architecture C)."""
+    """Backtest ranking weights plus allocator-owned BUY count."""
     enabled: bool = True
-    top_k: int = 3
+    buy_signal_count: int = 3
     alpha: float = 0.40        # screener weight
     beta: float = 0.40         # ml_confidence weight
     gamma: float = 0.20        # signal_tier weight
@@ -972,9 +972,19 @@ class RankingParams:
     @classmethod
     def from_trading_config(cls, tc: dict) -> "RankingParams":
         rk = tc.get("ranking", {})
+        allocation = (
+            (tc.get("alphaFramework") or {}).get("allocation")
+            if isinstance(tc.get("alphaFramework"), dict)
+            else None
+        ) or {}
         return cls(
             enabled=rk.get("enabled", True),
-            top_k=rk.get("topK", 3),
+            buy_signal_count=int(
+                allocation.get(
+                    "buySignalCount",
+                    allocation.get("buy_signal_count", 3),
+                )
+            ),
             alpha=rk.get("alpha", 0.40),
             beta=rk.get("beta", 0.40),
             gamma=rk.get("gamma", 0.20),
@@ -1965,7 +1975,7 @@ def replay_screener_for_date(
       3. score_multi_factor per survivor (reads 22-day trailing window)
       4. Same-industry cap (max_per_industry)
       5. Top-N truncation (max_candidates)
-      6. Hybrid Ranking: compute combined_score, promote top_k to has_buy_signal=1
+      6. Ranking: compute combined_score, then allocator-owned BUY count
          (Mode A: ml_confidence=0.5 placeholder, signal_tier=0.35 HOLD-eq)
 
     Returns list of Candidate, sorted by combined_score descending.
@@ -2083,7 +2093,7 @@ def replay_screener_for_date(
     # Step 5d: top-N truncation
     final_candidates = after_industry[: screener.max_candidates]
 
-    # Hybrid Ranking (Architecture C): compute combined_score + promote top_k
+    # Ranking weights only; BUY count is owned by alphaFramework allocation.
     # Mode A placeholder: ml_confidence = 0.5, signal_tier = 0.35 (HOLD-equiv)
     ML_CONF_PLACEHOLDER = 0.5
     SIGNAL_TIER_PLACEHOLDER = 0.35
@@ -2098,23 +2108,23 @@ def replay_screener_for_date(
 
     final_candidates.sort(key=lambda c: c.combined_score, reverse=True)
 
-    # Promote top_k to has_buy_signal = 1
     if ranking.enabled:
         if alpha_policy:
             from services.alpha_framework import normalize_alpha_policy
 
             policy = normalize_alpha_policy(alpha_policy)
+            buy_signal_count = int(policy["allocation"]["buy_signal_count"])
             final_candidates = apply_alpha_framework_to_candidates(
                 final_candidates,
                 alpha_policy=policy,
                 regime_label=regime_label,
                 regime_surface=regime_surface,
                 payload_by_symbol=alpha_payload_by_symbol,
-                slate_size=max(ranking.top_k, int(policy["allocation"]["slate_size"])),
-                buy_signal_count=ranking.top_k,
+                slate_size=max(buy_signal_count, int(policy["allocation"]["slate_size"])),
+                buy_signal_count=buy_signal_count,
             )
         else:
-            for c in final_candidates[: ranking.top_k]:
+            for c in final_candidates[: ranking.buy_signal_count]:
                 c.has_buy_signal = 1
 
     return final_candidates
@@ -2345,7 +2355,7 @@ def diagnose_replay_for_date(
     final_candidates.sort(key=lambda c: c.combined_score, reverse=True)
     promoted = 0
     if ranking.enabled:
-        for c in final_candidates[: ranking.top_k]:
+        for c in final_candidates[: ranking.buy_signal_count]:
             c.has_buy_signal = 1
             promoted += 1
 

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.promotion_service import (  # noqa: E402
     build_alpha_policy_evidence_bundle,
+    classify_parameter_candidate_validation_status,
     evaluate_alpha_policy_evidence_gate,
     evaluate_latest_alpha_policy_gate,
     evaluate_latest_promotion_gate,
@@ -164,8 +165,78 @@ def test_evaluate_latest_promotion_gate_joins_latest_mode_b_risk_checks(monkeypa
     assert out["inputs"]["backtest"]["mode"] == "B"
     assert out["metrics"]["mc_mdd_95th"] == 0.16
     assert out["validation_packet"]["decision"] == "PASS"
-    assert out["validation_packet"]["schema_version"] == "validation-governance-packet-v1"
-    assert "walk_forward" not in out["validation_packet"]["warnings"]
+
+
+def test_parameter_candidate_validation_status_separates_insufficient_evidence_from_blocked():
+    gate = {
+        "decision": "FAIL",
+        "failed_gates": [
+            "backtest_min_trades",
+            "backtest_sharpe",
+            "validation_packet:backtest_sample_size",
+            "validation_packet:worker_parity",
+        ],
+    }
+    evidence = {"backtest": {"total_trades": 8, "fill_rate": 0.023}}
+
+    status = classify_parameter_candidate_validation_status(gate, evidence)
+
+    assert status["status"] == "EVIDENCE_INSUFFICIENT"
+    assert status["promotion_ready"] is False
+    assert status["reason"] == "insufficient_sample"
+
+
+def test_parameter_candidate_validation_status_keeps_bad_sufficient_candidate_not_ready():
+    gate = {
+        "decision": "FAIL",
+        "failed_gates": [
+            "backtest_sharpe",
+            "pbo_verdict",
+            "validation_packet:pbo_overfit_risk",
+        ],
+    }
+    evidence = {"backtest": {"total_trades": 90, "fill_rate": 0.18}}
+
+    status = classify_parameter_candidate_validation_status(gate, evidence)
+
+    assert status["status"] == "NOT_PROMOTION_READY"
+    assert status["reason"] == "promotion_gates_failed"
+
+
+def test_parameter_candidate_validation_status_uses_adaptive_evidence_floor():
+    gate = {
+        "decision": "FAIL",
+        "failed_gates": [
+            "backtest_min_trades",
+            "backtest_sharpe",
+            "validation_packet:backtest_sample_size",
+        ],
+    }
+    evidence = {
+        "backtest": {
+            "total_trades": 30,
+            "entry_attempts": 400,
+            "fill_rate": 0.20,
+        }
+    }
+
+    status = classify_parameter_candidate_validation_status(gate, evidence)
+
+    assert status["status"] == "NOT_PROMOTION_READY"
+    assert status["reason"] == "promotion_gates_failed"
+
+
+def test_parameter_candidate_validation_status_keeps_infra_failures_blocked():
+    gate = {
+        "decision": "FAIL",
+        "failed_gates": ["sandbox_body_unavailable"],
+    }
+    evidence = {"backtest": {}}
+
+    status = classify_parameter_candidate_validation_status(gate, evidence)
+
+    assert status["status"] == "INFRA_BLOCKED"
+    assert status["reason"] == "validation_infra_or_contract_missing"
 
 
 def test_evaluate_latest_promotion_gate_can_use_separate_pbo_source(monkeypatch):

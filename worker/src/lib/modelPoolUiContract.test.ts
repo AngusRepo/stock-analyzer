@@ -24,14 +24,14 @@ assert(page.includes('selected candidate only: shadow predict -> verify-v2 -> IC
 assert(page.includes('verify-v2') && page.includes('actual_return'), 'Model Pool/verify guidance must point to verified outcome writes as IC prerequisite')
 assert(page.includes('review packet required'), 'Formal Layer 3 candidates must require experiment registry / review packet before promotion')
 assert(page.includes('Live Gate Evidence /'), 'Model Pool must show same-family artifact live gate evidence from registry candidates')
-assert(page.includes('Model Research Tracks /'), 'Model Pool must show experiment-gated model research tracks')
+assert(page.includes('Layer 3 Formal Slots /'), 'Model Pool must show experiment-gated formal Layer 3 slots')
 assert(page.includes('modelUpgradeNeedsExperiment'), 'Model Pool must explicitly separate experiment-registry lanes from track-only governance lanes')
 assert(page.includes('statusRows={modelUpgradeStatus?.candidates ?? []}'), 'Model Pool must consume backend model-upgrade status rows')
 assert(!page.includes('track_only'), 'Model Pool research tracks should not render track-only governance lanes')
 assert(!page.includes('這個軌道不走 Strategy Lab experiment registry'), 'Track-only governance copy belongs outside Model Pool research tracks')
 assert(page.includes('Chronos is retired from alpha vote'), 'Chronos retirement should be explicit in the model page')
-assert(page.includes('GAOptimizer 已移到 OBS adaptive meta'), 'GAOptimizer should be routed to OBS adaptive meta instead of Model Pool cards')
-assert(page.includes('Kalman / Markov 只在下方 State-space Overlays'), 'State-space overlays should be shown only in the live overlay section')
+assert(!page.includes('GAOptimizer'), 'GAOptimizer should be routed to adaptive/meta governance instead of Model Pool cards')
+assert(page.includes('Kalman / Markov 只扮演'), 'State-space overlays should be shown only in the live overlay section')
 assert(page.includes('Artifact Diff /'), 'Model Pool must expose champion-vs-candidate artifact differences')
 assert(page.includes('champion pointer -> candidate'), 'Artifact diff must compare champion pointer to registry candidate')
 assert(page.includes('version-only baseline'), 'Artifact diff must expose missing champion artifact linkage instead of fake NaN')
@@ -48,6 +48,12 @@ assert(!page.includes('ServingAlphaStrip'), 'Model Pool must not render the remo
 assert(!page.includes('Model Ops Mission Control'), 'Model Pool must not render the removed duplicate Model Ops Mission Control panel')
 assert(page.includes('Artifact linked'), 'Champion pointer UI must distinguish version-only pointers from artifact-linked production baselines')
 assert(page.includes('Artifact Lifecycle Summary /'), 'Model Pool must expose a lifecycle summary strip across champion, candidate, live evidence, and promotion queue')
+assert(page.includes('<ArtifactLifecycleSummaryPanel'), 'Model Pool must mount the lifecycle summary strip, not only define it')
+assert(page.includes('data-testid="modelpool-governance-drilldown"'), 'Model Pool must collapse dense governance panels behind a drilldown disclosure')
+assert(
+  page.indexOf('<ArtifactLifecycleSummaryPanel') < page.indexOf('data-testid="modelpool-governance-drilldown"'),
+  'Model Pool lifecycle summary must appear before dense governance drilldown'
+)
 assert(page.includes('ActionContextNote'), 'Model Pool must render backend-owned artifact action context instead of inferring root cause only in the UI')
 assert(page.includes('affected_downstream'), 'Live gate UI must expose affected downstream from artifact action context')
 assert(api.includes('formatApiError'), 'Frontend API client must format non-OK responses with endpoint context')
@@ -60,9 +66,10 @@ assert(dashboardReadRoutes.includes('/model_pool/artifact_registry/promotion_con
 assert(dashboardReadRoutes.includes('/model_pool/artifact_registry/champion_pointers'), 'Worker must proxy champion pointer projection API to ml-controller')
 assert(dashboardReadRoutes.includes('/model_pool/artifact_registry/champion_pointers/backfill'), 'Worker must proxy champion pointer backfill API to ml-controller')
 
-for (const id of ['Chronos', 'FT-Transformer', 'ResidualMLP', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
+for (const id of ['Chronos', 'ResidualMLP', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
   assert(track.includes(id), `Model upgrade track must include ${id}`)
 }
+assert(!track.includes('FT-Transformer'), 'FT-Transformer must not remain as a Model Pool upgrade track or comparator')
 assert(!track.includes("id: 'Moirai'"), 'Moirai must stay excluded from active benchmark candidates until weight/license risk is cleared')
 
 assert(track.includes("stage: 'layer3_formal_family_slot'"), 'Upgrade track must include formal Layer 3 family slot stage')

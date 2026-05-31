@@ -21,7 +21,7 @@ import { toast } from 'sonner'
 import { Toaster } from '@/components/ui/sonner'
 import {
   Trash2, RefreshCw, BarChart2, Home,
-  PieChart, Brain, LogIn, Sparkles,
+  PieChart, Brain, LogIn, Sparkles, Bot,
   Newspaper, LogOut, ChevronRight, Search, Layers, ShieldAlert, Bell,
   Star, ShieldCheck, Users } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -41,11 +41,11 @@ import MarketRiskPanel from '@/components/MarketRiskPanel'
 import TradePerformancePanel from '@/components/TradePerformancePanel'
 import SystemStatusBar from '@/components/SystemStatusBar'
 import { ThemeFlowPanel } from '@/components/DailyRecommendationPanel'
-import { DailyRecommendationPanelV2 } from '@/components/DailyRecommendationPanelV2'
 import { AdminUsersPanel } from '@/components/AdminUsersPanel'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ErrorBoundary from '@/components/ErrorBoundary'
+import { cn } from '@/lib/utils'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
@@ -358,6 +358,53 @@ function MorningBriefingCard() {
   )
 }
 
+function DailyFocusRoutingPanel() {
+  const lanes = [
+    {
+      title: 'Home',
+      detail: 'Public market context: risk, theme flow, candidate breadth.',
+      icon: Home,
+      href: '/',
+      tone: 'border-sky-400/25 bg-sky-400/[0.06] text-sky-100',
+    },
+    {
+      title: 'Bot',
+      detail: 'Private execution core: targets, debate, pending buys.',
+      icon: Bot,
+      href: '/bot',
+      tone: 'border-fuchsia-400/25 bg-fuchsia-400/[0.06] text-fuchsia-100',
+    },
+    {
+      title: 'Dashboard',
+      detail: 'Stock drilldown only: chart, chips, fundamentals, AI report.',
+      icon: BarChart2,
+      href: '/dashboard',
+      tone: 'border-[#d6a85f]/30 bg-[#d6a85f]/[0.06] text-[#f1c16f]',
+    },
+  ]
+
+  return (
+    <WorkstationPanel title="Daily Focus Routing" kicker="public context / private execution / stock drilldown">
+      <div className="grid gap-3 p-3 lg:grid-cols-3">
+        {lanes.map(({ title, detail, icon: Icon, href, tone }) => (
+          <a
+            key={title}
+            href={href}
+            className={cn('rounded-xl border p-3 transition-colors hover:border-[#d6a85f]/55 hover:bg-[#0f151d]', tone)}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <Icon className="h-4 w-4" />
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em]">open</span>
+            </div>
+            <div className="mt-4 text-sm font-semibold text-[#f2ead8]">{title}</div>
+            <p className="mt-1 text-xs leading-5 text-[#a8b6c5]">{detail}</p>
+          </a>
+        ))}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => void }) {
   return (
     <WorkstationPanel title="標的入口" kicker="search, quick tickers, personal watch">
@@ -404,11 +451,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         <AttentionStocksCard />
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.28fr)_minmax(360px,0.72fr)]">
-          <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">
-            <div className="p-3">
-              <DailyRecommendationPanelV2 />
-            </div>
-          </WorkstationPanel>
+          <DailyFocusRoutingPanel />
 
           <ThemeFlowPanel />
         </div>

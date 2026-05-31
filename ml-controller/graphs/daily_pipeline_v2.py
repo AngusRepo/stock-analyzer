@@ -35,14 +35,17 @@ from services.payload_builder import (
 )
 from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
+from services.legacy_prediction_namespace import strip_legacy_candidate_prediction_fields
 from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
+from services.screener_sizing_policy import resolve_controller_screener_sizing
 from services.state_space_series import build_state_space_series_from_payloads
 from services.recommendation_service import (
+    apply_core_family_rank,
     apply_core_ml_gate,
     build_return_history_from_payloads,
     filter_and_score_recommendations,
-    hybrid_ranking_promotion,
+    apply_sparse_tangent_allocation,
     load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
     prune_predictions_outside_universe,
@@ -272,7 +275,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     # Layer 2 runs cheap feature models first. Heavy sequence/state-space work
     # only runs on the Layer 3 core shortlist selected from coarse rank scores.
-    model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+    model_pool_versions = await asyncio.to_thread(_load_model_pool_versions)
+    if len(model_pool_versions) == 4:
+        model_status, active_versions, _pool_version_details, pool_versions_loaded = model_pool_versions
+    else:
+        model_status, active_versions, pool_versions_loaded = model_pool_versions
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
@@ -300,22 +307,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             confidence = 0.0
         return max(0.0, min(1.0, confidence))
 
-    def _core_ml_target_size() -> int:
-        trading_cfg = state.get("trading_config") or {}
-        screener_cfg = trading_cfg.get("screener") if isinstance(trading_cfg.get("screener"), dict) else {}
-        raw = screener_cfg.get("mlShortlistSize", screener_cfg.get("ml_shortlist_size", 35))
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = 35
-        return max(15, min(80, value))
-
     feature_by_symbol_for_gate = {
         str(row.get("symbol")): row
         for row in results
         if isinstance(row, dict) and row.get("symbol") and not row.get("error")
     }
-    core_target_size = _core_ml_target_size()
+    screener_sizing = resolve_controller_screener_sizing(
+        state.get("trading_config"),
+        state.get("adaptive_params"),
+    )
+    core_target_size = screener_sizing["coarse_ml_queue_size"]
     coarse_ranked = sorted(
         (
             {
@@ -527,10 +528,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym in markov_map:
             row["markov_switching"] = markov_map[sym]
 
-    def _drop_legacy_version_candidate_scores(row: dict) -> None:
-        row.pop("challenger_rank_scores", None)
-        row.pop("challenger_errors", None)
-
     def _last_close(payload: dict) -> float:
         prices = payload.get("prices") or []
         if prices:
@@ -630,7 +627,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             "source": "LightGBM+XGBoost+ExtraTrees",
         })
         _attach_alt_sources(row, sym)
-        _drop_legacy_version_candidate_scores(row)
+        strip_legacy_candidate_prediction_fields(row)
         pred_map[sym] = row
 
     degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
@@ -684,44 +681,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             f"[Pipeline V2] Ensemble V2 merged: {sum(1 for v in pred_map.values() if 'ensemble_v2' in v)}/{len(pred_map)} stocks "
             f"(degraded_dampening={degraded_dampening})"
         )
-
-        # #B Option 1 Top-K override (2026-04-21): regression-on-rank predictions
-        # compress to [0.43, 0.58] under realistic R² 0.02-0.05, never hitting
-        # absolute 0.70 BUY threshold. Industry-standard fix: sort top K by
-        # avg_rank desc, force BUY regardless of absolute threshold. Confidence
-        # override gives downstream (paper.ts morning-setup SQL + debate prompt)
-        # the margin they need to distinguish promoted signals from edge HOLDs.
-        top_k_enabled = bool(
-            ev2_cfg.get("topKOverrideEnabled", False)
-            and ev2_cfg.get("allowLegacyTopKOverride", False)
-        )
-        top_k_count = int(ev2_cfg.get("topKCount", 3))
-        top_k_conf = float(ev2_cfg.get("topKConfidenceOverride", 0.72))
-        if top_k_enabled and top_k_count > 0:
-            ranked = sorted(
-                ((sym, v) for sym, v in pred_map.items() if "ensemble_v2" in v and _prediction_eligible_for_topk(v)),
-                key=lambda kv: kv[1]["ensemble_v2"].get("avg_rank", 0.0),
-                reverse=True,
-            )
-            forced: list[str] = []
-            for sym, v in ranked[:top_k_count]:
-                ev2 = v["ensemble_v2"]
-                cur = ev2.get("signal")
-                if cur in ("BUY", "STRONG_BUY"):
-                    continue  # natural buy signal; leave as-is
-                ev2["signal_raw"] = cur  # preserve pre-override for audit
-                ev2["signal_source_raw"] = ev2.get("signal_source", "ensemble_v2")
-                ev2["signal"] = "BUY"
-                ev2["confidence_override"] = top_k_conf
-                ev2["confidence"] = max(float(ev2.get("confidence", 0.0) or 0.0), top_k_conf)
-                ev2["signal_source"] = "ensemble_v2_topk_policy"
-                ev2["topk_forced"] = True
-                forced.append(sym)
-            if forced:
-                logger.info(
-                    f"[Pipeline V2] ensemble_v2 top-K override forced BUY on "
-                    f"{len(forced)}/{top_k_count} stocks (conf={top_k_conf}): {forced}"
-                )
     else:
         logger.info("[Pipeline V2] Ensemble V2 skip (model_pool.json not initialized)")
 
@@ -742,10 +701,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[str, str], bool]:
-    """Load active/challenger versions for batch predictors.
+def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], bool]:
+    """Load active versions for batch predictors.
 
-    Returns (status_by_model, active_version_by_model, challenger_version_by_model, used_pool).
+    Returns (status_by_model, active_version_by_model, used_pool).
     Missing pool falls back to v1 active behavior.
     """
     import json as _json
@@ -762,30 +721,26 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
 
         bucket_name = os.getenv("GCS_BUCKET_NAME")
         if not bucket_name:
-            return {}, active_defaults, {}, False
+            return {}, active_defaults, False
         blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
         if not blob.exists():
-            return {}, active_defaults, {}, False
+            return {}, active_defaults, False
 
         pool = _json.loads(blob.download_as_text())
         status: dict[str, str] = {}
         active_versions = dict(active_defaults)
-        challenger_versions: dict[str, str] = {}
         for name, entry in (pool.get("models") or {}).items():
             status[name] = entry.get("status", "active")
             if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
                 active_versions[name] = entry["version"]
-            challenger = entry.get("challenger") or {}
-            if challenger.get("version"):
-                challenger_versions[name] = challenger["version"]
         for name, entry in (pool.get("state_overlays") or {}).items():
             status[name] = entry.get("status", "active")
             if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
                 active_versions[name] = entry["version"]
-        return status, active_versions, challenger_versions, True
+        return status, active_versions, True
     except Exception as e:
         logger.warning(f"[Pipeline V2] model_pool version load failed: {e}")
-        return {}, active_defaults, {}, False
+        return {}, active_defaults, False
 
 
 def _normalize_market_segment(segment: Any) -> str | None:
@@ -1123,7 +1078,7 @@ def _load_pool_and_ic():
       - model_status: per-model "active"/"degraded"/"challenger"/"retired"
       - ic_weights: from model_pool.json rolling_ic/ic_4w_avg/latest weekly_ic
       - degraded_dampening: from trading:config.mlPool.degradedDampening
-      - ev2_cfg: from trading:config.ensemble_v2 — thresholds + Top-K override
+      - ev2_cfg: from trading:config.ensemble_v2 — thresholds + sparse-tangent allocation thresholds
         config (#B Option 1 2026-04-21 fix for "bot no-buy" mystery). Empty
         dict when KV absent → _attach_ensemble_v2 + top-K loop fall back to
         hardcoded defaults matching ml-service ensemble.rank_to_signal.
@@ -1165,7 +1120,7 @@ def _load_pool_and_ic():
 
         # IC weights have exactly one owner: model_pool.json. Missing IC stays
         # missing so lifecycle diagnostics can explain the root cause.
-        # KV-driven degraded dampening + ensemble_v2 thresholds / Top-K cfg
+        # KV-driven degraded dampening + ensemble_v2 thresholds / sparse-tangent allocation cfg
         degraded_dampening = 1.0
         ev2_cfg: dict = {}
         try:
@@ -1534,21 +1489,43 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy=alpha_policy,
         fundamental_quality_by_symbol=fundamental_quality_by_symbol,
     )
-    screener_cfg = trading_cfg.get("screener", {}) if isinstance(trading_cfg.get("screener"), dict) else {}
-    core_ml_target_size = int(screener_cfg.get("mlShortlistSize") or screener_cfg.get("ml_shortlist_size") or 35)
+    screener_sizing = resolve_controller_screener_sizing(
+        trading_cfg,
+        state.get("adaptive_params"),
+    )
+    core_ml_target_size = screener_sizing["coarse_ml_queue_size"]
     final = apply_core_ml_gate(
         final,
         state["predictions"],
         fallback_size=core_ml_target_size,
     )
+    core_family_target_size = screener_sizing["core_family_rank_size"]
+    final = apply_core_family_rank(
+        final,
+        state["predictions"],
+        target_size=core_family_target_size,
+    )
+    active_family_counts = [
+        int(((row.get("core_family_vote") or {}).get("active_family_count") or 0))
+        for row in final
+    ]
+    logger.info(
+        "[Pipeline V2] Layer3 core_family_vote ranked %s/%s candidates "
+        "(target=%s, active_family_counts=%s)",
+        len(final),
+        len(state["predictions"]),
+        core_family_target_size,
+        sorted(set(active_family_counts)),
+    )
     return_history = build_return_history_from_payloads(state["payloads"])
 
-    # Hybrid ranking from KV trading:config.ranking
-    ranking_cfg = trading_cfg.get("ranking", {"enabled": True, "topK": 3,
+    # Score ranking thresholds from KV trading:config.ranking.
+    # Final BUY count is owned by alphaFramework.allocation.buySignalCount.
+    ranking_cfg = trading_cfg.get("ranking", {"enabled": True,
                                               "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
                                               "screenerDenominator": 60.0, "promoteMinConf": 0.60})
     ev2_cfg = trading_cfg.get("ensemble_v2", {}) or {}
-    final = hybrid_ranking_promotion(
+    final = apply_sparse_tangent_allocation(
         final,
         ranking_cfg,
         ev2_cfg,

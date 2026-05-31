@@ -397,6 +397,14 @@ def _date_diff(date1: str, date2: str) -> int:
         return 0
 
 
+def _positive_float(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _run_backtest_for_stock(
     prices: list[dict],
     signals: list[dict],
@@ -405,6 +413,20 @@ def _run_backtest_for_stock(
     Run backtest for a single stock with FIFO order matching.
     Returns list of completed trade dicts (one per lot consumed).
     """
+    if len(prices) < 30:
+        return []
+    clean_prices: list[dict] = []
+    for bar in prices:
+        close = _positive_float(bar.get("close"))
+        if close is None:
+            continue
+        clean_prices.append({
+            **bar,
+            "close": close,
+            "high": _positive_float(bar.get("high")) or close,
+            "low": _positive_float(bar.get("low")) or close,
+        })
+    prices = clean_prices
     if len(prices) < 30:
         return []
 
@@ -416,8 +438,8 @@ def _run_backtest_for_stock(
     for idx, bar in enumerate(prices):
         date_str = bar["date"]
         close = float(bar["close"])
-        high = float(bar.get("high") or close)
-        low = float(bar.get("low") or close)
+        high = float(bar["high"])
+        low = float(bar["low"])
         sig = sig_map.get(date_str, {})
         signal = sig.get("signal", "HOLD")
         confidence = float(sig.get("confidence") or 0)

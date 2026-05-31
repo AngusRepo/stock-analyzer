@@ -12,6 +12,10 @@ import os
 import modal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from app.candidate_lifecycle_payload import (
+    candidate_registration_requested,
+    candidate_registrations_from_payload,
+)
 from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
 
 # Local code mounted into the Modal image during deploy.
@@ -545,30 +549,33 @@ def retrain_orchestrator(payload: dict) -> dict:
                 f"{partial_error.get('error')}"
             )
 
-        challenger_registrations = {}
-        if payload.get("register_challengers", True):
-            from app.model_pool import register_challenger as _register_challenger
-
+        candidate_registrations = {}
+        if candidate_registration_requested(payload, default=True):
             candidate_models = set(reduced_train["candidate_models"])
+            tree_registrations = candidate_registrations_from_payload(tree_result)
             for model_name in sorted(candidate_models):
-                if model_name in (tree_result.get("challenger_registrations") or {}):
+                if model_name in tree_registrations:
                     continue
                 try:
                     version = candidate_version
-                    _register_challenger(model_name, version, save=True)
                     group_result = {}
                     if model_name == "DLinear":
                         group_result = aux_train.get("dlinear") or {}
                     elif model_name == "PatchTST":
                         group_result = aux_train.get("patchtst") or {}
-                    challenger_registrations[model_name] = {
+                    folder = model_name.lower().replace("-", "_")
+                    ext = "pt" if model_name in {"DLinear", "PatchTST"} else "joblib"
+                    candidate_registrations[model_name] = {
                         "status": "registered",
                         "version": version,
+                        "gcs_path": f"universal/{folder}/{version}.{ext}",
+                        "metadata_path": f"universal/{folder}/metadata_{version}.json",
+                        "registry_owner": "model_artifact_registry",
                         "training_run_id": group_result.get("training_run_id"),
                         "training_manifest_path": group_result.get("training_manifest_path"),
                     }
                 except Exception as e:
-                    challenger_registrations[model_name] = {
+                    candidate_registrations[model_name] = {
                         "status": "error",
                         "version": candidate_version,
                         "error": str(e),
@@ -584,9 +591,9 @@ def retrain_orchestrator(payload: dict) -> dict:
             "total_samples": total_samples,
             "ic_tracking": merged_ic,
             "circuit_breaker": circuit_breaker,
-            "challenger_registrations": {
-                **(tree_result.get("challenger_registrations") or {}),
-                **challenger_registrations,
+            "candidate_registrations": {
+                **candidate_registrations_from_payload(tree_result),
+                **candidate_registrations,
             },
             "tree_elapsed_s": tree_result.get("elapsed_s"),
             "aux_train": {
@@ -1358,9 +1365,9 @@ def prep_universal_batch(payload: dict) -> dict:
 
 
 @app.function(
-    gpu="L4",                    # FT-Transformer needs GPU; L4 24GB for 631K full samples
+    gpu="L4",                    # Tree/sequence release training path; GPU retained for promoted neural sequence slots.
     memory=4096,                 # 631K samples x 106 features plus tree training overhead
-    timeout=7200,                # 120 min: tree models ~5 min + FT-T GPU full train ~90 min
+    timeout=7200,                # 120 min cap for universal release training.
     scaledown_window=60,
     max_containers=1,
 )
@@ -1400,9 +1407,8 @@ def train_universal_from_gcs(payload: dict) -> dict:
     return train_result
 
 
-# Two-container split: tree models on CPU + FT-T on GPU.
-# Saves ~30 min GPU idle time + enables parallel training.
-# Orchestrator spawns both, waits for both, then merges results for IC gate.
+# Tree model train path. Retired neural-tabular paths are excluded from release
+# artifacts; sequence/foundation families are trained through their own lanes.
 
 @app.function(
     cpu=2,
@@ -2856,10 +2862,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     windows = payload["windows"]
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
+    active_release_models = {"XGBoost", "CatBoost", "ExtraTrees", "LightGBM"}
     models = [
         model
         for model in (payload.get("models") or ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"])
-        if model != "FT-Transformer"
+        if model in active_release_models
     ]
     concurrent = int(payload.get("concurrent_windows", 2))
     start_date = payload["start_date"]

@@ -6,7 +6,7 @@
  */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
+import { paperApi, marketApi, systemApi, backtestApi, cronApi, adaptiveApi, recommendationsApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,7 +17,6 @@ import {
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
 import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
-import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
 import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
@@ -27,6 +26,7 @@ import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pe
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
+import { queryTtl, recommendationDailyKey, selectRecommendationLanes, twToday } from '@/lib/queryPolicy'
 import {
   WorkstationCatCard,
   WorkstationFlow,
@@ -34,7 +34,6 @@ import {
   WorkstationPanel,
   WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
-import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -342,6 +341,90 @@ function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: bo
   )
 }
 
+function BotExecutionLifecycleVisual({
+  state,
+  meta,
+  stale,
+  staging,
+}: {
+  state?: any
+  meta?: any
+  stale?: boolean
+  staging?: boolean
+}) {
+  const execution = state?.execution_counts ?? {}
+  const debate = state?.debate_counts ?? meta?.debate_counts ?? {}
+  const closed = Number(execution.skipped ?? 0) + Number(execution.cancelled ?? 0) + Number(execution.expired ?? 0) + Number(execution.rejected ?? 0)
+  const total = Math.max(
+    1,
+    Number(state?.total_count ?? 0),
+    Number(meta?.candidate_count ?? 0),
+    Number(state?.active_count ?? 0) + Number(execution.filled ?? 0) + closed,
+  )
+  const stages = [
+    {
+      label: 'staging',
+      value: staging ? Math.max(Number(meta?.candidate_count ?? 0), Number(state?.total_count ?? 0), 1) : Number(meta?.candidate_count ?? state?.total_count ?? 0),
+      tone: staging ? 'info' : 'neutral',
+      active: staging,
+    },
+    {
+      label: 'debate',
+      value: Number(debate.pending ?? 0) || (state?.state === 'debate_pending' ? Number(state?.total_count ?? 0) : Number(debate.completed ?? 0)),
+      tone: state?.state === 'debate_pending' ? 'warn' : 'neutral',
+      active: state?.state === 'debate_pending',
+    },
+    {
+      label: 'pending',
+      value: Number(state?.active_count ?? 0),
+      tone: state?.state === 'ready_to_execute' ? 'ok' : 'neutral',
+      active: state?.state === 'ready_to_execute',
+    },
+    {
+      label: 'filled',
+      value: Number(execution.filled ?? 0),
+      tone: Number(execution.filled ?? 0) > 0 ? 'ok' : 'neutral',
+      active: Number(execution.filled ?? 0) > 0,
+    },
+    {
+      label: 'closed',
+      value: closed,
+      tone: closed > 0 ? 'warn' : 'neutral',
+      active: closed > 0,
+    },
+  ]
+
+  return (
+    <div className="bot-execution-lifecycle-visual rounded-xl border border-[#263247] bg-[#05070c] p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">candidate lifecycle</p>
+          <p className="mt-1 text-xs text-[#9badbf]">從 pre-debate 候選池到成交/收斂，用數量軌跡取代表格掃讀。</p>
+        </div>
+        <WorkstationPill tone={stale ? 'warn' : staging ? 'info' : 'neutral'}>{stale ? 'stale' : staging ? 'pre-debate' : state?.label ?? 'execution'}</WorkstationPill>
+      </div>
+      <div className="grid gap-2 md:grid-cols-5">
+        {stages.map((stage, index) => {
+          const width = `${Math.max(stage.value > 0 ? 8 : 0, Math.min(100, (stage.value / total) * 100))}%`
+          const tone = stage.tone as 'ok' | 'warn' | 'info' | 'neutral'
+          return (
+            <div key={stage.label} className={`rounded-lg border p-2 ${executionToneClass(tone)}`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-[9px] uppercase tracking-[0.12em] opacity-70">{index + 1}. {stage.label}</span>
+                {stage.active && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+              </div>
+              <p className="mt-1 font-['Space_Grotesk'] text-xl font-semibold">{fmt(stage.value)}</p>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/30">
+                <div className="h-full rounded-full bg-current" style={{ width }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function pendingBuyEmptyMessage(meta?: any): string {
   const counts = meta?.execution_counts ?? {}
   const cancelled = Number(counts.cancelled ?? 0)
@@ -350,12 +433,354 @@ function pendingBuyEmptyMessage(meta?: any): string {
   const expired = Number(counts.expired ?? 0)
   const terminal = cancelled + filled + skipped + expired
   if (cancelled > 0 && terminal > 0) {
-    return '今日執行池的 pending buys 已被風控取消；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+    return '今日執行池的 pending buys 已被風控取消；Bot 不回退顯示 daily recommendations，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
   }
   if (terminal > 0) {
-    return '今日執行池的 pending buys 已進入終態；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+    return '今日執行池的 pending buys 已進入終態；Bot 保留 execution / audit context，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
   }
   return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在下一個交易日早上的 morning setup / debate 後產生。'
+}
+
+function shouldShowPreDebateStaging(pendingState?: any, meta?: any, stale?: boolean): boolean {
+  if (stale) return false
+  const state = String(pendingState?.state ?? '').toLowerCase()
+  if (['ready_to_execute', 'filled', 'skipped', 'expired', 'closed', 'halted', 'error'].includes(state)) return false
+  const debateStatus = String(meta?.debate_status ?? '').toLowerCase()
+  const pendingDebate = Number(pendingState?.debate_counts?.pending ?? meta?.debate_counts?.pending ?? 0)
+  return state === '' || state === 'empty' || state === 'base_ready' || state === 'debate_pending' || debateStatus === 'pending' || pendingDebate > 0
+}
+
+function executionToneClass(tone?: string): string {
+  if (tone === 'ok') return 'border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-200'
+  if (tone === 'warn') return 'border-amber-500/25 bg-amber-500/[0.08] text-amber-200'
+  if (tone === 'error') return 'border-red-500/30 bg-red-500/[0.08] text-red-200'
+  if (tone === 'info') return 'border-sky-500/25 bg-sky-500/[0.08] text-sky-200'
+  return 'border-[#263247] bg-[#070a10] text-slate-300'
+}
+
+function compactMoney(value: unknown): string {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '-'
+  return n.toLocaleString('zh-TW', { maximumFractionDigits: 2 })
+}
+
+function candidateScore(rec: any): number {
+  const scoreV2 = rec?.score_v2 ?? rec?.scoreV2 ?? rec?.score_components
+  const raw = scoreV2?.finalScore ?? scoreV2?.final_score ?? scoreV2?.final_score_v2 ?? rec?.finalScore ?? rec?.score ?? rec?.confidence
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, Math.abs(value) <= 1 ? value * 100 : value))
+}
+
+function candidateForecastPct(rec: any): number | null {
+  const summary = rec?.ml_vote_summary ?? rec?.mlVoteSummary ?? {}
+  const raw = summary?.forecast_pct ?? summary?.forecastPct ?? rec?.forecast_pct ?? rec?.forecastPct
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return null
+  return Math.abs(value) <= 0.2 ? value * 100 : value
+}
+
+function ExecutionOnlyEmptyState({
+  showingDate,
+  pendingState,
+  pendingMeta,
+  stale,
+}: {
+  showingDate: string
+  pendingState?: any
+  pendingMeta?: any
+  stale?: boolean
+}) {
+  const counts = pendingMeta?.execution_counts ?? {}
+  const stateLabel = pendingState?.label ?? pendingState?.state ?? 'no active pending buys'
+  const rows = [
+    { label: 'active', value: pendingState?.active_count ?? 0, tone: 'info' },
+    { label: 'filled', value: counts.filled ?? 0, tone: 'ok' },
+    { label: 'skipped', value: counts.skipped ?? 0, tone: 'warn' },
+    { label: 'rejected', value: counts.rejected ?? 0, tone: 'error' },
+  ]
+
+  return (
+    <div className="bot-execution-empty-state space-y-3">
+      <div className="grid gap-2 md:grid-cols-4">
+        {rows.map((row) => (
+          <div key={row.label} className={`rounded-xl border p-3 ${executionToneClass(row.tone)}`}>
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] opacity-70">{row.label}</p>
+            <div className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold">{fmt(Number(row.value ?? 0))}</div>
+          </div>
+        ))}
+      </div>
+      <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-xs leading-5 text-[#8b9bab]">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <WorkstationPill tone={stale ? 'warn' : 'neutral'}>{stale ? 'stale pending context' : stateLabel}</WorkstationPill>
+          <span className="font-mono text-[10px] text-[#70809b]">{showingDate || 'today'} execution snapshot</span>
+        </div>
+        <p>{pendingBuyEmptyMessage(pendingMeta)}</p>
+        <p className="mt-2 text-[#d6a85f]">沒有 pre-debate staging 或 pending buys 時，Bot 只保留 execution / audit context。</p>
+      </div>
+    </div>
+  )
+}
+
+function PreDebateStagingCard({
+  rec,
+  rank,
+  selected,
+  onSelectSymbol,
+}: {
+  rec: any
+  rank: number
+  selected?: boolean
+  onSelectSymbol?: (symbol: string) => void
+}) {
+  const score = candidateScore(rec)
+  const forecast = candidateForecastPct(rec)
+  const reason = String(rec?.reason ?? rec?.summary ?? '').trim()
+  const symbol = String(rec?.symbol ?? rec?.stock_symbol ?? '')
+  const name = String(rec?.name ?? rec?.stock_name ?? '')
+  const lane = String(rec?.recommendation_lane ?? rec?.market_segment ?? 'candidate')
+  const segment = String(rec?.market_segment ?? 'TWSE/TPEx')
+  const confidence = Number(rec?.confidence ?? score / 100)
+
+  return (
+    <div className={`pre-debate-staging-card rounded-xl border bg-[#070a10] p-3 ${selected ? 'border-sky-400/50' : 'border-[#263247]'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="grid h-6 w-6 place-items-center border border-sky-500/25 bg-sky-500/10 font-mono text-[10px] text-sky-200">{rank}</span>
+            <button
+              onClick={() => symbol && onSelectSymbol?.(symbol)}
+              className="truncate text-left font-['Space_Grotesk'] text-base font-semibold text-[#f2ead8] hover:text-sky-200"
+            >
+              {symbol || '-'} {name && <span className="text-xs font-normal text-[#8b9bab]">{name}</span>}
+            </button>
+            {signalBadge(String(rec?.signal ?? 'candidate'))}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <WorkstationPill tone="info">{lane}</WorkstationPill>
+            <WorkstationPill tone="neutral">{segment}</WorkstationPill>
+            <WorkstationPill tone="warn">pre-debate</WorkstationPill>
+          </div>
+        </div>
+        <ConvictionGauge value={score / 100} size={56} />
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] px-2 py-1.5">
+          <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">score</p>
+          <p className="font-mono text-sm text-[#f2ead8]">{score.toFixed(0)}</p>
+        </div>
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] px-2 py-1.5">
+          <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">forecast</p>
+          <p className={`font-mono text-sm ${forecast == null ? 'text-[#8b9bab]' : forecast >= 0 ? 'text-rose-200' : 'text-emerald-200'}`}>
+            {forecast == null ? '-' : `${forecast >= 0 ? '+' : ''}${forecast.toFixed(1)}%`}
+          </p>
+        </div>
+        <div className="rounded-lg border border-[#263247] bg-[#05070c] px-2 py-1.5">
+          <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">limit ref</p>
+          <p className="font-mono text-sm text-[#f2ead8]">{compactMoney(rec?.current_price ?? rec?.price ?? rec?.close)}</p>
+        </div>
+      </div>
+
+      {reason && <p className="mt-3 line-clamp-2 text-[11px] leading-5 text-[#8b9bab]">{reason}</p>}
+      <button
+        onClick={() => symbol && onSelectSymbol?.(symbol)}
+        className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#263247] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8b9bab] hover:border-sky-400/40 hover:text-sky-200"
+      >
+        <Activity className="h-3.5 w-3.5" />
+        K line
+      </button>
+    </div>
+  )
+}
+
+function PreDebateStagingPool({
+  showingDate,
+  pendingState,
+  pendingMeta,
+  selectedSymbol,
+  onSelectSymbol,
+}: {
+  showingDate: string
+  pendingState?: any
+  pendingMeta?: any
+  selectedSymbol?: string | null
+  onSelectSymbol?: (symbol: string) => void
+}) {
+  const today = twToday()
+  const { data, isLoading } = useQuery({
+    queryKey: recommendationDailyKey(today),
+    queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
+    staleTime: queryTtl.intraday,
+    refetchOnMount: 'always',
+    select: selectRecommendationLanes<any>,
+  })
+  const payload = data?.payload
+  const tradable = data?.tradable ?? []
+  const emerging = data?.emerging ?? []
+  const rows = tradable.slice(0, 16)
+
+  return (
+    <div className="pre-debate-staging-pool space-y-3">
+      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.05] p-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <WorkstationPill tone="info">pre-debate staging</WorkstationPill>
+              <WorkstationPill tone="warn">not executable</WorkstationPill>
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{payload?.date ?? showingDate ?? today}</span>
+            </div>
+            <p className="mt-2 max-w-3xl text-xs leading-5 text-[#9badbf]">
+              這是 debate 前的私有候選池，可能暫時與 Home 的候選來源一致；真正下單目標要等 morning setup / debate / T2 後轉成 pending buys。
+            </p>
+          </div>
+          <div className="grid min-w-[220px] grid-cols-3 gap-2 text-center">
+            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">tradable</p>
+              <p className="font-['Space_Grotesk'] text-xl font-semibold text-[#f2ead8]">{fmt(tradable.length)}</p>
+            </div>
+            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">research</p>
+              <p className="font-['Space_Grotesk'] text-xl font-semibold text-[#f2ead8]">{fmt(emerging.length)}</p>
+            </div>
+            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">state</p>
+              <p className="truncate text-xs font-semibold text-sky-200">{pendingState?.label ?? pendingMeta?.status ?? 'waiting'}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="grid gap-3 xl:grid-cols-2">
+          {[1, 2, 3, 4].map((idx) => <div key={idx} className="h-36 animate-pulse rounded-xl bg-muted/30" />)}
+        </div>
+      ) : rows.length ? (
+        <div className="grid gap-3 xl:grid-cols-2">
+          {rows.map((rec: any, idx: number) => (
+            <PreDebateStagingCard
+              key={rec.stock_id ?? rec.symbol ?? idx}
+              rec={rec}
+              rank={idx + 1}
+              selected={selectedSymbol === rec.symbol}
+              onSelectSymbol={onSelectSymbol}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-[#263247] bg-[#070a10] p-4 text-xs text-[#8b9bab]">
+          pre-debate staging 尚未產生；請看 pending state / run history 判斷是時間差、pipeline 未完成或資料異常。
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BotExecutionCandidateCard({
+  item,
+  rank,
+  quadrant,
+  selected,
+  onSelectSymbol,
+}: {
+  item: any
+  rank: number
+  quadrant?: string
+  selected?: boolean
+  onSelectSymbol?: (symbol: string) => void
+}) {
+  const executionBadge = formatExecutionStatusBadge(item.execution_status)
+  const partialRemaining = formatPartialFillRemaining(item.watch_points)
+  const allocatorSummary = describeAllocatorDecision(item.watch_points)
+  const riskPct = Number(item.risk_pct ?? 0)
+  const confidence = Number(item.confidence ?? 0)
+  const score = item.score_v2?.finalScore ?? item.score ?? null
+
+  return (
+    <div className={`bot-execution-candidate-card rounded-xl border bg-[#070a10] p-3 ${selected ? 'border-emerald-500/50' : 'border-[#263247]'}`}>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="grid h-6 w-6 place-items-center border border-[#3a3125] bg-[#171714] font-mono text-[10px] text-[#ffd87f]">{rank}</span>
+                <button
+                  onClick={() => onSelectSymbol?.(item.symbol)}
+                  className="font-mono text-sm font-semibold text-[#f2ead8] hover:text-[#ffd87f]"
+                  title="open k-line"
+                >
+                  {item.symbol} {item.name}
+                </button>
+                <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-300">
+                  {quadrant ?? item.recommendation_lane ?? 'pending'}
+                </Badge>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className={`rounded-md border px-2 py-1 font-mono text-[10px] ${executionToneClass(executionBadge.tone)}`}>
+                  execution: {executionBadge.label}
+                </span>
+                <span className="rounded-md border border-[#263247] bg-[#0f151d] px-2 py-1 font-mono text-[10px] text-[#8b9bab]">
+                  debate: {item.debate_status ?? 'pending'}
+                </span>
+                <span className="rounded-md border border-[#263247] bg-[#0f151d] px-2 py-1 font-mono text-[10px] text-[#8b9bab]">
+                  retry: {item.retry_count ?? 0}
+                </span>
+              </div>
+            </div>
+            <WorkstationPill tone={executionBadge.tone === 'error' ? 'error' : executionBadge.tone === 'warn' ? 'warn' : 'info'}>
+              private target
+            </WorkstationPill>
+          </div>
+
+          <div className="mt-3 grid gap-2 md:grid-cols-4">
+            {[
+              { label: 'limit', value: compactMoney(item.ml_entry_price), tone: 'text-[#f2ead8]' },
+              { label: 'stop', value: compactMoney(item.ml_stop_loss), tone: 'text-emerald-200' },
+              { label: 'tp1', value: compactMoney(item.ml_target1), tone: 'text-rose-200' },
+              { label: 'risk', value: Number.isFinite(riskPct) ? `${(riskPct * 100).toFixed(1)}%` : '-', tone: 'text-amber-200' },
+            ].map((metric) => (
+              <div key={metric.label} className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{metric.label}</p>
+                <p className={`mt-1 font-mono text-sm font-semibold ${metric.tone}`}>{metric.value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 rounded-lg border border-[#263247] bg-[#05070c] p-3 text-[11px] leading-5 text-[#8b9bab]">
+            {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
+          </div>
+          {allocatorSummary && (
+            <div className={`mt-2 rounded-lg border px-3 py-2 text-[11px] leading-5 ${executionToneClass(allocatorSummary.tone)}`}>
+              <div className="font-semibold">{allocatorSummary.title}</div>
+              <div className="mt-0.5 opacity-80">{allocatorSummary.detail}</div>
+            </div>
+          )}
+        </div>
+
+        <div className="grid content-start gap-2">
+          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">conviction</p>
+            <div className="mt-2 flex items-center gap-3">
+              <ConvictionGauge value={Number.isFinite(confidence) ? confidence : 0} size={70} />
+              <div>
+                <div className="font-['Space_Grotesk'] text-xl font-semibold text-[#f2ead8]">
+                  {Number.isFinite(confidence) ? `${(confidence * 100).toFixed(0)}%` : '-'}
+                </div>
+                <div className="font-mono text-[10px] text-[#70809b]">score {score == null ? '-' : Number(score).toFixed(1)}</div>
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => onSelectSymbol?.(item.symbol)}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#263247] bg-[#0f151d] px-3 py-2 font-mono text-[11px] text-[#d6a85f] hover:border-[#d6a85f]/40"
+          >
+            <Activity className="h-3.5 w-3.5" />
+            open k-line
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
@@ -371,6 +796,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   const activeBuys = isStalePending ? [] : buys
   const pendingState = pbData?.state
   const pendingMeta = pbData?.meta
+  const showPreDebateStaging = !activeBuys.length && shouldShowPreDebateStaging(pendingState, pendingMeta, isStalePending)
 
   // Quadrant filter
   const { data: qfData } = useQuery({
@@ -385,16 +811,24 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
 
-  // 如果沒有 pending buys，fallback 到 daily recommendations
+  // If there are no pending buys, keep Bot on execution context only.
   if (!activeBuys.length) {
     return (
       <div className="space-y-3">
-        <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
         <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
-        <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
-          {pendingBuyEmptyMessage(pendingMeta)}
-        </div>
+        <BotExecutionLifecycleVisual state={pendingState} stale={isStalePending} meta={pendingMeta} staging={showPreDebateStaging} />
+        {showPreDebateStaging ? (
+          <PreDebateStagingPool
+            showingDate={showingDate}
+            pendingState={pendingState}
+            pendingMeta={pendingMeta}
+            selectedSymbol={selectedSymbol}
+            onSelectSymbol={onSelectSymbol}
+          />
+        ) : (
+          <ExecutionOnlyEmptyState showingDate={showingDate} pendingState={pendingState} pendingMeta={pendingMeta} stale={isStalePending} />
+        )}
       </div>
     )
   }
@@ -403,162 +837,20 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     <div className="space-y-2">
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
+      <BotExecutionLifecycleVisual state={pendingState} stale={isStalePending} meta={pendingMeta} />
       {activeBuys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
-        const executionBadge = formatExecutionStatusBadge(b.execution_status)
-        const partialRemaining = formatPartialFillRemaining(b.watch_points)
-        const allocatorSummary = describeAllocatorDecision(b.watch_points)
-        // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
-        // prefix with price line. Previously price line 100% replaced reason.
-        // Also strip "⚠️ Signal Provenance ..." English debate-only preamble
-        // that shouldn't be shown to end users (it's a hint for debate LLM).
-        const priceLine = `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`
-        const stripProvenance = (s: string): string => {
-          // Remove "⚠️ Signal Provenance (...): ... Judge on ... context." paragraph.
-          // Preserves zh-TW LLM reason that follows (separated by blank line or period).
-          return s.replace(/^[\s\S]*?Judge on fundamental merit\s*\/\s*industry context\.\s*/, '').trim()
-        }
-        const cleanReason = b.reason ? stripProvenance(b.reason) : ''
-        const rec = {
-          symbol: b.symbol, name: b.name, signal: b.signal, confidence: b.confidence,
-          current_price: b.ml_entry_price, sector: qf?.quadrant ?? '',
-          reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
-          watch_points: b.watch_points ?? null,
-          stock_id: b.stock_id ?? b.stockId ?? null,
-          market_segment: b.market_segment ?? null,
-          recommendation_lane: b.recommendation_lane ?? null,
-          score_v2: b.score_v2 ?? null,
-          alpha_context: b.alpha_context ?? null,
-          alpha_allocation: b.alpha_allocation ?? null,
-          ml_vote_summary: b.ml_vote_summary ?? null,
-          prediction_forecast_data: b.prediction_forecast_data ?? null,
-          chip_evidence: b.chip_evidence ?? null,
-          reason_variants: b.reason_variants ?? b.llm_reason_variants ?? null,
-          gemini_reason: b.gemini_reason ?? null,
-          breeze2_reason: b.breeze2_reason ?? b.breeze2_reason_shadow ?? null,
-        }
         return (
-          <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
-            <RecommendationCard rec={rec} rank={idx + 1} />
-            <div className="mx-2 -mt-2 mb-2 rounded-lg border border-muted/40 bg-background/40 px-3 py-2 text-[10px] font-mono text-muted-foreground">
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                <span>execution: {executionBadge.label}</span>
-                <span>debate: {b.debate_status ?? 'pending'}</span>
-                <span>source: {b.source ?? 'morning_setup'}</span>
-                <span>retry: {b.retry_count ?? 0}</span>
-              </div>
-              <div className="mt-1 text-muted-foreground/70">
-                base {b.original_entry ? `$${b.original_entry}` : 'N/A'} {'->'} limit {b.ml_entry_price ? `$${b.ml_entry_price}` : 'N/A'} | risk {(Number(b.risk_pct ?? 0) * 100).toFixed(1)}%
-              </div>
-              <div className="mt-1 text-muted-foreground/70">
-                {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
-              </div>
-              {allocatorSummary && (
-                <div className={[
-                  'mt-2 rounded-md border px-2 py-1.5',
-                  allocatorSummary.tone === 'ok'
-                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-                    : allocatorSummary.tone === 'warn'
-                      ? 'border-amber-500/25 bg-amber-500/10 text-amber-200'
-                      : 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200',
-                ].join(' ')}>
-                  <div className="font-semibold">{allocatorSummary.title}</div>
-                  <div className="mt-0.5 text-muted-foreground/80">{allocatorSummary.detail}</div>
-                </div>
-              )}
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
-              className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-              title="查看 K 線"
-            >
-              <Activity className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          <BotExecutionCandidateCard
+            key={b.symbol}
+            item={b}
+            rank={idx + 1}
+            quadrant={qf?.quadrant}
+            selected={selectedSymbol === b.symbol}
+            onSelectSymbol={onSelectSymbol}
+          />
         )
       })}
-    </div>
-  )
-}
-
-// Fallback: 無掛單時顯示最新 daily recommendations
-function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
-  const { data: recData, isLoading } = useQuery({
-    queryKey: ['recommendations', 'daily', 'latest'],
-    queryFn: () => recommendationsApi.daily(),
-    staleTime: 5 * 60_000,
-  })
-  const { tradable: tradableRecs, emerging: emergingRecs } = splitRecommendationLanes<any>(recData)
-  const recs = tradableRecs
-  if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
-  if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
-  return (
-    <div className="bot-fallback-recommendations space-y-3">
-      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
-      <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
-          tradable {recs.length}
-        </Badge>
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 bg-amber-500/10 text-amber-300">
-          research {emergingRecs.length}
-        </Badge>
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
-          source: daily recommendations
-        </Badge>
-        <span className="text-muted-foreground/70">這是 pipeline 產出的推薦候選；下一個交易日 morning setup / debate 後才會產生 pending buys。</span>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1.05fr)_minmax(300px,0.95fr)]">
-        <div className="space-y-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
-          <div className="flex items-center justify-between px-1">
-            <div>
-              <p className="text-[11px] font-semibold text-emerald-300">上市櫃交易流</p>
-              <p className="text-[10px] text-muted-foreground/70">會進 morning setup / debate / pending buys。</p>
-            </div>
-            <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-300">
-              {recs.length} 檔
-            </Badge>
-          </div>
-          {recs.slice(0, 16).map((r: any, idx: number) => (
-            <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
-              <RecommendationCard rec={r} rank={idx + 1} />
-              <button
-                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                title="查看 K 線"
-              >
-                <Activity className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-          {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有上市櫃交易候選。</div>}
-        </div>
-
-        <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-2">
-          <div className="flex items-center justify-between gap-3 px-1">
-            <div>
-              <p className="text-[11px] font-semibold text-amber-300">興櫃觀察名單</p>
-              <p className="text-[10px] text-muted-foreground/70">研究用，不進 morning setup / pending buys。</p>
-            </div>
-            <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
-              {emergingRecs.length} 檔
-            </Badge>
-          </div>
-          {emergingRecs.slice(0, 12).map((r: any, idx: number) => (
-            <div key={`emerging-${r.symbol}`} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-amber-500/40 rounded-xl' : ''}`}>
-              <RecommendationCard rec={r} rank={idx + 1} />
-              <button
-                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                title="查看 K 線"
-              >
-                <Activity className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-          {!emergingRecs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有興櫃研究候選。</div>}
-        </div>
-      </div>
     </div>
   )
 }
@@ -1391,16 +1683,16 @@ export default function BotDashboard() {
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">
           <WorkstationPanel
-            title="AI 候選清單"
-            kicker="post-debate execution candidates"
+            title="執行池"
+            kicker="pending buys and execution state"
             action={<WorkstationPill tone="info">T2 aware</WorkstationPill>}
           >
             <div className="border-b border-[#263247] px-4 pb-2 pt-3">
               <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
-                <TrendingUp className="w-3.5 h-3.5" /> AI 候選清單
+                <TrendingUp className="w-3.5 h-3.5" /> Execution Pending Context
               </div>
               <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
-                {AI_TOP_PICK_EXPLANATION}
+                Bot 只顯示 post-debate pending context、quote sanity 與 execution state；不回退顯示 daily recommendations。
               </p>
             </div>
             <div className="p-2">

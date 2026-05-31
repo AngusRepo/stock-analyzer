@@ -3,6 +3,7 @@ import {
   isEmergingStylePriceRow,
   normalizeBoardType,
   recommendationLaneForBoard,
+  resolveRecommendationGovernance,
 } from './boardTradability'
 
 function assert(condition: unknown, message: string): void {
@@ -24,6 +25,23 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const classified = classifyBoard({ symbol: '0050', market: 'TWSE', open: 190, avg_price: null })
+  assert(classified.boardType === 'ETF', 'ETF-like symbol must override TWSE metadata')
+  assert(classified.recommendationLane === 'research_only', 'ETF must not enter tradable screener lane')
+  assert(classified.eligibleForMl === false, 'ETF must not consume L1/L2 ML capacity')
+  assert(classified.eligibleForPendingBuy === false, 'ETF must not become pending buy')
+
+  const governed = resolveRecommendationGovernance(classified, {
+    recommendationLane: 'tradable',
+    eligibleForMl: 1,
+    eligibleForPendingBuy: 1,
+  })
+  assert(governed.recommendationLane === 'research_only', 'ETF hard gate must override stale persisted tradable lane')
+  assert(governed.eligibleForMl === false, 'ETF hard gate must override stale persisted ML eligibility')
+  assert(governed.eligibleForPendingBuy === false, 'ETF hard gate must override stale persisted pending-buy eligibility')
+}
+
+{
   const classified = classifyBoard({ market: 'TWSE', open: 266, avg_price: null, restricted: true })
   assert(classified.tradabilityTier === 'blocked', 'restricted stocks should be blocked')
   assert(classified.eligibleForMl === false, 'restricted stocks should not consume ML shortlist capacity')
@@ -41,5 +59,6 @@ function assert(condition: unknown, message: string): void {
   assert(normalizeBoardType('sii') === 'LISTED', 'FinLab sii should map to listed board')
   assert(normalizeBoardType('otc') === 'OTC', 'FinLab otc should map to OTC board')
   assert(normalizeBoardType('rotc') === 'EMERGING', 'FinLab rotc should map to emerging board')
+  assert(normalizeBoardType('etf') === 'ETF', 'FinLab ETF market should map to ETF board')
   assert(normalizeBoardType('pub') === 'UNKNOWN', 'FinLab pub should not become tradable by default')
 }

@@ -1,6 +1,7 @@
 import { adminReadRoutes } from '../routes/adminReadRoutes'
 import { adminWriteRoutes } from '../routes/adminWriteRoutes'
 import { EXPECTED_V2_MODELS } from './dataQualityMonitor'
+import { listModelUpgradeCandidates } from './modelUpgradeResearchTrack'
 import type { Bindings } from '../types'
 
 function assert(condition: unknown, message: string): void {
@@ -519,7 +520,11 @@ void (async () => {
         headers: { Authorization: 'Bearer service-token' },
       }, env)
       const statusBody = await statusRes.json() as any
-      assert(statusBody.candidates.length >= 10, 'model upgrade status should include the full P7 track, not only shadow/benchmark candidates')
+      const expectedModelUpgradeIds = listModelUpgradeCandidates().map((candidate) => candidate.id)
+      assert(statusBody.candidates.length >= expectedModelUpgradeIds.length, 'model upgrade status should include the full P7 track, not only shadow/benchmark candidates')
+      for (const candidateId of expectedModelUpgradeIds) {
+        assert(statusBody.candidates.some((row: any) => row.candidate_id === candidateId), `model upgrade status should include ${candidateId}`)
+      }
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'track_only' && row.requires_experiment_registry === false), 'non-experiment tracks should be visible as track_only')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'ready_for_review'), 'model upgrade status should surface review-ready evidence after batch run')
       const target = statusBody.candidates.find((row: any) => row.registry_status === 'ready_for_review' && row.requires_experiment_registry && row.latest_experiment_id)

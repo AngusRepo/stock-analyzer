@@ -43,6 +43,18 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     pendingBuyOrchestrator.includes('serializeScoreV2Snapshot(scoreV2)'),
     'morning setup pending buys should keep canonical Score V2 payload on the pending-buy item',
   )
+  assert(
+    morningSetupQuery.includes('dr.signal_source AS signal_source'),
+    'morning setup must carry final allocator signal_source into pending-buy provenance',
+  )
+  assert(
+    pendingBuyOrchestrator.includes('Signal Provenance (sparse tangent)'),
+    'pending-buy provenance must identify sparse tangent allocation instead of old ranking promotion',
+  )
+  assert(
+    !pendingBuyOrchestrator.includes('Signal Provenance (ranking promoted)'),
+    'pending-buy provenance must not label sparse tangent BUYs as ranking promotion',
+  )
   for (const legacyProjection of [
     'chip_score: scoreV2.components.chipFlow',
     'tech_score: scoreV2.components.technicalStructure',

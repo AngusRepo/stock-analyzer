@@ -248,7 +248,7 @@ async function handleSchedulerCallback(c: any) {
     run_id: callbackRunId,
     run_date: schedulerRunDate,
     metadata: callbackMetadata,
-  })
+  }, c.env as any)
 
   c.executionCtx.waitUntil((async () => {
     try {
@@ -403,6 +403,7 @@ async function handleSchedulerCallback(c: any) {
         await runPostVerifyCallbackChain(c.env, {
           runDate: callbackRunDate,
           upstreamRunId: callbackRunId,
+          metadata: callbackMetadata,
         })
       } catch (e: any) {
         await logSchedulerResult(c.env.KV, 'post-verify-chain', {

@@ -1,8 +1,15 @@
 /**
  * schedulerRunLogger.ts - Scheduler run result persistence and alerting
  */
+import type { R2Bucket } from '../types'
 
 export type SchedulerRunStatus = 'success' | 'error' | 'skipped' | 'triggered' | 'running'
+
+type SchedulerRunLoggerEnv = {
+  DISCORD_WEBHOOK_URL?: string
+  DB?: D1Database
+  ARTIFACTS?: R2Bucket
+}
 
 export interface SchedulerRunLogEntry {
   task: string
@@ -34,6 +41,7 @@ const TASK_NAMES: Record<string, string> = {
   'dataset-snapshot-export': 'Dataset Snapshot Export',
   'linucb-reward-ledger': 'LinUCB Reward Ledger',
   'meta-learning-shadow': 'Meta Learning Shadow',
+  'finlab-ai-skill-discovery': 'FinLab AI Skill Discovery',
   'strategy-learning': 'Strategy Learning',
   pipeline: 'Pipeline',
   'backtest-replay': 'Backtest Replay',
@@ -130,7 +138,7 @@ export async function logSchedulerRunResult(
   kv: KVNamespace,
   task: string,
   result: SchedulerRunResultInput,
-  env?: { DISCORD_WEBHOOK_URL?: string },
+  env?: SchedulerRunLoggerEnv,
 ): Promise<void> {
   const requestedDate = String(result.run_date ?? result.date ?? '').trim()
   const today = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
@@ -160,6 +168,25 @@ export async function logSchedulerRunResult(
     // makes Scheduler incidents impossible to diagnose.
     console.warn(`[schedulerRunLogger] KV write failed for task=${task}:`, error)
     if (result.strict) throw error
+  }
+
+  if (env?.DB && env.ARTIFACTS) {
+    try {
+      const { recordSchedulerRunReportArtifact } = await import('./datasetSnapshots')
+      await recordSchedulerRunReportArtifact(env as Required<Pick<SchedulerRunLoggerEnv, 'DB' | 'ARTIFACTS'>>, {
+        task,
+        status: result.status,
+        businessDate: today,
+        runId: result.run_id ?? `${task}:${today}:${entry.timestamp}`,
+        summary: result.summary,
+        durationMs: result.duration_ms,
+        error: result.error,
+        metadata: result.metadata,
+      })
+    } catch (error) {
+      console.warn(`[schedulerRunLogger] scheduler_report_artifact_failed task=${task}:`, error)
+      if (result.strict) throw error
+    }
   }
 
   if (result.status === 'error' && env?.DISCORD_WEBHOOK_URL) {
@@ -193,7 +220,97 @@ export async function logSchedulerRunResult(
   }
 }
 
-export async function getSchedulerRunLogs(kv: KVNamespace, date: string): Promise<SchedulerRunLogEntry[]> {
+function schedulerReportKindForTask(task: string): string {
+  return `${task.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}_run_report`
+}
+
+function schedulerLogFromReportPayload(
+  task: string,
+  date: string,
+  payload: Record<string, unknown>,
+): SchedulerRunLogEntry | null {
+  const status = payload.status
+  if (!isSchedulerRunStatus(status)) return null
+
+  const metadata = payload.metadata
+  return {
+    task: String(payload.task || task),
+    status,
+    summary: String(payload.summary ?? ''),
+    duration_ms: Number(payload.duration_ms ?? 0),
+    timestamp: String(payload.written_at ?? ''),
+    run_id: typeof payload.producer_run_id === 'string' ? payload.producer_run_id : undefined,
+    run_date: typeof payload.business_date === 'string' ? payload.business_date : date,
+    error: typeof payload.error === 'string' ? payload.error : undefined,
+    metadata: metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+      ? metadata as Record<string, unknown>
+      : undefined,
+  }
+}
+
+async function getSchedulerRunReportArtifactLogs(
+  env: SchedulerRunLoggerEnv | undefined,
+  date: string,
+  missingTasks: string[],
+): Promise<SchedulerRunLogEntry[]> {
+  if (!env?.DB || !env.ARTIFACTS || missingTasks.length === 0) return []
+
+  const taskByKind = new Map(missingTasks.map((task) => [schedulerReportKindForTask(task), task]))
+  const kinds = [...taskByKind.keys()]
+  const placeholders = kinds.map(() => '?').join(',')
+  const rows = await env.DB.prepare(`
+    SELECT kind, r2_key, producer_run_id, created_at, updated_at
+    FROM dataset_snapshots
+    WHERE business_date = ?
+      AND access_tier = 'report'
+      AND kind IN (${placeholders})
+      AND status = 'ready'
+      AND r2_key IS NOT NULL
+    ORDER BY updated_at DESC, created_at DESC
+  `).bind(date, ...kinds).all<{
+    kind: string
+    r2_key: string | null
+    producer_run_id: string
+    created_at?: string
+    updated_at?: string
+  }>()
+
+  const latestByKind = new Map<string, {
+    kind: string
+    r2_key: string | null
+    producer_run_id: string
+    created_at?: string
+    updated_at?: string
+  }>()
+  for (const row of rows.results ?? []) {
+    if (!latestByKind.has(row.kind)) latestByKind.set(row.kind, row)
+  }
+
+  const logs: SchedulerRunLogEntry[] = []
+  await Promise.all([...latestByKind.values()].map(async (row) => {
+    const task = taskByKind.get(row.kind)
+    if (!task || !row.r2_key) return
+
+    const object = await (env.ARTIFACTS as any).get(row.r2_key)
+    if (!object) return
+    const payload = JSON.parse(await object.text()) as Record<string, unknown>
+    const entry = schedulerLogFromReportPayload(task, date, payload)
+    if (!entry) return
+    logs.push({
+      ...entry,
+      run_id: entry.run_id ?? row.producer_run_id,
+      timestamp: entry.timestamp || row.updated_at || row.created_at || '',
+    })
+  }))
+
+  return logs
+}
+
+export async function getSchedulerRunLogs(
+  kv: KVNamespace,
+  date: string,
+  env?: SchedulerRunLoggerEnv,
+): Promise<SchedulerRunLogEntry[]> {
   const tasks = Object.keys(TASK_NAMES)
   const results: SchedulerRunLogEntry[] = []
 
@@ -210,6 +327,17 @@ export async function getSchedulerRunLogs(kv: KVNamespace, date: string): Promis
   }
 
   const loggedTasks = new Set(results.map((row) => row.task))
+  const artifactLogs = await getSchedulerRunReportArtifactLogs(
+    env,
+    date,
+    tasks.filter((task) => !loggedTasks.has(task)),
+  )
+  for (const entry of artifactLogs) {
+    if (loggedTasks.has(entry.task)) continue
+    results.push(entry)
+    loggedTasks.add(entry.task)
+  }
+
   for (const task of tasks) {
     if (loggedTasks.has(task)) continue
     results.push({

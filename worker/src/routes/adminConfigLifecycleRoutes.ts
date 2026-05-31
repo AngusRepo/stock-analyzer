@@ -235,7 +235,17 @@ adminConfigLifecycleRoutes.get('/api/admin/config/parameter-candidates', async (
   }
   return c.json({
     success: true,
-    states: ['NO_CANDIDATE', 'SHADOW_COLLECTING', 'VALIDATION_BLOCKED', 'PROMOTION_READY', 'APPROVAL_REQUIRED', 'PROD_ACTIVE'],
+    states: [
+      'NO_CANDIDATE',
+      'SHADOW_COLLECTING',
+      'VALIDATION_BLOCKED',
+      'EVIDENCE_INSUFFICIENT',
+      'NOT_PROMOTION_READY',
+      'INFRA_BLOCKED',
+      'PROMOTION_READY',
+      'APPROVAL_REQUIRED',
+      'PROD_ACTIVE',
+    ],
     count: rows.results?.length ?? 0,
     candidates: (rows.results || []).map((row: any) => ({
       ...row,

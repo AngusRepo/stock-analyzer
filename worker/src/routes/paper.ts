@@ -183,7 +183,7 @@ async function enrichPendingBuyContext(
           FROM predictions
          WHERE stock_id IN (${stockPlaceholders})
            AND model_name != 'ensemble'
-           AND model_name NOT LIKE '%::challenger'
+          AND instr(model_name, '::') = 0
            AND prediction_date <= ?
       )
       SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data

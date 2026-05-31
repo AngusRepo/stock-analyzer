@@ -448,7 +448,7 @@ def test_strategy_lab_record_requires_reproducibility_evidence():
     assert record["owner"] == "ml-controller.validation_governance"
     assert record["decision"] == "PASS"
     assert record["production_promotion_allowed"] is False
-    assert record["promotion_owner"] == "model_pool/promote_check"
+    assert record["promotion_owner"] == "model_artifact_registry/confirm_promotion"
     assert record["dataset_snapshot"]["prices_snapshot"].startswith("gcs://")
 
 

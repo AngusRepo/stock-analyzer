@@ -14,7 +14,7 @@ from typing import Any
 from services.portfolio_allocation import allocate_sparse_tangent
 
 
-SCHEMA_VERSION = "online-portfolio-bandit-l2-v1"
+SCHEMA_VERSION = "online-portfolio-bandit-controller-v2"
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,11 @@ def _candidate_score(row: dict[str, Any]) -> float:
     return _to_float(row.get("score"), 0.0)
 
 
+def _is_production_controller_stage(stage: str) -> bool:
+    normalized = str(stage or "").lower()
+    return normalized.startswith("l3_") or "production" in normalized
+
+
 def build_online_portfolio_bandit_l2_packet(
     *,
     candidates: list[dict[str, Any]],
@@ -121,7 +126,7 @@ def build_online_portfolio_bandit_l2_packet(
     stage: str = "L2_paper_active",
     candidate_cap_limit: int | None = None,
 ) -> dict[str, Any]:
-    """Select allocator knobs with warm-start UCB and compute paper weights."""
+    """Select allocator knobs with warm-start UCB and compute allocation weights."""
 
     ledger = _ledger_by_arm(reward_ledger or [])
     arm_rows: list[dict[str, Any]] = []
@@ -178,26 +183,38 @@ def build_online_portfolio_bandit_l2_packet(
         )
         cash_weight = max(0.0, 1.0 - sum(final_weights.values()))
 
-    return {
+    allocation = {
+        "weights": final_weights,
+        "cash_weight": cash_weight,
+        "raw_sparse_tangent_weights": raw_weights,
+    }
+    production_controller = _is_production_controller_stage(stage)
+    packet: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "stage": stage,
         "controller": "OnlinePortfolioBandit",
         "selection_policy": "warm_start_constrained_ucb",
         "allocator_engine": "sparse_tangent_inverse_risk",
+        "allocation_role": (
+            "production_recommendation_allocation_controller"
+            if production_controller
+            else "paper_evidence_only"
+        ),
         "production_mutation_allowed": False,
+        "can_write_recommendation_allocation": production_controller,
         "can_write_order": False,
         "can_submit_real_order": False,
         "selected_arm": selected,
         "arm_scores": scored,
-        "paper_allocation": {
-            "weights": final_weights,
-            "cash_weight": cash_weight,
-            "raw_sparse_tangent_weights": raw_weights,
-        },
+        "controlled_allocation": allocation,
         "constraints": {
             "bandit_controls_final_weights": False,
             "bandit_controls_allocator_knobs": True,
-            "requires_paper_active_attribution": True,
-            "requires_wei_approval_for_L3_or_production": True,
+            "requires_paper_active_attribution": not production_controller,
+            "requires_wei_approval_for_L3_or_production": not production_controller,
+            "production_controller_enabled": production_controller,
         },
     }
+    if not production_controller:
+        packet["paper_allocation"] = allocation
+    return packet

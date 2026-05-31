@@ -54,3 +54,27 @@ def test_finlab_canonical_market_daily_bridges_into_stock_prices_hot_path() -> N
     assert "FROM stocks WHERE symbol = ?" in sql
     assert "ON CONFLICT(stock_id, date) DO UPDATE SET" in sql
     assert params == ["2026-05-27", 100.0, 105.0, 99.0, 104.0, 104.0, 2000, 104.0, "2330"]
+
+
+def test_finlab_canonical_market_daily_does_not_bridge_missing_close() -> None:
+    outputs = _outputs()
+    outputs.canonical_market_daily.append({
+        "stock_id": "5906",
+        "date": "2026-05-27",
+        "market_segment": "LISTED_OTC",
+        "open": None,
+        "high": None,
+        "low": None,
+        "close": None,
+        "volume": 477.0,
+        "value": 20248.0,
+        "source": "finlab.price",
+        "lineage_json": "{}",
+        "as_of_date": "2026-05-27",
+    })
+
+    statements = build_d1_upsert_statements(outputs)
+    bridge = [item for item in statements if "INSERT INTO stock_prices" in item[0]]
+
+    assert len(bridge) == 1
+    assert bridge[0][1][-1] == "2330"

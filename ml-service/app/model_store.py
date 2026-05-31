@@ -10,7 +10,6 @@ model_store.py — 模型持久化框架
           ├── catboost.joblib
           ├── extratrees.joblib
           ├── lightgbm.joblib
-          ├── ft-transformer.joblib    # dict: {state_dict, scaler, n_features}
           ├── metadata_{model}.json
           └── weekly/
                 └── ...（週備份）

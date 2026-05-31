@@ -16,7 +16,7 @@ from datetime import datetime
 import numpy as np
 import polars as pl
 from joblib import load as joblib_load
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .artifact_contract import (
     build_model_artifact_metadata,
@@ -25,6 +25,10 @@ from .artifact_contract import (
     validate_model_artifact_metadata,
 )
 from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
+from .candidate_lifecycle_payload import (
+    LEGACY_REGISTER_CANDIDATES_KEY,
+    candidate_registration_requested,
+)
 from .model_store import _get_bucket, save_model
 from .training_policy import (
     TREE_MODEL_NAMES,
@@ -32,7 +36,7 @@ from .training_policy import (
     build_model_feature_policy_metadata,
     generated_model_pool_version,
     should_force_full_feature_pool,
-    should_force_model_pool_challenger,
+    should_generate_model_artifact_candidate,
 )
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
@@ -66,7 +70,8 @@ class UniversalTrainRequest(BaseModel):
     feature_pool_path: str | None = None
     followup_webhook_url: str | None = None
     output_model_version: str | None = None
-    register_challengers: bool = False
+    register_candidates: bool = False
+    legacy_register_candidates: bool = Field(default=False, alias=LEGACY_REGISTER_CANDIDATES_KEY, exclude=True)
     embargo_base_days: int | None = None
     embargo_pct: float | None = None
     max_embargo_days: int | None = None
@@ -121,13 +126,13 @@ def normalize_universal_lifecycle_request(
     walk_forward_mode: bool,
     now_fn=now_utc_iso,
 ) -> UniversalTrainRequest:
-    """Ensure production universal retrain enters model_pool lifecycle.
+    """Ensure production universal retrain enters artifact candidate lifecycle.
 
     Universal production retrain must not silently overwrite flat-file artifacts.
-    If an older caller omits output_model_version, generate a challenger version
-    so the artifact can be audited/promoted by model_pool instead of bypassing it.
+    If an older caller omits output_model_version, generate a candidate version
+    so the artifact can be audited/promoted by model_artifact_registry.
     """
-    if not should_force_model_pool_challenger(
+    if not should_generate_model_artifact_candidate(
         gcs_prefix=gcs_prefix,
         walk_forward_mode=walk_forward_mode,
         output_model_version=req.output_model_version,
@@ -137,7 +142,7 @@ def normalize_universal_lifecycle_request(
     version = generated_model_pool_version(now_fn())
     update = {
         "output_model_version": version,
-        "register_challengers": True,
+        "register_candidates": True,
     }
     if hasattr(req, "model_copy"):
         return req.model_copy(update=update)
@@ -196,23 +201,24 @@ def _save_universal_versioned_model(
     return model_path
 
 
-def _register_challenger_safe(
+def _build_candidate_registration(
     model_name: str,
     version: str,
     *,
+    gcs_path: str | None = None,
     model_cpcv: dict | None = None,
     feature_policy_version: str | None = None,
     feature_policy: dict | None = None,
 ) -> dict:
     try:
-        from .model_pool import register_challenger
-
-        pool = register_challenger(model_name, version, save=True, model_cpcv=model_cpcv)
+        folder = model_name.lower().replace("-", "_")
         return {
             "status": "registered",
             "version": version,
-            "pool_updated": bool(pool),
+            "gcs_path": gcs_path or f"universal/{folder}/{version}.joblib",
+            "metadata_path": f"universal/{folder}/metadata_{version}.json",
             "model_cpcv": model_cpcv,
+            "registry_owner": "model_artifact_registry",
             "feature_policy_version": feature_policy_version,
             "feature_policy": feature_policy,
         }
@@ -1204,7 +1210,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "test_range": [req.test_start, req.test_end],
         })
 
-    challenger_registrations: dict[str, dict] = {}
+    candidate_registrations: dict[str, dict] = {}
     for model_name, model_obj in trained_models.items():
         try:
             model_selection_evidence = {
@@ -1243,19 +1249,20 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     feature_medians=feature_medians,
                     extra_metadata=model_extra_meta or None,
                 )
-                if req.register_challengers:
-                    registration = _register_challenger_safe(
+                if candidate_registration_requested(req):
+                    registration = _build_candidate_registration(
                         model_name,
                         req.output_model_version,
+                        gcs_path=model_path,
                         model_cpcv=model_cpcv_evidence_by_model.get(model_name),
                         feature_policy_version=str(model_extra_meta.get("feature_policy_schema_version") or ""),
                         feature_policy=model_extra_meta.get("feature_policy") if isinstance(model_extra_meta.get("feature_policy"), dict) else None,
                     )
                     registration["training_run_id"] = training_run_id
                     registration["training_manifest_path"] = manifest_path
-                    challenger_registrations[model_name] = registration
+                    candidate_registrations[model_name] = registration
                 print(
-                    f"[TrainUniversal] Saved {model_name} challenger to {model_path} "
+                    f"[TrainUniversal] Saved {model_name} candidate to {model_path} "
                     f"(version={req.output_model_version})"
                 )
                 continue
@@ -1296,7 +1303,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "candidate_version": req.output_model_version,
                 "training_run_id": training_run_id,
                 "training_manifest_path": manifest_path,
-                "challenger_registrations": challenger_registrations,
+                "candidate_registrations": candidate_registrations,
             }
             _headers = {"Content-Type": "application/json"}
             _token = _controller_callback_token()
@@ -1327,7 +1334,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "ic_tracking": ic_tracking,
         "circuit_breaker": circuit_breaker_triggered,
         "candidate_version": req.output_model_version,
-        "challenger_registrations": challenger_registrations,
+        "candidate_registrations": candidate_registrations,
         "oos_artifact": oos_artifact,
         "gcs_io": gcs_io,
         "trained_at": trained_at_iso,

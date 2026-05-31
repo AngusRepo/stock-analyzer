@@ -16,6 +16,15 @@ export interface MlVoteSummary {
     regime: string
     adjustment: number
   }
+  coreFamilyVote?: CoreFamilyVoteSummary | null
+}
+
+export interface CoreFamilyVoteSummary {
+  schema_version?: string
+  family_score?: number
+  active_family_count?: number
+  active_families?: string[]
+  inactive_formal_models?: string[]
 }
 
 export interface MlDiagnosticsSummary {
@@ -112,6 +121,19 @@ function normalizeForecastPct(raw: unknown): number | null {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return null
   const pct = Math.abs(raw) <= 1 ? raw * 100 : raw
   return Math.round(pct * 10) / 10
+}
+
+function coreFamilyVoteFromForecastData(data: Record<string, any> | null): CoreFamilyVoteSummary | null {
+  const raw = data?.core_family_vote ?? data?.coreFamilyVote ?? data?.ensemble_v2?.family_vote ?? null
+  const vote = parsePredictionForecastData(raw)
+  if (!vote) return null
+  return {
+    schema_version: typeof vote.schema_version === 'string' ? vote.schema_version : undefined,
+    family_score: finiteOrNull(vote.family_score) ?? undefined,
+    active_family_count: finiteOrNull(vote.active_family_count) ?? undefined,
+    active_families: Array.isArray(vote.active_families) ? vote.active_families.map(String) : undefined,
+    inactive_formal_models: Array.isArray(vote.inactive_formal_models) ? vote.inactive_formal_models.map(String) : undefined,
+  }
 }
 
 function rowRankScore(row: PerModelPredictionRow): number | null {
@@ -250,6 +272,7 @@ export function buildMlVoteSummary(
     contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models : [],
     reason: typeof data?.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
     thresholds,
+    coreFamilyVote: coreFamilyVoteFromForecastData(data),
   }
 }
 

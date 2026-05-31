@@ -32,7 +32,6 @@ const MODEL_COLORS: Record<string, string> = {
   'CatBoost': '#f97316',
   'ExtraTrees': '#ec4899',
   'LightGBM': '#14b8a6',
-  'FT-Transformer': '#6366f1',
 }
 
 const STATE_SPACE_OVERLAYS = new Set(['KalmanFilter', 'MarkovSwitching'])

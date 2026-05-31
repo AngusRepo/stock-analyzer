@@ -27,6 +27,10 @@ from services.model_artifact_registry import (
     build_artifact_records_from_retrain_followup,
     upsert_artifact_records,
 )
+from services.candidate_lifecycle_payload import (
+    LEGACY_CANDIDATE_REGISTRATIONS_KEY,
+    candidate_registrations_from_payload,
+)
 from services.cost_tracker import record_modal_call
 from services.modal_client import _modal_resource_spec
 
@@ -47,7 +51,12 @@ class RetrainFollowupPayload(BaseModel):
     candidate_version: str | None = None
     training_run_id: str | None = None
     training_manifest_path: str | None = None
-    challenger_registrations: dict[str, Any] = Field(default_factory=dict)
+    candidate_registrations: dict[str, Any] = Field(default_factory=dict)
+    legacy_candidate_registrations: dict[str, Any] = Field(
+        default_factory=dict,
+        alias=LEGACY_CANDIDATE_REGISTRATIONS_KEY,
+        exclude=True,
+    )
     window_id: int | None = None
     total_samples: int = 0
     train_samples: int = 0
@@ -231,6 +240,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             downstream_notes = "lock_release_failed"
             logger.error(f"[RetrainFollowup] lock release failed: key={payload.lock_key} error={e}")
 
+    effective_candidate_registrations = candidate_registrations_from_payload(payload)
     summary = json.dumps(
         {
             "run_id": payload.run_id,
@@ -241,7 +251,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "batch_count": payload.batch_count,
             "gcs_prefix": payload.gcs_prefix,
             "candidate_version": payload.candidate_version,
-            "challenger_registrations": payload.challenger_registrations,
+            "candidate_registrations": effective_candidate_registrations,
             "window_id": payload.window_id,
             "total_samples": payload.total_samples,
             "train_samples": payload.train_samples,

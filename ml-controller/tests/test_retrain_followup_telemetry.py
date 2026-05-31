@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import sys
+import asyncio
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+if "httpx" not in sys.modules:
+    httpx_stub = type(sys)("httpx")
+    httpx_stub.AsyncClient = object
+    sys.modules["httpx"] = httpx_stub
 
 from routers import retrain_followup as followup_router  # noqa: E402
 
@@ -15,8 +21,7 @@ class _Request:
         self.headers = headers or {}
 
 
-@pytest.mark.asyncio
-async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
+def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     calls: list[dict] = []
     registry_records: list[dict] = []
 
@@ -67,7 +72,7 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
         ],
     )
 
-    result = await followup_router.retrain_followup(payload, _Request())
+    result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
 
     assert result["status"] == "completed"
     assert result["modal_telemetry"]["recorded"] == 3
@@ -88,8 +93,7 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     assert registry_records == []
 
 
-@pytest.mark.asyncio
-async def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
+def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
     written: list[dict] = []
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
@@ -124,7 +128,7 @@ async def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
         },
     )
 
-    result = await followup_router.retrain_followup(payload, _Request())
+    result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
 
     assert result["artifact_registry"]["attempted"] == 1
     assert result["artifact_registry"]["written"] == 1
@@ -192,8 +196,7 @@ def test_non_monthly_retrain_followup_keeps_compat_task():
     assert callback["error"] == "artifact mismatch"
 
 
-@pytest.mark.asyncio
-async def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
+def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     written: list[dict] = []
     executed: list[tuple] = []
 
@@ -240,9 +243,11 @@ async def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: (_ for _ in ()).throw(AssertionError("must not release lock")))
     monkeypatch.setattr(followup_router, "_callback_worker_scheduler", lambda payload: (_ for _ in ()).throw(AssertionError("must not callback scheduler")))
 
-    result = await followup_router.retrain_followup_registry_backfill(
-        followup_router.RetrainFollowupRegistryBackfillRequest(run_id="run-backfill", dry_run=False),
-        _Request(),
+    result = asyncio.run(
+        followup_router.retrain_followup_registry_backfill(
+            followup_router.RetrainFollowupRegistryBackfillRequest(run_id="run-backfill", dry_run=False),
+            _Request(),
+        )
     )
 
     assert result["side_effects"]["webhook_log_updated"] is False

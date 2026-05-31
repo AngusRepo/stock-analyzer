@@ -17,12 +17,11 @@ from app.training_policy import (  # noqa: E402
     generated_model_pool_version,
     models_for_training_group,
     should_force_full_feature_pool,
-    should_force_model_pool_challenger,
+    should_generate_model_artifact_candidate,
     ValidationGovernancePolicy,
     training_group_feature_policy,
 )
 from app import universal_training  # noqa: E402
-from app import model_pool  # noqa: E402
 from app.universal_training import (  # noqa: E402
     UniversalTrainRequest,
     build_non_tree_model_cpcv_gap_evidence,
@@ -195,7 +194,7 @@ def test_universal_training_policy_keeps_current_defaults():
     assert policy.to_base_train_payload({}, candidate_version="v-test") == {
         "batch_count": 5,
         "output_model_version": "v-test",
-        "register_challengers": False,
+        "register_candidates": True,
         "model_cpcv_policy": {"family_adapters": {}},
     }
 
@@ -220,8 +219,8 @@ def test_universal_training_policy_accepts_payload_group_string():
     assert policy.requested_groups({"train_model_groups": "tree,ftt,patchtst"}) == ["tree", "patchtst"]
 
 
-def test_universal_train_without_version_should_become_model_pool_challenger():
-    assert should_force_model_pool_challenger(
+def test_universal_train_without_version_should_generate_artifact_candidate():
+    assert should_generate_model_artifact_candidate(
         gcs_prefix="universal",
         walk_forward_mode=False,
         output_model_version=None,
@@ -230,7 +229,7 @@ def test_universal_train_without_version_should_become_model_pool_challenger():
 
 
 def test_universal_train_walk_forward_keeps_explicit_storage_scope():
-    assert should_force_model_pool_challenger(
+    assert should_generate_model_artifact_candidate(
         gcs_prefix="walk_forward/w0",
         walk_forward_mode=True,
         output_model_version=None,
@@ -335,20 +334,18 @@ def test_model_feature_policy_metadata_records_feature_count_and_evidence():
     assert meta["selection_evidence"]["feature_pool_path"] == "universal/feature_pool.json"
 
 
-def test_register_challenger_safe_preserves_feature_policy_metadata(monkeypatch):
-    def fake_register_challenger(model_name, version, *, save, model_cpcv):
-        return {"model_name": model_name, "version": version, "save": save, "model_cpcv": model_cpcv}
-
-    monkeypatch.setattr(model_pool, "register_challenger", fake_register_challenger)
-
-    result = universal_training._register_challenger_safe(
+def test_build_candidate_registration_preserves_feature_policy_metadata():
+    result = universal_training._build_candidate_registration(
         "LightGBM",
         "v20260517170259",
+        gcs_path="universal/lightgbm/v20260517170259.joblib",
         model_cpcv={"decision": "PASS"},
         feature_policy_version="model-feature-policy-v1",
         feature_policy={"model": "LightGBM", "feature_policy_type": "selected_tabular"},
     )
 
     assert result["status"] == "registered"
+    assert result["gcs_path"] == "universal/lightgbm/v20260517170259.joblib"
+    assert result["metadata_path"] == "universal/lightgbm/metadata_v20260517170259.json"
     assert result["feature_policy_version"] == "model-feature-policy-v1"
     assert result["feature_policy"]["feature_policy_type"] == "selected_tabular"

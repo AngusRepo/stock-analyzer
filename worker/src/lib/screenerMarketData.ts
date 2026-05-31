@@ -64,6 +64,7 @@ export interface ScreenerPriceRow {
 }
 
 export function isAutoTradablePriceRow(row: {
+  symbol?: string | null
   market: string | null
   open: number | null
   avg_price: number | null

@@ -10,6 +10,7 @@ import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 type ChainContext = {
   runDate?: string
   upstreamRunId?: string
+  metadata?: Record<string, unknown>
 }
 
 type ChainedTask = {
@@ -34,6 +35,17 @@ function normalizeSummary(value: unknown): string {
 
 function isCurrentBusinessDate(runDate?: string): boolean {
   return !!runDate && runDate === twDateToday()
+}
+
+function truthyFlag(value: unknown): boolean {
+  if (value === true) return true
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+  return false
+}
+
+function allowHistoricalLearningCatchup(ctx: ChainContext): boolean {
+  return !isCurrentBusinessDate(ctx.runDate) && truthyFlag(ctx.metadata?.allow_historical_learning_catchup)
 }
 
 async function logChainedTask(
@@ -130,6 +142,22 @@ async function runStrategyLearningClosureTask(env: Bindings, ctx: ChainContext):
   return runStrategyLearningClosure(env.DB, ctx.runDate ?? new Date().toISOString().slice(0, 10))
 }
 
+async function runFinLabAiSkillDiscoveryClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const { runFinLabAiSkillDiscoveryClosure } = await import('./finlabAiSkillDiscovery')
+  const report = await runFinLabAiSkillDiscoveryClosure(env, ctx.runDate ?? new Date().toISOString().slice(0, 10), {
+    dryRun: false,
+  })
+  return [
+    `status=${report.status}`,
+    `source_rows=${report.source_rows}`,
+    `packets=${report.packets.length}`,
+    `research_experiments=${report.persisted.research_experiments}`,
+    `strategy_specs=${report.persisted.strategy_specs}`,
+    `invalid=${report.skipped_invalid.length}`,
+    report.reason ? `reason=${report.reason}` : '',
+  ].filter(Boolean).join(' ')
+}
+
 async function logChainSummary(
   env: Bindings,
   ctx: ChainContext,
@@ -166,13 +194,17 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
 
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
 
-  if (isCurrentBusinessDate(ctx.runDate)) {
+  const currentBusinessDate = isCurrentBusinessDate(ctx.runDate)
+  const historicalLearningCatchup = allowHistoricalLearningCatchup(ctx)
+
+  if (currentBusinessDate) {
     results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
     results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
+    results.push(await logChainedTask(env, ctx, 'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
@@ -180,8 +212,14 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'strategy-learning'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'finlab-ai-skill-discovery'))
+    if (historicalLearningCatchup) {
+      results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
+      results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
+    } else {
+      results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
+      results.push(await logSkippedHistoricalTask(env, ctx, 'strategy-learning'))
+    }
   }
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)

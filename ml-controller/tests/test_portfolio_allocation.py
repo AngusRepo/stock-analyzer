@@ -35,6 +35,19 @@ def test_sparse_tangent_downweights_high_volatility_rank_winner():
     assert max(weights.values()) <= 0.70
 
 
+def test_sparse_tangent_does_not_fallback_to_equal_weight_without_positive_edge():
+    weights = allocate_sparse_tangent(
+        [
+            {"symbol": "A", "score": 90.0, "expected_return": -0.01},
+            {"symbol": "B", "score": 88.0, "expected_return": 0.0},
+        ],
+        {"A": [0.01, -0.01], "B": [0.01, -0.01]},
+        top_k=2,
+    )
+
+    assert weights == {}
+
+
 def test_portfolio_allocation_benchmark_compares_against_rank_topk_with_metrics():
     baseline = allocate_rank_topk_equal_weight(_candidates(), top_k=2)
     report = build_portfolio_allocation_benchmark(

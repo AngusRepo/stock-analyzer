@@ -1096,6 +1096,7 @@ def update_feature_pool(
     ic_results: dict | None = None,
     k_sweep_result: dict | None = None,           # P0-2: Pareto K sweep result
     gate_result: dict | None = None,              # P0-9: Signal Sanity Gate result
+    all_feature_names: list[str] | None = None,
     extra_evidence: dict | None = None,
 ) -> dict:
     """Build feature_pool.json structure with governed tree feature output.
@@ -1128,6 +1129,7 @@ def update_feature_pool(
             "tree": {
                 "feature_source": "feature_pool.tree_active",
                 "feature_count": len(tree_active),
+                "input_feature_count": len(all_feature_names or tree_active),
                 "selection_required": True,
                 "methods": ["signal_sanity_gate", "target_permutation", "correlation_clustering", "ic_icir", "optuna_k_sweep", "diversity_guard"],
             },

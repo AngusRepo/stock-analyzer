@@ -51,6 +51,93 @@ function scoreComponentValue(scoreViewModel: ScoreBreakdownViewModel, key: strin
   return scoreViewModel.rows.find((row) => row.key === key)?.value ?? 0
 }
 
+function stageRetentionPct(current: number, previous: number): number {
+  if (previous <= 0) return current > 0 ? 100 : 0
+  return Math.max(0, Math.min(100, Math.round((current / previous) * 100)))
+}
+
+function PipelineCompressionVisual({
+  stages,
+  dropoffs,
+}: {
+  stages: Array<{
+    key: string
+    label: string
+    detail: string
+    count: number
+    previousCount?: number
+    icon: any
+    color: string
+    barColor: string
+  }>
+  dropoffs: Array<{ label: string; count: number; color: string }>
+}) {
+  const maxStageCount = Math.max(1, ...stages.map((stage) => stage.count))
+  const maxDropoffCount = Math.max(1, ...dropoffs.map((item) => item.count))
+
+  return (
+    <section
+      data-testid="pipeline-compression-visual"
+      className="rounded-2xl border border-[#3a3125] bg-[#171714] p-3 shadow-[0_18px_70px_rgba(0,0,0,0.14)]"
+    >
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">Pipeline Compression Map</p>
+          <h2 className="mt-1 text-sm font-semibold text-[#fff7e8]">候選如何被壓縮成可執行清單</h2>
+        </div>
+        <div className="rounded-full border border-[#3a3125] bg-[#0d1117] px-3 py-1.5 font-mono text-[11px] text-[#b9b1a1]">
+          {stages[0]?.count ?? 0} → {stages[stages.length - 1]?.count ?? 0}
+        </div>
+      </div>
+
+      <div className="grid gap-2 lg:grid-cols-4">
+        {stages.map(({ key, label, detail, count, previousCount, icon: Icon, color, barColor }) => {
+          const retention = previousCount == null ? 100 : stageRetentionPct(count, previousCount)
+          const width = Math.max(8, Math.round((count / maxStageCount) * 100))
+          return (
+            <div key={key} className="rounded-xl border border-[#2b3a49] bg-[#0b1017] p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Icon className={`h-4 w-4 shrink-0 ${color}`} />
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-[#f2ead8]">{label}</p>
+                    <p className="mt-0.5 truncate text-[10px] text-[#8b9bab]">{detail}</p>
+                  </div>
+                </div>
+                <span className="font-mono text-lg font-bold text-[#fff7e8]">{count}</span>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#1c2633]">
+                <div className={`h-full rounded-full ${barColor}`} style={{ width: `${width}%` }} />
+              </div>
+              <div className="mt-2 flex items-center justify-between font-mono text-[10px] text-[#8b9bab]">
+                <span>{previousCount == null ? 'base pool' : `${retention}% kept`}</span>
+                <span>{previousCount == null ? '100%' : `${Math.max(0, previousCount - count)} drop`}</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="mt-3 grid gap-2 lg:grid-cols-3">
+        {dropoffs.map(({ label, count, color }) => {
+          const width = Math.max(count > 0 ? 8 : 2, Math.round((count / maxDropoffCount) * 100))
+          return (
+            <div key={label} className="rounded-lg border border-[#2b3a49] bg-[#070a10] px-3 py-2">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="truncate text-[11px] text-[#b9b1a1]">{label}</span>
+                <span className="font-mono text-xs text-[#fff7e8]">{count}</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-[#1c2633]">
+                <div className={`h-full rounded-full ${color}`} style={{ width: `${width}%` }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function buildScreenerSectorSummary(recs: any[]) {
   const bySector = new Map<string, {
     sector: string
@@ -355,6 +442,8 @@ export default function PipelinePage() {
   const mlHold = allRecs.filter((r: any) => r.signal === 'HOLD')
   const mlSell = allRecs.filter((r: any) => ['SELL', 'STRONG_SELL'].includes(r.signal))
   const mlNoSignal = allRecs.filter((r: any) => !r.signal || r.signal === 'NO_SIGNAL')
+  const mlSignalCount = allRecs.filter((r: any) => r.signal && r.signal !== 'NO_SIGNAL').length
+  const recommendationCount = mlBuy.length + mlHold.length
   const screenerPreview = [...screenerPassed]
     .sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a))
     .slice(0, 10)
@@ -362,6 +451,52 @@ export default function PipelinePage() {
   const recommendationPreview = [...mlBuy, ...mlHold]
     .sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a))
     .slice(0, 10)
+  const pipelineStages = [
+    {
+      key: 'screener',
+      label: '初篩',
+      detail: 'sector/theme breadth',
+      count: screenerPassed.length,
+      icon: Filter,
+      color: 'text-sky-300',
+      barColor: 'bg-sky-300',
+    },
+    {
+      key: 'model_signal',
+      label: '模型判斷',
+      detail: 'non-empty signal',
+      count: mlSignalCount,
+      previousCount: screenerPassed.length,
+      icon: Brain,
+      color: 'text-violet-300',
+      barColor: 'bg-violet-300',
+    },
+    {
+      key: 'recommendation',
+      label: '推薦整理',
+      detail: 'BUY + HOLD watchlist',
+      count: recommendationCount,
+      previousCount: mlSignalCount,
+      icon: Star,
+      color: 'text-amber-300',
+      barColor: 'bg-amber-300',
+    },
+    {
+      key: 'pending_buy',
+      label: '辯論掛單',
+      detail: 'debate + T2 executable',
+      count: pendingBuys.length,
+      previousCount: recommendationCount,
+      icon: Scale,
+      color: 'text-emerald-300',
+      barColor: 'bg-emerald-300',
+    },
+  ]
+  const pipelineDropoffs = [
+    { label: '無訊號 / 排除', count: mlNoSignal.length + mlSell.length, color: 'bg-emerald-400' },
+    { label: '觀察未掛單', count: Math.max(0, recommendationCount - pendingBuys.length), color: 'bg-amber-300' },
+    { label: 'RRG / debate filter', count: qfList.length, color: 'bg-sky-300' },
+  ]
 
   const isLoading = recLoading || pbLoading
 
@@ -397,29 +532,25 @@ export default function PipelinePage() {
           </div>
         </div>
 
-        {/* Pipeline flow indicator */}
-        <div className="grid gap-2 rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3 md:grid-cols-4">
-          {[
-            { label: '初篩', count: screenerPassed.length, color: 'text-[#9fcca1]' },
-            { label: '模型判斷', count: allRecs.filter((r: any) => r.signal && r.signal !== 'NO_SIGNAL').length, color: 'text-[#d7b98c]' },
-            { label: '推薦整理', count: mlBuy.length + mlHold.length, color: 'text-[#f1c16f]' },
-            { label: '辯論掛單', count: pendingBuys.length, color: 'text-[#d6a85f]' },
-          ].map((step, i) => (
-            <div key={step.label} className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-1.5">
-                <span className={`text-lg font-bold font-mono ${step.color}`}>{step.count}</span>
-                <span className="text-xs text-muted-foreground">{step.label}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-
         {isLoading ? (
           <div className="space-y-3">
             {[1, 2, 3, 4].map(i => <div key={i} className="h-24 rounded-xl bg-muted/40 animate-pulse" />)}
           </div>
         ) : (
-          <div className="grid gap-4 xl:grid-cols-4">
+          <>
+            <PipelineCompressionVisual stages={pipelineStages} dropoffs={pipelineDropoffs} />
+
+            <details
+              data-testid="pipeline-stage-drilldown"
+              className="group rounded-2xl border border-[#3a3125] bg-[#0b1017]"
+            >
+              <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-[#fff7e8] transition-colors hover:bg-[#101720]">
+                <span>Stage drilldown</span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8b9bab]">
+                  sector / signal / recommendation / pending
+                </span>
+              </summary>
+              <div className="grid gap-4 p-3 xl:grid-cols-4">
 
             {/* ═══ Step 1: Screener ═══ */}
             <Card className="border-border bg-card">
@@ -591,7 +722,9 @@ export default function PipelinePage() {
               </CardContent>
             </Card>
 
-          </div>
+              </div>
+            </details>
+          </>
         )}
       </div>
     </AppShell>

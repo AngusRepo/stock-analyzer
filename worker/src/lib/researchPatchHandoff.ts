@@ -48,6 +48,10 @@ function cleanStringArray(value: unknown): string[] {
 function artifactBridge(record: ResearchExperimentRecord): ResearchPatchHandoff['artifact_bridge'] {
   const shadowCandidates = cleanStringArray(record.data_slice?.shadow_candidates)
   const benchmarkCandidates = cleanStringArray(record.data_slice?.benchmark_candidates)
+  const formalLayer3Candidates = [
+    ...cleanStringArray(record.data_slice?.layer3_candidates),
+    ...cleanStringArray(record.data_slice?.formal_family_candidates),
+  ]
   if (shadowCandidates.length) {
     return {
       candidate_type: 'model_family_shadow',
@@ -56,10 +60,10 @@ function artifactBridge(record: ResearchExperimentRecord): ResearchPatchHandoff[
       target_registry: 'model_artifact_registry',
     }
   }
-  if (benchmarkCandidates.length) {
+  if (benchmarkCandidates.length || formalLayer3Candidates.length) {
     return {
       candidate_type: 'research_benchmark',
-      candidate_ids: benchmarkCandidates,
+      candidate_ids: benchmarkCandidates.length ? benchmarkCandidates : [...new Set(formalLayer3Candidates)],
       requires_external_artifact: true,
       target_registry: 'model_artifact_registry',
     }

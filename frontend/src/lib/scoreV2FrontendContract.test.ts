@@ -68,6 +68,11 @@ assert(
   'Recommendation card should only consume normalized score_v2 payloads',
 )
 assert(
+  recommendationCard.includes('coreFamilyVoteBadgeText')
+    && recommendationCard.includes('coreFamilyVote'),
+  'Recommendation card should surface Layer3 core family vote evidence in the ML badge',
+)
+assert(
   viewModel.includes('canonicalScoreV2Payload')
     && !viewModel.includes('rec.score_components')
     && !viewModel.includes('scoreComponentsPayload'),

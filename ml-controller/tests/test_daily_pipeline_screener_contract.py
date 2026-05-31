@@ -18,6 +18,7 @@ if "httpx" not in sys.modules:
     sys.modules["httpx"] = httpx_stub
 
 from services.payload_builder import build_ml_universe  # noqa: E402
+from services.screener_sizing_policy import resolve_controller_screener_sizing  # noqa: E402
 
 
 def test_daily_pipeline_refuses_watchlist_screener_fallback():
@@ -62,8 +63,60 @@ def test_daily_pipeline_runs_coarse_feature_gate_before_heavy_sequence_models():
     assert feature_call < core_gate < sequence_call
     assert "core_ml_gate_by_symbol" in source
     assert "LightGBM+XGBoost+ExtraTrees" in source
+    assert "resolve_controller_screener_sizing(" in source
+    assert 'core_target_size = screener_sizing["coarse_ml_queue_size"]' in source
     assert "apply_core_ml_gate(" in source
+    assert "apply_core_family_rank(" in source
+    assert 'core_family_target_size = screener_sizing["core_family_rank_size"]' in source
+    assert "core_family_vote" in source
+    assert "topKOverrideEnabled" not in source
+    assert "ensemble_v2_topk_policy" not in source
+    assert "topk_forced" not in source
     assert "build_return_history_from_payloads(state[\"payloads\"])" in source
+
+
+def test_controller_screener_sizing_matches_worker_layer_contract():
+    policy = resolve_controller_screener_sizing(
+        {
+            "screener": {
+                "candidatePoolSize": 200,
+                "coarseMlQueueSize": 80,
+                "mlShortlistSize": 40,
+                "emergingResearchSize": 24,
+            },
+        },
+        {
+            "screener": {
+                "candidate_pool_delta": -20,
+                "coarse_ml_queue_delta": -10,
+                "ml_shortlist_delta": 5,
+                "emerging_research_delta": 6,
+            },
+        },
+    )
+
+    assert policy["candidate_pool_size"] == 180
+    assert policy["coarse_ml_queue_size"] == 70
+    assert policy["ml_shortlist_size"] == 45
+    assert policy["core_family_rank_size"] == 45
+    assert policy["emerging_research_size"] == 30
+
+
+def test_controller_explicit_core_family_rank_size_is_bounded_by_coarse_queue():
+    policy = resolve_controller_screener_sizing(
+        {
+            "screener": {
+                "coarseMlQueueSize": 50,
+                "mlShortlistSize": 35,
+                "coreFamilyRankSize": 70,
+            },
+        },
+        {"screener": {"ml_shortlist_delta": 20}},
+    )
+
+    assert policy["coarse_ml_queue_size"] == 50
+    assert policy["ml_shortlist_size"] == 50
+    assert policy["core_family_rank_size"] == 50
 
 
 def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():

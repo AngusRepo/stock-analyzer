@@ -1,4 +1,4 @@
-from verify_job_main import classify_verify_callback_status, format_verify_summary
+from verify_job_main import build_verify_callback_metadata, classify_verify_callback_status, format_verify_summary
 
 
 def test_verify_job_zero_written_rows_is_not_success_when_pending_exists():
@@ -60,3 +60,12 @@ def test_verify_summary_includes_durable_write_count():
 
     assert "verified 12/12" in summary
     assert "written 12" in summary
+
+
+def test_verify_callback_metadata_enables_historical_learning_catchup_only_for_backfill_dates():
+    historical = build_verify_callback_metadata("2026-05-29", today="2026-05-31")
+    current = build_verify_callback_metadata("2026-05-31", today="2026-05-31")
+
+    assert historical["allow_historical_learning_catchup"] is True
+    assert historical["learning_catchup_scope"] == "meta_learning_shadow_and_strategy_learning_only"
+    assert current["allow_historical_learning_catchup"] is False

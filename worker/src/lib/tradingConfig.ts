@@ -262,11 +262,10 @@ export interface TradingConfig {
   }
   // ── Sprint 3 P0-4: Hybrid Ranking (Architecture C) ─────────────────────────
   // Why: 解決 "filter 後 0 BUY signal" 問題。combined_score = α*screener + β*ml_conf + γ*signal_tier
-  //      若 has_buy_signal 數量 < topK，用 combined_score 排序 promote 到 has_buy_signal=1
+  //      sparse_tangent_inverse_risk 最終決定 BUY rows；ranking 只保留 score tie-break 權重。
   // α/β/γ 未來 Sprint 7+ 用 Optuna 搜；目前 hardcode 合理 default
   ranking: {
     enabled: boolean             // feature flag（預設 true，直接解 0-signal 問題）
-    topK: number                 // 目標持有部位數（預設 3，對齊 paper.ts morningSetup LIMIT 3）
     alpha: number                // screener weight 預設 0.40
     beta: number                 // ml_confidence weight 預設 0.40
     gamma: number                // signal_tier weight 預設 0.20
@@ -275,27 +274,13 @@ export interface TradingConfig {
     screenerDenominator: number
     promoteMinConf: number       // promoted row 的 confidence 保底（預設 0.60，對齊 buyConfThreshold）
   }
-  // ── #B Option 1 (2026-04-21): ensemble_v2 thresholds + Top-K override ─────
-  // Fixes "bot 4 天沒掛單" — regression-on-rank ensemble_v2 predicted values
-  // cluster [0.43, 0.58] under realistic R² 0.02-0.05, never hits hardcoded
-  // 0.70 BUY threshold → signal always HOLD → no pending buys.
-  //
-  // Strategy: keep absolute thresholds (for when real strong signal emerges)
-  // AND add Top-K override — sort predictions by avg_rank desc, force top K
-  // to signal="BUY" regardless of absolute threshold (industry-standard
-  // top-K selection for compressed-distribution regression outputs).
-  //
-  // Threshold schema mirrors ml-service/app/ensemble.rank_to_signal kwargs so
-  // Optuna search can tune both paths uniformly in future (#28b Tier 1).
+  // Ensemble V2 thresholds only. Legacy BUY forcing is retired; final BUY rows
+  // are owned by sparse_tangent_inverse_risk.
   ensemble_v2: {
     strongBuyThreshold: number       // 絕對 STRONG_BUY 門檻（預設 0.85）
     buyThreshold: number             // 絕對 BUY 門檻（預設 0.70）
     sellThreshold: number            // 絕對 SELL 門檻（預設 0.30）
     strongSellThreshold: number      // 絕對 STRONG_SELL 門檻（預設 0.15）
-    topKOverrideEnabled: boolean     // Top-K 補救開關（預設 false，legacy rollback only）
-    allowLegacyTopKOverride: boolean // rollback-only guard; sparse tangent is production owner
-    topKCount: number                // 強制 BUY 的 top-K 數（預設 3，對齊 ranking.topK）
-    topKConfidenceOverride: number   // Top-K 強制 BUY 時的 confidence（預設 0.72）
   }
   // ── 2026-04-07 added: Optuna #2 Signal 月搜結果 destination ────────────────
   // 之前寫進 ml:adaptive_params 是錯的（adaptive_params 應該只裝 daily delta）
@@ -580,7 +565,6 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   // ── Sprint 3 P0-4: Hybrid Ranking ─────────────────────────────────────────
   ranking: {
     enabled: true,          // default ON（解 0-signal 問題）
-    topK: 3,
     alpha: 0.40,
     beta: 0.40,
     gamma: 0.20,
@@ -588,16 +572,12 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     screenerDenominator: 60,
     promoteMinConf: 0.60,
   },
-  // ── #B Option 1 (2026-04-21): ensemble_v2 thresholds + Top-K override ─────
+  // Ensemble V2 thresholds; final BUY rows are owned by sparse_tangent_inverse_risk.
   ensemble_v2: {
     strongBuyThreshold: 0.85,
     buyThreshold: 0.70,
     sellThreshold: 0.30,
     strongSellThreshold: 0.15,
-    topKOverrideEnabled: false,
-    allowLegacyTopKOverride: false,
-    topKCount: 3,
-    topKConfidenceOverride: 0.72,
   },
   // ── 2026-04-07 NEW: Optuna #2 destination ─────────────────────────────────
   signal: {

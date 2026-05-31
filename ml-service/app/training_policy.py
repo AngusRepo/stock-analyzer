@@ -65,7 +65,7 @@ def generated_model_pool_version(now_iso: str) -> str:
     return f"v{now_iso.replace('-', '').replace(':', '').replace('.', '')[:15]}"
 
 
-def should_force_model_pool_challenger(
+def should_generate_model_artifact_candidate(
     *,
     gcs_prefix: str,
     walk_forward_mode: bool,
@@ -338,7 +338,7 @@ MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
         requires_schema_parity=False,
         mergeable_oos=False,
         allowed_selection_methods=("chronos2_context_window", "chronos2_member_contract"),
-        note="Chronos is the Chronos-2 production slot and does not consume tree/FT feature selection.",
+        note="Chronos is retired from alpha vote and does not consume tabular feature selection.",
     ),
 }
 
@@ -470,6 +470,6 @@ class UniversalTrainingPolicy:
         return {
             "batch_count": _coerce_int(payload.get("batch_count"), 5),
             "output_model_version": candidate_version,
-            "register_challengers": False,
+            "register_candidates": True,
             "model_cpcv_policy": model_cpcv_policy,
         }

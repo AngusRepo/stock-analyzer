@@ -65,6 +65,46 @@ def _payload_with_volumes(symbol: str, closes: list[float], volumes: list[float]
     }
 
 
+def _score_seed_inputs(chip: float, tech: float, momentum: float = 0.0) -> dict:
+    return {
+        "chipFlowSeed40": chip,
+        "technicalSeed30": tech,
+        "screenerMomentumSeed20": momentum,
+        "mlEdgeSeed30": 0.0,
+        "personaAlphaSeed": 0.0,
+    }
+
+
+def _screener_score_components(chip: float, tech: float, momentum: float = 0.0) -> dict:
+    chip_flow = round((chip / 40.0) * 25.0, 1)
+    technical = round(((tech + momentum) / 50.0) * 25.0, 1)
+    total = round(chip_flow + technical, 1)
+    return {
+        "version": "score_v2",
+        "weights": {
+            "mlEdge": 25,
+            "chipFlow": 25,
+            "technicalStructure": 25,
+            "fundamentalQuality": 20,
+            "newsTheme": 5,
+        },
+        "components": {
+            "mlEdge": 0,
+            "chipFlow": chip_flow,
+            "technicalStructure": technical,
+            "fundamentalQuality": 0,
+            "newsTheme": 0,
+        },
+        "total": total,
+        "finalScore": total,
+        "alphaAdjustment": 0,
+        "technicalBreakdown": {"volumeConfirmation": round((momentum / 20.0) * 6.0, 1)},
+        "riskFlags": [],
+        "reasons": ["screener_base"],
+        "seedComponents": _score_seed_inputs(chip, tech, momentum),
+    }
+
+
 def test_build_alpha_context_classifies_breakout_and_applies_bull_regime_weight():
     payload = _payload("2330", [90, 91, 92, 93, 94, 95, 96, 98, 100, 106], rsi=64)
     rec = {"chip_score": 18.0, "tech_score": 18.0}
@@ -257,6 +297,7 @@ def test_filter_and_score_recommendations_embeds_alpha_context(monkeypatch):
         "industry": "IC",
         "chip_score": 18.0,
         "tech_score": 18.0,
+        "score_components": _screener_score_components(18.0, 18.0),
     }
 
     final, sell_count = filter_and_score_recommendations(

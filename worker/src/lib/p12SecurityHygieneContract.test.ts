@@ -1,6 +1,5 @@
 const fs = require('fs')
 const path = require('path')
-const { execSync } = require('child_process')
 
 export {}
 
@@ -30,9 +29,20 @@ assert(
 
 assert(osvResult.includes('lodash') && osvResult.includes('transformers'), 'P12 OSV exceptions must stay explicitly documented')
 
-const trackedOsvReports = execSync('git ls-files osv-report.json osv-report-before.json osv-report-after.json osv-report-after.html', {
-  cwd: root,
-  encoding: 'utf8',
-}).trim()
+function readGitIndex(rootDir: string): Buffer {
+  const gitPath = path.join(rootDir, '.git')
+  if (fs.statSync(gitPath).isDirectory()) {
+    return fs.readFileSync(path.join(gitPath, 'index'))
+  }
+  const gitFile = fs.readFileSync(gitPath, 'utf8')
+  const match = gitFile.match(/^gitdir:\s*(.+)$/m)
+  assert(match, '.git file must point to a gitdir')
+  const gitDir = path.resolve(rootDir, match[1].trim())
+  return fs.readFileSync(path.join(gitDir, 'index'))
+}
+
+const gitIndex = readGitIndex(root)
+const rawOsvReports = ['osv-report.json', 'osv-report-before.json', 'osv-report-after.json', 'osv-report-after.html']
+const trackedOsvReports = rawOsvReports.filter((name) => gitIndex.includes(Buffer.from(name))).join('\n')
 
 assert(!trackedOsvReports, `OSV raw reports must not be committed: ${trackedOsvReports}`)

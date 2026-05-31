@@ -52,6 +52,7 @@ export interface StrategyCapacityDecision {
 }
 
 export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
+  score?: number | null
   score_components?: unknown
   industryTheme?: string | null
   subindustry?: string | null
@@ -122,6 +123,23 @@ export interface StrategyCandidateSelection<T extends StrategyCandidatePoolCandi
     estimated_batch_chunks: number
     strategy_usage: Record<string, number>
     industry_usage: Record<string, number>
+  }
+}
+
+export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandidate = StrategyCandidatePoolCandidate> {
+  version: `${typeof STRATEGY_CANDIDATE_POOL_VERSION}:layer1-breadth-v1`
+  sourceUniverseCount: number
+  breadthPool: T[]
+  coarseQueue: T[]
+  researchOnlyQueue: T[]
+  selection: StrategyCandidateSelection<T>
+  telemetry: {
+    selection_order: 'full_feature_enriched_universe_strategy_quota_then_score_top_up'
+    target_size: number
+    coarse_ml_queue_size: number
+    strategy_selected_count: number
+    score_top_up_count: number
+    source_universe_count: number
   }
 }
 
@@ -562,7 +580,7 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       reason = entry.candidate.restricted === true ? 'restricted_or_attention' : 'not_ml_eligible_segment'
     } else if (entryMaxMlShare === 0) {
       decision = 'research_only_queue'
-      reason = 'strategy_shadow_lane_only'
+      reason = 'strategy_research_discovery_lane_only'
     } else if (nextStrategyCount > entryStrategyCap) {
       decision = 'research_only_queue'
       reason = 'strategy_share_cap'
@@ -630,4 +648,90 @@ export function planStrategyFirstCandidateSelection<T extends StrategyCandidateP
     strategyWeights: options.strategyWeights,
   })
   return mergeStrategyCandidatePools(pools, capacity, policy)
+}
+
+function scoreFallbackValue(candidate: StrategyCandidatePoolCandidate): number {
+  const explicit = finiteNumber(candidate.score)
+  if (explicit != null) return explicit
+  return candidatePoolThresholdScores(candidate).seedScore
+}
+
+function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
+  candidate: T,
+  rank: number,
+): T {
+  const cloned = cloneCandidate(candidate)
+  cloned.strategy_pool_decision = 'ml_queue'
+  cloned.strategy_pool_reason = 'score_fallback_top_up_after_strategy_quota'
+  cloned.strategy_pool_rank = rank
+  cloned.strategy_pool_ids = ['score_fallback']
+  cloned.strategy_pool_score = scoreFallbackValue(candidate)
+  cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:score_fallback'])
+  cloned.strategy_watch_points = uniqueTexts([
+    ...(cloned.strategy_watch_points ?? []),
+    'strategy_pool:score_fallback_top_up_after_strategy_quota',
+  ])
+  return cloned
+}
+
+export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandidate>(
+  featureEnrichedUniverse: T[],
+  specs: StrategySpec[],
+  options: {
+    targetSize: number
+    coarseMlQueueSize: number
+    regime?: AlphaFrameworkRegime | string | null
+    strategyWeights?: Record<string, number>
+    policy?: StrategyCandidatePoolPolicy
+  },
+): Layer1StrategyBreadthPlan<T> {
+  const targetSize = Math.max(1, Math.round(options.targetSize))
+  const coarseMlQueueSize = Math.max(1, Math.min(Math.round(options.coarseMlQueueSize), targetSize))
+  const basePolicy = options.policy ?? DEFAULT_STRATEGY_CANDIDATE_POOL_POLICY
+  const policy: StrategyCandidatePoolPolicy = {
+    ...basePolicy,
+    baseTotalBudget: Math.min(basePolicy.baseTotalBudget, targetSize),
+    normalTotalCap: Math.max(basePolicy.normalTotalCap, targetSize),
+    lowLoadTotalCap: Math.max(basePolicy.lowLoadTotalCap, targetSize),
+    hardTotalCap: Math.max(basePolicy.hardTotalCap, targetSize),
+  }
+  const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
+    regime: options.regime,
+    strategyWeights: options.strategyWeights,
+    policy,
+    capacity: { requestedTotalCap: targetSize },
+    mlQueueCapOverride: targetSize,
+  })
+
+  const selectedSymbols = new Set(selection.mlQueue.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
+  const strategySelected = selection.mlQueue.slice(0, targetSize)
+  const topUp = featureEnrichedUniverse
+    .filter((candidate) => {
+      const symbol = cleanText(candidate.symbol).toUpperCase()
+      if (!symbol || selectedSymbols.has(symbol)) return false
+      if (!eligibleForMl(candidate)) return false
+      return true
+    })
+    .sort((a, b) => scoreFallbackValue(b) - scoreFallbackValue(a))
+    .slice(0, Math.max(0, targetSize - strategySelected.length))
+    .map((candidate, index) => annotateLayer1TopUp(candidate, strategySelected.length + index + 1))
+
+  const breadthPool = [...strategySelected, ...topUp].slice(0, targetSize)
+
+  return {
+    version: `${STRATEGY_CANDIDATE_POOL_VERSION}:layer1-breadth-v1`,
+    sourceUniverseCount: featureEnrichedUniverse.length,
+    breadthPool,
+    coarseQueue: breadthPool.slice(0, coarseMlQueueSize),
+    researchOnlyQueue: selection.researchOnlyQueue,
+    selection,
+    telemetry: {
+      selection_order: 'full_feature_enriched_universe_strategy_quota_then_score_top_up',
+      target_size: targetSize,
+      coarse_ml_queue_size: coarseMlQueueSize,
+      strategy_selected_count: strategySelected.length,
+      score_top_up_count: topUp.length,
+      source_universe_count: featureEnrichedUniverse.length,
+    },
+  }
 }

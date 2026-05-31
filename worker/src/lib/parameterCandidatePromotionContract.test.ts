@@ -24,8 +24,11 @@ assert(
 assert(
   schema.includes('CREATE TABLE IF NOT EXISTS parameter_candidate_registry') &&
     schema.includes('CREATE TABLE IF NOT EXISTS parameter_candidate_evidence') &&
-    schema.includes('CREATE TABLE IF NOT EXISTS parameter_candidate_events'),
-  'canonical D1 schema.sql must include parameter candidate registry/evidence/event tables to avoid lazy-schema split-brain',
+    schema.includes('CREATE TABLE IF NOT EXISTS parameter_candidate_events') &&
+    schema.includes('EVIDENCE_INSUFFICIENT') &&
+    schema.includes('NOT_PROMOTION_READY') &&
+    schema.includes('INFRA_BLOCKED'),
+  'canonical D1 schema.sql must include parameter candidate registry/evidence/event tables and validation ladder states to avoid lazy-schema split-brain',
 )
 
 assert(
@@ -98,6 +101,17 @@ assert(
     configPool.includes('sandbox_body_unavailable') &&
     configPool.match(/_persist_parameter_candidate_evidence\(\s*candidate_id,\s*evidence,\s*"FAIL"/s),
   'validation-blocked candidates without replayable sandbox state must still persist FAIL evidence rows',
+)
+
+assert(
+  configPool.includes('classify_parameter_candidate_validation_status') &&
+    configPool.includes('EVIDENCE_INSUFFICIENT') &&
+    configPool.includes('NOT_PROMOTION_READY') &&
+    configPool.includes('INFRA_BLOCKED') &&
+    controllerWorkflows.includes('evidence_insufficient=') &&
+    controllerWorkflows.includes('not_promotion_ready=') &&
+    controllerWorkflows.includes('infra_blocked='),
+  'parameter candidate validation must report ladder states instead of collapsing every non-PASS into blocked',
 )
 
 assert(

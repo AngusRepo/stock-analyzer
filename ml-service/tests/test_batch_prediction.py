@@ -167,7 +167,7 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
 
 
 def test_legacy_layer3_side_channel_pool_is_ignored_by_batch_runtime(monkeypatch):
-    from app.prediction_runtime import _BATCH_CHALLENGER_RANK_SCORES_KEY
+    from app.legacy_prediction_namespace import LEGACY_LAYER3_CANDIDATE_RANK_SCORES_KEY
     from app.schemas import PredictRequest
 
     def fake_load_artifact(model_name, explicit_path=None):
@@ -195,8 +195,8 @@ def test_legacy_layer3_side_channel_pool_is_ignored_by_batch_runtime(monkeypatch
 
     overrides = batch_prediction._build_feature_model_batch_runtime_overrides(requests)
 
-    assert _BATCH_CHALLENGER_RANK_SCORES_KEY not in overrides[0]
-    assert _BATCH_CHALLENGER_RANK_SCORES_KEY not in overrides[1]
+    assert LEGACY_LAYER3_CANDIDATE_RANK_SCORES_KEY not in overrides[0]
+    assert LEGACY_LAYER3_CANDIDATE_RANK_SCORES_KEY not in overrides[1]
 
 
 def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
@@ -239,9 +239,11 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
 
 def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypatch):
     from app import ensemble, model_pool, model_store, prediction_runtime, stacking
+    from app.legacy_prediction_namespace import (
+        LEGACY_LAYER3_CANDIDATE_MODEL_ERRORS_KEY,
+        LEGACY_LAYER3_CANDIDATE_RANK_SCORES_KEY,
+    )
     from app.prediction_runtime import (
-        _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
-        _BATCH_CHALLENGER_RANK_SCORES_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
     )
@@ -260,14 +262,15 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         **payload["runtime_options"],
         _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.82},
         _BATCH_FEATURE_MODEL_ERRORS_KEY: ["LightGBM: not found in GCS"],
-        _BATCH_CHALLENGER_RANK_SCORES_KEY: {"XGBoost": 0.64},
-        _BATCH_CHALLENGER_MODEL_ERRORS_KEY: [],
+        LEGACY_LAYER3_CANDIDATE_RANK_SCORES_KEY: {"XGBoost": 0.64},
+        LEGACY_LAYER3_CANDIDATE_MODEL_ERRORS_KEY: [],
     }
 
     result = prediction_runtime.predict_stock_v2(PredictRequest(**payload))
 
     assert result["rank_scores"]["XGBoost"] == pytest.approx(0.82)
-    assert result["challenger_rank_scores"] == {}
+    assert "challenger_rank_scores" not in result
     assert "LightGBM: not found in GCS" in result["model_errors"]
     assert _BATCH_FEATURE_RANK_SCORES_KEY not in result["runtime_options"]
+    assert LEGACY_LAYER3_CANDIDATE_RANK_SCORES_KEY not in result["runtime_options"]
     assert result["runtime_options"]["owner"] == "daily_pipeline_v2.batch_predict"

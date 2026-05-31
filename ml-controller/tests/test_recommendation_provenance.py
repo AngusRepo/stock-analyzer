@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import sys
 import types
 from pathlib import Path
@@ -27,7 +29,7 @@ from services.recommendation_service import (  # noqa: E402
     build_reason,
     build_ml_vote_summary_data,
     filter_and_score_recommendations,
-    hybrid_ranking_promotion,
+    apply_sparse_tangent_allocation,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
     write_predictions_to_d1,
@@ -127,7 +129,7 @@ def _prediction_with_ensemble_v2() -> dict:
             "signal": "BUY",
             "confidence": 0.79,
             "forecast_pct": 0.034,
-            "signal_source": "ensemble_v2_topk_policy",
+            "signal_source": "ensemble_v2",
             "signal_raw": "HOLD",
         },
         "models": {
@@ -178,7 +180,7 @@ def test_filter_and_score_uses_ensemble_v2_consistently(monkeypatch):
 
     assert row["signal"] == "BUY"
     assert row["confidence"] == pytest.approx(0.79, abs=1e-6)
-    assert row["signal_source"] == "ensemble_v2_topk_policy"
+    assert row["signal_source"] == "ensemble_v2"
     assert row["signal_raw"] == "HOLD"
     assert row["has_buy_signal"] == 1
     assert row["ml_score"] == 0
@@ -600,7 +602,7 @@ def test_update_recommendations_in_d1_fails_when_no_seed_rows_exist(monkeypatch)
         }], "2026-04-27")
 
 
-def test_hybrid_ranking_promotion_marks_signal_source():
+def test_legacy_topk_allocation_engine_is_retired():
     rows = [{
         "symbol": "2330",
         "chip_score": 20.0,
@@ -613,17 +615,12 @@ def test_hybrid_ranking_promotion_marks_signal_source():
         "has_buy_signal": 0,
     }]
 
-    promoted = hybrid_ranking_promotion(
-        rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
-        alpha_policy={"allocation": {"engine": "legacy_topk"}},
-    )
-
-    assert promoted[0]["ranking_promoted"] is True
-    assert promoted[0]["signal"] == "BUY"
-    assert promoted[0]["signal_raw"] == "HOLD"
-    assert promoted[0]["signal_source"] == "ranking_promotion"
+    with pytest.raises(ValueError, match="legacy_topk_allocation_retired"):
+        apply_sparse_tangent_allocation(
+            rows,
+            ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+            alpha_policy={"allocation": {"engine": "legacy_topk"}},
+        )
 
 
 def test_sparse_tangent_allocator_is_default_buy_signal_owner():
@@ -657,10 +654,9 @@ def test_sparse_tangent_allocator_is_default_buy_signal_owner():
         "eligible_for_pending_buy": True,
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         alpha_policy={"allocation": {"buySignalCount": 1}},
     )
 
@@ -672,7 +668,7 @@ def test_sparse_tangent_allocator_is_default_buy_signal_owner():
     assert bypassed["has_buy_signal"] == 0
 
 
-def test_hybrid_ranking_promotion_uses_payload_return_history_and_opb_controller():
+def test_apply_sparse_tangent_allocation_uses_payload_return_history_and_opb_controller():
     rows = [{
         "symbol": "NOISY",
         "chip_score": 34.0,
@@ -707,9 +703,9 @@ def test_hybrid_ranking_promotion_uses_payload_return_history_and_opb_controller
         "STEADY": [0.010, 0.011, 0.010, 0.012, 0.011, 0.010],
     }
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 2, "promoteMinForecastPct": 0.0},
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.0},
         alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "controller": "OnlinePortfolioBandit", "buySignalCount": 2}},
         return_history=history,
     )
@@ -720,6 +716,10 @@ def test_hybrid_ranking_promotion_uses_payload_return_history_and_opb_controller
     assert by_symbol["STEADY"]["allocation_weight"] > by_symbol["NOISY"]["allocation_weight"]
     assert by_symbol["STEADY"]["alpha_allocation"]["return_history_coverage"] == 2
     assert by_symbol["STEADY"]["alpha_allocation"]["opb_controller"]["stage"] == "L3_production_allocation_controller"
+    assert (
+        by_symbol["STEADY"]["alpha_allocation"]["opb_controller"]["allocation_role"]
+        == "production_recommendation_allocation_controller"
+    )
 
 
 def test_core_ml_gate_filters_recommendations_to_selected_family_rank_symbols():
@@ -737,6 +737,96 @@ def test_core_ml_gate_filters_recommendations_to_selected_family_rank_symbols():
     assert any(point.startswith("core_ml_gate:") for point in gated[0]["watch_points"])
 
 
+def test_core_family_vote_counts_tree_and_learned_sequence_as_active_families():
+    prediction = {
+        "rank_scores": {
+            "XGBoost": 0.70,
+            "CatBoost": 0.65,
+            "ExtraTrees": 0.60,
+            "LightGBM": 0.75,
+        },
+        "dlinear": {"forecast_pct": 0.03},
+        "patchtst": {"forecast_pct": 0.02},
+    }
+
+    vote = recommendation_service.build_core_family_vote(prediction)
+
+    expected_tree = (0.70 + 0.65 + 0.60 + 0.75) / 4
+    expected_sequence = (
+        1.0 / (1.0 + math.exp(-0.03 * 12.0))
+        + 1.0 / (1.0 + math.exp(-0.02 * 12.0))
+    ) / 2
+    assert vote["schema_version"] == "core_family_vote_v1"
+    assert vote["active_family_count"] == 2
+    assert vote["active_families"] == ["tree", "learned_sequence"]
+    assert vote["families"]["tree"]["models"]["XGBoost"] == pytest.approx(0.70)
+    assert vote["families"]["learned_sequence"]["models"]["DLinear"] == pytest.approx(
+        1.0 / (1.0 + math.exp(-0.03 * 12.0))
+    )
+    assert vote["families"]["tabular_neural"]["status"] == "inactive_missing_artifact"
+    assert vote["families"]["graph"]["status"] == "inactive_missing_artifact"
+    assert vote["families"]["foundation_sequence"]["status"] == "inactive_missing_artifact"
+    assert set(vote["inactive_formal_models"]) >= {"TabM", "GNN", "iTransformer", "TimesFM"}
+    assert vote["family_score"] == pytest.approx((expected_tree + expected_sequence) / 2)
+
+
+def test_core_family_rank_reorders_by_family_score_and_persists_evidence():
+    rows = [
+        {
+            "symbol": "A",
+            "score": 95,
+            "watch_points": [],
+            "ml_vote_summary": {"reported": 6},
+            "score_components": {"version": "score_v2", "finalScore": 95, "components": {}},
+        },
+        {
+            "symbol": "B",
+            "score": 70,
+            "watch_points": [],
+            "ml_vote_summary": {"reported": 6},
+            "score_components": {"version": "score_v2", "finalScore": 70, "components": {}},
+        },
+    ]
+    predictions = {
+        "A": {
+            "rank_scores": {"XGBoost": 0.72, "CatBoost": 0.70, "ExtraTrees": 0.68, "LightGBM": 0.69},
+            "dlinear": {"forecast_pct": -0.03},
+            "patchtst": {"forecast_pct": -0.02},
+        },
+        "B": {
+            "rank_scores": {"XGBoost": 0.64, "CatBoost": 0.63, "ExtraTrees": 0.62, "LightGBM": 0.61},
+            "dlinear": {"forecast_pct": 0.07},
+            "patchtst": {"forecast_pct": 0.06},
+        },
+    }
+
+    ranked = recommendation_service.apply_core_family_rank(rows, predictions, target_size=1)
+
+    assert [row["symbol"] for row in ranked] == ["B"]
+    row = ranked[0]
+    assert row["core_family_vote"]["active_family_count"] == 2
+    assert row["ml_vote_summary"]["coreFamilyVote"]["family_score"] == pytest.approx(
+        row["core_family_vote"]["family_score"]
+    )
+    assert row["score_components"]["coreFamilyVote"]["schema_version"] == "core_family_vote_v1"
+    assert any(point.startswith("core_family_rank:") for point in row["watch_points"])
+    assert predictions["B"]["core_family_vote"]["family_score"] == pytest.approx(
+        row["core_family_vote"]["family_score"]
+    )
+
+
+def test_core_family_rank_fails_closed_when_only_tree_family_is_available():
+    rows = [{"symbol": "A", "score": 95}]
+    predictions = {
+        "A": {
+            "rank_scores": {"XGBoost": 0.72, "CatBoost": 0.70, "ExtraTrees": 0.68, "LightGBM": 0.69},
+        }
+    }
+
+    with pytest.raises(ValueError, match="core_family_rank_requires_2_active_families"):
+        recommendation_service.apply_core_family_rank(rows, predictions, target_size=1)
+
+
 def test_build_return_history_from_payloads_uses_close_to_close_returns():
     history = build_return_history_from_payloads([
         {
@@ -752,7 +842,7 @@ def test_build_return_history_from_payloads_uses_close_to_close_returns():
     assert history["2330"] == [0.02, -0.00980392]
 
 
-def test_hybrid_ranking_promotion_blocks_negative_forecast():
+def test_apply_sparse_tangent_allocation_blocks_negative_forecast():
     rows = [{
         "symbol": "5292",
         "chip_score": 36.0,
@@ -766,11 +856,9 @@ def test_hybrid_ranking_promotion_blocks_negative_forecast():
         "ml_forecast_pct": -0.01,
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
-        alpha_policy={"allocation": {"engine": "legacy_topk"}},
+        ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
     )
 
     assert promoted[0]["signal"] == "HOLD"
@@ -778,7 +866,7 @@ def test_hybrid_ranking_promotion_blocks_negative_forecast():
     assert promoted[0]["promotion_blocked_reason"] == "negative_or_below_min_forecast"
 
 
-def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied():
+def test_existing_buy_rows_do_not_bypass_sparse_tangent_allocator():
     rows = [{
         "symbol": "2330",
         "chip_score": 20.0,
@@ -786,10 +874,11 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
         "score_seed_inputs": _score_seed_inputs(20.0, 15.0),
         "score_components": _screener_score_components(20.0, 15.0),
         "confidence": 0.72,
+        "score": 80.0,
+        "ml_forecast_pct": 0.012,
         "signal": "BUY",
-        "signal_source": "ensemble_v2_topk_policy",
+        "signal_source": "ensemble_v2",
         "has_buy_signal": 1,
-        "topk_forced": True,
     }, {
         "symbol": "2317",
         "chip_score": 19.0,
@@ -797,24 +886,58 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
         "score_seed_inputs": _score_seed_inputs(19.0, 14.0),
         "score_components": _screener_score_components(19.0, 14.0),
         "confidence": 0.41,
+        "score": 66.0,
+        "ml_forecast_pct": 0.004,
         "signal": "HOLD",
         "signal_source": "ensemble_v2",
         "has_buy_signal": 0,
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
-        alpha_policy={"allocation": {"engine": "legacy_topk"}},
+        ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "buySignalCount": 1}},
     )
 
-    assert promoted[0]["signal_source"] == "ensemble_v2_topk_policy"
+    assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
     assert promoted[1]["signal"] == "HOLD"
     assert promoted[1].get("ranking_promoted") is not True
 
 
-def test_hybrid_ranking_promotion_backfills_tradable_when_controller_topk_is_research_only():
+def test_stale_buy_rows_are_neutralized_when_sparse_tangent_has_no_positive_edge():
+    rows = [{
+        "symbol": "2330",
+        "chip_score": 20.0,
+        "tech_score": 15.0,
+        "score_seed_inputs": _score_seed_inputs(20.0, 15.0),
+        "score_components": _screener_score_components(20.0, 15.0),
+        "confidence": 0.72,
+        "score": 80.0,
+        "ml_forecast_pct": -0.012,
+        "signal": "BUY",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 1,
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={
+            "enabled": True,            "alpha": 0.4,
+            "beta": 0.4,
+            "gamma": 0.2,
+            "promoteMinForecastPct": -0.02,
+        },
+        alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "buySignalCount": 1}},
+    )
+
+    assert promoted[0]["signal"] == "HOLD"
+    assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
+    assert promoted[0]["signal_source_raw"] == "ensemble_v2"
+    assert promoted[0]["has_buy_signal"] == 0
+    assert promoted[0]["sparse_tangent_selected"] is False
+
+
+def test_sparse_tangent_ignores_research_only_rows_when_selecting_buys():
     rows = [{
         "symbol": "4925",
         "chip_score": 9.0,
@@ -823,9 +946,8 @@ def test_hybrid_ranking_promotion_backfills_tradable_when_controller_topk_is_res
         "score_components": _screener_score_components(9.0, 14.0),
         "confidence": 0.72,
         "signal": "BUY",
-        "signal_source": "ensemble_v2_topk_policy",
+        "signal_source": "ensemble_v2",
         "has_buy_signal": 0,
-        "topk_forced": True,
         "recommendation_lane": "emerging_watchlist",
         "eligible_for_pending_buy": False,
     }, {
@@ -843,24 +965,24 @@ def test_hybrid_ranking_promotion_backfills_tradable_when_controller_topk_is_res
         "eligible_for_pending_buy": True,
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
-        alpha_policy={"allocation": {"engine": "legacy_topk"}},
+        ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "buySignalCount": 1}},
     )
 
     tradable = next(row for row in promoted if row["symbol"] == "3231")
     research_only = next(row for row in promoted if row["symbol"] == "4925")
     assert research_only["has_buy_signal"] == 0
     assert tradable["signal"] == "BUY"
-    assert tradable["signal_source"] == "ranking_promotion"
+    assert tradable["signal_source"] == "sparse_tangent_inverse_risk"
     assert tradable["has_buy_signal"] == 1
 
 
-def test_hybrid_ranking_promotion_uses_score_v2_final_as_primary_rank_owner():
+def test_apply_sparse_tangent_allocation_uses_score_v2_final_as_primary_rank_owner():
     rows = [{
         "symbol": "LOWV2",
+        "score": 42.0,
         "chip_score": 36.0,
         "tech_score": 30.0,
         "score_seed_inputs": _score_seed_inputs(36.0, 30.0),
@@ -874,6 +996,7 @@ def test_hybrid_ranking_promotion_uses_score_v2_final_as_primary_rank_owner():
         "eligible_for_pending_buy": True,
     }, {
         "symbol": "HIGHV2",
+        "score": 76.0,
         "chip_score": 16.0,
         "tech_score": 12.0,
         "score_seed_inputs": _score_seed_inputs(16.0, 12.0),
@@ -887,21 +1010,21 @@ def test_hybrid_ranking_promotion_uses_score_v2_final_as_primary_rank_owner():
         "eligible_for_pending_buy": True,
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
-        alpha_policy={"allocation": {"engine": "legacy_topk"}},
+        ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "buySignalCount": 1}},
     )
 
-    selected = next(row for row in promoted if row.get("ranking_promoted"))
+    selected = next(row for row in promoted if row.get("has_buy_signal") == 1)
     bypassed = next(row for row in promoted if row["symbol"] == "LOWV2")
     assert selected["symbol"] == "HIGHV2"
     assert selected["_combined_score_source"] == "score_v2_final_score_plus_ml_tiebreak"
-    assert bypassed.get("ranking_promoted") is not True
+    assert selected["signal_source"] == "sparse_tangent_inverse_risk"
+    assert bypassed.get("has_buy_signal") == 0
 
 
-def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
+def test_apply_sparse_tangent_allocation_uses_alpha_policy_slate_size():
     rows = [
         {
             "symbol": "2330",
@@ -941,10 +1064,10 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
         },
     ]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        alpha_policy={"allocation": {"engine": "legacy_topk", "slateSize": 2}},
+        ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+        alpha_policy={"allocation": {"engine": "sparse_tangent_inverse_risk", "buySignalCount": 2, "slateSize": 2}},
         regime_label="sideways",
     )
 
@@ -952,7 +1075,7 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
     assert len(selected) == 2
 
 
-def test_hybrid_ranking_promotion_requires_canonical_score_v2_components():
+def test_apply_sparse_tangent_allocation_requires_canonical_score_v2_components():
     rows = [{
         "symbol": "2330",
         "chip_score": 40.0,
@@ -965,9 +1088,9 @@ def test_hybrid_ranking_promotion_requires_canonical_score_v2_components():
     }]
 
     with pytest.raises(ValueError, match="score_components required"):
-        hybrid_ranking_promotion(
+        apply_sparse_tangent_allocation(
             rows,
-            ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
+            ranking_config={"enabled": True, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
         )
 
 
@@ -1014,7 +1137,7 @@ def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
             "feature_version": "v2",
             "ensemble_v2": {
                 "signal": "BUY",
-                "signal_source": "ensemble_v2_topk_policy",
+                "signal_source": "ensemble_v2",
             },
             "models": {},
             "forecasts": {},
@@ -1026,7 +1149,48 @@ def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
 
     insert_params = captured["statements"][2][1]
     forecast_data = insert_params[4]
-    assert '"signal_source": "ensemble_v2_topk_policy"' in forecast_data
+    assert '"signal_source": "ensemble_v2"' in forecast_data
+
+
+def test_write_predictions_to_d1_persists_core_family_vote_payload(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+
+    vote = {
+        "schema_version": "core_family_vote_v1",
+        "family_score": 0.64,
+        "active_family_count": 2,
+        "active_families": ["tree", "learned_sequence"],
+    }
+
+    write_predictions_to_d1(
+        {
+            "2330": {
+                "signal": "BUY",
+                "confidence": 0.71,
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "target1": 108.0,
+                "target2": 112.0,
+                "feature_version": "v2",
+                "ensemble_v2": {"signal": "BUY", "signal_source": "ensemble_v2"},
+                "core_ml_gate": {"schema_version": "core-ml-gate-v1", "selected": True, "rank": 1},
+                "core_family_vote": vote,
+            }
+        },
+        {"2330": 1},
+    )
+
+    forecast_payload = json.loads(captured["statements"][2][1][4])
+    assert forecast_payload["core_family_vote"] == vote
+    assert forecast_payload["core_ml_gate"]["selected"] is True
 
 
 def test_ml_vote_summary_counts_weight_gated_models_as_reported():

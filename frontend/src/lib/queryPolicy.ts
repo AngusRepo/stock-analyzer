@@ -69,7 +69,16 @@ export function prefetchWorkstationRoute(
 ) {
   const date = twToday()
 
-  if (href === '/' || href.startsWith('/stock/')) {
+  if (href === '/') {
+    prefetchMany(queryClient, [
+      { queryKey: ['market', 'risk', 'public-home'], queryFn: marketApi.risk, staleTime: queryTtl.intraday },
+      { queryKey: ['recommendations', 'sector-flow', 'theme', 'public-home', date], queryFn: () => recommendationsApi.sectorFlow(undefined, 'theme'), staleTime: queryTtl.dailyDecision },
+      { queryKey: ['recommendations', 'daily-report', 'public-home', date], queryFn: () => recommendationsApi.dailyReport(), staleTime: queryTtl.dailyDecision },
+    ])
+    return
+  }
+
+  if (href.startsWith('/stock/')) {
     prefetchMany(queryClient, [
       { queryKey: ['market', 'indices'], queryFn: marketApi.indices, staleTime: queryTtl.dashboard },
       { queryKey: recommendationDailyKey(date), queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }), staleTime: queryTtl.intraday },
@@ -82,6 +91,13 @@ export function prefetchWorkstationRoute(
       { queryKey: ['paper', 'account'], queryFn: paperApi.account, staleTime: queryTtl.intraday },
       { queryKey: ['paper', 'pending-buys'], queryFn: paperApi.pendingBuys, staleTime: queryTtl.dashboard },
       { queryKey: recommendationDailyKey(date), queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }), staleTime: queryTtl.intraday },
+    ])
+    return
+  }
+
+  if (href === '/model-pool/inspector' && opts.isAdmin) {
+    prefetchMany(queryClient, [
+      { queryKey: ['model-pool', 'artifactRegistry', 'inspector'], queryFn: () => modelPoolApi.artifactRegistry(500), staleTime: queryTtl.intraday },
     ])
     return
   }

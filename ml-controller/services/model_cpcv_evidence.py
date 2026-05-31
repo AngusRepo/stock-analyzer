@@ -87,7 +87,7 @@ def build_model_cpcv_evidence(
 ) -> dict[str, Any]:
     """Aggregate CPCV fold metrics into a lifecycle promotion packet.
 
-    Expected fold fields are intentionally generic so tree, FT, DLinear,
+    Expected fold fields are intentionally generic so tree, sequence,
     PatchTST, and Chronos adapters can all emit the same contract:
     `oos_ic` or `rank_ic`, `test_rows`, and optional `coverage`.
     """

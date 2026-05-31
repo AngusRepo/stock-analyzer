@@ -36,6 +36,13 @@ function assert(condition: unknown, message: string): void {
 }
 
 const forecastData = {
+  core_family_vote: {
+    schema_version: 'core_family_vote_v1',
+    family_score: 0.64,
+    active_family_count: 2,
+    active_families: ['tree', 'learned_sequence'],
+    inactive_formal_models: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
+  },
   ensemble_v2: {
     forecast_pct: 0.012,
     forecast_pct_source: 'empirical_rank_bins',
@@ -91,6 +98,8 @@ const forecastData = {
   assert(summary?.forecastPct === 1.2, 'Worker card contract must expose forecastPct as display percent points')
   assert(summary?.activeWeightCount === 9, 'active weight count must ignore overlays and retired models')
   assert(summary?.zeroWeightModels?.[0] === 'DLinear', 'zero weight root-cause list should be visible to UI')
+  assert(summary?.coreFamilyVote?.family_score === 0.64, 'Worker response must expose Layer3 core family vote evidence')
+  assert(summary?.coreFamilyVote?.active_family_count === 2, 'Worker response must expose active family breadth')
 }
 
 {

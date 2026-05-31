@@ -6,6 +6,7 @@ import os
 from collections import defaultdict
 from typing import Any
 
+from services.legacy_prediction_namespace import legacy_model_candidate_name
 from services.model_ic_tracker import ALPHA_PREDICTION_MODELS
 
 MANAGED_MODELS = ALPHA_PREDICTION_MODELS
@@ -121,7 +122,11 @@ def load_paper_order_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str,
     from services.d1_client import query
 
     managed_csv = ",".join(f"'{m}'" for m in MANAGED_MODELS)
-    challenger_csv = ",".join(f"'{m}::challenger'" for m in MANAGED_MODELS)
+    challenger_csv = ",".join(f"'{legacy_model_candidate_name(m)}'" for m in MANAGED_MODELS)
+    challenger_join_cases = " ".join(
+        f"WHEN '{model_name}' THEN '{legacy_model_candidate_name(model_name)}'"
+        for model_name in MANAGED_MODELS
+    )
     rows = query(
         f"""
         WITH paper_buys AS (
@@ -154,7 +159,7 @@ def load_paper_order_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str,
              AND base.actual_return_pct IS NOT NULL
             JOIN predictions ch
               ON ch.stock_id = base.stock_id
-             AND ch.model_name = base.model_name || '::challenger'
+             AND ch.model_name = CASE base.model_name {challenger_join_cases} ELSE NULL END
              AND date(ch.generated_at) = date(base.generated_at)
              AND ch.verified_at IS NOT NULL
              AND ch.actual_return_pct IS NOT NULL

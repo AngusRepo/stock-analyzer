@@ -69,6 +69,83 @@ def _base_risk_source(source: str) -> str:
     return text
 
 
+def _adaptive_evidence_min_trades(backtest: dict[str, Any], policy: PromotionPolicy) -> int:
+    promotion_min = max(1, int(policy.min_trades))
+    default_floor = max(10, min(promotion_min, promotion_min // 2))
+    entry_attempts = _as_int(backtest.get("entry_attempts"), 0)
+    if entry_attempts <= 0:
+        return default_floor
+    attempt_scaled = max(5, min(promotion_min, round(entry_attempts * 0.10)))
+    return max(5, min(default_floor, attempt_scaled))
+
+
+def classify_parameter_candidate_validation_status(
+    gate: dict[str, Any] | None,
+    evidence: dict[str, Any] | None,
+    *,
+    proxy_pbo_blocked: bool = False,
+    policy: PromotionPolicy | None = None,
+) -> dict[str, Any]:
+    gate = gate or {}
+    evidence = evidence or {}
+    policy = policy or PromotionPolicy.from_env()
+    failed_gates = [str(item) for item in (gate.get("failed_gates") or [])]
+    backtest = evidence.get("backtest") if isinstance(evidence.get("backtest"), dict) else {}
+    if not backtest:
+        inputs = gate.get("inputs") if isinstance(gate.get("inputs"), dict) else {}
+        backtest = inputs.get("backtest") if isinstance(inputs.get("backtest"), dict) else {}
+
+    infra_gates = {
+        "sandbox_missing_or_non_config_shadow_state",
+        "sandbox_body_unavailable",
+        "parameter_evidence_candidate_mismatch",
+        "parameter_evidence_candidate_missing",
+        "missing_parameter_evidence_backtest",
+        "missing_parameter_evidence_monte_carlo",
+        "missing_parameter_evidence_pbo",
+    }
+    if any(name in infra_gates for name in failed_gates):
+        return {
+            "status": "INFRA_BLOCKED",
+            "reason": "validation_infra_or_contract_missing",
+            "promotion_ready": False,
+        }
+
+    decision = str(gate.get("decision") or evidence.get("decision") or "").upper()
+    if decision == "PASS" and not proxy_pbo_blocked:
+        return {
+            "status": "PROMOTION_READY",
+            "reason": "promotion_gates_passed",
+            "promotion_ready": True,
+        }
+
+    total_trades = _as_int(backtest.get("total_trades"), 0)
+    fill_rate = _as_float(backtest.get("fill_rate"), 0.0)
+    evidence_min_trades = _adaptive_evidence_min_trades(backtest, policy)
+    sample_failed = (
+        total_trades < evidence_min_trades
+        or "validation_packet:slippage_fee_liquidity" in failed_gates and fill_rate < 0.10
+    )
+    if sample_failed:
+        return {
+            "status": "EVIDENCE_INSUFFICIENT",
+            "reason": "insufficient_sample",
+            "promotion_ready": False,
+            "sample": {
+                "total_trades": total_trades,
+                "evidence_min_trades": evidence_min_trades,
+                "promotion_min_trades": policy.min_trades,
+                "fill_rate": fill_rate,
+            },
+        }
+
+    return {
+        "status": "NOT_PROMOTION_READY",
+        "reason": "promotion_gates_failed",
+        "promotion_ready": False,
+    }
+
+
 def normalize_latest_backtest_row(row: dict[str, Any] | None) -> dict[str, Any]:
     row = row or {}
     raw = _safe_json(row.get("raw_results"))

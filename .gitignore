@@ -17,6 +17,7 @@ pytest-cache-files-*/
 .tmp/
 .bug-hunter/
 worker/.tmp/
+worker/.tmp-test-run*/
 *.log
 scripts/data/
 scripts/backfill_output*

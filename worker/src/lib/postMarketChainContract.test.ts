@@ -17,6 +17,7 @@ assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback m
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
 assert(callbackRoutes.includes('runPostPipelineCallbackChain'), 'pipeline success callback must launch post-pipeline chain')
 assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify success callback must launch post-verify chain')
+assert(callbackRoutes.includes('metadata: callbackMetadata'), 'verify callback metadata must be passed into post-verify chain')
 assert(
   pipelineCallbackBlock.includes('executionCtx.waitUntil') &&
     pipelineCallbackBlock.includes('runPostPipelineCallbackChain'),
@@ -26,6 +27,11 @@ assert(
 assert(
   postMarketChain.includes('isCurrentBusinessDate'),
   'current-date-only tasks must be guarded so historical reruns cannot dirty current reports',
+)
+assert(
+  postMarketChain.includes('allowHistoricalLearningCatchup') &&
+    postMarketChain.includes('allow_historical_learning_catchup'),
+  'historical verify catch-up may run only explicit learning closures, not current-date report/trading side effects',
 )
 assert(
   postMarketChain.includes('runVerifyV2(env, ctx.runDate)'),
@@ -65,8 +71,13 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <
+    postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask"),
+  'FinLab AI Skill discovery should run after model/meta-learning evidence is available',
+)
+assert(
+  postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask") <
     postMarketChain.indexOf("'strategy-learning', () => runStrategyLearningClosureTask"),
-  'Strategy learning reward closure should run after model/meta-learning evidence is available',
+  'Strategy learning reward closure should consume FinLab AI Skill generated research specs when available',
 )
 assert(
   postMarketChain.includes('runPaperActivePostmarketPromotion'),
@@ -100,5 +111,6 @@ assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be vi
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
+assert(logger.includes("'finlab-ai-skill-discovery'"), 'FinLab AI Skill discovery must be visible in scheduler/OBS logs')
 assert(logger.includes("'strategy-learning'"), 'Strategy learning closure must be visible in scheduler/OBS logs')
 assert(logger.includes("'paper-active-postmarket'"), 'paper-active postmarket must be visible in scheduler/OBS logs')

@@ -312,7 +312,7 @@ def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch):
     assert result["lifecycle_review_packet"]["required_evidence"]["model_cpcv"]
 
 
-def test_promote_check_apply_rejects_disabled_promotion_governance(monkeypatch):
+def test_promote_check_apply_rejects_legacy_model_pool_promotion(monkeypatch):
     challenger = {
         "version": "v2",
         "gcs_path": "universal/xgboost/v2.joblib",
@@ -344,14 +344,12 @@ def test_promote_check_apply_rejects_disabled_promotion_governance(monkeypatch):
                 model_pool.PromoteCheckRequest(
                     apply=True,
                     confirm=True,
-                    require_promotion_gate=False,
                 )
             )
         )
 
-    assert exc.value.status_code == 400
-    assert "cannot disable production promotion governance" in exc.value.detail
-    assert "promotion_gate" in exc.value.detail
+    assert exc.value.status_code == 410
+    assert "legacy model_pool challenger promotion is disabled" in exc.value.detail
 
 
 def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
@@ -398,7 +396,7 @@ def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
     assert result["model_cpcv_by_model"]["XGBoost"]["decision"] == "PASS"
 
 
-def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypatch):
+def test_promote_check_apply_does_not_mutate_legacy_model_pool_promote(monkeypatch):
     cpcv = {
         "decision": "PASS",
         "method": "purged_cpcv_rank_ic",
@@ -424,6 +422,7 @@ def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypatch):
         },
     }
     bucket = _install_fake_gcs(monkeypatch, pool)
+    before = bucket.pool_blob.download_as_text()
 
     import services.shadow_ab_service as shadow_ab_service
     import services.paper_order_ab_service as paper_order_ab_service
@@ -443,13 +442,10 @@ def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypatch):
         "validation_packet": {"decision": "PASS", "failed_gates": []},
     })
 
-    result = asyncio.run(
-        model_pool.promote_check(model_pool.PromoteCheckRequest(apply=True, confirm=True))
-    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            model_pool.promote_check(model_pool.PromoteCheckRequest(apply=True, confirm=True))
+        )
 
-    assert result["applied_count"] == 1
-    saved = json.loads(bucket.pool_blob.download_as_text())
-    active = saved["models"]["XGBoost"]
-    assert active["version"] == "v2"
-    assert active["last_model_cpcv"]["decision"] == "PASS"
-    assert "challenger" not in active
+    assert exc.value.status_code == 410
+    assert bucket.pool_blob.download_as_text() == before

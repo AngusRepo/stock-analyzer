@@ -12,10 +12,10 @@ import {
   Boxes,
   ChevronRight,
   Command,
+  Database,
   FlaskConical,
   GitBranch,
   Home,
-  LayoutDashboard,
   LogIn,
   LogOut,
   Menu,
@@ -27,7 +27,7 @@ const NAV_SECTIONS = [
   {
     label: '每日',
     items: [
-      { label: '晨間概覽', icon: LayoutDashboard, href: '/' },
+      { label: 'Home', icon: Home, href: '/' },
     ],
   },
   {
@@ -43,12 +43,14 @@ const NAV_SECTIONS = [
       { label: 'Observability', icon: Activity, href: '/obs', adminOnly: true },
       { label: '流程追蹤', icon: GitBranch, href: '/pipeline', adminOnly: true },
       { label: '模型池', icon: Boxes, href: '/model-pool', adminOnly: true },
+      { label: 'Raw Inspector', icon: Database, href: '/model-pool/inspector', adminOnly: true },
     ],
   },
 ] as const
 
 function isActivePath(itemHref: string, currentPath: string) {
   if (itemHref === '/') return currentPath === '/' || currentPath.startsWith('/stock/')
+  if (itemHref === '/model-pool') return currentPath === '/model-pool'
   return currentPath === itemHref || currentPath.startsWith(`${itemHref}/`)
 }
 

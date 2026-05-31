@@ -18,6 +18,24 @@ function assert(condition: unknown, message: string): void {
     },
     {
       symbol: '2330',
+      stage: 'layer1_strategy_breadth_gate',
+      decision: 'pass',
+      reason_code: 'selected_by_strategy_pool',
+      rank: 18,
+      score_after: 72,
+      evidence: JSON.stringify({ strategy_ids: ['trend_breakout'], selection_order: 'full_feature_enriched_universe_strategy_quota_then_score_top_up' }),
+    },
+    {
+      symbol: '2330',
+      stage: 'layer2_coarse_ml_gate',
+      decision: 'pass',
+      reason_code: 'coarse_ml_queue_seed_from_layer1_breadth',
+      rank: 6,
+      score_after: 72,
+      evidence: JSON.stringify({ coarse_ml_queue_size: 80, core_ml_shortlist_size: 35 }),
+    },
+    {
+      symbol: '2330',
       stage: 'rrg_overlay',
       decision: 'observe',
       reason_code: 'rrg_overlay_leading_confirmed',
@@ -57,7 +75,9 @@ function assert(condition: unknown, message: string): void {
   const summary = summaries.get('2330')
   assert(summary?.rank === 4, 'final selection rank must be preserved')
   assert(summary?.reason_code === 'selected_for_ml_shortlist', 'final reason must be preserved')
-  assert(summary?.timeline.length === 5, 'timeline must retain all screener stages')
+  assert(summary?.timeline.length === 7, 'timeline must retain all screener stages')
+  assert((summary?.evidence.layer1_breadth as any)?.rank === 18, 'Layer1 breadth evidence must be summarized')
+  assert((summary?.evidence.layer2_coarse_ml as any)?.coarse_ml_queue_size === 80, 'Layer2 coarse ML evidence must be summarized')
   assert((summary?.evidence.rrg_overlay as any)?.quadrant === 'Leading', 'RRG overlay evidence must be summarized')
   assert((summary?.evidence.buzz_evidence as any)?.concept === 'AI', 'buzz evidence must be summarized')
   assert(Array.isArray(summary?.evidence.diversity_cooldown), 'diversity/cooldown evidence must be summarized')

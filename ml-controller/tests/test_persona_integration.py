@@ -24,6 +24,46 @@ from services.persona_service import (  # noqa: E402
 )
 
 
+def _score_seed_inputs(chip: float, tech: float, momentum: float = 0.0) -> dict:
+    return {
+        "chipFlowSeed40": chip,
+        "technicalSeed30": tech,
+        "screenerMomentumSeed20": momentum,
+        "mlEdgeSeed30": 0.0,
+        "personaAlphaSeed": 0.0,
+    }
+
+
+def _screener_score_components(chip: float, tech: float, momentum: float = 0.0) -> dict:
+    chip_flow = round((chip / 40.0) * 25.0, 1)
+    technical = round(((tech + momentum) / 50.0) * 25.0, 1)
+    total = round(chip_flow + technical, 1)
+    return {
+        "version": "score_v2",
+        "weights": {
+            "mlEdge": 25,
+            "chipFlow": 25,
+            "technicalStructure": 25,
+            "fundamentalQuality": 20,
+            "newsTheme": 5,
+        },
+        "components": {
+            "mlEdge": 0,
+            "chipFlow": chip_flow,
+            "technicalStructure": technical,
+            "fundamentalQuality": 0,
+            "newsTheme": 0,
+        },
+        "total": total,
+        "finalScore": total,
+        "alphaAdjustment": 0,
+        "technicalBreakdown": {"volumeConfirmation": round((momentum / 20.0) * 6.0, 1)},
+        "riskFlags": [],
+        "reasons": ["screener_base"],
+        "seedComponents": _score_seed_inputs(chip, tech, momentum),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -38,6 +78,7 @@ def _screener_rec(symbol: str, chip: float = 20.0, tech: float = 15.0) -> dict:
         "industry": "晶圓代工",
         "chip_score": chip,
         "tech_score": tech,
+        "score_components": _screener_score_components(chip, tech),
     }
 
 

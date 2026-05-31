@@ -144,7 +144,17 @@ export async function runParameterCandidateValidationChain(
   if (result.status === 'triggered') {
     return `triggered candidate_validation Job run_id=${result.run_id ?? options.runId ?? 'unknown'} execution_id=${result.execution_id ?? 'unknown'} callback expected`
   }
-  return `candidate_validation status=${result.status ?? 'completed'} total=${result.total ?? 0} ready=${result.ready ?? 0} blocked=${result.blocked ?? 0}`
+  const breakdown = result.status_breakdown && typeof result.status_breakdown === 'object'
+    ? result.status_breakdown as Record<string, any>
+    : {}
+  return [
+    `candidate_validation status=${result.status ?? 'completed'}`,
+    `total=${result.total ?? 0}`,
+    `ready=${result.ready ?? 0}`,
+    `evidence_insufficient=${result.evidence_insufficient ?? breakdown.EVIDENCE_INSUFFICIENT ?? 0}`,
+    `not_promotion_ready=${result.not_promotion_ready ?? breakdown.NOT_PROMOTION_READY ?? 0}`,
+    `infra_blocked=${result.infra_blocked ?? result.blocked ?? breakdown.INFRA_BLOCKED ?? 0}`,
+  ].join(' ')
 }
 
 export async function runWeeklyOptunaResearch(env: Bindings, runDate?: string) {

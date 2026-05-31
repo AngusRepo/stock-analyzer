@@ -5,6 +5,7 @@ import {
   validateStrategySpec,
   type StrategyCandidateInput,
   type StrategySpec,
+  type StrategySpecCandidatePolicy,
   type StrategySpecStatus,
 } from './strategySpec'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
@@ -23,9 +24,14 @@ export interface StrategySpecRegistryRow {
   thresholds_json: string
   risk_notes_json: string
   source_refs_json: string
-  created_by: 'p5_strategy_governance'
+  created_by: string
   created_at?: string
   updated_at?: string
+}
+
+export interface StrategySpecRegistryRowOptions {
+  sourceRefs?: string[]
+  createdBy?: string
 }
 
 export interface StrategyDecisionLogRow {
@@ -153,6 +159,7 @@ export interface StrategyLearningSummary {
 }
 
 export const STRATEGY_POLICY_ID = 'strategy-adaptive-shadow-v1'
+const LEGACY_RETIRED_STRATEGY_SPEC_IDS = ['finlab_ai_skill_shadow_v1']
 
 const PROMOTION_MIN_DECISIONS = 30
 const PROMOTION_MIN_MATCH_RATE = 0.02
@@ -286,7 +293,11 @@ export async function ensureStrategyLearningTables(db: D1Database): Promise<void
   }
 }
 
-export function strategySpecToRegistryRow(spec: StrategySpec, nowIso = new Date().toISOString()): StrategySpecRegistryRow {
+export function strategySpecToRegistryRow(
+  spec: StrategySpec,
+  nowIso = new Date().toISOString(),
+  options: StrategySpecRegistryRowOptions = {},
+): StrategySpecRegistryRow {
   return {
     strategy_id: spec.id,
     version: spec.version,
@@ -298,11 +309,35 @@ export function strategySpecToRegistryRow(spec: StrategySpec, nowIso = new Date(
     thesis: spec.thesis,
     thresholds_json: safeJson(spec.thresholds),
     risk_notes_json: safeJson(spec.riskNotes),
-    source_refs_json: safeJson(['default_strategy_specs', spec.createdBy]),
-    created_by: 'p5_strategy_governance',
+    source_refs_json: safeJson(options.sourceRefs ?? ['default_strategy_specs', spec.createdBy]),
+    created_by: options.createdBy ?? 'p5_strategy_governance',
     created_at: nowIso,
     updated_at: nowIso,
   }
+}
+
+function candidatePolicyForRegistryRow(row: StrategySpecRegistryRow, defaultSpec?: StrategySpec): StrategySpecCandidatePolicy | undefined {
+  if (defaultSpec?.candidatePolicy) return defaultSpec.candidatePolicy
+  const sourceRefs = parseJson(row.source_refs_json, []) as string[]
+  const isFinLabAiSkillSpec = row.strategy_id.startsWith('finlab_ai_skill_')
+    || row.created_by === 'finlab_ai_skill_discovery_v1'
+    || sourceRefs.includes('finlab_ai_skill_discovery_v1')
+  if (row.status === 'research') {
+    return {
+      poolQuota: 8,
+      costBudget: 10,
+      evidenceRequirements: ['strategy_hypothesis', 'research_reward'],
+      maxMlShare: 0,
+    }
+  }
+  if (isFinLabAiSkillSpec) {
+    return {
+      poolQuota: 8,
+      costBudget: 10,
+      evidenceRequirements: ['finlab_ai_skill', 'finlab_taxonomy', 'strategy_hypothesis', 'research_reward'],
+    }
+  }
+  return undefined
 }
 
 export function registryRowToStrategySpec(row: StrategySpecRegistryRow): StrategySpec {
@@ -317,10 +352,66 @@ export function registryRowToStrategySpec(row: StrategySpecRegistryRow): Strateg
     supportedRegimes: parseJson(row.supported_regimes_json, []) as StrategySpec['supportedRegimes'],
     thesis: row.thesis,
     thresholds: parseJson(row.thresholds_json, {}),
-    candidatePolicy: defaultSpec?.candidatePolicy,
+    candidatePolicy: candidatePolicyForRegistryRow(row, defaultSpec),
     riskNotes: parseJson(row.risk_notes_json, []),
     createdBy: 'p5_strategy_governance',
   }
+}
+
+export async function upsertStrategySpecRegistry(
+  db: D1Database,
+  spec: StrategySpec,
+  options: StrategySpecRegistryRowOptions & { nowIso?: string } = {},
+): Promise<{ upserted: number; skipped_invalid: string[]; strategy_id: string; status: StrategySpecStatus }> {
+  assertOwnerCanOwn('strategy', 'strategy_spec')
+  await ensureStrategyLearningTables(db)
+  const validation = validateStrategySpec(spec)
+  if (!validation.ok) {
+    return {
+      upserted: 0,
+      skipped_invalid: [`${spec.id}:${validation.errors.join('|')}`],
+      strategy_id: spec.id,
+      status: spec.status,
+    }
+  }
+  const row = strategySpecToRegistryRow(spec, options.nowIso ?? new Date().toISOString(), {
+    sourceRefs: options.sourceRefs,
+    createdBy: options.createdBy,
+  })
+  await db.prepare(`
+    INSERT INTO strategy_spec_registry (
+      strategy_id, version, name, status, owner, alpha_bucket,
+      supported_regimes_json, thesis, thresholds_json, risk_notes_json,
+      source_refs_json, created_by, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(strategy_id, version) DO UPDATE SET
+      name=excluded.name,
+      status=excluded.status,
+      alpha_bucket=excluded.alpha_bucket,
+      supported_regimes_json=excluded.supported_regimes_json,
+      thesis=excluded.thesis,
+      thresholds_json=excluded.thresholds_json,
+      risk_notes_json=excluded.risk_notes_json,
+      source_refs_json=excluded.source_refs_json,
+      updated_at=excluded.updated_at
+  `).bind(
+    row.strategy_id,
+    row.version,
+    row.name,
+    row.status,
+    row.owner,
+    row.alpha_bucket,
+    row.supported_regimes_json,
+    row.thesis,
+    row.thresholds_json,
+    row.risk_notes_json,
+    row.source_refs_json,
+    row.created_by,
+    row.created_at,
+    row.updated_at,
+  ).run()
+  return { upserted: 1, skipped_invalid: [], strategy_id: spec.id, status: spec.status }
 }
 
 export async function seedDefaultStrategySpecRegistry(
@@ -373,6 +464,15 @@ export async function seedDefaultStrategySpecRegistry(
       row.updated_at,
     ).run()
     seeded += 1
+  }
+  for (const legacyId of LEGACY_RETIRED_STRATEGY_SPEC_IDS) {
+    await db.prepare(`
+      UPDATE strategy_spec_registry
+         SET status='retired',
+             updated_at=?
+       WHERE strategy_id=?
+         AND status != 'retired'
+    `).bind(nowIso, legacyId).run()
   }
   return { seeded, skipped_invalid: skippedInvalid }
 }

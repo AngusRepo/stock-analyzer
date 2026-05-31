@@ -38,10 +38,6 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
         "buyThreshold": 0.70,
         "sellThreshold": 0.30,
         "strongSellThreshold": 0.15,
-        "topKOverrideEnabled": False,
-        "allowLegacyTopKOverride": False,
-        "topKCount": 3,
-        "topKConfidenceOverride": 0.72,
     },
     "alphaFramework": {
         "allocation": {
@@ -61,7 +57,6 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
     },
     "ranking": {
         "enabled": True,
-        "topK": 3,
         "alpha": 0.40,
         "beta": 0.40,
         "gamma": 0.20,
@@ -103,6 +98,12 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
         "bandit_max_mult_high": 1.5,
         "bandit_max_mult_med": 2.0,
         "bandit_max_mult_low": 2.5,
+    },
+    "screener": {
+        "candidatePoolSize": 200,
+        "coarseMlQueueSize": 80,
+        "mlShortlistSize": 35,
+        "emergingResearchSize": 24,
     },
 }
 
@@ -167,7 +168,15 @@ def _missing_required_sections(raw: dict[str, Any] | None) -> list[str]:
 
 def _with_required_defaults(config: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_required_aliases(config if isinstance(config, dict) else {})
-    return deep_merge(DEFAULT_REQUIRED_CONFIG, normalized)
+    return _sanitize_retired_ranking_keys(deep_merge(DEFAULT_REQUIRED_CONFIG, normalized))
+
+
+def _sanitize_retired_ranking_keys(config: dict[str, Any]) -> dict[str, Any]:
+    out = deepcopy(config)
+    ranking = out.get("ranking")
+    if isinstance(ranking, dict):
+        ranking.pop("topK", None)
+    return out
 
 
 def get_raw_trading_config() -> dict[str, Any] | None:

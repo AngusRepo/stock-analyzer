@@ -652,7 +652,7 @@ def build_strategy_lab_record(
         "follow_up": follow_up or [],
         "tags": tags or [],
         "production_promotion_allowed": False,
-        "promotion_owner": "model_pool/promote_check",
+        "promotion_owner": "model_artifact_registry/confirm_promotion",
         "decision": "PASS" if not failed and validation_decision == "PASS" else "FAIL",
         "failed_gates": [gate["name"] for gate in failed],
         "gates": gates,

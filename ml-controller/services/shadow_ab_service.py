@@ -6,6 +6,11 @@ import os
 from collections import defaultdict
 from typing import Any
 
+from services.legacy_prediction_namespace import (
+    base_model_name,
+    is_legacy_model_candidate_name,
+    legacy_model_candidate_name,
+)
 from services.model_ic_tracker import ALPHA_PREDICTION_MODELS
 
 
@@ -59,9 +64,9 @@ def evaluate_shadow_ab_rows(
         model_name = str(row.get("model_name") or "")
         if not model_name:
             continue
-        base = model_name.replace("::challenger", "")
+        base = base_model_name(model_name)
         key = (row.get("stock_id"), row.get("sample_date"))
-        side = "challenger" if model_name.endswith("::challenger") else "active"
+        side = "challenger" if is_legacy_model_candidate_name(model_name) else "active"
         by_key[(base, key)][side] = row
 
     paired: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
@@ -130,7 +135,7 @@ def load_shadow_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str, Any]
     from services.d1_client import query
 
     alpha_csv = ",".join(f"'{m}'" for m in ALPHA_PREDICTION_MODELS)
-    challenger_csv = ",".join(f"'{m}::challenger'" for m in ALPHA_PREDICTION_MODELS)
+    challenger_csv = ",".join(f"'{legacy_model_candidate_name(m)}'" for m in ALPHA_PREDICTION_MODELS)
     rows = query(
         f"""
         SELECT

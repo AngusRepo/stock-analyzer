@@ -62,6 +62,7 @@ interface BuyRecommendationRow {
   latest_avg_price: number | null
   market: string | null
   forecast_data?: string | null
+  signal_source?: string | null
   watch_points?: unknown
 }
 
@@ -482,16 +483,17 @@ function applyRecommendationProvenance(buyRecs: BuyRecommendationRow[]): void {
       const avgRank = typeof ensemble.avg_rank === 'number' ? ensemble.avg_rank : null
       const avgRankText = avgRank != null ? avgRank.toFixed(3) : '?'
       const ensembleSignal = ensemble.signal ?? 'unknown'
+      const signalSource = String(rec.signal_source ?? '').trim()
 
       let provenance: string | null = null
-      if (ensemble.topk_forced === true) {
+      if (signalSource === 'sparse_tangent_inverse_risk') {
         provenance =
-          `Signal Provenance (ensemble Top-K): BUY forced at ensemble layer (signal_raw=${ensemble.signal_raw ?? 'HOLD'}, avg_rank=${avgRankText}). ` +
-          'Judge on business merit and industry context, not raw signal strength.'
+          `Signal Provenance (sparse tangent): BUY selected by sparse_tangent_inverse_risk allocation after ML family rank (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
+          'Judge on allocation evidence, risk budget and execution feasibility.'
       } else if (/BUY/i.test(rec.signal ?? '') && ensembleSignal !== 'unknown' && !/BUY/i.test(ensembleSignal)) {
         provenance =
-          `Signal Provenance (ranking promoted): BUY flipped at recommendation layer (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
-          'Treat as ranking promotion, not a naturally strong BUY.'
+          `Signal Provenance (allocator selected): BUY selected after final allocation layer (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
+          'Treat as allocation-selected, not a standalone ensemble BUY.'
       }
 
       if (provenance) rec.reason = `${provenance}\n\n${rec.reason ?? ''}`
@@ -690,7 +692,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
                 ORDER BY sp.date DESC
                 LIMIT 1
              ) AS latest_avg_price,
-             p.forecast_data AS forecast_data
+             p.forecast_data AS forecast_data,
+             dr.signal_source AS signal_source
         FROM daily_recommendations dr
         LEFT JOIN stocks s ON s.symbol = dr.symbol
         LEFT JOIN predictions p ON p.id = (
@@ -748,7 +751,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           FROM predictions
          WHERE stock_id IN (${placeholders})
            AND model_name != 'ensemble'
-           AND model_name NOT LIKE '%::challenger'
+          AND instr(model_name, '::') = 0
            AND prediction_date IN (?, ?)
          ORDER BY stock_id, model_name, generated_at DESC
       `).bind(

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from services import d1_client
+from services.candidate_lifecycle_payload import candidate_registrations_from_payload
+from services.legacy_prediction_namespace import legacy_model_candidate_name
 
 CandidateType = Literal[
     "monthly_release",
@@ -302,8 +304,8 @@ def _nested_dict(value: Any) -> dict[str, Any]:
 def _model_training_evidence(payload_dict: dict[str, Any], model_name: str) -> dict[str, Any]:
     """Extract model-specific evidence from the richer retrain followup stages.
 
-    Older followup payloads kept ``challenger_registrations`` intentionally thin
-    while storing CPCV/OOS evidence under ``stages.train.ic_tracking`` and
+    Older followup payloads kept model candidate registration rows intentionally
+    thin while storing CPCV/OOS evidence under ``stages.train.ic_tracking`` and
     sequence metadata under ``stages.train.aux_train``. Registry backfills must
     read those fields or valid artifacts look weaker than they really are.
     """
@@ -344,7 +346,7 @@ def _model_training_evidence(payload_dict: dict[str, Any], model_name: str) -> d
 def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str, Any]]:
     payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     version = payload_dict.get("candidate_version")
-    registrations = payload_dict.get("challenger_registrations") or {}
+    registrations = candidate_registrations_from_payload(payload)
     if not version or not isinstance(registrations, dict) or not registrations:
         return []
 
@@ -793,7 +795,7 @@ def _load_model_artifact_shadow_pairs(
     *,
     lookback_days: int = 90,
 ) -> list[dict[str, Any]]:
-    challenger_name = f"{model_name}::challenger"
+    challenger_name = legacy_model_candidate_name(model_name)
     return d1_client.query(
         """
         SELECT
@@ -1152,7 +1154,7 @@ def _build_model_artifact_candidate_evidence(
             "pair_source": "predictions active/challenger verified rows",
             "pair_count": len(shadow_rows),
             "active_model_name": row.get("model_name"),
-            "challenger_model_name": f"{row.get('model_name')}::challenger",
+            "legacy_candidate_model_name": legacy_model_candidate_name(str(row.get("model_name") or "")),
             "replay_method": "paired_shadow_verified_replay",
         },
     }
@@ -2232,7 +2234,7 @@ def _live_gate_decision(
     per_model_ic: dict[str, dict[str, Any]],
     min_samples: int,
 ) -> dict[str, Any]:
-    shadow_name = f"{model_name}::challenger"
+    shadow_name = legacy_model_candidate_name(model_name)
     production = per_model_ic.get(model_name) or {}
     shadow = per_model_ic.get(shadow_name) or {}
     shadow_ic = _ic_number(shadow)

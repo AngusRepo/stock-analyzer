@@ -1369,28 +1369,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // Step 2 debug: top 30 scored
   debugLog.push(`[Step 2] 多因子評分完成: ${scored.length} 檔 | 大盤 5d return=${(marketReturn5d * 100).toFixed(2)}%`)
   const scoredSorted = [...scored].sort((a, b) => b.score - a.score)
-  const preRankPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
-  preRankPool.forEach((candidate, index) => {
-    pushFunnelItem(funnelItems, {
-      symbol: candidate.symbol,
-      name: candidate.name,
-      stage: 'layer1_strategy_breadth_gate',
-      decision: 'pass',
-      reasonCode: 'strategy_breadth_seed',
-      scoreAfter: candidate.score,
-      rank: index + 1,
-      evidence: {
-        target_size: screenerPolicy.sizing.candidatePoolSize,
-        coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
-        core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
-        chip_score: candidate.chip_score,
-        tech_score: candidate.tech_score,
-        momentum_score: candidate.momentum_score,
-        market_segment: candidate.market_segment ?? null,
-        layer_contract: 'L1 keeps breadth; RRG/news/PTT/heavy ML are not selection owners here',
-      },
-    })
-  })
+  const featureEnrichedUniverse = dedupeScreenerCandidatesBySymbol(scored)
   debugLog.push(`[Step 2] Top 15 (base_score):`)
   for (const c of scoredSorted.slice(0, 15)) {
     debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} | base=${c.score.toFixed(1)} chip=${c.chip_score} tech=${c.tech_score} mom=${c.momentum_score.toFixed(1)} | ${c.reason}`)
@@ -1407,12 +1386,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const maxCandidates = screenerPolicy.sizing.mlShortlistSize
   let strategySelectionTelemetry: Record<string, unknown> | null = null
   let strategySelectionPlan: any | null = null
-  const strategySourceUniverse = dedupeScreenerCandidatesBySymbol(preRankPool as ScreenerCandidate[])
-  let overlayEligibleSymbols = new Set(
-    strategySourceUniverse.slice(0, coarseQueueSize).map((candidate) => String(candidate.symbol || '').trim()),
-  )
+  const strategySourceUniverse = featureEnrichedUniverse
+  let layer1BreadthPool: ScoredCandidate[] = []
+  let layer2CoarseQueueSeed: ScoredCandidate[] = []
+  let overlayEligibleSymbols = new Set<string>()
   try {
-    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, { planStrategyFirstCandidateSelection }] = await Promise.all([
+    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, { buildLayer1StrategyBreadthPlan }] = await Promise.all([
       import('./strategyLearning'),
       import('./strategyCandidatePool'),
     ])
@@ -1420,28 +1399,31 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       listStrategySpecsForLearning(env.DB),
       getLatestStrategyPolicyState(env.DB).catch(() => null),
     ])
-    strategySelectionPlan = planStrategyFirstCandidateSelection(
+    const layer1BreadthPlan = buildLayer1StrategyBreadthPlan(
       strategySourceUniverse as any,
       specs,
       {
+        targetSize: screenerPolicy.sizing.candidatePoolSize,
+        coarseMlQueueSize: coarseQueueSize,
         regime: (adaptiveParams as any)?.provenance?.regime ?? null,
         strategyWeights: policyState?.strategy_weights ?? undefined,
-        mlQueueCapOverride: coarseQueueSize,
       },
     )
-    overlayEligibleSymbols = new Set(
-      [
-        ...strategySelectionPlan.mlQueue.map((candidate: any) => String(candidate.symbol || '').trim()),
-        ...strategySourceUniverse.slice(0, coarseQueueSize).map((candidate) => String(candidate.symbol || '').trim()),
-      ].filter(Boolean),
-    )
+    strategySelectionPlan = layer1BreadthPlan.selection
+    layer1BreadthPool = layer1BreadthPlan.breadthPool as ScoredCandidate[]
+    layer2CoarseQueueSeed = layer1BreadthPlan.coarseQueue as ScoredCandidate[]
+    overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
     strategySelectionTelemetry = {
-      version: strategySelectionPlan.version,
+      version: layer1BreadthPlan.version,
+      candidate_pool_version: strategySelectionPlan.version,
       spec_source: source,
       capacity: strategySelectionPlan.capacity,
       telemetry: strategySelectionPlan.telemetry,
+      layer1_telemetry: layer1BreadthPlan.telemetry,
       source_universe_count: strategySourceUniverse.length,
-      selection_order: 'strategy_pool_after_safety_hard_filter_before_rrg_scoring_overlays',
+      layer1_breadth_count: layer1BreadthPool.length,
+      layer2_coarse_queue_seed_count: layer2CoarseQueueSeed.length,
+      selection_order: layer1BreadthPlan.telemetry.selection_order,
       pool_status: strategySelectionPlan.pools.map((pool: any) => ({
         strategy_id: pool.strategy_id,
         status: pool.status,
@@ -1452,11 +1434,56 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       })),
     }
     debugLog.push(
-      `[Step 2c] strategy_pool=${strategySelectionPlan.version} source=${source} ` +
-      `coarse_ml=${strategySelectionPlan.mlQueue.length}/${coarseQueueSize} core_ml=${maxCandidates} ` +
+      `[Step 2c] layer1_breadth=${layer1BreadthPlan.version} source=${source} ` +
+      `source_universe=${strategySourceUniverse.length} layer1=${layer1BreadthPool.length}/${screenerPolicy.sizing.candidatePoolSize} ` +
+      `coarse_seed=${layer2CoarseQueueSeed.length}/${coarseQueueSize} core_ml=${maxCandidates} ` +
       `research_only=${strategySelectionPlan.researchOnlyQueue.length} overflow=${strategySelectionPlan.telemetry.overflow_count} ` +
       `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode}`,
     )
+    layer1BreadthPool.forEach((candidate, index) => {
+      pushFunnelItem(funnelItems, {
+        symbol: candidate.symbol,
+        name: candidate.name,
+        stage: 'layer1_strategy_breadth_gate',
+        decision: 'pass',
+        reasonCode: String((candidate as any).strategy_pool_reason ?? 'strategy_breadth_seed'),
+        scoreAfter: candidate.score,
+        rank: index + 1,
+        evidence: {
+          strategy_ids: (candidate as any).strategy_pool_ids ?? [],
+          strategy_pool_score: (candidate as any).strategy_pool_score ?? null,
+          target_size: screenerPolicy.sizing.candidatePoolSize,
+          coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
+          core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
+          chip_score: candidate.chip_score,
+          tech_score: candidate.tech_score,
+          momentum_score: candidate.momentum_score,
+          market_segment: candidate.market_segment ?? null,
+          source_universe: 'full_feature_enriched_universe',
+          source_universe_count: strategySourceUniverse.length,
+          selection_order: layer1BreadthPlan.telemetry.selection_order,
+          layer_contract: 'L1 keeps breadth; RRG/news/PTT/heavy ML are not selection owners here',
+        },
+      })
+    })
+    layer2CoarseQueueSeed.forEach((candidate, index) => {
+      pushFunnelItem(funnelItems, {
+        symbol: candidate.symbol,
+        name: candidate.name,
+        stage: 'layer2_coarse_ml_gate',
+        decision: 'pass',
+        reasonCode: 'coarse_ml_queue_seed_from_layer1_breadth',
+        scoreAfter: candidate.score,
+        rank: index + 1,
+        evidence: {
+          strategy_ids: (candidate as any).strategy_pool_ids ?? [],
+          strategy_pool_reason: (candidate as any).strategy_pool_reason ?? null,
+          layer1_rank: (candidate as any).strategy_pool_rank ?? index + 1,
+          coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
+          core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
+        },
+      })
+    })
     const mlQueueAuditLimit = Math.min(D1_IN_CHUNK_SIZE * 2, strategySelectionPlan.mlQueue.length)
     for (const entry of strategySelectionPlan.mlQueue.slice(0, mlQueueAuditLimit)) {
       pushFunnelItem(funnelItems, {
@@ -1496,7 +1523,18 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       })
     }
   } catch (e) {
-    debugLog.push(`[Step 2c] strategy_pool unavailable before overlays; fallback to score top later: ${String(e)}`)
+    layer1BreadthPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
+    layer2CoarseQueueSeed = layer1BreadthPool.slice(0, coarseQueueSize)
+    overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
+    strategySelectionTelemetry = {
+      version: 'layer1-breadth-fallback',
+      selection_order: 'emergency_score_fallback_after_layer1_strategy_pool_error',
+      source_universe_count: strategySourceUniverse.length,
+      layer1_breadth_count: layer1BreadthPool.length,
+      layer2_coarse_queue_seed_count: layer2CoarseQueueSeed.length,
+      error: String(e),
+    }
+    debugLog.push(`[Step 2c] layer1 breadth unavailable before overlays; emergency score fallback used: ${String(e)}`)
   }
 
   // ── Step 3: RRG 象限加權 ── (2026-04-09 rewired)
@@ -1634,7 +1672,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // 4a. 新聞情緒（D1 查詢）
   try {
     // 批次查所有候選的近 7 天新聞情緒
-    const topSymbols = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
+    const topSymbols = [...overlayEligibleSymbols]
     if (topSymbols.length > 0) {
       // 查 stocks 表拿 stock_id
       const newsAgg: { symbol: string; sentiment: string; cnt: number }[] = []
@@ -1773,7 +1811,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ── Step 4b: 基本面加分（F-Score + 毛利率事件）──
   try {
-    const topSymbols4b = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
+    const topSymbols4b = [...overlayEligibleSymbols]
     if (topSymbols4b.length > 0) {
       const ph = topSymbols4b.map(() => '?').join(',')
 
@@ -1885,7 +1923,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ── Step 4c: 趨勢品質 + ADX + 流動性分級（D1 60 天歷史）──
   try {
-    const policyPoolSymbols = scored.sort((a, b) => b.score - a.score).slice(0, screenerPolicy.sizing.candidatePoolSize).map(c => c.symbol)
+    const policyPoolSymbols = [...overlayEligibleSymbols]
     if (policyPoolSymbols.length > 0) {
       const ph = policyPoolSymbols.map(() => '?').join(',')
       // 查 60 天 OHLCV（ADX 需要 high/low）
@@ -1996,10 +2034,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // 5a+5b: 同產業上限
   let selectionFlagMap = new Map<string, ScreenerSelectionFlag>()
   try {
-    const policyPoolSymbols = scored
-      .sort((a, b) => b.score - a.score)
-      .slice(0, screenerPolicy.sizing.candidatePoolSize)
-      .map(c => c.symbol)
+    const policyPoolSymbols = [...overlayEligibleSymbols]
     selectionFlagMap = await loadSelectionHistoryFlags(env.DB, policyPoolSymbols, endDate, {
       highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
     })
@@ -2086,9 +2121,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let finalCandidates = dedupeScreenerCandidatesBySymbol(
     annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, coarseQueueSize) as ScreenerCandidate[]),
   )
-  if (strategySelectionPlan) {
-    const updatedBySymbol = new Map(afterIndustryLimit.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
-    const coarseQueue = strategySelectionPlan.mlQueue.slice(0, coarseQueueSize)
+  if (layer2CoarseQueueSeed.length > 0) {
+    const updatedBySymbol = new Map(scored.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
+    const layer1SymbolSet = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()))
+    const coarseQueue = layer2CoarseQueueSeed
+      .filter((candidate) => updatedBySymbol.has(String(candidate.symbol || '').trim()))
+      .slice(0, coarseQueueSize)
     const selectedSymbols = new Set(coarseQueue.map((candidate: any) => String(candidate.symbol || '').trim()))
     const selectedCandidates = coarseQueue.map((entry: any) => {
       const symbol = String(entry.symbol || '').trim()
@@ -2107,17 +2145,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }
     })
     const topUpCandidates = afterIndustryLimit
-      .filter((candidate) => !selectedSymbols.has(String(candidate.symbol || '').trim()))
+      .filter((candidate) => {
+        const symbol = String(candidate.symbol || '').trim()
+        return layer1SymbolSet.has(symbol) && !selectedSymbols.has(symbol)
+      })
       .slice(0, Math.max(0, coarseQueueSize - selectedCandidates.length))
       .map((candidate, index) => ({
         ...candidate,
         strategy_pool_decision: 'ml_queue',
-        strategy_pool_reason: 'score_fallback_top_up',
+        strategy_pool_reason: 'layer1_breadth_after_overlay_top_up',
         strategy_pool_rank: selectedCandidates.length + index + 1,
-        strategy_pool_ids: ['score_fallback'],
+        strategy_pool_ids: (candidate as any).strategy_pool_ids ?? ['layer1_breadth'],
         strategy_watch_points: [
           ...((candidate as any).strategy_watch_points ?? []),
-          'strategy_pool:score_fallback_top_up',
+          'strategy_pool:layer1_breadth_after_overlay_top_up',
         ],
       }))
     finalCandidates = dedupeScreenerCandidatesBySymbol(
@@ -2129,7 +2170,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     strategySelectionTelemetry = {
       ...(strategySelectionTelemetry ?? {}),
       post_diversity_universe_count: afterIndustryLimit.length,
-      coarse_queue_count: strategySelectionPlan.mlQueue.length,
+      layer1_breadth_count: layer1BreadthPool.length,
+      coarse_queue_count: layer2CoarseQueueSeed.length,
       top_up_count: topUpCandidates.length,
       selected_after_overlay_count: selectedCandidates.length,
       core_ml_shortlist_size: maxCandidates,
@@ -2139,7 +2181,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
     )
   } else {
-    debugLog.push(`[Step 5] strategy_pool unavailable; fallback to score top coarse queue ${coarseQueueSize}`)
+    debugLog.push(`[Step 5] layer1 breadth unavailable; fallback to current breadth coarse queue ${coarseQueueSize}`)
   }
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → coarse ${coarseQueueSize} → ${finalCandidates.length} 檔 → core target ${maxCandidates}`
   debugLog.push(step5Msg)

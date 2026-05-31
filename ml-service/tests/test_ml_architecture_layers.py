@@ -49,8 +49,9 @@ def test_formal_slots_have_no_legacy_shadow_registration_api():
     assert not hasattr(model_pool, "get_" + "shadow" + "_challenger_path")
 
 
-def test_chronos_production_baseline_is_chronos2_not_tiny():
+def test_chronos_retired_diagnostic_slot_is_chronos2_not_tiny():
     assert _DEFAULT_MODEL_ID == "amazon/chronos-2"
     assert CURRENT_CONFIG["model_id"] == "amazon/chronos-2"
-    assert CURRENT_CONFIG["production_members"] == ["Chronos2ZeroShot", "Chronos2LoRA"]
-    assert "tiny" not in CURRENT_CONFIG["production_baseline_note"].lower()
+    assert CURRENT_CONFIG["diagnostic_members"] == ["Chronos2ZeroShot", "Chronos2LoRA"]
+    assert "tiny" not in CURRENT_CONFIG["diagnostic_note"].lower()
+    assert "production ranking" in CURRENT_CONFIG["strategy"]

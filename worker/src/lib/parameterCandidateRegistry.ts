@@ -2,6 +2,9 @@ export type ParameterCandidateStatus =
   | 'NO_CANDIDATE'
   | 'SHADOW_COLLECTING'
   | 'VALIDATION_BLOCKED'
+  | 'EVIDENCE_INSUFFICIENT'
+  | 'NOT_PROMOTION_READY'
+  | 'INFRA_BLOCKED'
   | 'PROMOTION_READY'
   | 'APPROVAL_REQUIRED'
   | 'PROD_ACTIVE'
@@ -231,7 +234,13 @@ export async function recordParameterCandidateEvidence(
   const promotionPacketId = input.promotionPacketId ?? (
     decision === 'PASS' ? `promotion_packet:${sanitizeIdPart(input.candidateId)}:${Date.now()}` : null
   )
-  const status: ParameterCandidateStatus = decision === 'PASS' ? 'PROMOTION_READY' : 'VALIDATION_BLOCKED'
+  const requestedStatus = String(input.evidence?.validation_status ?? '').toUpperCase()
+  const nonPromotionStatus = requestedStatus === 'EVIDENCE_INSUFFICIENT' ||
+    requestedStatus === 'NOT_PROMOTION_READY' ||
+    requestedStatus === 'INFRA_BLOCKED'
+    ? requestedStatus as ParameterCandidateStatus
+    : 'NOT_PROMOTION_READY'
+  const status: ParameterCandidateStatus = decision === 'PASS' ? 'PROMOTION_READY' : nonPromotionStatus
   const evidence = {
     schema_version: PARAMETER_CANDIDATE_SCHEMA_VERSION,
     ...(input.evidence ?? {}),

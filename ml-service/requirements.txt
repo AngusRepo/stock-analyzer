@@ -23,7 +23,7 @@ catboost==1.2.7
 hmmlearn==0.3.2
 arch==7.0.0
 lightgbm>=4.0.0
-# PyTorch：FT-Transformer 需要；Chronos 也依賴 torch
+# PyTorch is shared by sequence, foundation, and graph model adapters.
 torch==2.8.0
 # Breeze2 reason-generation shadow provider. The model card requires
 # transformers 4.47.x plus MediaTek's prompt helpers; this path is shadow-only
@@ -39,10 +39,7 @@ chronos-forecasting>=2.0.0
 river>=0.21.0
 # P3#31: SHAP feature attribution for tree models
 shap>=0.46.0
-# P3#29: RL Shadow Framework
-gymnasium>=0.29.0
-stable-baselines3>=2.3.0
-# P3#28: GNN Shadow (cross-stock relations)
+# GNN formal graph branch (cross-stock relations)
 torch-geometric>=2.5.0
 # P7 research benchmarks: not production voters; used by research_model_benchmark
 # to produce OOS IC / CPCV-PBO / cost / data-slice evidence.

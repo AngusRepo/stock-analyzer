@@ -12,7 +12,6 @@ export type ModelUpgradeCandidateId =
   | 'iTransformer'
   | 'TimesFM'
   | 'ResidualMLP'
-  | 'FT-Transformer'
   | 'Chronos'
   | 'GAOptimizer'
   | 'KalmanFilter'
@@ -41,7 +40,7 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     stage: 'layer3_formal_family_slot',
     parent_slot: 'Layer3.CoreFamily.TabularNeural',
     family: 'tabular_neural',
-    role: 'formal Layer 3 tabular-neural family slot; replaces FT-Transformer and ResidualMLP as the neural tabular direction',
+    role: 'formal Layer 3 tabular-neural family slot; replaces retired wide-tabular neural paths as the neural tabular direction',
     vote_weight: 0,
     can_predict: false,
     can_vote: false,
@@ -104,19 +103,6 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     requires_review_packet: false,
     evidence_required: [],
     notes: 'Kept only as historical audit context; no new production or evaluation lane should be seeded.',
-  },
-  {
-    id: 'FT-Transformer',
-    stage: 'retired',
-    family: 'tabular_neural_retired',
-    role: 'retired tabular transformer path removed from active alpha vote and training policy',
-    vote_weight: 0,
-    can_predict: false,
-    can_vote: false,
-    can_promote_directly: false,
-    requires_review_packet: false,
-    evidence_required: [],
-    notes: 'Do not use as comparator or active production model in this screener refactor.',
   },
   {
     id: 'Chronos',

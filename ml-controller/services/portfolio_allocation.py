@@ -1,8 +1,8 @@
-"""Offline portfolio allocation benchmark utilities.
+"""Portfolio allocation utilities.
 
-This module compares the current rank-topK equal-weight behavior against a
-sparse tangent-style inverse-risk allocation. It does not place orders, mutate
-production config, or promote a challenger.
+The rank-topK equal-weight path is kept only as an offline benchmark baseline.
+Production BUY selection is owned by sparse_tangent_inverse_risk, which returns
+cash/empty weights when no candidate has a positive expected edge.
 """
 
 from __future__ import annotations
@@ -99,11 +99,12 @@ def allocate_sparse_tangent(
     max_weight: float = 0.55,
     daily_vol_floor: float = 0.01,
 ) -> dict[str, float]:
-    """Sparse tangent approximation over the current rank topK candidate set.
+    """Sparse tangent approximation over the current candidate set.
 
     Expected return comes from candidate expected_return/predicted_return when
     available. Risk uses realized return variance with a volatility floor so a
-    flat low-edge series cannot dominate the portfolio.
+    flat low-edge series cannot dominate the portfolio. If no candidate has
+    positive expected edge, return empty weights and let the caller keep cash.
     """
     selected = _ranked_candidates(candidates, top_k)
     raw: dict[str, float] = {}
@@ -114,7 +115,7 @@ def allocate_sparse_tangent(
         variance = max(var_floor, _sample_variance(history))
         raw[symbol] = max(0.0, _expected_return(row)) / variance
     if not any(value > 0 for value in raw.values()):
-        return allocate_rank_topk_equal_weight(candidates, top_k=top_k)
+        return {}
     return _cap_and_renormalize(raw, max_weight=max_weight)
 
 

@@ -1,6 +1,7 @@
 import { DEFAULT_STRATEGY_SPECS, STRATEGY_SPEC_VERSION } from './strategySpec'
 import {
   DEFAULT_STRATEGY_CANDIDATE_POOL_POLICY,
+  buildLayer1StrategyBreadthPlan,
   buildStrategyCandidatePools,
   mergeStrategyCandidatePools,
   planStrategyFirstCandidateSelection,
@@ -61,6 +62,74 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     eligible_for_ml: 1,
   }
 })
+
+{
+  const lowScoreDiverseCandidate: StrategyCandidatePoolCandidate = {
+    symbol: '8999',
+    name: 'Low Score Strategy Fit',
+    industry: 'Niche',
+    score: 1,
+    score_components: scoreV2Payload({
+      finalScore: 76,
+      chipFlow: 25,
+      technicalStructure: 24,
+      momentumProxy: 12,
+    }),
+    current_price: 55,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+  }
+  const scoreCrowd: StrategyCandidatePoolCandidate[] = Array.from({ length: 40 }, (_, index) => ({
+    symbol: `${5000 + index}`,
+    name: `Score Crowd ${index}`,
+    industry: 'Crowded',
+    score: 100 - index,
+    score_components: scoreV2Payload({
+      finalScore: 42,
+      chipFlow: 8,
+      technicalStructure: 8,
+      momentumProxy: 2,
+    }),
+    current_price: 40,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+  }))
+  const nicheSpec = {
+    id: 'niche_strategy_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Niche strategy',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Niche strategy should source L1 breadth directly from full feature-enriched universe.',
+    thresholds: { minSeedScore: 70, minChipScore: 20, minTechScore: 20, minMomentumScore: 8, includeIndustries: ['Niche'], minPrice: 10 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const oldTopScoreSymbols = new Set(
+    [...scoreCrowd, lowScoreDiverseCandidate]
+      .sort((a, b) => Number((b as any).score ?? 0) - Number((a as any).score ?? 0))
+      .slice(0, 20)
+      .map((candidate) => candidate.symbol),
+  )
+
+  const plan = buildLayer1StrategyBreadthPlan(
+    [...scoreCrowd, lowScoreDiverseCandidate],
+    [nicheSpec],
+    {
+      targetSize: 20,
+      coarseMlQueueSize: 8,
+      regime: 'bull',
+    },
+  )
+
+  assert(!oldTopScoreSymbols.has('8999'), 'test fixture must keep niche candidate outside old score-top pool')
+  assert(plan.breadthPool.some((candidate) => candidate.symbol === '8999'), 'L1 breadth pool should include full-universe strategy fit outside old score-top pool')
+  assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_quota_then_score_top_up', 'L1 selection order must be strategy quota before score fallback')
+  assert(plan.coarseQueue.length <= 8, 'Layer2 coarse queue should be sliced from the L1 breadth pool')
+}
 
 {
   const pools = buildStrategyCandidatePools(candidates, DEFAULT_STRATEGY_SPECS, { regime: 'bull' })
@@ -198,14 +267,14 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
-  const finlabShadow = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_shadow_v1')
-  assert(finlabShadow, 'FinLab AI Skill shadow spec should exist')
-  const pools = buildStrategyCandidatePools(candidates.slice(0, 20), [finlabShadow!], { regime: 'bull' })
+  const finlabDiscovery = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_discovery_v1')
+  assert(finlabDiscovery, 'FinLab AI Skill discovery spec should exist')
+  const pools = buildStrategyCandidatePools(candidates.slice(0, 20), [finlabDiscovery!], { regime: 'bull' })
   const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 8 }))
-  assert(selection.mlQueue.length === 0, 'FinLab AI Skill shadow lane must not enter ML queue')
-  assert(selection.researchOnlyQueue.length > 0, 'FinLab AI Skill shadow lane should still preserve research candidates')
+  assert(selection.mlQueue.length === 0, 'FinLab AI Skill discovery lane must not enter ML queue directly')
+  assert(selection.researchOnlyQueue.length > 0, 'FinLab AI Skill discovery lane should preserve research candidates')
   assert(
-    selection.researchOnlyQueue.every((candidate) => candidate.strategy_pool_reason === 'strategy_shadow_lane_only'),
-    'FinLab AI Skill shadow candidates should explain research-only routing',
+    selection.researchOnlyQueue.every((candidate) => candidate.strategy_pool_reason === 'strategy_research_discovery_lane_only'),
+    'FinLab AI Skill candidates should explain research-discovery routing',
   )
 }

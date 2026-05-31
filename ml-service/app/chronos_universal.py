@@ -1,13 +1,14 @@
 """
-Universal batch predictor for the production Chronos slot.
+Universal batch predictor for the retired Chronos diagnostic slot.
 
-StockVision treats Chronos as one alpha model slot, but that slot is now backed
-by two production members:
+StockVision no longer includes Chronos in alpha vote or evening-chain batch
+inference. This module is retained for historical audit/diagnostic evidence
+and can evaluate two Chronos-2 members:
 - Chronos2ZeroShot: the public amazon/chronos-2 foundation model.
 - Chronos2LoRA: optional fine-tuned adapter/checkpoint configured by env.
 
-The downstream contract intentionally remains model="Chronos" so the ensemble
-does not inflate the model denominator when the LoRA member is enabled.
+The downstream contract intentionally remains model="Chronos" for legacy
+forecast validation rows; it must not add an active model denominator.
 """
 from __future__ import annotations
 
@@ -365,7 +366,7 @@ def _combine_members(members: list[dict]) -> dict:
 def _combine_member_maps(member_maps: list[tuple[str, dict[str, dict]]], symbol: str) -> dict:
     members = [values[symbol] for _name, values in member_maps if symbol in values]
     out = _combine_members(members)
-    out["production_members"] = [name for name, values in member_maps if symbol in values]
+    out["diagnostic_members"] = [name for name, values in member_maps if symbol in values]
     out["lora_status"] = "active" if any(
         name == "Chronos2LoRA" and symbol in values for name, values in member_maps
     ) else "not_configured"
@@ -388,7 +389,7 @@ def _one_forecast(
         member_names.append("Chronos2LoRA")
         lora_status = "active"
     out = _combine_members(members)
-    out["production_members"] = member_names
+    out["diagnostic_members"] = member_names
     out["lora_status"] = lora_status
     return out
 
@@ -490,20 +491,20 @@ def chronos_batch_predict(
 CURRENT_CONFIG = {
     "version": "v2",
     "model_id": _DEFAULT_MODEL_ID,
-    "production_members": ["Chronos2ZeroShot", "Chronos2LoRA"],
-    "production_baseline_note": "Production Chronos slot is Chronos-2 zero-shot plus optional LoRA fine-tuned member.",
+    "diagnostic_members": ["Chronos2ZeroShot", "Chronos2LoRA"],
+    "diagnostic_note": "Retired Chronos diagnostic slot uses Chronos-2 zero-shot plus optional LoRA fine-tuned member.",
     "lora_model_id_env": _LORA_MODEL_ID_ENV,
     "horizon_default": 5,
     "num_samples_default": 20,
     "min_context": _MIN_CONTEXT,
     "max_context": _MAX_CONTEXT,
-    "strategy": "Chronos-2 production replacement, not challenger shadow",
+    "strategy": "Chronos-2 retired diagnostic context; not alpha vote or production ranking",
     "feature_policy": {
         "feature_policy_type": "chronos2_zero_shot_lora_time_series",
         "feature_source": "chronos2.context.close_series",
         "selection_owner": "chronos_universal",
         "selection_required": False,
-        "note": "Chronos consumes time-series context only and does not use tree/FT tabular feature selection.",
+        "note": "Chronos consumes time-series context only and does not use tabular feature selection.",
     },
     "validation_contract": {
         "method": "chronos_forecast_rank_ic",

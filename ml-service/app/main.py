@@ -421,7 +421,7 @@ class ARFUpdateRequest(BaseModel):
     # #14 LinUCB reward enrichment
     actual_return: float = 0.0    # Realized return over the evaluation horizon
     forecast_pct: float = 0.0     # Forecasted return used at decision time
-    # FT online update metadata
+    # Online reward metadata
     stock_id: int = 0
     symbol: str = ""
 

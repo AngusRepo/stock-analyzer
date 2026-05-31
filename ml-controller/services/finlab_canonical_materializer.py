@@ -321,6 +321,9 @@ def build_market_rows(
     df = _join_wide_fields(artifact_root / "raw" / lane, fields, start_date=start_date, end_date=end_date)
     if df.is_empty():
         return []
+    df = df.filter(pl.col("close").is_not_null() & (pl.col("close") > 0))
+    if df.is_empty():
+        return []
     lineage = _lineage(run_id, lane, fields, artifact_root)
     df = df.with_columns(
         pl.lit(market_segment).alias("market_segment"),
@@ -927,6 +930,8 @@ def _stock_price_bridge_statements(rows: list[dict[str, Any]]) -> list[tuple[str
         if not symbol or not re.fullmatch(r"\d{3,6}", symbol):
             continue
         close = _positive_float(row.get("close"))
+        if close is None:
+            continue
         statements.append((
             sql,
             [

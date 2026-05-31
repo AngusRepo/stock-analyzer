@@ -235,8 +235,8 @@ def init_default_pool() -> dict:
     """Build a fresh model_pool.json where every managed model is 'active' v1.
 
     Used by /model_pool/init endpoint when bootstrapping. Subsequent retrain
-    calls add new versions as challengers (Stage 3). Stage 1 itself doesn't
-    set up any challenger — only declares "we have a versioned baseline".
+    calls add new versions as model_artifact_registry candidates. Stage 1
+    itself only declares "we have a versioned baseline".
     """
     today = datetime.now(timezone.utc).date().isoformat()
     pool = {
@@ -319,12 +319,12 @@ def get_status_filter(status: str) -> float:
     """Pure status → on/off filter. NOT a final weight (use compute_weight).
 
     Returns 1.0 for active/degraded (model still inferring), 0.0 for
-    challenger/retired (shadow or stopped).
+    retired or historical side-slot rows.
     """
     return {
         "active":     1.0,
         "degraded":   1.0,    # still in ensemble, may be IC-dampened by caller
-        "challenger": 0.0,    # shadow predict, vote=0
+        "challenger": 0.0,    # historical side-slot rows do not vote
         "retired":    0.0,    # not in ensemble
     }.get(status, 0.0)
 
@@ -348,7 +348,7 @@ def compute_weight(
     Status semantics:
       active:     pure IC weight
       degraded:   IC × degraded_dampening (default 1.0 = no extra dampening)
-      challenger: 0 (shadow predict only)
+      challenger: 0 (historical side-slot rows only)
       retired:    0 (excluded)
 
     Args:
@@ -381,103 +381,10 @@ def compute_weight(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 3 challenger helpers (shadow mode)
+# Historical side-slot helpers removed
 # ─────────────────────────────────────────────────────────────────────────────
 
-CHALLENGER_SUFFIX = "::challenger"   # convention: model_name@D1 = "XGBoost::challenger"
-
-
-def get_challenger_version(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
-    """If a challenger version is registered for model_name, return it. Else None."""
-    pool = pool or load_pool()
-    if not pool:
-        return None
-    entry = pool.get("models", {}).get(model_name)
-    if not entry:
-        return None
-    ch = entry.get("challenger")
-    if not ch:
-        return None
-    return ch.get("version")
-
-
-def get_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
-    """Return GCS path for challenger version, or None if no challenger registered."""
-    version = get_challenger_version(model_name, pool=pool)
-    if version is None:
-        return None
-    pool = pool or load_pool()
-    if pool:
-        ch = pool.get("models", {}).get(model_name, {}).get("challenger") or {}
-        if ch.get("gcs_path"):
-            return ch["gcs_path"]
-    # Fallback: derive from convention
-    return gcs_path_for(model_name, version)
-
-
-def register_challenger(
-    model_name: str,
-    version: str,
-    pool: Optional[dict] = None,
-    save: bool = True,
-    model_cpcv: dict | None = None,
-) -> dict:
-    """Add a challenger entry to model_pool.json.
-
-    Caller responsible for ensuring the GCS artifact at the challenger path
-    actually exists. This function only writes the bookkeeping entry.
-
-    Args:
-      model_name: must be in MANAGED_MODELS
-      version:    new version string (e.g., "v2"); must NOT equal active
-      pool:       loaded pool (or None to fetch from GCS)
-      save:       write back to GCS
-
-    Returns the updated pool entry for model_name.
-    """
-    if model_name not in MANAGED_MODELS:
-        raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
-    pool = pool or load_pool()
-    if not pool:
-        raise RuntimeError("model_pool.json not initialized; run /model_pool/init first")
-    entry = pool.get("models", {}).get(model_name)
-    if not entry:
-        raise ValueError(f"{model_name} missing from model_pool.json (likely Stage 1 init missed)")
-    if entry.get("version") == version:
-        raise ValueError(
-            f"{model_name} active version is already {version}; "
-            f"challenger must be a different version"
-        )
-
-    today = datetime.now(timezone.utc).date().isoformat()
-    entry["challenger"] = {
-        "version": version,
-        "gcs_path": gcs_path_for(model_name, version),
-        "shadow_since": today,
-        "weekly_ic": [],
-        "ic_4w_avg": None,
-        "consecutive_negative_weeks": 0,
-    }
-    if model_cpcv is not None:
-        entry["challenger"]["model_cpcv"] = model_cpcv
-    if save:
-        save_pool(pool)
-    return entry
-
-
-def discard_challenger(model_name: str, pool: Optional[dict] = None, save: bool = True) -> dict:
-    """Remove challenger entry (used when Stage 4 retire-not-promote, or
-    manual rollback). Returns updated entry."""
-    pool = pool or load_pool()
-    if not pool:
-        raise RuntimeError("model_pool.json not initialized")
-    entry = pool.get("models", {}).get(model_name)
-    if not entry:
-        raise ValueError(f"{model_name} not in pool")
-    entry.pop("challenger", None)
-    if save:
-        save_pool(pool)
-    return entry
+# New retrain artifacts enter model_artifact_registry candidates, not side slots.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

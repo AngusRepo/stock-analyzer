@@ -256,6 +256,39 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     assert any("INSERT INTO finlab_materialization_manifest" in sql for sql, _ in statements)
 
 
+def test_materialize_market_daily_requires_valid_close() -> None:
+    root = _root("materialize_market_daily_requires_close")
+    _write(
+        root / "raw" / "daily_price" / "close.parquet",
+        pl.DataFrame({"date": ["2026-05-29"], "2330": [100.0], "5906": [None]}),
+    )
+    for field, valid_value in {"open": 99.0, "high": 101.0, "low": 98.0}.items():
+        _write(
+            root / "raw" / "daily_price" / f"{field}.parquet",
+            pl.DataFrame({"date": ["2026-05-29"], "2330": [valid_value], "5906": [None]}),
+        )
+    _write(
+        root / "raw" / "daily_price" / "volume.parquet",
+        pl.DataFrame({"date": ["2026-05-29"], "2330": [2000.0], "5906": [477.0]}),
+    )
+    _write(
+        root / "raw" / "daily_price" / "value.parquet",
+        pl.DataFrame({"date": ["2026-05-29"], "2330": [200000.0], "5906": [20248.0]}),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-05-30T00:00:00+00:00",
+        start_date="2026-05-29",
+        end_date="2026-05-29",
+        datasets=["canonical_market_daily"],
+    )
+
+    assert [row["stock_id"] for row in outputs.canonical_market_daily] == ["2330"]
+    assert outputs.canonical_market_daily[0]["close"] == 100.0
+    assert outputs.manifest["row_counts"]["canonical_market_daily"] == 1
+
+
 def test_materialize_outputs_can_apply_fundamental_features_dataset_only() -> None:
     root = _root("materialize_fundamental_only")
     for field, value in {

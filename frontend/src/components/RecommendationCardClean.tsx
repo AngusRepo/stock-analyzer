@@ -75,6 +75,15 @@ type MlVoteSummary = {
   }
   icWeightScope?: string
   validationBlockedModels?: string[]
+  coreFamilyVote?: CoreFamilyVoteSummary | null
+}
+
+type CoreFamilyVoteSummary = {
+  schema_version?: string
+  family_score?: number
+  active_family_count?: number
+  active_families?: string[]
+  inactive_formal_models?: string[]
 }
 
 type MlDiagnosticsSummary = {
@@ -161,6 +170,17 @@ function displayForecastPct(summary: MlVoteSummary | null): number | null {
   const raw = summary.forecast_pct
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return null
   return Math.abs(raw) <= 0.2 ? raw * 100 : raw
+}
+
+function coreFamilyVoteBadgeText(summary: MlVoteSummary | null): string | null {
+  const vote = parseObject(summary?.coreFamilyVote)
+  if (!vote) return null
+  const active = Number(vote.active_family_count ?? vote.activeFamilyCount ?? 0)
+  const score = Number(vote.family_score ?? vote.familyScore ?? NaN)
+  if (!Number.isFinite(active) || active <= 0) return null
+  const familyTotal = Math.max(5, Object.keys(parseObject(vote.families) ?? {}).length)
+  const scoreText = Number.isFinite(score) ? ` ${Math.round(score * 100)}` : ''
+  return `Family ${active}/${familyTotal}${scoreText}`
 }
 
 function normalizeForecastPctForUi(raw: unknown): number | null {
@@ -377,11 +397,13 @@ function scoreComponentValue(rec: any, key: string): number {
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const persisted = parseObject(rec.ml_vote_summary)
   if (persisted && Number(persisted.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
+    const persistedCoreFamilyVote = parseObject(persisted.coreFamilyVote ?? persisted.core_family_vote)
     const reported = Number(persisted.reported ?? 0)
     const evidence = Number(persisted.bullish ?? 0) + Number(persisted.bearish ?? 0) + Number(persisted.flat ?? 0)
-    if (reported > 0 || evidence > 0 || scoreComponentValue(rec, 'mlEdge') <= 0) {
+    if (persistedCoreFamilyVote || reported > 0 || evidence > 0 || scoreComponentValue(rec, 'mlEdge') <= 0) {
       return {
         ...persisted,
+        coreFamilyVote: persistedCoreFamilyVote ?? persisted.coreFamilyVote ?? null,
         forecastPct: normalizePersistedForecastPctForUi(persisted),
       }
     }
@@ -399,6 +421,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const thresholds = forecast?.ensemble_v2?.rank_signal_thresholds && typeof forecast.ensemble_v2.rank_signal_thresholds === 'object'
     ? forecast.ensemble_v2.rank_signal_thresholds
     : null
+  const coreFamilyVote = parseObject(forecast?.core_family_vote ?? forecast?.coreFamilyVote ?? forecast?.ensemble_v2?.family_vote)
   const trackedWeightKeys = Object.keys(weights).filter(isAlphaPredictionModelName)
   const total = Math.max(ALPHA_PREDICTION_MODEL_NAMES.length, trackedWeightKeys.length, models.length)
   if (!forecast || total <= 0) return null
@@ -426,6 +449,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     validationBlockedModels: Object.entries(diagnostics)
       .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
       .map(([name]) => name),
+    coreFamilyVote,
   }
 }
 
@@ -491,6 +515,8 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
   if (!summary) return null
   const total = Number(summary.total ?? 0)
   if (!Number.isFinite(total) || total <= 0) return null
+  const familyText = coreFamilyVoteBadgeText(summary)
+  if (familyText) return familyText
   const bullish = Number(summary.bullish ?? 0)
   const bearish = Number(summary.bearish ?? 0)
   const missing = Number(summary.missing ?? Math.max(0, total - bullish - bearish - Number(summary.flat ?? 0)))
@@ -540,6 +566,8 @@ function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | nu
   if (!summary) return null
   const total = Number(summary.total ?? 0)
   if (!Number.isFinite(total) || total <= 0) return null
+  const familyText = coreFamilyVoteBadgeText(summary)
+  if (familyText) return familyText
   const bullish = Number(summary.bullish ?? 0)
   const bearish = Number(summary.bearish ?? 0)
   const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish))
@@ -609,17 +637,7 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
 
 function translateRecommendationReason(reason: unknown): string {
   if (typeof reason !== 'string') return ''
-  return reason
-    .replace(
-      /Signal Provenance \(ensemble Top-K\): BUY forced at ensemble layer \(signal_raw=([^,)]*), avg_rank=([^)]+)\)\. Judge on business merit and industry context, not raw signal strength\./g,
-      '訊號來源：此檔由 ensemble Top-K 納入，原始訊號為 $1，平均排名 $2；代表它是排序入選，不是模型自然強買。',
-    )
-    .replace(
-      /Signal Provenance \(ranking promoted\): BUY flipped at recommendation layer \(ensemble_v2\.signal=([^,)]*), avg_rank=([^)]+)\)\. Treat as ranking promotion, not a naturally strong BUY\./g,
-      '訊號來源：此檔由推薦層從 $1 提升為買進，平均排名 $2；需用分數、產業脈絡與盤中再評估輔助判讀。',
-    )
-    .replace(/(^|[^校準])預期 ([+-]\d+(?:\.\d+)?%)/g, '$1校準預期 $2')
-    .trim()
+  return reason.trim()
 }
 
 function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {

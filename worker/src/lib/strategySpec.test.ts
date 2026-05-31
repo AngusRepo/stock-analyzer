@@ -22,13 +22,20 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const finlabShadow = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_shadow_v1')
-  assert(finlabShadow?.status === 'shadow', 'FinLab AI Skill should start as a shadow strategy lane')
-  assert(finlabShadow?.candidatePolicy?.maxMlShare === 0, 'FinLab AI Skill shadow lane must not enter ML queue')
+  const finlabDiscovery = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_discovery_v1')
+  assert(finlabDiscovery?.status === 'research', 'FinLab AI Skill should be an active research discovery lane')
+  assert(finlabDiscovery?.candidatePolicy?.maxMlShare === 0, 'FinLab AI Skill discovery lane must not enter ML queue directly')
   assert(
-    finlabShadow?.candidatePolicy?.evidenceRequirements?.includes('finlab_ai_skill'),
-    'FinLab AI Skill shadow lane should require FinLab AI Skill evidence',
+    finlabDiscovery?.candidatePolicy?.evidenceRequirements?.includes('strategy_hypothesis'),
+    'FinLab AI Skill discovery lane should require strategy hypothesis evidence',
   )
+}
+
+{
+  for (const id of ['trend_following_seed_v1', 'breakout_vol_expansion_seed_v1', 'defensive_accumulation_seed_v1']) {
+    const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === id)
+    assert(spec?.status === 'active', `${id} should be an active production seed strategy`)
+  }
 }
 
 {

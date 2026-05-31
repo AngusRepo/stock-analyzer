@@ -527,7 +527,7 @@ stocks.get('/:id/ai-summary', async (c) => {
           FROM predictions
          WHERE stock_id = ?
            AND model_name != 'ensemble'
-           AND model_name NOT LIKE '%::challenger'
+          AND instr(model_name, '::') = 0
            AND prediction_date = ?
          ORDER BY model_name
       `).bind(id, recRow.date).all<any>().then((r) => r.results ?? []).catch(() => []),

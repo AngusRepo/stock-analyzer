@@ -96,12 +96,19 @@ def _default_baseline_params() -> dict:
         },
         "ranking": {
             "enabled": True,
-            "topK": 3,
             "alpha": 0.40,
             "beta": 0.40,
             "gamma": 0.20,
             "screenerDenominator": 60.0,
             "promoteMinConf": 0.60,
+        },
+        "alphaFramework": {
+            "allocation": {
+                "engine": "sparse_tangent_inverse_risk",
+                "controller": "OnlinePortfolioBandit",
+                "buySignalCount": 3,
+                "slateSize": 10,
+            },
         },
     }
 
@@ -176,7 +183,6 @@ def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
     base_ranking = params.setdefault("ranking", {})
     params["ranking"] = {
         "enabled": True,
-        "topK": base_ranking.get("topK", 3),
         "alpha": trial.suggest_float("ranking_alpha", 0.3, 0.6),   # screener_norm weight
         "beta":  trial.suggest_float("ranking_beta",  0.2, 0.5),   # ml_confidence weight
         "gamma": trial.suggest_float("ranking_gamma", 0.1, 0.3),   # signal_tier weight

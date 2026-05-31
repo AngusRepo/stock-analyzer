@@ -27,7 +27,7 @@ import {
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
-import { classifyBoard } from '../lib/boardTradability'
+import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows } from '../lib/screenerFunnelEvidence'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import {
@@ -1363,6 +1363,8 @@ recommendations.get('/daily', async (c) => {
            AND symbol IN (${placeholders})
            AND stage IN (
              'scoring',
+             'layer1_strategy_breadth_gate',
+             'layer2_coarse_ml_gate',
              'rrg_overlay',
              'buzz_evidence',
              'diversity_cooldown',
@@ -1389,7 +1391,7 @@ recommendations.get('/daily', async (c) => {
         FROM predictions
        WHERE stock_id IN (${placeholders})
          AND model_name != 'ensemble'
-         AND model_name NOT LIKE '%::challenger'
+        AND instr(model_name, '::') = 0
          AND prediction_date = ?
        ORDER BY stock_id, model_name
     `).bind(...stockIds, date).all<any>().catch(() => ({ results: [] as any[] }))
@@ -1423,11 +1425,11 @@ recommendations.get('/daily', async (c) => {
       symbol: r.symbol,
     })
     const persistedLane = String(r.recommendation_lane || '').trim()
-    const recommendationLane = persistedLane || board.recommendationLane
-    const eligibleForMl = r.eligible_for_ml == null ? board.eligibleForMl : Number(r.eligible_for_ml) === 1
-    const eligibleForPendingBuy = r.eligible_for_pending_buy == null
-      ? board.eligibleForPendingBuy
-      : Number(r.eligible_for_pending_buy) === 1
+    const governance = resolveRecommendationGovernance(board, {
+      recommendationLane: persistedLane,
+      eligibleForMl: r.eligible_for_ml,
+      eligibleForPendingBuy: r.eligible_for_pending_buy,
+    })
     const base = removeLegacyRecommendationScoreFields(r)
     return {
       ...base,
@@ -1436,9 +1438,9 @@ recommendations.get('/daily', async (c) => {
       market_segment: r.market_segment || board.boardType,
       board_type: board.boardType,
       tradability_tier: board.tradabilityTier,
-      recommendation_lane: recommendationLane,
-      eligible_for_ml: eligibleForMl,
-      eligible_for_pending_buy: eligibleForPendingBuy,
+      recommendation_lane: governance.recommendationLane,
+      eligible_for_ml: governance.eligibleForMl,
+      eligible_for_pending_buy: governance.eligibleForPendingBuy,
       board_reason: board.reason,
       alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
       alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,

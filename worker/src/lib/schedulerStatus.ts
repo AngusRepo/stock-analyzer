@@ -353,7 +353,7 @@ export async function getSchedulerStatus(env: Bindings) {
   const allLogs: Record<string, CronLogEntry[]> = {}
   await Promise.all(
     dates.map(async (date) => {
-      allLogs[date] = await getCronLogs(env.KV, date)
+      allLogs[date] = await getCronLogs(env.KV, date, env)
     }),
   )
 

@@ -46,6 +46,26 @@ from services.portfolio_allocation import allocate_sparse_tangent
 
 logger = logging.getLogger(__name__)
 
+D1_IN_CLAUSE_CHUNK_SIZE = 80
+
+
+def _dedupe_preserve_order(values: list[Any]) -> list[Any]:
+    seen: set[Any] = set()
+    out: list[Any] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _chunked(values: list[Any], size: int = D1_IN_CLAUSE_CHUNK_SIZE) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    unique_values = _dedupe_preserve_order(values)
+    return [unique_values[i:i + size] for i in range(0, len(unique_values), size)]
+
 
 def _prediction_delete_date_expr(run_date: str | None) -> tuple[str, list[Any]]:
     """Align prediction dedupe with the pipeline business date when available."""
@@ -56,21 +76,35 @@ def _prediction_delete_date_expr(run_date: str | None) -> tuple[str, list[Any]]:
 
 def prune_predictions_outside_universe(stock_ids: list[int], run_date: str) -> int:
     """Remove same-date prediction rows that no longer belong to the current V2 universe."""
-    safe_ids = [int(stock_id) for stock_id in stock_ids if stock_id]
-    if safe_ids:
-        placeholders = ",".join("?" for _ in safe_ids)
-        result = d1_client.execute(
-            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? AND {COL_STOCK_ID} NOT IN ({placeholders})",
-            [run_date, *safe_ids],
-            timeout=60,
-        )
-    else:
+    safe_ids = {int(stock_id) for stock_id in stock_ids if stock_id}
+    if not safe_ids:
         result = d1_client.execute(
             f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
             [run_date],
             timeout=60,
         )
-    return int(((result or {}).get("meta") or {}).get("changes") or 0)
+        return int(((result or {}).get("meta") or {}).get("changes") or 0)
+
+    existing_rows = d1_client.query(
+        f"SELECT DISTINCT {COL_STOCK_ID} AS stock_id FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
+        [run_date],
+        timeout=60,
+    )
+    stale_ids = sorted({
+        int(row["stock_id"])
+        for row in existing_rows or []
+        if row.get("stock_id") is not None and int(row["stock_id"]) not in safe_ids
+    })
+    deleted = 0
+    for chunk in _chunked(stale_ids):
+        placeholders = ",".join("?" for _ in chunk)
+        result = d1_client.execute(
+            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? AND {COL_STOCK_ID} IN ({placeholders})",
+            [run_date, *chunk],
+            timeout=60,
+        )
+        deleted += int(((result or {}).get("meta") or {}).get("changes") or 0)
+    return deleted
 
 
 def _sanitize_non_finite(value: Any) -> tuple[Any, int]:
@@ -609,67 +643,71 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
     financial_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in stock_ids}
 
     if symbols:
-        placeholders = ",".join("?" for _ in symbols)
         try:
-            rows = d1_client.query(
-                f"""
-                SELECT stock_id, revenue_month, market_segment, revenue, mom, yoy, source, as_of_date
-                FROM canonical_revenue_monthly
-                WHERE stock_id IN ({placeholders})
-                ORDER BY stock_id, revenue_month
-                """,
-                symbols,
-                timeout=60,
-            )
-            for row in rows or []:
-                symbol = str(row.get("stock_id") or "").strip()
-                if symbol in revenue_by_symbol:
-                    revenue_by_symbol[symbol].append(dict(row))
+            for chunk in _chunked(symbols):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = d1_client.query(
+                    f"""
+                    SELECT stock_id, revenue_month, market_segment, revenue, mom, yoy, source, as_of_date
+                    FROM canonical_revenue_monthly
+                    WHERE stock_id IN ({placeholders})
+                    ORDER BY stock_id, revenue_month
+                    """,
+                    chunk,
+                    timeout=60,
+                )
+                for row in rows or []:
+                    symbol = str(row.get("stock_id") or "").strip()
+                    if symbol in revenue_by_symbol:
+                        revenue_by_symbol[symbol].append(dict(row))
         except Exception as exc:  # noqa: BLE001
             logger.warning("[reco] canonical_revenue_monthly unavailable for fundamental quality: %s", exc)
 
         try:
-            rows = d1_client.query(
-                f"""
-                SELECT stock_id, period, market_segment, report_date, available_date,
-                       revenue_growth_yoy, gross_margin, operating_margin, roe, eps,
-                       pe, pb, dividend_yield, debt_ratio, current_ratio,
-                       operating_cash_flow, industry_quality_percentile,
-                       source, as_of_date
-                FROM canonical_fundamental_features
-                WHERE stock_id IN ({placeholders})
-                  AND available_date <= ?
-                ORDER BY stock_id, available_date, period
-                """,
-                [*symbols, decision_date],
-                timeout=60,
-            )
-            for row in rows or []:
-                symbol = str(row.get("stock_id") or "").strip()
-                if symbol in canonical_financial_by_symbol:
-                    canonical_financial_by_symbol[symbol].append(dict(row))
+            for chunk in _chunked(symbols):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = d1_client.query(
+                    f"""
+                    SELECT stock_id, period, market_segment, report_date, available_date,
+                           revenue_growth_yoy, gross_margin, operating_margin, roe, eps,
+                           pe, pb, dividend_yield, debt_ratio, current_ratio,
+                           operating_cash_flow, industry_quality_percentile,
+                           source, as_of_date
+                    FROM canonical_fundamental_features
+                    WHERE stock_id IN ({placeholders})
+                      AND available_date <= ?
+                    ORDER BY stock_id, available_date, period
+                    """,
+                    [*chunk, decision_date],
+                    timeout=60,
+                )
+                for row in rows or []:
+                    symbol = str(row.get("stock_id") or "").strip()
+                    if symbol in canonical_financial_by_symbol:
+                        canonical_financial_by_symbol[symbol].append(dict(row))
         except Exception as exc:  # noqa: BLE001
             logger.warning("[reco] canonical_fundamental_features unavailable for fundamental quality: %s", exc)
 
     if stock_ids:
-        placeholders = ",".join("?" for _ in stock_ids)
         try:
-            rows = d1_client.query(
-                f"""
-                SELECT stock_id, period, period_type, revenue, revenue_growth_yoy,
-                       eps, roe, pe, pb, dividend_yield
-                FROM financials
-                WHERE stock_id IN ({placeholders})
-                  AND period_type IN ('quarterly', 'annual')
-                ORDER BY stock_id, period
-                """,
-                stock_ids,
-                timeout=60,
-            )
-            for row in rows or []:
-                stock_id = int(row.get("stock_id") or 0)
-                if stock_id in financial_by_stock_id:
-                    financial_by_stock_id[stock_id].append(dict(row))
+            for chunk in _chunked(stock_ids):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = d1_client.query(
+                    f"""
+                    SELECT stock_id, period, period_type, revenue, revenue_growth_yoy,
+                           eps, roe, pe, pb, dividend_yield
+                    FROM financials
+                    WHERE stock_id IN ({placeholders})
+                      AND period_type IN ('quarterly', 'annual')
+                    ORDER BY stock_id, period
+                    """,
+                    chunk,
+                    timeout=60,
+                )
+                for row in rows or []:
+                    stock_id = int(row.get("stock_id") or 0)
+                    if stock_id in financial_by_stock_id:
+                        financial_by_stock_id[stock_id].append(dict(row))
         except Exception as exc:  # noqa: BLE001
             logger.warning("[reco] financials unavailable for fundamental quality: %s", exc)
 
@@ -2276,16 +2314,28 @@ def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], ru
 
 def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str) -> int:
     """Keep the run-date recommendation set owned by the current pipeline output."""
-    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
+    stock_ids = {int(r["stock_id"]) for r in recommendations if r.get("stock_id")}
     if not stock_ids:
         return 0
-    placeholders = ",".join("?" for _ in stock_ids)
-    result = d1_client.execute(
-        f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id NOT IN ({placeholders})",
-        [run_date, *stock_ids],
+    rows = d1_client.query(
+        "SELECT stock_id FROM daily_recommendations WHERE date = ?",
+        [run_date],
         timeout=60,
     )
-    changes = int(((result or {}).get("meta") or {}).get("changes") or 0)
+    stale_ids = sorted({
+        int(row["stock_id"])
+        for row in rows or []
+        if row.get("stock_id") is not None and int(row["stock_id"]) not in stock_ids
+    })
+    changes = 0
+    for chunk in _chunked(stale_ids):
+        placeholders = ",".join("?" for _ in chunk)
+        result = d1_client.execute(
+            f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id IN ({placeholders})",
+            [run_date, *chunk],
+            timeout=60,
+        )
+        changes += int(((result or {}).get("meta") or {}).get("changes") or 0)
     if changes:
         logger.warning(
             "[recommendation_service] Deleted %s stale daily_recommendations rows for run_date=%s",

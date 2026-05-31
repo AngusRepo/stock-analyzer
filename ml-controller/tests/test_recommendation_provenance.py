@@ -485,11 +485,12 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
 
     monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
-    monkeypatch.setattr(
-        recommendation_service.d1_client,
-        "query",
-        lambda *_args, **_kwargs: [{"stock_id": 1}],
-    )
+    def _fake_query(sql, *_args, **_kwargs):
+        if "stock_id IN" in sql:
+            return [{"stock_id": 1}]
+        return [{"stock_id": 1}, {"stock_id": 9}]
+
+    monkeypatch.setattr(recommendation_service.d1_client, "query", _fake_query)
 
     update_recommendations_in_d1([{
         "date": "2026-04-27",
@@ -512,8 +513,8 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
     }], "2026-04-27")
 
     assert "DELETE FROM daily_recommendations" in captured["cleanup_sql"]
-    assert "stock_id NOT IN" in captured["cleanup_sql"]
-    assert captured["cleanup_params"] == ["2026-04-27", 1]
+    assert "stock_id IN (?)" in captured["cleanup_sql"]
+    assert captured["cleanup_params"] == ["2026-04-27", 9]
 
     sql, params = captured["statements"][0]
     assert "UPDATE daily_recommendations SET" in sql
@@ -535,11 +536,12 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
 
     monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
-    monkeypatch.setattr(
-        recommendation_service.d1_client,
-        "query",
-        lambda *_args, **_kwargs: [{"stock_id": 1}],
-    )
+    def _fake_query(sql, *_args, **_kwargs):
+        if "stock_id IN" in sql:
+            return [{"stock_id": 1}]
+        return [{"stock_id": 1}, {"stock_id": 3}]
+
+    monkeypatch.setattr(recommendation_service.d1_client, "query", _fake_query)
 
     updated = update_recommendations_in_d1([
         {
@@ -584,7 +586,7 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
     assert updated == 1
     assert len(captured["statements"]) == 1
     assert captured["statements"][0][1][0] == "2330"
-    assert captured["cleanup_params"] == ["2026-04-27", 1]
+    assert captured["cleanup_params"] == ["2026-04-27", 3]
 
 
 def test_update_recommendations_in_d1_fails_when_no_seed_rows_exist(monkeypatch):
@@ -1295,18 +1297,51 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
 def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monkeypatch):
     captured = {}
 
+    def _fake_query(sql, params, timeout=60):
+        captured["query_sql"] = sql
+        captured["query_params"] = params
+        captured["query_timeout"] = timeout
+        return [{"stock_id": 1}, {"stock_id": 2}, {"stock_id": 3}, {"stock_id": 99}]
+
     def _fake_execute(sql, params, timeout=60):
         captured["sql"] = sql
         captured["params"] = params
         captured["timeout"] = timeout
         return {"meta": {"changes": 12}}
 
+    monkeypatch.setattr(recommendation_service.d1_client, "query", _fake_query)
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
 
     deleted = prune_predictions_outside_universe([1, 2, 3], "2026-04-30")
 
     assert deleted == 12
+    assert "SELECT DISTINCT stock_id" in captured["query_sql"]
+    assert captured["query_params"] == ["2026-04-30"]
     assert "DELETE FROM predictions" in captured["sql"]
     assert "prediction_date = ?" in captured["sql"]
-    assert "stock_id NOT IN (?,?,?)" in captured["sql"]
-    assert captured["params"] == ["2026-04-30", 1, 2, 3]
+    assert "stock_id IN (?)" in captured["sql"]
+    assert captured["params"] == ["2026-04-30", 99]
+
+
+def test_prune_predictions_outside_universe_chunks_stale_deletes(monkeypatch):
+    captured_params: list[list[object]] = []
+    stale_ids = list(range(1, recommendation_service.D1_IN_CLAUSE_CHUNK_SIZE + 6))
+    safe_ids = [999]
+
+    def _fake_query(sql, params, timeout=60):
+        return [{"stock_id": stock_id} for stock_id in [*stale_ids, *safe_ids]]
+
+    def _fake_execute(sql, params, timeout=60):
+        assert "stock_id IN (" in sql
+        captured_params.append(list(params))
+        return {"meta": {"changes": len(params) - 1}}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "query", _fake_query)
+    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
+
+    deleted = prune_predictions_outside_universe(safe_ids, "2026-04-30")
+
+    assert deleted == len(stale_ids)
+    assert len(captured_params) == 2
+    assert all(len(params) <= recommendation_service.D1_IN_CLAUSE_CHUNK_SIZE + 1 for params in captured_params)
+    assert all(params[0] == "2026-04-30" for params in captured_params)

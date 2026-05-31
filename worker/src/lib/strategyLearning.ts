@@ -638,22 +638,12 @@ export async function persistStrategyDecisionRows(db: D1Database, rows: Strategy
   let persisted = 0
   for (const row of rows) {
     await db.prepare(`
-      INSERT INTO strategy_decision_log (
+      INSERT OR REPLACE INTO strategy_decision_log (
         decision_id, date, symbol, name, strategy_id, strategy_version,
         strategy_status, alpha_bucket, matched, match_score, reason_code,
         context_json, evidence_json, created_at
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET
-        name=excluded.name,
-        strategy_status=excluded.strategy_status,
-        alpha_bucket=excluded.alpha_bucket,
-        matched=excluded.matched,
-        match_score=excluded.match_score,
-        reason_code=excluded.reason_code,
-        context_json=excluded.context_json,
-        evidence_json=excluded.evidence_json,
-        created_at=excluded.created_at
     `).bind(
       row.decision_id,
       row.date,

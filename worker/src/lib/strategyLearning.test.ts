@@ -1,4 +1,5 @@
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
+import * as fs from 'node:fs'
 import {
   buildStrategyAdaptivePolicyState,
   buildStrategyDecisionRows,
@@ -11,6 +12,14 @@ import {
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+{
+  const source = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
+  assert(
+    source.includes('INSERT OR REPLACE INTO strategy_decision_log'),
+    'strategy decision materialization must be idempotent across historical replay runs',
+  )
 }
 
 {

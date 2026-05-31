@@ -67,5 +67,5 @@ def test_verify_callback_metadata_enables_historical_learning_catchup_only_for_b
     current = build_verify_callback_metadata("2026-05-31", today="2026-05-31")
 
     assert historical["allow_historical_learning_catchup"] is True
-    assert historical["learning_catchup_scope"] == "meta_learning_shadow_and_strategy_learning_only"
+    assert historical["learning_catchup_scope"] == "meta_learning_shadow_finlab_discovery_and_strategy_learning_only"
     assert current["allow_historical_learning_catchup"] is False

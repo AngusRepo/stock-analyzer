@@ -19,6 +19,12 @@ assert(callbackRoutes.includes('runPostPipelineCallbackChain'), 'pipeline succes
 assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify success callback must launch post-verify chain')
 assert(callbackRoutes.includes('metadata: callbackMetadata'), 'verify callback metadata must be passed into post-verify chain')
 assert(
+  callbackRoutes.includes('allowLearningCatchupAfterVerifySkip') &&
+    callbackRoutes.includes("body.status === 'skipped'") &&
+    callbackRoutes.includes('allow_historical_learning_catchup'),
+  'historical verify-v2 skipped callbacks must still launch post-verify learning catch-up when metadata allows it',
+)
+assert(
   pipelineCallbackBlock.includes('executionCtx.waitUntil') &&
     pipelineCallbackBlock.includes('runPostPipelineCallbackChain'),
   'pipeline terminal callback must detach post-pipeline chain with waitUntil so Cloud Run pipeline-v2 is not held open by downstream closure',

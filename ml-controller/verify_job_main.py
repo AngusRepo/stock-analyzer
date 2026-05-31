@@ -28,7 +28,7 @@ def tw_today() -> str:
 def build_verify_callback_metadata(run_date: str, today: str | None = None) -> dict[str, object]:
     return {
         "allow_historical_learning_catchup": bool(run_date and run_date != (today or tw_today())),
-        "learning_catchup_scope": "meta_learning_shadow_and_strategy_learning_only",
+        "learning_catchup_scope": "meta_learning_shadow_finlab_discovery_and_strategy_learning_only",
     }
 
 

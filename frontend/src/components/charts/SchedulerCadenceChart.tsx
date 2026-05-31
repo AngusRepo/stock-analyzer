@@ -121,12 +121,12 @@ function EmptyWorkbench({ message }: { message: string }) {
   const bars = [0.48, 0.72, 0.56, 0.84, 0.62, 0.38, 0.76]
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
+    <section className="sv-content-card overflow-hidden">
+      <header className="grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-amber-300">Scheduler Visual Workbench</p>
-          <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">排程節奏圖面等待 jobs</h2>
-          <p className="mt-2 text-xs leading-5 text-[#9badbf]">{message}</p>
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">Scheduler Visual Workbench</p>
+          <h2 className="sv-title-text mt-1 text-xl font-semibold">排程節奏圖面等待 jobs</h2>
+          <p className="sv-muted-text mt-2 text-xs leading-5">{message}</p>
         </div>
         <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
           <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">jobs 0</div>
@@ -134,7 +134,7 @@ function EmptyWorkbench({ message }: { message: string }) {
           <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">api degraded</div>
         </div>
       </header>
-      <div className="relative min-h-[300px] overflow-hidden bg-[#070a10] p-4">
+      <div className="relative min-h-[300px] overflow-hidden bg-[color:var(--sv-panel-deep)] p-4">
         <div className="absolute inset-0 opacity-50 [background-image:linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] [background-size:42px_42px]" />
         <div className="relative flex h-[250px] items-end gap-3 border-l border-b border-[#3a4659] px-4 pb-6">
           {bars.map((height, index) => (
@@ -147,7 +147,7 @@ function EmptyWorkbench({ message }: { message: string }) {
             </div>
           ))}
         </div>
-        <div className="relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">
+        <div className="sv-muted-text relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em]">
           <span>7d cadence</span>
           <span>failed density</span>
           <span>duration risk</span>
@@ -215,12 +215,12 @@ export default function SchedulerCadenceChart({ status, loading, error }: Schedu
   if (!jobs.length) return <EmptyWorkbench message="目前沒有 scheduler jobs；請確認 Worker admin scheduler endpoint。" />
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_18px_60px_rgba(0,0,0,0.20)]">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_460px] lg:items-center">
+    <section className="sv-content-card overflow-hidden shadow-[0_18px_60px_rgba(0,0,0,0.20)]">
+      <header className="grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-4 lg:grid-cols-[minmax(0,1fr)_460px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-amber-300">Scheduler Visual Workbench</p>
-          <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">排程健康度 cadence surface</h2>
-          <p className="mt-2 max-w-2xl text-xs leading-5 text-[#9badbf]">
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">Scheduler Visual Workbench</p>
+          <h2 className="sv-title-text mt-1 text-xl font-semibold">排程健康度 cadence surface</h2>
+          <p className="sv-muted-text mt-2 max-w-2xl text-xs leading-5">
             這張圖把每個 job 的 history7d、failed density 與 suspicious duration 轉成可掃描的 SLO 曲線；下方長條越高，代表當天失敗或 callback/duration 風險越高。
           </p>
         </div>
@@ -232,23 +232,23 @@ export default function SchedulerCadenceChart({ status, loading, error }: Schedu
         </div>
       </header>
 
-      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.55fr)]">
-        <div ref={containerRef} className="min-h-[340px] w-full bg-[#070a10]" />
-        <aside className="bg-[#070a10] p-4">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">run focus</p>
+      <div className="grid gap-px bg-[color:var(--sv-panel-border-soft)] lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.55fr)]">
+        <div ref={containerRef} className="min-h-[340px] w-full bg-[color:var(--sv-panel-deep)]" />
+        <aside className="bg-[color:var(--sv-panel-deep)] p-4">
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">run focus</p>
           <div className="mt-3 space-y-2 text-xs">
             {focusJobs.length ? focusJobs.map((job) => (
               <a
                 key={job.id}
                 href={`/scheduler?focus=${job.id}`}
-                className="block border border-[#263247] bg-[#0f151d] p-2 text-[#c8d3df] hover:border-[#d6a85f]/50"
+                className="sv-content-card block p-2 text-[color:var(--sv-text-main)] hover:border-[color:var(--sv-accent-border)]"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-semibold">{job.name}</span>
                   <span className="font-mono text-[10px] text-rose-300">{job.lastStatus}</span>
                 </div>
-                <p className="mt-1 font-mono text-[10px] text-[#70809b]">{job.group} / {job.lastDuration || '-'}</p>
-                <p className="mt-1 line-clamp-2 text-[#8b9bab]">{job.durationConcernReason || job.summary || job.schedule}</p>
+                <p className="sv-muted-text mt-1 font-mono text-[10px]">{job.group} / {job.lastDuration || '-'}</p>
+                <p className="sv-muted-text mt-1 line-clamp-2">{job.durationConcernReason || job.summary || job.schedule}</p>
               </a>
             )) : (
               <div className="border border-emerald-400/25 bg-emerald-400/10 p-2 text-emerald-200">

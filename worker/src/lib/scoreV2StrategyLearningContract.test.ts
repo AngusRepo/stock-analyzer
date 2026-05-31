@@ -20,15 +20,15 @@ const adminDryRunEnd = adminReadRoutes.indexOf("adminReadRoutes.get('/api/admin/
 assert(adminDryRunStart >= 0 && adminDryRunEnd > adminDryRunStart, 'admin strategy dry-run block should be locatable')
 const adminDryRunBlock = adminReadRoutes.slice(adminDryRunStart, adminDryRunEnd)
 
-assert(contextBlock.includes('score_v2'), 'strategy decision context should persist a Score V2 object')
-assert(contextBlock.includes('finalScore: thresholdScores.seedScore'), 'strategy decision context should name finalScore explicitly')
-assert(contextBlock.includes('chipFlow: thresholdScores.chipFlow'), 'strategy decision context should name chipFlow explicitly')
+assert(contextBlock.includes('raw_signals: rawSignals'), 'strategy decision context should persist raw strategy signals')
+assert(!contextBlock.includes('score_v2: {'), 'strategy decision context must not use Score V2 as L1 strategy evidence')
+assert(!contextBlock.includes('finalScore: thresholdScores.seedScore'), 'strategy decision context must not write Score V2 finalScore as strategy baseline')
+assert(!contextBlock.includes('chipFlow: thresholdScores.chipFlow'), 'strategy decision context must not write Score V2 chipFlow as strategy baseline')
 assert(
-  contextBlock.includes('technicalStructure: thresholdScores.technicalStructure'),
-  'strategy decision context should name technicalStructure explicitly',
+  !contextBlock.includes('technicalStructure: thresholdScores.technicalStructure'),
+  'strategy decision context must not write Score V2 technicalStructure as strategy baseline',
 )
-assert(contextBlock.includes('momentumProxy: thresholdScores.momentumProxy'), 'strategy decision context should name momentumProxy explicitly')
-assert(contextBlock.includes('source: thresholdScores.source'), 'strategy decision context should preserve Score V2 source')
+assert(!contextBlock.includes('momentumProxy: thresholdScores.momentumProxy'), 'strategy decision context must not write Score V2 momentumProxy as strategy baseline')
 assert(!contextBlock.includes('chip_score'), 'strategy decision context must not write legacy chip_score')
 assert(!contextBlock.includes('tech_score'), 'strategy decision context must not write legacy tech_score')
 assert(!contextBlock.includes('momentum_score'), 'strategy decision context must not write legacy momentum_score')

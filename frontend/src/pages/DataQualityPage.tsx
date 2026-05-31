@@ -12,11 +12,23 @@ import {
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
 
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(' ')
+}
+
 function statusTone(status?: string): WorkstationTone {
   if (status === 'ok' || status === 'PASS') return 'ok'
   if (status === 'warn' || status === 'WARN') return 'warn'
   if (status === 'fail' || status === 'BLOCK') return 'error'
   return 'neutral'
+}
+
+function toneValueClass(tone: WorkstationTone) {
+  if (tone === 'ok') return 'text-emerald-300'
+  if (tone === 'warn') return 'text-[#ffd87f]'
+  if (tone === 'error') return 'text-rose-300'
+  if (tone === 'info') return 'text-[#a5e7ff]'
+  return 'sv-title-text'
 }
 
 function scoreFromChecks(checks: DataQualityCheck[]) {
@@ -36,7 +48,7 @@ function metricSummary(check: DataQualityCheck): string {
 function MiniBar({ tone, value }: { tone: WorkstationTone; value: number }) {
   const color = tone === 'ok' ? '#34d399' : tone === 'warn' ? '#fbbf24' : tone === 'error' ? '#fb7185' : '#94a3b8'
   return (
-    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
       <div className="h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, value))}%`, backgroundColor: color }} />
     </div>
   )
@@ -44,16 +56,14 @@ function MiniBar({ tone, value }: { tone: WorkstationTone; value: number }) {
 
 function DataQualityMetric({ label, value, tone, detail }: { label: string; value: string; tone: WorkstationTone; detail: string }) {
   return (
-    <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+    <div className="sv-content-card rounded-xl p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
+        <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">{label}</p>
         <WorkstationPill tone={tone}>{tone}</WorkstationPill>
       </div>
-      <p className={`mt-2 font-mono text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-200'}`}>
-        {value}
-      </p>
+      <p className={cx('mt-2 font-mono text-2xl font-semibold', toneValueClass(tone))}>{value}</p>
       <MiniBar tone={tone} value={tone === 'error' ? 100 : tone === 'warn' ? 62 : 92} />
-      <p className="mt-2 truncate text-xs text-slate-500">{detail}</p>
+      <p className="sv-muted-text mt-2 truncate text-xs">{detail}</p>
     </div>
   )
 }
@@ -84,30 +94,33 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
 
   return (
     <WorkstationPanel title="FinLab Dagster Data Quality" kicker="source coverage, freshness, missing, duplicate, schema drift">
-      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="grid gap-px bg-[#263247] md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-px bg-[color:var(--sv-panel-border-soft)] lg:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="grid gap-px bg-[color:var(--sv-panel-border-soft)] md:grid-cols-2 xl:grid-cols-4">
           {sources.map((source) => {
             const row = sourceCounts.get(source)
             const missing = row ? Math.round(row.missing_rate * 100) : 100
             const duplicate = row ? Math.round(row.duplicate_rate * 100) : 0
             const tone: WorkstationTone = !row || row.runtime_state === 'missing' ? 'warn' : missing < 20 ? 'ok' : 'warn'
             return (
-              <div key={source} className="bg-[#05070c] p-3">
+              <div key={source} className="sv-content-card p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">{source}</p>
+                  <p className="sv-title-text flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em]">
+                    <Database className="h-3.5 w-3.5 sv-accent-text" />
+                    {source}
+                  </p>
                   <WorkstationPill tone={tone}>{row?.freshness_status ?? 'missing'}</WorkstationPill>
                 </div>
                 <MiniBar tone={tone} value={row ? Math.max(0, 100 - missing) : 0} />
-                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                <p className="sv-muted-text mt-2 text-[10px] leading-4">
                   rows {row?.rows ?? 0} / missing {missing}% / dup {duplicate}%
                 </p>
-                <p className="mt-1 truncate text-[10px] text-slate-600">{row?.role ?? 'not wired'} / {row?.decision_effect ?? 'no effect'}</p>
-                <p className="mt-1 truncate text-[10px] text-slate-600">{row?.latest_materialization ?? 'no materialization'}</p>
+                <p className="sv-muted-text mt-1 truncate text-[10px]">{row?.role ?? 'not wired'} / {row?.decision_effect ?? 'no effect'}</p>
+                <p className="sv-muted-text mt-1 truncate text-[10px]">{row?.latest_materialization ?? 'no materialization'}</p>
               </div>
             )
           })}
         </div>
-        <aside className="grid gap-2 bg-[#070a10] p-3 text-xs">
+        <aside className="grid gap-2 bg-[color:var(--sv-panel-deep)] p-3 text-xs">
           <DataQualityMetric label="Theme Signals" value={String(runtime?.theme_signals?.total ?? 0)} tone={(runtime?.theme_signals?.total ?? 0) > 0 ? 'ok' : 'warn'} detail={`${runtime?.theme_signals?.sources ?? 0} sources`} />
           <DataQualityMetric
             label="Canonical Rows"
@@ -131,24 +144,27 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
 function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boolean }) {
   const tone = statusTone(check.status)
   return (
-    <div id={`dq-${check.id}`} className={`scroll-mt-24 grid gap-3 border-b p-3 text-xs last:border-0 lg:grid-cols-[0.8fr_1fr_0.8fr_auto] ${
-      focused ? 'ring-1 ring-amber-300/60 ' : ''
-    }${
-      check.status === 'fail' ? 'border-rose-500/25 bg-rose-950/15'
-        : check.status === 'warn' ? 'border-amber-500/25 bg-amber-950/10'
-          : 'border-[#263247] bg-[#05070c]'
-    }`}>
+    <div
+      id={`dq-${check.id}`}
+      className={cx(
+        'scroll-mt-24 grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] p-3 text-xs last:border-0 lg:grid-cols-[0.8fr_1fr_0.8fr_auto]',
+        focused && 'ring-1 ring-[color:var(--sv-accent)]',
+        check.status === 'fail' && 'bg-rose-950/15',
+        check.status === 'warn' && 'bg-[color:var(--sv-accent-soft)]',
+        check.status === 'ok' && 'bg-[color:var(--sv-panel-deep)]',
+      )}
+    >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <WorkstationPill tone={tone}>{check.status}</WorkstationPill>
-          <p className="truncate text-sm font-semibold text-slate-100">{check.label}</p>
+          <p className="sv-title-text truncate text-sm font-semibold">{check.label}</p>
         </div>
-        <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">{check.id}</p>
+        <p className="sv-muted-text mt-1 font-mono text-[10px] uppercase tracking-[0.12em]">{check.id}</p>
         <MiniBar tone={tone} value={check.status === 'ok' ? 96 : check.status === 'warn' ? 62 : 100} />
       </div>
-      <p className="line-clamp-2 leading-5 text-slate-400">{check.summary}</p>
-      <p className="font-mono text-[10px] leading-5 text-slate-500">{metricSummary(check)}</p>
-      <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-200 hover:text-emerald-100">
+      <p className="line-clamp-2 leading-5 text-[color:var(--sv-text-soft)]">{check.summary}</p>
+      <p className="sv-muted-text font-mono text-[10px] leading-5">{metricSummary(check)}</p>
+      <a href={`/data-quality?focus=${check.id}`} className="sv-accent-text inline-flex items-start justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.14em] hover:opacity-80">
         Inspect <ExternalLink className="h-3 w-3" />
       </a>
     </div>
@@ -193,17 +209,17 @@ export default function DataQualityPage() {
       <div className="space-y-4 p-4 lg:p-5">
         <WorkstationPageTitle
           kicker="Data Quality"
-          title="Data Quality Drilldown / 資料品質"
-          description="專注 freshness、schema、train/serve parity；OBS 看總覽，這頁看每一個檢查項目的證據。"
+          title="Data Quality Drilldown / 資料品質鑽取"
+          description="把 freshness、schema、train/serve parity 與 source coverage 壓成可掃描的 ops surface；OBS 顯示摘要，這裡保留可追 root cause 的檢查與來源細節。"
           action={
             <div className="flex flex-wrap gap-2">
-              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">
+              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] sv-accent-text">
                 OBS <ExternalLink className="h-3 w-3" />
               </a>
               <button
                 type="button"
                 onClick={() => void quality.refetch()}
-                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]"
+                className="inline-flex items-center gap-1 rounded-full border border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] sv-accent-text"
               >
                 <RefreshCw className={`h-3 w-3 ${quality.isFetching ? 'animate-spin' : ''}`} />
                 Refresh
@@ -213,12 +229,12 @@ export default function DataQualityPage() {
         />
 
         {quality.error && (
-          <div className="border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
+          <div className="rounded-xl border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
             Data Quality API 載入失敗：{(quality.error as Error).message}
           </div>
         )}
 
-        <section className="grid gap-3 md:grid-cols-4">
+        <section data-testid="data-quality-signal-board" className="grid gap-3 md:grid-cols-4">
           <DataQualityMetric label="Trust Score" value={checks.length ? `${trustScore}%` : 'N/A'} tone={reportTone} detail={`date ${report?.date ?? '-'}`} />
           <DataQualityMetric label="Checks" value={String(checks.length)} tone={reportTone} detail={`ok ${okCount} / warn ${warnCount} / fail ${failCount}`} />
           <DataQualityMetric label="Actionable Gaps" value={String(gaps.length)} tone={!checks.length ? 'neutral' : gaps.length ? 'warn' : 'ok'} detail={gaps.length ? 'fail/warn first' : checks.length ? 'no active gap' : 'no report'} />
@@ -233,13 +249,13 @@ export default function DataQualityPage() {
 
         <DataRuntimeSourcePanel runtime={runtime.data} />
 
-        <WorkstationPanel title="Actionable Data Gaps / 可處理缺口" kicker="fail and warn first">
+        <WorkstationPanel title="Actionable Data Gaps / 可處理資料缺口" kicker="fail and warn first">
           <div className="overflow-hidden">
             {gaps.length > 0 ? (
               gaps.map((check) => <CheckRow key={check.id} check={check} focused={check.id === focusId} />)
             ) : (
               <div className="flex items-center gap-2 p-4 text-sm text-emerald-300">
-                <CheckCircle2 className="h-4 w-4" /> 沒有 fail/warn data quality 缺口。
+                <CheckCircle2 className="h-4 w-4" /> 目前沒有 fail/warn data quality gap。
               </div>
             )}
           </div>
@@ -250,7 +266,7 @@ export default function DataQualityPage() {
             {checks.map((check) => <CheckRow key={check.id} check={check} focused={check.id === focusId} />)}
             {!checks.length && (
               <div className="flex items-center gap-2 p-4 text-sm text-amber-200">
-                <AlertTriangle className="h-4 w-4" /> 尚未取得 Data Quality checks。
+                <AlertTriangle className="h-4 w-4" /> 目前沒有 Data Quality checks 可顯示。
               </div>
             )}
           </div>

@@ -52,7 +52,17 @@ const scoreV2 = JSON.stringify({
   assert(packet.strategy_spec.id.startsWith('finlab_ai_skill_'), 'generated strategy id should be FinLab scoped')
   assert(packet.strategy_spec.status === 'research', 'auto-discovered specs should default to research status')
   assert(packet.strategy_spec.thresholds.includeIndustries?.includes('AI Server'), 'taxonomy tag should bind the strategy spec to L1 taxonomy matching')
+  assert(packet.strategy_spec.thresholds.minSeedScore == null, 'FinLab AI Skill discovery must not inject Score V2 seed thresholds')
+  assert(packet.strategy_spec.thresholds.minTechScore == null, 'FinLab AI Skill discovery must not inject old technical score thresholds')
   assert(packet.strategy_spec.candidatePolicy?.maxMlShare === 0, 'research discovery specs must not enter ML queue directly')
+  assert(
+    packet.strategy_spec.candidatePolicy?.evidenceRequirements?.includes('raw_factor_mining'),
+    'FinLab AI Skill discovery should record raw factor mining evidence',
+  )
+  assert(
+    packet.strategy_spec.candidatePolicy?.evidenceRequirements?.includes('raw_technical_indicator_mining'),
+    'FinLab AI Skill discovery should record technical indicator mining evidence',
+  )
   assert(packet.research_experiment.strategy_spec_ids.includes(packet.strategy_spec.id), 'research experiment should reference generated strategy spec')
   assert(packet.research_experiment.source_refs.includes(FINLAB_AI_SKILL_DISCOVERY_ID), 'research experiment should preserve FinLab AI Skill lineage')
   assert(packet.bridge.path_to_screener_layers.includes('strategy_spec_registry'), 'bridge should declare registry path into screener layers')
@@ -69,7 +79,12 @@ const scoreV2 = JSON.stringify({
       name: 'TestCo',
       industry: 'AI Server',
       current_price: 100,
-      score_v2: scoreV2,
+      raw_signals: {
+        volumeExpansion20: 1.1,
+        closeAboveMa20Pct: 0.02,
+        factorSignals: { monthly_revenue_yoy_acceleration: 1.2 },
+        technicalIndicators: { rsi14: 55 },
+      },
     },
   ], [restored], { regime: 'bull' })
   const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 8 }))
@@ -106,7 +121,12 @@ const scoreV2 = JSON.stringify({
       name: 'TestCo',
       industry: 'AI Server',
       current_price: 100,
-      score_v2: scoreV2,
+      raw_signals: {
+        volumeExpansion20: 1.1,
+        closeAboveMa20Pct: 0.02,
+        factorSignals: { monthly_revenue_yoy_acceleration: 1.2 },
+        technicalIndicators: { rsi14: 55 },
+      },
     },
   ], [restored], { regime: 'bull' })
   const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 8 }))

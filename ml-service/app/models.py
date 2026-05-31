@@ -12,8 +12,11 @@ import numpy as np
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Literal
+import logging
 import warnings
 warnings.filterwarnings("ignore")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -317,14 +320,24 @@ def run_markov_switching(
         lookback = min(252, n - 1)
         log_returns = np.diff(np.log(prices[-lookback - 1:]))
 
+        log_returns = log_returns[np.isfinite(log_returns)]
         if len(log_returns) < 50:
             raise ValueError("too few returns for MS-AR")
+        return_std = float(np.std(log_returns))
+        min_return_std = float(hp.get("min_return_std", 1e-5))
+        min_unique_returns = max(5, int(hp.get("min_unique_returns", 12)))
+        if not np.isfinite(return_std) or return_std < min_return_std:
+            return _fallback_momentum(prices, horizon, stock_id, "low_regime_variation")
+        if len(np.unique(np.round(log_returns, 6))) < min_unique_returns:
+            return _fallback_momentum(prices, horizon, stock_id, "low_unique_return_states")
 
         mod = MarkovAutoregression(
             log_returns, k_regimes=n_regimes, order=ar_order,
             switching_ar=True, switching_variance=switching_vol,
         )
-        res = mod.fit(maxiter=200, disp=False, search_reps=20)
+        fit_maxiter = max(50, min(200, int(hp.get("fit_maxiter", 120))))
+        fit_search_reps = max(1, min(20, int(hp.get("search_reps", 5))))
+        res = mod.fit(maxiter=fit_maxiter, disp=False, search_reps=fit_search_reps)
 
         # ??smoothed probabilities ????? regime
         # 2026-04-17 #1 fix: ??? statsmodels ??numpy input ??? numpy array
@@ -370,7 +383,9 @@ def run_markov_switching(
         pct = (forecast_prices[4] - last_price) / last_price if len(forecast_prices) > 4 else 0.0
 
         # Walk-forward validation
-        test_size = min(15, n // 10)
+        test_size = min(max(0, int(hp.get("walk_forward_size", 5))), n // 10)
+        wf_maxiter = max(30, min(120, int(hp.get("walk_forward_maxiter", 60))))
+        wf_search_reps = max(1, min(10, int(hp.get("walk_forward_search_reps", 2))))
         wf_correct, wf_total = 0, 0
         for i in range(test_size):
             seg_end = n - test_size + i
@@ -380,7 +395,7 @@ def run_markov_switching(
             try:
                 m = MarkovAutoregression(seg_ret, k_regimes=n_regimes, order=ar_order,
                                          switching_ar=True, switching_variance=switching_vol)
-                r_fit = m.fit(maxiter=100, disp=False, search_reps=5)
+                r_fit = m.fit(maxiter=wf_maxiter, disp=False, search_reps=wf_search_reps)
                 sp = np.asarray(r_fit.smoothed_marginal_probabilities)  # 2026-04-17 #1 fix
                 pmap = _params_to_dict(r_fit)
                 rm = [pmap.get(f"const[{j}]", 0.0) for j in range(n_regimes)]
@@ -415,6 +430,8 @@ def run_markov_switching(
         reason = str(e).strip() or type(e).__name__
         if "SVD did not converge" in reason:
             reason = "svd_not_converged"
+        elif "Steady-state probabilities could not be constructed" in reason:
+            reason = "steady_state_probabilities_unavailable"
         return _fallback_momentum(prices, horizon, stock_id, reason)
 
 
@@ -441,7 +458,7 @@ def _fallback_momentum(prices: np.ndarray, horizon: int, stock_id: int, reason: 
     dates = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points(forecast_vals, std, dates)
 
-    print(f"[{MODEL_NAME}] fallback momentum due to: {reason}")
+    logger.debug("[%s] fallback momentum due to: %s", MODEL_NAME, reason)
     pred = ModelPrediction(
         model_name=MODEL_NAME,
         direction="up" if is_up else "down",

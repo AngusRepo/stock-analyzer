@@ -43,6 +43,7 @@ assert(strategyChart.includes('LineSeries'), 'StrategyExperimentTimeline should 
 assert(strategyChart.includes('HistogramSeries'), 'StrategyExperimentTimeline should render sample histograms')
 assert(strategyChart.includes('createSeriesMarkers'), 'StrategyExperimentTimeline should render experiment markers')
 assert(strategyChart.includes('Strategy Visual Workbench'), 'StrategyExperimentTimeline empty state should still render a visible visual workbench')
+assert(strategyChart.includes('sv-content-card') && strategyChart.includes('sv-accent-text') && strategyChart.includes('sv-muted-text'), 'StrategyExperimentTimeline should consume route-level research surface tokens')
 
 const modelPoolPage = fs.readFileSync(modelPoolPagePath, 'utf8')
 assert(modelPoolPage.includes('Model Health Matrix'), 'ModelPool page should render the unified model health matrix')
@@ -58,6 +59,8 @@ assert(!modelPoolPage.includes('<Mini' + 'Sparkline'), 'Serving alpha matrix sho
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
 const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
 assert(strategyLabPage.includes('StrategyExperimentTimeline'), 'Strategy Lab page should render the experiment timeline')
+assert(strategyLabPage.includes('data-testid="strategy-signal-board"'), 'Strategy Lab should show a signal board before dense research controls')
+assert(strategyLabPage.includes('WorkstationPageTitle') && strategyLabPage.includes('sv-content-card') && strategyLabPage.includes('sv-accent-text'), 'Strategy Lab should consume the dedicated research surface theme')
 assert(strategyLabPage.includes('Action Lanes'), 'Strategy Lab should group actionable controls into a left-side action lane')
 assert(strategyLabPage.includes('Registry / Evidence Inspector'), 'Strategy Lab should inspect registry evidence in the right-side inspector')
 assert(strategyLabPage.includes('Strategy Ops'), 'Strategy Lab should merge spec/dry-run and learning/reward into one lifecycle block')

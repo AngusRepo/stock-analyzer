@@ -25,16 +25,16 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
     height: 340,
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: '#070a10' },
-      textColor: '#9aa6bd',
+      background: { type: ColorType.Solid, color: '#0d070c' },
+      textColor: '#a88498',
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      vertLines: { color: 'rgba(168, 132, 152, 0.10)' },
+      horzLines: { color: 'rgba(168, 132, 152, 0.10)' },
     },
-    rightPriceScale: { borderColor: 'rgba(148, 163, 184, 0.18)' },
-    timeScale: { borderColor: 'rgba(148, 163, 184, 0.18)' },
+    rightPriceScale: { borderColor: 'rgba(244, 114, 182, 0.22)' },
+    timeScale: { borderColor: 'rgba(244, 114, 182, 0.22)' },
   }
 }
 
@@ -75,12 +75,12 @@ function WorkbenchSkeleton() {
   const bars = [0.22, 0.38, 0.31, 0.58, 0.47, 0.64, 0.51, 0.72, 0.44, 0.61]
 
   return (
-    <section className="overflow-hidden border border-[#3a3125] bg-[#0f151d]/96 shadow-[0_18px_60px_rgba(0,0,0,0.26)]">
-      <header className="grid gap-3 border-b border-[#3a3125] bg-[linear-gradient(90deg,#171714,#0f151d_58%,#07131b)] p-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-center">
+    <section className="sv-content-card overflow-hidden rounded-xl shadow-[0_18px_60px_rgba(0,0,0,0.26)]">
+      <header className="grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-amber-300">Strategy Visual Workbench</p>
-          <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">策略實驗圖面等待資料</h2>
-          <p className="mt-2 max-w-2xl text-xs leading-5 text-[#9badbf]">
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.2em]">Strategy Visual Workbench</p>
+          <h2 className="sv-title-text mt-1 text-xl font-semibold">策略實驗圖面等待資料</h2>
+          <p className="mt-2 max-w-2xl text-xs leading-5 text-[color:var(--sv-text-soft)]">
             strategy API 目前沒有回傳可用 specs，所以先顯示工作台骨架。之後這裡會承接 dry-run 命中率、樣本量與 experiment marker，讓策略狀態先用圖面判讀，再下鑽看細節。
           </p>
         </div>
@@ -91,37 +91,37 @@ function WorkbenchSkeleton() {
         </div>
       </header>
 
-      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.6fr)]">
-        <div className="relative min-h-[360px] overflow-hidden bg-[#070a10] p-4">
-          <div className="absolute inset-0 opacity-50 [background-image:linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] [background-size:42px_42px]" />
-          <div className="relative flex h-[320px] items-end gap-3 border-l border-b border-[#3a4659] px-4 pb-6">
+      <div className="grid gap-px bg-[color:var(--sv-panel-border-soft)] lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.6fr)]">
+        <div className="relative min-h-[360px] overflow-hidden bg-[color:var(--sv-panel-deep)] p-4">
+          <div className="absolute inset-0 opacity-55 [background-image:linear-gradient(rgba(244,114,182,0.10)_1px,transparent_1px),linear-gradient(90deg,rgba(168,132,152,0.08)_1px,transparent_1px)] [background-size:42px_42px]" />
+          <div className="relative flex h-[320px] items-end gap-3 border-l border-b border-[color:var(--sv-panel-border)] px-4 pb-6">
             {bars.map((height, index) => (
               <div key={index} className="flex flex-1 flex-col items-center gap-2">
                 <div
-                  className="w-full border border-amber-300/30 bg-amber-300/15"
+                  className="w-full border border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)]"
                   style={{ height: `${Math.max(12, height * 210)}px` }}
                 />
-                <div className="h-1.5 w-1.5 bg-sky-300" />
+                <div className="h-1.5 w-1.5 bg-[color:var(--sv-accent)]" />
               </div>
             ))}
           </div>
-          <div className="relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">
+          <div className="sv-muted-text relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em]">
             <span>dry-run match rate</span>
             <span>sample histogram</span>
             <span>experiment markers</span>
           </div>
         </div>
 
-        <aside className="bg-[#070a10] p-4">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">operator focus</p>
+        <aside className="bg-[color:var(--sv-panel-deep)] p-4">
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">operator focus</p>
           <div className="mt-3 space-y-2 text-xs">
             {[
               ['1', '確認 specs API 是否正常回傳'],
               ['2', '檢查 dry-run 命中率與 sample size'],
               ['3', '連回 evaluation plan / registry'],
             ].map(([step, text]) => (
-              <div key={step} className="grid grid-cols-[28px_1fr] items-center gap-2 border border-[#263247] bg-[#0f151d] p-2 text-[#c8d3df]">
-                <span className="grid h-6 w-6 place-items-center bg-[#171714] font-mono text-amber-200">{step}</span>
+              <div key={step} className="sv-content-card grid grid-cols-[28px_1fr] items-center gap-2 p-2 text-[color:var(--sv-text-soft)]">
+                <span className="grid h-6 w-6 place-items-center bg-[color:var(--sv-panel-raised)] font-mono text-[color:var(--sv-accent)]">{step}</span>
                 <span>{text}</span>
               </div>
             ))}
@@ -183,11 +183,11 @@ export default function StrategyExperimentTimeline({ specs, dryRun, experiments 
   if (!specs.length) return <WorkbenchSkeleton />
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+    <section className="sv-content-card overflow-hidden rounded-xl">
+      <header className="grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-amber-300">Strategy Visual Workbench</p>
-          <h2 className="mt-1 text-base font-semibold text-[#f2ead8]">Dry-run match rate and experiment registry markers</h2>
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">Strategy Visual Workbench</p>
+          <h2 className="sv-title-text mt-1 text-base font-semibold">Dry-run match rate and experiment registry markers</h2>
         </div>
         <div className="grid grid-cols-3 gap-2 text-[11px]">
           <div className="border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-200">specs {specs.length}</div>
@@ -195,7 +195,7 @@ export default function StrategyExperimentTimeline({ specs, dryRun, experiments 
           <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">samples {samples}</div>
         </div>
       </header>
-      <div ref={containerRef} className="min-h-[340px] w-full bg-[#070a10]" />
+      <div ref={containerRef} className="min-h-[340px] w-full bg-[color:var(--sv-panel-deep)]" />
     </section>
   )
 }

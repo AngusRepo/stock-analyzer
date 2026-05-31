@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import AppShell from '@/components/AppShell'
 import {
   strategyLabApi,
@@ -17,8 +18,9 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Activity, BrainCircuit, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
+import { Activity, BrainCircuit, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
 import StrategyExperimentTimeline from '@/components/charts/StrategyExperimentTimeline'
+import { WorkstationPageTitle } from '@/components/workstation/WorkstationChrome'
 
 type MetaLearningTrack = NonNullable<ResearchExperimentsResponse['meta_learning_tracks']>[number]
 type MetaLearningEvidenceRow = NonNullable<ResearchExperimentsResponse['meta_learning_evidence_matrix']>[number]
@@ -97,6 +99,34 @@ function pct(value?: number | null) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
+}
+
+function strategySignalValueClass(tone: 'ok' | 'warn' | 'error' | 'info' | 'neutral') {
+  if (tone === 'ok') return 'text-emerald-300'
+  if (tone === 'warn') return 'text-[#ffd87f]'
+  if (tone === 'error') return 'text-rose-300'
+  if (tone === 'info') return 'text-[#a5e7ff]'
+  return 'sv-title-text'
+}
+
+function StrategySignalTile({
+  label,
+  value,
+  hint,
+  tone = 'neutral',
+}: {
+  label: string
+  value: ReactNode
+  hint: ReactNode
+  tone?: 'ok' | 'warn' | 'error' | 'info' | 'neutral'
+}) {
+  return (
+    <div className="sv-content-card rounded-xl p-4">
+      <div className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.18em]">{label}</div>
+      <div className={`mt-2 font-['Space_Grotesk'] text-2xl font-semibold ${strategySignalValueClass(tone)}`}>{value}</div>
+      <div className="sv-muted-text mt-1 truncate text-xs">{hint}</div>
+    </div>
+  )
 }
 
 function splitCsv(value: string) {
@@ -1689,8 +1719,8 @@ export default function StrategyLabPage() {
   if (loading) {
     return (
       <AppShell>
-        <div className="flex items-center gap-2 p-6 text-sm text-slate-400">
-          <Loader2 className="h-4 w-4 animate-spin" /> Strategy Lab 載入中...
+        <div className="sv-muted-text flex items-center gap-2 p-6 text-sm">
+          <Loader2 className="sv-accent-text h-4 w-4 animate-spin" /> Strategy Lab 載入中...
         </div>
       </AppShell>
     )
@@ -1699,22 +1729,21 @@ export default function StrategyLabPage() {
   return (
     <AppShell>
       <div className="space-y-5 p-4 lg:p-6">
-        <div className="rounded-3xl border border-amber-500/20 bg-[radial-gradient(circle_at_18%_20%,rgba(245,158,11,0.18),transparent_28%),linear-gradient(135deg,#151714,#0b0f14_62%,#17110a)] p-5 shadow-[0_24px_90px_rgba(0,0,0,0.28)]">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-amber-300">Research Mission Control</p>
-              <h1 className="mt-2 flex items-center gap-2 text-2xl font-bold text-amber-50">
-                <FlaskConical className="h-5 w-5 text-amber-300" /> 策略研究室
-              </h1>
-              <p className="mt-2 max-w-4xl text-sm leading-relaxed text-slate-300">
-                研究室只產生假說、dry-run review packet 與 evidence，不直接 retrain、promote 或 deploy。所有候選策略都要先通過 gate。
-              </p>
-            </div>
-            <Button size="sm" variant="outline" className="rounded-full border-amber-400/30 text-amber-200" onClick={() => { setRefreshing(true); load() }}>
+        <WorkstationPageTitle
+          kicker="Research Mission Control"
+          title="策略研究室"
+          description="研究室只產生假說、dry-run review packet 與 evidence，不直接 retrain、promote 或 deploy。所有候選策略都要先通過 gate。"
+          action={
+            <Button
+              size="sm"
+              variant="outline"
+              className="rounded-full border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] sv-accent-text"
+              onClick={() => { setRefreshing(true); load() }}
+            >
               <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新整理
             </Button>
-          </div>
-        </div>
+          }
+        />
 
         <StrategyExperimentTimeline
           specs={specs?.specs ?? []}
@@ -1735,29 +1764,19 @@ export default function StrategyLabPage() {
           </Card>
         )}
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-          {[
-            ['策略規格', stats.strategyCount, specs?.version ?? 'strategy-spec-v1'],
-            ['Dry-run 命中', stats.dryRunMatches, dryRun?.source ?? '-'],
-            ['研究實驗', experiments?.experiments.length ?? 0, experiments?.mode ?? 'read_only'],
-            ['允許 Gate', stats.safeGateCount, 'hypothesis / dry-run'],
-            ['阻擋 Gate', stats.blockedGateCount, 'deploy / trade'],
-          ].map(([label, value, hint]) => (
-            <Card key={label as string} className="border-slate-800 bg-slate-950/70">
-              <CardContent className="p-4">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</div>
-                <div className="mt-2 text-2xl font-bold text-slate-100">{value}</div>
-                <div className="mt-1 truncate text-xs text-slate-500">{hint}</div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+        <section data-testid="strategy-signal-board" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <StrategySignalTile label="策略規格" value={stats.strategyCount} hint={specs?.version ?? 'strategy-spec-v1'} tone="info" />
+          <StrategySignalTile label="Dry-run 命中" value={stats.dryRunMatches} hint={dryRun?.source ?? '-'} tone={stats.dryRunMatches > 0 ? 'ok' : 'neutral'} />
+          <StrategySignalTile label="研究實驗" value={experiments?.experiments.length ?? 0} hint={experiments?.mode ?? 'read_only'} tone="neutral" />
+          <StrategySignalTile label="允許 Gate" value={stats.safeGateCount} hint="hypothesis / dry-run" tone={stats.safeGateCount ? 'ok' : 'neutral'} />
+          <StrategySignalTile label="阻擋 Gate" value={stats.blockedGateCount} hint="deploy / trade" tone={stats.blockedGateCount ? 'error' : 'warn'} />
+        </section>
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(420px,0.85fr)]">
           <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-300">Action Lanes</div>
-              <div className="mt-1 text-xs leading-5 text-slate-500">
+            <div className="sv-content-card rounded-2xl p-3">
+              <div className="sv-accent-text text-[10px] font-semibold uppercase tracking-[0.18em]">Action Lanes</div>
+              <div className="sv-muted-text mt-1 text-xs leading-5">
                 左側是可執行操作；右側 inspector 是該操作對應的 registry evidence 與下一步。
               </div>
             </div>
@@ -1864,12 +1883,12 @@ export default function StrategyLabPage() {
           />
         </div>
 
-        <div className="rounded-3xl border border-slate-800 bg-slate-950/50 p-4">
+        <div className="sv-content-card-raised rounded-3xl p-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Strategy Ops</div>
-              <div className="mt-1 text-sm font-semibold text-slate-100">Pre-trade Spec + Dry-run / Post-trade Learning + Reward</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
+              <div className="sv-accent-text text-[10px] font-semibold uppercase tracking-[0.18em]">Strategy Ops</div>
+              <div className="sv-title-text mt-1 text-sm font-semibold">Pre-trade Spec + Dry-run / Post-trade Learning + Reward</div>
+              <p className="sv-muted-text mt-1 text-xs leading-5">
                 左欄只看策略定義與當日候選池命中；右欄只看後驗 reward、promotion gate 與 adaptive shadow 權重。
               </p>
             </div>

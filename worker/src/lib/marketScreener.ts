@@ -19,6 +19,7 @@ import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateLike } from './breeze2Runtime'
 import { loadTradingRestrictionSet } from './tradingRestrictions'
+import { isEtfLikeSymbol } from './boardTradability'
 import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
 import {
@@ -30,6 +31,11 @@ import {
 
 const D1_IN_CHUNK_SIZE = 40
 const SCREENER_FUNNEL_MAX_ITEMS = 5000
+
+function isEtfHardGateSymbol(symbol: string, info?: { market?: string }): boolean {
+  const market = String(info?.market ?? '').trim().toUpperCase()
+  return market === 'ETF' || isEtfLikeSymbol(symbol)
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -484,6 +490,41 @@ interface StockDailyData {
   chips: Map<string, Map<string, ChipDayNet>>  // stockId → date → net
 }
 
+interface StrategyRawFundamentalSignals {
+  revenueGrowthYoY?: number | null
+  monthlyRevenueYoY?: number | null
+  monthlyRevenueMoM?: number | null
+  grossMargin?: number | null
+  operatingMargin?: number | null
+  roe?: number | null
+  eps?: number | null
+  pe?: number | null
+  pb?: number | null
+  dividendYield?: number | null
+  source?: string | null
+}
+
+interface StrategyRawSignals extends StrategyRawFundamentalSignals {
+  close?: number | null
+  ma20?: number | null
+  ma60?: number | null
+  closeAboveMa20Pct?: number | null
+  closeAboveMa60Pct?: number | null
+  volumeExpansion20?: number | null
+  return20d?: number | null
+  return60d?: number | null
+  foreignNet5d?: number | null
+  trustNet5d?: number | null
+  dealerNet5d?: number | null
+  foreignTrustNet5d?: number | null
+  brokerNetShares5d?: number | null
+  brokerNetAmount5d?: number | null
+  brokerCount?: number | null
+  brokerConcentration?: number | null
+  technicalIndicators?: Record<string, number | null>
+  factorSignals?: Record<string, number | null>
+}
+
 function buildStockData(
   allPrices: FMStockPrice[],
   allChips: FMChip[],
@@ -530,6 +571,322 @@ function buildStockData(
  * 計算大盤 5 日報酬率（用加權指數或全市場平均）
  * 這裡用全市場等權平均近似
  */
+function finiteOrNull(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function avg(values: number[]): number | null {
+  const clean = values.filter(Number.isFinite)
+  return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : null
+}
+
+function pctChange(current: number | null | undefined, previous: number | null | undefined): number | null {
+  if (current == null || previous == null || previous <= 0) return null
+  return (current - previous) / previous
+}
+
+function rsi14(closes: number[]): number | null {
+  if (closes.length < 15) return null
+  let gains = 0
+  let losses = 0
+  for (let i = closes.length - 14; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1]
+    if (diff >= 0) gains += diff
+    else losses += Math.abs(diff)
+  }
+  if (gains === 0 && losses === 0) return 50
+  if (losses === 0) return 100
+  const rs = gains / losses
+  return 100 - 100 / (1 + rs)
+}
+
+function mergeFundamentalSignals(
+  map: Map<string, StrategyRawFundamentalSignals>,
+  symbol: string,
+  patch: StrategyRawFundamentalSignals,
+): void {
+  const key = String(symbol || '').trim()
+  if (!key) return
+  const existing = map.get(key) ?? {}
+  const next: StrategyRawFundamentalSignals = { ...existing }
+  for (const [field, value] of Object.entries(patch) as Array<[keyof StrategyRawFundamentalSignals, unknown]>) {
+    if (field === 'source') continue
+    if (next[field] == null && value != null && value !== '') {
+      ;(next as Record<string, unknown>)[field] = value
+    }
+  }
+  next.source = [existing.source, patch.source].filter(Boolean).join('+') || null
+  map.set(key, next)
+}
+
+async function loadStrategyRawFundamentalSignals(
+  env: Bindings,
+  symbols: string[],
+  endDate: string,
+): Promise<Map<string, StrategyRawFundamentalSignals>> {
+  const fundamentals = new Map<string, StrategyRawFundamentalSignals>()
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  if (!uniqueSymbols.length) return fundamentals
+  const revenueMonth = endDate.slice(0, 7)
+
+  for (const chunk of chunkArray(uniqueSymbols, D1_IN_CHUNK_SIZE)) {
+    const placeholders = chunk.map(() => '?').join(',')
+    try {
+      const { results } = await env.DB.prepare(`
+        SELECT f.stock_id AS symbol,
+               f.revenue_growth_yoy, f.gross_margin, f.operating_margin, f.roe,
+               f.eps, f.pe, f.pb, f.dividend_yield
+          FROM canonical_fundamental_features f
+         WHERE f.stock_id IN (${placeholders})
+           AND f.available_date <= ?
+           AND f.available_date = (
+             SELECT MAX(f2.available_date)
+               FROM canonical_fundamental_features f2
+              WHERE f2.stock_id = f.stock_id
+                AND f2.available_date <= ?
+           )
+      `).bind(...chunk, endDate, endDate).all<{
+        symbol: string
+        revenue_growth_yoy: number | null
+        gross_margin: number | null
+        operating_margin: number | null
+        roe: number | null
+        eps: number | null
+        pe: number | null
+        pb: number | null
+        dividend_yield: number | null
+      }>()
+      for (const row of results ?? []) {
+        mergeFundamentalSignals(fundamentals, row.symbol, {
+          revenueGrowthYoY: finiteOrNull(row.revenue_growth_yoy),
+          grossMargin: finiteOrNull(row.gross_margin),
+          operatingMargin: finiteOrNull(row.operating_margin),
+          roe: finiteOrNull(row.roe),
+          eps: finiteOrNull(row.eps),
+          pe: finiteOrNull(row.pe),
+          pb: finiteOrNull(row.pb),
+          dividendYield: finiteOrNull(row.dividend_yield),
+          source: 'canonical_fundamental_features',
+        })
+      }
+    } catch {
+      // Older local D1 snapshots may not have canonical_fundamental_features.
+    }
+
+    try {
+      const { results } = await env.DB.prepare(`
+        SELECT r.stock_id AS symbol, r.yoy, r.mom
+          FROM canonical_revenue_monthly r
+         WHERE r.stock_id IN (${placeholders})
+           AND r.revenue_month <= ?
+           AND r.revenue_month = (
+             SELECT MAX(r2.revenue_month)
+               FROM canonical_revenue_monthly r2
+              WHERE r2.stock_id = r.stock_id
+                AND r2.revenue_month <= ?
+           )
+      `).bind(...chunk, revenueMonth, revenueMonth).all<{
+        symbol: string
+        yoy: number | null
+        mom: number | null
+      }>()
+      for (const row of results ?? []) {
+        mergeFundamentalSignals(fundamentals, row.symbol, {
+          monthlyRevenueYoY: finiteOrNull(row.yoy),
+          monthlyRevenueMoM: finiteOrNull(row.mom),
+          source: 'canonical_revenue_monthly',
+        })
+      }
+    } catch {
+      // Canonical revenue is optional in older snapshots; legacy monthly_revenue fills below.
+    }
+
+    try {
+      const { results } = await env.DB.prepare(`
+        SELECT s.symbol, f.revenue_growth_yoy, f.roe, f.eps, f.pe, f.pb, f.dividend_yield
+          FROM financials f
+          JOIN stocks s ON s.id = f.stock_id
+         WHERE s.symbol IN (${placeholders})
+           AND f.period_type = 'quarterly'
+           AND f.period = (
+             SELECT MAX(f2.period)
+               FROM financials f2
+              WHERE f2.stock_id = f.stock_id
+                AND f2.period_type = 'quarterly'
+           )
+      `).bind(...chunk).all<{
+        symbol: string
+        revenue_growth_yoy: number | null
+        roe: number | null
+        eps: number | null
+        pe: number | null
+        pb: number | null
+        dividend_yield: number | null
+      }>()
+      for (const row of results ?? []) {
+        mergeFundamentalSignals(fundamentals, row.symbol, {
+          revenueGrowthYoY: finiteOrNull(row.revenue_growth_yoy),
+          roe: finiteOrNull(row.roe),
+          eps: finiteOrNull(row.eps),
+          pe: finiteOrNull(row.pe),
+          pb: finiteOrNull(row.pb),
+          dividendYield: finiteOrNull(row.dividend_yield),
+          source: 'legacy.financials',
+        })
+      }
+    } catch {
+      // Legacy fundamentals are a fallback only.
+    }
+
+    try {
+      const { results } = await env.DB.prepare(`
+        SELECT s.symbol, r.revenue_yoy, r.revenue_mom
+          FROM monthly_revenue r
+          JOIN stocks s ON s.id = r.stock_id
+         WHERE s.symbol IN (${placeholders})
+           AND r.date <= ?
+           AND r.date = (
+             SELECT MAX(r2.date)
+               FROM monthly_revenue r2
+              WHERE r2.stock_id = r.stock_id
+                AND r2.date <= ?
+           )
+      `).bind(...chunk, revenueMonth, revenueMonth).all<{
+        symbol: string
+        revenue_yoy: number | null
+        revenue_mom: number | null
+      }>()
+      for (const row of results ?? []) {
+        mergeFundamentalSignals(fundamentals, row.symbol, {
+          monthlyRevenueYoY: finiteOrNull(row.revenue_yoy),
+          monthlyRevenueMoM: finiteOrNull(row.revenue_mom),
+          source: 'legacy.monthly_revenue',
+        })
+      }
+    } catch {
+      // Legacy monthly revenue is a fallback only.
+    }
+  }
+
+  return fundamentals
+}
+
+function deriveStrategyRawSignals(
+  prices: FMStockPrice[],
+  chipDates: Map<string, ChipDayNet> | undefined,
+  fundamentals?: StrategyRawFundamentalSignals,
+): StrategyRawSignals {
+  const latest = prices[prices.length - 1]
+  const closes = prices.map((price) => finiteOrNull(price.close)).filter((value): value is number => value != null)
+  const volumes = prices.map((price) => finiteOrNull(price.Trading_Volume)).filter((value): value is number => value != null)
+  const close = latest ? finiteOrNull(latest.close) : null
+  const ma20 = avg(closes.slice(-20))
+  const ma60 = avg(closes.slice(-60))
+  const avgVol5 = avg(volumes.slice(-5))
+  const avgVol20 = avg(volumes.slice(-20))
+  const latestIndex = closes.length - 1
+  const closeAboveMa20Pct = pctChange(close, ma20)
+  const closeAboveMa60Pct = pctChange(close, ma60)
+  const volumeExpansion20 = avgVol5 != null && avgVol20 != null && avgVol20 > 0 ? avgVol5 / avgVol20 : null
+  const return20d = latestIndex >= 20 ? pctChange(closes[latestIndex], closes[latestIndex - 20]) : null
+  const return60d = latestIndex >= 60 ? pctChange(closes[latestIndex], closes[latestIndex - 60]) : null
+  const latestRsi14 = rsi14(closes)
+  const chipRows = [...(chipDates?.entries() ?? [])]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-5)
+    .map(([, value]) => value)
+  const foreignNet5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.foreign) ?? 0), 0)
+  const trustNet5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.trust) ?? 0), 0)
+  const dealerNet5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.dealer) ?? 0), 0)
+  const brokerNetShares5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.brokerProxy) ?? 0), 0)
+  const brokerNetAmount5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.estimatedAmount) ?? 0), 0)
+  const latestBroker = [...chipRows].reverse().find((row) => row.brokerCount != null || row.concentration != null)
+  const base: StrategyRawSignals = {
+    close,
+    ma20,
+    ma60,
+    closeAboveMa20Pct,
+    closeAboveMa60Pct,
+    volumeExpansion20,
+    return20d,
+    return60d,
+    foreignNet5d,
+    trustNet5d,
+    dealerNet5d,
+    foreignTrustNet5d: foreignNet5d + trustNet5d,
+    brokerNetShares5d,
+    brokerNetAmount5d,
+    brokerCount: finiteOrNull(latestBroker?.brokerCount),
+    brokerConcentration: finiteOrNull(latestBroker?.concentration),
+    ...(fundamentals ?? {}),
+    source: [
+      'stock_prices',
+      chipRows.some((row) => String(row.source || '').includes('canonical')) ? 'canonical_chip_or_broker_flow' : null,
+      fundamentals?.source ?? null,
+    ].filter(Boolean).join('+'),
+  }
+
+  return {
+    ...base,
+    technicalIndicators: {
+      closeAboveMa20Pct,
+      closeAboveMa60Pct,
+      volumeExpansion20,
+      return20d,
+      return60d,
+      rsi14: latestRsi14,
+    },
+    factorSignals: {
+      closeAboveMa20Pct,
+      volumeExpansion20,
+      return20d,
+      rsi14: latestRsi14,
+      foreignTrustNet5d: base.foreignTrustNet5d ?? null,
+      brokerNetShares5d,
+      brokerNetAmount5d,
+      brokerCount: base.brokerCount ?? null,
+      brokerConcentration: base.brokerConcentration ?? null,
+      revenueGrowthYoY: base.revenueGrowthYoY ?? null,
+      monthlyRevenueYoY: base.monthlyRevenueYoY ?? null,
+      monthlyRevenueMoM: base.monthlyRevenueMoM ?? null,
+      grossMargin: base.grossMargin ?? null,
+      operatingMargin: base.operatingMargin ?? null,
+      roe: base.roe ?? null,
+      eps: base.eps ?? null,
+      pe: base.pe ?? null,
+      pb: base.pb ?? null,
+      dividendYield: base.dividendYield ?? null,
+    },
+  }
+}
+
+function rawSignalEmergencyFallbackScore(candidate: { raw_signals?: StrategyRawSignals; score?: number | null }): number {
+  const raw = candidate.raw_signals ?? {}
+  const close20 = finiteOrNull(raw.closeAboveMa20Pct) ?? 0
+  const close60 = finiteOrNull(raw.closeAboveMa60Pct) ?? 0
+  const volume = finiteOrNull(raw.volumeExpansion20) ?? 1
+  const ret20 = finiteOrNull(raw.return20d) ?? 0
+  const flowAmount = finiteOrNull(raw.brokerNetAmount5d) ?? 0
+  const flowShares = finiteOrNull(raw.foreignTrustNet5d) ?? 0
+  const revenue = finiteOrNull(raw.revenueGrowthYoY) ?? finiteOrNull(raw.monthlyRevenueYoY) ?? 0
+  const roe = finiteOrNull(raw.roe) ?? 0
+  const eps = finiteOrNull(raw.eps) ?? 0
+  const pe = finiteOrNull(raw.pe)
+  const trendScore = Math.max(-12, Math.min(18, close20 * 180))
+    + Math.max(-10, Math.min(14, close60 * 120))
+    + Math.max(-6, Math.min(16, (volume - 0.8) * 18))
+    + Math.max(-8, Math.min(12, ret20 * 80))
+  const flowScore = Math.max(-10, Math.min(14, Math.sign(flowAmount) * Math.log10(Math.abs(flowAmount) + 1)))
+    + Math.max(-8, Math.min(12, Math.sign(flowShares) * Math.log10(Math.abs(flowShares) + 1)))
+  const qualityScore = Math.max(-8, Math.min(12, revenue / 4))
+    + Math.max(-4, Math.min(12, roe / 2))
+    + Math.max(-6, Math.min(12, eps * 2))
+  const valuationScore = pe == null ? 0 : Math.max(-8, Math.min(12, 10 - (pe - 12) / 3))
+  return Math.max(0, Math.min(100, 45 + trendScore * 0.34 + flowScore * 0.25 + qualityScore * 0.28 + valuationScore * 0.13))
+}
+
 function calcMarketReturn5d(data: StockDailyData): number {
   let totalReturn = 0
   let count = 0
@@ -1268,13 +1625,19 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ── Step 1: Universe hard filter ──
   const universe: { stockId: string; prices: FMStockPrice[] }[] = []
-  let skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0
+  let skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
 
   for (const [stockId, prices] of data.prices) {
     if (prices.length < 3) continue
     const latest = prices[prices.length - 1]
+    const info = sectorMap[stockId]
 
     // Hard filters
+    if (isEtfHardGateSymbol(stockId, info)) {
+      skipEtf++
+      pushFunnelItem(funnelItems, { symbol: stockId, name: info?.name, stage: 'universe', decision: 'drop', reasonCode: 'etf_excluded', evidence: { market: info?.market ?? null } })
+      continue
+    }
     if (latest.close < sc.minPrice || latest.close > sc.maxPrice) {
       skipPrice++
       pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'price_out_of_range', evidence: { close: latest.close, minPrice: sc.minPrice, maxPrice: sc.maxPrice } })
@@ -1309,15 +1672,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     universe.push({ stockId, prices })
     pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'pass', reasonCode: 'hard_filters_passed', evidence: { close: latest.close, avgVol20, avgDailyTurnover } })
   }
-  const universeMsg = `[Step 1] Universe: ${universe.length} 檔通過 | 篩掉: 股價=${skipPrice} 均量=${skipVol} 成交額=${skipTurnover} 處置=${skipPunish} 零量=${skipVolZero} 天數不足=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero}`
+  const universeMsg = `[Step 1] Universe: ${universe.length} passed | drops: price=${skipPrice} avgVol=${skipVol} turnover=${skipTurnover} restricted=${skipPunish} zeroVol=${skipVolZero} etf=${skipEtf} other=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero - skipEtf}`
   debugLog.push(universeMsg)
+  if (skipEtf > 0) debugLog.push(`[Step 1] hard gate excluded ETFs=${skipEtf}`)
 
   // ── Step 2: 多因子評分 ──
+  const rawFundamentalSignals = await loadStrategyRawFundamentalSignals(
+    env,
+    universe.map((row) => row.stockId),
+    endDate,
+  )
+  debugLog.push(
+    `[Step 1b] raw strategy signals: fundamentals=${rawFundamentalSignals.size}/${universe.length} ` +
+    `sources=canonical_fundamental_features+canonical_revenue_monthly+legacy_fallback`,
+  )
+
   type ScoredCandidate = ScreenerCandidate & {
     chip_score: number
     tech_score: number
     momentum_score: number
     score_components?: string
+    raw_signals?: StrategyRawSignals
     industry: string
     market_segment: string
     taxonomy?: SymbolTaxonomyProfile
@@ -1335,6 +1710,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const taxonomy = taxonomyProfiles.get(stockId)
     const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '其他')
 
+    const raw_signals = deriveStrategyRawSignals(prices, chipDates, rawFundamentalSignals.get(stockId))
+
     scored.push({
       symbol: stockId,
       name: info?.name ?? stockId,
@@ -1343,6 +1720,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       reason: reasons.slice(0, 3).join('；') || '符合篩選條件',
       chip_score, tech_score, momentum_score,
       score_components,
+      raw_signals,
       industry,
       market_segment: 'listed_otc',
       taxonomy,
@@ -1354,7 +1732,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       decision: 'pass',
       reasonCode: 'base_score_computed',
       scoreAfter: base_score,
-      evidence: { chip_score, tech_score, momentum_score, score_components, reasons, taxonomy },
+      evidence: { chip_score, tech_score, momentum_score, score_components, reasons, taxonomy, raw_signals },
     })
   }
 
@@ -1458,6 +1836,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           chip_score: candidate.chip_score,
           tech_score: candidate.tech_score,
           momentum_score: candidate.momentum_score,
+          raw_signals: candidate.raw_signals ?? null,
           market_segment: candidate.market_segment ?? null,
           source_universe: 'full_feature_enriched_universe',
           source_universe_count: strategySourceUniverse.length,
@@ -1478,6 +1857,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         evidence: {
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
           strategy_pool_reason: (candidate as any).strategy_pool_reason ?? null,
+          raw_signals: candidate.raw_signals ?? null,
           layer1_rank: (candidate as any).strategy_pool_rank ?? index + 1,
           coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
           core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
@@ -1523,18 +1903,19 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       })
     }
   } catch (e) {
-    layer1BreadthPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
+    const rawSignalSorted = [...strategySourceUniverse].sort((a, b) => rawSignalEmergencyFallbackScore(b) - rawSignalEmergencyFallbackScore(a))
+    layer1BreadthPool = rawSignalSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
     layer2CoarseQueueSeed = layer1BreadthPool.slice(0, coarseQueueSize)
     overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
     strategySelectionTelemetry = {
       version: 'layer1-breadth-fallback',
-      selection_order: 'emergency_score_fallback_after_layer1_strategy_pool_error',
+      selection_order: 'emergency_raw_signal_fallback_after_layer1_strategy_pool_error',
       source_universe_count: strategySourceUniverse.length,
       layer1_breadth_count: layer1BreadthPool.length,
       layer2_coarse_queue_seed_count: layer2CoarseQueueSeed.length,
       error: String(e),
     }
-    debugLog.push(`[Step 2c] layer1 breadth unavailable before overlays; emergency score fallback used: ${String(e)}`)
+    debugLog.push(`[Step 2c] layer1 breadth unavailable before overlays; emergency raw-signal fallback used: ${String(e)}`)
   }
 
   // ── Step 3: RRG 象限加權 ── (2026-04-09 rewired)
@@ -2119,16 +2500,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // 5d: top N 截斷；strategy pool 已在 Step 2c（安全硬篩後、RRG/去重前）完成。
   let finalCandidates = dedupeScreenerCandidatesBySymbol(
-    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, coarseQueueSize) as ScreenerCandidate[]),
+    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, screenerPolicy.sizing.candidatePoolSize) as ScreenerCandidate[]),
   )
-  if (layer2CoarseQueueSeed.length > 0) {
+  if (layer1BreadthPool.length > 0) {
+    const layer1TargetSize = screenerPolicy.sizing.candidatePoolSize
     const updatedBySymbol = new Map(scored.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
-    const layer1SymbolSet = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()))
-    const coarseQueue = layer2CoarseQueueSeed
-      .filter((candidate) => updatedBySymbol.has(String(candidate.symbol || '').trim()))
-      .slice(0, coarseQueueSize)
-    const selectedSymbols = new Set(coarseQueue.map((candidate: any) => String(candidate.symbol || '').trim()))
-    const selectedCandidates = coarseQueue.map((entry: any) => {
+    const diversityEligibleSymbols = new Set(afterIndustryLimit.map((candidate) => String(candidate.symbol || '').trim()))
+    const layer1Queue = layer1BreadthPool
+      .filter((candidate) => {
+        const symbol = String(candidate.symbol || '').trim()
+        return updatedBySymbol.has(symbol) && diversityEligibleSymbols.has(symbol)
+      })
+      .slice(0, layer1TargetSize)
+    const selectedSymbols = new Set(layer1Queue.map((candidate: any) => String(candidate.symbol || '').trim()))
+    const selectedCandidates = layer1Queue.map((entry: any) => {
       const symbol = String(entry.symbol || '').trim()
       const updated = updatedBySymbol.get(symbol)
       return {
@@ -2147,9 +2532,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const topUpCandidates = afterIndustryLimit
       .filter((candidate) => {
         const symbol = String(candidate.symbol || '').trim()
-        return layer1SymbolSet.has(symbol) && !selectedSymbols.has(symbol)
+        return !selectedSymbols.has(symbol)
       })
-      .slice(0, Math.max(0, coarseQueueSize - selectedCandidates.length))
+      .slice(0, Math.max(0, layer1TargetSize - selectedCandidates.length))
       .map((candidate, index) => ({
         ...candidate,
         strategy_pool_decision: 'ml_queue',
@@ -2174,17 +2559,19 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       coarse_queue_count: layer2CoarseQueueSeed.length,
       top_up_count: topUpCandidates.length,
       selected_after_overlay_count: selectedCandidates.length,
+      l1_seed_count: selectedCandidates.length + topUpCandidates.length,
       core_ml_shortlist_size: maxCandidates,
     }
     debugLog.push(
-      `[Step 5] layer2 coarse queue seed applied: selected=${selectedCandidates.length}+topup=${topUpCandidates.length}/${coarseQueueSize} ` +
-      `core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
+      `[Step 5] layer1 breadth seed applied: selected=${selectedCandidates.length}+topup=${topUpCandidates.length}/${layer1TargetSize} ` +
+      `controller_l2_target=${coarseQueueSize} core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
     )
   } else {
-    debugLog.push(`[Step 5] layer1 breadth unavailable; fallback to current breadth coarse queue ${coarseQueueSize}`)
+    debugLog.push(`[Step 5] layer1 breadth unavailable; fallback to score-ranked L1 seed ${screenerPolicy.sizing.candidatePoolSize}`)
   }
   const step5Msg = `[Step 5] ${scored.length} 檔 → 同產業≤${maxPerIndustry} → ${afterIndustryLimit.length} 檔 → coarse ${coarseQueueSize} → ${finalCandidates.length} 檔 → core target ${maxCandidates}`
   debugLog.push(step5Msg)
+  debugLog.push(`[Step 5] L1 seed=${finalCandidates.length}; controller L2 target=${coarseQueueSize}; controller L3 target=${maxCandidates}`)
 
   // 被產業上限篩掉的
   const removedByIndustry = scored.filter(c => !afterIndustryLimit.includes(c)).slice(0, 10)
@@ -2199,7 +2586,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const afterDedupSet = new Set(afterIndustryLimit.map(c => c.symbol))
   const removedByDedup = afterIndustryLimit.filter(c => !afterDedupSet.has(c.symbol))
   // 被截斷的
-  const truncated = afterIndustryLimit.slice(coarseQueueSize)
+  const truncated = afterIndustryLimit.slice(screenerPolicy.sizing.candidatePoolSize)
   const emergingMaxCandidates = screenerPolicy.sizing.emergingResearchSize
   const emergingResearchCandidates: ScreenerCandidate[] = []
   const emergingData = buildStockData(emergingResearchPrices, allChips)
@@ -2336,12 +2723,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       symbol: c.symbol,
       name: c.name,
       stage: 'layer2_coarse_ml_gate',
-      decision: 'selected',
-      reasonCode: 'selected_for_coarse_ml_queue',
+      decision: 'observe',
+      reasonCode: 'controller_pending_coarse_ml_gate',
       scoreAfter: Number(sc.score ?? 0),
       rank: index + 1,
       evidence: {
         layer_contract: 'ml-controller runs LightGBM/XGBoost/ExtraTrees coarse rank before core family ML',
+        worker_seed_only: true,
         coarse_ml_queue_size: coarseQueueSize,
         core_ml_shortlist_size: maxCandidates,
         strategy_pool_ids: sc.strategy_pool_ids ?? [],
@@ -2354,7 +2742,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       name: c.name,
       stage: 'final_selection',
       decision: 'selected',
-      reasonCode: 'selected_for_ml_shortlist',
+      reasonCode: 'selected_for_l1_breadth_seed',
       scoreAfter: Number(sc.score ?? 0),
       rank: index + 1,
       evidence: {
@@ -2369,6 +2757,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategy_pool_ids: sc.strategy_pool_ids ?? [],
         strategy_pool_score: sc.strategy_pool_score ?? null,
         strategy_pool_reason: sc.strategy_pool_reason ?? null,
+        l1_breadth_seed_size: finalCandidates.length,
+        layer2_owner: 'ml-controller',
         layer2_coarse_queue_size: coarseQueueSize,
         layer3_core_ml_target_size: maxCandidates,
       },

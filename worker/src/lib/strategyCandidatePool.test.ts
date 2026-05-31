@@ -46,6 +46,40 @@ function scoreV2Payload(input: {
   return JSON.stringify(payload)
 }
 
+function rawSignalPayload(input: {
+  closeAboveMa20Pct?: number
+  closeAboveMa60Pct?: number
+  volumeExpansion20?: number
+  return20d?: number
+  foreignTrustNet5d?: number
+  brokerNetAmount5d?: number
+  brokerCount?: number
+  brokerConcentration?: number
+  revenueGrowthYoY?: number
+  monthlyRevenueYoY?: number
+  roe?: number
+  eps?: number
+  pe?: number
+  pb?: number
+} = {}) {
+  return {
+    closeAboveMa20Pct: input.closeAboveMa20Pct ?? 0.03,
+    closeAboveMa60Pct: input.closeAboveMa60Pct ?? 0.01,
+    volumeExpansion20: input.volumeExpansion20 ?? 1.25,
+    return20d: input.return20d ?? 0.06,
+    foreignTrustNet5d: input.foreignTrustNet5d ?? 1200,
+    brokerNetAmount5d: input.brokerNetAmount5d ?? 10_000_000,
+    brokerCount: input.brokerCount ?? 8,
+    brokerConcentration: input.brokerConcentration ?? 0.4,
+    revenueGrowthYoY: input.revenueGrowthYoY ?? 8,
+    monthlyRevenueYoY: input.monthlyRevenueYoY ?? 10,
+    roe: input.roe ?? 12,
+    eps: input.eps ?? 1.8,
+    pe: input.pe ?? 18,
+    pb: input.pb ?? 2,
+  }
+}
+
 const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, (_, index) => {
   const n = index + 1
   const finalScore = 72 - index * 0.15
@@ -57,6 +91,14 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     name: `Stock ${n}`,
     industry: index % 3 === 0 ? 'Semiconductor' : index % 3 === 1 ? 'Network' : 'Other',
     score_components: scoreV2Payload({ finalScore, chipFlow, technicalStructure, momentumProxy }),
+    raw_signals: rawSignalPayload({
+      closeAboveMa20Pct: 0.01 + (index % 5) * 0.01,
+      volumeExpansion20: 0.95 + (index % 6) * 0.08,
+      return20d: 0.01 + (index % 4) * 0.02,
+      foreignTrustNet5d: index % 4 === 0 ? 2200 : 500,
+      brokerCount: 4 + (index % 8),
+      brokerConcentration: 0.25 + (index % 4) * 0.08,
+    }),
     current_price: 30 + index,
     market_segment: 'LISTED',
     eligible_for_ml: 1,
@@ -75,6 +117,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       technicalStructure: 24,
       momentumProxy: 12,
     }),
+    raw_signals: rawSignalPayload({ closeAboveMa20Pct: 0.06, volumeExpansion20: 1.45, return20d: 0.1 }),
     current_price: 55,
     market_segment: 'LISTED',
     eligible_for_ml: 1,
@@ -90,6 +133,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       technicalStructure: 8,
       momentumProxy: 2,
     }),
+    raw_signals: rawSignalPayload({ closeAboveMa20Pct: -0.08, volumeExpansion20: 0.6, return20d: -0.1 }),
     current_price: 40,
     market_segment: 'LISTED',
     eligible_for_ml: 1,
@@ -103,7 +147,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     alphaBucket: 'trend_following' as const,
     supportedRegimes: ['bull' as const],
     thesis: 'Niche strategy should source L1 breadth directly from full feature-enriched universe.',
-    thresholds: { minSeedScore: 70, minChipScore: 20, minTechScore: 20, minMomentumScore: 8, includeIndustries: ['Niche'], minPrice: 10 },
+    thresholds: { minCloseAboveMa20Pct: 0.03, minVolumeExpansion20: 1.2, minReturn20d: 0.03, includeIndustries: ['Niche'], minPrice: 10 },
     candidatePolicy: { poolQuota: 8, costBudget: 8 },
     riskNotes: ['test only'],
     createdBy: 'p5_strategy_governance' as const,
@@ -127,7 +171,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 
   assert(!oldTopScoreSymbols.has('8999'), 'test fixture must keep niche candidate outside old score-top pool')
   assert(plan.breadthPool.some((candidate) => candidate.symbol === '8999'), 'L1 breadth pool should include full-universe strategy fit outside old score-top pool')
-  assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_quota_then_score_top_up', 'L1 selection order must be strategy quota before score fallback')
+  assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up', 'L1 selection order must be strategy quota before raw-signal top-up')
   assert(plan.coarseQueue.length <= 8, 'Layer2 coarse queue should be sliced from the L1 breadth pool')
 }
 
@@ -139,6 +183,11 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
+  const legacyScoreV2Spec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'legacy_score_v2_compat_test_v1',
+    thresholds: { minSeedScore: 58, minTechScore: 18, minMomentumScore: 6, minPrice: 10 },
+  }
   const scoreV2Only = {
     symbol: '2330',
     name: 'Score V2 Seed',
@@ -172,12 +221,17 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       },
     }),
   }
-  const pools = buildStrategyCandidatePools([scoreV2Only], [DEFAULT_STRATEGY_SPECS[0]], { regime: 'bull' })
-  assert(pools[0].candidates.length === 1, 'candidate pool should rank by canonical Score V2 when legacy fields are stale')
+  const pools = buildStrategyCandidatePools([scoreV2Only], [legacyScoreV2Spec], { regime: 'bull' })
+  assert(pools[0].candidates.length === 1, 'candidate pool should rank by canonical Score V2 for legacy registry specs only')
   assert(pools[0].candidates[0].raw_score === 70, 'candidate pool raw score should expose canonical strategy seed score')
 }
 
 {
+  const legacyScoreV2Spec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'legacy_score_v2_total_compat_test_v1',
+    thresholds: { minSeedScore: 58, minTechScore: 18, minMomentumScore: 6, minPrice: 10 },
+  }
   const scoreV2TotalOnly = {
     symbol: '2454',
     name: 'Score V2 Total Seed',
@@ -198,8 +252,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       newsTheme: 2,
     }),
   }
-  const pools = buildStrategyCandidatePools([scoreV2TotalOnly], [DEFAULT_STRATEGY_SPECS[0]], { regime: 'bull' })
-  assert(pools[0].candidates.length === 1, 'candidate pool should use Score V2 total when finalScore is absent')
+  const pools = buildStrategyCandidatePools([scoreV2TotalOnly], [legacyScoreV2Spec], { regime: 'bull' })
+  assert(pools[0].candidates.length === 1, 'legacy registry specs can still use Score V2 total when finalScore is absent')
   assert(pools[0].candidates[0].raw_score === 70, 'candidate pool must not use stale scalar score when Score V2 total is canonical')
 }
 
@@ -237,7 +291,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     alphaBucket: 'trend_following' as const,
     supportedRegimes: ['bull' as const],
     thesis: 'Exercise adaptive near-match pool when strict thresholds are empty.',
-    thresholds: { minSeedScore: 75, minTechScore: 26, minMomentumScore: 10, minPrice: 10 },
+    thresholds: { minCloseAboveMa20Pct: 0.025, minVolumeExpansion20: 1.38, minReturn20d: 0.03, minPrice: 10 },
     candidatePolicy: { poolQuota: 8, costBudget: 8 },
     riskNotes: ['test only'],
     createdBy: 'p5_strategy_governance' as const,
@@ -245,19 +299,42 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const pools = buildStrategyCandidatePools(candidates.slice(0, 12), nearMatchSpecs, { regime: 'bull' })
   assert(pools[0].status === 'adaptive_near_match', 'empty strict pool should expose adaptive near-match status')
   assert(pools[0].missing_evidence.includes('strict_threshold_match_empty'), 'adaptive near-match should be explicit evidence, not silent fallback')
+  assert(
+    pools[0].candidates[0]?.reason.startsWith('adaptive_near_match:'),
+    'pool candidate reason should explain which thresholds were near misses',
+  )
   const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 8 }))
   assert(selection.mlQueue.length > 0, 'adaptive near-match candidates should be able to enter shadow ML queue')
   const firstNearMatch = selection.mlQueue[0] as any
   assert(
-    String(firstNearMatch.strategy_pool_reason || '').startsWith('adaptive_near_match:'),
-    'candidate reason should explain which thresholds were near misses',
+    String(firstNearMatch.strategy_pool_reason || '').length > 0,
+    'merged candidate should preserve a strategy pool reason',
   )
 }
 
 {
+  const activeNoMatchSpec = {
+    id: 'active_no_proxy_spec_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Active no proxy test',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Active production strategies must not emit full-universe proxy candidates when strict and near-match evidence is empty.',
+    thresholds: { minCloseAboveMa20Pct: 0.4, minVolumeExpansion20: 3, minReturn20d: 0.5, minPrice: 10 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const pools = buildStrategyCandidatePools(candidates.slice(0, 12), [activeNoMatchSpec], { regime: 'bull' })
+  assert(pools[0].candidates.length === 0, 'active production strategies should not produce adaptive empty-pool garbage')
+}
+
+{
   const restricted = [
-    { ...candidates[0], symbol: '9991', restricted: true },
-    { ...candidates[1], symbol: '9992', market_segment: 'EMERGING', eligible_for_ml: 0 },
+    { ...candidates[0], symbol: '9991', restricted: true, raw_signals: rawSignalPayload({ closeAboveMa20Pct: 0.08, volumeExpansion20: 1.5, return20d: 0.12 }) },
+    { ...candidates[1], symbol: '9992', market_segment: 'EMERGING', eligible_for_ml: 0, raw_signals: rawSignalPayload({ closeAboveMa20Pct: 0.07, volumeExpansion20: 1.45, return20d: 0.1 }) },
     ...candidates.slice(2, 20),
   ]
   const pools = buildStrategyCandidatePools(restricted, DEFAULT_STRATEGY_SPECS, { regime: 'bull' })

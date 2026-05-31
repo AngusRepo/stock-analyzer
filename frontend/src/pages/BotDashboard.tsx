@@ -395,10 +395,10 @@ function BotExecutionLifecycleVisual({
   ]
 
   return (
-    <div className="bot-execution-lifecycle-visual rounded-xl border border-[#263247] bg-[#05070c] p-3">
+    <div className="bot-execution-lifecycle-visual sv-content-card rounded-xl p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">candidate lifecycle</p>
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">candidate lifecycle</p>
           <p className="mt-1 text-xs text-[#9badbf]">從 pre-debate 候選池到成交/收斂，用數量軌跡取代表格掃讀。</p>
         </div>
         <WorkstationPill tone={stale ? 'warn' : staging ? 'info' : 'neutral'}>{stale ? 'stale' : staging ? 'pre-debate' : state?.label ?? 'execution'}</WorkstationPill>
@@ -455,13 +455,18 @@ function executionToneClass(tone?: string): string {
   if (tone === 'warn') return 'border-amber-500/25 bg-amber-500/[0.08] text-amber-200'
   if (tone === 'error') return 'border-red-500/30 bg-red-500/[0.08] text-red-200'
   if (tone === 'info') return 'border-sky-500/25 bg-sky-500/[0.08] text-sky-200'
-  return 'border-[#263247] bg-[#070a10] text-slate-300'
+  return 'sv-surface-chip'
 }
 
 function compactMoney(value: unknown): string {
   const n = Number(value)
   if (!Number.isFinite(n) || n <= 0) return '-'
   return n.toLocaleString('zh-TW', { maximumFractionDigits: 2 })
+}
+
+function pendingBuyStockId(item: any): number | null {
+  const n = Number(item?.stock_id ?? item?.stockId)
+  return Number.isFinite(n) && n > 0 ? n : null
 }
 
 function candidateScore(rec: any): number {
@@ -510,13 +515,13 @@ function ExecutionOnlyEmptyState({
           </div>
         ))}
       </div>
-      <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-xs leading-5 text-[#8b9bab]">
+      <div className="sv-content-card sv-muted-text rounded-xl p-3 text-xs leading-5">
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <WorkstationPill tone={stale ? 'warn' : 'neutral'}>{stale ? 'stale pending context' : stateLabel}</WorkstationPill>
-          <span className="font-mono text-[10px] text-[#70809b]">{showingDate || 'today'} execution snapshot</span>
+          <span className="sv-muted-text font-mono text-[10px]">{showingDate || 'today'} execution snapshot</span>
         </div>
         <p>{pendingBuyEmptyMessage(pendingMeta)}</p>
-        <p className="mt-2 text-[#d6a85f]">沒有 pre-debate staging 或 pending buys 時，Bot 只保留 execution / audit context。</p>
+        <p className="sv-accent-text mt-2">沒有 pre-debate staging 或 pending buys 時，Bot 只保留 execution / audit context。</p>
       </div>
     </div>
   )
@@ -531,7 +536,7 @@ function PreDebateStagingCard({
   rec: any
   rank: number
   selected?: boolean
-  onSelectSymbol?: (symbol: string) => void
+  onSelectSymbol?: (symbol: string, stockId?: number | string | null) => void
 }) {
   const score = candidateScore(rec)
   const forecast = candidateForecastPct(rec)
@@ -543,16 +548,16 @@ function PreDebateStagingCard({
   const confidence = Number(rec?.confidence ?? score / 100)
 
   return (
-    <div className={`pre-debate-staging-card rounded-xl border bg-[#070a10] p-3 ${selected ? 'border-sky-400/50' : 'border-[#263247]'}`}>
+    <div className={`pre-debate-staging-card rounded-xl p-3 ${selected ? 'sv-content-card-selected' : 'sv-content-card'}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="grid h-6 w-6 place-items-center border border-sky-500/25 bg-sky-500/10 font-mono text-[10px] text-sky-200">{rank}</span>
+            <span className="sv-surface-chip-accent grid h-6 w-6 place-items-center font-mono text-[10px]">{rank}</span>
             <button
-              onClick={() => symbol && onSelectSymbol?.(symbol)}
-              className="truncate text-left font-['Space_Grotesk'] text-base font-semibold text-[#f2ead8] hover:text-sky-200"
+              onClick={() => symbol && onSelectSymbol?.(symbol, rec?.stock_id ?? rec?.stockId ?? null)}
+              className="sv-title-text truncate text-left font-['Space_Grotesk'] text-base font-semibold hover:text-[color:var(--sv-accent)]"
             >
-              {symbol || '-'} {name && <span className="text-xs font-normal text-[#8b9bab]">{name}</span>}
+              {symbol || '-'} {name && <span className="sv-muted-text text-xs font-normal">{name}</span>}
             </button>
             {signalBadge(String(rec?.signal ?? 'candidate'))}
           </div>
@@ -566,26 +571,26 @@ function PreDebateStagingCard({
       </div>
 
       <div className="mt-3 grid gap-2 sm:grid-cols-3">
-        <div className="rounded-lg border border-[#263247] bg-[#05070c] px-2 py-1.5">
-          <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">score</p>
-          <p className="font-mono text-sm text-[#f2ead8]">{score.toFixed(0)}</p>
+        <div className="sv-content-card rounded-lg px-2 py-1.5">
+          <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">score</p>
+          <p className="sv-title-text font-mono text-sm">{score.toFixed(0)}</p>
         </div>
-        <div className="rounded-lg border border-[#263247] bg-[#05070c] px-2 py-1.5">
-          <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">forecast</p>
-          <p className={`font-mono text-sm ${forecast == null ? 'text-[#8b9bab]' : forecast >= 0 ? 'text-rose-200' : 'text-emerald-200'}`}>
+        <div className="sv-content-card rounded-lg px-2 py-1.5">
+          <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">forecast</p>
+          <p className={`font-mono text-sm ${forecast == null ? 'sv-muted-text' : forecast >= 0 ? 'text-rose-200' : 'text-emerald-200'}`}>
             {forecast == null ? '-' : `${forecast >= 0 ? '+' : ''}${forecast.toFixed(1)}%`}
           </p>
         </div>
-        <div className="rounded-lg border border-[#263247] bg-[#05070c] px-2 py-1.5">
-          <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">limit ref</p>
-          <p className="font-mono text-sm text-[#f2ead8]">{compactMoney(rec?.current_price ?? rec?.price ?? rec?.close)}</p>
+        <div className="sv-content-card rounded-lg px-2 py-1.5">
+          <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">limit ref</p>
+          <p className="sv-title-text font-mono text-sm">{compactMoney(rec?.current_price ?? rec?.price ?? rec?.close)}</p>
         </div>
       </div>
 
-      {reason && <p className="mt-3 line-clamp-2 text-[11px] leading-5 text-[#8b9bab]">{reason}</p>}
+      {reason && <p className="sv-muted-text mt-3 line-clamp-2 text-[11px] leading-5">{reason}</p>}
       <button
-        onClick={() => symbol && onSelectSymbol?.(symbol)}
-        className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#263247] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8b9bab] hover:border-sky-400/40 hover:text-sky-200"
+        onClick={() => symbol && onSelectSymbol?.(symbol, rec?.stock_id ?? rec?.stockId ?? null)}
+        className="sv-surface-chip mt-3 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] hover:border-[color:var(--sv-accent-border)] hover:text-[color:var(--sv-accent)]"
       >
         <Activity className="h-3.5 w-3.5" />
         K line
@@ -605,7 +610,7 @@ function PreDebateStagingPool({
   pendingState?: any
   pendingMeta?: any
   selectedSymbol?: string | null
-  onSelectSymbol?: (symbol: string) => void
+  onSelectSymbol?: (symbol: string, stockId?: number | string | null) => void
 }) {
   const today = twToday()
   const { data, isLoading } = useQuery({
@@ -622,30 +627,30 @@ function PreDebateStagingPool({
 
   return (
     <div className="pre-debate-staging-pool space-y-3">
-      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.05] p-3">
+      <div className="sv-content-card-selected rounded-xl p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <WorkstationPill tone="info">pre-debate staging</WorkstationPill>
               <WorkstationPill tone="warn">not executable</WorkstationPill>
-              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{payload?.date ?? showingDate ?? today}</span>
+              <span className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.12em]">{payload?.date ?? showingDate ?? today}</span>
             </div>
-            <p className="mt-2 max-w-3xl text-xs leading-5 text-[#9badbf]">
+            <p className="mt-2 max-w-3xl text-xs leading-5 text-[color:var(--sv-text-soft)]">
               這是 debate 前的私有候選池，可能暫時與 Home 的候選來源一致；真正下單目標要等 morning setup / debate / T2 後轉成 pending buys。
             </p>
           </div>
           <div className="grid min-w-[220px] grid-cols-3 gap-2 text-center">
-            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">tradable</p>
-              <p className="font-['Space_Grotesk'] text-xl font-semibold text-[#f2ead8]">{fmt(tradable.length)}</p>
+            <div className="sv-content-card rounded-lg p-2">
+              <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">tradable</p>
+              <p className="sv-title-text font-['Space_Grotesk'] text-xl font-semibold">{fmt(tradable.length)}</p>
             </div>
-            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">research</p>
-              <p className="font-['Space_Grotesk'] text-xl font-semibold text-[#f2ead8]">{fmt(emerging.length)}</p>
+            <div className="sv-content-card rounded-lg p-2">
+              <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">research</p>
+              <p className="sv-title-text font-['Space_Grotesk'] text-xl font-semibold">{fmt(emerging.length)}</p>
             </div>
-            <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">state</p>
-              <p className="truncate text-xs font-semibold text-sky-200">{pendingState?.label ?? pendingMeta?.status ?? 'waiting'}</p>
+            <div className="sv-content-card rounded-lg p-2">
+              <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">state</p>
+              <p className="sv-accent-text truncate text-xs font-semibold">{pendingState?.label ?? pendingMeta?.status ?? 'waiting'}</p>
             </div>
           </div>
         </div>
@@ -668,7 +673,7 @@ function PreDebateStagingPool({
           ))}
         </div>
       ) : (
-        <div className="rounded-xl border border-[#263247] bg-[#070a10] p-4 text-xs text-[#8b9bab]">
+        <div className="sv-content-card sv-muted-text rounded-xl p-4 text-xs">
           pre-debate staging 尚未產生；請看 pending state / run history 判斷是時間差、pipeline 未完成或資料異常。
         </div>
       )}
@@ -687,26 +692,27 @@ function BotExecutionCandidateCard({
   rank: number
   quadrant?: string
   selected?: boolean
-  onSelectSymbol?: (symbol: string) => void
+  onSelectSymbol?: (symbol: string, stockId?: number | string | null) => void
 }) {
   const executionBadge = formatExecutionStatusBadge(item.execution_status)
   const partialRemaining = formatPartialFillRemaining(item.watch_points)
   const allocatorSummary = describeAllocatorDecision(item.watch_points)
   const riskPct = Number(item.risk_pct ?? 0)
   const confidence = Number(item.confidence ?? 0)
-  const score = item.score_v2?.finalScore ?? item.score ?? null
+  const scorePayload = item.score_v2 ?? item.scoreV2
+  const score = scorePayload?.finalScore ?? scorePayload?.final_score ?? scorePayload?.final_score_v2 ?? null
 
   return (
-    <div className={`bot-execution-candidate-card rounded-xl border bg-[#070a10] p-3 ${selected ? 'border-emerald-500/50' : 'border-[#263247]'}`}>
+    <div className={`bot-execution-candidate-card rounded-xl p-3 ${selected ? 'sv-content-card-selected' : 'sv-content-card'}`}>
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
         <div className="min-w-0">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="grid h-6 w-6 place-items-center border border-[#3a3125] bg-[#171714] font-mono text-[10px] text-[#ffd87f]">{rank}</span>
+                <span className="sv-surface-chip-accent grid h-6 w-6 place-items-center font-mono text-[10px]">{rank}</span>
                 <button
-                  onClick={() => onSelectSymbol?.(item.symbol)}
-                  className="font-mono text-sm font-semibold text-[#f2ead8] hover:text-[#ffd87f]"
+                  onClick={() => onSelectSymbol?.(item.symbol, pendingBuyStockId(item))}
+                  className="sv-title-text font-mono text-sm font-semibold hover:text-[color:var(--sv-accent)]"
                   title="open k-line"
                 >
                   {item.symbol} {item.name}
@@ -719,10 +725,10 @@ function BotExecutionCandidateCard({
                 <span className={`rounded-md border px-2 py-1 font-mono text-[10px] ${executionToneClass(executionBadge.tone)}`}>
                   execution: {executionBadge.label}
                 </span>
-                <span className="rounded-md border border-[#263247] bg-[#0f151d] px-2 py-1 font-mono text-[10px] text-[#8b9bab]">
+                <span className="sv-surface-chip rounded-md px-2 py-1 font-mono text-[10px]">
                   debate: {item.debate_status ?? 'pending'}
                 </span>
-                <span className="rounded-md border border-[#263247] bg-[#0f151d] px-2 py-1 font-mono text-[10px] text-[#8b9bab]">
+                <span className="sv-surface-chip rounded-md px-2 py-1 font-mono text-[10px]">
                   retry: {item.retry_count ?? 0}
                 </span>
               </div>
@@ -734,19 +740,19 @@ function BotExecutionCandidateCard({
 
           <div className="mt-3 grid gap-2 md:grid-cols-4">
             {[
-              { label: 'limit', value: compactMoney(item.ml_entry_price), tone: 'text-[#f2ead8]' },
+              { label: 'limit', value: compactMoney(item.ml_entry_price), tone: 'sv-title-text' },
               { label: 'stop', value: compactMoney(item.ml_stop_loss), tone: 'text-emerald-200' },
               { label: 'tp1', value: compactMoney(item.ml_target1), tone: 'text-rose-200' },
               { label: 'risk', value: Number.isFinite(riskPct) ? `${(riskPct * 100).toFixed(1)}%` : '-', tone: 'text-amber-200' },
             ].map((metric) => (
-              <div key={metric.label} className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{metric.label}</p>
+              <div key={metric.label} className="sv-content-card rounded-lg p-2">
+                <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.12em]">{metric.label}</p>
                 <p className={`mt-1 font-mono text-sm font-semibold ${metric.tone}`}>{metric.value}</p>
               </div>
             ))}
           </div>
 
-          <div className="mt-3 rounded-lg border border-[#263247] bg-[#05070c] p-3 text-[11px] leading-5 text-[#8b9bab]">
+          <div className="sv-content-card sv-muted-text mt-3 rounded-lg p-3 text-[11px] leading-5">
             {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
           </div>
           {allocatorSummary && (
@@ -758,21 +764,21 @@ function BotExecutionCandidateCard({
         </div>
 
         <div className="grid content-start gap-2">
-          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">conviction</p>
+          <div className="sv-content-card rounded-xl p-3">
+            <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">conviction</p>
             <div className="mt-2 flex items-center gap-3">
               <ConvictionGauge value={Number.isFinite(confidence) ? confidence : 0} size={70} />
               <div>
-                <div className="font-['Space_Grotesk'] text-xl font-semibold text-[#f2ead8]">
+                <div className="sv-title-text font-['Space_Grotesk'] text-xl font-semibold">
                   {Number.isFinite(confidence) ? `${(confidence * 100).toFixed(0)}%` : '-'}
                 </div>
-                <div className="font-mono text-[10px] text-[#70809b]">score {score == null ? '-' : Number(score).toFixed(1)}</div>
+                <div className="sv-muted-text font-mono text-[10px]">score {score == null ? '-' : Number(score).toFixed(1)}</div>
               </div>
             </div>
           </div>
           <button
-            onClick={() => onSelectSymbol?.(item.symbol)}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#263247] bg-[#0f151d] px-3 py-2 font-mono text-[11px] text-[#d6a85f] hover:border-[#d6a85f]/40"
+            onClick={() => onSelectSymbol?.(item.symbol, pendingBuyStockId(item))}
+            className="sv-surface-chip inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 font-mono text-[11px] text-[color:var(--sv-accent)] hover:border-[color:var(--sv-accent-border)]"
           >
             <Activity className="h-3.5 w-3.5" />
             open k-line
@@ -783,7 +789,13 @@ function BotExecutionCandidateCard({
   )
 }
 
-function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
+function SignalTable({
+  onSelectSymbol,
+  selectedSymbol,
+}: {
+  onSelectSymbol?: (symbol: string, stockId?: number | string | null) => void
+  selectedSymbol?: string | null
+}) {
   // T2 過濾後的掛單（非 raw recommendations）
   const { data: pbData, isLoading } = useQuery({
     queryKey: ['paper', 'pending-buys'],
@@ -925,19 +937,19 @@ function PositionsTable() {
     return (
       <div className="p-4">
         <div className="grid gap-3 lg:grid-cols-[0.8fr_1.2fr]">
-          <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4">
-            <Wallet className="mb-3 h-8 w-8 text-[#d6a85f]/70" />
+          <div className="sv-content-card rounded-xl p-4">
+            <Wallet className="sv-accent-text mb-3 h-8 w-8 opacity-80" />
             <WorkstationPill tone={latestIsBuy ? 'error' : latestIsSell ? 'warn' : 'neutral'}>
               {latestIsSell ? '無持倉：最新紀錄為賣出' : latestIsBuy ? '資料需檢查' : '目前無持倉'}
             </WorkstationPill>
-            <p className="mt-3 text-sm font-semibold text-[#e6edf3]">
+            <p className="sv-title-text mt-3 text-sm font-semibold">
               {latestIsSell
                 ? `${latestOrder.symbol} 已於 ${formatTwOrderTime(latestOrder.created_at)} 出場`
                 : latestIsBuy
                   ? `${latestOrder.symbol} 有買進紀錄但 position 為空`
                   : '目前沒有 open position'}
             </p>
-            <p className="mt-2 text-xs leading-5 text-[#8b9bab]">
+            <p className="sv-muted-text mt-2 text-xs leading-5">
               {latestIsSell
                 ? '持倉 API 仍正常；畫面為空是因為 D1 的 paper_positions 已無 shares > 0。'
                 : latestIsBuy
@@ -946,56 +958,56 @@ function PositionsTable() {
             </p>
             {summary && (
               <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
-                  <p className="text-[#8b9bab]">現金</p>
-                  <p className="font-mono text-[#e6edf3]">${fmt(summary.cash)}</p>
+                <div className="sv-content-card rounded-lg p-2">
+                  <p className="sv-muted-text">現金</p>
+                  <p className="font-mono text-[color:var(--sv-text-main)]">${fmt(summary.cash)}</p>
                 </div>
-                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
-                  <p className="text-[#8b9bab]">總資產</p>
-                  <p className="font-mono text-[#e6edf3]">${fmt(summary.total_value)}</p>
+                <div className="sv-content-card rounded-lg p-2">
+                  <p className="sv-muted-text">總資產</p>
+                  <p className="font-mono text-[color:var(--sv-text-main)]">${fmt(summary.total_value)}</p>
                 </div>
               </div>
             )}
           </div>
 
           {latestOrder && (
-            <div className="rounded-xl border border-[#3a3125] bg-[linear-gradient(135deg,#15130d,#0b1118)] p-4">
+            <div className="sv-content-card-selected rounded-xl p-4">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]/80">
+                  <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em] opacity-80">
                     latest order evidence
                   </p>
-                  <h3 className="mt-1 text-sm font-semibold text-[#f2ead8]">最近交易證據</h3>
+                  <h3 className="sv-title-text mt-1 text-sm font-semibold">最近交易證據</h3>
                 </div>
                 <WorkstationPill tone={latestIsSell ? 'warn' : 'info'}>{latestOrder.side}</WorkstationPill>
               </div>
               <div className="grid gap-2 text-xs sm:grid-cols-4">
                 <div>
-                  <p className="text-[#8b9bab]">標的</p>
-                  <p className="font-mono text-[#e6edf3]">{latestOrder.symbol} {latestOrder.name}</p>
+                  <p className="sv-muted-text">標的</p>
+                  <p className="font-mono text-[color:var(--sv-text-main)]">{latestOrder.symbol} {latestOrder.name}</p>
                 </div>
                 <div>
-                  <p className="text-[#8b9bab]">股數</p>
-                  <p className="font-mono text-[#e6edf3]">{fmt(latestOrder.shares)}</p>
+                  <p className="sv-muted-text">股數</p>
+                  <p className="font-mono text-[color:var(--sv-text-main)]">{fmt(latestOrder.shares)}</p>
                 </div>
                 <div>
-                  <p className="text-[#8b9bab]">價格</p>
-                  <p className="font-mono text-[#e6edf3]">${fmt(latestOrder.price, 1)}</p>
+                  <p className="sv-muted-text">價格</p>
+                  <p className="font-mono text-[color:var(--sv-text-main)]">${fmt(latestOrder.price, 1)}</p>
                 </div>
                 <div>
-                  <p className="text-[#8b9bab]">時間</p>
-                  <p className="font-mono text-[#e6edf3]">{formatTwOrderTime(latestOrder.created_at)}</p>
+                  <p className="sv-muted-text">時間</p>
+                  <p className="font-mono text-[color:var(--sv-text-main)]">{formatTwOrderTime(latestOrder.created_at)}</p>
                 </div>
               </div>
-              <div className="mt-3 rounded-lg border border-[#2b3a49] bg-[#070a10] p-3">
-                <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9bab]">原因 / note</p>
-                <p className="mt-1 text-xs leading-5 text-[#c8d3df]">{latestReason}</p>
+              <div className="sv-content-card mt-3 rounded-lg p-3">
+                <p className="sv-muted-text text-[10px] uppercase tracking-[0.16em]">原因 / note</p>
+                <p className="mt-1 text-xs leading-5 text-[color:var(--sv-text-soft)]">{latestReason}</p>
               </div>
             </div>
           )}
 
           {!latestOrder && (
-            <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4 text-sm text-muted-foreground">
+            <div className="sv-content-card rounded-xl p-4 text-sm text-muted-foreground">
               交易紀錄也為空，代表目前 paper trading 尚未建立任何 open/closed order。
             </div>
           )}
@@ -1012,10 +1024,49 @@ function PositionsTable() {
   // 計算未實現損益總計
   let totalUnrealized = 0
   let totalCostBasis = 0
+  const positionExposure = positions.reduce((sum: number, p: any) => {
+    const current = p.current_price ?? p.avg_cost ?? 0
+    return sum + (current * (p.shares ?? 0))
+  }, 0)
+  const stopCovered = positions.filter((p: any) => p.trailing_stop || p.initial_stop).length
+  const profitable = positions.filter((p: any) => {
+    const entry = p.entry_price ?? p.avg_cost ?? 0
+    const current = p.current_price ?? entry
+    return entry > 0 && current > entry
+  }).length
 
   return (
-    <div>
-      <div className="overflow-x-auto">
+    <div className="space-y-3">
+      <div data-testid="bot-position-risk-map" className="grid gap-2 md:grid-cols-4">
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">open names</p>
+          <p className="sv-title-text mt-2 font-mono text-2xl">{positions.length}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">live holdings</p>
+        </div>
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">exposure</p>
+          <p className="mt-2 font-mono text-2xl text-sky-200">${fmt(Math.round(positionExposure))}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">market value</p>
+        </div>
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">stop coverage</p>
+          <p className="sv-accent-text mt-2 font-mono text-2xl">{stopCovered}/{positions.length}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">trailing or initial stop</p>
+        </div>
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">green names</p>
+          <p className={`mt-2 font-mono text-2xl ${profitable >= positions.length / 2 ? 'text-emerald-300' : 'text-rose-300'}`}>{profitable}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">current above entry</p>
+        </div>
+      </div>
+
+      <details data-testid="bot-position-table-drilldown" className="sv-disclosure group">
+        <summary className="sv-disclosure-summary flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+          <span className="font-mono uppercase tracking-[0.14em]">Position table</span>
+          <span className="sv-accent-text font-mono group-open:hidden">open</span>
+          <span className="sv-accent-text hidden font-mono group-open:inline">close</span>
+        </summary>
+        <div className="overflow-x-auto border-t border-[color:var(--sv-panel-border-soft)]">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-muted-foreground text-xs uppercase border-b border-border">
@@ -1089,7 +1140,8 @@ function PositionsTable() {
             })}
           </tbody>
         </table>
-      </div>
+        </div>
+      </details>
 
       {/* Summary bar */}
       <div className="flex items-center justify-between px-3 py-2 mt-2 bg-muted/40 rounded text-xs">
@@ -1125,9 +1177,43 @@ function TradeHistory() {
       </div>
     )
   }
+  const buyCount = orders.filter((o: any) => o.side === 'buy').length
+  const sellCount = orders.filter((o: any) => o.side === 'sell').length
+  const totalNotional = orders.reduce((sum: number, o: any) => sum + Number(o.total_cost ?? ((o.price ?? 0) * (o.shares ?? 0))), 0)
+  const latestOrder = orders[0]
 
   return (
-    <div className="overflow-x-auto">
+    <div className="space-y-3">
+      <div data-testid="bot-order-flow-summary" className="grid gap-2 md:grid-cols-4">
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">orders</p>
+          <p className="sv-title-text mt-2 font-mono text-2xl">{orders.length}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">latest 30 audit rows</p>
+        </div>
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">buy / sell</p>
+          <p className="mt-2 font-mono text-2xl text-sky-200">{buyCount}/{sellCount}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">flow balance</p>
+        </div>
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">notional</p>
+          <p className="sv-accent-text mt-2 font-mono text-2xl">${fmt(Math.round(totalNotional))}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">paper order value</p>
+        </div>
+        <div className="sv-content-card rounded-xl p-3">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">latest</p>
+          <p className="sv-title-text mt-2 truncate font-mono text-lg">{latestOrder?.symbol ?? '-'}</p>
+          <p className="sv-muted-text mt-1 text-[11px]">{latestOrder ? `${latestOrder.side} @ ${formatTwOrderTime(latestOrder.created_at)}` : 'no audit row'}</p>
+        </div>
+      </div>
+
+      <details data-testid="bot-orders-table-drilldown" className="sv-disclosure group">
+        <summary className="sv-disclosure-summary flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+          <span className="font-mono uppercase tracking-[0.14em]">Orders table</span>
+          <span className="sv-accent-text font-mono group-open:hidden">open</span>
+          <span className="sv-accent-text hidden font-mono group-open:inline">close</span>
+        </summary>
+      <div className="overflow-x-auto border-t border-[color:var(--sv-panel-border-soft)]">
       <table className="w-full text-sm">
         <thead>
           <tr className="text-muted-foreground text-xs uppercase border-b border-border">
@@ -1177,6 +1263,8 @@ function TradeHistory() {
           })}
         </tbody>
       </table>
+      </div>
+      </details>
     </div>
   )
 }
@@ -1588,13 +1676,19 @@ export default function BotDashboard() {
 
   // ⚠ All hooks BEFORE conditional return（React rules of hooks — M15 教訓）
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+  const [selectedStockIdHint, setSelectedStockIdHint] = useState<number | null>(null)
+  const selectSymbolForKLine = (symbol: string, stockId?: number | string | null) => {
+    const n = Number(stockId)
+    setSelectedSymbol(symbol)
+    setSelectedStockIdHint(Number.isFinite(n) && n > 0 ? n : null)
+  }
   const { data: searchResult } = useQuery({
     queryKey: ['stock-search', selectedSymbol],
     queryFn: () => stocksApi.search(selectedSymbol!, 1),
-    enabled: !!selectedSymbol && isAuthenticated,
+    enabled: !!selectedSymbol && selectedStockIdHint == null && isAuthenticated,
     staleTime: 60_000,
   })
-  const selectedStockId = searchResult?.[0]?.id ?? null
+  const selectedStockId = selectedStockIdHint ?? searchResult?.[0]?.id ?? null
 
   if (!isAuthenticated) {
     return (
@@ -1621,10 +1715,10 @@ export default function BotDashboard() {
                 tone="info"
               />
             </div>
-            <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/90 p-6 text-center">
-              <Bot className="mx-auto h-12 w-12 text-[#d6a85f]/80" />
-              <p className="mt-3 text-sm text-[#b9b1a1]">請先登入以查看模擬交易室</p>
-              <button onClick={login} className="mt-4 rounded-full border border-[#d6a85f]/35 bg-[#d6a85f]/90 px-4 py-2 text-sm text-[#171714] hover:bg-[#f1c16f]">
+            <div className="sv-login-panel rounded-2xl p-6 text-center">
+              <Bot className="sv-accent-text mx-auto h-12 w-12" />
+              <p className="sv-muted-text mt-3 text-sm">請先登入以查看模擬交易室</p>
+              <button onClick={login} className="sv-surface-button mt-4 rounded-full px-4 py-2 text-sm">
                 Google 登入
               </button>
             </div>
@@ -1687,7 +1781,7 @@ export default function BotDashboard() {
             kicker="pending buys and execution state"
             action={<WorkstationPill tone="info">T2 aware</WorkstationPill>}
           >
-            <div className="border-b border-[#263247] px-4 pb-2 pt-3">
+            <div className="border-b border-[color:var(--sv-panel-border-soft)] px-4 pb-2 pt-3">
               <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
                 <TrendingUp className="w-3.5 h-3.5" /> Execution Pending Context
               </div>
@@ -1696,7 +1790,7 @@ export default function BotDashboard() {
               </p>
             </div>
             <div className="p-2">
-              <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
+              <SignalTable onSelectSymbol={selectSymbolForKLine} selectedSymbol={selectedSymbol} />
             </div>
           </WorkstationPanel>
 
@@ -1706,7 +1800,7 @@ export default function BotDashboard() {
         </div>
 
         {/* K-Line Dialog (popup on stock click) */}
-        <Dialog open={!!selectedStockId} onOpenChange={(open) => { if (!open) setSelectedSymbol(null) }}>
+        <Dialog open={!!selectedStockId} onOpenChange={(open) => { if (!open) { setSelectedSymbol(null); setSelectedStockIdHint(null) } }}>
           <DialogContent className="max-w-4xl bg-card border-border">
             <DialogHeader>
               <DialogTitle className="text-sm font-mono">{selectedSymbol} K 線圖</DialogTitle>
@@ -1721,7 +1815,7 @@ export default function BotDashboard() {
         </div>
 
         <details className="group">
-          <summary className="flex items-center gap-2 border border-[#263247] bg-[#070a10] px-4 py-2.5 cursor-pointer hover:border-amber-300/30 transition-colors text-xs font-medium text-muted-foreground select-none">
+          <summary className="sv-disclosure sv-disclosure-summary flex cursor-pointer items-center gap-2 px-4 py-2.5 text-xs font-medium transition-colors hover:border-[color:var(--sv-accent-border)] select-none">
             <Bot className="w-3.5 h-3.5" />
             <span className="font-mono uppercase tracking-wider">Bot 狀態與排程紀錄</span>
             <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>

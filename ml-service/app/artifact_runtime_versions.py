@@ -5,6 +5,7 @@ import warnings
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_WARNED_ARTIFACT_VERSION_MISMATCHES: set[str] = set()
 
 
 def runtime_library_versions() -> dict[str, str]:
@@ -61,11 +62,13 @@ def load_joblib_with_version_warnings(buffer: Any, *, artifact_name: str):
     for item in caught:
         category_name = getattr(item.category, "__name__", str(item.category))
         if category_name == "InconsistentVersionWarning":
-            logger.warning(
-                "[ArtifactVersion] sklearn InconsistentVersionWarning while loading %s: %s",
-                artifact_name,
-                item.message,
-            )
+            if artifact_name not in _WARNED_ARTIFACT_VERSION_MISMATCHES:
+                _WARNED_ARTIFACT_VERSION_MISMATCHES.add(artifact_name)
+                logger.warning(
+                    "[ArtifactVersion] sklearn InconsistentVersionWarning while loading %s: %s",
+                    artifact_name,
+                    item.message,
+                )
         else:
             warnings.warn(item.message, item.category, stacklevel=2)
     return model

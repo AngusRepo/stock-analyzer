@@ -39,7 +39,10 @@ def test_default_pool_bootstraps_only_active_alpha_models():
     assert set(pool["formal_layer3_slots"]) == {"TabM", "GNN", "iTransformer", "TimesFM"}
     assert set(pool["meta_optimizers"]) == {"GAOptimizer"}
     assert all(pool["models"][name]["status"] == "active" for name in model_pool.ALPHA_PREDICTION_MODELS)
-    assert all(entry["status"] == "formal_slot_pending_artifact" for entry in pool["formal_layer3_slots"].values())
+    assert pool["formal_layer3_slots"]["GNN"]["status"] == "production_adapter_active"
+    assert pool["formal_layer3_slots"]["TimesFM"]["status"] == "production_adapter_active"
+    assert pool["formal_layer3_slots"]["TabM"]["status"] == "formal_slot_pending_artifact"
+    assert pool["formal_layer3_slots"]["iTransformer"]["status"] == "formal_slot_pending_artifact"
 
 
 def test_formal_slots_have_no_legacy_shadow_registration_api():

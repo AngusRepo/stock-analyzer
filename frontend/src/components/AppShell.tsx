@@ -54,6 +54,18 @@ function isActivePath(itemHref: string, currentPath: string) {
   return currentPath === itemHref || currentPath.startsWith(`${itemHref}/`)
 }
 
+function surfaceForPath(currentPath: string) {
+  if (currentPath.startsWith('/report/')) return 'stock'
+  if (currentPath === '/' || currentPath.startsWith('/stock/')) return 'home'
+  if (currentPath.startsWith('/bot')) return 'bot'
+  if (currentPath.startsWith('/strategy-lab')) return 'strategy'
+  if (currentPath.startsWith('/model-pool/inspector')) return 'inspector'
+  if (currentPath.startsWith('/model-pool')) return 'model'
+  if (currentPath.startsWith('/pipeline')) return 'pipeline'
+  if (currentPath.startsWith('/obs') || currentPath.startsWith('/scheduler') || currentPath.startsWith('/data-quality')) return 'ops'
+  return 'default'
+}
+
 function MarketTicker() {
   const { data, isLoading } = useQuery({
     queryKey: ['market', 'indices'],
@@ -94,6 +106,8 @@ function MarketTicker() {
 function FocusBar({ currentPath, unreadCount }: { currentPath: string; unreadCount: number }) {
   const area = currentPath.startsWith('/bot')
       ? '模擬交易室'
+      : currentPath.startsWith('/strategy-lab')
+        ? '策略實驗室'
       : currentPath.startsWith('/obs') || currentPath.startsWith('/pipeline') || currentPath.startsWith('/scheduler') || currentPath.startsWith('/data-quality')
         ? '可觀測性'
         : '晨間概覽'
@@ -123,14 +137,14 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2.5 border-b border-[#2b3a49] px-4 py-3.5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#f0b90b]/45 bg-[linear-gradient(135deg,#221b08,#0f2835)] font-mono text-xs font-black text-[#ffd87f] shadow-[0_0_22px_rgba(240,185,11,0.14)]">
+        <div className="sv-brand-mark flex h-9 w-9 items-center justify-center rounded-xl border font-mono text-xs font-black">
           SV
         </div>
         <div>
           <span className="block font-mono text-[12px] font-bold uppercase tracking-[0.18em] text-[#e6edf3]">StockVision</span>
           <span className="block text-[10px] text-[#8b9bab]">我的量化投資伴侶</span>
         </div>
-        <span className="ml-auto rounded-full border border-[#3a3125] bg-[#171714] px-1.5 py-0.5 font-mono text-[9px] text-[#ffd87f]">v12</span>
+        <span className="sv-version-pill ml-auto rounded-full border px-1.5 py-0.5 font-mono text-[9px]">v12</span>
       </div>
 
       <nav className="flex-1 space-y-4 overflow-y-auto px-2.5 py-3">
@@ -155,13 +169,13 @@ function SidebarNav({ currentPath, onNavigate }: { currentPath: string; onNaviga
                       onClick={() => onNavigate(item.href)}
                       className={`group grid w-full grid-cols-[24px_1fr_14px] items-center gap-2 border px-3 py-2.5 text-left font-mono text-[12px] transition-all ${
                         active
-                          ? 'rounded-xl border-[#f0b90b]/50 bg-[linear-gradient(90deg,#241b08,#101821)] text-[#f2ead8] shadow-[inset_3px_0_0_#f0b90b]'
+                          ? 'sv-nav-active rounded-xl'
                           : 'rounded-xl border-transparent text-[#8b9bab] hover:border-[#2b3a49] hover:bg-[#111821] hover:text-[#e6edf3]'
                       }`}
                     >
-                      <Icon className={`h-4 w-4 ${active ? 'text-[#ffd87f] opacity-100' : 'opacity-60'}`} />
+                      <Icon className={`h-4 w-4 ${active ? 'sv-nav-active-icon opacity-100' : 'opacity-60'}`} />
                       <span>{item.label}</span>
-                      <ChevronRight className={`h-3.5 w-3.5 ${active ? 'text-[#ffd87f]' : 'text-[#566574] group-hover:text-[#e6edf3]'}`} />
+                      <ChevronRight className={`h-3.5 w-3.5 ${active ? 'sv-nav-active-icon' : 'text-[#566574] group-hover:text-[#e6edf3]'}`} />
                     </button>
                   )
                 })}
@@ -218,6 +232,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const { isAuthenticated } = useAuth()
+  const surface = surfaceForPath(location)
 
   const { data: notifCount } = useQuery({
     queryKey: ['notifications', 'count'],
@@ -234,24 +249,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="relative flex h-screen overflow-hidden bg-[#0b0f14] text-[#e6edf3]">
+    <div data-sv-surface={surface} className="sv-app-shell relative flex h-screen overflow-hidden">
       <WorkstationBackdrop />
 
       <aside
-        className="relative z-10 hidden shrink-0 flex-col lg:flex"
-        style={{ width: 230, background: 'rgba(12,17,23,0.96)', borderRight: '1px solid #2b3a49' }}
+        className="sv-shell-sidebar relative z-10 hidden shrink-0 flex-col lg:flex"
+        style={{ width: 230 }}
       >
         <SidebarNav currentPath={location} onNavigate={handleNavigate} />
       </aside>
 
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-[230px] border-[#2b3a49] p-0" style={{ background: '#0c1117' }}>
+        <SheetContent side="left" className="sv-shell-sheet w-[230px] p-0">
           <SidebarNav currentPath={location} onNavigate={handleNavigate} />
         </SheetContent>
       </Sheet>
 
       <div className="relative z-10 flex flex-1 flex-col overflow-hidden">
-        <div className="grid min-h-[48px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#2b3a49] bg-[linear-gradient(90deg,#0c1117,#171714_42%,#0d1722)] px-3">
+        <div className="sv-topbar grid min-h-[48px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 px-3">
           <Button size="icon" variant="ghost" className="h-8 w-8 lg:hidden" onClick={() => setSidebarOpen(true)}>
             <Menu className="h-4 w-4" />
           </Button>
@@ -260,9 +275,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="ml-auto flex min-w-0 items-center gap-2.5">
             <FocusBar currentPath={location} unreadCount={unreadCount} />
-            <div className="hidden min-w-[250px] items-center gap-2 rounded-full border border-[#2b3a49] bg-[#0b0f14] px-3 py-1.5 font-mono text-[11px] text-[#8b9bab] md:flex">
-              <Command className="h-3.5 w-3.5 text-[#ffd87f]" />
-              <span className="text-[#ffd87f]">/</span>
+            <div className="sv-command-pill hidden min-w-[250px] items-center gap-2 rounded-full px-3 py-1.5 font-mono text-[11px] md:flex">
+              <Command className="sv-command-accent h-3.5 w-3.5" />
+              <span className="sv-command-accent">/</span>
               <span className="truncate">標的 / 任務 / 監控狀態</span>
               <kbd className="ml-auto rounded border border-[#2b3a49] bg-[#111821] px-1 font-mono text-[9px] text-[#9badbf]">GO</kbd>
             </div>

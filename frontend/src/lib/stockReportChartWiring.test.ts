@@ -19,7 +19,13 @@ assert(page.includes("queryKey: ['dashboard-v4-chart', 'report', stockId]"), 'St
 assert(page.includes('packet={chartPacket}'), 'StockReportPage should pass chart packet into DashboardV4LightweightChart')
 assert(page.includes('loading={chartLoading}'), 'StockReportPage should pass chart loading state')
 assert(page.includes('error={chartError}'), 'StockReportPage should pass chart error state')
+assert(page.includes('AppShell'), 'StockReportPage should use the shared workstation shell')
+assert(page.includes('data-testid="stock-report-signal-board"'), 'StockReportPage should expose a visual signal board before dense analysis sections')
+assert(page.includes('WorkstationPageTitle') && page.includes('sv-content-card') && page.includes('sv-accent-text'), 'StockReportPage should consume route-level stock surface tokens')
 assert(page.indexOf('DashboardV4LightweightChart') < page.indexOf('投資信號總覽'), 'Stock report chart should render before prose-led signal sections')
+
+const chart = fs.readFileSync(chartPath, 'utf8')
+assert(chart.includes('sv-content-card') && chart.includes('sv-accent-text') && chart.includes('sv-muted-text'), 'DashboardV4LightweightChart should consume active route surface tokens')
 
 const packageLock = JSON.parse(fs.readFileSync(packageLockPath, 'utf8')) as {
   packages?: Record<string, { license?: string; version?: string }>

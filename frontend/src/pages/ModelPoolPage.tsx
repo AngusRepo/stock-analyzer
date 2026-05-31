@@ -905,11 +905,11 @@ function TinyBar({ label, value, tone = 'info' }: { label: string; value: number
   const color = tone === 'ok' ? 'bg-emerald-300' : tone === 'warn' ? 'bg-amber-300' : tone === 'error' ? 'bg-rose-300' : 'bg-sky-300'
   return (
     <div>
-      <div className="mb-1 flex justify-between gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8a92a6]">
+      <div className="sv-muted-text mb-1 flex justify-between gap-2 font-mono text-[10px] uppercase tracking-[0.12em]">
         <span>{label}</span>
         <span>{safe}%</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-[#172033]">
+      <div className="h-2 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${safe}%` }} />
       </div>
     </div>
@@ -980,7 +980,7 @@ function ModelGovernanceVisualMap({
       title="Governance Visual Map / 模型治理地圖"
       kicker="champion pointer -> registry candidate -> offline/live gate -> promotion"
       action={
-        <Button asChild size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]">
+        <Button asChild size="sm" variant="outline" className="rounded-full border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] text-[color:var(--sv-accent)] hover:bg-[color:var(--sv-accent-soft)]">
           <Link href="/model-pool/inspector">
             Raw inspector <ArrowRight className="ml-1 h-3.5 w-3.5" />
           </Link>
@@ -1001,14 +1001,14 @@ function ModelGovernanceVisualMap({
 
         <div className="grid gap-3 xl:grid-cols-2">
           {rows.map((row) => (
-            <div key={row.name} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
+            <div key={row.name} className="sv-content-card rounded-xl p-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`h-10 w-1.5 ${familyAccentClass(modelFamily(row.model))}`} />
                     <div>
-                      <p className="font-['Space_Grotesk'] text-base font-semibold text-[#f2ead8]">{row.name}</p>
-                      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{modelFamily(row.model)} · {row.policy.label}</p>
+                      <p className="sv-title-text font-['Space_Grotesk'] text-base font-semibold">{row.name}</p>
+                      <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.12em]">{modelFamily(row.model)} · {row.policy.label}</p>
                     </div>
                   </div>
                 </div>
@@ -1017,12 +1017,12 @@ function ModelGovernanceVisualMap({
 
               <div className="mt-3 grid gap-2 sm:grid-cols-4">
                 {row.gates.map((gate) => (
-                  <div key={gate.label} className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
+                  <div key={gate.label} className="sv-content-card rounded-lg p-2">
                     <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">{gate.label}</span>
+                      <span className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">{gate.label}</span>
                       <WorkstationPill tone={gate.tone}>{gate.ready ? 'ready' : 'wait'}</WorkstationPill>
                     </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-[#172033]">
+                    <div className="h-1.5 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
                       <div className={`h-full rounded-full ${gate.ready ? 'bg-emerald-300' : gate.tone === 'warn' ? 'bg-amber-300' : 'bg-slate-500'}`} style={{ width: gate.ready ? '100%' : '35%' }} />
                     </div>
                   </div>
@@ -1030,23 +1030,23 @@ function ModelGovernanceVisualMap({
               </div>
 
               <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-                <div className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
-                  <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">prod IC 4W</p>
-                  <p className="mt-1 text-[#f2ead8]">{row.ic == null ? 'N/A' : row.ic.toFixed(4)}</p>
+                <div className="sv-content-card rounded-lg p-2">
+                  <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">prod IC 4W</p>
+                  <p className="sv-title-text mt-1">{row.ic == null ? 'N/A' : row.ic.toFixed(4)}</p>
                 </div>
-                <div className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
-                  <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">candidate</p>
-                  <p className="mt-1 truncate text-[#f2ead8]">{row.artifact?.version ?? row.artifact?.artifact_id ?? 'none'}</p>
+                <div className="sv-content-card rounded-lg p-2">
+                  <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">candidate</p>
+                  <p className="sv-title-text mt-1 truncate">{row.artifact?.version ?? row.artifact?.artifact_id ?? 'none'}</p>
                 </div>
-                <div className="rounded-lg border border-[#1f2a3e] bg-[#05070c] p-2">
-                  <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#70809b]">decision</p>
-                  <p className="mt-1 truncate text-[#f2ead8]">{row.decision?.label ?? row.artifact?.live_gate_status ?? 'observe'}</p>
+                <div className="sv-content-card rounded-lg p-2">
+                  <p className="sv-muted-text font-mono text-[9px] uppercase tracking-[0.12em]">decision</p>
+                  <p className="sv-title-text mt-1 truncate">{row.decision?.label ?? row.artifact?.live_gate_status ?? 'observe'}</p>
                 </div>
               </div>
             </div>
           ))}
           {!rows.length && (
-            <div className="rounded-xl border border-[#263247] bg-[#070a10] p-4 text-sm text-[#8b9bab]">
+            <div className="sv-content-card sv-muted-text rounded-xl p-4 text-sm">
               尚未讀到 lineage model；請先確認 ml-controller / Worker proxy。
             </div>
           )}
@@ -2250,7 +2250,7 @@ export default function ModelPoolPage() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
-              <Button size="sm" variant="outline" className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]" onClick={() => { refetch(); artifactSelection.refetch(); artifactRegistry.refetch(); artifactPromotionQueue.refetch(); championPointers.refetch() }}>
+              <Button size="sm" variant="outline" className="rounded-full border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] text-[color:var(--sv-accent)] hover:bg-[color:var(--sv-accent-soft)]" onClick={() => { refetch(); artifactSelection.refetch(); artifactRegistry.refetch(); artifactPromotionQueue.refetch(); championPointers.refetch() }}>
                 <RefreshCw className="mr-1 h-3 w-3" /> 更新
               </Button>
             </div>
@@ -2290,14 +2290,14 @@ export default function ModelPoolPage() {
               queue={artifactPromotionQueue.data}
             />
 
-            <details data-testid="modelpool-governance-drilldown" className="group border border-[#263247] bg-[#05070c]">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 border-b border-[#263247] px-3 py-3 text-sm text-[#cbd5e1] marker:hidden">
+            <details data-testid="modelpool-governance-drilldown" className="sv-disclosure group">
+              <summary className="sv-disclosure-summary flex cursor-pointer list-none items-center justify-between gap-3 border-b border-[color:var(--sv-panel-border-soft)] px-3 py-3 text-sm marker:hidden">
                 <div>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">Governance drilldown</p>
-                  <p className="mt-1 text-xs text-[#8a92a6]">health matrix, promotion queue, upgrade lanes, overlays, lifecycle audit</p>
+                  <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">Governance drilldown</p>
+                  <p className="sv-muted-text mt-1 text-xs">health matrix, promotion queue, upgrade lanes, overlays, lifecycle audit</p>
                 </div>
-                <span className="font-mono text-[11px] text-[#f1c16f] group-open:hidden">open</span>
-                <span className="hidden font-mono text-[11px] text-[#f1c16f] group-open:inline">close</span>
+                <span className="sv-accent-text font-mono text-[11px] group-open:hidden">open</span>
+                <span className="sv-accent-text hidden font-mono text-[11px] group-open:inline">close</span>
               </summary>
               <div className="space-y-6 p-3">
             <UnifiedModelHealthMatrix

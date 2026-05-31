@@ -61,17 +61,17 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
 
 function LoadingPanel() {
   return (
-    <div className="grid min-h-[460px] place-items-center border border-[#263247] bg-[#070a10]">
-      <div className="h-28 w-full max-w-xl animate-pulse rounded bg-slate-800/50" />
+    <div className="sv-content-card grid min-h-[460px] place-items-center rounded-xl">
+      <div className="h-28 w-full max-w-xl animate-pulse rounded bg-[color:var(--sv-panel-raised)]" />
     </div>
   )
 }
 function EmptyPanel({ message }: { message: string }) {
   return (
-    <div className="grid min-h-[460px] place-items-center border border-[#263247] bg-[#070a10] px-4 text-center">
+    <div className="sv-content-card grid min-h-[460px] place-items-center rounded-xl px-4 text-center">
       <div>
-        <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-amber-200">chart unavailable</p>
-        <p className="mt-2 text-sm text-slate-400">{message}</p>
+        <p className="sv-accent-text font-mono text-[11px] uppercase tracking-[0.18em]">chart unavailable</p>
+        <p className="sv-muted-text mt-2 text-sm">{message}</p>
       </div>
     </div>
   )
@@ -141,12 +141,12 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
   if (!viewModel.candles.length) return <EmptyPanel message="No valid OHLC rows were available after the data-quality filter." />
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_8px_26px_rgba(0,0,0,0.16)]">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+    <section className="sv-content-card overflow-hidden rounded-xl shadow-[0_8px_26px_rgba(0,0,0,0.16)]">
+      <header className="grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="min-w-0">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">Dashboard V4 / Lightweight Charts</p>
-          <h2 className="mt-1 truncate text-lg font-semibold text-[#f2ead8]">{viewModel.title}</h2>
-          <p className="mt-1 font-mono text-[11px] text-[#8b9bab]">{viewModel.subtitle}</p>
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">Dashboard V4 / Lightweight Charts</p>
+          <h2 className="sv-title-text mt-1 truncate text-lg font-semibold">{viewModel.title}</h2>
+          <p className="sv-muted-text mt-1 font-mono text-[11px]">{viewModel.subtitle}</p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-3 lg:min-w-[520px]">
           {viewModel.lanes.map((lane) => (
@@ -161,15 +161,15 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
         </div>
       </header>
 
-      <div ref={containerRef} className="min-h-[430px] w-full bg-[#070a10]" />
+      <div ref={containerRef} className="min-h-[430px] w-full bg-[color:var(--sv-panel-deep)]" />
 
-      <footer className="grid gap-2 border-t border-[#263247] bg-[#070a10] p-3 text-[11px] text-[#8b9bab] lg:grid-cols-[minmax(0,1fr)_auto]">
+      <footer className="sv-muted-text grid gap-2 border-t border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-3 text-[11px] lg:grid-cols-[minmax(0,1fr)_auto]">
         <div className="min-w-0">
-          <span className="text-[#d6a85f]">regime</span> {viewModel.regimeLabel}
+          <span className="sv-accent-text">regime</span> {viewModel.regimeLabel}
           <span className="mx-2 text-slate-600">/</span>
-          <span className="text-[#d6a85f]">quality</span> {viewModel.dataQualityStatus}
+          <span className="sv-accent-text">quality</span> {viewModel.dataQualityStatus}
           <span className="mx-2 text-slate-600">/</span>
-          <span className="text-[#d6a85f]">warnings</span> {summary?.warningCount ?? 0}
+          <span className="sv-accent-text">warnings</span> {summary?.warningCount ?? 0}
         </div>
         {summary?.hasExternalWidget && (
           <span className="text-rose-300">external widget source blocked by Dashboard V4 policy</span>

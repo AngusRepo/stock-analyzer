@@ -1,7 +1,7 @@
 import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
-  deriveStrategyThresholdScores,
+  deriveStrategyRawSignals,
   validateStrategySpec,
   type StrategyCandidateInput,
   type StrategySpec,
@@ -122,9 +122,10 @@ export interface StrategyAdaptivePolicyState {
   status: 'shadow' | 'candidate' | 'active' | 'retired'
   strategy_weights: Record<string, number>
   threshold_deltas: Record<string, {
-    minSeedScore?: number
-    minChipScore?: number
-    minTechScore?: number
+    minCloseAboveMa20Pct?: number
+    minVolumeExpansion20?: number
+    minBrokerCount?: number
+    minRevenueGrowthYoY?: number
   }>
   evidence: {
     version: string
@@ -334,14 +335,37 @@ function candidatePolicyForRegistryRow(row: StrategySpecRegistryRow, defaultSpec
     return {
       poolQuota: 8,
       costBudget: 10,
-      evidenceRequirements: ['finlab_ai_skill', 'finlab_taxonomy', 'strategy_hypothesis', 'research_reward'],
+      evidenceRequirements: [
+        'finlab_ai_skill',
+        'finlab_taxonomy',
+        'raw_factor_mining',
+        'raw_technical_indicator_mining',
+        'strategy_hypothesis',
+        'research_reward',
+      ],
     }
   }
   return undefined
 }
 
+function hasLegacyScoreThresholds(thresholds: StrategySpec['thresholds']): boolean {
+  return thresholds.minSeedScore != null
+    || thresholds.minChipScore != null
+    || thresholds.minTechScore != null
+    || thresholds.minMomentumScore != null
+}
+
+function shouldPreferDefaultSpecOverRegistry(row: StrategySpecRegistryRow, defaultSpec: StrategySpec | undefined): boolean {
+  if (!defaultSpec) return false
+  const registryThresholds = parseJson(row.thresholds_json, {}) as StrategySpec['thresholds']
+  if (!hasLegacyScoreThresholds(registryThresholds)) return false
+  if (hasLegacyScoreThresholds(defaultSpec.thresholds)) return false
+  return defaultSpec.status === 'active'
+}
+
 export function registryRowToStrategySpec(row: StrategySpecRegistryRow): StrategySpec {
   const defaultSpec = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === row.strategy_id)
+  if (shouldPreferDefaultSpecOverRegistry(row, defaultSpec)) return { ...defaultSpec!, thresholds: { ...defaultSpec!.thresholds } }
   return {
     id: row.strategy_id,
     version: row.version,
@@ -487,7 +511,7 @@ export async function listStrategySpecsForLearning(
              supported_regimes_json, thesis, thresholds_json, risk_notes_json,
              source_refs_json, created_by, created_at, updated_at
         FROM strategy_spec_registry
-       WHERE status IN ('research','shadow','candidate','active')
+       WHERE status IN ('research','shadow','candidate','active','retired')
        ORDER BY CASE status
           WHEN 'active' THEN 0
           WHEN 'candidate' THEN 1
@@ -497,7 +521,14 @@ export async function listStrategySpecsForLearning(
         END, strategy_id ASC
     `).all<StrategySpecRegistryRow>()
     const specs = (results ?? []).map(registryRowToStrategySpec)
-    if (specs.length > 0) return { specs, source: 'registry' }
+    if (specs.length > 0) {
+      const registryKeys = new Set(specs.map((spec) => `${spec.id}:${spec.version}`))
+      const merged = [
+        ...specs,
+        ...DEFAULT_STRATEGY_SPECS.filter((spec) => !registryKeys.has(`${spec.id}:${spec.version}`)),
+      ].filter((spec) => spec.status !== 'retired')
+      return { specs: merged, source: 'registry' }
+    }
   } catch {
     return { specs: DEFAULT_STRATEGY_SPECS, source: 'default_fallback' }
   }
@@ -506,12 +537,13 @@ export async function listStrategySpecsForLearning(
 
 function matchScore(candidate: StrategyCandidateInput, matched: boolean): number | null {
   if (!matched) return null
-  const scores = deriveStrategyThresholdScores(candidate)
-  const score = scores.seedScore
-  const chip = scores.chipFlow
-  const tech = scores.technicalStructure
-  const momentum = scores.momentumProxy
-  return round6(Math.max(0, Math.min(1, (score * 0.45 + chip * 0.25 + tech * 0.2 + momentum * 0.1) / 100)))
+  const raw = deriveStrategyRawSignals(candidate)
+  const trend = Math.max(-0.2, Math.min(0.2, finiteNumber(raw.closeAboveMa20Pct) ?? 0)) * 2
+  const volume = Math.max(0, Math.min(2, finiteNumber(raw.volumeExpansion20) ?? 0)) / 2
+  const flow = Math.max(-1, Math.min(1, Math.sign(finiteNumber(raw.foreignTrustNet5d) ?? 0)))
+  const broker = Math.max(0, Math.min(1, (finiteNumber(raw.brokerCount) ?? 0) / 10))
+  const quality = Math.max(-1, Math.min(1, ((finiteNumber(raw.revenueGrowthYoY) ?? 0) + (finiteNumber(raw.roe) ?? 0)) / 30))
+  return round6(Math.max(0, Math.min(1, 0.35 + trend * 0.2 + volume * 0.2 + flow * 0.08 + broker * 0.08 + quality * 0.09)))
 }
 
 export function buildStrategyDecisionRows(
@@ -542,16 +574,10 @@ export function buildStrategyDecisionRows(
         tags: assessment.tags,
         watch_points: assessment.watchPoints,
       }
-      const thresholdScores = deriveStrategyThresholdScores(candidate)
+      const rawSignals = deriveStrategyRawSignals(candidate)
       const context = {
         candidate: {
-          score_v2: {
-            finalScore: thresholdScores.seedScore,
-            chipFlow: thresholdScores.chipFlow,
-            technicalStructure: thresholdScores.technicalStructure,
-            momentumProxy: thresholdScores.momentumProxy,
-            source: thresholdScores.source,
-          },
+          raw_signals: rawSignals,
           current_price: finiteNumber(candidate.current_price),
           industry: candidate.industry ?? candidate.sector ?? null,
         },
@@ -981,10 +1007,14 @@ export function buildStrategyAdaptivePolicyState(
       && row.spec.learning.hit_rate >= 0.58
     const drawdownWeak = row.spec.learning.max_drawdown_pct != null && row.spec.learning.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN
     thresholdDeltas[row.spec.id] = rewardHealthy
-      ? { minSeedScore: -1, minChipScore: row.spec.learning.hit_rate != null && row.spec.learning.hit_rate >= 0.6 ? -1 : 0 }
+      ? {
+        minVolumeExpansion20: -0.05,
+        minCloseAboveMa20Pct: -0.005,
+        minBrokerCount: row.spec.learning.hit_rate != null && row.spec.learning.hit_rate >= 0.6 ? -1 : 0,
+      }
       : drawdownWeak || row.spec.learning.avg_return_pct == null || row.spec.learning.avg_return_pct <= 0
-        ? { minSeedScore: 2, minTechScore: 1 }
-        : { minSeedScore: 0 }
+        ? { minVolumeExpansion20: 0.08, minCloseAboveMa20Pct: 0.01, minRevenueGrowthYoY: 1 }
+        : { minVolumeExpansion20: 0 }
   }
 
   return {

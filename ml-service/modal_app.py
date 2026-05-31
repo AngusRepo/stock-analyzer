@@ -3314,6 +3314,25 @@ def patchtst_universal_predict(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "patchtst_universal_predict"}
 
 
+# 2026-05-31 Layer 3 formal production adapters: GNN + TimesFM.
+@app.function(
+    gpu="L4",
+    memory=8192,
+    timeout=900,
+    scaledown_window=300,
+    max_containers=1,
+)
+def layer3_formal_universal_predict(payload: dict) -> dict:
+    """Batch formal Layer 3 production overlays for core ML candidates."""
+    _setup_env()
+    from app.layer3_formal_universal import layer3_formal_batch_predict
+    try:
+        return layer3_formal_batch_predict(payload)
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "layer3_formal_universal_predict"}
+
+
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict (KalmanFilter + MarkovSwitching)
 @app.function(
     cpu=2,

@@ -3,11 +3,12 @@
  * 路由: /report/:symbol
  * 自動 fetch 所有資料（ML 預測 + AI Summary + LLM 摘要/技術/交易）
  */
-import { useEffect } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { useRoute, Link } from 'wouter'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { stocksApi, mlApi, llmApi, dashboardV4Api } from '@/lib/api'
 import DashboardV4LightweightChart from '@/components/charts/DashboardV4LightweightChart'
+import AppShell from '@/components/AppShell'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Brain, BarChart2,
   Shield, Target, Zap, RefreshCw, Tag, Building2, DollarSign,
@@ -15,6 +16,7 @@ import {
 import { cn } from '@/lib/utils'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
+import { WorkstationPageTitle } from '@/components/workstation/WorkstationChrome'
 
 // ─── Signal 設定 ───────────────────────────────────────────────────────────────
 const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; border: string }> = {
@@ -39,13 +41,13 @@ function modelDisplayName(name: string): string {
 }
 
 function SectionCard({ title, icon: Icon, children, className }: {
-  title: string; icon?: any; children: React.ReactNode; className?: string
+  title: string; icon?: any; children: ReactNode; className?: string
 }) {
   return (
-    <div className={cn('rounded-2xl border border-[#3a3125] bg-[#171714]/86 p-5 shadow-[0_14px_50px_rgba(0,0,0,0.16)] backdrop-blur-sm', className)}>
+    <div className={cn('sv-content-card rounded-2xl p-5 shadow-[0_14px_50px_rgba(0,0,0,0.16)] backdrop-blur-sm', className)}>
       <div className="flex items-center gap-2 mb-4">
-        {Icon && <Icon className="w-4 h-4 text-[#d6a85f]" />}
-        <h3 className="text-sm font-bold text-[#fff7e8]">{title}</h3>
+        {Icon && <Icon className="sv-accent-text w-4 h-4" />}
+        <h3 className="sv-title-text text-sm font-bold">{title}</h3>
       </div>
       {children}
     </div>
@@ -56,11 +58,41 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
   const pct = max > 0 ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="min-w-16 shrink-0 text-[#8f877a]">{label}</span>
-      <div className="flex-1 bg-[#27261f] rounded-full h-2 overflow-hidden">
+      <span className="sv-muted-text min-w-16 shrink-0">{label}</span>
+      <div className="h-2 flex-1 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-14 text-right font-mono text-[#8f877a]">{value}/{max}</span>
+      <span className="sv-muted-text w-14 text-right font-mono">{value}/{max}</span>
+    </div>
+  )
+}
+
+function StockSignalTile({
+  label,
+  value,
+  detail,
+  tone = 'neutral',
+}: {
+  label: string
+  value: ReactNode
+  detail: ReactNode
+  tone?: 'buy' | 'sell' | 'warn' | 'info' | 'neutral'
+}) {
+  const valueClass = tone === 'buy'
+    ? 'text-red-300'
+    : tone === 'sell'
+      ? 'text-emerald-300'
+      : tone === 'warn'
+        ? 'text-[#ffd87f]'
+        : tone === 'info'
+          ? 'text-[#a5e7ff]'
+          : 'sv-title-text'
+
+  return (
+    <div className="sv-content-card rounded-xl p-3">
+      <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">{label}</p>
+      <div className={`mt-2 font-['Space_Grotesk'] text-xl font-semibold ${valueClass}`}>{value}</div>
+      <p className="sv-muted-text mt-1 truncate text-xs">{detail}</p>
     </div>
   )
 }
@@ -126,58 +158,61 @@ export default function StockReportPage() {
   const scoreViewModel = rec ? buildScoreBreakdownViewModel(rec) : null
 
   const isLoading = aiLoading || mlLoading
+  const signalTone = signalKey.includes('BUY')
+    ? 'buy'
+    : signalKey.includes('SELL')
+      ? 'sell'
+      : signalKey === 'HOLD'
+        ? 'warn'
+        : 'neutral'
+  const reportScore = scoreViewModel?.finalScore != null ? Math.round(scoreViewModel.finalScore) : null
+  const forecastText = ml?.forecast_pct != null ? `${(ml.forecast_pct * 100).toFixed(1)}%` : '-'
+  const consensusText = ml?.consensus != null ? `${(ml.consensus * 100).toFixed(0)}%` : '-'
+  const latestDate = stock?.latestPriceDate ?? stock?.latestChipDate ?? chartPacket?.generatedAt ?? '-'
 
   if (!symbol) return null
 
   return (
-    <div className="min-h-screen bg-[#111210] text-[#efe7d6] relative">
-      {/* Background Glow */}
-      <div className="pointer-events-none fixed inset-0 z-0">
-        <div className="absolute" style={{ left: '-10%', top: '5%', width: '50vw', height: '50vh', background: 'radial-gradient(ellipse at center, rgba(214,168,95,0.14) 0%, transparent 70%)', animation: 'blob-drift-1 25s ease-in-out infinite' }} />
-        <div className="absolute" style={{ right: '-5%', bottom: '0%', width: '40vw', height: '40vh', background: 'radial-gradient(ellipse at center, rgba(159,204,161,0.08) 0%, transparent 70%)', animation: 'blob-drift-3 22s ease-in-out infinite' }} />
-      </div>
-
-      <div className="relative z-10 max-w-4xl mx-auto px-4 py-6 space-y-6">
-
-        {/* ═══ Header ═══ */}
-        <div className="flex items-center gap-3">
-          <Link href="/">
-            <button className="rounded-full border border-[#3a3125] bg-[#171714] hover:bg-[#1f211c] p-2 transition-colors">
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-          </Link>
-          <div className="flex-1">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Stock note</p>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-[#fff7e8]">{stock?.name ?? symbol}</h1>
-              <span className="text-lg text-[#8f877a] font-mono">{symbol}</span>
+    <AppShell>
+      <div className="mx-auto max-w-5xl space-y-5 p-4 lg:p-6">
+        <WorkstationPageTitle
+          kicker="Stock note"
+          title={`${stock?.name ?? symbol} / ${symbol}`}
+          description="先看價格、信號、分數、ML 共識與資料時間，再下鑽 Dashboard V4 K 線、模型投票、籌碼、基本面與 LLM 分析，避免個股頁一開場就變成長表格。"
+          action={
+            <div className="flex flex-wrap items-center gap-2">
+              <Link href="/">
+                <button className="inline-flex items-center gap-1 rounded-full border border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] sv-accent-text">
+                  <ArrowLeft className="h-3 w-3" /> Home
+                </button>
+              </Link>
               {stock?.market && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-[#3a3125] text-[#b9b1a1]">
+                <span className="sv-surface-chip rounded-full px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em]">
                   {stock.market}
                 </span>
               )}
+              <span className="sv-muted-text font-mono text-[10px]">{new Date().toLocaleDateString('zh-TW')}</span>
             </div>
-            {stock?.close != null && (
-              <div className="flex items-center gap-3 mt-1">
-                <span className="text-xl font-bold font-mono">${stock.close.toLocaleString()}</span>
-                {stock.change_pct != null && (
-                  <span className={cn('text-sm font-mono font-bold', stock.change_pct >= 0 ? 'text-red-400' : 'text-emerald-400')}>
-                    {stock.change_pct >= 0 ? '▲' : '▼'} {stock.change_pct >= 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="text-right text-xs text-[#8f877a]">
-            <p>個股研究筆記</p>
-            <p>{new Date().toLocaleDateString('zh-TW')}</p>
-          </div>
-        </div>
+          }
+        />
+
+        <section data-testid="stock-report-signal-board" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <StockSignalTile
+            label="Price"
+            value={stock?.close != null ? `$${stock.close.toLocaleString()}` : '-'}
+            detail={stock?.change_pct != null ? `${stock.change_pct >= 0 ? '+' : ''}${stock.change_pct.toFixed(2)}%` : 'quote pending'}
+            tone={stock?.change_pct == null ? 'neutral' : stock.change_pct >= 0 ? 'buy' : 'sell'}
+          />
+          <StockSignalTile label="Signal" value={cfg.label} detail={signalKey} tone={signalTone} />
+          <StockSignalTile label="Score V2" value={reportScore ?? 'N/A'} detail={scoreViewModel ? 'final score' : 'score payload missing'} tone={reportScore == null ? 'neutral' : reportScore >= 70 ? 'buy' : reportScore >= 55 ? 'warn' : 'neutral'} />
+          <StockSignalTile label="ML Consensus" value={consensusText} detail={`5d forecast ${forecastText}`} tone={ml?.forecast_pct == null ? 'neutral' : ml.forecast_pct >= 0 ? 'buy' : 'sell'} />
+          <StockSignalTile label="Freshness" value={latestDate === '-' ? '-' : formatTwDateTimeShort(String(latestDate))} detail="price / chip / chart" tone="info" />
+        </section>
 
         {isLoading && (
-          <div className="flex items-center justify-center py-20 gap-3">
-            <RefreshCw className="w-5 h-5 animate-spin text-primary" />
-            <span className="text-muted-foreground">載入分析資料中…</span>
+          <div className="sv-content-card flex items-center justify-center gap-3 rounded-xl py-20">
+            <RefreshCw className="sv-accent-text h-5 w-5 animate-spin" />
+            <span className="sv-muted-text text-sm">載入分析資料中…</span>
           </div>
         )}
 
@@ -404,7 +439,7 @@ export default function StockReportPage() {
           </>
         )}
       </div>
-    </div>
+    </AppShell>
   )
 }
 

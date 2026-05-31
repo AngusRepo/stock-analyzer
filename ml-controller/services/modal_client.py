@@ -47,6 +47,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "dlinear_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
     "train_patchtst_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "patchtst_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "layer3_formal_universal_predict": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "research_model_benchmark": {"cpu": 2.0, "memory_mb": 8192, "gpu": "L4"},
     "backtest_full_run": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
     "backtest_replay": {"cpu": 4.0, "memory_mb": 4096, "gpu": None},
@@ -1050,6 +1051,26 @@ async def train_patchtst_universal(series_close: list[list[float]], **hyperparam
     """One-shot universal PatchTST training."""
     payload = {"series_close": series_close, **hyperparams}
     return await _modal_train_patchtst_universal(payload)
+
+
+async def _modal_layer3_formal_universal_predict(payload: dict) -> dict:
+    return await _modal_remote_call("layer3_formal_universal_predict", payload)
+
+
+async def layer3_formal_batch_predict(
+    series_list: list[dict],
+    *,
+    horizon: int = 5,
+    models: list[str] | None = None,
+    gnn_corr_threshold: float = 0.45,
+) -> dict:
+    """Formal Layer 3 production overlays for core ML candidates."""
+    return await _modal_layer3_formal_universal_predict({
+        "series_list": series_list,
+        "horizon": horizon,
+        "models": models or ["GNN", "TimesFM"],
+        "gnn_corr_threshold": gnn_corr_threshold,
+    })
 
 
 async def _modal_research_model_benchmark(payload: dict) -> dict:

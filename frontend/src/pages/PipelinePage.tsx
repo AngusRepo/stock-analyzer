@@ -78,14 +78,14 @@ function PipelineCompressionVisual({
   return (
     <section
       data-testid="pipeline-compression-visual"
-      className="rounded-2xl border border-[#3a3125] bg-[#171714] p-3 shadow-[0_18px_70px_rgba(0,0,0,0.14)]"
+      className="sv-content-card-selected rounded-2xl p-3"
     >
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">Pipeline Compression Map</p>
-          <h2 className="mt-1 text-sm font-semibold text-[#fff7e8]">候選如何被壓縮成可執行清單</h2>
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">Pipeline Compression Map</p>
+          <h2 className="sv-title-text mt-1 text-sm font-semibold">候選如何被壓縮成可執行清單</h2>
         </div>
-        <div className="rounded-full border border-[#3a3125] bg-[#0d1117] px-3 py-1.5 font-mono text-[11px] text-[#b9b1a1]">
+        <div className="sv-surface-chip rounded-full px-3 py-1.5 font-mono text-[11px]">
           {stages[0]?.count ?? 0} → {stages[stages.length - 1]?.count ?? 0}
         </div>
       </div>
@@ -95,21 +95,21 @@ function PipelineCompressionVisual({
           const retention = previousCount == null ? 100 : stageRetentionPct(count, previousCount)
           const width = Math.max(8, Math.round((count / maxStageCount) * 100))
           return (
-            <div key={key} className="rounded-xl border border-[#2b3a49] bg-[#0b1017] p-3">
+            <div key={key} className="sv-content-card rounded-xl p-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <Icon className={`h-4 w-4 shrink-0 ${color}`} />
                   <div className="min-w-0">
-                    <p className="truncate text-xs font-semibold text-[#f2ead8]">{label}</p>
-                    <p className="mt-0.5 truncate text-[10px] text-[#8b9bab]">{detail}</p>
+                    <p className="sv-title-text truncate text-xs font-semibold">{label}</p>
+                    <p className="sv-muted-text mt-0.5 truncate text-[10px]">{detail}</p>
                   </div>
                 </div>
-                <span className="font-mono text-lg font-bold text-[#fff7e8]">{count}</span>
+                <span className="sv-title-text font-mono text-lg font-bold">{count}</span>
               </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#1c2633]">
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
                 <div className={`h-full rounded-full ${barColor}`} style={{ width: `${width}%` }} />
               </div>
-              <div className="mt-2 flex items-center justify-between font-mono text-[10px] text-[#8b9bab]">
+              <div className="sv-muted-text mt-2 flex items-center justify-between font-mono text-[10px]">
                 <span>{previousCount == null ? 'base pool' : `${retention}% kept`}</span>
                 <span>{previousCount == null ? '100%' : `${Math.max(0, previousCount - count)} drop`}</span>
               </div>
@@ -122,12 +122,12 @@ function PipelineCompressionVisual({
         {dropoffs.map(({ label, count, color }) => {
           const width = Math.max(count > 0 ? 8 : 2, Math.round((count / maxDropoffCount) * 100))
           return (
-            <div key={label} className="rounded-lg border border-[#2b3a49] bg-[#070a10] px-3 py-2">
+            <div key={label} className="sv-content-card rounded-lg px-3 py-2">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="truncate text-[11px] text-[#b9b1a1]">{label}</span>
-                <span className="font-mono text-xs text-[#fff7e8]">{count}</span>
+                <span className="sv-muted-text truncate text-[11px]">{label}</span>
+                <span className="sv-title-text font-mono text-xs">{count}</span>
               </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-[#1c2633]">
+              <div className="h-1.5 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
                 <div className={`h-full rounded-full ${color}`} style={{ width: `${width}%` }} />
               </div>
             </div>
@@ -504,10 +504,10 @@ export default function PipelinePage() {
     return (
       <AppShell>
         <div className="flex items-center justify-center h-full p-4">
-          <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/90 p-6 text-center space-y-4">
-            <Filter className="w-12 h-12 mx-auto text-[#d6a85f]/80" />
-            <p className="text-[#b9b1a1]">請先登入以查看每日流程</p>
-            <button onClick={login} className="rounded-full border border-[#d6a85f]/35 bg-[#d6a85f]/90 px-4 py-2 text-sm text-[#171714] hover:bg-[#f1c16f]">
+          <div className="sv-login-panel space-y-4 rounded-2xl p-6 text-center">
+            <Filter className="sv-accent-text mx-auto h-12 w-12 opacity-80" />
+            <p className="text-[color:var(--sv-text-soft)]">請先登入以查看每日流程</p>
+            <button onClick={login} className="sv-surface-button rounded-full px-4 py-2 text-sm">
               Google 登入
             </button>
           </div>
@@ -521,13 +521,13 @@ export default function PipelinePage() {
       <div className="p-4 lg:p-5 space-y-4 text-sm">
 
         {/* Page header */}
-        <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)] flex items-center justify-between">
+        <div className="sv-page-title flex items-center justify-between rounded-2xl p-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Daily flow</p>
-            <h1 className="mt-1 text-lg font-bold text-[#fff7e8]">每日流程</h1>
-            <p className="mt-1 text-xs text-[#b9b1a1]">{recDate} 從初篩、模型、推薦到模擬掛單的節奏總覽</p>
+            <p className="sv-accent-text text-[10px] font-semibold uppercase tracking-[0.2em]">Daily flow</p>
+            <h1 className="sv-title-text mt-1 text-lg font-bold">每日流程</h1>
+            <p className="mt-1 text-xs text-[color:var(--sv-text-soft)]">{recDate} 從初篩、模型、推薦到模擬掛單的節奏總覽</p>
           </div>
-          <div className="hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 text-xs text-[#b9b1a1] md:flex">
+          <div className="sv-surface-chip hidden items-center gap-2 rounded-full px-3 py-2 text-xs md:flex">
             <span className="font-mono">882 → {screenerPassed.length} → {mlBuy.length} 買進 → {pendingBuys.length} 掛單</span>
           </div>
         </div>
@@ -542,11 +542,11 @@ export default function PipelinePage() {
 
             <details
               data-testid="pipeline-stage-drilldown"
-              className="group rounded-2xl border border-[#3a3125] bg-[#0b1017]"
+              className="sv-disclosure group rounded-2xl"
             >
-              <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-[#fff7e8] transition-colors hover:bg-[#101720]">
+              <summary className="sv-disclosure-summary flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold transition-colors hover:text-[color:var(--sv-accent)]">
                 <span>Stage drilldown</span>
-                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8b9bab]">
+                <span className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">
                   sector / signal / recommendation / pending
                 </span>
               </summary>

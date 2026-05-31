@@ -44,8 +44,9 @@ Current bootstrap:
     XGBoost / CatBoost / ExtraTrees / LightGBM
   Time-series family (2):
     DLinear / PatchTST (learnable)
-  Formal Layer 3 slots pending artifact promotion:
-    TabM / GNN / iTransformer / TimesFM
+  Formal Layer 3 slots:
+    GNN / TimesFM active production adapters
+    TabM / iTransformer pending artifact promotion
 
 Chronos remains a legacy managed artifact/diagnostic runtime, but it is retired
 from production alpha vote and the evening-chain batch path.
@@ -106,13 +107,14 @@ FORMAL_LAYER3_PENDING_MODELS = {
         "evidence_required": ["artifact_manifest", "feature_policy", "walk_forward", "pbo", "cpcv", "cost_profile"],
     },
     "GNN": {
-        "status": "formal_slot_pending_artifact",
+        "status": "production_adapter_active",
         "model_type": "cross_stock_graph",
         "family": "graph",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "artifact_required",
-        "evidence_required": ["graph_spec", "leakage_controls", "artifact_manifest", "walk_forward", "pbo", "cpcv"],
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "active_controller_modal_adapter",
+        "serving_path": "daily_pipeline_v2 -> layer3_formal_universal_predict -> rank_scores.GNN",
+        "evidence_required": ["graph_spec", "leakage_controls", "walk_forward", "pbo", "cpcv"],
     },
     "iTransformer": {
         "status": "formal_slot_pending_artifact",
@@ -124,13 +126,14 @@ FORMAL_LAYER3_PENDING_MODELS = {
         "evidence_required": ["sequence_policy", "artifact_manifest", "walk_forward", "pbo", "cpcv", "cost_profile"],
     },
     "TimesFM": {
-        "status": "formal_slot_pending_artifact",
+        "status": "production_adapter_active",
         "model_type": "foundation_time_series",
         "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "artifact_required",
-        "evidence_required": ["forecast_validation", "artifact_manifest", "walk_forward", "pbo", "cost_profile"],
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "active_zero_shot_foundation_adapter",
+        "serving_path": "daily_pipeline_v2 -> layer3_formal_universal_predict -> timesfm",
+        "evidence_required": ["forecast_validation", "walk_forward", "pbo", "cost_profile"],
     },
 }
 RESEARCH_BENCHMARK_MODELS = FORMAL_LAYER3_PENDING_MODELS
@@ -282,11 +285,16 @@ def init_default_pool() -> dict:
             "promotion_gate": "walk_forward+pbo+transaction_cost_sensitivity",
         }
     for name, meta in RESEARCH_BENCHMARK_MODELS.items():
+        is_active_adapter = meta.get("status") == "production_adapter_active"
         pool["formal_layer3_slots"][name] = {
             **meta,
             "created_at": today,
-            "approval_gate": "artifact_review_packet_required",
-            "note": "Formal Layer 3 slot; no production prediction or vote until artifact promotion is approved.",
+            "approval_gate": "active_adapter_review_packet_required" if is_active_adapter else "artifact_review_packet_required",
+            "note": (
+                "Formal Layer 3 production adapter; prediction output is consumed by core family vote."
+                if is_active_adapter
+                else "Formal Layer 3 slot; no production prediction or vote until artifact promotion is approved."
+            ),
         }
     pool["research_benchmarks"] = dict(pool["formal_layer3_slots"])
     return pool

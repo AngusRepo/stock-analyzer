@@ -143,12 +143,16 @@ for (const legacyRef of [
   assert(!botDashboard.includes(legacyRef), `Bot dashboard should not pass legacy pending-buy score field: ${legacyRef}`)
 }
 assert(
-  botDashboard.includes('score_v2: b.score_v2 ?? null'),
-  'Bot dashboard pending-buy cards should consume backend score_v2 payload',
+  botDashboard.includes('item={b}')
+    && botDashboard.includes('const scorePayload = item.score_v2 ?? item.scoreV2')
+    && !botDashboard.includes('item.score ?? null'),
+  'Bot dashboard pending-buy cards should consume backend score_v2 payload without legacy score fallback',
 )
 assert(
-  botDashboard.includes('stock_id: b.stock_id ?? b.stockId ?? null'),
-  'Bot dashboard pending-buy cards should pass stock_id so each card can fetch its own K-line data',
+  botDashboard.includes('pendingBuyStockId(item)')
+    && botDashboard.includes('onSelectSymbol?.(item.symbol, pendingBuyStockId(item))')
+    && botDashboard.includes('selectedStockIdHint ?? searchResult?.[0]?.id ?? null'),
+  'Bot dashboard pending-buy cards should pass stock_id directly so each card can fetch its own K-line data',
 )
 for (const stockReportSurface of [stockAIReport, stockReportPage]) {
   assert(

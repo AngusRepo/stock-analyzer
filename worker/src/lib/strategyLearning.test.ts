@@ -24,6 +24,20 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const staleLegacyRow = strategySpecToRegistryRow({
+    ...DEFAULT_STRATEGY_SPECS[0],
+    status: 'shadow' as const,
+    thresholds: { minSeedScore: 58, minTechScore: 18, minMomentumScore: 6, minPrice: 10 },
+  }, '2026-05-21T00:00:00.000Z', {
+    sourceRefs: ['codex_seed_2026_05_22'],
+  })
+  const restored = registryRowToStrategySpec(staleLegacyRow)
+  assert(restored.status === 'active', 'stale legacy default registry row must not override newer active default spec')
+  assert(restored.thresholds.minSeedScore == null, 'stale legacy default registry row must not keep Score V2 seed threshold')
+  assert(restored.thresholds.minCloseAboveMa20Pct === 0, 'stale legacy default registry row should restore raw active threshold')
+}
+
+{
   const rows = buildStrategyDecisionRows(
     '2026-05-19',
     [
@@ -31,23 +45,16 @@ function assert(condition: unknown, message: string): void {
         symbol: '2330',
         name: 'TSMC',
         current_price: 900,
-        score_v2: JSON.stringify({
-          version: 'score_v2',
-          finalScore: 70,
-          components: {
-            mlEdge: 12,
-            chipFlow: 25,
-            technicalStructure: 24,
-            fundamentalQuality: 8,
-            newsTheme: 1,
-          },
-          technicalBreakdown: {
-            volumeConfirmation: 4,
-          },
-          seedComponents: {
-            screenerMomentumSeed20: 12,
-          },
-        }),
+        raw_signals: {
+          closeAboveMa20Pct: 0.03,
+          closeAboveMa60Pct: 0.02,
+          volumeExpansion20: 1.25,
+          return20d: 0.06,
+          foreignTrustNet5d: 1000,
+          brokerCount: 8,
+          revenueGrowthYoY: 8,
+          roe: 12,
+        },
       },
     ],
     DEFAULT_STRATEGY_SPECS,
@@ -66,39 +73,27 @@ function assert(condition: unknown, message: string): void {
         symbol: '2330',
         name: 'TSMC',
         current_price: 900,
-        score_v2: JSON.stringify({
-          version: 'score_v2',
-          finalScore: 70,
-          components: {
-            mlEdge: 12,
-            chipFlow: 24,
-            technicalStructure: 22,
-            fundamentalQuality: 10,
-            newsTheme: 2,
-          },
-          technicalBreakdown: {
-            trendStructure: 6,
-            volatilityStructure: 4,
-            reversalExtreme: 4,
-            volumeConfirmation: 3,
-            executionRisk: 1,
-          },
-          seedComponents: {
-            screenerMomentumSeed20: 10,
-          },
-        }),
+        raw_signals: {
+          closeAboveMa20Pct: 0.03,
+          closeAboveMa60Pct: 0.02,
+          volumeExpansion20: 1.25,
+          return20d: 0.06,
+          foreignTrustNet5d: 1000,
+          brokerCount: 8,
+          revenueGrowthYoY: 8,
+          roe: 12,
+        },
       },
     ],
     DEFAULT_STRATEGY_SPECS,
     { nowIso: '2026-05-19T00:00:00.000Z' },
   )
   const matched = rows.find((row) => row.matched === 1)
-  assert(matched != null, 'strategy learning should match by canonical Score V2 when legacy fields are stale')
+  assert(matched != null, 'strategy learning should match by raw strategy signals')
   const context = JSON.parse(matched.context_json)
-  assert(context.candidate.score_v2.source === 'score_v2', 'decision context should record Score V2 as the strategy score source')
-  assert(context.candidate.score_v2.finalScore === 70, 'decision context should persist canonical strategy seed score')
-  assert(context.candidate.score_v2.chipFlow === 24, 'decision context should persist Score V2 chipFlow')
-  assert(context.candidate.score_v2.technicalStructure === 22, 'decision context should persist Score V2 technicalStructure')
+  assert(context.candidate.raw_signals.volumeExpansion20 === 1.25, 'decision context should persist raw volume evidence')
+  assert(context.candidate.raw_signals.closeAboveMa20Pct === 0.03, 'decision context should persist raw price structure evidence')
+  assert(!('score_v2' in context.candidate), 'decision context must not use Score V2 as L1 strategy evidence')
   assert(!('chip_score' in context.candidate), 'decision context must not persist legacy chip_score')
   assert(!('tech_score' in context.candidate), 'decision context must not persist legacy tech_score')
   assert(!('momentum_score' in context.candidate), 'decision context must not persist legacy momentum_score')

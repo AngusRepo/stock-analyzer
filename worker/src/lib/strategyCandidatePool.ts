@@ -1,5 +1,6 @@
 import {
   assessCandidateAgainstStrategySpecs,
+  deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
   validateStrategySpec,
   type StrategyCandidateInput,
@@ -134,11 +135,11 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
   researchOnlyQueue: T[]
   selection: StrategyCandidateSelection<T>
   telemetry: {
-    selection_order: 'full_feature_enriched_universe_strategy_quota_then_score_top_up'
+    selection_order: 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up'
     target_size: number
     coarse_ml_queue_size: number
     strategy_selected_count: number
-    score_top_up_count: number
+    raw_signal_top_up_count: number
     source_universe_count: number
   }
 }
@@ -230,11 +231,30 @@ function candidatePoolThresholdScores(candidate: StrategyCandidatePoolCandidate)
   }
 }
 
+function usesLegacyScoreThresholds(spec: StrategySpec): boolean {
+  const t = spec.thresholds
+  return t.minSeedScore != null
+    || t.minChipScore != null
+    || t.minTechScore != null
+    || t.minMomentumScore != null
+}
+
 function strategyInputFromPoolCandidate(candidate: StrategyCandidatePoolCandidate): StrategyCandidateInput {
   const { score_components, ...rest } = candidate
   return {
     ...rest,
     score_v2: candidate.score_v2 ?? score_components,
+  }
+}
+
+function addDynamicNearMissChecks(
+  checks: Array<[string, unknown, number | undefined]>,
+  prefix: string,
+  signals: Record<string, number | null> | undefined,
+  thresholds: Record<string, number> | undefined,
+): void {
+  for (const [key, min] of Object.entries(thresholds ?? {})) {
+    checks.push([`${prefix}.${key}`, signals?.[key], min])
   }
 }
 
@@ -251,12 +271,26 @@ function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: St
   if (thresholds.maxPrice != null && (price == null || price > thresholds.maxPrice)) return null
 
   const scores = candidatePoolThresholdScores(candidate)
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
   const checks: Array<[string, unknown, number | undefined]> = [
     ['score', scores.seedScore, thresholds.minSeedScore],
     ['chip', scores.chipFlow, thresholds.minChipScore],
     ['technical', scores.technicalStructure, thresholds.minTechScore],
     ['momentum', scores.momentumProxy, thresholds.minMomentumScore],
+    ['closeAboveMa20Pct', raw.closeAboveMa20Pct, thresholds.minCloseAboveMa20Pct],
+    ['closeAboveMa60Pct', raw.closeAboveMa60Pct, thresholds.minCloseAboveMa60Pct],
+    ['volumeExpansion20', raw.volumeExpansion20, thresholds.minVolumeExpansion20],
+    ['return20d', raw.return20d, thresholds.minReturn20d],
+    ['foreignTrustNet5d', raw.foreignTrustNet5d, thresholds.minForeignTrustNet5d],
+    ['brokerNetAmount5d', raw.brokerNetAmount5d, thresholds.minBrokerNetAmount5d],
+    ['brokerCount', raw.brokerCount, thresholds.minBrokerCount],
+    ['revenueGrowthYoY', raw.revenueGrowthYoY, thresholds.minRevenueGrowthYoY],
+    ['monthlyRevenueYoY', raw.monthlyRevenueYoY, thresholds.minMonthlyRevenueYoY],
+    ['roe', raw.roe, thresholds.minRoe],
+    ['eps', raw.eps, thresholds.minEps],
   ]
+  addDynamicNearMissChecks(checks, 'technicalIndicators', raw.technicalIndicators, thresholds.minTechnicalIndicators)
+  addDynamicNearMissChecks(checks, 'factorSignals', raw.factorSignals, thresholds.minFactorSignals)
   const misses: string[] = []
   for (const [label, rawValue, minValue] of checks) {
     if (minValue == null) continue
@@ -280,14 +314,58 @@ function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
 
 function strategyScore(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, weight: number): number {
   const scores = candidatePoolThresholdScores(candidate)
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
   const score = scores.seedScore
   const chip = scores.chipFlow
   const tech = scores.technicalStructure
   const momentum = scores.momentumProxy
   const liquidity = candidateLiquidity(candidate)
   const liquidityBonus = liquidity == null ? 0 : clamp(Math.log10(Math.max(liquidity, 1)) - 7, 0, 3)
-  const raw = score * 0.52 + chip * 0.2 + tech * 0.16 + momentum * 0.1 + liquidityBonus
-  return Math.round(raw * statusWeight(spec.status) * weight * 1000) / 1000
+  if (!usesLegacyScoreThresholds(spec)) {
+    return Math.round(rawSignalSuitabilityScore(raw, liquidityBonus) * statusWeight(spec.status) * weight * 1000) / 1000
+  }
+  const scoreV2Suitability = score * 0.52 + chip * 0.2 + tech * 0.16 + momentum * 0.1 + liquidityBonus
+  return Math.round(scoreV2Suitability * statusWeight(spec.status) * weight * 1000) / 1000
+}
+
+function dynamicSignalScore(signals: Record<string, number | null> | undefined): number {
+  const values = Object.values(signals ?? {}).map(finiteNumber).filter((value): value is number => value != null)
+  if (!values.length) return 0
+  const bounded = values.slice(0, 8).reduce((sum, value) => sum + clamp(value, -20, 20), 0)
+  return clamp(bounded / Math.min(values.length, 8), -10, 10)
+}
+
+function rawSignalSuitabilityScore(raw: ReturnType<typeof deriveStrategyRawSignals>, liquidityBonus = 0): number {
+  const trendScore =
+    clamp((finiteNumber(raw.closeAboveMa20Pct) ?? 0) * 180, -12, 18)
+    + clamp((finiteNumber(raw.closeAboveMa60Pct) ?? 0) * 120, -10, 14)
+    + clamp(((finiteNumber(raw.volumeExpansion20) ?? 1) - 0.8) * 18, -6, 16)
+    + clamp((finiteNumber(raw.return20d) ?? 0) * 80, -8, 12)
+  const flowAmount = finiteNumber(raw.brokerNetAmount5d) ?? 0
+  const flowShares = finiteNumber(raw.foreignTrustNet5d) ?? 0
+  const flowScore =
+    clamp(Math.sign(flowAmount) * Math.log10(Math.abs(flowAmount) + 1), -10, 14)
+    + clamp(Math.sign(flowShares) * Math.log10(Math.abs(flowShares) + 1), -8, 12)
+    + clamp((finiteNumber(raw.brokerCount) ?? 0) / 3, 0, 8)
+    - clamp((finiteNumber(raw.brokerConcentration) ?? 0) * 8, 0, 8)
+  const qualityScore =
+    clamp((finiteNumber(raw.revenueGrowthYoY) ?? 0) / 4, -8, 12)
+    + clamp((finiteNumber(raw.monthlyRevenueYoY) ?? 0) / 4, -8, 12)
+    + clamp((finiteNumber(raw.roe) ?? 0) / 2, -4, 12)
+    + clamp((finiteNumber(raw.eps) ?? 0) * 2, -6, 12)
+  const valuationScore =
+    clamp(10 - ((finiteNumber(raw.pe) ?? 35) - 12) / 3, -8, 12)
+    + clamp(6 - ((finiteNumber(raw.pb) ?? 3) - 1) * 2, -6, 8)
+  const dynamicScore = dynamicSignalScore(raw.factorSignals) * 0.4 + dynamicSignalScore(raw.technicalIndicators) * 0.25
+  return clamp(45 + trendScore * 0.28 + flowScore * 0.28 + qualityScore * 0.3 + valuationScore * 0.14 + dynamicScore + liquidityBonus, 0, 100)
+}
+
+function rawScoreForEntry(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec): number {
+  if (usesLegacyScoreThresholds(spec)) return candidatePoolThresholdScores(candidate).seedScore
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
+  const liquidity = candidateLiquidity(candidate)
+  const liquidityBonus = liquidity == null ? 0 : clamp(Math.log10(Math.max(liquidity, 1)) - 7, 0, 3)
+  return Math.round(rawSignalSuitabilityScore(raw, liquidityBonus) * 1000) / 1000
 }
 
 function cloneCandidate<T extends StrategyCandidatePoolCandidate>(candidate: T): T {
@@ -406,7 +484,6 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         .map((candidate) => {
           const assessment = assessCandidateAgainstStrategySpecs(strategyInputFromPoolCandidate(candidate), [spec])
           if (!assessment.matches.length) return null
-          const thresholdScores = candidatePoolThresholdScores(candidate)
           const scored = strategyScore(candidate, spec, rWeight)
           return {
             strategy_id: spec.id,
@@ -419,7 +496,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
             max_ml_share: maxMlShare,
             regime_weight: rWeight,
             candidate: cloneCandidate(candidate),
-            raw_score: thresholdScores.seedScore,
+            raw_score: rawScoreForEntry(candidate, spec),
             strategy_score: scored,
             rank: 0,
             reason: assessment.matches[0]?.reason ?? spec.thesis,
@@ -436,7 +513,6 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           .map((candidate) => {
             const misses = thresholdNearMisses(candidate, spec)
             if (!misses) return null
-            const thresholdScores = candidatePoolThresholdScores(candidate)
             const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.92 - misses.length * 1.5) * 1000) / 1000
             return {
               strategy_id: spec.id,
@@ -449,7 +525,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               max_ml_share: maxMlShare,
               regime_weight: rWeight,
               candidate: cloneCandidate(candidate),
-              raw_score: thresholdScores.seedScore,
+              raw_score: rawScoreForEntry(candidate, spec),
               strategy_score: scored,
               rank: 0,
               reason: `adaptive_near_match:${misses.join('|')}`,
@@ -460,11 +536,10 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           .slice(0, Math.min(quota, costBudget))
           .map((entry, index) => ({ ...entry, rank: index + 1 }))
       }
-      if (!entries.length) {
+      if (!entries.length && spec.status !== 'active') {
         usedAdaptiveNearMatch = true
         entries = candidates
           .map((candidate) => {
-            const thresholdScores = candidatePoolThresholdScores(candidate)
             const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.86) * 1000) / 1000
             return {
               strategy_id: spec.id,
@@ -477,7 +552,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               max_ml_share: maxMlShare,
               regime_weight: rWeight,
               candidate: cloneCandidate(candidate),
-              raw_score: thresholdScores.seedScore,
+              raw_score: rawScoreForEntry(candidate, spec),
               strategy_score: scored,
               rank: 0,
               reason: 'adaptive_empty_pool_ranked_proxy',
@@ -650,10 +725,11 @@ export function planStrategyFirstCandidateSelection<T extends StrategyCandidateP
   return mergeStrategyCandidatePools(pools, capacity, policy)
 }
 
-function scoreFallbackValue(candidate: StrategyCandidatePoolCandidate): number {
-  const explicit = finiteNumber(candidate.score)
-  if (explicit != null) return explicit
-  return candidatePoolThresholdScores(candidate).seedScore
+function rawSignalFallbackValue(candidate: StrategyCandidatePoolCandidate): number {
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
+  const liquidity = candidateLiquidity(candidate)
+  const liquidityBonus = liquidity == null ? 0 : clamp(Math.log10(Math.max(liquidity, 1)) - 7, 0, 3)
+  return Math.round(rawSignalSuitabilityScore(raw, liquidityBonus) * 1000) / 1000
 }
 
 function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
@@ -662,14 +738,14 @@ function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
 ): T {
   const cloned = cloneCandidate(candidate)
   cloned.strategy_pool_decision = 'ml_queue'
-  cloned.strategy_pool_reason = 'score_fallback_top_up_after_strategy_quota'
+  cloned.strategy_pool_reason = 'raw_signal_top_up_after_strategy_quota'
   cloned.strategy_pool_rank = rank
-  cloned.strategy_pool_ids = ['score_fallback']
-  cloned.strategy_pool_score = scoreFallbackValue(candidate)
-  cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:score_fallback'])
+  cloned.strategy_pool_ids = ['raw_signal_top_up']
+  cloned.strategy_pool_score = rawSignalFallbackValue(candidate)
+  cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:raw_signal_top_up'])
   cloned.strategy_watch_points = uniqueTexts([
     ...(cloned.strategy_watch_points ?? []),
-    'strategy_pool:score_fallback_top_up_after_strategy_quota',
+    'strategy_pool:raw_signal_top_up_after_strategy_quota',
   ])
   return cloned
 }
@@ -712,7 +788,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       if (!eligibleForMl(candidate)) return false
       return true
     })
-    .sort((a, b) => scoreFallbackValue(b) - scoreFallbackValue(a))
+    .sort((a, b) => rawSignalFallbackValue(b) - rawSignalFallbackValue(a))
     .slice(0, Math.max(0, targetSize - strategySelected.length))
     .map((candidate, index) => annotateLayer1TopUp(candidate, strategySelected.length + index + 1))
 
@@ -726,11 +802,11 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     researchOnlyQueue: selection.researchOnlyQueue,
     selection,
     telemetry: {
-      selection_order: 'full_feature_enriched_universe_strategy_quota_then_score_top_up',
+      selection_order: 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up',
       target_size: targetSize,
       coarse_ml_queue_size: coarseMlQueueSize,
       strategy_selected_count: strategySelected.length,
-      score_top_up_count: topUp.length,
+      raw_signal_top_up_count: topUp.length,
       source_universe_count: featureEnrichedUniverse.length,
     },
   }

@@ -26,6 +26,8 @@ assert(page.includes('SchedulerCadenceChart'), 'SchedulerPage should render Sche
 assert(page.includes('status={scheduler.data}'), 'SchedulerPage should pass scheduler status into the chart')
 assert(page.includes('loading={scheduler.isLoading}'), 'SchedulerPage should pass loading state into the chart')
 assert(page.includes('error={scheduler.error}'), 'SchedulerPage should pass error state into the chart')
+assert(page.includes('data-testid="scheduler-signal-board"'), 'SchedulerPage should expose a visual signal board before dense run rows')
+assert(page.includes('sv-content-card') && page.includes('sv-muted-text') && page.includes('sv-accent-text'), 'SchedulerPage should consume the operations route surface tokens')
 assert(page.indexOf('SchedulerCadenceChart') < page.indexOf('Daily Pipeline Chain'), 'Scheduler visual workbench should render before the pipeline DAG')
 
 const packageLock = JSON.parse(fs.readFileSync(packageLockPath, 'utf8')) as {

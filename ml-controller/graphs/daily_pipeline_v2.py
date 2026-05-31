@@ -351,6 +351,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if str(payload.get("symbol")) in selected_core_symbols
     ]
     sequence_series = build_state_space_series_from_payloads(core_payloads)
+    for series in sequence_series:
+        sym = str(series.get("symbol") or "")
+        series["feature_score"] = _coarse_model_score(feature_by_symbol_for_gate.get(sym) or {})
     logger.info(
         "[Pipeline V2] Layer2 coarse ML gate selected "
         f"{len(core_payloads)}/{len(payloads)} core payloads "
@@ -366,6 +369,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         modal_client.patchtst_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("PatchTST", "v1"))
         if model_status.get("PatchTST", "active") in ("active", "degraded")
         else _skip_batch("PatchTST retired by model_pool")
+    )
+    formal_layer3_task = modal_client.layer3_formal_batch_predict(
+        sequence_series,
+        horizon=5,
+        models=["GNN", "TimesFM"],
     )
     state_space_mode = _state_space_overlay_mode()
     state_space_models = {
@@ -402,10 +410,12 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     (
         dlinear_raw,
         patchtst_raw,
+        formal_layer3_raw,
         state_space_raw,
     ) = await asyncio.gather(
         dlinear_task,
         patchtst_task,
+        formal_layer3_task,
         state_space_task,
         return_exceptions=True,
     )
@@ -449,6 +459,27 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         logger.debug(f"[Pipeline V2] PatchTST skipped: {patchtst_raw.get('error')}")
     else:
         logger.warning(f"[Pipeline V2] PatchTST batch returned error: {patchtst_raw}")
+
+    formal_layer3_maps: dict[str, dict[str, dict]] = {"GNN": {}, "TimesFM": {}}
+    formal_layer3_blockers: dict[str, str] = {}
+    if isinstance(formal_layer3_raw, BaseException):
+        logger.warning(f"[Pipeline V2] Layer3 formal batch failed entirely: {formal_layer3_raw}")
+    elif isinstance(formal_layer3_raw, dict) and not formal_layer3_raw.get("error"):
+        overlays = formal_layer3_raw.get("overlays") if isinstance(formal_layer3_raw.get("overlays"), dict) else {}
+        formal_layer3_blockers = formal_layer3_raw.get("blockers") if isinstance(formal_layer3_raw.get("blockers"), dict) else {}
+        for model_name in ("GNN", "TimesFM"):
+            for row in overlays.get(model_name) or []:
+                sym = row.get("symbol") if isinstance(row, dict) else None
+                if sym and not row.get("error"):
+                    formal_layer3_maps[model_name][str(sym)] = row
+        logger.info(
+            "[Pipeline V2] Layer3 formal production overlays: "
+            f"gnn={len(formal_layer3_maps['GNN'])}/{len(sequence_series)} "
+            f"timesfm={len(formal_layer3_maps['TimesFM'])}/{len(sequence_series)} "
+            f"blockers={formal_layer3_blockers}"
+        )
+    else:
+        logger.warning(f"[Pipeline V2] Layer3 formal batch returned error: {formal_layer3_raw}")
 
     def _drain_ts_result(raw, name: str, series: list[dict]) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -523,6 +554,17 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             row["dlinear"] = dlinear_map[sym]
         if sym in patchtst_map:
             row["patchtst"] = patchtst_map[sym]
+        gnn_row = formal_layer3_maps.get("GNN", {}).get(sym)
+        if gnn_row:
+            rank_scores = row.get("rank_scores") if isinstance(row.get("rank_scores"), dict) else {}
+            rank_scores["GNN"] = gnn_row.get("rank_score")
+            row["rank_scores"] = rank_scores
+            row["gnn"] = gnn_row
+        timesfm_row = formal_layer3_maps.get("TimesFM", {}).get(sym)
+        if timesfm_row:
+            row["timesfm"] = timesfm_row
+        if formal_layer3_blockers:
+            row["formal_layer3_blockers"] = formal_layer3_blockers
         if sym in kalman_map:
             row["kalman_filter"] = kalman_map[sym]
         if sym in markov_map:
@@ -645,6 +687,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"{error_count} errors, "
         f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
         f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}, "
+        f"gnn={sum(1 for v in pred_map.values() if 'gnn' in v)}, "
+        f"timesfm={sum(1 for v in pred_map.values() if 'timesfm' in v)}, "
         f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
         f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
         f"alt_fallback={alt_fallback_count}, "

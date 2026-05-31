@@ -80,7 +80,7 @@ function computeDataQualityScore(report?: DataQualityReport) {
 function MiniBar({ value, tone }: { value: number; tone: WorkstationTone }) {
   const clamped = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0))
   return (
-    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
       <div className="h-full rounded-full" style={{ width: `${clamped}%`, backgroundColor: toneColor(tone) }} />
     </div>
   )
@@ -117,22 +117,29 @@ function MetricCell({
   detail?: string
 }) {
   return (
-    <div className="border border-[#2b3a49] bg-[#070a10] p-3">
+    <div className="sv-content-card rounded-xl p-3">
       <div className="flex items-start justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#7f8ba0]">{label}</p>
+        <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.18em]">{label}</p>
         <WorkstationPill tone={tone}>{count ?? tone}</WorkstationPill>
       </div>
       <p className={`mt-2 text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-sky-300' : 'text-slate-200'}`}>
         {value}
       </p>
       <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 64 : tone === 'ok' ? 92 : 48} tone={tone} />
-      {detail && <p className="mt-2 text-xs leading-4 text-slate-500">{detail}</p>}
+      {detail && <p className="sv-muted-text mt-2 text-xs leading-4">{detail}</p>}
     </div>
   )
 }
 
+function scoreTone(score: number, hasFailure = false): WorkstationTone {
+  if (hasFailure) return 'error'
+  if (score >= 85) return 'ok'
+  if (score >= 65) return 'warn'
+  return 'error'
+}
+
 function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
-  if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
+  if (!jobs.length) return <div className="sv-muted-text p-4 text-sm">目前沒有 scheduler payload。</div>
   const sortedJobs = [...jobs].sort((a, b) => {
     const statusRank = (status: string) => status === 'failed' ? 0 : status === 'running' ? 1 : status === 'waiting' ? 2 : status === 'success' ? 3 : status === 'sleep' ? 4 : status === 'skip' ? 5 : 6
     return statusRank(a.lastStatus) - statusRank(b.lastStatus) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name)
@@ -140,38 +147,38 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
   return (
     <div className="space-y-3">
       <SchedulerExecutionMap jobs={jobs} />
-      <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
+      <div className="sv-disclosure overflow-hidden rounded-xl">
         {sortedJobs.map((job) => (
-          <div key={job.id} className="grid gap-2 border-b border-[#263247] bg-[#05070c] p-2 text-xs last:border-0 xl:grid-cols-[minmax(0,1fr)_0.75fr_0.7fr_120px]">
+          <div key={job.id} className="grid gap-2 border-b border-[color:var(--sv-panel-border-soft)] p-2 text-xs last:border-0 xl:grid-cols-[minmax(0,1fr)_0.75fr_0.7fr_120px]">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <WorkstationPill tone={statusTone(job.lastStatus)}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
-                <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
+                <p className="sv-title-text truncate text-sm font-semibold">{job.name}</p>
               </div>
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
+              <p className="sv-muted-text mt-1 font-mono text-[10px] uppercase tracking-[0.12em]">{job.group} / {job.schedule}</p>
             </div>
-            <div className="min-w-0 font-mono text-slate-400">
+            <div className="sv-muted-text min-w-0 font-mono">
               <p>發生 {job.lastRun || '-'}</p>
-              <p className="text-slate-600">next {job.nextRun || '-'}</p>
+              <p className="opacity-70">next {job.nextRun || '-'}</p>
             </div>
-            <div className="min-w-0 font-mono text-slate-400">
+            <div className="sv-muted-text min-w-0 font-mono">
               <p>{job.lastDuration || '-'}</p>
-              <p className="text-slate-600">7d {job.rate7d || '-'}</p>
+              <p className="opacity-70">7d {job.rate7d || '-'}</p>
             </div>
-            <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
+            <a href="/scheduler" className="sv-accent-text inline-flex items-center justify-end gap-1 self-start font-mono text-[10px] uppercase tracking-[0.14em]">
               Drilldown <ExternalLink className="h-3 w-3" />
             </a>
-            <div className={`xl:col-span-4 grid gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 ${schedulerHasRootCause(job) ? 'md:grid-cols-3' : 'md:grid-cols-1'}`}>
-              <p className="text-slate-400">
-                <span className="font-semibold text-slate-200">{schedulerStatusLogLabel(job)}：</span>{schedulerStatusLog(job)}
+            <div className={`sv-content-card xl:col-span-4 grid gap-2 rounded-lg p-2 text-xs leading-5 ${schedulerHasRootCause(job) ? 'md:grid-cols-3' : 'md:grid-cols-1'}`}>
+              <p className="sv-muted-text">
+                <span className="sv-title-text font-semibold">{schedulerStatusLogLabel(job)}：</span>{schedulerStatusLog(job)}
               </p>
               {schedulerHasRootCause(job) && (
                 <>
                   <p className="text-rose-300">
-                    <span className="font-semibold text-slate-200">Root cause：</span>{schedulerRootCause(job)}
+                    <span className="sv-title-text font-semibold">Root cause：</span>{schedulerRootCause(job)}
                   </p>
-                  <p className="text-slate-400">
-                    <span className="font-semibold text-slate-200">可能影響：</span>{schedulerImpact(job)}
+                  <p className="sv-muted-text">
+                    <span className="sv-title-text font-semibold">可能影響：</span>{schedulerImpact(job)}
                   </p>
                 </>
               )}
@@ -212,15 +219,15 @@ function SchedulerExecutionMap({ jobs }: { jobs: SchedulerJob[] }) {
   const waiting = active ? stages.slice(stages.indexOf(active) + 1).filter((stage) => stage.status !== 'success').map((stage) => stage.label) : []
 
   return (
-    <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+    <div className="sv-content-card rounded-xl p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Execution dependency map / 執行依賴地圖</p>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">Execution dependency map / 執行依賴地圖</p>
+          <p className="sv-muted-text mt-1 text-xs">
             目前階段：{active?.label ?? 'complete'}；等待：{waiting.slice(0, 4).join(' -> ') || 'none'}
           </p>
         </div>
-        <a href="/scheduler" className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
+        <a href="/scheduler" className="sv-accent-text inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em]">
           Full scheduler <ExternalLink className="h-3 w-3" />
         </a>
       </div>
@@ -234,13 +241,13 @@ function SchedulerExecutionMap({ jobs }: { jobs: SchedulerJob[] }) {
                     : stage.tone === 'neutral' ? 'border-slate-600/30 bg-slate-800/20'
                       : 'border-sky-500/25 bg-sky-500/10'
             }`}>
-              <p className="truncate text-xs font-semibold text-slate-100">{stage.label}</p>
+              <p className="sv-title-text truncate text-xs font-semibold">{stage.label}</p>
               <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em]" style={{ color: toneColor(stage.tone) }}>
                 {schedulerStatusLabel(stage.status)}
               </p>
-              <p className="mt-1 truncate font-mono text-[10px] text-slate-500">{stage.job?.lastDuration || '-'}</p>
+              <p className="sv-muted-text mt-1 truncate font-mono text-[10px]">{stage.job?.lastDuration || '-'}</p>
             </div>
-            {index < stages.length - 1 && <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-600" />}
+            {index < stages.length - 1 && <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[color:var(--sv-panel-border)]" />}
           </div>
         ))}
       </div>
@@ -258,11 +265,11 @@ function DataQualityScoreBar({ score, tone }: { score: number; tone: Workstation
   const clamped = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
   return (
     <div className="min-w-[120px]">
-      <div className="flex items-center justify-between font-mono text-[10px] text-slate-500">
+      <div className="sv-muted-text flex items-center justify-between font-mono text-[10px]">
         <span>score</span>
         <span className={tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : 'text-rose-300'}>{clamped}%</span>
       </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800">
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
         <div className="h-full rounded-full" style={{ width: `${clamped}%`, backgroundColor: toneColor(tone) }} />
       </div>
     </div>
@@ -270,13 +277,13 @@ function DataQualityScoreBar({ score, tone }: { score: number; tone: Workstation
 }
 
 function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
-  if (!checks.length) return <div className="p-4 text-sm text-slate-500">目前沒有 data quality checks。</div>
+  if (!checks.length) return <div className="sv-muted-text p-4 text-sm">目前沒有 data quality checks。</div>
   const sortedChecks = [...checks].sort((a, b) => {
     const rank = (status: string) => status === 'fail' ? 0 : status === 'warn' ? 1 : 2
     return rank(a.status) - rank(b.status) || a.id.localeCompare(b.id)
   })
   return (
-    <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
+    <div className="sv-disclosure overflow-hidden rounded-xl">
       {sortedChecks.map((check) => {
         const tone = statusTone(check.status)
         return (
@@ -284,11 +291,11 @@ function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <WorkstationPill tone={tone}>{check.status}</WorkstationPill>
-                <p className="min-w-0 break-words text-sm font-semibold text-slate-100">{check.label}</p>
+                <p className="sv-title-text min-w-0 break-words text-sm font-semibold">{check.label}</p>
               </div>
-              <p className="mt-1 break-all font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{check.id}</p>
+              <p className="sv-muted-text mt-1 break-all font-mono text-[10px] uppercase tracking-[0.12em]">{check.id}</p>
             </div>
-            <p className="min-w-0 whitespace-normal break-words leading-5 text-slate-400 [overflow-wrap:anywhere]">{check.summary}</p>
+            <p className="sv-muted-text min-w-0 whitespace-normal break-words leading-5 [overflow-wrap:anywhere]">{check.summary}</p>
             <DataQualityScoreBar score={checkScore(check.status)} tone={tone} />
             <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-200 hover:text-emerald-100">
               Inspect <ExternalLink className="h-3 w-3" />
@@ -389,9 +396,9 @@ function AdaptiveMetaPanel({
   return (
     <WorkstationPanel title="Adaptive / Meta Evidence" kicker="threshold, bandit, GA">
       <div className="grid gap-3 p-3 xl:grid-cols-3">
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+        <div className="sv-content-card rounded-xl p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Threshold Policy</p>
+            <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">Threshold Policy</p>
             <WorkstationPill tone={tone}>{adaptive?.status ?? 'missing'}</WorkstationPill>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -412,9 +419,9 @@ function AdaptiveMetaPanel({
           </div>
         </div>
 
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+        <div className="sv-content-card rounded-xl p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">LinUCB Guard</p>
+            <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">LinUCB Guard</p>
             <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
@@ -431,7 +438,7 @@ function AdaptiveMetaPanel({
               <p className="font-mono text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
             </div>
           </div>
-          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+          <div className="sv-content-card mt-3 rounded-lg p-2 text-[11px] leading-5 text-slate-300">
             <div className="flex flex-wrap items-center gap-2">
               <WorkstationPill tone={linucbLedger.reward_ledger_status === 'updated' ? 'ok' : 'warn'}>
                 ledger {String(linucbLedger.reward_ledger_status ?? 'missing')}
@@ -446,9 +453,9 @@ function AdaptiveMetaPanel({
           </div>
         </div>
 
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+        <div className="sv-content-card rounded-xl p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">GA Promotion</p>
+            <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">GA Promotion</p>
             <WorkstationPill tone={severityTone(ga?.severity)}>{String(promotion.level ?? 'L0')}</WorkstationPill>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -487,7 +494,7 @@ function AdaptiveMetaPanel({
             <span>MDD95 {fmtNumber(bestMetrics.mdd_95th, 3)}</span>
             <span>Sharpe {fmtNumber(bestMetrics.sharpe, 2)}</span>
           </div>
-          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+          <div className="sv-content-card mt-3 rounded-lg p-2 text-[11px] leading-5 text-slate-300">
             <p className="font-semibold text-slate-100">L3 gate evidence</p>
             <div className="mt-2 flex flex-wrap gap-1">
               {(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']).map((item) => (
@@ -506,7 +513,7 @@ function AdaptiveMetaPanel({
             </div>
             <p className="mt-2 text-[#9badbf]">{gaNextAction || 'GA promotion state has not exposed a next action yet.'}</p>
           </div>
-          <p className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+          <p className="sv-content-card mt-3 rounded-lg p-2 text-[11px] leading-5 text-slate-300">
             learned policy: {summarizeLearnedPolicy(learnedPolicy)}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -602,17 +609,17 @@ function DependencyMap() {
     <div className="p-3">
       <div className="grid grid-cols-2 gap-2">
         {nodes.map(([name, role], index) => (
-          <div key={name} className="rounded border border-[#263247] bg-[#05070c] p-2">
+          <div key={name} className="sv-content-card rounded p-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-200">{name}</p>
-              {index < nodes.length - 1 && <ArrowRight className="h-3 w-3 text-amber-300" />}
+              <p className="sv-title-text font-mono text-[10px] uppercase tracking-[0.14em]">{name}</p>
+              {index < nodes.length - 1 && <ArrowRight className="sv-accent-text h-3 w-3" />}
             </div>
-            <p className="mt-1 text-xs text-slate-500">{role}</p>
+            <p className="sv-muted-text mt-1 text-xs">{role}</p>
           </div>
         ))}
       </div>
-      <div className="mt-3 border-t border-[#263247] pt-3">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Execution realism watch</p>
+      <div className="mt-3 border-t border-[color:var(--sv-panel-border-soft)] pt-3">
+        <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">Execution realism watch</p>
         <div className="mt-2 flex flex-wrap gap-2">
           {EXECUTION_REALISM_STATES.map((item) => (
             <WorkstationPill key={item} tone={item.includes('unavailable') || item.includes('stale') ? 'warn' : 'info'}>
@@ -694,17 +701,18 @@ export default function ObservabilityPage() {
   const deployScore = deployGate.data?.decision === 'PASS' ? 100 : deployGate.data?.decision === 'WARN' ? 70 : 30
   const failedJobs = jobs.filter((job) => job.lastStatus === 'failed').length
   const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
+  const obsIncidents = events.filter((event) => event.severity === 'error' || event.severity === 'warn').length
   const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
 
   return (
     <AppShell>
       <div className="relative min-h-[70vh] p-4 lg:p-5">
         {initialLoading && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#05070c]/95 backdrop-blur-sm">
-            <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
-              <Loader2 className="mx-auto h-6 w-6 animate-spin text-sky-300" />
-              <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.18em] text-sky-200">Loading OBS evidence</p>
-              <p className="mt-1 text-xs text-slate-500">scheduler / data quality / deploy gate / model events</p>
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[color:var(--sv-panel-deep)]/95 backdrop-blur-sm">
+            <div className="sv-content-card rounded-xl px-5 py-4 text-center shadow-xl">
+              <Loader2 className="sv-accent-text mx-auto h-6 w-6 animate-spin" />
+              <p className="sv-accent-text mt-3 font-mono text-[11px] uppercase tracking-[0.18em]">Loading OBS evidence</p>
+              <p className="sv-muted-text mt-1 text-xs">scheduler / data quality / deploy gate / model events</p>
             </div>
           </div>
         )}
@@ -723,6 +731,37 @@ export default function ObservabilityPage() {
           }
         />
 
+        <section data-testid="obs-signal-board" className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCell
+            label="Scheduler SLO"
+            value={`${Math.round(schedulerScore)}%`}
+            tone={scoreTone(schedulerScore, failedJobs > 0)}
+            count={failedJobs ? `${failedJobs} failed` : 'chain'}
+            detail={`${jobs.length} jobs; failures first, drilldown below`}
+          />
+          <MetricCell
+            label="Data Quality"
+            value={`${dataQualityScore}%`}
+            tone={scoreTone(dataQualityScore, failedChecks > 0)}
+            count={failedChecks ? `${failedChecks} fail` : formatStatus(dataQuality.data?.overall)}
+            detail={`${dqChecks.length} checks; freshness/schema/parity evidence`}
+          />
+          <MetricCell
+            label="Deploy Gate"
+            value={`${deployScore}%`}
+            tone={statusTone(deployGate.data?.decision)}
+            count={formatStatus(deployGate.data?.decision)}
+            detail="predeploy contract and live-readiness guard"
+          />
+          <MetricCell
+            label="OBS Events"
+            value={String(obsIncidents)}
+            tone={obsIncidents ? severityTone(observability.data?.overall) : 'ok'}
+            count={formatStatus(observability.data?.overall)}
+            detail="scheduler / data-quality / adaptive-meta incidents"
+          />
+        </section>
+
         <section className="grid gap-4 xl:grid-cols-[minmax(0,4fr)_minmax(260px,1fr)]">
           <AdaptiveMetaPanel
             events={events}
@@ -736,9 +775,9 @@ export default function ObservabilityPage() {
         </section>
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
-          <div className="border-b border-[#263247] p-3">
+          <div className="border-b border-[color:var(--sv-panel-border-soft)] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs leading-5 text-slate-400">
+              <p className="sv-muted-text text-xs leading-5">
                 Scheduler row 直接顯示 root cause、發生時間與可能影響；OBS 不再另外維護重複的事件收件匣。
               </p>
               <div className="flex flex-wrap gap-2 text-[11px]">
@@ -763,7 +802,7 @@ export default function ObservabilityPage() {
           <div className="grid gap-3 p-3 xl:grid-cols-2">
             <div>
               <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
+                <p className="sv-muted-text shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em]">Scheduler Runs / 排程執行</p>
                 <div className="hidden w-32 shrink-0 sm:block">
                   <Sparkline values={(jobs.length ? jobs : []).slice(0, 12).map((job) => job.lastStatus === 'success' ? 100 : job.lastStatus === 'waiting' ? 70 : job.lastStatus === 'sleep' || job.lastStatus === 'skip' ? 45 : 5)} tone={failedJobs ? 'warn' : 'ok'} />
                 </div>
@@ -772,7 +811,7 @@ export default function ObservabilityPage() {
             </div>
             <div>
               <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Data Quality / 資料品質</p>
+                <p className="sv-muted-text shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em]">Data Quality / 資料品質</p>
                 <div className="hidden items-center gap-3 sm:flex">
                   <span className={`font-mono text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
                   <div className="w-32 shrink-0">

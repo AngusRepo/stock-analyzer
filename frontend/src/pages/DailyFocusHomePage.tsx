@@ -72,10 +72,10 @@ function RiskGauge({ score, label }: { score: number; label: string }) {
   const circumference = 2 * Math.PI * radius
   const dash = (safe / 100) * circumference
   return (
-    <div className="grid min-h-[220px] place-items-center rounded-xl border border-[#263247] bg-[#05070c] p-4">
+    <div className="sv-content-card grid min-h-[220px] place-items-center rounded-xl p-4">
       <div className="relative h-40 w-40">
         <svg viewBox="0 0 128 128" className="h-40 w-40 -rotate-90">
-          <circle cx="64" cy="64" r={radius} fill="none" stroke="#172033" strokeWidth="12" />
+          <circle cx="64" cy="64" r={radius} fill="none" stroke="var(--sv-panel-raised)" strokeWidth="12" />
           <circle
             cx="64"
             cy="64"
@@ -89,8 +89,8 @@ function RiskGauge({ score, label }: { score: number; label: string }) {
         </svg>
         <div className="absolute inset-0 grid place-items-center text-center">
           <div>
-            <div className="font-['Space_Grotesk'] text-4xl font-semibold text-[#f2ead8]">{Math.round(safe)}</div>
-            <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#8b9bab]">{label}</div>
+            <div className="sv-title-text font-['Space_Grotesk'] text-4xl font-semibold">{Math.round(safe)}</div>
+            <div className="sv-muted-text mt-1 font-mono text-[10px] uppercase tracking-[0.14em]">{label}</div>
           </div>
         </div>
       </div>
@@ -102,7 +102,7 @@ function FlowTooltip({ active, payload }: { active?: boolean; payload?: Array<{ 
   const row = payload?.[0]?.payload
   if (!active || !row) return null
   return (
-    <div className="border border-[#263247] bg-[#070a10] px-3 py-2 text-xs text-[#d7e0ea] shadow-xl">
+    <div className="sv-content-card rounded-lg px-3 py-2 text-xs text-[color:var(--sv-text-soft)] shadow-xl">
       <div className="font-semibold">{row.name}</div>
       <div className="mt-1 font-mono text-[#9badbf]">net {fmtNet(row.net)}</div>
       <div className="font-mono text-[#9badbf]">pool {fmtInt(row.stockCount)}</div>
@@ -115,28 +115,28 @@ function ThemeFlowChart({ flows }: { flows: PublicDailyFlow[] }) {
   const rows = flows.slice(0, 12)
   if (!rows.length) {
     return (
-      <div className="grid h-[310px] place-items-center rounded-xl border border-[#263247] bg-[#05070c] text-sm text-[#70809b]">
+      <div className="sv-content-card sv-muted-text grid h-[310px] place-items-center rounded-xl text-sm">
         今日公開主題流尚未產生
       </div>
     )
   }
 
   return (
-    <div className="h-[310px] rounded-xl border border-[#263247] bg-[#05070c] p-3">
+    <div className="sv-content-card h-[310px] rounded-xl p-3">
       <ResponsiveContainer width="100%" height={CHART_HEIGHT - 24}>
         <BarChart data={rows} layout="vertical" margin={{ top: 8, right: 20, bottom: 8, left: 8 }}>
           <CartesianGrid stroke="rgba(148,163,184,0.12)" horizontal={false} />
           <XAxis
             type="number"
-            tick={{ fill: '#70809b', fontSize: 11 }}
+            tick={{ fill: 'var(--sv-text-muted)', fontSize: 11 }}
             tickLine={false}
-            axisLine={{ stroke: '#263247' }}
+            axisLine={{ stroke: 'var(--sv-panel-border-soft)' }}
           />
           <YAxis
             dataKey="name"
             type="category"
             width={96}
-            tick={{ fill: '#a8b6c5', fontSize: 11 }}
+            tick={{ fill: 'var(--sv-text-soft)', fontSize: 11 }}
             tickLine={false}
             axisLine={false}
           />
@@ -163,11 +163,11 @@ function PublicCandidateArc({ buy, hold, sell }: { buy: number; hold: number; se
     <div className="space-y-3">
       {lanes.map((lane) => (
         <div key={lane.label}>
-          <div className="mb-1 flex justify-between font-mono text-[10px] uppercase tracking-[0.12em] text-[#8b9bab]">
+          <div className="sv-muted-text mb-1 flex justify-between font-mono text-[10px] uppercase tracking-[0.12em]">
             <span>{lane.label}</span>
             <span className={lane.text}>{fmtInt(lane.value)}</span>
           </div>
-          <div className="h-3 overflow-hidden rounded-full bg-[#172033]">
+          <div className="h-3 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
             <div className={cn('h-full rounded-full', lane.color)} style={{ width: `${Math.max(4, (lane.value / total) * 100)}%` }} />
           </div>
         </div>
@@ -187,19 +187,19 @@ function FlowCloud({ flows }: { flows: PublicDailyFlow[] }) {
         return (
           <div
             key={row.name}
-            className="min-h-[92px] rounded-xl border border-[#263247] bg-[#05070c] p-3"
+            className="sv-content-card min-h-[92px] rounded-xl p-3"
             style={{ boxShadow: `inset 0 0 0 999px rgba(${row.net >= 0 ? '251,113,133' : '52,211,153'},${0.04 + intensity * 0.11})` }}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-[#f2ead8]">{row.name}</div>
-                <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8b9bab]">{row.quadrant}</div>
+                <div className="sv-title-text truncate text-sm font-semibold">{row.name}</div>
+                <div className="sv-muted-text mt-1 font-mono text-[10px] uppercase tracking-[0.12em]">{row.quadrant}</div>
               </div>
               <span className={cn('font-mono text-xs', row.net >= 0 ? 'text-rose-200' : 'text-emerald-200')}>
                 {fmtNet(row.net)}
               </span>
             </div>
-            <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#172033]">
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
               <div
                 className={cn('h-full rounded-full', row.net >= 0 ? 'bg-rose-300' : 'bg-emerald-300')}
                 style={{ width: `${Math.max(8, intensity * 100)}%` }}
@@ -261,7 +261,7 @@ export default function DailyFocusHomePage() {
               <Button
                 size="sm"
                 variant="outline"
-                className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]"
+                className="rounded-full border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] text-[color:var(--sv-accent)] hover:bg-[color:var(--sv-accent-soft)]"
                 onClick={refreshAll}
               >
                 <RefreshCw className={cn('mr-1 h-3.5 w-3.5', isLoading && 'animate-spin')} />
@@ -312,7 +312,7 @@ export default function DailyFocusHomePage() {
           >
             <div className="grid gap-3 p-3">
               <RiskGauge score={packet.riskScore} label={packet.riskLevel} />
-              <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#a8b6c5]">
+              <div className="sv-content-card rounded-xl p-3 text-xs leading-5 text-[color:var(--sv-text-soft)]">
                 {packet.riskSummary}
               </div>
             </div>
@@ -339,11 +339,11 @@ export default function DailyFocusHomePage() {
           <WorkstationPanel
             title="Signal Distribution"
             kicker="aggregate only"
-            action={<EyeOff className="h-4 w-4 text-[#ffd87f]" />}
+            action={<EyeOff className="sv-accent-text h-4 w-4" />}
           >
             <div className="space-y-4 p-3">
               <PublicCandidateArc buy={packet.buyCount} hold={packet.holdCount} sell={packet.sellCount} />
-              <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#a8b6c5]">
+              <div className="sv-content-card rounded-xl p-3 text-xs leading-5 text-[color:var(--sv-text-soft)]">
                 {packet.informationBoundary}
               </div>
             </div>
@@ -356,12 +356,12 @@ export default function DailyFocusHomePage() {
           action={<ShieldCheck className="h-4 w-4 text-emerald-300" />}
         >
           <div className="grid gap-3 p-3 xl:grid-cols-[1fr_1.4fr]">
-            <div className="rounded-xl border border-[#263247] bg-[#05070c] p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#f2ead8]">
-                <Sparkles className="h-4 w-4 text-[#ffd87f]" />
+            <div className="sv-content-card rounded-xl p-4">
+              <div className="sv-title-text flex items-center gap-2 text-sm font-semibold">
+                <Sparkles className="sv-accent-text h-4 w-4" />
                 今日公開摘要
               </div>
-              <p className="mt-3 text-sm leading-6 text-[#a8b6c5]">{packet.dailyDigest}</p>
+              <p className="mt-3 text-sm leading-6 text-[color:var(--sv-text-soft)]">{packet.dailyDigest}</p>
             </div>
             <WorkstationFlow
               steps={[
@@ -381,22 +381,22 @@ export default function DailyFocusHomePage() {
             { icon: BarChart3, label: 'pool', detail: '候選池只顯示聚合' },
             { icon: Bot, label: 'private', detail: '核心交易留在 Bot' },
           ].map(({ icon: Icon, label, detail }) => (
-            <div key={label} className="flex min-h-[76px] items-center gap-3 rounded-xl border border-[#263247] bg-[#05070c] p-3">
-              <Icon className="h-5 w-5 text-[#ffd87f]" />
+            <div key={label} className="sv-content-card flex min-h-[76px] items-center gap-3 rounded-xl p-3">
+              <Icon className="sv-accent-text h-5 w-5" />
               <div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#8b9bab]">{label}</div>
-                <div className="mt-1 text-sm text-[#f2ead8]">{detail}</div>
+                <div className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">{label}</div>
+                <div className="sv-title-text mt-1 text-sm">{detail}</div>
               </div>
             </div>
           ))}
         </div>
 
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#8b9bab]">
+          <div className="sv-content-card sv-muted-text rounded-xl p-3 text-xs leading-5">
             <Activity className="mb-2 h-4 w-4 text-[#7aa2c7]" />
             Home 現在是正式入口，但資料面保留資訊落差：公開頁只看宏觀聚合，不讀核心推薦卡。
           </div>
-          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#8b9bab]">
+          <div className="sv-content-card sv-muted-text rounded-xl p-3 text-xs leading-5">
             <TrendingUp className="mb-2 inline h-4 w-4 text-rose-300" />
             <TrendingDown className="mb-2 ml-2 inline h-4 w-4 text-emerald-300" />
             紅綠只代表市場資金流方向；不代表首頁可以直接推導進出場。

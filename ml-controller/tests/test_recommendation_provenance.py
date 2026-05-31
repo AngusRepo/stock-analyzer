@@ -770,6 +770,28 @@ def test_core_family_vote_counts_tree_and_learned_sequence_as_active_families():
     assert vote["family_score"] == pytest.approx((expected_tree + expected_sequence) / 2)
 
 
+def test_core_family_vote_counts_formal_gnn_and_timesfm_when_served():
+    prediction = {
+        "rank_scores": {
+            "XGBoost": 0.70,
+            "LightGBM": 0.75,
+            "GNN": 0.62,
+        },
+        "timesfm": {"forecast_pct": 0.02},
+    }
+
+    vote = recommendation_service.build_core_family_vote(prediction)
+
+    assert "graph" in vote["active_families"]
+    assert "foundation_sequence" in vote["active_families"]
+    assert vote["families"]["graph"]["models"]["GNN"] == pytest.approx(0.62)
+    assert vote["families"]["foundation_sequence"]["models"]["TimesFM"] == pytest.approx(
+        1.0 / (1.0 + math.exp(-0.02 * 12.0))
+    )
+    assert "GNN" not in vote["inactive_formal_models"]
+    assert "TimesFM" not in vote["inactive_formal_models"]
+
+
 def test_core_family_rank_reorders_by_family_score_and_persists_evidence():
     rows = [
         {

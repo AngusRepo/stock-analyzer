@@ -122,7 +122,15 @@ function candidatePolicyForStatus(
   const base = {
     poolQuota: 8,
     costBudget: 10,
-    evidenceRequirements: ['finlab_ai_skill', 'finlab_factor', 'finlab_taxonomy', 'strategy_hypothesis', 'research_reward'],
+    evidenceRequirements: [
+      'finlab_ai_skill',
+      'finlab_factor',
+      'raw_factor_mining',
+      'raw_technical_indicator_mining',
+      'finlab_taxonomy',
+      'strategy_hypothesis',
+      'research_reward',
+    ],
   }
   if (status === 'research') return { ...base, maxMlShare: 0 }
   return base
@@ -150,8 +158,6 @@ export function buildFinLabAiSkillStrategySpecDraft(
     supportedRegimes: supportedRegimes(input),
     thesis: cleanText(input.hypothesis),
     thresholds: {
-      minSeedScore: status === 'research' ? 50 : 56,
-      minTechScore: status === 'research' ? 10 : 14,
       minPrice: 10,
       ...(includeIndustries ? { includeIndustries } : {}),
       ...(input.thresholds ?? {}),
@@ -276,7 +282,7 @@ function packetFromTaxonomyRow(
     id: `${tagType}_${tag}`,
     hypothesis: `FinLab AI Skill discovered ${tagType}:${tag} breadth with ${symbolCount} covered symbols and avg taxonomy weight ${avgWeight}; evaluate it as a reusable L1 strategy hypothesis before any production promotion.`,
     taxonomyRefs: [`${tagType}:${tag}`],
-    factorRefs: ['finlab_taxonomy_breadth', 'score_v2_seed', 'strategy_reward'],
+    factorRefs: ['finlab_taxonomy_breadth', 'raw_factor_mining', 'raw_technical_indicator_mining', 'strategy_reward'],
     sourceRefs: [`run_date:${date}`, row.latest_as_of_date ? `latest_as_of_date:${row.latest_as_of_date}` : 'latest_as_of_date:unknown'],
     tag,
     tagType,

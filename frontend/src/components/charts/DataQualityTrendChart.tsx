@@ -87,57 +87,81 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
     height: 340,
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: '#070a10' },
-      textColor: '#9aa6bd',
+      background: { type: ColorType.Solid, color: '#0b0908' },
+      textColor: '#a28274',
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      vertLines: { color: 'rgba(162, 130, 116, 0.10)' },
+      horzLines: { color: 'rgba(162, 130, 116, 0.10)' },
     },
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 138, 76, 0.22)',
       scaleMargins: { top: 0.08, bottom: 0.2 },
     },
     timeScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 138, 76, 0.22)',
       timeVisible: false,
       secondsVisible: false,
     },
   }
 }
 
+function SnapshotDisclosure() {
+  return (
+    <p className="mt-2 max-w-2xl text-xs leading-5 text-[color:var(--sv-text-soft)]">
+      Current API data is a snapshot, not a historical trend. This workbench projects each check onto a review timeline so freshness, schema, parity, and feature coverage gaps can be scanned without repeating the raw table.
+    </p>
+  )
+}
+
+function MetricTile({ label, value, tone }: { label: string; value: string | number; tone: 'ok' | 'warn' | 'error' | 'neutral' }) {
+  const toneClass = tone === 'ok'
+    ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-200'
+    : tone === 'warn'
+      ? 'border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] text-[color:var(--sv-accent)]'
+      : tone === 'error'
+        ? 'border-rose-400/25 bg-rose-400/10 text-rose-200'
+        : 'border-slate-500/25 bg-slate-500/10 text-slate-300'
+
+  return (
+    <div className={`border px-3 py-2 ${toneClass}`}>
+      {label} {value}
+    </div>
+  )
+}
+
 function EmptyWorkbench({ message }: { message: string }) {
   const bars = [0.64, 0.42, 0.76, 0.58, 0.34, 0.69, 0.51, 0.84]
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
+    <section className="sv-content-card overflow-hidden rounded-xl">
+      <header className="grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-emerald-300">Data Quality Visual Workbench</p>
-          <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">資料品質圖面等待 checks</h2>
-          <p className="mt-2 text-xs leading-5 text-[#9badbf]">{message}</p>
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">Data Quality Visual Workbench</p>
+          <h2 className="sv-title-text mt-1 text-xl font-semibold">資料品質視覺檢查台</h2>
+          <p className="sv-muted-text mt-2 text-xs leading-5">{message}</p>
         </div>
         <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
-          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">checks 0</div>
-          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">score N/A</div>
-          <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">api degraded</div>
+          <MetricTile label="checks" value={0} tone="neutral" />
+          <MetricTile label="score" value="N/A" tone="neutral" />
+          <MetricTile label="api" value="degraded" tone="error" />
         </div>
       </header>
-      <div className="relative min-h-[300px] overflow-hidden bg-[#070a10] p-4">
-        <div className="absolute inset-0 opacity-50 [background-image:linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] [background-size:42px_42px]" />
-        <div className="relative flex h-[250px] items-end gap-3 border-l border-b border-[#3a4659] px-4 pb-6">
+      <div className="relative min-h-[300px] overflow-hidden bg-[color:var(--sv-panel-deep)] p-4">
+        <div className="absolute inset-0 opacity-55 [background-image:linear-gradient(rgba(255,138,76,0.09)_1px,transparent_1px),linear-gradient(90deg,rgba(162,130,116,0.08)_1px,transparent_1px)] [background-size:42px_42px]" />
+        <div className="relative flex h-[250px] items-end gap-3 border-l border-b border-[color:var(--sv-panel-border)] px-4 pb-6">
           {bars.map((height, index) => (
             <div key={index} className="flex flex-1 flex-col items-center gap-2">
               <div
-                className="w-full border border-emerald-300/25 bg-emerald-300/10"
+                className="w-full border border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)]"
                 style={{ height: `${Math.max(16, height * 190)}px` }}
               />
-              <div className="h-1.5 w-1.5 bg-amber-300" />
+              <div className="h-1.5 w-1.5 bg-[color:var(--sv-accent)]" />
             </div>
           ))}
         </div>
-        <div className="relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">
+        <div className="sv-muted-text relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em]">
           <span>freshness</span>
           <span>schema</span>
           <span>train / serve parity</span>
@@ -201,47 +225,45 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
     }
   }, [failCount, markers, points, warnCount])
 
-  if (loading) return <EmptyWorkbench message="Data Quality API 載入中，先保留資料品質圖面位置。" />
+  if (loading) return <EmptyWorkbench message="Data Quality API 載入中，先保留視覺檢查台骨架。" />
   if (error) return <EmptyWorkbench message={error instanceof Error ? error.message : 'Data Quality API failed.'} />
-  if (!points.length) return <EmptyWorkbench message="目前沒有 data-quality checks；請確認 Worker admin data-quality endpoint。" />
+  if (!points.length) return <EmptyWorkbench message="目前沒有 data-quality checks；請確認 Worker admin data-quality endpoint 是否已回傳資料。" />
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_18px_60px_rgba(0,0,0,0.20)]">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-center">
+    <section className="sv-content-card overflow-hidden rounded-xl shadow-[0_18px_60px_rgba(0,0,0,0.20)]">
+      <header className="grid gap-3 border-b border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)] p-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-emerald-300">Data Quality Visual Workbench</p>
-          <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">資料品質 evidence surface</h2>
-          <p className="mt-2 max-w-2xl text-xs leading-5 text-[#9badbf]">
-            這張圖把本次 freshness、schema、train/serve parity 與 feature coverage checks 轉成可掃描的品質曲線與缺口 marker。這不是歷史趨勢，等 V4 operations timeline contract 補齊後再接多日序列。
-          </p>
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">Data Quality Visual Workbench</p>
+          <h2 className="sv-title-text mt-1 text-xl font-semibold">資料品質 evidence surface</h2>
+          <SnapshotDisclosure />
         </div>
         <div className="grid grid-cols-4 gap-2 font-mono text-[11px]">
-          <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">score {trustScore}%</div>
-          <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">ok {okCount}</div>
-          <div className="border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-200">warn {warnCount}</div>
-          <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">fail {failCount}</div>
+          <MetricTile label="score" value={`${trustScore}%`} tone={failCount ? 'error' : warnCount ? 'warn' : 'ok'} />
+          <MetricTile label="ok" value={okCount} tone="ok" />
+          <MetricTile label="warn" value={warnCount} tone={warnCount ? 'warn' : 'neutral'} />
+          <MetricTile label="fail" value={failCount} tone={failCount ? 'error' : 'neutral'} />
         </div>
       </header>
 
-      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.55fr)]">
-        <div ref={containerRef} className="min-h-[340px] w-full bg-[#070a10]" />
-        <aside className="bg-[#070a10] p-4">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">gap focus</p>
+      <div className="grid gap-px bg-[color:var(--sv-panel-border-soft)] lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.55fr)]">
+        <div ref={containerRef} className="min-h-[340px] w-full bg-[color:var(--sv-panel-deep)]" />
+        <aside className="bg-[color:var(--sv-panel-deep)] p-4">
+          <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.18em]">gap focus</p>
           <div className="mt-3 space-y-2 text-xs">
             {topGaps.length ? topGaps.map((point) => (
               <a
                 key={point.check.id}
                 href={`/data-quality?focus=${point.check.id}`}
-                className="block border border-[#263247] bg-[#0f151d] p-2 text-[#c8d3df] hover:border-[#d6a85f]/50"
+                className="sv-content-card block rounded-lg p-2 text-[color:var(--sv-text-soft)] hover:border-[color:var(--sv-accent-border)]"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-semibold">{point.check.label}</span>
+                  <span className="sv-title-text truncate font-semibold">{point.check.label}</span>
                   <span className="font-mono text-[10px]" style={{ color: point.color }}>{point.check.status}</span>
                 </div>
-                <p className="mt-1 line-clamp-2 text-[#8b9bab]">{point.check.summary}</p>
+                <p className="sv-muted-text mt-1 line-clamp-2">{point.check.summary}</p>
               </a>
             )) : (
-              <div className="border border-emerald-400/25 bg-emerald-400/10 p-2 text-emerald-200">
+              <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 p-2 text-emerald-200">
                 目前沒有 fail/warn checks。
               </div>
             )}

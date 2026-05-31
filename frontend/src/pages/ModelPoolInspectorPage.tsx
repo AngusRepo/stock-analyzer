@@ -143,19 +143,19 @@ function VisualSummaryBar({
       disabled={!interactive}
       onClick={onClick}
       className={cn(
-        'w-full rounded-xl border bg-[#05070c] p-3 text-left transition-colors hover:border-[#d6a85f]/45 hover:bg-[#0a111b]',
-        active ? 'border-[#d6a85f]/70 ring-1 ring-[#d6a85f]/30' : 'border-[#263247]',
-        !interactive && 'cursor-default hover:border-[#263247] hover:bg-[#05070c]',
+        'w-full rounded-xl p-3 text-left transition-colors',
+        active ? 'sv-content-card-selected' : 'sv-content-card hover:border-[color:var(--sv-accent-border)]',
+        !interactive && 'cursor-default',
       )}
     >
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{label}</p>
-          {detail && <p className="mt-0.5 truncate text-[10px] text-[#8b9bab]">{detail}</p>}
+          <p className="sv-muted-text truncate font-mono text-[10px] uppercase tracking-[0.12em]">{label}</p>
+          {detail && <p className="sv-muted-text mt-0.5 truncate text-[10px]">{detail}</p>}
         </div>
         <span className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${toneClass.replace(/^bg-\S+\s/, '')}`}>{count}</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-[#172033]">
+      <div className="h-2 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
         <div className={`h-full rounded-full ${toneClass.split(' ')[0]}`} style={{ width: `${pct}%` }} />
       </div>
     </button>
@@ -215,7 +215,7 @@ function InspectorVisualSummary({
             <button
               type="button"
               data-testid="inspector-visual-summary-reset"
-              className="visual-filter-reset rounded-md border border-[#d6a85f]/35 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#f1c16f] hover:bg-[#d6a85f]/10"
+              className="visual-filter-reset sv-surface-chip-accent rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em]"
               onClick={onReset}
             >
               clear {visualFilter.kind}
@@ -228,7 +228,7 @@ function InspectorVisualSummary({
       <div className="visual-inspector-summary grid gap-3 p-3 xl:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)]">
         <div className="space-y-3">
           <div>
-            <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">gate distribution</div>
+            <div className="sv-muted-text mb-2 font-mono text-[10px] uppercase tracking-[0.14em]">gate distribution</div>
             <div className="grid gap-2 sm:grid-cols-2">
               {gateRows.map((row) => (
                 <VisualSummaryBar
@@ -246,7 +246,7 @@ function InspectorVisualSummary({
             </div>
           </div>
           <div>
-            <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">state distribution</div>
+            <div className="sv-muted-text mb-2 font-mono text-[10px] uppercase tracking-[0.14em]">state distribution</div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {stateRows.map((row) => (
                 <VisualSummaryBar
@@ -264,7 +264,7 @@ function InspectorVisualSummary({
           </div>
         </div>
         <div>
-          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[#70809b]">evidence coverage</div>
+          <div className="sv-muted-text mb-2 font-mono text-[10px] uppercase tracking-[0.14em]">evidence coverage</div>
           <div className="space-y-2">
             {evidenceRows.map((row) => (
               <VisualSummaryBar
@@ -280,7 +280,7 @@ function InspectorVisualSummary({
               />
             ))}
           </div>
-          <div className="mt-3 rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#8b9bab]">
+          <div className="sv-content-card sv-muted-text mt-3 rounded-xl p-3 text-xs leading-5">
             這層只做 raw registry 的快速讀圖；完整 artifact id、gate 欄位與 evidence keys 保留在下方 read-only table。
           </div>
         </div>
@@ -343,7 +343,7 @@ export default function ModelPoolInspectorPage() {
               <Button
                 size="sm"
                 variant="outline"
-                className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]"
+                className="rounded-full border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] text-[color:var(--sv-accent)] hover:bg-[color:var(--sv-accent-soft)]"
                 onClick={() => artifactRegistry.refetch()}
               >
                 <RefreshCw className={cn('mr-1 h-3.5 w-3.5', artifactRegistry.isFetching && 'animate-spin')} />
@@ -375,22 +375,22 @@ export default function ModelPoolInspectorPage() {
         >
           <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
             <label className="relative block">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#70809b]" />
+              <Search className="sv-muted-text pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
               <input
                 value={filter}
                 onChange={(event) => setFilter(event.target.value)}
                 placeholder="filter by model, artifact id, state, gate..."
-                className="h-10 w-full rounded-xl border border-[#263247] bg-[#05070c] pl-9 pr-3 font-mono text-sm text-[#e6edf3] outline-none focus:border-[#d6a85f]/60"
+                className="sv-surface-input h-10 w-full rounded-xl pl-9 pr-3 font-mono text-sm"
               />
             </label>
-            <div className="flex items-center gap-2 text-xs text-[#8b9bab]">
+            <div className="sv-muted-text flex items-center gap-2 text-xs">
               <Database className="h-4 w-4 text-[#7aa2c7]" />
               {filteredRows.length} / {rows.length} rows
               {visualFilter && (
                 <button
                   type="button"
                   data-testid="inspector-visual-table-reset"
-                  className="visual-filter-reset rounded border border-[#d6a85f]/35 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#f1c16f] hover:bg-[#d6a85f]/10"
+                  className="visual-filter-reset sv-surface-chip-accent rounded px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em]"
                   onClick={() => setVisualFilter(null)}
                 >
                   {visualFilter.kind}: {visualFilter.value}
@@ -409,7 +409,7 @@ export default function ModelPoolInspectorPage() {
         <WorkstationPanel
           title="Raw Registry Rows"
           kicker="artifact id / gate / evidence preview"
-          action={<FileJson className="h-4 w-4 text-[#ffd87f]" />}
+          action={<FileJson className="sv-accent-text h-4 w-4" />}
         >
           <div className="overflow-x-auto">
             <table className="min-w-[1180px] table-fixed text-left text-xs">
@@ -424,7 +424,7 @@ export default function ModelPoolInspectorPage() {
                 <col className="w-[200px]" />
                 <col className="w-[160px]" />
               </colgroup>
-              <thead className="border-b border-[#263247] bg-[#070a10] font-mono uppercase tracking-[0.12em] text-[#70809b]">
+              <thead className="sv-data-table-head font-mono uppercase tracking-[0.12em]">
                 <tr>
                   <th className="px-3 py-2">artifact</th>
                   <th className="px-3 py-2">model</th>
@@ -437,10 +437,10 @@ export default function ModelPoolInspectorPage() {
                   <th className="px-3 py-2">updated</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#263247] bg-[#05070c] text-[#d7e0ea]">
+              <tbody className="sv-data-table-body divide-y divide-[color:var(--sv-panel-border-soft)]">
                 {filteredRows.map((row) => (
-                  <tr key={row.artifact_id} className="align-top hover:bg-[#0f151d]">
-                    <td className="px-3 py-2 font-mono text-[#f2ead8]" title={row.artifact_id}>
+                  <tr key={row.artifact_id} className="sv-data-row align-top">
+                    <td className="sv-title-text px-3 py-2 font-mono" title={row.artifact_id}>
                       {shortId(row.artifact_id)}
                     </td>
                     <td className="px-3 py-2 font-mono">{fmt(row.model_name)}</td>
@@ -457,13 +457,13 @@ export default function ModelPoolInspectorPage() {
                     <td className="px-3 py-2">
                       <StatusPill tone={toneFromState(row.live_gate_status)}>{fmt(row.live_gate_status)}</StatusPill>
                     </td>
-                    <td className="px-3 py-2 font-mono text-[#8b9bab]">{evidenceKeys(row)}</td>
-                    <td className="px-3 py-2 font-mono text-[#8b9bab]">{fmt(row.updated_at ?? row.created_at)}</td>
+                    <td className="sv-muted-text px-3 py-2 font-mono">{evidenceKeys(row)}</td>
+                    <td className="sv-muted-text px-3 py-2 font-mono">{fmt(row.updated_at ?? row.created_at)}</td>
                   </tr>
                 ))}
                 {!filteredRows.length && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-12 text-center text-[#70809b]">
+                    <td colSpan={9} className="sv-muted-text px-3 py-12 text-center">
                       No artifact rows match the current filter.
                     </td>
                   </tr>
@@ -474,11 +474,11 @@ export default function ModelPoolInspectorPage() {
         </WorkstationPanel>
 
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#8b9bab]">
-            <Boxes className="mb-2 h-4 w-4 text-[#7aa2c7]" />
+          <div className="sv-content-card sv-muted-text rounded-xl p-3 text-xs leading-5">
+            <Boxes className="sv-accent-text mb-2 h-4 w-4" />
             高階 ModelPool 頁保留模型健康與 promotion 決策流，raw registry 改到此頁折疊查證。
           </div>
-          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#8b9bab]">
+          <div className="sv-content-card sv-muted-text rounded-xl p-3 text-xs leading-5">
             <ShieldCheck className="mb-2 h-4 w-4 text-emerald-300" />
             此頁只讀資料，不提供 promote/backfill mutation，避免 inspector 變成操作入口。
           </div>

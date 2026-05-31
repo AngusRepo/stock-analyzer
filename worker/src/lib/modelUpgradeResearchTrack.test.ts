@@ -20,7 +20,10 @@ function assert(condition: unknown, message: string): void {
   assert(formal.every((candidate) => candidate.parent_slot?.startsWith('Layer3.CoreFamily.')), 'formal slots must declare their Layer 3 family branch')
   assert(formal.every((candidate) => candidate.requires_review_packet), 'formal slots require review packets before artifact promotion')
   assert(formal.every((candidate) => !candidate.can_promote_directly), 'formal slots must not bypass promotion governance')
-  assert(formal.every((candidate) => !candidate.can_vote), 'formal slots must not vote until an artifact is approved and registered')
+  const active = formal.filter((candidate) => candidate.id === 'GNN' || candidate.id === 'TimesFM')
+  const blocked = formal.filter((candidate) => candidate.id === 'TabM' || candidate.id === 'iTransformer')
+  assert(active.every((candidate) => candidate.can_predict && candidate.can_vote), 'GNN and TimesFM should be active Layer 3 production adapters')
+  assert(blocked.every((candidate) => !candidate.can_vote), 'TabM and iTransformer must not vote until an artifact is approved and registered')
 }
 
 {
@@ -48,6 +51,6 @@ function assert(condition: unknown, message: string): void {
 
 {
   const packet = buildP7ModelUpgradeReviewPacket()
-  assert(packet.includes('formal Layer 3 slots require artifact promotion before voting'), 'review packet should clarify formal slot governance')
+  assert(packet.includes('GNN and TimesFM are active formal production adapters'), 'review packet should clarify active formal adapter governance')
   assert(packet.includes('retired models do not seed new experiments'), 'review packet should clarify retired model behavior')
 }

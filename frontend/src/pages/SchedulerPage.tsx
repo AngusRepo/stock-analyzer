@@ -60,7 +60,7 @@ function HistoryStrip({ history }: { history: Array<'success' | 'failed' | 'skip
         <span
           key={`${status}-${index}`}
           className={`h-2 flex-1 rounded-full ${
-            status === 'success' ? 'bg-emerald-400' : status === 'failed' ? 'bg-rose-400' : 'bg-slate-700'
+            status === 'success' ? 'bg-emerald-400' : status === 'failed' ? 'bg-rose-400' : 'bg-[color:var(--sv-panel-raised)]'
           }`}
         />
       ))}
@@ -75,18 +75,18 @@ function MetricCell({ label, value, tone = 'neutral', detail }: {
   detail?: string
 }) {
   return (
-    <div className="border-r border-[#263247] bg-[#070a10] p-3 last:border-r-0">
+    <div className="sv-content-card rounded-xl p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a92a6]">{label}</p>
+        <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.16em]">{label}</p>
         <WorkstationPill tone={tone}>{tone}</WorkstationPill>
       </div>
-      <p className={`mt-2 font-mono text-xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'}`}>
+      <p className={`mt-2 font-mono text-xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'sv-title-text'}`}>
         {value}
       </p>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
         <div className={`h-full rounded-full ${tone === 'ok' ? 'bg-emerald-400' : tone === 'warn' ? 'bg-amber-400' : tone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} style={{ width: tone === 'error' ? '100%' : tone === 'warn' ? '64%' : '92%' }} />
       </div>
-      {detail && <p className="mt-1 truncate text-xs text-slate-500">{detail}</p>}
+      {detail && <p className="sv-muted-text mt-1 truncate text-xs">{detail}</p>}
     </div>
   )
 }
@@ -95,17 +95,17 @@ function JobRow({ job }: { job: SchedulerJob }) {
   const suspicious = suspiciousDuration(job)
   const consolidation = job.consolidation
   return (
-    <div className="grid min-h-[92px] grid-cols-[1fr_96px_92px_112px] items-center gap-2 border-b border-[#263247] px-3 py-2 font-mono text-[11px]">
+    <div className="grid min-h-[92px] grid-cols-[1fr_96px_92px_112px] items-center gap-2 border-b border-[color:var(--sv-panel-border-soft)] px-3 py-2 font-mono text-[11px]">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
           <WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill>
-          <p className="truncate text-slate-100">{job.name}</p>
+          <p className="sv-title-text truncate">{job.name}</p>
           {suspicious && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
         </div>
-        <p className="mt-1 truncate text-[#70809b]">{job.group} / {job.summary || job.schedule}</p>
+        <p className="sv-muted-text mt-1 truncate">{job.group} / {job.summary || job.schedule}</p>
         {consolidation && (
-          <p className="mt-1 truncate text-[#8a92a6]">
+          <p className="sv-muted-text mt-1 truncate">
             {consolidation.replacementOwner
               ? `建議：${consolidation.replacementOwner}`
               : consolidation.recommendation}
@@ -115,9 +115,9 @@ function JobRow({ job }: { job: SchedulerJob }) {
           <HistoryStrip history={job.history7d ?? []} />
         </div>
       </div>
-      <span className={suspicious ? 'text-amber-300' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
-      <span className="truncate text-[#8a92a6]">{job.rate7d || '-'}</span>
-      <span className="truncate text-right text-[#70809b]">{job.nextRun || '-'}</span>
+      <span className={suspicious ? 'text-amber-300' : 'sv-muted-text'}>{job.lastDuration || '-'}</span>
+      <span className="sv-muted-text truncate">{job.rate7d || '-'}</span>
+      <span className="sv-muted-text truncate text-right">{job.nextRun || '-'}</span>
     </div>
   )
 }
@@ -128,7 +128,7 @@ function PipelineDag({ jobs }: { jobs: SchedulerJob[] }) {
   const chainIds = ['update', 'indicator-queue', 'screener', 'pipeline', 'ml-predict', 'recommendation']
   const pipelineJobs = chainIds.map((id) => byId.get(id)).filter((job): job is SchedulerJob => Boolean(job))
   if (!root && !pipelineJobs.length) {
-    return <div className="p-4 text-sm text-slate-500">目前沒有 pipeline chain job payload。</div>
+    return <div className="sv-muted-text p-4 text-sm">目前沒有 pipeline chain job payload。</div>
   }
 
   return (
@@ -139,16 +139,16 @@ function PipelineDag({ jobs }: { jobs: SchedulerJob[] }) {
           root.lastStatus === 'failed' ? 'border-rose-400/35 bg-rose-400/[0.06]' :
           root.lastStatus === 'running' ? 'border-amber-400/35 bg-amber-400/[0.06]' :
           root.lastStatus === 'waiting' ? 'border-sky-400/35 bg-sky-400/[0.05]' :
-            'border-[#263247] bg-[#05070c]'
+            'border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)]'
         }`}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">Evening Chain Root</p>
-              <p className="mt-1 text-[11px] text-[#8a92a6]">Data update → Indicator Queue → Screener → Pipeline → ML Predict → Recommendation</p>
+              <p className="sv-title-text font-mono text-[11px] uppercase tracking-[0.14em]">Evening Chain Root</p>
+              <p className="sv-muted-text mt-1 text-[11px]">Data update -&gt; Indicator Queue -&gt; Screener -&gt; Pipeline -&gt; ML Predict -&gt; Recommendation</p>
             </div>
             <div className="flex items-center gap-2">
               <WorkstationPill tone={statusTone(root.lastStatus)}>{statusLabel(root.lastStatus)}</WorkstationPill>
-              <span className="font-mono text-[11px] text-[#8a92a6]">{root.lastDuration || '-'}</span>
+              <span className="sv-muted-text font-mono text-[11px]">{root.lastDuration || '-'}</span>
             </div>
           </div>
           <div className="mt-2 max-w-[360px]">
@@ -163,15 +163,15 @@ function PipelineDag({ jobs }: { jobs: SchedulerJob[] }) {
             job.lastStatus === 'success' ? 'border-emerald-400/35 bg-emerald-400/[0.06]' :
             job.lastStatus === 'failed' ? 'border-rose-400/35 bg-rose-400/[0.06]' :
             job.lastStatus === 'waiting' ? 'border-sky-400/35 bg-sky-400/[0.05]' :
-              'border-[#263247] bg-[#05070c]'
+              'border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-deep)]'
           }`}
           >
-            <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
-            <p className="mt-1 text-[10px] text-[#8a92a6]">{job.lastDuration || '-'}</p>
+            <p className="sv-title-text truncate font-mono text-[11px] uppercase tracking-[0.12em]">{job.name}</p>
+            <p className="sv-muted-text mt-1 text-[10px]">{job.lastDuration || '-'}</p>
             <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
             <HistoryStrip history={job.history7d ?? []} />
           </div>
-          {index < pipelineJobs.length - 1 && <ArrowRight className="h-3.5 w-3.5 text-amber-300" />}
+          {index < pipelineJobs.length - 1 && <ArrowRight className="sv-accent-text h-3.5 w-3.5" />}
         </div>
       ))}
       </div>
@@ -209,16 +209,16 @@ export default function SchedulerPage() {
           description="用 SLO、7 日狀態條、duration 與 next run 判斷：排程有沒有跑、是不是假成功、下一個卡點在哪。"
           action={
             <div className="flex flex-wrap gap-2">
-              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">
+              <a href="/obs" className="sv-accent-text inline-flex items-center gap-1 rounded-full border border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em]">
                 OBS <ExternalLink className="h-3 w-3" />
               </a>
-              <a href="/data-quality" className="inline-flex items-center gap-1 rounded-full border border-[#3a3125] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#b9b1a1]">
+              <a href="/data-quality" className="sv-muted-text inline-flex items-center gap-1 rounded-full border border-[color:var(--sv-panel-border-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em]">
                 Data Quality <ExternalLink className="h-3 w-3" />
               </a>
               <button
                 type="button"
                 onClick={() => void scheduler.refetch()}
-                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]"
+                className="sv-accent-text inline-flex items-center gap-1 rounded-full border border-[color:var(--sv-accent-border)] bg-[color:var(--sv-accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em]"
               >
                 <RefreshCw className={`h-3 w-3 ${scheduler.isFetching ? 'animate-spin' : ''}`} />
                 Refresh
@@ -228,12 +228,12 @@ export default function SchedulerPage() {
         />
 
         {scheduler.error && (
-          <div className="border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
+          <div className="rounded-xl border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
             Scheduler API 載入失敗：{(scheduler.error as Error).message}
           </div>
         )}
 
-        <section className="grid grid-cols-1 overflow-hidden rounded-2xl border border-[#3a3125] bg-[#3a3125] md:grid-cols-5">
+        <section data-testid="scheduler-signal-board" className="grid grid-cols-1 gap-3 md:grid-cols-5">
           <MetricCell label="Jobs" value={String(stats.total)} tone="info" detail={`${stats.active} active`} />
           <MetricCell label="7d SLO" value={`${stats.successRate7d}%`} tone={stats.successRate7d >= 95 ? 'ok' : stats.successRate7d >= 80 ? 'warn' : 'error'} />
           <MetricCell label="24h Failed" value={String(stats.failed24h)} tone={stats.failed24h ? 'error' : 'ok'} detail={`${failedJobs.length} current failed`} />
@@ -259,27 +259,27 @@ export default function SchedulerPage() {
               itemHeight={92}
               getKey={(job) => job.id}
               renderItem={(job) => <JobRow job={job} />}
-              empty={<div className="p-4 text-sm text-slate-500">尚未取得 scheduler jobs。</div>}
+              empty={<div className="sv-muted-text p-4 text-sm">尚未取得 scheduler jobs。</div>}
             />
           </WorkstationPanel>
 
           <WorkstationPanel title="Needs Attention / 優先處理" kicker="failed or suspicious duration">
             <div className="space-y-2 p-3">
               {suspiciousJobs.slice(0, 8).map((job) => (
-                <div key={job.id} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+                <div key={job.id} className="sv-content-card rounded-xl p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
-                      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{job.summary || job.schedule}</p>
+                      <p className="sv-title-text truncate font-mono text-[11px] uppercase tracking-[0.12em]">{job.name}</p>
+                      <p className="sv-muted-text mt-1 text-xs leading-5">{job.summary || job.schedule}</p>
                       {job.consolidation && (
-                        <p className="mt-1 text-xs leading-5 text-[#70809b]">
+                        <p className="sv-muted-text mt-1 text-xs leading-5">
                           Consolidation: {consolidationLabel(job)} / risk {job.consolidation.operatorRisk}
                         </p>
                       )}
                     </div>
                     <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
                   </div>
-                  <p className="mt-2 font-mono text-[10px] text-[#70809b]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
+                  <p className="sv-muted-text mt-2 font-mono text-[10px]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
                 </div>
               ))}
               {!suspiciousJobs.length && (
@@ -288,8 +288,8 @@ export default function SchedulerPage() {
                   目前沒有 failed 或 suspicious duration job。
                 </div>
               )}
-              <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-slate-400">
-                <div className="mb-2 flex items-center gap-2 text-sky-300">
+              <div className="sv-content-card sv-muted-text rounded-xl p-3 text-xs leading-5">
+                <div className="sv-accent-text mb-2 flex items-center gap-2">
                   <Clock className="h-4 w-4" />
                   Reading rule
                 </div>

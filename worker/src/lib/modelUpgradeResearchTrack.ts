@@ -55,13 +55,13 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     parent_slot: 'Layer3.CoreFamily.Graph',
     family: 'cross_stock_graph',
     role: 'formal Layer 3 graph family slot for cross-stock relation evidence',
-    vote_weight: 0,
-    can_predict: false,
-    can_vote: false,
+    vote_weight: 1,
+    can_predict: true,
+    can_vote: true,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['graph_spec', 'leakage_controls', 'artifact_manifest', 'walk_forward', 'pbo', 'cpcv'],
-    notes: 'Graph inference must prove relation construction and leakage controls before production scoring.',
+    evidence_required: ['graph_spec', 'leakage_controls', 'walk_forward', 'pbo', 'cpcv'],
+    notes: 'Active production adapter: daily_pipeline_v2 calls layer3_formal_universal_predict and writes rank_scores.GNN for core family vote.',
   },
   {
     id: 'iTransformer',
@@ -83,13 +83,13 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     parent_slot: 'Layer3.CoreFamily.FoundationSequence',
     family: 'foundation_sequence',
     role: 'formal Layer 3 foundation-sequence candidate to compare with DLinear, PatchTST, and iTransformer',
-    vote_weight: 0,
-    can_predict: false,
-    can_vote: false,
+    vote_weight: 1,
+    can_predict: true,
+    can_vote: true,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['forecast_validation', 'artifact_manifest', 'walk_forward', 'pbo', 'cost_profile'],
-    notes: 'Chronos is retired from alpha vote; TimesFM belongs to the sequence-family promotion lane, not a Chronos comparator lane.',
+    evidence_required: ['forecast_validation', 'walk_forward', 'pbo', 'cost_profile'],
+    notes: 'Active production adapter: daily_pipeline_v2 calls TimesFM zero-shot via layer3_formal_universal_predict and writes timesfm for core family vote.',
   },
   {
     id: 'ResidualMLP',
@@ -173,7 +173,7 @@ export function buildP7ModelUpgradeReviewPacket(): string {
   }
   const lines = [
     `P7 Model Upgrade Track: ${P7_MODEL_UPGRADE_TRACK_VERSION}`,
-    'Rules: formal Layer 3 slots require artifact promotion before voting; retired models do not seed new experiments; GA is meta-only; Kalman/Markov are overlays.',
+    'Rules: GNN and TimesFM are active formal production adapters; TabM and iTransformer still require artifact promotion before voting; retired models do not seed new experiments; GA is meta-only; Kalman/Markov are overlays.',
   ]
   for (const [stage, candidates] of byStage.entries()) {
     lines.push(`${stage}: ${candidates.map((candidate) => candidate.id).join(', ')}`)

@@ -15,8 +15,10 @@ const inspector = read(root, 'src', 'pages', 'ModelPoolInspectorPage.tsx')
 const app = read(root, 'src', 'App.tsx')
 
 assert(modelPool.includes('ModelGovernanceVisualMap'), 'ModelPool should render a visual governance map before dense evidence tables')
+assert(modelPool.includes('sv-content-card'), 'ModelPool governance visual map should consume route-level surface cards')
 assert(modelPool.includes('<ArtifactLifecycleSummaryPanel'), 'ModelPool should mount lifecycle summary as a visual bridge before dense governance details')
 assert(modelPool.includes('data-testid="modelpool-governance-drilldown"'), 'ModelPool dense governance panels should live behind a drilldown disclosure')
+assert(modelPool.includes('sv-disclosure'), 'ModelPool dense governance drilldown should consume route-level disclosure tokens')
 assert(modelPool.includes('Governance drilldown'), 'ModelPool governance disclosure should have a stable visible label')
 assert(
   modelPool.indexOf('<ArtifactLifecycleSummaryPanel') < modelPool.indexOf('data-testid="modelpool-governance-drilldown"'),
@@ -24,10 +26,14 @@ assert(
 )
 assert(modelPool.includes('/model-pool/inspector'), 'ModelPool should link raw artifact inspection to the dedicated inspector route')
 assert(!modelPool.includes('Raw Artifact Inspector'), 'ModelPool governance page should not be the raw artifact inspector')
+assert(!modelPool.includes('border-[#d6a85f]/30 text-[#f1c16f]'), 'ModelPool actions must not keep the retired amber-only styling')
 
 assert(inspector.includes('Raw Artifact Inspector'), 'Raw artifact inspection should live on the inspector page')
 assert(inspector.includes('InspectorVisualSummary'), 'Inspector should summarize raw registry rows visually before the table')
 assert(inspector.includes('visual-inspector-summary'), 'Inspector should expose a visual summary section for QA')
+assert(inspector.includes('sv-content-card-selected'), 'Inspector active visual cards should consume selected surface tokens')
+assert(inspector.includes('sv-surface-input'), 'Inspector search input should consume route-level surface tokens')
+assert(inspector.includes('sv-data-table-head') && inspector.includes('sv-data-table-body'), 'Inspector raw table should consume route-level table tokens')
 assert(inspector.includes('gate distribution'), 'Inspector should visualize gate distribution')
 assert(inspector.includes('evidence coverage'), 'Inspector should visualize evidence coverage')
 assert(inspector.includes('applyInspectorVisualFilter'), 'Inspector should apply visual summary filters to raw rows')

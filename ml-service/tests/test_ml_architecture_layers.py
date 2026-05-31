@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app import model_pool
 from app.chronos_universal import CURRENT_CONFIG, _DEFAULT_MODEL_ID
 
@@ -58,3 +60,14 @@ def test_chronos_retired_diagnostic_slot_is_chronos2_not_tiny():
     assert CURRENT_CONFIG["diagnostic_members"] == ["Chronos2ZeroShot", "Chronos2LoRA"]
     assert "tiny" not in CURRENT_CONFIG["diagnostic_note"].lower()
     assert "production ranking" in CURRENT_CONFIG["strategy"]
+
+
+def test_modal_image_does_not_install_retired_chronos_package():
+    requirements = Path("ml-service/requirements.txt").read_text(encoding="utf-8")
+    requirement_rows = [
+        row.strip()
+        for row in requirements.splitlines()
+        if row.strip() and not row.strip().startswith("#")
+    ]
+    assert not any(row.startswith("chronos-forecasting") for row in requirement_rows)
+    assert "scikit-learn==1.5.2" in requirement_rows

@@ -32,9 +32,11 @@ transformers==4.47.0
 accelerate>=0.26.0
 mtkresearch==0.3.2
 safetensors>=0.4.5
+# Chronos is retired from active alpha serving. Its diagnostic runtime remains
+# fail-closed in code, but its package is intentionally not installed
+# in the production Modal image because it conflicts with sklearn 1.5.2.
 # Chronos Amazon foundation model（zero-shot time series forecasting）
 # 若不需要 Chronos 可移除；DLinear 會自動接管 fallback
-chronos-forecasting>=2.0.0
 # River：ARF 聚合層（第11模型 Layer 2），ADWIN drift detection
 river>=0.21.0
 # P3#31: SHAP feature attribution for tree models

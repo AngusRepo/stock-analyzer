@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from services import modal_client
 from services.finlab_execution_smoke import run_finlab_execution_smoke
 from services.finlab_execution_preview_service import run_finlab_execution_preview
+from services.finlab_ai_factor_miner import discover_finlab_raw_factor_candidates
 from services.finlab_production_simulated_loop import (
     build_execution_loop_plan as build_production_simulated_loop_plan,
     run_production_simulated_execution_loop,
@@ -65,6 +66,11 @@ class FinLabProductionSimulatedLoopRequest(BaseModel):
     max_symbols: int = Field(5, ge=1, le=20)
     dry_run: bool = True
     allow_worker_paper_order: bool = True
+
+
+class FinLabAiFactorDiscoveryRequest(BaseModel):
+    max_per_lane: int = Field(8, ge=1, le=30)
+    dry_run: bool = True
 
 
 def _model_dump(model: BaseModel) -> dict[str, Any]:
@@ -193,3 +199,16 @@ async def run_finlab_execution_production_simulated_loop_route(req: FinLabProduc
     data and active Worker gates are allowed, but broker submit stays disabled.
     """
     return await _run_finlab_production_simulated_loop(req)
+
+
+@router.post("/ai-factor-discovery")
+async def run_finlab_ai_factor_discovery_route(req: FinLabAiFactorDiscoveryRequest) -> dict:
+    """Read-only FinLab API factor discovery.
+
+    This route searches official FinLab datasets and returns research-only
+    factor candidates. It does not write strategy specs or production config.
+    """
+    payload = discover_finlab_raw_factor_candidates(max_per_lane=req.max_per_lane)
+    payload["mode"] = "dry_run" if req.dry_run else "research_payload_only"
+    payload["production_effect"] = False
+    return payload

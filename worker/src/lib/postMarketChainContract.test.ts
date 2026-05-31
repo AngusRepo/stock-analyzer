@@ -34,6 +34,14 @@ assert(
   'historical verify catch-up may run only explicit learning closures, not current-date report/trading side effects',
 )
 assert(
+  postMarketChain.includes("if (historicalLearningCatchup)") &&
+    postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false })") <
+      postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false })") &&
+    postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false })") <
+      postMarketChain.indexOf("'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false })"),
+  'historical learning catch-up must run FinLab AI Skill discovery before strategy-learning so backdated reruns can consume new raw-factor specs',
+)
+assert(
   postMarketChain.includes('runVerifyV2(env, ctx.runDate)'),
   'verify-v2 must receive the callback business date',
 )
@@ -73,6 +81,12 @@ assert(
   postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <
     postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask"),
   'FinLab AI Skill discovery should run after model/meta-learning evidence is available',
+)
+assert(
+  postMarketChain.includes("'/finlab/ai-factor-discovery'") &&
+    postMarketChain.includes('rawFactorMinerPayload') &&
+    postMarketChain.indexOf('fetchFinLabRawFactorMinerPayload') < postMarketChain.indexOf('runFinLabAiSkillDiscoveryClosure(env'),
+  'FinLab API raw-factor miner payload must feed the Worker discovery closure before strategy-learning runs',
 )
 assert(
   postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask") <

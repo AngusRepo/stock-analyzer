@@ -75,6 +75,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('buildLayer1StrategyBreadthPlan'), 'L1 breadth pool must be strategy-quota driven from the full feature-enriched universe')
   assert(!marketScreener.includes('preRankPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)'), 'L1 breadth pool must not be pre-ranked by score top 200')
   assert(marketScreener.includes('layer1BreadthPool'), 'marketScreener should name the Layer1 breadth pool explicitly')
+  assert(marketScreener.includes('passesLayer1TopUpQualityGuard'), 'post-overlay L1 top-up must not bypass raw strategy quality guards')
   assert(marketScreener.includes('emergingResearchCandidates.push(...dedupeScreenerCandidatesBySymbol'), 'emerging funnel count must use the deduped research shortlist')
   assert(marketScreener.includes('highFreqPenalty'), 'screener high-frequency candidates must affect ranking, not only labels')
   assert(screenerMarketData.includes('dealer_buy'), 'screener chip data must include dealer flows for three-institution scoring')

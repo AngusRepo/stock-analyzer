@@ -1,7 +1,9 @@
 import type { Bindings } from '../types'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
+import { controllerPostJson } from './controllerClient'
 import { runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
+import type { FinLabRawFactorMinerPayload } from './finlabAiSkillDiscovery'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
@@ -142,10 +144,33 @@ async function runStrategyLearningClosureTask(env: Bindings, ctx: ChainContext):
   return runStrategyLearningClosure(env.DB, ctx.runDate ?? new Date().toISOString().slice(0, 10))
 }
 
+async function fetchFinLabRawFactorMinerPayload(env: Bindings): Promise<{
+  payload: FinLabRawFactorMinerPayload | null
+  summary: string
+}> {
+  if (!env.ML_CONTROLLER_URL) {
+    return { payload: null, summary: 'raw_factor_miner=skipped_no_ml_controller_url' }
+  }
+  try {
+    const payload = await controllerPostJson<FinLabRawFactorMinerPayload>(
+      env,
+      '/finlab/ai-factor-discovery',
+      { max_per_lane: 8, dry_run: false },
+      120_000,
+    )
+    const count = Array.isArray(payload?.candidates) ? payload.candidates.length : 0
+    return { payload, summary: `raw_factor_miner=ok candidates=${count}` }
+  } catch (error) {
+    return { payload: null, summary: `raw_factor_miner=unavailable:${String(error).slice(0, 160)}` }
+  }
+}
+
 async function runFinLabAiSkillDiscoveryClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
   const { runFinLabAiSkillDiscoveryClosure } = await import('./finlabAiSkillDiscovery')
+  const rawFactorMiner = await fetchFinLabRawFactorMinerPayload(env)
   const report = await runFinLabAiSkillDiscoveryClosure(env, ctx.runDate ?? new Date().toISOString().slice(0, 10), {
     dryRun: false,
+    rawFactorMinerPayload: rawFactorMiner.payload,
   })
   return [
     `status=${report.status}`,
@@ -154,6 +179,7 @@ async function runFinLabAiSkillDiscoveryClosureTask(env: Bindings, ctx: ChainCon
     `research_experiments=${report.persisted.research_experiments}`,
     `strategy_specs=${report.persisted.strategy_specs}`,
     `invalid=${report.skipped_invalid.length}`,
+    rawFactorMiner.summary,
     report.reason ? `reason=${report.reason}` : '',
   ].filter(Boolean).join(' ')
 }
@@ -212,11 +238,12 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'finlab-ai-skill-discovery'))
     if (historicalLearningCatchup) {
       results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
+      results.push(await logChainedTask(env, ctx, 'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false }))
       results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
     } else {
+      results.push(await logSkippedHistoricalTask(env, ctx, 'finlab-ai-skill-discovery'))
       results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
       results.push(await logSkippedHistoricalTask(env, ctx, 'strategy-learning'))
     }

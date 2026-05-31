@@ -85,7 +85,7 @@ export interface StrategyRewardLedgerRow {
   updated_at: string
 }
 
-export type StrategyPromotionDecision = 'not_ready' | 'candidate_ready' | 'active_monitor'
+export type StrategyPromotionDecision = 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
 export type StrategyLearningStage =
   | 'L0_hypothesis'
   | 'L1_shadow'
@@ -168,6 +168,8 @@ const PROMOTION_MIN_SAMPLES = 30
 const PROMOTION_MIN_HIT_RATE = 0.52
 const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
+const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
+const ACTIVE_COOLDOWN_HIT_RATE = 0.48
 
 function stageForStrategyStatus(status: StrategySpecStatus): StrategyLearningStage {
   if (status === 'active') return 'L3_production_allocation'
@@ -928,10 +930,20 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
     }
 
     const activeMonitor = spec.status === 'active'
+    const activeCooldownReasons = activeMonitor && evidence.samples >= ACTIVE_COOLDOWN_MIN_SAMPLES
+      ? [
+        evidence.hit_rate != null && evidence.hit_rate < ACTIVE_COOLDOWN_HIT_RATE ? `active_hit_rate_lt_${ACTIVE_COOLDOWN_HIT_RATE}` : null,
+        evidence.avg_return_pct != null && evidence.avg_return_pct <= 0 ? 'active_avg_return_not_positive' : null,
+        evidence.max_drawdown_pct != null && evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN ? `active_max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}` : null,
+      ].filter((reason): reason is string => reason != null)
+      : []
+    const activeCooldown = activeMonitor && activeCooldownReasons.length > 0
     const ready = !activeMonitor && missing.length === 0
     const currentStage = stageForStrategyStatus(spec.status)
-    const recommendedNextStatus = activeMonitor
-      ? 'active'
+    const recommendedNextStatus = activeCooldown
+      ? 'candidate'
+      : activeMonitor
+        ? 'active'
       : ready && spec.status === 'candidate'
         ? 'active'
         : ready
@@ -941,8 +953,10 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
           : spec.status === 'candidate'
             ? 'candidate'
             : 'shadow'
-    const recommendedStage = activeMonitor
-      ? 'L3_production_allocation'
+    const recommendedStage = activeCooldown
+      ? 'L2_paper_active'
+      : activeMonitor
+        ? 'L3_production_allocation'
       : ready && spec.status === 'candidate'
         ? 'L3_production_allocation'
         : ready
@@ -958,18 +972,19 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       alpha_bucket: spec.alphaBucket,
       current_stage: currentStage,
       recommended_stage: recommendedStage,
-      decision: activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
+      decision: activeCooldown ? 'active_cooldown' : activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
       recommended_next_status: recommendedNextStatus,
-      requires_wei_approval: !activeMonitor,
+      requires_wei_approval: !activeMonitor || activeCooldown,
       l3_requires_wei_approval: recommendedStage === 'L3_production_allocation' && !activeMonitor,
       production_effect: false,
-      missing_evidence: activeMonitor ? [] : missing,
+      missing_evidence: activeCooldown ? activeCooldownReasons : activeMonitor ? [] : missing,
       evidence,
     }
   })
 }
 
 function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gate: StrategyPromotionGateRow): number {
+  if (gate.decision === 'active_cooldown') return 0
   const samples = Math.max(0, spec.learning.samples)
   if (samples <= 0 || spec.learning.hit_rate == null || spec.learning.avg_return_pct == null) return 0
   const sampleConfidence = Math.min(samples / 100, 1) * 0.2
@@ -1015,6 +1030,14 @@ export function buildStrategyAdaptivePolicyState(
       : drawdownWeak || row.spec.learning.avg_return_pct == null || row.spec.learning.avg_return_pct <= 0
         ? { minVolumeExpansion20: 0.08, minCloseAboveMa20Pct: 0.01, minRevenueGrowthYoY: 1 }
         : { minVolumeExpansion20: 0 }
+  }
+  for (const gate of gates.filter((row) => row.decision === 'active_cooldown')) {
+    strategyWeights[gate.strategy_id] = 0.2
+    thresholdDeltas[gate.strategy_id] = {
+      minVolumeExpansion20: 0.12,
+      minCloseAboveMa20Pct: 0.015,
+      minRevenueGrowthYoY: 1,
+    }
   }
 
   return {

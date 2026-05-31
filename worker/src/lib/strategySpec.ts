@@ -489,8 +489,6 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
       minCloseAboveMa20Pct: -0.08,
       minVolumeExpansion20: 0.75,
       minForeignTrustNet5d: 0,
-      minBrokerCount: 3,
-      maxBrokerConcentration: 0.8,
     },
     candidatePolicy: { poolQuota: 16, costBudget: 20, evidenceRequirements: ['raw_price_structure', 'raw_chip_flow', 'raw_broker_flow'] },
     riskNotes: ['Accumulation can become stale; Kalman, Markov, and portfolio risk overlays decide final sizing.'],
@@ -535,9 +533,6 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
     thresholds: {
       minPrice: 10,
       minForeignTrustNet5d: 0,
-      minBrokerNetAmount5d: 0,
-      minBrokerCount: 3,
-      maxBrokerConcentration: 0.75,
     },
     candidatePolicy: {
       poolQuota: 18,
@@ -720,16 +715,12 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
       minPrice: 10,
       minCloseAboveMa20Pct: -0.02,
       maxReturn20d: 0.08,
-      minBrokerCount: 3,
       minTechnicalIndicators: {
         rsi14: 45,
         volumeExpansion20: 1.1,
       },
       maxTechnicalIndicators: {
         rsi14: 65,
-      },
-      minFactorSignals: {
-        brokerCount: 3,
       },
     },
     candidatePolicy: {

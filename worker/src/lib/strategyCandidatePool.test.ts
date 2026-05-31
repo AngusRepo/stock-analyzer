@@ -4,6 +4,7 @@ import {
   buildLayer1StrategyBreadthPlan,
   buildStrategyCandidatePools,
   mergeStrategyCandidatePools,
+  passesLayer1TopUpQualityGuard,
   planStrategyFirstCandidateSelection,
   resolveStrategyCapacityBudget,
   type StrategyCandidatePoolCandidate,
@@ -106,6 +107,53 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     eligible_for_ml: 1,
   }
 })
+
+{
+  const fragileNoSupport: StrategyCandidatePoolCandidate = {
+    symbol: '1215',
+    name: 'Fragile No Support',
+    industry: 'Food',
+    score: 5.8,
+    chip_score: 0,
+    tech_score: 9,
+    current_price: 125,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+    raw_signals: {
+      close: 125,
+      closeAboveMa20Pct: -0.092,
+      closeAboveMa60Pct: -0.092,
+      volumeExpansion20: 1.56,
+      foreignTrustNet5d: -1_574_161,
+      brokerNetAmount5d: 0,
+      brokerCount: null,
+      monthlyRevenueYoY: 7.54,
+      roe: 3.38,
+      eps: 1.26,
+      technicalIndicators: { rsi14: 36.7 },
+      factorSignals: { rsi14: 36.7, foreignTrustNet5d: -1_574_161, brokerNetAmount5d: 0, brokerCount: null },
+    },
+  }
+  const constructiveTopUp: StrategyCandidatePoolCandidate = {
+    ...fragileNoSupport,
+    symbol: '8998',
+    name: 'Constructive Top Up',
+    chip_score: 12,
+    tech_score: 17,
+    raw_signals: rawSignalPayload({
+      closeAboveMa20Pct: -0.01,
+      closeAboveMa60Pct: 0.02,
+      volumeExpansion20: 1.25,
+      foreignTrustNet5d: 1500,
+      brokerNetAmount5d: 8_000_000,
+      brokerCount: 5,
+      brokerConcentration: 0.4,
+    }),
+  }
+
+  assert(!passesLayer1TopUpQualityGuard(fragileNoSupport), 'fragile technicals plus unsupported chip flow must not enter L1 through top-up')
+  assert(passesLayer1TopUpQualityGuard(constructiveTopUp), 'constructive raw technical/chip evidence should remain eligible for qualified L1 top-up')
+}
 
 {
   const lowScoreDiverseCandidate: StrategyCandidatePoolCandidate = {

@@ -157,6 +157,25 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
+  const assessment = assessCandidateAgainstStrategySpecs({
+    symbol: '1216',
+    current_price: 78,
+    raw_signals: {
+      closeAboveMa20Pct: -0.01,
+      volumeExpansion20: 0.95,
+      foreignTrustNet5d: 1200,
+      technicalIndicators: {
+        rsi14: 48,
+      },
+    },
+  }, DEFAULT_STRATEGY_SPECS)
+  assert(
+    assessment.matches.some((match) => match.specId === 'defensive_accumulation_seed_v1' || match.specId === 'finlab_ai_skill_chip_accumulation_v1'),
+    'listed/OTC accumulation strategies should not require ROTC-only brokerCount coverage',
+  )
+}
+
+{
   const raw = deriveStrategyRawSignals({
     symbol: '3034',
     current_price: 80,

@@ -55,6 +55,9 @@ export interface StrategyCapacityDecision {
 export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   score?: number | null
   score_components?: unknown
+  chip_score?: number | null
+  tech_score?: number | null
+  momentum_score?: number | null
   industryTheme?: string | null
   subindustry?: string | null
   market_segment?: string | null
@@ -358,6 +361,52 @@ function rawSignalSuitabilityScore(raw: ReturnType<typeof deriveStrategyRawSigna
     + clamp(6 - ((finiteNumber(raw.pb) ?? 3) - 1) * 2, -6, 8)
   const dynamicScore = dynamicSignalScore(raw.factorSignals) * 0.4 + dynamicSignalScore(raw.technicalIndicators) * 0.25
   return clamp(45 + trendScore * 0.28 + flowScore * 0.28 + qualityScore * 0.3 + valuationScore * 0.14 + dynamicScore + liquidityBonus, 0, 100)
+}
+
+export function passesLayer1TopUpQualityGuard(candidate: StrategyCandidatePoolCandidate): boolean {
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
+  const scores = candidatePoolThresholdScores(candidate)
+  const chip = finiteNumber(candidate.chip_score) ?? scores.chipFlow
+  const tech = finiteNumber(candidate.tech_score) ?? scores.technicalStructure
+  const closeAboveMa20Pct = finiteNumber(raw.closeAboveMa20Pct)
+  const closeAboveMa60Pct = finiteNumber(raw.closeAboveMa60Pct)
+  const volumeExpansion20 = finiteNumber(raw.volumeExpansion20)
+  const rsi14 = finiteNumber(raw.technicalIndicators?.rsi14) ?? finiteNumber(raw.factorSignals?.rsi14)
+  const foreignTrustNet5d = finiteNumber(raw.foreignTrustNet5d)
+  const brokerNetAmount5d = finiteNumber(raw.brokerNetAmount5d)
+  const brokerCount = finiteNumber(raw.brokerCount)
+  const monthlyRevenueYoY = finiteNumber(raw.monthlyRevenueYoY)
+  const roe = finiteNumber(raw.roe)
+  const eps = finiteNumber(raw.eps)
+
+  const brokenTrend =
+    tech < 12
+    || (closeAboveMa20Pct != null && closeAboveMa20Pct <= -0.08)
+    || (closeAboveMa60Pct != null && closeAboveMa60Pct <= -0.08)
+    || (rsi14 != null && rsi14 < 40)
+  const unsupportedChip =
+    chip <= 0
+    || (
+      (foreignTrustNet5d != null && foreignTrustNet5d < 0)
+      && (brokerNetAmount5d == null || brokerNetAmount5d <= 0)
+      && (brokerCount == null || brokerCount < 3)
+    )
+  if (brokenTrend && unsupportedChip) return false
+
+  const constructiveTechnical =
+    (closeAboveMa20Pct != null && closeAboveMa20Pct >= -0.02 && (volumeExpansion20 ?? 1) >= 1.1 && (rsi14 == null || rsi14 >= 45))
+    || (tech >= 16 && (volumeExpansion20 ?? 1) >= 0.9)
+  const constructiveChip =
+    (foreignTrustNet5d != null && foreignTrustNet5d > 0)
+    || (brokerNetAmount5d != null && brokerNetAmount5d > 0)
+    || (brokerCount != null && brokerCount >= 3 && chip > 0)
+  const constructiveQuality =
+    (monthlyRevenueYoY != null && monthlyRevenueYoY >= 8)
+    && (eps != null && eps > 0)
+    && (roe != null && roe >= 5)
+    && (closeAboveMa20Pct == null || closeAboveMa20Pct >= -0.04)
+
+  return constructiveTechnical || constructiveChip || constructiveQuality
 }
 
 function rawScoreForEntry(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec): number {
@@ -786,6 +835,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       const symbol = cleanText(candidate.symbol).toUpperCase()
       if (!symbol || selectedSymbols.has(symbol)) return false
       if (!eligibleForMl(candidate)) return false
+      if (!passesLayer1TopUpQualityGuard(candidate)) return false
       return true
     })
     .sort((a, b) => rawSignalFallbackValue(b) - rawSignalFallbackValue(a))

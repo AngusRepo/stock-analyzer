@@ -1514,7 +1514,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
 
     const [marketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
-      loadMarketDataFromD1(env, 20, 5, endDate),
+      loadMarketDataFromD1(env, 70, 5, endDate),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
@@ -1770,11 +1770,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let layer1BreadthPool: ScoredCandidate[] = []
   let layer2CoarseQueueSeed: ScoredCandidate[] = []
   let overlayEligibleSymbols = new Set<string>()
+  let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
   try {
-    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, { buildLayer1StrategyBreadthPlan }] = await Promise.all([
+    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, strategyCandidatePoolModule] = await Promise.all([
       import('./strategyLearning'),
       import('./strategyCandidatePool'),
     ])
+    const { buildLayer1StrategyBreadthPlan } = strategyCandidatePoolModule
+    passesLayer1TopUpQualityGuard = strategyCandidatePoolModule.passesLayer1TopUpQualityGuard
     const [{ specs, source }, policyState] = await Promise.all([
       listStrategySpecsForLearning(env.DB),
       getLatestStrategyPolicyState(env.DB).catch(() => null),
@@ -2534,7 +2537,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const topUpCandidates = afterIndustryLimit
       .filter((candidate) => {
         const symbol = String(candidate.symbol || '').trim()
-        return !selectedSymbols.has(symbol)
+        if (selectedSymbols.has(symbol)) return false
+        if (passesLayer1TopUpQualityGuard && !passesLayer1TopUpQualityGuard(candidate as any)) return false
+        return true
       })
       .slice(0, Math.max(0, layer1TargetSize - selectedCandidates.length))
       .map((candidate, index) => ({

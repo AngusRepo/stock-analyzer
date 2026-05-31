@@ -9,7 +9,14 @@ import {
 import { upsertStrategySpecRegistry } from './strategyLearning'
 
 export const FINLAB_AI_SKILL_DISCOVERY_ID = 'finlab_ai_skill_discovery_v1'
-export const FINLAB_AI_SKILL_DISCOVERY_VERSION = 'finlab-ai-skill-discovery-bridge-v1'
+export const FINLAB_AI_SKILL_DISCOVERY_VERSION = 'finlab-ai-official-skill-discovery-v2'
+export const FINLAB_OFFICIAL_STRATEGY_UID = 'TJN4FDuqrwU8DML7DAjUYFIMutp2'
+export const FINLAB_OFFICIAL_STRATEGY_CATALOG_URL =
+  `https://firestore.googleapis.com/v1/projects/fdata-299302/databases/(default)/documents/users/${FINLAB_OFFICIAL_STRATEGY_UID}`
+export const FINLAB_OFFICIAL_STRATEGY_PAGE_URL = 'https://ai.finlab.tw/strategies?tab=FinLab%E5%8F%B0%E8%82%A1'
+export const FINLAB_OFFICIAL_DIRECT_ACTIVE_SHARPE_MIN = 1
+export const FINLAB_OFFICIAL_DIRECT_ACTIVE_MAX_DRAWDOWN_FLOOR = -0.4
+export const FINLAB_RAW_FACTOR_MINER_ID = 'finlab_api_raw_factor_miner_v1'
 
 export interface FinLabAiSkillDiscoveryInput {
   id?: string
@@ -24,6 +31,7 @@ export interface FinLabAiSkillDiscoveryInput {
   thresholds?: Partial<StrategySpecThresholds>
   status?: Extract<StrategySpecStatus, 'research' | 'candidate' | 'active'>
   approvedForL1?: boolean
+  bindTagToIndustry?: boolean
   metrics?: string[]
   followUp?: string[]
   nowIso?: string
@@ -40,7 +48,7 @@ export interface FinLabAiSkillDiscoveryBridgePacket {
     source: typeof FINLAB_AI_SKILL_DISCOVERY_ID
     path_to_screener_layers: string[]
     registry_effect_if_persisted: 'research_only_queue' | 'l2_coarse_ml_queue'
-    production_effect: false
+    production_effect: boolean
     requires_wei_approval_for_l2_coarse_ml: boolean
   }
 }
@@ -67,6 +75,47 @@ interface FinLabTaxonomyDiscoveryRow {
   latest_as_of_date?: string | null
 }
 
+export interface FinLabOfficialStrategySummary {
+  sid: string
+  name: string
+  tags: string[]
+  market: 'TW' | 'US' | 'unknown'
+  annual_return: number | null
+  sharpe_ratio: number | null
+  max_drawdown: number | null
+  ndays_return: Record<string, number> | null
+  public_code: number | null
+  public_position: number | null
+  public_performance: number | null
+  last_updated?: string | null
+}
+
+export interface FinLabRawFactorMinerCandidate {
+  candidate_id?: string
+  lane?: string
+  query?: string
+  dataset_key?: string
+  display_name?: string
+  hypothesis?: string
+  alpha_bucket?: string
+  evidence_requirements?: unknown
+  promotion_status?: string
+  source_refs?: unknown
+  production_effect?: boolean
+  strategy_spec_hint?: Record<string, unknown>
+}
+
+export interface FinLabRawFactorMinerPayload {
+  version?: string
+  generated_at?: string
+  checksum?: string
+  registry_target?: string
+  production_effect?: boolean
+  summary?: Record<string, unknown>
+  candidates?: FinLabRawFactorMinerCandidate[]
+  errors?: string[]
+}
+
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
 }
@@ -90,6 +139,13 @@ function safeStrategyId(input: FinLabAiSkillDiscoveryInput): string {
   const tag = slug(cleanText(input.tag ?? input.taxonomyRefs?.[0] ?? 'strategy'))
   const bucket = slug(cleanText(input.alphaBucket ?? 'taxonomy'))
   return `finlab_ai_skill_${bucket}_${tag || 'strategy'}`
+}
+
+function shouldBindTagToIndustry(input: FinLabAiSkillDiscoveryInput): boolean {
+  if (input.bindTagToIndustry === false) return false
+  const tagType = cleanText(input.tagType)
+  if (!tagType) return true
+  return ['industry_theme', 'subindustry', 'industry'].includes(tagType)
 }
 
 function supportedRegimes(input: FinLabAiSkillDiscoveryInput): StrategySpec['supportedRegimes'] {
@@ -146,7 +202,7 @@ export function buildFinLabAiSkillStrategySpecDraft(
   const taxonomyRefs = cleanTextArray(input.taxonomyRefs)
   const factorRefs = cleanTextArray(input.factorRefs)
   const alphaBucket = input.alphaBucket ?? 'mean_reversion'
-  const includeIndustries = tag ? [tag] : undefined
+  const includeIndustries = tag && shouldBindTagToIndustry(input) ? [tag] : undefined
 
   const spec: StrategySpec = {
     id: safeStrategyId(input),
@@ -235,8 +291,8 @@ export function buildFinLabAiSkillDiscoveryBridgePacket(
         'Layer2 coarse ML gate evaluates the shortlisted queue',
       ],
       registry_effect_if_persisted: status === 'research' ? 'research_only_queue' : 'l2_coarse_ml_queue',
-      production_effect: false,
-      requires_wei_approval_for_l2_coarse_ml: status !== 'research',
+      production_effect: status === 'active' && input.approvedForL1 === true,
+      requires_wei_approval_for_l2_coarse_ml: status !== 'research' && input.approvedForL1 !== true,
     },
   }
 }
@@ -244,6 +300,358 @@ export function buildFinLabAiSkillDiscoveryBridgePacket(
 function numberOrZero(value: unknown): number {
   const n = Number(value)
   return Number.isFinite(n) ? n : 0
+}
+
+function decodeFirestoreValue(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value
+  const record = value as Record<string, unknown>
+  if ('stringValue' in record) return String(record.stringValue ?? '')
+  if ('integerValue' in record) {
+    const parsed = Number(record.integerValue)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  if ('doubleValue' in record) {
+    const parsed = Number(record.doubleValue)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  if ('booleanValue' in record) return record.booleanValue === true
+  if ('timestampValue' in record) return String(record.timestampValue ?? '')
+  if ('nullValue' in record) return null
+  if ('arrayValue' in record) {
+    const values = ((record.arrayValue as Record<string, unknown>)?.values ?? []) as unknown[]
+    return values.map(decodeFirestoreValue)
+  }
+  if ('mapValue' in record) {
+    const fields = ((record.mapValue as Record<string, unknown>)?.fields ?? {}) as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(fields)) out[key] = decodeFirestoreValue(child)
+    return out
+  }
+  return value
+}
+
+function decodeFirestoreDocument(payload: unknown): Record<string, unknown> {
+  const fields = (payload as Record<string, unknown> | null)?.fields
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return {}
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(fields as Record<string, unknown>)) {
+    out[key] = decodeFirestoreValue(value)
+  }
+  return out
+}
+
+function numberOrNull(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function tagTextsForOfficialStrategy(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return []
+  return [...new Set(tags
+    .map((tag) => cleanText((tag as Record<string, unknown> | null)?.text ?? tag))
+    .filter(Boolean))]
+}
+
+export function parseFinLabOfficialStrategyCatalog(payload: unknown): FinLabOfficialStrategySummary[] {
+  const data = decodeFirestoreDocument(payload)
+  const strategies = data.strategies && typeof data.strategies === 'object' && !Array.isArray(data.strategies)
+    ? data.strategies as Record<string, Record<string, unknown>>
+    : {}
+  const tagsBySid = data.tags && typeof data.tags === 'object' && !Array.isArray(data.tags)
+    ? data.tags as Record<string, unknown>
+    : {}
+
+  return Object.entries(strategies).map(([sid, strategy]) => {
+    const tags = tagTextsForOfficialStrategy(tagsBySid[sid])
+    const market = tags.includes('美股') ? 'US' : tags.includes('台股') ? 'TW' : 'unknown'
+    const ndaysRaw = strategy.ndays_return && typeof strategy.ndays_return === 'object'
+      ? strategy.ndays_return as Record<string, unknown>
+      : null
+    const ndays_return = ndaysRaw
+      ? Object.fromEntries(Object.entries(ndaysRaw)
+        .map(([key, value]) => [key, numberOrNull(value)])
+        .filter((entry): entry is [string, number] => entry[1] != null))
+      : null
+    return {
+      sid,
+      name: cleanText(strategy.name) || sid,
+      tags,
+      market,
+      annual_return: numberOrNull(strategy.annual_return),
+      sharpe_ratio: numberOrNull(strategy.sharpe_ratio),
+      max_drawdown: numberOrNull(strategy.max_drawdown),
+      ndays_return,
+      public_code: numberOrNull(strategy.public_code),
+      public_position: numberOrNull(strategy.public_position),
+      public_performance: numberOrNull(strategy.public_performance),
+      last_updated: cleanText(strategy.last_updated) || null,
+    }
+  })
+}
+
+export async function fetchFinLabOfficialStrategyCatalog(options: {
+  fetcher?: typeof fetch
+  url?: string
+} = {}): Promise<FinLabOfficialStrategySummary[]> {
+  const fetcher = options.fetcher ?? fetch
+  const url = options.url ?? FINLAB_OFFICIAL_STRATEGY_CATALOG_URL
+  const response = await fetcher(url)
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    throw new Error(`finlab_official_strategy_catalog_http_${response.status}:${body.slice(0, 120)}`)
+  }
+  return parseFinLabOfficialStrategyCatalog(await response.json())
+}
+
+function officialStrategyFactorRefs(strategy: FinLabOfficialStrategySummary): string[] {
+  const refs = new Set<string>(['finlab_official_strategy_catalog', 'raw_factor_mining'])
+  const text = `${strategy.sid} ${strategy.name} ${strategy.tags.join(' ')}`
+  if (/技術|RSI|突破|趨勢|創高|低價/.test(text)) {
+    refs.add('raw_technical_indicator_mining')
+    refs.add('technical:rsi14')
+    refs.add('technical:volumeExpansion20')
+    refs.add('technical:ma_reclaim')
+  }
+  if (/籌碼|信用|小蝦米|鯨魚|券商|外資|投信|殖利率/.test(text)) {
+    refs.add('raw_chip_flow')
+    refs.add('raw_broker_flow')
+    refs.add('chip:foreignTrustNet5d')
+  }
+  if (/基本|財報|本益|淨值|價投|研發|現金流|殖利|合約負債|品質/.test(text)) {
+    refs.add('raw_profitability')
+    refs.add('raw_valuation')
+    refs.add('fundamental:roe_eps_pe_pb')
+  }
+  if (/營收|月營收|成長/.test(text)) {
+    refs.add('raw_revenue_revision')
+    refs.add('fundamental:monthlyRevenueYoY')
+    refs.add('fundamental:monthlyRevenueMoM')
+  }
+  if (/低波動|膽小/.test(text)) refs.add('risk:low_volatility')
+  if (/產業/.test(text)) refs.add('finlab_taxonomy')
+  if (/大盤|景氣|總體/.test(text)) refs.add('market_regime')
+  if (/事件|恢復信用/.test(text)) refs.add('event_research')
+  return [...refs]
+}
+
+function officialStrategyThresholds(strategy: FinLabOfficialStrategySummary): Partial<StrategySpecThresholds> {
+  const text = `${strategy.sid} ${strategy.name} ${strategy.tags.join(' ')}`
+  const thresholds: Partial<StrategySpecThresholds> = { minPrice: 10 }
+  if (/技術|RSI|突破|趨勢|創高|低價/.test(text)) {
+    thresholds.minVolumeExpansion20 = 0.85
+    thresholds.minTechnicalIndicators = { ...(thresholds.minTechnicalIndicators ?? {}), rsi14: 40 }
+  }
+  if (/營收|月營收|成長/.test(text)) {
+    thresholds.minMonthlyRevenueYoY = 0
+    thresholds.minFactorSignals = { ...(thresholds.minFactorSignals ?? {}), monthlyRevenueYoY: 0 }
+  }
+  if (/基本|財報|本益|淨值|價投|研發|現金流|殖利|合約負債|品質/.test(text)) {
+    thresholds.minEps = 0
+    thresholds.minRoe = 3
+    thresholds.maxPe = 60
+  }
+  if (/籌碼|信用|小蝦米|鯨魚|券商|外資|投信/.test(text)) {
+    thresholds.minForeignTrustNet5d = 0
+  }
+  if (/低波動|膽小/.test(text)) {
+    thresholds.maxReturn20d = 0.18
+  }
+  return thresholds
+}
+
+function officialStrategyAlphaBucket(strategy: FinLabOfficialStrategySummary): StrategySpec['alphaBucket'] {
+  const text = `${strategy.sid} ${strategy.name} ${strategy.tags.join(' ')}`
+  if (/突破|創高|趨勢|RSI|營收|動能/.test(text)) return 'trend_following'
+  if (/籌碼|信用|殖利|低波動|膽小/.test(text)) return 'defensive_accumulation'
+  if (/價投|本益|淨值|現金流|財報|研發|合約負債/.test(text)) return 'mean_reversion'
+  return 'trend_following'
+}
+
+const ALPHA_BUCKETS = new Set<StrategySpec['alphaBucket']>([
+  'trend_following',
+  'mean_reversion',
+  'breakout_vol_expansion',
+  'defensive_accumulation',
+])
+
+function rawFactorAlphaBucket(candidate: FinLabRawFactorMinerCandidate): StrategySpec['alphaBucket'] {
+  const requested = cleanText(candidate.alpha_bucket)
+  if (ALPHA_BUCKETS.has(requested as StrategySpec['alphaBucket'])) {
+    return requested as StrategySpec['alphaBucket']
+  }
+  const text = `${candidate.lane ?? ''} ${candidate.dataset_key ?? ''} ${candidate.display_name ?? ''} ${candidate.query ?? ''}`
+  if (/volume|成交量|breakout|突破|創高/i.test(text)) return 'breakout_vol_expansion'
+  if (/外資|投信|自營商|三大法人|融資|融券|券商|broker|chip|margin/i.test(text)) return 'defensive_accumulation'
+  if (/ROE|EPS|本益|淨值|毛利|營益|營收|cash flow|fundamental/i.test(text)) return 'mean_reversion'
+  return 'trend_following'
+}
+
+function rawFactorThresholds(candidate: FinLabRawFactorMinerCandidate): Partial<StrategySpecThresholds> {
+  const lane = cleanText(candidate.lane)
+  const text = `${lane} ${candidate.dataset_key ?? ''} ${candidate.display_name ?? ''} ${candidate.query ?? ''}`
+  const thresholds: Partial<StrategySpecThresholds> = { minPrice: 10 }
+  if (lane === 'technical' || /RSI|MACD|KD|布林|均線|成交量|momentum|volatility|technical|return/i.test(text)) {
+    thresholds.minVolumeExpansion20 = 0.75
+    thresholds.minCloseAboveMa20Pct = -0.03
+    if (/RSI/i.test(text)) {
+      thresholds.minTechnicalIndicators = { ...(thresholds.minTechnicalIndicators ?? {}), rsi14: 35 }
+    }
+  }
+  if (lane === 'chip' || /外資|投信|自營商|三大法人|融資|融券|券商|broker|margin|chip/i.test(text)) {
+    thresholds.minForeignTrustNet5d = 0
+  }
+  if (lane === 'fundamental' || /月營收|營收|ROE|EPS|毛利|營益|本益|淨值|cash flow|fundamental/i.test(text)) {
+    thresholds.minEps = 0
+    thresholds.minRoe = 3
+    thresholds.maxPe = 80
+  }
+  return thresholds
+}
+
+function packetFromRawFactorMinerCandidate(
+  candidate: FinLabRawFactorMinerCandidate,
+  date: string,
+  nowIso: string,
+  payload: FinLabRawFactorMinerPayload,
+): FinLabAiSkillDiscoveryBridgePacket | null {
+  const datasetKey = cleanText(candidate.dataset_key)
+  if (!datasetKey) return null
+  const lane = cleanText(candidate.lane) || 'unknown'
+  const displayName = cleanText(candidate.display_name) || datasetKey
+  const candidateId = cleanText(candidate.candidate_id) || `${lane}_${datasetKey}`
+  const evidenceRequirements = cleanTextArray(candidate.evidence_requirements)
+  const minerSourceRefs = cleanTextArray(candidate.source_refs)
+  return buildFinLabAiSkillDiscoveryBridgePacket({
+    id: `raw_factor_${candidateId}`,
+    hypothesis: cleanText(candidate.hypothesis) ||
+      `FinLab API raw-factor miner discovered ${lane} dataset "${displayName}" (${datasetKey}); keep it research-only until strategy-learning reward, PBO and reality-check evidence justify promotion.`,
+    taxonomyRefs: [`finlab_raw_factor_lane:${lane}`],
+    factorRefs: [
+      `raw_factor_dataset:${datasetKey}`,
+      `raw_factor_lane:${lane}`,
+      ...evidenceRequirements,
+    ],
+    sourceRefs: [
+      `run_date:${date}`,
+      FINLAB_RAW_FACTOR_MINER_ID,
+      payload.version ? `miner_version:${payload.version}` : 'miner_version:unknown',
+      payload.generated_at ? `miner_generated_at:${payload.generated_at}` : 'miner_generated_at:unknown',
+      payload.checksum ? `miner_checksum:${payload.checksum}` : 'miner_checksum:unknown',
+      `dataset:${datasetKey}`,
+      `lane:${lane}`,
+      `query:${cleanText(candidate.query) || 'unknown'}`,
+      `production_effect:${candidate.production_effect === true ? 'true' : 'false'}`,
+      ...minerSourceRefs,
+    ],
+    tag: displayName,
+    tagType: `finlab_raw_factor_${lane}`,
+    bindTagToIndustry: false,
+    alphaBucket: rawFactorAlphaBucket(candidate),
+    supportedRegimes: ['bull', 'sideways', 'volatile'],
+    thresholds: rawFactorThresholds(candidate),
+    status: 'research',
+    approvedForL1: false,
+    metrics: ['finlab_api_search', 'strategy_reward', 'l1_recall', 'ic_4w_avg', 'pbo', 'reality_check'],
+    followUp: [
+      'materialize historical raw factor panel coverage',
+      'run walk-forward reward and PBO before candidate promotion',
+      'promote through strategy-learning only after explicit evidence gate',
+    ],
+    nowIso,
+  })
+}
+
+export function buildFinLabRawFactorMinerDiscoveryPackets(
+  payload: FinLabRawFactorMinerPayload | null | undefined,
+  date: string,
+  nowIso: string,
+  options: { limit?: number } = {},
+): FinLabAiSkillDiscoveryBridgePacket[] {
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : []
+  const limit = Math.max(1, Math.min(Math.round(options.limit ?? 80), 200))
+  return candidates
+    .slice(0, limit)
+    .map((candidate) => packetFromRawFactorMinerCandidate(candidate, date, nowIso, payload ?? {}))
+    .filter((packet): packet is FinLabAiSkillDiscoveryBridgePacket => packet != null)
+}
+
+export function officialStrategyPassesDirectActiveGate(strategy: FinLabOfficialStrategySummary): boolean {
+  return strategy.market === 'TW'
+    && !strategy.tags.includes('ETF')
+    && strategy.sharpe_ratio != null
+    && strategy.sharpe_ratio > FINLAB_OFFICIAL_DIRECT_ACTIVE_SHARPE_MIN
+    && strategy.max_drawdown != null
+    && strategy.max_drawdown >= FINLAB_OFFICIAL_DIRECT_ACTIVE_MAX_DRAWDOWN_FLOOR
+}
+
+function packetFromOfficialStrategy(
+  strategy: FinLabOfficialStrategySummary,
+  date: string,
+  nowIso: string,
+): FinLabAiSkillDiscoveryBridgePacket {
+  const directActive = officialStrategyPassesDirectActiveGate(strategy)
+  const metrics = [
+    strategy.annual_return != null ? `annual_return=${strategy.annual_return.toFixed(4)}` : null,
+    strategy.sharpe_ratio != null ? `sharpe=${strategy.sharpe_ratio.toFixed(4)}` : null,
+    strategy.max_drawdown != null ? `max_drawdown=${strategy.max_drawdown.toFixed(4)}` : null,
+  ].filter(Boolean).join(' ')
+  return buildFinLabAiSkillDiscoveryBridgePacket({
+    id: `official_${strategy.sid}`,
+    hypothesis:
+      `FinLab official strategy "${strategy.name}" (${strategy.tags.join('/') || 'untagged'}) was discovered from the official strategy catalog; ` +
+      `${metrics || 'performance metrics unavailable'}; convert its published factor family into StockVision raw-signal hypotheses before promotion.`,
+    taxonomyRefs: strategy.tags.map((tag) => `finlab_official_tag:${tag}`),
+    factorRefs: officialStrategyFactorRefs(strategy),
+    sourceRefs: [
+      `run_date:${date}`,
+      `finlab_official_strategy_page:${FINLAB_OFFICIAL_STRATEGY_PAGE_URL}`,
+      `finlab_official_uid:${FINLAB_OFFICIAL_STRATEGY_UID}`,
+      `finlab_official_sid:${strategy.sid}`,
+      `market:${strategy.market}`,
+      `public_code:${strategy.public_code ?? 'unknown'}`,
+      `public_position:${strategy.public_position ?? 'unknown'}`,
+      directActive
+        ? `direct_active_gate:sharpe_gt_${FINLAB_OFFICIAL_DIRECT_ACTIVE_SHARPE_MIN}_max_drawdown_gte_${FINLAB_OFFICIAL_DIRECT_ACTIVE_MAX_DRAWDOWN_FLOOR}`
+        : 'direct_active_gate:not_passed',
+      strategy.last_updated ? `last_updated:${strategy.last_updated}` : 'last_updated:unknown',
+    ],
+    tag: strategy.name,
+    tagType: 'finlab_official_strategy',
+    bindTagToIndustry: false,
+    alphaBucket: officialStrategyAlphaBucket(strategy),
+    supportedRegimes: ['bull', 'sideways', 'volatile'],
+    thresholds: officialStrategyThresholds(strategy),
+    status: directActive ? 'active' : 'research',
+    approvedForL1: directActive,
+    metrics: ['official_annual_return', 'official_sharpe', 'official_max_drawdown', 'strategy_reward', 'l1_recall', 'pbo'],
+    followUp: directActive
+      ? [
+        'active by user-approved official FinLab metric gate',
+        'monitor StockVision reward, PBO and reality-check evidence for demotion',
+        'tighten or retire if live StockVision edge decays',
+      ]
+      : [
+        'fetch official FinLab strategy article/code when permission allows',
+        'translate official factor family into raw StockVision factor thresholds',
+        'run walk-forward and reality-check evidence before candidate promotion',
+      ],
+    nowIso,
+  })
+}
+
+export function buildFinLabOfficialStrategyDiscoveryPackets(
+  strategies: FinLabOfficialStrategySummary[],
+  date: string,
+  nowIso: string,
+  options: { market?: 'TW' | 'US' | 'all'; limit?: number } = {},
+): FinLabAiSkillDiscoveryBridgePacket[] {
+  const market = options.market ?? 'TW'
+  const limit = Math.max(1, Math.min(Math.round(options.limit ?? 40), 80))
+  return strategies
+    .filter((strategy) => market === 'all' || strategy.market === market)
+    .filter((strategy) => !strategy.tags.includes('ETF'))
+    .slice(0, limit)
+    .map((strategy) => packetFromOfficialStrategy(strategy, date, nowIso))
 }
 
 async function loadFinLabTaxonomyDiscoveryRows(
@@ -301,6 +709,12 @@ export async function runFinLabAiSkillDiscoveryClosure(
     limit?: number
     minSymbols?: number
     nowIso?: string
+    includeOfficialStrategies?: boolean
+    officialStrategyLimit?: number
+    officialStrategyMarket?: 'TW' | 'US' | 'all'
+    fetcher?: typeof fetch
+    rawFactorMinerPayload?: FinLabRawFactorMinerPayload | null
+    rawFactorMinerLimit?: number
   } = {},
 ): Promise<FinLabAiSkillDiscoveryClosureReport> {
   const dryRun = options.dryRun === true
@@ -309,38 +723,51 @@ export async function runFinLabAiSkillDiscoveryClosure(
   const nowIso = options.nowIso ?? new Date().toISOString()
 
   let rows: FinLabTaxonomyDiscoveryRow[] = []
+  let officialStrategies: FinLabOfficialStrategySummary[] = []
+  const discoveryWarnings: string[] = []
   try {
     rows = await loadFinLabTaxonomyDiscoveryRows(env.DB, date, { limit, minSymbols })
   } catch (error) {
-    return {
-      status: 'skipped',
-      version: FINLAB_AI_SKILL_DISCOVERY_VERSION,
-      date,
-      source_rows: 0,
-      packets: [],
-      persisted: { research_experiments: 0, strategy_specs: 0 },
-      skipped_invalid: [],
-      reason: `finlab_taxonomy_unavailable:${String(error).slice(0, 160)}`,
+    discoveryWarnings.push(`finlab_taxonomy_unavailable:${String(error).slice(0, 160)}`)
+  }
+
+  if (options.includeOfficialStrategies !== false) {
+    try {
+      officialStrategies = await fetchFinLabOfficialStrategyCatalog({ fetcher: options.fetcher })
+    } catch (error) {
+      discoveryWarnings.push(`finlab_official_strategy_catalog_unavailable:${String(error).slice(0, 160)}`)
     }
   }
 
-  const packets = rows
+  const taxonomyPackets = rows
     .map((row) => packetFromTaxonomyRow(row, date, nowIso))
     .filter((packet): packet is FinLabAiSkillDiscoveryBridgePacket => packet != null)
+  const officialPackets = buildFinLabOfficialStrategyDiscoveryPackets(officialStrategies, date, nowIso, {
+    market: options.officialStrategyMarket ?? 'TW',
+    limit: options.officialStrategyLimit ?? 40,
+  })
+  const rawFactorPackets = buildFinLabRawFactorMinerDiscoveryPackets(options.rawFactorMinerPayload, date, nowIso, {
+    limit: options.rawFactorMinerLimit ?? 80,
+  })
+  const rawFactorSourceRows = Array.isArray(options.rawFactorMinerPayload?.candidates)
+    ? options.rawFactorMinerPayload.candidates.length
+    : 0
+  const packets = [...taxonomyPackets, ...officialPackets, ...rawFactorPackets]
   const validPackets = packets.filter((packet) => packet.ok)
   const skippedInvalid = packets
     .filter((packet) => !packet.ok)
     .map((packet) => `${packet.strategy_spec.id}:${packet.errors.join('|')}`)
+  skippedInvalid.push(...discoveryWarnings)
 
   const report: FinLabAiSkillDiscoveryClosureReport = {
     status: dryRun ? 'dry_run' : validPackets.length ? 'persisted' : 'skipped',
     version: FINLAB_AI_SKILL_DISCOVERY_VERSION,
     date,
-    source_rows: rows.length,
+    source_rows: rows.length + officialStrategies.length + rawFactorSourceRows,
     packets,
     persisted: { research_experiments: 0, strategy_specs: 0 },
     skipped_invalid: skippedInvalid,
-    reason: validPackets.length ? undefined : 'no_valid_finlab_ai_skill_discoveries',
+    reason: validPackets.length ? undefined : discoveryWarnings.join('|') || 'no_valid_finlab_ai_skill_discoveries',
   }
 
   if (dryRun || !validPackets.length) return report

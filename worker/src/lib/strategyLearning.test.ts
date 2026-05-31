@@ -221,3 +221,36 @@ function assert(condition: unknown, message: string): void {
   assert(gate[0].l3_requires_wei_approval === true, 'L3 production allocation must require Wei approval')
   assert(gate[0].production_effect === false, 'L3 gate is still metadata until approved')
 }
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'active' as const }
+  const summary = {
+    version: 'strategy-learning-v1',
+    date: '2026-05-19',
+    spec_source: 'registry',
+    specs: [{
+      ...spec,
+      learning: {
+        decisions: 90,
+        matched: 20,
+        match_rate: 0.222222,
+        samples: 45,
+        hit_rate: 0.44,
+        avg_return_pct: -0.006,
+        max_drawdown_pct: -0.11,
+        status: 'learning',
+      },
+    }],
+    promotion_gate: [],
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].decision === 'active_cooldown', 'weak active strategy evidence should trigger cooldown')
+  assert(gate[0].recommended_next_status === 'candidate', 'active cooldown should recommend demotion to candidate')
+  assert(gate[0].recommended_stage === 'L2_paper_active', 'cooldown should move weak active strategies back to paper-active review')
+  assert(gate[0].missing_evidence.includes('active_avg_return_not_positive'), 'cooldown should expose weak return evidence')
+
+  const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
+  assert(policy.strategy_weights[spec.id] === 0.2, 'cooldown strategies should be explicitly down-weighted instead of falling back to default weight')
+  assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.12, 'cooldown should tighten raw-signal thresholds')
+}

@@ -1,4 +1,5 @@
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
+import { controllerPostJson } from './controllerClient'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
@@ -72,11 +73,51 @@ async function runNeuralShadowTask(
   return summary.join(' ')
 }
 
+async function runFinLabAiSkillDiscoveryTask(c: any, runDate?: string): Promise<string> {
+  const { runFinLabAiSkillDiscoveryClosure } = await import('./finlabAiSkillDiscovery')
+  let rawFactorMinerPayload: any = null
+  let rawFactorSummary = 'raw_factor_miner=skipped_no_ml_controller_url'
+  if (c.env.ML_CONTROLLER_URL) {
+    try {
+      rawFactorMinerPayload = await controllerPostJson<any>(
+        c.env,
+        '/finlab/ai-factor-discovery',
+        { max_per_lane: 8, dry_run: false },
+        120_000,
+      )
+      rawFactorSummary = `raw_factor_miner=ok candidates=${Array.isArray(rawFactorMinerPayload?.candidates) ? rawFactorMinerPayload.candidates.length : 0}`
+    } catch (error) {
+      rawFactorSummary = `raw_factor_miner=unavailable:${String(error).slice(0, 160)}`
+    }
+  }
+  const report = await runFinLabAiSkillDiscoveryClosure(c.env, runDate ?? twToday(), {
+    dryRun: false,
+    rawFactorMinerPayload,
+  })
+  return [
+    `status=${report.status}`,
+    `source_rows=${report.source_rows}`,
+    `packets=${report.packets.length}`,
+    `research_experiments=${report.persisted.research_experiments}`,
+    `strategy_specs=${report.persisted.strategy_specs}`,
+    `invalid=${report.skipped_invalid.length}`,
+    rawFactorSummary,
+    report.reason ? `reason=${report.reason}` : '',
+  ].filter(Boolean).join(' ')
+}
+
+async function runStrategyLearningTask(c: any, runDate?: string): Promise<string> {
+  const { runStrategyLearningClosure } = await import('./strategyLearning')
+  return runStrategyLearningClosure(c.env.DB, runDate ?? twToday())
+}
+
 export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
   return {
     'evening-chain': () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
+    'finlab-ai-skill-discovery': () => runFinLabAiSkillDiscoveryTask(c, requestedRunDate()),
+    'strategy-learning': () => runStrategyLearningTask(c, requestedRunDate()),
     screener: () => deps.runMarketScreener(requestedRunDate()),
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),

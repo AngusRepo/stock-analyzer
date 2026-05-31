@@ -6,6 +6,8 @@ function assert(condition: unknown, message: string): void {
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const adminTriggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
+const adminTriggerWorkerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const pipelineCallbackBlock = callbackRoutes.slice(
@@ -38,6 +40,14 @@ assert(
   postMarketChain.includes('allowHistoricalLearningCatchup') &&
     postMarketChain.includes('allow_historical_learning_catchup'),
   'historical verify catch-up may run only explicit learning closures, not current-date report/trading side effects',
+)
+assert(
+  adminTriggerRoutes.includes("'finlab-ai-skill-discovery'") &&
+    adminTriggerRoutes.includes("'strategy-learning'") &&
+    adminTriggerWorkerTasks.includes("'finlab-ai-skill-discovery': () => runFinLabAiSkillDiscoveryTask") &&
+    adminTriggerWorkerTasks.includes("'strategy-learning': () => runStrategyLearningTask") &&
+    adminTriggerWorkerTasks.includes("'/finlab/ai-factor-discovery'"),
+  'FinLab discovery and strategy-learning must be explicit admin-triggerable scheduler tasks for historical rerun closure',
 )
 assert(
   postMarketChain.includes("if (historicalLearningCatchup)") &&

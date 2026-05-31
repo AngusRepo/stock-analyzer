@@ -12,6 +12,7 @@ interface TriggerRouteDeps {
 const SYNC_REQUIRED_TASKS = new Set([
   'evening-chain',
   'update', 'pipeline',
+  'finlab-ai-skill-discovery', 'strategy-learning',
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'model-artifact-candidate-validation',
@@ -92,6 +93,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const longRunning = new Set([
       'pipeline',
       'evening-chain',
+      'finlab-ai-skill-discovery',
+      'strategy-learning',
       'ml',
       'update',
       'ml-warmup',

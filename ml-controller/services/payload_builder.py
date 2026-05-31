@@ -29,6 +29,26 @@ DAILY_RECOMMENDATION_PIPELINE_COLUMNS = (
     "alpha_context, alpha_allocation, ml_vote_summary, score_components"
 )
 
+D1_IN_CLAUSE_CHUNK_SIZE = 80
+
+
+def _dedupe_preserve_order(values: list[Any]) -> list[Any]:
+    seen: set[Any] = set()
+    out: list[Any] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _chunked(values: list[Any], size: int = D1_IN_CLAUSE_CHUNK_SIZE) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    unique_values = _dedupe_preserve_order(values)
+    return [unique_values[i:i + size] for i in range(0, len(unique_values), size)]
+
 
 def _as_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -482,30 +502,31 @@ def _bulk_load_prices(
     """
     if not stock_ids:
         return {}
-    placeholders = ",".join("?" * len(stock_ids))
-    upper_bound_sql = " AND date <= ?" if as_of_date else ""
-    params: list[Any] = list(stock_ids)
-    if as_of_date:
-        params.append(as_of_date)
-    rows = d1_client.query(
-        f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
-        f"FROM stock_prices "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years')"
-        f"{upper_bound_sql} "
-        f"ORDER BY stock_id ASC, date ASC",
-        params,
-        timeout=120.0,
-    )
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
-    for r in rows:
-        sid = r["stock_id"]
-        if sid in grouped:
-            grouped[sid].append({
-                "date": r["date"],
-                "open": r["open"], "high": r["high"], "low": r["low"],
-                "close": r["close"], "volume": r["volume"],
-                "adj_close": r.get("adj_close"), "avg_price": r.get("avg_price"),
-            })
+    upper_bound_sql = " AND date <= ?" if as_of_date else ""
+    for chunk in _chunked(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        params: list[Any] = list(chunk)
+        if as_of_date:
+            params.append(as_of_date)
+        rows = d1_client.query(
+            f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
+            f"FROM stock_prices "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years')"
+            f"{upper_bound_sql} "
+            f"ORDER BY stock_id ASC, date ASC",
+            params,
+            timeout=120.0,
+        )
+        for r in rows:
+            sid = r["stock_id"]
+            if sid in grouped:
+                grouped[sid].append({
+                    "date": r["date"],
+                    "open": r["open"], "high": r["high"], "low": r["low"],
+                    "close": r["close"], "volume": r["volume"],
+                    "adj_close": r.get("adj_close"), "avg_price": r.get("avg_price"),
+                })
     # Truncate to last `limit` per stock (oldest is dropped if > limit)
     for sid in grouped:
         if len(grouped[sid]) > limit:
@@ -520,54 +541,55 @@ def _bulk_load_indicators(
 ) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
-    placeholders = ",".join("?" * len(stock_ids))
-    upper_bound_sql = " AND date <= ?" if as_of_date else ""
-    params: list[Any] = list(stock_ids)
-    if as_of_date:
-        params.append(as_of_date)
-    rows = d1_client.query(
-        f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
-        f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
-        f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
-        f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10, "
-        f"       squeeze_on, squeeze_release, squeeze_momentum, obv_temperature_60, "
-        f"       adaptive_rsi_midline_50, adaptive_rsi_upper_50, adaptive_rsi_lower_50, "
-        f"       adaptive_rsi_overbought, adaptive_rsi_oversold "
-        f"FROM technical_indicators "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years')"
-        f"{upper_bound_sql} "
-        f"ORDER BY stock_id ASC, date ASC",
-        params,
-        timeout=120.0,
-    )
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
-    for r in rows:
-        sid = r["stock_id"]
-        if sid in grouped:
-            grouped[sid].append({
-                "date": r["date"],
-                "ma5": r.get("ma5"), "ma10": r.get("ma10"),
-                "ma20": r.get("ma20"), "ma60": r.get("ma60"),
-                "rsi14": r.get("rsi14"), "macdHist": r.get("macdHist"),
-                "bb_upper": r.get("bb_upper"), "bb_lower": r.get("bb_lower"),
-                "atr14": r.get("atr14"),
-                "plusDi14": r.get("plus_di14"),
-                "minusDi14": r.get("minus_di14"),
-                "adx14": r.get("adx14"),
-                "parabolicSar": r.get("parabolic_sar"),
-                "cci20": r.get("cci20"),
-                "volumeWeightedRsi14": r.get("volume_weighted_rsi14"),
-                "volumeMomentumDivergence132710": r.get("volume_momentum_divergence_13_27_10"),
-                "squeezeOn": r.get("squeeze_on"),
-                "squeezeRelease": r.get("squeeze_release"),
-                "squeezeMomentum": r.get("squeeze_momentum"),
-                "obvTemperature60": r.get("obv_temperature_60"),
-                "adaptiveRsiMidline50": r.get("adaptive_rsi_midline_50"),
-                "adaptiveRsiUpper50": r.get("adaptive_rsi_upper_50"),
-                "adaptiveRsiLower50": r.get("adaptive_rsi_lower_50"),
-                "adaptiveRsiOverbought": r.get("adaptive_rsi_overbought"),
-                "adaptiveRsiOversold": r.get("adaptive_rsi_oversold"),
-            })
+    upper_bound_sql = " AND date <= ?" if as_of_date else ""
+    for chunk in _chunked(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        params: list[Any] = list(chunk)
+        if as_of_date:
+            params.append(as_of_date)
+        rows = d1_client.query(
+            f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
+            f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
+            f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
+            f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10, "
+            f"       squeeze_on, squeeze_release, squeeze_momentum, obv_temperature_60, "
+            f"       adaptive_rsi_midline_50, adaptive_rsi_upper_50, adaptive_rsi_lower_50, "
+            f"       adaptive_rsi_overbought, adaptive_rsi_oversold "
+            f"FROM technical_indicators "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years')"
+            f"{upper_bound_sql} "
+            f"ORDER BY stock_id ASC, date ASC",
+            params,
+            timeout=120.0,
+        )
+        for r in rows:
+            sid = r["stock_id"]
+            if sid in grouped:
+                grouped[sid].append({
+                    "date": r["date"],
+                    "ma5": r.get("ma5"), "ma10": r.get("ma10"),
+                    "ma20": r.get("ma20"), "ma60": r.get("ma60"),
+                    "rsi14": r.get("rsi14"), "macdHist": r.get("macdHist"),
+                    "bb_upper": r.get("bb_upper"), "bb_lower": r.get("bb_lower"),
+                    "atr14": r.get("atr14"),
+                    "plusDi14": r.get("plus_di14"),
+                    "minusDi14": r.get("minus_di14"),
+                    "adx14": r.get("adx14"),
+                    "parabolicSar": r.get("parabolic_sar"),
+                    "cci20": r.get("cci20"),
+                    "volumeWeightedRsi14": r.get("volume_weighted_rsi14"),
+                    "volumeMomentumDivergence132710": r.get("volume_momentum_divergence_13_27_10"),
+                    "squeezeOn": r.get("squeeze_on"),
+                    "squeezeRelease": r.get("squeeze_release"),
+                    "squeezeMomentum": r.get("squeeze_momentum"),
+                    "obvTemperature60": r.get("obv_temperature_60"),
+                    "adaptiveRsiMidline50": r.get("adaptive_rsi_midline_50"),
+                    "adaptiveRsiUpper50": r.get("adaptive_rsi_upper_50"),
+                    "adaptiveRsiLower50": r.get("adaptive_rsi_lower_50"),
+                    "adaptiveRsiOverbought": r.get("adaptive_rsi_overbought"),
+                    "adaptiveRsiOversold": r.get("adaptive_rsi_oversold"),
+                })
     for sid in grouped:
         if len(grouped[sid]) > limit:
             grouped[sid] = grouped[sid][-limit:]
@@ -588,95 +610,106 @@ def _bulk_load_chips(
     """
     if not symbols:
         return {}
-    placeholders = ",".join("?" * len(symbols))
     grouped_by_date: dict[str, dict[str, dict]] = {s: {} for s in symbols}
     upper_bound_sql = " AND date <= ?" if as_of_date else ""
-    params: list[Any] = list(symbols)
-    if as_of_date:
-        params.append(as_of_date)
 
-    rows = d1_client.query(
-        f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
-        f"       margin_balance, short_balance "
-        f"FROM chip_data "
-        f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year')"
-        f"{upper_bound_sql} "
-        f"ORDER BY symbol ASC, date ASC",
-        params,
-        timeout=60.0,
-    )
-    for r in rows:
-        sym = r["symbol"]
-        if sym in grouped_by_date:
-            grouped_by_date[sym][r["date"]] = {
-                "date": r["date"],
-                "foreign_net": r.get("foreign_net"),
-                "trust_net": r.get("trust_net"),
-                "dealer_net": r.get("dealer_net"),
-                "margin_balance": r.get("margin_balance"),
-                "short_balance": r.get("short_balance"),
-                "chip_source": "legacy.chip_data",
-            }
-
-    try:
-        canonical_rows = d1_client.query(
-            f"SELECT stock_id AS symbol, date, market_segment, foreign_net, trust_net, dealer_net, "
-            f"       margin_balance, short_balance, source, as_of_date "
-            f"FROM canonical_chip_daily "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year')"
+    for chunk in _chunked(symbols):
+        placeholders = ",".join("?" * len(chunk))
+        params: list[Any] = list(chunk)
+        if as_of_date:
+            params.append(as_of_date)
+        rows = d1_client.query(
+            f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
+            f"       margin_balance, short_balance "
+            f"FROM chip_data "
+            f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year')"
             f"{upper_bound_sql} "
-            f"ORDER BY stock_id ASC, date ASC",
+            f"ORDER BY symbol ASC, date ASC",
             params,
             timeout=60.0,
         )
-        for r in canonical_rows:
+        for r in rows:
             sym = r["symbol"]
-            if sym not in grouped_by_date:
-                continue
-            current = grouped_by_date[sym].get(r["date"], {"date": r["date"]})
-            current.update({
-                "foreign_net": r.get("foreign_net"),
-                "trust_net": r.get("trust_net"),
-                "dealer_net": r.get("dealer_net"),
-                "margin_balance": r.get("margin_balance"),
-                "short_balance": r.get("short_balance"),
-                "chip_source": r.get("source") or "canonical_chip_daily",
-                "market_segment": r.get("market_segment"),
-                "as_of_date": r.get("as_of_date"),
-            })
-            grouped_by_date[sym][r["date"]] = current
+            if sym in grouped_by_date:
+                grouped_by_date[sym][r["date"]] = {
+                    "date": r["date"],
+                    "foreign_net": r.get("foreign_net"),
+                    "trust_net": r.get("trust_net"),
+                    "dealer_net": r.get("dealer_net"),
+                    "margin_balance": r.get("margin_balance"),
+                    "short_balance": r.get("short_balance"),
+                    "chip_source": "legacy.chip_data",
+                }
+
+    try:
+        for chunk in _chunked(symbols):
+            placeholders = ",".join("?" * len(chunk))
+            params: list[Any] = list(chunk)
+            if as_of_date:
+                params.append(as_of_date)
+            canonical_rows = d1_client.query(
+                f"SELECT stock_id AS symbol, date, market_segment, foreign_net, trust_net, dealer_net, "
+                f"       margin_balance, short_balance, source, as_of_date "
+                f"FROM canonical_chip_daily "
+                f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year')"
+                f"{upper_bound_sql} "
+                f"ORDER BY stock_id ASC, date ASC",
+                params,
+                timeout=60.0,
+            )
+            for r in canonical_rows:
+                sym = r["symbol"]
+                if sym not in grouped_by_date:
+                    continue
+                current = grouped_by_date[sym].get(r["date"], {"date": r["date"]})
+                current.update({
+                    "foreign_net": r.get("foreign_net"),
+                    "trust_net": r.get("trust_net"),
+                    "dealer_net": r.get("dealer_net"),
+                    "margin_balance": r.get("margin_balance"),
+                    "short_balance": r.get("short_balance"),
+                    "chip_source": r.get("source") or "canonical_chip_daily",
+                    "market_segment": r.get("market_segment"),
+                    "as_of_date": r.get("as_of_date"),
+                })
+                grouped_by_date[sym][r["date"]] = current
     except Exception as exc:
         logger.debug("[payload_builder] canonical_chip_daily unavailable, using legacy chip_data fallback: %s", exc)
 
     try:
-        broker_rows = d1_client.query(
-            f"SELECT stock_id AS symbol, date, market_segment, net_shares, estimated_amount, "
-            f"       broker_count, concentration, source, as_of_date "
-            f"FROM canonical_broker_flow_daily "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year')"
-            f"{upper_bound_sql} "
-            f"ORDER BY stock_id ASC, date ASC",
-            params,
-            timeout=60.0,
-        )
-        for r in broker_rows:
-            sym = r["symbol"]
-            if sym not in grouped_by_date:
-                continue
-            current = grouped_by_date[sym].get(r["date"], {"date": r["date"]})
-            net_shares = float(r.get("net_shares") or 0.0)
-            if str(current.get("market_segment") or r.get("market_segment") or "").upper() == "EMERGING":
-                current["dealer_net"] = net_shares
-            else:
-                current["dealer_net"] = float(current.get("dealer_net") or 0.0) + net_shares
-            current["broker_net_shares"] = float(current.get("broker_net_shares") or 0.0) + net_shares
-            current["broker_estimated_amount"] = float(current.get("broker_estimated_amount") or 0.0) + float(r.get("estimated_amount") or 0.0)
-            current["broker_count"] = r.get("broker_count")
-            current["broker_concentration"] = r.get("concentration")
-            current["chip_source"] = r.get("source") or "finlab.rotc_broker_transactions"
-            current["market_segment"] = r.get("market_segment") or "EMERGING"
-            current["as_of_date"] = r.get("as_of_date")
-            grouped_by_date[sym][r["date"]] = current
+        for chunk in _chunked(symbols):
+            placeholders = ",".join("?" * len(chunk))
+            params: list[Any] = list(chunk)
+            if as_of_date:
+                params.append(as_of_date)
+            broker_rows = d1_client.query(
+                f"SELECT stock_id AS symbol, date, market_segment, net_shares, estimated_amount, "
+                f"       broker_count, concentration, source, as_of_date "
+                f"FROM canonical_broker_flow_daily "
+                f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year')"
+                f"{upper_bound_sql} "
+                f"ORDER BY stock_id ASC, date ASC",
+                params,
+                timeout=60.0,
+            )
+            for r in broker_rows:
+                sym = r["symbol"]
+                if sym not in grouped_by_date:
+                    continue
+                current = grouped_by_date[sym].get(r["date"], {"date": r["date"]})
+                net_shares = float(r.get("net_shares") or 0.0)
+                if str(current.get("market_segment") or r.get("market_segment") or "").upper() == "EMERGING":
+                    current["dealer_net"] = net_shares
+                else:
+                    current["dealer_net"] = float(current.get("dealer_net") or 0.0) + net_shares
+                current["broker_net_shares"] = float(current.get("broker_net_shares") or 0.0) + net_shares
+                current["broker_estimated_amount"] = float(current.get("broker_estimated_amount") or 0.0) + float(r.get("estimated_amount") or 0.0)
+                current["broker_count"] = r.get("broker_count")
+                current["broker_concentration"] = r.get("concentration")
+                current["chip_source"] = r.get("source") or "finlab.rotc_broker_transactions"
+                current["market_segment"] = r.get("market_segment") or "EMERGING"
+                current["as_of_date"] = r.get("as_of_date")
+                grouped_by_date[sym][r["date"]] = current
     except Exception as exc:
         logger.debug("[payload_builder] canonical_broker_flow_daily unavailable, using institution-only chip payload: %s", exc)
 
@@ -694,27 +727,28 @@ def _bulk_load_sentiment(
 ) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
-    placeholders = ",".join("?" * len(stock_ids))
-    upper_bound_sql = "AND date(published_at) <= ? " if as_of_date else ""
-    params: list[Any] = list(stock_ids)
-    if as_of_date:
-        params.append(as_of_date)
-    rows = d1_client.query(
-        f"SELECT stock_id, date(published_at) as date, "
-        f"       AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score "
-        f"FROM news WHERE stock_id IN ({placeholders}) "
-        f"AND published_at >= date('now','-180 days') "
-        f"{upper_bound_sql}"
-        f"GROUP BY stock_id, date(published_at) "
-        f"ORDER BY stock_id ASC, date ASC",
-        params,
-        timeout=60.0,
-    )
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
-    for r in rows:
-        sid = r["stock_id"]
-        if sid in grouped:
-            grouped[sid].append({"date": r["date"], "score": r["score"]})
+    upper_bound_sql = "AND date(published_at) <= ? " if as_of_date else ""
+    for chunk in _chunked(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        params: list[Any] = list(chunk)
+        if as_of_date:
+            params.append(as_of_date)
+        rows = d1_client.query(
+            f"SELECT stock_id, date(published_at) as date, "
+            f"       AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score "
+            f"FROM news WHERE stock_id IN ({placeholders}) "
+            f"AND published_at >= date('now','-180 days') "
+            f"{upper_bound_sql}"
+            f"GROUP BY stock_id, date(published_at) "
+            f"ORDER BY stock_id ASC, date ASC",
+            params,
+            timeout=60.0,
+        )
+        for r in rows:
+            sid = r["stock_id"]
+            if sid in grouped:
+                grouped[sid].append({"date": r["date"], "score": r["score"]})
     for sid in grouped:
         if len(grouped[sid]) > limit:
             grouped[sid] = grouped[sid][-limit:]
@@ -730,33 +764,34 @@ def _bulk_load_accuracies(
     """
     if not stock_ids:
         return {}, {}
-    placeholders = ",".join("?" * len(stock_ids))
-    rows = d1_client.query(
-        f"SELECT stock_id, model_name, accuracy, profit_factor, expectancy, "
-        f"       avg_win_pct, avg_loss_pct, avg_trade_pnl_r, "
-        f"       hit_target_rate, hit_stop_rate "
-        f"FROM model_accuracy "
-        f"WHERE stock_id IN ({placeholders}) AND period='30d' AND total_count >= 5",
-        list(stock_ids),
-        timeout=60.0,
-    )
     real_acc: dict[int, dict[str, float]] = {sid: {} for sid in stock_ids}
     model_stats: dict[int, dict[str, dict]] = {sid: {} for sid in stock_ids}
-    for r in rows:
-        sid = r["stock_id"]
-        if sid not in real_acc:
-            continue
-        name = r["model_name"]
-        real_acc[sid][name] = r.get("accuracy") or 0
-        model_stats[sid][name] = {
-            "profit_factor": r.get("profit_factor"),
-            "expectancy": r.get("expectancy"),
-            "avg_win_pct": r.get("avg_win_pct"),
-            "avg_loss_pct": r.get("avg_loss_pct"),
-            "avg_pnl_r": r.get("avg_trade_pnl_r"),
-            "hit_target_rate": r.get("hit_target_rate"),
-            "hit_stop_rate": r.get("hit_stop_rate"),
-        }
+    for chunk in _chunked(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        rows = d1_client.query(
+            f"SELECT stock_id, model_name, accuracy, profit_factor, expectancy, "
+            f"       avg_win_pct, avg_loss_pct, avg_trade_pnl_r, "
+            f"       hit_target_rate, hit_stop_rate "
+            f"FROM model_accuracy "
+            f"WHERE stock_id IN ({placeholders}) AND period='30d' AND total_count >= 5",
+            list(chunk),
+            timeout=60.0,
+        )
+        for r in rows:
+            sid = r["stock_id"]
+            if sid not in real_acc:
+                continue
+            name = r["model_name"]
+            real_acc[sid][name] = r.get("accuracy") or 0
+            model_stats[sid][name] = {
+                "profit_factor": r.get("profit_factor"),
+                "expectancy": r.get("expectancy"),
+                "avg_win_pct": r.get("avg_win_pct"),
+                "avg_loss_pct": r.get("avg_loss_pct"),
+                "avg_pnl_r": r.get("avg_trade_pnl_r"),
+                "hit_target_rate": r.get("hit_target_rate"),
+                "hit_stop_rate": r.get("hit_stop_rate"),
+            }
     return real_acc, model_stats
 
 
@@ -770,66 +805,77 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], as_of_date: str | None = Non
     if not stock_ids:
         return {}
     out: dict[int, dict] = {sid: {} for sid in stock_ids}
-    placeholders = ",".join("?" * len(stock_ids))
     upper_bound_sql = " AND date <= ?" if as_of_date else ""
-    params: list[Any] = list(stock_ids)
-    if as_of_date:
-        params.append(as_of_date)
 
     # margin: latest
-    margin_rows = d1_client.query(
-        f"SELECT m1.stock_id, m1.margin_balance, m1.short_ratio "
-        f"FROM margin_data m1 "
-        f"INNER JOIN ("
-        f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM margin_data WHERE stock_id IN ({placeholders})"
-        f"{upper_bound_sql} GROUP BY stock_id"
-        f") m2 ON m1.stock_id = m2.stock_id AND m1.date = m2.max_date",
-        params,
-        timeout=60.0,
-    )
-    for r in margin_rows:
-        sid = r["stock_id"]
-        if sid in out:
-            out[sid]["margin_balance"] = r.get("margin_balance")
-            out[sid]["short_ratio"] = r.get("short_ratio")
+    for chunk in _chunked(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        params: list[Any] = list(chunk)
+        if as_of_date:
+            params.append(as_of_date)
+        margin_rows = d1_client.query(
+            f"SELECT m1.stock_id, m1.margin_balance, m1.short_ratio "
+            f"FROM margin_data m1 "
+            f"INNER JOIN ("
+            f"  SELECT stock_id, MAX(date) as max_date "
+            f"  FROM margin_data WHERE stock_id IN ({placeholders})"
+            f"{upper_bound_sql} GROUP BY stock_id"
+            f") m2 ON m1.stock_id = m2.stock_id AND m1.date = m2.max_date",
+            params,
+            timeout=60.0,
+        )
+        for r in margin_rows:
+            sid = r["stock_id"]
+            if sid in out:
+                out[sid]["margin_balance"] = r.get("margin_balance")
+                out[sid]["short_ratio"] = r.get("short_ratio")
 
     # margin: 5 days ago (offset 5 from latest) — too complex bulk; do nullable fallback
     # Skip for now; worker behavior is non-blocking (catch → null)
 
     # shareholding: latest retail_pct
-    sh_rows = d1_client.query(
-        f"SELECT s1.stock_id, s1.retail_pct "
-        f"FROM shareholding s1 "
-        f"INNER JOIN ("
-        f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM shareholding WHERE stock_id IN ({placeholders})"
-        f"{upper_bound_sql} GROUP BY stock_id"
-        f") s2 ON s1.stock_id = s2.stock_id AND s1.date = s2.max_date",
-        params,
-        timeout=60.0,
-    )
-    for r in sh_rows:
-        sid = r["stock_id"]
-        if sid in out:
-            out[sid]["retail_pct"] = r.get("retail_pct")
+    for chunk in _chunked(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        params = list(chunk)
+        if as_of_date:
+            params.append(as_of_date)
+        sh_rows = d1_client.query(
+            f"SELECT s1.stock_id, s1.retail_pct "
+            f"FROM shareholding s1 "
+            f"INNER JOIN ("
+            f"  SELECT stock_id, MAX(date) as max_date "
+            f"  FROM shareholding WHERE stock_id IN ({placeholders})"
+            f"{upper_bound_sql} GROUP BY stock_id"
+            f") s2 ON s1.stock_id = s2.stock_id AND s1.date = s2.max_date",
+            params,
+            timeout=60.0,
+        )
+        for r in sh_rows:
+            sid = r["stock_id"]
+            if sid in out:
+                out[sid]["retail_pct"] = r.get("retail_pct")
 
     # monthly_revenue: latest revenue_yoy
-    rev_rows = d1_client.query(
-        f"SELECT r1.stock_id, r1.revenue_yoy "
-        f"FROM monthly_revenue r1 "
-        f"INNER JOIN ("
-        f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM monthly_revenue WHERE stock_id IN ({placeholders})"
-        f"{upper_bound_sql} GROUP BY stock_id"
-        f") r2 ON r1.stock_id = r2.stock_id AND r1.date = r2.max_date",
-        params,
-        timeout=60.0,
-    )
-    for r in rev_rows:
-        sid = r["stock_id"]
-        if sid in out:
-            out[sid]["revenue_yoy"] = r.get("revenue_yoy")
+    for chunk in _chunked(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        params = list(chunk)
+        if as_of_date:
+            params.append(as_of_date)
+        rev_rows = d1_client.query(
+            f"SELECT r1.stock_id, r1.revenue_yoy "
+            f"FROM monthly_revenue r1 "
+            f"INNER JOIN ("
+            f"  SELECT stock_id, MAX(date) as max_date "
+            f"  FROM monthly_revenue WHERE stock_id IN ({placeholders})"
+            f"{upper_bound_sql} GROUP BY stock_id"
+            f") r2 ON r1.stock_id = r2.stock_id AND r1.date = r2.max_date",
+            params,
+            timeout=60.0,
+        )
+        for r in rev_rows:
+            sid = r["stock_id"]
+            if sid in out:
+                out[sid]["revenue_yoy"] = r.get("revenue_yoy")
 
     return out
 

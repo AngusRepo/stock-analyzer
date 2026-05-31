@@ -39,6 +39,69 @@ def test_bulk_load_prices_applies_as_of_date_upper_bound(monkeypatch):
     assert captured["params"] == [1, "2026-05-27"]
 
 
+def test_bulk_load_prices_chunks_d1_in_clause_params(monkeypatch):
+    captured_params: list[list[object]] = []
+    stock_ids = list(range(1, payload_builder.D1_IN_CLAUSE_CHUNK_SIZE + 6))
+
+    def fake_query(sql, params=None, timeout=None):
+        assert timeout == 120.0
+        assert "stock_id IN (" in sql
+        captured_params.append(list(params or []))
+        ids = [value for value in (params or []) if isinstance(value, int)]
+        return [
+            {
+                "stock_id": stock_id,
+                "date": "2026-05-27",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "volume": 1000,
+                "adj_close": 10.5,
+                "avg_price": None,
+            }
+            for stock_id in ids
+        ]
+
+    monkeypatch.setattr(payload_builder.d1_client, "query", fake_query)
+
+    rows = payload_builder._bulk_load_prices(stock_ids, as_of_date="2026-05-27")
+
+    assert len(captured_params) == 2
+    assert all(len(params) <= payload_builder.D1_IN_CLAUSE_CHUNK_SIZE + 1 for params in captured_params)
+    assert all(params[-1] == "2026-05-27" for params in captured_params)
+    assert rows[1][0]["close"] == 10.5
+    assert rows[stock_ids[-1]][0]["close"] == 10.5
+
+
+def test_per_stock_misc_chunks_all_bulk_queries(monkeypatch):
+    captured_params: list[list[object]] = []
+    stock_ids = list(range(1, payload_builder.D1_IN_CLAUSE_CHUNK_SIZE + 6))
+
+    def fake_query(sql, params=None, timeout=None):
+        assert timeout == 60.0
+        captured_params.append(list(params or []))
+        stock_id = next((value for value in (params or []) if isinstance(value, int)), None)
+        if "margin_data" in sql:
+            return [{"stock_id": stock_id, "margin_balance": 1000, "short_ratio": 0.1}]
+        if "shareholding" in sql:
+            return [{"stock_id": stock_id, "retail_pct": 25.0}]
+        if "monthly_revenue" in sql:
+            return [{"stock_id": stock_id, "revenue_yoy": 12.5}]
+        return []
+
+    monkeypatch.setattr(payload_builder.d1_client, "query", fake_query)
+
+    rows = payload_builder._bulk_load_per_stock_misc(stock_ids, as_of_date="2026-05-27")
+
+    assert len(captured_params) == 6
+    assert all(len(params) <= payload_builder.D1_IN_CLAUSE_CHUNK_SIZE + 1 for params in captured_params)
+    assert all(params[-1] == "2026-05-27" for params in captured_params)
+    assert rows[1]["margin_balance"] == 1000
+    assert rows[1]["retail_pct"] == 25.0
+    assert rows[1]["revenue_yoy"] == 12.5
+
+
 def test_build_payloads_handles_avg_price_only_latest_row(monkeypatch):
     captured_as_of: dict[str, object] = {}
     prices = [

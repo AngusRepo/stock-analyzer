@@ -313,6 +313,23 @@ void (async () => {
 
 {
   const check = buildScreenerSourceOfTruthCheck({
+    targetDate: '2026-05-29',
+    funnelRunId: 'screener-2026-05-29-1',
+    funnelStatus: 'success',
+    funnelFinalCount: 80,
+    funnelEmergingCount: 3,
+    dailyTotal: 40,
+    tradableCount: 37,
+    emergingCount: 3,
+    eligibleMlCount: 40,
+    eligiblePendingCount: 37,
+  })
+  assert(check.status === 'ok', 'post-allocation recommendation seeds may be a valid subset of the broader screener funnel')
+  assert(check.summary.includes('valid subset'), 'subset mode summary should make the new screener contract explicit')
+}
+
+{
+  const check = buildScreenerSourceOfTruthCheck({
     targetDate: '2026-04-30',
     funnelRunId: null,
     funnelStatus: null,
@@ -334,14 +351,14 @@ void (async () => {
     funnelStatus: 'success',
     funnelFinalCount: 40,
     funnelEmergingCount: 6,
-    dailyTotal: 45,
-    tradableCount: 39,
+    dailyTotal: 47,
+    tradableCount: 41,
     emergingCount: 6,
-    eligibleMlCount: 45,
-    eligiblePendingCount: 39,
+    eligibleMlCount: 47,
+    eligiblePendingCount: 41,
   })
-  assert(check.status === 'fail', 'daily seed count must not drift from screener funnel final/emerging counts')
-  assert(check.summary.includes('daily=45 funnel=46'), 'source-of-truth summary must expose count mismatch')
+  assert(check.status === 'fail', 'daily seed count must not exceed screener funnel capacity')
+  assert(check.summary.includes('daily=47 funnel=46'), 'source-of-truth summary must expose capacity mismatch')
 }
 
 {

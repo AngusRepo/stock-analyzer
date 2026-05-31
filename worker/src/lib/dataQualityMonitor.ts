@@ -564,9 +564,11 @@ export function buildScreenerSourceOfTruthCheck(input: {
   }
 
   const aligned =
-    dailyTotal === funnelTotal &&
-    tradableCount === funnelFinalCount &&
-    emergingCount === funnelEmergingCount &&
+    dailyTotal > 0 &&
+    dailyTotal <= funnelTotal &&
+    tradableCount <= funnelFinalCount &&
+    emergingCount <= funnelEmergingCount &&
+    tradableCount + emergingCount === dailyTotal &&
     eligibleMlCount === dailyTotal &&
     eligiblePendingCount === tradableCount
 
@@ -575,7 +577,7 @@ export function buildScreenerSourceOfTruthCheck(input: {
     label: 'Screener source of truth',
     status: aligned ? 'ok' : 'fail',
     summary: aligned
-      ? `daily=${dailyTotal} funnel=${funnelTotal} tradable=${tradableCount} emerging=${emergingCount}`
+      ? `daily=${dailyTotal} is valid subset of funnel=${funnelTotal}; tradable=${tradableCount}/${funnelFinalCount} emerging=${emergingCount}/${funnelEmergingCount}`
       : `daily=${dailyTotal} funnel=${funnelTotal} tradable=${tradableCount}/${funnelFinalCount} emerging=${emergingCount}/${funnelEmergingCount} eligible_ml=${eligibleMlCount}/${dailyTotal} pending=${eligiblePendingCount}/${tradableCount}`,
     metrics: baseMetrics,
   }

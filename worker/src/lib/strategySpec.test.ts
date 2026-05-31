@@ -88,8 +88,8 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 {
   const candidate = {
     symbol: '2454',
-    current_price: 120,
     raw_signals: {
+      close: 120,
       closeAboveMa20Pct: 0.03,
       closeAboveMa60Pct: 0.02,
       volumeExpansion20: 1.35,
@@ -109,7 +109,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   const assessment = assessCandidateAgainstStrategySpecs(candidate, DEFAULT_STRATEGY_SPECS)
   assert(
     assessment.matches.some((match) => match.specId.startsWith('finlab_ai_skill_')),
-    'raw row indicators should be sufficient for active FinLab AI Skill strategy matches without Score V2',
+    'raw row indicators should be sufficient for active FinLab AI Skill strategy matches without Score V2 or current_price',
   )
 }
 

@@ -266,12 +266,12 @@ function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: St
   if (includes.length && !includes.includes(industry)) return null
   if (excludes.length && excludes.includes(industry)) return null
 
-  const price = finiteNumber(candidate.current_price)
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
+  const price = finiteNumber(candidate.current_price) ?? raw.close ?? null
   if (thresholds.minPrice != null && (price == null || price < thresholds.minPrice)) return null
   if (thresholds.maxPrice != null && (price == null || price > thresholds.maxPrice)) return null
 
   const scores = candidatePoolThresholdScores(candidate)
-  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
   const checks: Array<[string, unknown, number | undefined]> = [
     ['score', scores.seedScore, thresholds.minSeedScore],
     ['chip', scores.chipFlow, thresholds.minChipScore],

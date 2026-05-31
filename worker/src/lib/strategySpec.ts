@@ -233,7 +233,7 @@ function meetsMinimum(value: unknown, min: number | undefined): boolean {
 }
 
 function meetsPrice(candidate: StrategyCandidateInput, thresholds: StrategySpecThresholds): boolean {
-  const price = finiteNumber(candidate.current_price)
+  const price = finiteNumber(candidate.current_price) ?? deriveStrategyRawSignals(candidate).close ?? null
   if (thresholds.minPrice == null && thresholds.maxPrice == null) return true
   if (price == null) return false
   if (thresholds.minPrice != null && price < thresholds.minPrice) return false

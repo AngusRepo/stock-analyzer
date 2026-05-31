@@ -47,6 +47,7 @@ function scoreV2Payload(input: {
 }
 
 function rawSignalPayload(input: {
+  close?: number
   closeAboveMa20Pct?: number
   closeAboveMa60Pct?: number
   volumeExpansion20?: number
@@ -63,6 +64,7 @@ function rawSignalPayload(input: {
   pb?: number
 } = {}) {
   return {
+    close: input.close ?? 50,
     closeAboveMa20Pct: input.closeAboveMa20Pct ?? 0.03,
     closeAboveMa60Pct: input.closeAboveMa60Pct ?? 0.01,
     volumeExpansion20: input.volumeExpansion20 ?? 1.25,
@@ -118,7 +120,6 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       momentumProxy: 12,
     }),
     raw_signals: rawSignalPayload({ closeAboveMa20Pct: 0.06, volumeExpansion20: 1.45, return20d: 0.1 }),
-    current_price: 55,
     market_segment: 'LISTED',
     eligible_for_ml: 1,
   }
@@ -170,7 +171,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   )
 
   assert(!oldTopScoreSymbols.has('8999'), 'test fixture must keep niche candidate outside old score-top pool')
-  assert(plan.breadthPool.some((candidate) => candidate.symbol === '8999'), 'L1 breadth pool should include full-universe strategy fit outside old score-top pool')
+  assert(plan.breadthPool.some((candidate) => candidate.symbol === '8999'), 'L1 breadth pool should include raw-signal priced strategy fit outside old score-top pool')
   assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up', 'L1 selection order must be strategy quota before raw-signal top-up')
   assert(plan.coarseQueue.length <= 8, 'Layer2 coarse queue should be sliced from the L1 breadth pool')
 }

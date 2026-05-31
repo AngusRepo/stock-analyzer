@@ -1695,6 +1695,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     raw_signals?: StrategyRawSignals
     industry: string
     market_segment: string
+    current_price: number | null
     taxonomy?: SymbolTaxonomyProfile
   }
   const scored: ScoredCandidate[] = []
@@ -1721,6 +1722,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       chip_score, tech_score, momentum_score,
       score_components,
       raw_signals,
+      current_price: finiteOrNull(latest.close),
       industry,
       market_segment: 'listed_otc',
       taxonomy,
@@ -2615,6 +2617,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         tech_score,
         momentum_score,
         score_components,
+        current_price: finiteOrNull(latest.close),
         industry,
         market_segment: 'emerging',
         taxonomy,

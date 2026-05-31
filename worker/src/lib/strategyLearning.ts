@@ -170,6 +170,7 @@ const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
 const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
 const ACTIVE_COOLDOWN_HIT_RATE = 0.48
+const STRATEGY_LEARNING_D1_BATCH_SIZE = 50
 
 function stageForStrategyStatus(status: StrategySpecStatus): StrategyLearningStage {
   if (status === 'active') return 'L3_production_allocation'
@@ -635,32 +636,35 @@ export async function listStrategyLearningCandidates(
 
 export async function persistStrategyDecisionRows(db: D1Database, rows: StrategyDecisionLogRow[]): Promise<number> {
   await ensureStrategyLearningTables(db)
+  if (rows.length === 0) return 0
+  const statements = rows.map((row) => db.prepare(`
+    INSERT OR REPLACE INTO strategy_decision_log (
+      decision_id, date, symbol, name, strategy_id, strategy_version,
+      strategy_status, alpha_bucket, matched, match_score, reason_code,
+      context_json, evidence_json, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    row.decision_id,
+    row.date,
+    row.symbol,
+    row.name,
+    row.strategy_id,
+    row.strategy_version,
+    row.strategy_status,
+    row.alpha_bucket,
+    row.matched,
+    row.match_score,
+    row.reason_code,
+    row.context_json,
+    row.evidence_json,
+    row.created_at,
+  ))
   let persisted = 0
-  for (const row of rows) {
-    await db.prepare(`
-      INSERT OR REPLACE INTO strategy_decision_log (
-        decision_id, date, symbol, name, strategy_id, strategy_version,
-        strategy_status, alpha_bucket, matched, match_score, reason_code,
-        context_json, evidence_json, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      row.decision_id,
-      row.date,
-      row.symbol,
-      row.name,
-      row.strategy_id,
-      row.strategy_version,
-      row.strategy_status,
-      row.alpha_bucket,
-      row.matched,
-      row.match_score,
-      row.reason_code,
-      row.context_json,
-      row.evidence_json,
-      row.created_at,
-    ).run()
-    persisted += 1
+  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    const chunk = statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE)
+    await db.batch(chunk)
+    persisted += chunk.length
   }
   return persisted
 }
@@ -821,50 +825,53 @@ export async function listStrategyRewardSourceRows(
 
 export async function persistStrategyRewardLedgerRows(db: D1Database, rows: StrategyRewardLedgerRow[]): Promise<number> {
   await ensureStrategyLearningTables(db)
+  if (rows.length === 0) return 0
+  const statements = rows.map((row) => db.prepare(`
+    INSERT INTO strategy_reward_ledger (
+      reward_id, strategy_id, strategy_version, strategy_status, alpha_bucket,
+      date_start, date_end, horizon_days, samples, hit_rate, avg_return_pct,
+      reward_sum, max_drawdown_pct, coverage, market_segment, regime,
+      evidence_json, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(strategy_id, strategy_version, horizon_days, market_segment, regime) DO UPDATE SET
+      strategy_status=excluded.strategy_status,
+      alpha_bucket=excluded.alpha_bucket,
+      date_start=excluded.date_start,
+      date_end=excluded.date_end,
+      samples=excluded.samples,
+      hit_rate=excluded.hit_rate,
+      avg_return_pct=excluded.avg_return_pct,
+      reward_sum=excluded.reward_sum,
+      max_drawdown_pct=excluded.max_drawdown_pct,
+      coverage=excluded.coverage,
+      evidence_json=excluded.evidence_json,
+      updated_at=excluded.updated_at
+  `).bind(
+    row.reward_id,
+    row.strategy_id,
+    row.strategy_version,
+    row.strategy_status,
+    row.alpha_bucket,
+    row.date_start,
+    row.date_end,
+    row.horizon_days,
+    row.samples,
+    row.hit_rate,
+    row.avg_return_pct,
+    row.reward_sum,
+    row.max_drawdown_pct,
+    row.coverage,
+    row.market_segment,
+    row.regime,
+    row.evidence_json,
+    row.updated_at,
+  ))
   let persisted = 0
-  for (const row of rows) {
-    await db.prepare(`
-      INSERT INTO strategy_reward_ledger (
-        reward_id, strategy_id, strategy_version, strategy_status, alpha_bucket,
-        date_start, date_end, horizon_days, samples, hit_rate, avg_return_pct,
-        reward_sum, max_drawdown_pct, coverage, market_segment, regime,
-        evidence_json, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(strategy_id, strategy_version, horizon_days, market_segment, regime) DO UPDATE SET
-        strategy_status=excluded.strategy_status,
-        alpha_bucket=excluded.alpha_bucket,
-        date_start=excluded.date_start,
-        date_end=excluded.date_end,
-        samples=excluded.samples,
-        hit_rate=excluded.hit_rate,
-        avg_return_pct=excluded.avg_return_pct,
-        reward_sum=excluded.reward_sum,
-        max_drawdown_pct=excluded.max_drawdown_pct,
-        coverage=excluded.coverage,
-        evidence_json=excluded.evidence_json,
-        updated_at=excluded.updated_at
-    `).bind(
-      row.reward_id,
-      row.strategy_id,
-      row.strategy_version,
-      row.strategy_status,
-      row.alpha_bucket,
-      row.date_start,
-      row.date_end,
-      row.horizon_days,
-      row.samples,
-      row.hit_rate,
-      row.avg_return_pct,
-      row.reward_sum,
-      row.max_drawdown_pct,
-      row.coverage,
-      row.market_segment,
-      row.regime,
-      row.evidence_json,
-      row.updated_at,
-    ).run()
-    persisted += 1
+  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    const chunk = statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE)
+    await db.batch(chunk)
+    persisted += chunk.length
   }
   return persisted
 }

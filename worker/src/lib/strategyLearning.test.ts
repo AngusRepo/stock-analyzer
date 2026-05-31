@@ -20,6 +20,8 @@ function assert(condition: unknown, message: string): void {
     source.includes('INSERT OR REPLACE INTO strategy_decision_log'),
     'strategy decision materialization must be idempotent across historical replay runs',
   )
+  assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE'), 'strategy learning replay writes must be chunked for D1 production latency')
+  assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
 }
 
 {

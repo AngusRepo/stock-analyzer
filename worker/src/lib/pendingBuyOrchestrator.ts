@@ -693,7 +693,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
                 LIMIT 1
              ) AS latest_avg_price,
              p.forecast_data AS forecast_data,
-             dr.signal_source AS signal_source
+             CASE WHEN json_valid(dr.alpha_allocation) THEN
+               COALESCE(
+                 json_extract(dr.alpha_allocation, '$.engine'),
+                 json_extract(dr.alpha_allocation, '$.controller')
+               )
+             ELSE NULL END AS signal_source
         FROM daily_recommendations dr
         LEFT JOIN stocks s ON s.symbol = dr.symbol
         LEFT JOIN predictions p ON p.id = (

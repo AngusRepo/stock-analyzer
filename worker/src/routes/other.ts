@@ -1092,7 +1092,7 @@ export const recommendations = new Hono<{ Bindings: Bindings; Variables: Variabl
 
 recommendations.use('/*', authMiddleware)
 
-const FINAL_RECOMMENDATION_WHERE = "signal IS NOT NULL AND confidence IS NOT NULL AND score_components LIKE '%score_v2%'"
+const FINAL_RECOMMENDATION_WHERE = "signal IS NOT NULL AND confidence IS NOT NULL AND score_components LIKE '%score_v2%' AND has_buy_signal = 1 AND json_valid(alpha_allocation) AND json_extract(alpha_allocation, '$.selected') = 1"
 
 function isEmergingRecommendation(row: Record<string, any>): boolean {
   return String(row.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
@@ -1338,6 +1338,7 @@ recommendations.get('/daily', async (c) => {
        LIMIT 1
     )
     WHERE r.date = ?
+      AND ${FINAL_RECOMMENDATION_WHERE}
     ORDER BY r.rank ASC
     LIMIT 80
   `).bind(date).all<any>()

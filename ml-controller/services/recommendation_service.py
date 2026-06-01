@@ -2269,8 +2269,26 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
         chunk = stock_ids[i:i + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
         rows = d1_client.query(
-            f"SELECT stock_id FROM daily_recommendations WHERE date=? AND stock_id IN ({placeholders})",
-            [run_date, *chunk],
+            f"""
+            WITH latest_screener_run AS (
+                SELECT run_id
+                  FROM screener_funnel_runs
+                 WHERE date = ?
+                   AND status = 'success'
+                 ORDER BY created_at DESC
+                 LIMIT 1
+            )
+            SELECT dr.stock_id
+              FROM daily_recommendations dr
+              JOIN screener_funnel_items sfi
+                ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
+               AND sfi.symbol = dr.symbol
+               AND sfi.stage = 'final_selection'
+               AND sfi.decision = 'selected'
+             WHERE dr.date = ?
+               AND dr.stock_id IN ({placeholders})
+            """,
+            [run_date, run_date, *chunk],
         )
         existing.update(int(row["stock_id"]) for row in rows if row.get("stock_id") is not None)
     return existing
@@ -2313,19 +2331,57 @@ def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], ru
 
 
 def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str) -> int:
-    """Keep the run-date recommendation set owned by the current pipeline output."""
-    stock_ids = {int(r["stock_id"]) for r in recommendations if r.get("stock_id")}
-    if not stock_ids:
+    """Keep only rows owned by the latest screener final_selection for run_date."""
+    if not recommendations:
         return 0
     rows = d1_client.query(
-        "SELECT stock_id FROM daily_recommendations WHERE date = ?",
-        [run_date],
+        """
+        WITH latest_screener_run AS (
+            SELECT run_id
+              FROM screener_funnel_runs
+             WHERE date = ?
+               AND status = 'success'
+             ORDER BY created_at DESC
+             LIMIT 1
+        )
+        SELECT dr.stock_id
+          FROM daily_recommendations dr
+         WHERE dr.date = ?
+           AND NOT EXISTS (
+             SELECT 1
+               FROM screener_funnel_items sfi
+              WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
+                AND sfi.symbol = dr.symbol
+                AND sfi.stage = 'final_selection'
+                AND sfi.decision = 'selected'
+           )
+        """,
+        [run_date, run_date],
         timeout=60,
     )
+    if not rows:
+        run = d1_client.query(
+            """
+            SELECT run_id
+              FROM screener_funnel_runs
+             WHERE date = ?
+               AND status = 'success'
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            [run_date],
+            timeout=60,
+        )
+        if not run:
+            logger.warning(
+                "[recommendation_service] No latest screener final_selection run for run_date=%s; skip stale cleanup",
+                run_date,
+            )
+        return 0
     stale_ids = sorted({
         int(row["stock_id"])
         for row in rows or []
-        if row.get("stock_id") is not None and int(row["stock_id"]) not in stock_ids
+        if row.get("stock_id") is not None
     })
     changes = 0
     for chunk in _chunked(stale_ids):
@@ -2338,7 +2394,7 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
         changes += int(((result or {}).get("meta") or {}).get("changes") or 0)
     if changes:
         logger.warning(
-            "[recommendation_service] Deleted %s stale daily_recommendations rows for run_date=%s",
+            "[recommendation_service] Deleted %s daily_recommendations rows outside latest screener final_selection for run_date=%s",
             changes,
             run_date,
         )

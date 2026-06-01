@@ -82,6 +82,13 @@ D1_RETRYABLE_MARKERS = (
 )
 
 
+def _daily_recommendation_select(alias: str = "dr") -> str:
+    return ", ".join(
+        f"{alias}.{column.strip()}"
+        for column in DAILY_RECOMMENDATION_PIPELINE_COLUMNS.split(",")
+    )
+
+
 def _is_retryable_d1_overload(error: Exception) -> bool:
     message = str(error)
     return any(marker.lower() in message.lower() for marker in D1_RETRYABLE_MARKERS)
@@ -188,20 +195,37 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     run_date = state["run_date"]
 
     screener_recs = d1_client.query(
-        f"SELECT {DAILY_RECOMMENDATION_PIPELINE_COLUMNS} "
-        "FROM daily_recommendations WHERE date = ? ORDER BY rank",
-        [run_date],
+        f"""
+        WITH latest_screener_run AS (
+            SELECT run_id
+              FROM screener_funnel_runs
+             WHERE date = ?
+               AND status = 'success'
+             ORDER BY created_at DESC
+             LIMIT 1
+        )
+        SELECT {_daily_recommendation_select("dr")}
+          FROM daily_recommendations dr
+          JOIN screener_funnel_items sfi
+            ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
+           AND sfi.symbol = dr.symbol
+           AND sfi.stage = 'final_selection'
+           AND sfi.decision = 'selected'
+         WHERE dr.date = ?
+         ORDER BY COALESCE(sfi.rank, dr.rank), dr.rank
+        """,
+        [run_date, run_date],
     )
     if not screener_recs:
         raise RuntimeError(
-            "screener_recs_missing: daily pipeline requires full-market screener "
-            "seeds before ML/recommendation; refusing watchlist fallback"
+            "screener_recs_missing: daily pipeline requires latest screener "
+            "final_selection ownership before ML/recommendation; refusing watchlist fallback"
         )
     active_stocks = build_ml_universe([], screener_recs)
 
     logger.info(
         f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
-        f"(source=daily_recommendations), "
+        f"(source=latest_screener_final_selection), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {

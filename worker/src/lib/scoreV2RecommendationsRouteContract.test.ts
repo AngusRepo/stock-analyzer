@@ -7,6 +7,12 @@ function assert(condition: unknown, message: string): void {
 const route = readFileSync('src/routes/other.ts', 'utf8')
 
 assert(
+  route.includes('has_buy_signal = 1') &&
+    route.includes("json_extract(alpha_allocation, '$.selected') = 1"),
+  'recommendations route must only resolve allocator-selected BUY rows as final recommendations',
+)
+
+assert(
   route.includes('mergeEmergingBrokerReason'),
   'recommendations route should merge emerging broker evidence through Score V2 reason semantics',
 )
@@ -64,6 +70,10 @@ const dailyStart = route.indexOf("recommendations.get('/daily'")
 const dailyEnd = route.indexOf("recommendations.get('/history'")
 assert(dailyStart >= 0 && dailyEnd > dailyStart, 'recommendations daily route should be locatable')
 const dailyBlock = route.slice(dailyStart, dailyEnd)
+assert(
+  dailyBlock.includes('WHERE r.date = ?') && dailyBlock.includes('AND ${FINAL_RECOMMENDATION_WHERE}'),
+  'recommendations daily payload query must apply the final BUY allocation predicate',
+)
 const responseMapStart = dailyBlock.indexOf('return {')
 const responseMapEnd = dailyBlock.indexOf('const evidenceLinksBySymbol')
 assert(responseMapStart >= 0 && responseMapEnd > responseMapStart, 'recommendations daily response shaping block should be locatable')

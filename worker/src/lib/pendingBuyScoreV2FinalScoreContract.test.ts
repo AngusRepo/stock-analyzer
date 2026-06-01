@@ -44,8 +44,14 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     'morning setup pending buys should keep canonical Score V2 payload on the pending-buy item',
   )
   assert(
-    morningSetupQuery.includes('dr.signal_source AS signal_source'),
-    'morning setup must carry final allocator signal_source into pending-buy provenance',
+    !morningSetupQuery.includes('dr.signal_source'),
+    'morning setup must not read nonexistent daily_recommendations.signal_source schema column',
+  )
+  assert(
+    morningSetupQuery.includes("json_extract(dr.alpha_allocation, '$.engine')") &&
+      morningSetupQuery.includes("json_extract(dr.alpha_allocation, '$.controller')") &&
+      morningSetupQuery.includes('AS signal_source'),
+    'morning setup must derive final allocator signal_source from alpha_allocation provenance',
   )
   assert(
     pendingBuyOrchestrator.includes('Signal Provenance (sparse tangent)'),

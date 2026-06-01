@@ -487,8 +487,11 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
     def _fake_query(sql, *_args, **_kwargs):
         if "stock_id IN" in sql:
+            assert "screener_funnel_items" in sql
+            assert "final_selection" in sql
             return [{"stock_id": 1}]
-        return [{"stock_id": 1}, {"stock_id": 9}]
+        assert "screener_funnel_items" in sql
+        return [{"stock_id": 9}]
 
     monkeypatch.setattr(recommendation_service.d1_client, "query", _fake_query)
 
@@ -538,8 +541,11 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
     def _fake_query(sql, *_args, **_kwargs):
         if "stock_id IN" in sql:
+            assert "screener_funnel_items" in sql
+            assert "final_selection" in sql
             return [{"stock_id": 1}]
-        return [{"stock_id": 1}, {"stock_id": 3}]
+        assert "screener_funnel_items" in sql
+        return [{"stock_id": 3}]
 
     monkeypatch.setattr(recommendation_service.d1_client, "query", _fake_query)
 

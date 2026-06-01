@@ -9,6 +9,7 @@ const entryTasks = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
 const workerTasks = readFileSync('src/lib/paperWorkerTasks.ts', 'utf8')
 const cronOrchestrator = readFileSync('src/lib/cronOrchestrator.ts', 'utf8')
 const intradayData = readFileSync('src/lib/paperIntradayData.ts', 'utf8')
+const paperMarketData = readFileSync('src/lib/paperMarketData.ts', 'utf8')
 
 assert(
   exitTasks.includes('batchGetIntradayOHLC'),
@@ -43,6 +44,14 @@ assert(
     workerTasks.includes('batchGetLatestPrices(env.DB, missingFinalSymbols)') &&
     !workerTasks.includes('if (finalPriceMap.size === 0) finalPriceMap = await batchGetLatestPrices'),
   'daily snapshot must fill missing intraday quotes from EOD prices instead of treating partial intraday coverage as complete',
+)
+assert(
+  paperMarketData.includes('ELSE COALESCE(sp.close, sp.avg_price)'),
+  'paper EOD pricing for regular TWSE/OTC positions must prefer close over avg_price',
+)
+assert(
+  paperMarketData.includes("UPPER(COALESCE(s.market, '')) IN ('EMERGING', 'ROTC')"),
+  'paper EOD pricing should keep avg_price fallback for emerging-style rows only',
 )
 assert(
   workerTasks.includes('options: DailySnapshotOptions = {}') &&

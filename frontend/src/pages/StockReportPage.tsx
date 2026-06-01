@@ -11,7 +11,7 @@ import DashboardV4LightweightChart from '@/components/charts/DashboardV4Lightwei
 import AppShell from '@/components/AppShell'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Brain, BarChart2,
-  Shield, Target, Zap, RefreshCw, Tag, Building2, DollarSign,
+  Shield, Zap, RefreshCw, Tag, Building2, DollarSign,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatTwDateTimeShort } from '@/lib/twTime'
@@ -64,6 +64,126 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
       </div>
       <span className="sv-muted-text w-14 text-right font-mono">{value}/{max}</span>
     </div>
+  )
+}
+
+function ScoreCompositionMap({ rows }: {
+  rows: Array<{ key: string; label: string; value: number; max: number; color: string }>
+}) {
+  if (!rows.length) {
+    return (
+      <div data-testid="stock-report-evidence-map" className="sv-content-card rounded-xl p-4">
+        <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.14em]">Score V2 evidence</p>
+        <p className="sv-title-text mt-2 text-sm font-semibold">score payload missing</p>
+        <p className="sv-muted-text mt-1 text-xs leading-5">不以前端 legacy score 推估；等 backend score_v2 payload 到齊後才展開構面圖。</p>
+      </div>
+    )
+  }
+
+  return (
+    <div data-testid="stock-report-evidence-map" className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {rows.map((item) => {
+          const pct = item.max > 0 ? Math.max(0, Math.min(100, Math.round((item.value / item.max) * 100))) : 0
+          return (
+            <div key={item.key} className="sv-content-card rounded-xl p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="sv-muted-text font-mono text-[10px] uppercase tracking-[0.14em]">{item.label}</p>
+                  <p className="sv-title-text mt-1 font-['Space_Grotesk'] text-2xl font-semibold">{item.value}</p>
+                </div>
+                <span className="sv-surface-chip rounded-full px-2 py-1 font-mono text-[10px]">{pct}%</span>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
+                <div className={cn('h-full rounded-full', item.color)} style={{ width: `${pct}%` }} />
+              </div>
+              <p className="sv-muted-text mt-2 font-mono text-[10px]">max {item.max}</p>
+            </div>
+          )
+        })}
+      </div>
+      <details className="sv-disclosure group">
+        <summary className="sv-disclosure-summary flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+          <span className="font-mono uppercase tracking-[0.14em]">Score detail bars</span>
+          <span className="sv-accent-text font-mono group-open:hidden">open</span>
+          <span className="sv-accent-text hidden font-mono group-open:inline">close</span>
+        </summary>
+        <div className="space-y-2 border-t border-[color:var(--sv-panel-border-soft)] p-3">
+          {rows.map((item) => (
+            <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+          ))}
+        </div>
+      </details>
+    </div>
+  )
+}
+
+function ModelVoteHeatmap({ models, reasoning }: { models: any[]; reasoning?: string }) {
+  const upCount = models.filter((m) => m.direction === 'up').length
+  const downCount = models.length - upCount
+
+  return (
+    <SectionCard title="ML 模型投票熱區" icon={Brain}>
+      <div data-testid="stock-report-model-heatmap" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {models.length ? (
+          models.map((m: any) => {
+            const confidence = Math.max(0, Math.min(100, Number(m.confidence ?? 0) * 100))
+            const accuracy = Math.max(0, Math.min(100, Number(m.direction_accuracy ?? 0) * 100))
+            const isUp = m.direction === 'up'
+            return (
+              <div key={m.name} className="sv-content-card rounded-xl p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="sv-title-text truncate font-mono text-xs font-semibold">{modelDisplayName(m.name)}</p>
+                    <p className={cn('mt-1 font-mono text-[10px]', isUp ? 'text-red-300' : 'text-emerald-300')}>
+                      {isUp ? 'up vote' : 'down vote'}
+                    </p>
+                  </div>
+                  <span
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[10px] font-bold text-black"
+                    style={{ backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}
+                  >
+                    {confidence.toFixed(0)}
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-[1fr_auto] items-center gap-2">
+                  <div className="h-2 overflow-hidden rounded-full bg-[color:var(--sv-panel-raised)]">
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${confidence}%`, backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}
+                    />
+                  </div>
+                  <span className="sv-muted-text font-mono text-[10px]">{accuracy.toFixed(0)}% acc</span>
+                </div>
+              </div>
+            )
+          })
+        ) : (
+          <div className="sv-content-card rounded-xl p-4 sm:col-span-2 lg:col-span-3">
+            <p className="sv-accent-text font-mono text-[10px] uppercase tracking-[0.14em]">model vote packet</p>
+            <p className="sv-title-text mt-2 text-sm font-semibold">model votes unavailable</p>
+            <p className="sv-muted-text mt-1 text-xs leading-5">沒有 ML model array 時不畫假 heatmap；保留空狀態讓資料缺口可見。</p>
+          </div>
+        )}
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <StockSignalTile label="Up votes" value={upCount} detail={`${models.length} models`} tone={upCount >= downCount ? 'buy' : 'neutral'} />
+        <StockSignalTile label="Down votes" value={downCount} detail={`${models.length} models`} tone={downCount > upCount ? 'sell' : 'neutral'} />
+        <StockSignalTile label="Coverage" value={models.length} detail="model families" tone="info" />
+      </div>
+      {reasoning && (
+        <details data-testid="stock-report-model-reasoning" className="sv-disclosure group mt-3">
+          <summary className="sv-disclosure-summary flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+            <span className="font-mono uppercase tracking-[0.14em]">Model reasoning</span>
+            <span className="sv-accent-text font-mono group-open:hidden">open</span>
+            <span className="sv-accent-text hidden font-mono group-open:inline">close</span>
+          </summary>
+          <p className="sv-muted-text border-t border-[color:var(--sv-panel-border-soft)] p-3 text-xs leading-5">
+            {reasoning}
+          </p>
+        </details>
+      )}
+    </SectionCard>
   )
 }
 
@@ -276,14 +396,7 @@ export default function StockReportPage() {
                 )}
               </div>
 
-              {/* 評分拆解 */}
-              {scoreViewModel && scoreViewModel.rows.length > 0 && (
-                <div className="space-y-2">
-                  {scoreViewModel?.rows.map((item) => (
-                    <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
-                  ))}
-                </div>
-              )}
+              <ScoreCompositionMap rows={scoreViewModel?.rows ?? []} />
 
               {/* 進場 / 停損 / 目標 */}
               {ml && signalKey !== 'NO_SIGNAL' && (
@@ -294,8 +407,8 @@ export default function StockReportPage() {
                     { label: '目標 1',   value: ml.target1,     cls: 'text-red-400' },
                     { label: '目標 2',   value: ml.target2,     cls: 'text-red-300' },
                   ].map(item => (
-                    <div key={item.label} className="rounded-lg border border-white/[0.08] bg-muted/20 p-3 text-center">
-                      <p className="text-[10px] text-muted-foreground mb-1">{item.label}</p>
+                    <div key={item.label} className="sv-content-card rounded-lg p-3 text-center">
+                      <p className="sv-muted-text mb-1 text-[10px]">{item.label}</p>
                       <p className={cn('text-sm font-bold font-mono', item.cls)}>
                         {typeof item.value === 'number' ? `$${item.value.toFixed(2)}` : '—'}
                       </p>
@@ -306,40 +419,7 @@ export default function StockReportPage() {
             </SectionCard>
 
             {/* ═══ Section 2: 模型投票 ═══ */}
-            {ml?.models?.length > 0 && (
-              <SectionCard title="ML 模型投票明細" icon={Brain}>
-                <div className="space-y-3">
-                  {ml.models.map((m: any) => (
-                    <div key={m.name} className="flex items-center gap-2 text-xs">
-                      <span
-                        className="w-20 text-[10px] font-medium px-2 py-0.5 rounded-full text-black text-center shrink-0"
-                        style={{ backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}
-                      >
-                        {modelDisplayName(m.name)}
-                      </span>
-                      <span className={cn('w-8 text-center', m.direction === 'up' ? 'text-red-400' : 'text-emerald-400')}>
-                        {m.direction === 'up' ? '↑ 漲' : '↓ 跌'}
-                      </span>
-                      <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
-                        <div
-                          className="h-full rounded-full"
-                          style={{ width: `${(m.confidence * 100).toFixed(0)}%`, backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}
-                        />
-                      </div>
-                      <span className="text-muted-foreground w-10 text-right font-mono">{(m.confidence * 100).toFixed(0)}%</span>
-                      <span className="text-muted-foreground/60 w-16 text-right">
-                        準確 {(m.direction_accuracy * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                {ml.reasoning && (
-                  <p className="mt-4 text-xs text-muted-foreground/70 leading-relaxed border-t border-white/[0.06] pt-3">
-                    {ml.reasoning}
-                  </p>
-                )}
-              </SectionCard>
-            )}
+            <ModelVoteHeatmap models={ml?.models ?? []} reasoning={ml?.reasoning} />
 
             {/* ═══ Section 3: 概念標籤 + 法人 + 基本面（三欄）═══ */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -402,7 +482,7 @@ export default function StockReportPage() {
             </div>
 
             {/* ═══ Section 4: LLM 分析報告 ═══ */}
-            <div className="space-y-4">
+            <div data-testid="stock-report-llm-drilldowns" className="space-y-3">
               {/* 分析師摘要 */}
               <LLMSection
                 title="分析師摘要"
@@ -447,21 +527,35 @@ function LLMSection({ title, icon: Icon, data, isPending, field }: {
   title: string; icon: any; data: any; isPending: boolean; field: string
 }) {
   const text = data?.[field] ?? data?.result ?? (typeof data === 'string' ? data : null)
+  const preview = text ? String(text).replace(/\s+/g, ' ').slice(0, 140) : null
 
   return (
-    <SectionCard title={title} icon={Icon}>
+    <details data-testid="stock-report-llm-drilldown" className="sv-disclosure group">
+      <summary className="sv-disclosure-summary flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 marker:hidden">
+        <div className="flex min-w-0 items-center gap-3">
+          <Icon className="sv-accent-text h-4 w-4 shrink-0" />
+          <div className="min-w-0">
+            <p className="sv-title-text text-sm font-semibold">{title}</p>
+            <p className="sv-muted-text truncate text-xs">
+              {isPending ? 'AI 分析中' : preview ? preview : '分析產生中或無資料'}
+            </p>
+          </div>
+        </div>
+        <span className="sv-accent-text shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] group-open:hidden">open</span>
+        <span className="sv-accent-text hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] group-open:inline">close</span>
+      </summary>
       {isPending ? (
-        <div className="flex items-center gap-2 py-4">
-          <RefreshCw className="w-4 h-4 animate-spin text-primary" />
-          <span className="text-sm text-muted-foreground animate-pulse">AI 分析中…</span>
+        <div className="flex items-center gap-2 border-t border-[color:var(--sv-panel-border-soft)] px-4 py-4">
+          <RefreshCw className="sv-accent-text h-4 w-4 animate-spin" />
+          <span className="sv-muted-text animate-pulse text-sm">AI 分析中…</span>
         </div>
       ) : text ? (
-        <div className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/85">
+        <div className="whitespace-pre-wrap border-t border-[color:var(--sv-panel-border-soft)] px-4 py-4 text-sm leading-7 text-[color:var(--sv-text-main)]">
           {text}
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground/50 py-2">分析產生中或無資料</p>
+        <p className="sv-muted-text border-t border-[color:var(--sv-panel-border-soft)] px-4 py-4 text-xs">分析產生中或無資料</p>
       )}
-    </SectionCard>
+    </details>
   )
 }

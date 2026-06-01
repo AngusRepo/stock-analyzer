@@ -30,6 +30,10 @@ type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> 
   strict?: boolean
 }
 
+function resolveTaipeiDateFromNow(): string {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
 const TASK_NAMES: Record<string, string> = {
   'pre-market-warmup': 'Pre-market Warmup',
   'evening-chain': 'Evening Chain',
@@ -141,9 +145,18 @@ export async function logSchedulerRunResult(
   env?: SchedulerRunLoggerEnv,
 ): Promise<void> {
   const requestedDate = String(result.run_date ?? result.date ?? '').trim()
+  const operationalDate = resolveTaipeiDateFromNow()
   const today = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
     ? requestedDate
-    : new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    : operationalDate
+  const metadata = operationalDate !== today
+    ? {
+        ...(result.metadata ?? {}),
+        business_date: today,
+        operational_date: operationalDate,
+        historical_rerun: true,
+      }
+    : result.metadata
   const entry: SchedulerRunLogEntry = {
     task,
     status: result.status,
@@ -153,16 +166,23 @@ export async function logSchedulerRunResult(
     run_id: result.run_id,
     run_date: today,
     error: result.error,
-    metadata: result.metadata,
+    metadata,
     timestamp: new Date().toISOString(),
   }
 
   try {
     const payload = JSON.stringify(entry)
-    await Promise.all([
+    const writes = [
       kv.put(`scheduler:run:${task}:${today}`, payload, { expirationTtl: 7 * 86400 }),
       kv.put(`cron:log:${task}:${today}`, payload, { expirationTtl: 7 * 86400 }),
-    ])
+    ]
+    if (operationalDate !== today) {
+      writes.push(
+        kv.put(`scheduler:run:${task}:executed:${operationalDate}`, payload, { expirationTtl: 7 * 86400 }),
+        kv.put(`cron:log:${task}:executed:${operationalDate}`, payload, { expirationTtl: 7 * 86400 }),
+      )
+    }
+    await Promise.all(writes)
   } catch (error) {
     // Scheduler run logging should never break the task itself, but silent failure
     // makes Scheduler incidents impossible to diagnose.
@@ -318,7 +338,11 @@ export async function getSchedulerRunLogs(
     tasks.map(async (task) => {
       const canonical = await kv.get(`scheduler:run:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
       if (canonical) return canonical
-      return await kv.get(`cron:log:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
+      const legacy = await kv.get(`cron:log:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
+      if (legacy) return legacy
+      const executed = await kv.get(`scheduler:run:${task}:executed:${date}`, 'json') as SchedulerRunLogEntry | null
+      if (executed) return executed
+      return await kv.get(`cron:log:${task}:executed:${date}`, 'json') as SchedulerRunLogEntry | null
     }),
   )
 

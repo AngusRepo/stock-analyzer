@@ -24,7 +24,7 @@ import { evaluatePreTradeExecution, type PreTradeMomentumContext } from './preTr
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
 import {
   buildFinLabL5MarketDataDetail,
-  fetchFinLabL5MarketDataQuotes,
+  fetchFinLabL5MarketDataSnapshot,
   quoteQualityFromL5,
 } from './finlabL5MarketData'
 import { fetchFinLabExecutionPreview } from './finlabExecutionPreviewClient'
@@ -465,7 +465,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   })
   const priceMap = new Map<string, number>()
   for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
-  const finLabL5MarketDataMap = await fetchFinLabL5MarketDataQuotes(env as any, pendingSymbols)
+  const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, pendingSymbols)
+  const finLabL5MarketDataMap = finLabL5MarketDataSnapshot.quotes
 
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
   if (zeroPriceSymbols.length > 0) {
@@ -1133,6 +1134,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         reason: finLabL5Quality?.reasons.join(',') || (finLabL5Quote ? 'l5_market_data_pass' : 'l5_market_data_missing'),
         detail: {
           ...buildFinLabL5MarketDataDetail(finLabL5Quote),
+          controller_status: finLabL5MarketDataSnapshot.status,
+          controller_blocked_reasons: finLabL5MarketDataSnapshot.blockedReasons,
+          controller_env_missing: finLabL5MarketDataSnapshot.envMissing,
+          controller_live_submit_enabled: finLabL5MarketDataSnapshot.liveSubmitEnabled,
+          controller_can_submit_real_order: finLabL5MarketDataSnapshot.canSubmitRealOrder,
           quality: finLabL5Quality,
           production_like_market_data: finLabL5MarketDataEnabled,
           live_submit_enabled: false,
@@ -1174,6 +1180,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         strategyMode: effectiveOhlcvTradePlan?.mode ?? null,
         marketRiskLevel: marketRisk.risk_level,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
+        minDistributionSkipBarCount: optionalPositiveNumber((env as any).INTRADAY_TECHNICAL_DISTRIBUTION_SKIP_MIN_BARS, 60),
       })
       : null
     if (intradayTechnicalDecision) {

@@ -70,6 +70,8 @@ export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   strategy_pool_score?: number
   strategy_pool_rank?: number
   strategy_pool_ids?: string[]
+  research_strategy_ids?: string[]
+  strategy_pool_fallback_source?: string
   strategy_pool_decision?: StrategyQueueDecision
   strategy_pool_reason?: string
   strategy_matches?: Array<{ specId: string; alphaBucket: string; status: string; label: string; reason: string }>
@@ -92,6 +94,7 @@ export interface StrategyPoolEntry<T extends StrategyCandidatePoolCandidate = St
   strategy_score: number
   rank: number
   reason: string
+  research_strategy_ids?: string[]
 }
 
 export interface StrategyPool<T extends StrategyCandidatePoolCandidate = StrategyCandidatePoolCandidate> {
@@ -107,6 +110,18 @@ export interface StrategyPool<T extends StrategyCandidatePoolCandidate = Strateg
   status: 'ready' | 'adaptive_near_match' | 'out_of_regime' | 'invalid_spec'
   missing_evidence: string[]
   candidates: Array<StrategyPoolEntry<T>>
+}
+
+type StrategyPoolAggregate<T extends StrategyCandidatePoolCandidate = StrategyCandidatePoolCandidate> = StrategyPoolEntry<T> & {
+  strategy_ids: string[]
+  research_strategy_ids: string[]
+  active_strategy_refs: StrategyPoolStrategyRef[]
+}
+
+type StrategyPoolStrategyRef = {
+  strategy_id: string
+  alpha_bucket: AlphaFrameworkBucket
+  strategy_score: number
 }
 
 export interface StrategyCandidateSelection<T extends StrategyCandidatePoolCandidate = StrategyCandidatePoolCandidate> {
@@ -313,6 +328,53 @@ function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
   const segment = cleanText(candidate.market_segment).toUpperCase()
   if (segment === 'EMERGING') return false
   return true
+}
+
+function strategyCanEnterMlQueue(entry: StrategyPoolEntry): boolean {
+  return entry.strategy_status === 'active' && finiteNumber(entry.max_ml_share) !== 0
+}
+
+function chooseCanonicalActiveStrategyRefs(
+  prevRefs: StrategyPoolStrategyRef[],
+  entry: StrategyPoolEntry,
+): StrategyPoolStrategyRef[] {
+  const refs = [...prevRefs]
+  if (!strategyCanEnterMlQueue(entry)) return refs
+
+  const next: StrategyPoolStrategyRef = {
+    strategy_id: entry.strategy_id,
+    alpha_bucket: entry.alpha_bucket,
+    strategy_score: entry.strategy_score,
+  }
+  const index = refs.findIndex((ref) => ref.alpha_bucket === next.alpha_bucket)
+  if (index < 0) {
+    refs.push(next)
+  } else {
+    const prev = refs[index]
+    if (
+      next.strategy_score > prev.strategy_score ||
+      (next.strategy_score === prev.strategy_score && next.strategy_id.localeCompare(prev.strategy_id) < 0)
+    ) {
+      refs[index] = next
+    }
+  }
+  return refs.sort((a, b) => String(a.alpha_bucket).localeCompare(String(b.alpha_bucket)))
+}
+
+function aggregateStrategyIds<T extends StrategyCandidatePoolCandidate>(
+  prev: StrategyPoolAggregate<T> | undefined,
+  entry: StrategyPoolEntry<T>,
+): Pick<StrategyPoolAggregate<T>, 'strategy_ids' | 'research_strategy_ids' | 'active_strategy_refs'> {
+  const activeRefs = chooseCanonicalActiveStrategyRefs(prev?.active_strategy_refs ?? [], entry)
+  const researchIds = [...(prev?.research_strategy_ids ?? [])]
+  if (!strategyCanEnterMlQueue(entry)) {
+    researchIds.push(entry.strategy_id)
+  }
+  return {
+    active_strategy_refs: activeRefs,
+    strategy_ids: uniqueTexts(activeRefs.map((ref) => ref.strategy_id)),
+    research_strategy_ids: uniqueTexts(researchIds),
+  }
 }
 
 function strategyScore(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, weight: number): number {
@@ -640,6 +702,7 @@ function annotateSelection<T extends StrategyCandidatePoolCandidate>(
   candidate.strategy_pool_score = entry.strategy_score
   candidate.strategy_pool_rank = rank
   candidate.strategy_pool_ids = strategyIds
+  candidate.research_strategy_ids = entry.research_strategy_ids
   candidate.strategy_pool_decision = decision
   candidate.strategy_pool_reason = reason
   candidate.strategy_tags = uniqueTexts([
@@ -662,16 +725,24 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
   capacity: StrategyCapacityDecision,
   policy: StrategyCandidatePoolPolicy = DEFAULT_STRATEGY_CANDIDATE_POOL_POLICY,
 ): StrategyCandidateSelection<T> {
-  const bestBySymbol = new Map<string, StrategyPoolEntry<T> & { strategy_ids: string[] }>()
+  const bestBySymbol = new Map<string, StrategyPoolAggregate<T>>()
   for (const pool of pools) {
     for (const entry of pool.candidates) {
       const symbol = cleanText(entry.candidate.symbol).toUpperCase()
       if (!symbol) continue
       const prev = bestBySymbol.get(symbol)
-      if (!prev || entry.strategy_score > prev.strategy_score) {
-        bestBySymbol.set(symbol, { ...entry, strategy_ids: uniqueTexts([...(prev?.strategy_ids ?? []), entry.strategy_id]) })
+      const strategyIds = aggregateStrategyIds(prev, entry)
+      const prevHasProductionOwner = (prev?.active_strategy_refs?.length ?? 0) > 0
+      const entryHasProductionOwner = strategyCanEnterMlQueue(entry)
+      const shouldReplace = !prev ||
+        (entryHasProductionOwner && !prevHasProductionOwner) ||
+        (entryHasProductionOwner === prevHasProductionOwner && entry.strategy_score > prev.strategy_score)
+      if (shouldReplace) {
+        bestBySymbol.set(symbol, { ...entry, ...strategyIds })
       } else {
-        prev.strategy_ids = uniqueTexts([...prev.strategy_ids, entry.strategy_id])
+        prev.strategy_ids = strategyIds.strategy_ids
+        prev.research_strategy_ids = strategyIds.research_strategy_ids
+        prev.active_strategy_refs = strategyIds.active_strategy_refs
       }
     }
   }
@@ -721,9 +792,10 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       industryUsage.set(industry, nextIndustryCount)
       mlQueue.push(annotateSelection(entry, decision, reason, mlQueue.length + 1, entry.strategy_ids))
     } else if (researchOnlyQueue.length < capacity.researchQueueBudget) {
-      researchOnlyQueue.push(annotateSelection(entry, decision, reason, researchOnlyQueue.length + 1, entry.strategy_ids))
+      const researchStrategyIds = uniqueTexts([...entry.strategy_ids, ...entry.research_strategy_ids])
+      researchOnlyQueue.push(annotateSelection(entry, decision, reason, researchOnlyQueue.length + 1, researchStrategyIds))
     } else {
-      dropped.push({ symbol, reason, strategy_ids: entry.strategy_ids })
+      dropped.push({ symbol, reason, strategy_ids: uniqueTexts([...entry.strategy_ids, ...entry.research_strategy_ids]) })
     }
   }
 
@@ -789,7 +861,9 @@ function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
   cloned.strategy_pool_decision = 'ml_queue'
   cloned.strategy_pool_reason = 'raw_signal_top_up_after_strategy_quota'
   cloned.strategy_pool_rank = rank
-  cloned.strategy_pool_ids = ['raw_signal_top_up']
+  cloned.strategy_pool_ids = []
+  cloned.research_strategy_ids = []
+  cloned.strategy_pool_fallback_source = 'raw_signal_top_up'
   cloned.strategy_pool_score = rawSignalFallbackValue(candidate)
   cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:raw_signal_top_up'])
   cloned.strategy_watch_points = uniqueTexts([

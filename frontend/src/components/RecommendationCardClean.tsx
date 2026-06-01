@@ -1455,9 +1455,6 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
   const support = zones.support
   const atrDefense = zones.atrDefense
   const stop = atrDefense ?? support ?? '近端支撐'
-  const breakoutTrigger = zones.confirmation ?? resistance ?? '前高壓力'
-  const breakoutEntryZone = zones.breakoutChaseZone !== '-' ? zones.breakoutChaseZone : breakoutTrigger
-  const pullbackZone = zones.buyReferenceZone !== '-' ? zones.buyReferenceZone : '量價支撐區'
   const alphaAdj = context?.scoreAdjustment == null ? 'Alpha 調整資料不足' : `Alpha 調整 ${signedText(Number(context.scoreAdjustment))}`
   const sizing = context?.sizing == null ? '部位倍率待定' : `部位倍率 x${fmtNumber(context.sizing, 2)}`
   const marketLine = [
@@ -1478,7 +1475,7 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
         推薦理由 / Alpha 交易計劃
       </p>
       <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground/85">
-        兩個方案由 StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生；Gemini 與 Breeze2 只負責旁路文字解讀，不決定進出場方案。
+        StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生交易計劃；Gemini 與 Breeze2 只負責旁路文字解讀，不決定進出場。
       </p>
       <div className="grid gap-2">
         <KLinePlanSketch rec={rec} priceRows={priceRows} isLoading={isLoading} plan={plan} />
@@ -1495,26 +1492,6 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
               ))}
             </div>
           </div>
-        </div>
-        <div className="grid gap-2 lg:grid-cols-2">
-          <PlanBlock
-            title="方案 A | 突破追價"
-            accent="bg-cyan-400"
-            lines={[
-              `觸發：收盤站回 ${breakoutTrigger}，且量能不是萎縮。`,
-              `預計入場：${breakoutEntryZone}；突破後回測不破再加碼，避免一根急拉直接追滿。`,
-              `目標：樂觀價格區間 ${zones.optimisticPriceRange}，站穩後再看下一段趨勢延伸。`,
-            ]}
-          />
-          <PlanBlock
-            title="方案 B | 拉回低吸"
-            accent="bg-emerald-400"
-            lines={[
-              `觸發：回測 ${pullbackZone} 不破，賣壓縮小後再分批。`,
-              `預計入場：${pullbackZone}；先小部位，等重新轉強再補，不一次滿倉。`,
-              `目標：先回到 ${zones.confirmation ?? '轉強確認價'}，再觀察能否轉突破。`,
-            ]}
-          />
         </div>
         <PlanBlock
           title="風控規則"

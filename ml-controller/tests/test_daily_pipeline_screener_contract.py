@@ -26,7 +26,7 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     payload_builder = Path(__file__).resolve().parent.parent.joinpath("services", "payload_builder.py").read_text(encoding="utf-8")
 
     assert "screener_recs_missing" in source
-    assert "final_selection ownership" in source
+    assert "l1_candidate_seed_after_overlay/final_selection ownership" in source
     assert "refusing watchlist fallback" in source
     assert "build_screener_seed_recommendations(" not in source
     assert "load_active_stocks" not in source
@@ -34,8 +34,11 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     assert "DAILY_RECOMMENDATION_PIPELINE_COLUMNS" in source
     assert "_daily_recommendation_select(\"dr\")" in source
     assert "FROM daily_recommendations dr" in source
-    assert "JOIN screener_funnel_items sfi" in source
-    assert "sfi.stage = 'final_selection'" in source
+    assert "candidate_seed AS" in source
+    assert "JOIN candidate_seed sfi" in source
+    assert "'l1_candidate_seed_after_overlay'" in source
+    assert "sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')" in source
+    assert "sfi.stage_preference_rank = 1" in source
     assert "sfi.decision = 'selected'" in source
     assert "SELECT * FROM daily_recommendations" not in source
     assert "score_components" in payload_builder

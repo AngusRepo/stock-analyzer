@@ -59,6 +59,37 @@ function assert(condition: unknown, message: string): void {
     strategyMode: 'pullback',
     marketRiskLevel: 'high',
     minRangePosition: 0.15,
+    minDistributionSkipBarCount: 20,
+  })
+  assert(decision.action === 'defer', 'early technical distribution should stay pending during cooldown')
+  assert(decision.reason === 'technical_distribution_cooldown', 'early distribution should explain cooldown instead of terminal skip')
+}
+
+{
+  const snapshot = buildIntradayTechnicalSnapshot({
+    symbol: '2344',
+    previousClose: 155,
+    previousAtr14: 10,
+    previousObvTemperature60: 58,
+    previousAdaptiveRsiUpper50: 70,
+    sessionHigh: 156.5,
+    sessionLow: 142.5,
+    sessionTotalVolume: 322774,
+    rollingBars: Array.from({ length: 24 }, (_, index) => ({
+      startMs: index * 30_000,
+      open: 145.5,
+      high: 146,
+      low: 142.5,
+      close: 142.5,
+      volume: 1200 + index,
+    })),
+  })
+  const decision = resolveIntradayTechnicalDecision({
+    snapshot,
+    strategyMode: 'pullback',
+    marketRiskLevel: 'high',
+    minRangePosition: 0.15,
+    minDistributionSkipBarCount: 20,
   })
   assert(decision.action === 'skip', 'weak RSI plus cold OBV near session low should become a real technical skip')
   assert(decision.reason === 'technical_distribution', 'technical skip should use a stable reason')

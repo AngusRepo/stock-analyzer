@@ -404,3 +404,117 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     'FinLab AI Skill candidates should explain research-discovery routing',
   )
 }
+
+{
+  const sharedCandidate = {
+    ...candidates[0],
+    symbol: '9988',
+    raw_signals: rawSignalPayload({
+      close: 52,
+      closeAboveMa20Pct: 0.05,
+      closeAboveMa60Pct: 0.03,
+      volumeExpansion20: 1.4,
+      return20d: 0.06,
+    }),
+  }
+  const activeSpec = {
+    id: 'active_shared_signal_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Active shared signal',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Active strategy owns the production ML queue evidence.',
+    thresholds: { minPrice: 10, minCloseAboveMa20Pct: 0, minVolumeExpansion20: 1.1 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const researchSpec = {
+    ...activeSpec,
+    id: 'research_shared_signal_v1',
+    name: 'Research shared signal',
+    status: 'research' as const,
+    thesis: 'Research matches must not be reported as production ML queue strategy ids.',
+    candidatePolicy: { poolQuota: 8, costBudget: 8, maxMlShare: 0 },
+  }
+  const pools = buildStrategyCandidatePools([sharedCandidate], [researchSpec, activeSpec], { regime: 'bull' })
+  const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 4 }))
+  const selected = selection.mlQueue.find((candidate) => candidate.symbol === '9988')
+  assert(selected, 'shared active/research match should enter ML queue through the active strategy')
+  assert(selected?.strategy_pool_ids?.includes('active_shared_signal_v1'), 'ML queue evidence should retain the active strategy id')
+  assert(!selected?.strategy_pool_ids?.includes('research_shared_signal_v1'), 'ML queue evidence must not leak research strategy ids')
+}
+
+{
+  const sharedCandidate = {
+    ...candidates[0],
+    symbol: '9977',
+    raw_signals: rawSignalPayload({
+      close: 52,
+      closeAboveMa20Pct: 0.05,
+      closeAboveMa60Pct: 0.03,
+      volumeExpansion20: 1.4,
+      return20d: 0.06,
+      brokerCount: 8,
+    }),
+  }
+  const trendA = {
+    id: 'active_trend_a_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Active trend A',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Trend family A.',
+    thresholds: { minPrice: 10, minCloseAboveMa20Pct: 0, minVolumeExpansion20: 1.1 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const trendB = {
+    ...trendA,
+    id: 'active_trend_b_v1',
+    name: 'Active trend B',
+    thesis: 'Trend family B duplicate.',
+  }
+  const meanReversion = {
+    ...trendA,
+    id: 'active_mean_reversion_v1',
+    name: 'Active mean reversion',
+    alphaBucket: 'mean_reversion' as const,
+    thesis: 'Different family can remain as a second active representative.',
+  }
+  const researchDuplicate = {
+    ...trendA,
+    id: 'research_trend_duplicate_v1',
+    name: 'Research trend duplicate',
+    status: 'research' as const,
+    thesis: 'Research duplicate must stay attribution-only.',
+    candidatePolicy: { poolQuota: 8, costBudget: 8, maxMlShare: 0 },
+  }
+  const pools = buildStrategyCandidatePools([sharedCandidate], [trendA, trendB, meanReversion, researchDuplicate], { regime: 'bull' })
+  const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 4 }))
+  const selected = selection.mlQueue.find((candidate) => candidate.symbol === '9977') as any
+  assert(selected, 'shared duplicate active families should still produce one ML queue candidate')
+  const ids = selected.strategy_pool_ids ?? []
+  assert(ids.length === 2, 'ML queue evidence should keep only one active representative per alpha bucket')
+  assert(ids.filter((id: string) => id.startsWith('active_trend_')).length === 1, 'duplicate active trend strategies must converge to one representative')
+  assert(ids.includes('active_mean_reversion_v1'), 'different alpha bucket can remain as a separate representative')
+  assert(!ids.includes('research_trend_duplicate_v1'), 'research duplicate must not leak into production strategy ids')
+  assert((selected.research_strategy_ids ?? []).includes('research_trend_duplicate_v1'), 'research duplicate should remain visible as attribution')
+}
+
+{
+  const plan = buildLayer1StrategyBreadthPlan(candidates.slice(0, 12), [], {
+    targetSize: 4,
+    coarseMlQueueSize: 2,
+    regime: 'bull',
+  })
+  const topUp = plan.breadthPool.find((candidate: any) => candidate.strategy_pool_reason === 'raw_signal_top_up_after_strategy_quota') as any
+  assert(topUp, 'empty strategy pools should still top up Layer1 from raw signals')
+  assert((topUp.strategy_pool_ids ?? []).length === 0, 'raw signal top-up must not masquerade as a registered production strategy id')
+  assert(topUp.strategy_pool_fallback_source === 'raw_signal_top_up', 'raw signal top-up source should be explicit outside strategy ids')
+}

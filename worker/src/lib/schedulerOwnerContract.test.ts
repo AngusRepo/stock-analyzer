@@ -34,14 +34,25 @@ assert(
     manifest.deprecatedJobs.some((job: any) => job.id === 'finlab-v4-backfill'),
   'deprecated direct FinLab backfill scheduler must stay declared so sync can fail on stale live jobs',
 )
-const intradayCheckJob = manifest.jobs.find((job: any) => job.id === 'intraday-check')
-assert(intradayCheckJob?.baseUrlEnv === 'ML_CONTROLLER_URL', 'intraday-check scheduler should target ML Controller for real 10s execution loop')
-assert(intradayCheckJob?.path === '/finlab/execution/production-simulated-loop', 'intraday-check scheduler should call production-simulated execution loop route')
-assert(intradayCheckJob?.authHeaderName === 'X-Controller-Token', 'ML Controller scheduler job should use controller token header')
-assert(intradayCheckJob?.authTokenEnv === 'ML_CONTROLLER_SECRET', 'ML Controller scheduler job should load token from env')
-assert(intradayCheckJob?.body?.dry_run === false, 'intraday-check scheduler should run real loop, not plan-only dry-run')
-assert(intradayCheckJob?.body?.duration_seconds === 50, 'intraday-check scheduler should run bounded 50s loops inside a 60s cadence')
-assert(intradayCheckJob?.body?.poll_seconds === 10, 'intraday-check scheduler should poll every 10 seconds')
+const intradayCheckJobs = manifest.jobs.filter((job: any) => job.task === 'intraday-check')
+assert(intradayCheckJobs.length === 2, 'intraday-check must be split into two GCP jobs so it stops at TW 13:30')
+assert(
+  manifest.deprecatedJobs.some((job: any) => job.id === 'intraday-check'),
+  'legacy single intraday-check Scheduler job must stay declared as deprecated until deleted from live GCP',
+)
+const intradaySchedules = new Set(intradayCheckJobs.map((job: any) => job.schedule))
+assert(intradaySchedules.has('* 1-4 * * 1-5'), 'intraday-check should cover TW 09:00-12:59')
+assert(intradaySchedules.has('0-30 5 * * 1-5'), 'intraday-check should cover TW 13:00-13:30')
+assert(!intradaySchedules.has('* 1-5 * * 1-5'), 'intraday-check must not run until TW 13:59')
+for (const intradayCheckJob of intradayCheckJobs) {
+  assert(intradayCheckJob?.baseUrlEnv === 'ML_CONTROLLER_URL', 'intraday-check scheduler should target ML Controller for real 10s execution loop')
+  assert(intradayCheckJob?.path === '/finlab/execution/production-simulated-loop', 'intraday-check scheduler should call production-simulated execution loop route')
+  assert(intradayCheckJob?.authHeaderName === 'X-Controller-Token', 'ML Controller scheduler job should use controller token header')
+  assert(intradayCheckJob?.authTokenEnv === 'ML_CONTROLLER_SECRET', 'ML Controller scheduler job should load token from env')
+  assert(intradayCheckJob?.body?.dry_run === false, 'intraday-check scheduler should run real loop, not plan-only dry-run')
+  assert(intradayCheckJob?.body?.duration_seconds === 50, 'intraday-check scheduler should run bounded 50s loops inside a 60s cadence')
+  assert(intradayCheckJob?.body?.poll_seconds === 10, 'intraday-check scheduler should poll every 10 seconds')
+}
 
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const cronGcpDomainTasks = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')

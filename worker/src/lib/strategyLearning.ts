@@ -444,7 +444,7 @@ export async function upsertStrategySpecRegistry(
 export async function seedDefaultStrategySpecRegistry(
   db: D1Database,
   options: { nowIso?: string } = {},
-): Promise<{ seeded: number; skipped_invalid: string[] }> {
+): Promise<{ seeded: number; skipped_invalid: string[]; demoted_stale_active: number }> {
   assertOwnerCanOwn('strategy', 'strategy_spec')
   await ensureStrategyLearningTables(db)
   const nowIso = options.nowIso ?? new Date().toISOString()
@@ -501,7 +501,34 @@ export async function seedDefaultStrategySpecRegistry(
          AND status != 'retired'
     `).bind(nowIso, legacyId).run()
   }
-  return { seeded, skipped_invalid: skippedInvalid }
+  const demotedStaleActive = await demoteStaleActiveDiscoveryStrategySpecs(db, nowIso)
+  return { seeded, skipped_invalid: skippedInvalid, demoted_stale_active: demotedStaleActive }
+}
+
+export async function demoteStaleActiveDiscoveryStrategySpecs(
+  db: D1Database,
+  nowIso = new Date().toISOString(),
+): Promise<number> {
+  const approvedActiveIds = DEFAULT_STRATEGY_SPECS
+    .filter((spec) => spec.status === 'active')
+    .map((spec) => spec.id)
+  if (!approvedActiveIds.length) return 0
+
+  const placeholders = approvedActiveIds.map(() => '?').join(', ')
+  const result = await db.prepare(`
+    UPDATE strategy_spec_registry
+       SET status='research',
+           updated_at=?
+     WHERE status='active'
+       AND strategy_id LIKE 'finlab_ai_skill_%'
+       AND strategy_id NOT IN (${placeholders})
+       AND (
+         created_by='finlab_ai_skill_discovery_v1'
+         OR source_refs_json LIKE '%finlab_ai_skill_discovery_v1%'
+         OR source_refs_json LIKE '%finlab_ai_skill%'
+       )
+  `).bind(nowIso, ...approvedActiveIds).run()
+  return Number((result as { meta?: { changes?: number } })?.meta?.changes ?? 0)
 }
 
 export async function listStrategySpecsForLearning(

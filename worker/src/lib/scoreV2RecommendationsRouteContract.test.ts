@@ -7,9 +7,10 @@ function assert(condition: unknown, message: string): void {
 const route = readFileSync('src/routes/other.ts', 'utf8')
 
 assert(
-  route.includes('has_buy_signal = 1') &&
+  route.includes('const ALLOCATED_BUY_RECOMMENDATION_WHERE =') &&
+    route.includes('has_buy_signal = 1') &&
     route.includes("json_extract(alpha_allocation, '$.selected') = 1"),
-  'recommendations route must only resolve allocator-selected BUY rows as final recommendations',
+  'recommendations route must keep allocator-selected BUY predicate for execution-specific slices',
 )
 
 assert(
@@ -72,7 +73,13 @@ assert(dailyStart >= 0 && dailyEnd > dailyStart, 'recommendations daily route sh
 const dailyBlock = route.slice(dailyStart, dailyEnd)
 assert(
   dailyBlock.includes('WHERE r.date = ?') && dailyBlock.includes('AND ${FINAL_RECOMMENDATION_WHERE}'),
-  'recommendations daily payload query must apply the final BUY allocation predicate',
+  'recommendations daily payload query must apply the broad final recommendation predicate',
+)
+assert(
+  dailyBlock.includes('const allocatedBuyRecs = recs.filter(isAllocatedBuyRecommendation)') &&
+    dailyBlock.includes('allocated_buy_recommendations: allocatedBuyPayload') &&
+    dailyBlock.includes('execution_recommendations: allocatedBuyPayload'),
+  'recommendations daily route should expose allocator-selected BUY rows separately from the pre-debate list',
 )
 const responseMapStart = dailyBlock.indexOf('return {')
 const responseMapEnd = dailyBlock.indexOf('const evidenceLinksBySymbol')

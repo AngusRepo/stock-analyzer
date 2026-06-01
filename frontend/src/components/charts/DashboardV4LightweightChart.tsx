@@ -66,14 +66,38 @@ function LoadingPanel() {
     </div>
   )
 }
-function EmptyPanel({ message }: { message: string }) {
+function EmptyPanel({ message, status = 'waiting' }: { message: string; status?: 'waiting' | 'filtered' | 'error' }) {
+  const tone = status === 'error'
+    ? 'text-rose-300'
+    : status === 'filtered'
+      ? 'text-amber-200'
+      : 'sv-accent-text'
+
   return (
-    <div className="sv-content-card grid min-h-[460px] place-items-center rounded-xl px-4 text-center">
-      <div>
-        <p className="sv-accent-text font-mono text-[11px] uppercase tracking-[0.18em]">chart unavailable</p>
-        <p className="sv-muted-text mt-2 text-sm">{message}</p>
+    <section
+      data-testid="dashboard-v4-chart-empty-state"
+      className="sv-content-card rounded-xl p-4"
+    >
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div className="min-w-0">
+          <p className={`${tone} font-mono text-[10px] uppercase tracking-[0.18em]`}>Dashboard V4 chart status</p>
+          <h2 className="sv-title-text mt-1 text-base font-semibold">chart unavailable</h2>
+          <p className="sv-muted-text mt-1 text-xs leading-5">{message}</p>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-center text-[10px] lg:min-w-[280px]">
+          {[
+            { label: 'packet', value: status === 'waiting' ? 'pending' : status },
+            { label: 'candles', value: status === 'filtered' ? '0' : '-' },
+            { label: 'action', value: status === 'error' ? 'retry' : 'wait' },
+          ].map((item) => (
+            <div key={item.label} className="rounded-lg border border-[color:var(--sv-panel-border-soft)] bg-[color:var(--sv-panel-raised)] px-2 py-2">
+              <p className="sv-muted-text font-mono uppercase tracking-[0.12em]">{item.label}</p>
+              <p className="sv-title-text mt-1 truncate font-mono">{item.value}</p>
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -136,9 +160,9 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
   }, [viewModel])
 
   if (loading) return <LoadingPanel />
-  if (error) return <EmptyPanel message={error instanceof Error ? error.message : 'Dashboard V4 chart packet failed to load.'} />
-  if (!viewModel) return <EmptyPanel message="No Dashboard V4 chart packet yet." />
-  if (!viewModel.candles.length) return <EmptyPanel message="No valid OHLC rows were available after the data-quality filter." />
+  if (error) return <EmptyPanel status="error" message={error instanceof Error ? error.message : 'Dashboard V4 chart packet failed to load.'} />
+  if (!viewModel) return <EmptyPanel status="waiting" message="No Dashboard V4 chart packet yet." />
+  if (!viewModel.candles.length) return <EmptyPanel status="filtered" message="No valid OHLC rows were available after the data-quality filter." />
 
   return (
     <section className="sv-content-card overflow-hidden rounded-xl shadow-[0_8px_26px_rgba(0,0,0,0.16)]">

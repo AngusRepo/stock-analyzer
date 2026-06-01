@@ -7,12 +7,16 @@
     {
       "id": "finlab-v4-backfill",
       "reason": "Deprecated direct TW 18:30 FinLab backfill. Evening-chain owns FinLab daily-price materialization at TW 22:00 and continues the DAG by callback."
+    },
+    {
+      "id": "intraday-check",
+      "reason": "Deprecated single UTC 01:00-05:59 loop. TW market closes at 13:30, so intraday execution is split into UTC 01:00-04:59 and 05:00-05:30 jobs."
     }
   ],
   "jobs": [
     {
-      "id": "intraday-check",
-      "schedule": "* 1-5 * * 1-5",
+      "id": "intraday-check-continuous",
+      "schedule": "* 1-4 * * 1-5",
       "task": "intraday-check",
       "baseUrlEnv": "ML_CONTROLLER_URL",
       "path": "/finlab/execution/production-simulated-loop",
@@ -25,7 +29,24 @@
         "rolling_bar_seconds": 30,
         "allow_worker_paper_order": true
       },
-      "description": "TW 09:00-13:30 FinLab real 10s loop with simulated paper orders"
+      "description": "TW 09:00-12:59 FinLab real 10s loop with simulated paper orders"
+    },
+    {
+      "id": "intraday-check-close-window",
+      "schedule": "0-30 5 * * 1-5",
+      "task": "intraday-check",
+      "baseUrlEnv": "ML_CONTROLLER_URL",
+      "path": "/finlab/execution/production-simulated-loop",
+      "authHeaderName": "X-Controller-Token",
+      "authTokenEnv": "ML_CONTROLLER_SECRET",
+      "body": {
+        "dry_run": false,
+        "duration_seconds": 50,
+        "poll_seconds": 10,
+        "rolling_bar_seconds": 30,
+        "allow_worker_paper_order": true
+      },
+      "description": "TW 13:00-13:30 FinLab real 10s loop with simulated paper orders"
     },
     { "id": "rescore-10", "schedule": "0 2 * * 1-5", "task": "intraday-rescore", "query": "sync=1", "description": "TW 10:00 intraday ML re-score" },
     { "id": "rescore-11", "schedule": "0 3 * * 1-5", "task": "intraday-rescore", "query": "sync=1", "description": "TW 11:00 intraday ML re-score" },

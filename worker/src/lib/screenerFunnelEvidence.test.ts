@@ -83,3 +83,36 @@ function assert(condition: unknown, message: string): void {
   assert(Array.isArray(summary?.evidence.diversity_cooldown), 'diversity/cooldown evidence must be summarized')
   assert(Array.isArray(summary?.evidence.decision_path), 'decision path must be UI-readable')
 }
+
+{
+  const summaries = summarizeScreenerFunnelRows([
+    {
+      symbol: '1215',
+      stage: 'layer1_strategy_breadth_gate',
+      decision: 'pass',
+      reason_code: 'selected_by_raw_factor_strategy',
+      rank: 44,
+      score_after: 62,
+      evidence: JSON.stringify({ strategy_ids: ['raw_chip_accumulation'] }),
+    },
+    {
+      symbol: '1215',
+      stage: 'l1_candidate_seed_after_overlay',
+      decision: 'selected',
+      reason_code: 'selected_for_l1_breadth_seed',
+      rank: 37,
+      score_after: 61,
+      evidence: JSON.stringify({
+        semantic_stage: 'l1_candidate_seed_after_overlay',
+        legacy_alias_stage: 'final_selection',
+        strategy_pool_ids: ['raw_chip_accumulation'],
+      }),
+    },
+  ])
+
+  const summary = summaries.get('1215')
+  assert(summary?.rank === 37, 'L1 candidate seed alias rank must be preserved without legacy final_selection rows')
+  assert(summary?.reason_code === 'selected_for_l1_breadth_seed', 'L1 candidate seed alias reason must be preserved')
+  assert(summary?.evidence.semantic_stage === 'l1_candidate_seed_after_overlay', 'summary evidence must expose semantic L1 seed stage')
+  assert(Array.isArray(summary?.evidence.strategy_ids), 'semantic L1 seed strategy ids must be exposed')
+}

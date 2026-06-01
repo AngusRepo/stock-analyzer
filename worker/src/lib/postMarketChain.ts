@@ -50,6 +50,20 @@ function allowHistoricalLearningCatchup(ctx: ChainContext): boolean {
   return !isCurrentBusinessDate(ctx.runDate) && truthyFlag(ctx.metadata?.allow_historical_learning_catchup)
 }
 
+async function isLatestRecommendationBusinessDate(env: Bindings, runDate?: string): Promise<boolean> {
+  if (!runDate || !env.DB) return false
+  try {
+    const row = await env.DB.prepare(`
+      SELECT MAX(date) AS latest_date
+        FROM daily_recommendations
+       WHERE date IS NOT NULL
+    `).first<{ latest_date: string | null }>()
+    return row?.latest_date === runDate
+  } catch {
+    return false
+  }
+}
+
 async function logChainedTask(
   env: Bindings,
   ctx: ChainContext,
@@ -222,6 +236,8 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
 
   const currentBusinessDate = isCurrentBusinessDate(ctx.runDate)
   const historicalLearningCatchup = allowHistoricalLearningCatchup(ctx)
+  const latestRecommendationBusinessDate = await isLatestRecommendationBusinessDate(env, ctx.runDate)
+  const runLearningClosures = currentBusinessDate || historicalLearningCatchup || latestRecommendationBusinessDate
 
   if (currentBusinessDate) {
     results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
@@ -230,23 +246,25 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
-    results.push(await logChainedTask(env, ctx, 'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false }))
-    results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
-    if (historicalLearningCatchup) {
+    if (runLearningClosures) {
       results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
-      results.push(await logChainedTask(env, ctx, 'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false }))
-      results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
     } else {
-      results.push(await logSkippedHistoricalTask(env, ctx, 'finlab-ai-skill-discovery'))
       results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
-      results.push(await logSkippedHistoricalTask(env, ctx, 'strategy-learning'))
     }
+  }
+
+  if (runLearningClosures) {
+    results.push(await logChainedTask(env, ctx, 'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false }))
+    results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
+  } else {
+    results.push(await logSkippedHistoricalTask(env, ctx, 'finlab-ai-skill-discovery'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'strategy-learning'))
   }
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)

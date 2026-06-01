@@ -8,8 +8,14 @@ const paperEntryTasks = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
 const paperExecutionEvents = readFileSync('src/lib/paperExecutionEvents.ts', 'utf8')
 
 assert(
-  paperEntryTasks.includes('fetchFinLabL5MarketDataQuotes'),
-  'intraday execution must fetch FinLab/Sinopac L5 market data for pending candidates',
+  paperEntryTasks.includes('fetchFinLabL5MarketDataSnapshot'),
+  'intraday execution must fetch FinLab/Sinopac L5 market-data snapshot for pending candidates',
+)
+assert(
+  paperEntryTasks.includes('controller_blocked_reasons') &&
+    paperEntryTasks.includes('controller_env_missing') &&
+    paperEntryTasks.includes('controller_status'),
+  'intraday execution must persist controller-side L5 missing root-cause fields',
 )
 assert(
   paperEntryTasks.includes('quoteQualityFromL5'),

@@ -203,14 +203,26 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
                AND status = 'success'
              ORDER BY created_at DESC
              LIMIT 1
+        ),
+        candidate_seed AS (
+            SELECT
+                sfi.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY sfi.symbol
+                    ORDER BY
+                        CASE sfi.stage WHEN 'l1_candidate_seed_after_overlay' THEN 0 ELSE 1 END,
+                        COALESCE(sfi.rank, 999999)
+                ) AS stage_preference_rank
+              FROM screener_funnel_items sfi
+             WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
+               AND sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')
+               AND sfi.decision = 'selected'
         )
         SELECT {_daily_recommendation_select("dr")}
           FROM daily_recommendations dr
-          JOIN screener_funnel_items sfi
-            ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
-           AND sfi.symbol = dr.symbol
-           AND sfi.stage = 'final_selection'
-           AND sfi.decision = 'selected'
+          JOIN candidate_seed sfi
+            ON sfi.symbol = dr.symbol
+           AND sfi.stage_preference_rank = 1
          WHERE dr.date = ?
          ORDER BY COALESCE(sfi.rank, dr.rank), dr.rank
         """,
@@ -219,13 +231,14 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     if not screener_recs:
         raise RuntimeError(
             "screener_recs_missing: daily pipeline requires latest screener "
-            "final_selection ownership before ML/recommendation; refusing watchlist fallback"
+            "l1_candidate_seed_after_overlay/final_selection ownership before ML/recommendation; "
+            "refusing watchlist fallback"
         )
     active_stocks = build_ml_universe([], screener_recs)
 
     logger.info(
         f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
-        f"(source=latest_screener_final_selection), "
+        f"(source=latest_screener_l1_candidate_seed_after_overlay), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {
@@ -1166,13 +1179,16 @@ def _load_pool_and_ic():
         pool = _json.loads(pool_blob.download_as_text())
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}
-        for name, entry in pool.get("models", {}).items():
+
+        def _load_entry_ic(name: str, entry: dict, *, include_weight: bool = True) -> None:
             model_status[name] = entry.get("status", "active")
             last_status = str(entry.get("last_ic_status") or "").strip()
             last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()
             has_fresh_diagnostics = bool(last_status or last_root_cause)
             if has_fresh_diagnostics and not (last_status == "computed" and last_root_cause in ("", "ok")):
-                continue
+                return
+            if not include_weight:
+                return
             ic_value = entry.get("rolling_ic")
             if ic_value is None:
                 ic_value = entry.get("ic_4w_avg")
@@ -1185,6 +1201,13 @@ def _load_pool_and_ic():
                     ic_weights[name] = float(ic_value)
             except (TypeError, ValueError):
                 logger.debug(f"[Pipeline V2] invalid model_pool IC for {name}: {ic_value}")
+
+        for name, entry in pool.get("models", {}).items():
+            _load_entry_ic(name, entry)
+
+        for name, entry in (pool.get("formal_layer3_slots") or {}).items():
+            status = str((entry or {}).get("status") or "").strip()
+            _load_entry_ic(name, entry, include_weight=status == "production_adapter_active")
 
         # IC weights have exactly one owner: model_pool.json. Missing IC stays
         # missing so lifecycle diagnostics can explain the root cause.

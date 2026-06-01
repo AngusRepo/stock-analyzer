@@ -6,26 +6,44 @@ function assert(condition: unknown, message: string): void {
 }
 
 const root = process.cwd()
-const pagePath = path.join(root, 'src', 'pages', 'StockReportPage.tsx')
+const appPath = path.join(root, 'src', 'App.tsx')
+const appShellPath = path.join(root, 'src', 'components', 'AppShell.tsx')
+const dashboardPath = path.join(root, 'src', 'pages', 'Dashboard.tsx')
+const stockAIReportPath = path.join(root, 'src', 'components', 'StockAIReport.tsx')
+const legacyReportRedirectPath = path.join(root, 'src', 'pages', 'LegacyStockReportRedirectPage.tsx')
 const chartPath = path.join(root, 'src', 'components', 'charts', 'DashboardV4LightweightChart.tsx')
 const packageLockPath = path.join(root, 'package-lock.json')
 
 assert(fs.existsSync(chartPath), 'Stock report should reuse the DashboardV4LightweightChart component')
+assert(fs.existsSync(legacyReportRedirectPath), 'Legacy /report/:symbol should be an explicit redirect page')
 
-const page = fs.readFileSync(pagePath, 'utf8')
-assert(page.includes('DashboardV4LightweightChart'), 'StockReportPage should render DashboardV4LightweightChart')
-assert(page.includes('dashboardV4Api'), 'StockReportPage should fetch the Dashboard V4 chart packet')
-assert(page.includes("queryKey: ['dashboard-v4-chart', 'report', stockId]"), 'StockReportPage should keep report chart cache scoped by stockId')
-assert(page.includes('packet={chartPacket}'), 'StockReportPage should pass chart packet into DashboardV4LightweightChart')
-assert(page.includes('loading={chartLoading}'), 'StockReportPage should pass chart loading state')
-assert(page.includes('error={chartError}'), 'StockReportPage should pass chart error state')
-assert(page.includes('AppShell'), 'StockReportPage should use the shared workstation shell')
-assert(page.includes('data-testid="stock-report-signal-board"'), 'StockReportPage should expose a visual signal board before dense analysis sections')
-assert(page.includes('WorkstationPageTitle') && page.includes('sv-content-card') && page.includes('sv-accent-text'), 'StockReportPage should consume route-level stock surface tokens')
-assert(page.indexOf('DashboardV4LightweightChart') < page.indexOf('投資信號總覽'), 'Stock report chart should render before prose-led signal sections')
+const app = fs.readFileSync(appPath, 'utf8')
+const appShell = fs.readFileSync(appShellPath, 'utf8')
+const dashboard = fs.readFileSync(dashboardPath, 'utf8')
+const stockAIReport = fs.readFileSync(stockAIReportPath, 'utf8')
+const legacyRedirect = fs.readFileSync(legacyReportRedirectPath, 'utf8')
+
+assert(app.includes("const LegacyStockReportRedirectPage = lazy(() => import('./pages/LegacyStockReportRedirectPage'))"), 'App should lazy-load the legacy report redirect page')
+assert(app.includes('path="/report/:symbol"') && app.includes('<LegacyStockReportRedirectPage />'), 'Legacy /report/:symbol route should no longer render the retired standalone StockReportPage')
+assert(!app.includes("import('./pages/StockReportPage')"), 'App should not lazy-load the retired standalone StockReportPage as a formal route')
+assert(legacyRedirect.includes("LEGACY_STOCK_REPORT_REDIRECT_TARGET = '/'"), 'Legacy report redirect should return old report URLs to formal Home')
+assert(legacyRedirect.includes('<Redirect to={LEGACY_STOCK_REPORT_REDIRECT_TARGET} replace />'), 'Legacy report redirect should be immediate and replace browser history')
+assert(!legacyRedirect.includes('stocksApi.search') && !legacyRedirect.includes('useQuery'), 'Legacy report redirect should not call stock search or show an old stock-report loading shell')
+
+assert(appShell.includes("currentPath.startsWith('/stock/')"), 'Current /stock/:id workspace should receive the stock detail surface theme')
+assert(!appShell.includes("currentPath.startsWith('/report/')"), 'Legacy /report/:symbol must not remain the formal stock surface owner')
+
+assert(app.includes('<Route path="/stock/:id" component={Dashboard} />'), 'Stock route alias should still land in Dashboard while the standalone report page is retired')
+assert(dashboard.includes('DashboardV4LightweightChart'), 'Dashboard stock selection workspace should render DashboardV4LightweightChart')
+assert(dashboard.includes('dashboardV4Api.stockChart'), 'Dashboard stock selection workspace should fetch the Dashboard V4 chart packet')
+assert(dashboard.includes('StockAIReport'), 'Dashboard stock selection workspace should embed the current StockAIReport AI tab')
+assert(stockAIReport.includes('StockAIReport') && stockAIReport.includes('buildScoreBreakdownViewModel'), 'Current AI stock report should live in StockAIReport, not the legacy standalone page')
 
 const chart = fs.readFileSync(chartPath, 'utf8')
 assert(chart.includes('sv-content-card') && chart.includes('sv-accent-text') && chart.includes('sv-muted-text'), 'DashboardV4LightweightChart should consume active route surface tokens')
+assert(chart.includes('data-testid="dashboard-v4-chart-empty-state"'), 'DashboardV4LightweightChart should expose a compact empty/error chart state')
+assert(chart.includes('Dashboard V4 chart status') && chart.includes("status?: 'waiting' | 'filtered' | 'error'"), 'DashboardV4LightweightChart empty state should show a typed packet/candle/error status')
+assert(!chart.includes('min-h-[460px] place-items-center rounded-xl px-4 text-center'), 'DashboardV4LightweightChart empty state should not reserve full chart height when no packet exists')
 
 const packageLock = JSON.parse(fs.readFileSync(packageLockPath, 'utf8')) as {
   packages?: Record<string, { license?: string; version?: string }>

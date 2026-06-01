@@ -1092,7 +1092,13 @@ export const recommendations = new Hono<{ Bindings: Bindings; Variables: Variabl
 
 recommendations.use('/*', authMiddleware)
 
-const FINAL_RECOMMENDATION_WHERE = "signal IS NOT NULL AND confidence IS NOT NULL AND score_components LIKE '%score_v2%' AND has_buy_signal = 1 AND json_valid(alpha_allocation) AND json_extract(alpha_allocation, '$.selected') = 1"
+const FINAL_RECOMMENDATION_WHERE = "signal IS NOT NULL AND confidence IS NOT NULL AND score_components LIKE '%score_v2%'"
+const ALLOCATED_BUY_RECOMMENDATION_WHERE = `${FINAL_RECOMMENDATION_WHERE} AND has_buy_signal = 1 AND json_valid(alpha_allocation) AND json_extract(alpha_allocation, '$.selected') = 1`
+
+function isAllocatedBuyRecommendation(row: Record<string, any>): boolean {
+  const allocation = parsePredictionForecastData(row.alpha_allocation)
+  return Number(row.has_buy_signal ?? 0) === 1 && allocation?.selected === true
+}
 
 function isEmergingRecommendation(row: Record<string, any>): boolean {
   return String(row.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
@@ -1371,6 +1377,7 @@ recommendations.get('/daily', async (c) => {
              'diversity_cooldown',
              'strategy_pool_ml_queue',
              'strategy_pool_research_only',
+             'l1_candidate_seed_after_overlay',
              'final_selection'
            )
          ORDER BY symbol ASC, created_at ASC
@@ -1471,10 +1478,12 @@ recommendations.get('/daily', async (c) => {
   const tradableRecs = recs.filter((r: any) => r.recommendation_lane === 'tradable')
   const emergingRecs = recs.filter((r: any) => r.recommendation_lane === 'emerging_watchlist')
   const researchOnlyRecs = recs.filter((r: any) => r.recommendation_lane === 'research_only')
+  const allocatedBuyRecs = recs.filter(isAllocatedBuyRecommendation)
   const shape = view === 'card' ? compactRecommendationForCard : (r: Record<string, any>) => r
   const tradablePayload = tradableRecs.map(shape)
   const emergingPayload = emergingRecs.map(shape)
   const researchOnlyPayload = researchOnlyRecs.map(shape)
+  const allocatedBuyPayload = allocatedBuyRecs.map(shape)
   const allPayload = recs.map(shape)
 
   return c.json({
@@ -1487,11 +1496,15 @@ recommendations.get('/daily', async (c) => {
     tradable_recommendations: tradablePayload,
     emerging_recommendations: emergingPayload,
     research_only_recommendations: researchOnlyPayload,
+    buy_recommendations: allocatedBuyPayload,
+    allocated_buy_recommendations: allocatedBuyPayload,
+    execution_recommendations: allocatedBuyPayload,
     all_recommendations: allPayload,
     lanes: {
       tradable: { count: tradableRecs.length },
       emerging_watchlist: { count: emergingRecs.length },
       research_only: { count: researchOnlyRecs.length },
+      allocated_buy: { count: allocatedBuyRecs.length },
     },
     generated_at: recs[0]?.created_at ?? null,
   })

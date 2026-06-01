@@ -21,6 +21,12 @@ assert(callbackRoutes.includes('runPostPipelineCallbackChain'), 'pipeline succes
 assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify success callback must launch post-verify chain')
 assert(callbackRoutes.includes('metadata: callbackMetadata'), 'verify callback metadata must be passed into post-verify chain')
 assert(
+  !callbackRoutes.includes(
+    "if (body.task === 'verify-v2' && (body.status === 'success' || allowLearningCatchupAfterVerifySkip) && c.env.ML_CONTROLLER_URL)",
+  ),
+  'verify-v2 post-verify callback must not be globally gated by ML_CONTROLLER_URL; child tasks handle missing controller dependencies individually',
+)
+assert(
   callbackRoutes.includes('allowLearningCatchupAfterVerifySkip') &&
     callbackRoutes.includes("body.status === 'skipped'") &&
     callbackRoutes.includes('allow_historical_learning_catchup'),
@@ -42,6 +48,12 @@ assert(
   'historical verify catch-up may run only explicit learning closures, not current-date report/trading side effects',
 )
 assert(
+  postMarketChain.includes('isLatestRecommendationBusinessDate') &&
+    postMarketChain.includes('latestRecommendationBusinessDate') &&
+    postMarketChain.includes('currentBusinessDate || historicalLearningCatchup || latestRecommendationBusinessDate'),
+  'post-verify strategy-learning/discovery must run when the callback date is the latest recommendation date, even if wall-clock date has advanced',
+)
+assert(
   adminTriggerRoutes.includes("'finlab-ai-skill-discovery'") &&
     adminTriggerRoutes.includes("'strategy-learning'") &&
     adminTriggerRoutes.includes("'post-verify-chain'") &&
@@ -52,7 +64,7 @@ assert(
   'post-verify learning closure tasks must be explicit admin-triggerable scheduler tasks for historical rerun closure',
 )
 assert(
-  postMarketChain.includes("if (historicalLearningCatchup)") &&
+  postMarketChain.includes("if (runLearningClosures)") &&
     postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false })") <
       postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false })") &&
     postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false })") <

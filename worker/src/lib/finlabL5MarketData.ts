@@ -36,6 +36,16 @@ export interface L5QuoteQuality {
   }
 }
 
+export interface FinLabL5MarketDataSnapshot {
+  status: string | null
+  blockedReasons: string[]
+  envMissing: string[]
+  liveSubmitEnabled: boolean
+  canSubmitRealOrder: boolean
+  quotes: Map<string, FinLabL5Quote>
+  raw?: Record<string, unknown> | null
+}
+
 function finitePositive(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : null
@@ -216,7 +226,24 @@ function truthyFlag(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
-export async function fetchFinLabL5MarketDataQuotes(
+function textArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean)
+}
+
+function emptyL5MarketDataSnapshot(status: string | null = null): FinLabL5MarketDataSnapshot {
+  return {
+    status,
+    blockedReasons: [],
+    envMissing: [],
+    liveSubmitEnabled: false,
+    canSubmitRealOrder: false,
+    quotes: new Map(),
+    raw: null,
+  }
+}
+
+export async function fetchFinLabL5MarketDataSnapshot(
   env: {
     ML_CONTROLLER_URL?: string
     ML_CONTROLLER_SECRET?: string
@@ -224,11 +251,13 @@ export async function fetchFinLabL5MarketDataQuotes(
     FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN?: string
   },
   symbols: string[],
-): Promise<Map<string, FinLabL5Quote>> {
-  const map = new Map<string, FinLabL5Quote>()
+): Promise<FinLabL5MarketDataSnapshot> {
+  const snapshot = emptyL5MarketDataSnapshot()
   const controllerUrl = env.ML_CONTROLLER_URL?.trim()
   const marketDataEnabled = truthyFlag(env.FINLAB_L5_MARKET_DATA_ENABLED)
-  if (!marketDataEnabled || !controllerUrl || symbols.length === 0) return map
+  if (!marketDataEnabled) return emptyL5MarketDataSnapshot('disabled')
+  if (!controllerUrl) return emptyL5MarketDataSnapshot('missing_controller_url')
+  if (symbols.length === 0) return emptyL5MarketDataSnapshot('empty_symbols')
 
   try {
     const route = '/finlab/execution/l5-market-data'
@@ -244,16 +273,44 @@ export async function fetchFinLabL5MarketDataQuotes(
       }),
       signal: AbortSignal.timeout(5000),
     })
-    if (!res.ok) return map
+    if (!res.ok) return emptyL5MarketDataSnapshot(`http_${res.status}`)
     const payload = await res.json() as any
-    if (payload?.can_submit_real_order === true || payload?.live_submit_enabled === true) return map
+    snapshot.status = payload?.status != null ? String(payload.status) : null
+    snapshot.blockedReasons = textArray(payload?.blocked_reasons)
+    snapshot.envMissing = textArray(payload?.env_status?.missing)
+    snapshot.liveSubmitEnabled = payload?.live_submit_enabled === true
+    snapshot.canSubmitRealOrder = payload?.can_submit_real_order === true
+    snapshot.raw = payload && typeof payload === 'object'
+      ? {
+        schema_version: payload.schema_version,
+        allowed_use: payload.allowed_use,
+        status: payload.status,
+        blocked_reasons: payload.blocked_reasons,
+        env_status: payload.env_status,
+      }
+      : null
+    if (snapshot.canSubmitRealOrder || snapshot.liveSubmitEnabled) return snapshot
     const quotes = payload?.quotes && typeof payload.quotes === 'object' ? payload.quotes : {}
     for (const [symbol, quotePayload] of Object.entries(quotes)) {
       const quote = normalizeFinLabL5Quote(symbol, quotePayload as Record<string, unknown>)
-      if (quote) map.set(symbol, quote)
+      if (quote) snapshot.quotes.set(symbol, quote)
     }
   } catch (error) {
     console.warn(`[FinLabL5MarketData] fetch failed: ${error instanceof Error ? error.message : String(error)}`)
+    return emptyL5MarketDataSnapshot('fetch_failed')
   }
-  return map
+  return snapshot
+}
+
+export async function fetchFinLabL5MarketDataQuotes(
+  env: {
+    ML_CONTROLLER_URL?: string
+    ML_CONTROLLER_SECRET?: string
+    FINLAB_L5_MARKET_DATA_ENABLED?: string
+    FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN?: string
+  },
+  symbols: string[],
+): Promise<Map<string, FinLabL5Quote>> {
+  const snapshot = await fetchFinLabL5MarketDataSnapshot(env, symbols)
+  return snapshot.quotes
 }

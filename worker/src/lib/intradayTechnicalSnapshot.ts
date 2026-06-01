@@ -46,6 +46,7 @@ export interface IntradayTechnicalDecisionInput {
   strategyMode?: string | null
   marketRiskLevel?: string | null
   minRangePosition?: number | null
+  minDistributionSkipBarCount?: number | null
 }
 
 export interface IntradayTechnicalDecision {
@@ -184,6 +185,9 @@ export function resolveIntradayTechnicalDecision(input: IntradayTechnicalDecisio
   const nearSessionLow = rangePosition != null && rangePosition < 0.15
   const coldObv = obv < 45 || (obvDelta != null && obvDelta <= -5)
   const distributionObv = obv < 40 || (obvDelta != null && obvDelta <= -10)
+  const minDistributionSkipBarCount = Number.isFinite(Number(input.minDistributionSkipBarCount))
+    ? Math.max(1, Number(input.minDistributionSkipBarCount))
+    : 60
 
   const detail = [
     metric('adaptive_rsi', snapshot.adaptiveRsiState),
@@ -198,6 +202,9 @@ export function resolveIntradayTechnicalDecision(input: IntradayTechnicalDecisio
   ].filter(Boolean).join(';')
 
   if (snapshot.adaptiveRsiState === 'weak' && distributionObv && nearSessionLow && (deeplyBelowVwap || weakRisk)) {
+    if (snapshot.barCount < minDistributionSkipBarCount) {
+      return { action: 'defer', reason: 'technical_distribution_cooldown', detail }
+    }
     return { action: 'skip', reason: 'technical_distribution', detail }
   }
 

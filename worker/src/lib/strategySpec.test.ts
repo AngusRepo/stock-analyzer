@@ -59,6 +59,19 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
+  const activeBucketCounts = DEFAULT_STRATEGY_SPECS
+    .filter((spec) => spec.status === 'active')
+    .reduce<Record<string, number>>((counts, spec) => {
+      counts[spec.alphaBucket] = (counts[spec.alphaBucket] ?? 0) + 1
+      return counts
+    }, {})
+  assert(
+    Object.values(activeBucketCounts).every((count) => count <= 3),
+    'source-approved active strategy specs must stay curated by alpha bucket; discovery duplicates should remain research until promotion',
+  )
+}
+
+{
   const activeFinLabSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.id.startsWith('finlab_ai_skill_') && spec.status === 'active')
   assert(activeFinLabSpecs.length >= 8, 'FinLab AI Skill production specs should widen L1 diversity beyond the first seeded batch')
   assert(

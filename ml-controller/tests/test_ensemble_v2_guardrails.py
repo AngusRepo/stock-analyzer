@@ -250,6 +250,92 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
     assert ic_weights["PatchTST"] == 0.07
 
 
+def test_daily_pipeline_loads_formal_layer3_active_adapter_ic(monkeypatch):
+    import sys
+    import types
+
+    graph_mod = types.ModuleType("langgraph.graph")
+    graph_mod.END = object()
+    graph_mod.StateGraph = object
+    sqlite_mod = types.ModuleType("langgraph.checkpoint.sqlite")
+    sqlite_mod.SqliteSaver = object
+    types_mod = types.ModuleType("langgraph.types")
+    types_mod.RetryPolicy = object
+    retry_mod = types.ModuleType("langgraph.pregel.types")
+    retry_mod.RetryPolicy = object
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.checkpoint.sqlite", sqlite_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.types", types_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.pregel.types", retry_mod)
+    httpx_mod = types.ModuleType("httpx")
+    httpx_mod.AsyncClient = object
+    monkeypatch.setitem(sys.modules, "httpx", httpx_mod)
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+    google_storage_mod.Client = object
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
+
+    from graphs import daily_pipeline_v2
+
+    pool = {
+        "models": {
+            "XGBoost": {"status": "active", "rolling_ic": 0.04},
+        },
+        "formal_layer3_slots": {
+            "GNN": {
+                "status": "production_adapter_active",
+                "rolling_ic": 0.021,
+                "last_ic_status": "computed",
+                "last_ic_root_cause": "ok",
+            },
+            "TimesFM": {
+                "status": "production_adapter_active",
+                "ic_4w_avg": 0.018,
+                "last_ic_status": "computed",
+                "last_ic_root_cause": "ok",
+            },
+            "TabM": {
+                "status": "formal_slot_pending_artifact",
+                "rolling_ic": 0.2,
+            },
+        },
+    }
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            import json
+
+            return json.dumps(pool)
+
+    class Bucket:
+        def blob(self, path):
+            return Blob()
+
+    class Client:
+        def bucket(self, name):
+            return Bucket()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(google_storage_mod, "Client", lambda: Client())
+    monkeypatch.setattr(daily_pipeline_v2.kv_client, "get_json", lambda *_, **__: {})
+
+    status, ic_weights, *_ = daily_pipeline_v2._load_pool_and_ic()
+
+    assert status["GNN"] == "production_adapter_active"
+    assert status["TimesFM"] == "production_adapter_active"
+    assert ic_weights["GNN"] == 0.021
+    assert ic_weights["TimesFM"] == 0.018
+    assert "TabM" not in ic_weights
+
+
 def test_daily_pipeline_builds_expected_return_calibration_from_verified_outcomes(monkeypatch):
     import json
     import sys

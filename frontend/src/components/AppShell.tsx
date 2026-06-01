@@ -55,8 +55,8 @@ function isActivePath(itemHref: string, currentPath: string) {
 }
 
 function surfaceForPath(currentPath: string) {
-  if (currentPath.startsWith('/report/')) return 'stock'
-  if (currentPath === '/' || currentPath.startsWith('/stock/')) return 'home'
+  if (currentPath.startsWith('/stock/')) return 'stock'
+  if (currentPath === '/') return 'home'
   if (currentPath.startsWith('/bot')) return 'bot'
   if (currentPath.startsWith('/strategy-lab')) return 'strategy'
   if (currentPath.startsWith('/model-pool/inspector')) return 'inspector'

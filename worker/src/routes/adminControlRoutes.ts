@@ -401,7 +401,7 @@ async function handleSchedulerCallback(c: any) {
     body.status === 'skipped' &&
     truthyFlag(callbackMetadata?.allow_historical_learning_catchup)
 
-  if (body.task === 'verify-v2' && (body.status === 'success' || allowLearningCatchupAfterVerifySkip) && c.env.ML_CONTROLLER_URL) {
+  if (body.task === 'verify-v2' && (body.status === 'success' || allowLearningCatchupAfterVerifySkip)) {
     c.executionCtx.waitUntil((async () => {
       try {
         const { runPostVerifyCallbackChain } = await import('../lib/postMarketChain')

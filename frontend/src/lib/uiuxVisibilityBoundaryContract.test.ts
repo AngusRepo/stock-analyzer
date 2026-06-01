@@ -49,6 +49,7 @@ assert(app.includes('<Route path="/" component={DailyFocusHomePage} />'), 'Root 
 assert(app.includes('<Route path="/dashboard" component={Dashboard} />'), 'Legacy Dashboard should remain available at /dashboard')
 assert(!app.includes('DailyFocusPrototypePage'), 'Preview daily-focus prototype should not remain as a routable duplicate surface')
 assert(app.includes('path="/preview/daily-focus"') && app.includes('<Redirect to="/" replace />'), 'Old /preview/daily-focus URL should redirect to formal Home')
+assert(app.includes('path="/report/:symbol"') && app.includes('<LegacyStockReportRedirectPage />'), 'Old /report/:symbol URL should redirect away from the retired stock report surface')
 assert(app.indexOf('path="/model-pool/inspector"') >= 0, 'App should expose /model-pool/inspector')
 assert(app.indexOf('path="/model-pool/inspector"') < app.indexOf('path="/model-pool"'), 'Inspector route should be declared before /model-pool')
 

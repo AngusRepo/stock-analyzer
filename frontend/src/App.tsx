@@ -6,7 +6,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 
 const BotDashboard = lazy(() => import('./pages/BotDashboard'))
 const DailyFocusHomePage = lazy(() => import('./pages/DailyFocusHomePage'))
-const StockReportPage = lazy(() => import('./pages/StockReportPage'))
+const LegacyStockReportRedirectPage = lazy(() => import('./pages/LegacyStockReportRedirectPage'))
 const PipelinePage = lazy(() => import('./pages/PipelinePage'))
 const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
 const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
@@ -33,8 +33,8 @@ export default function App() {
         <Route path="/stock/:id" component={Dashboard} />
         <Route path="/unauthorized" component={Unauthorized} />
         <Route path="/report/:symbol">
-          <Suspense fallback={<PageLoader label="Report" />}>
-            <StockReportPage />
+          <Suspense fallback={<PageLoader label="Legacy stock report" />}>
+            <LegacyStockReportRedirectPage />
           </Suspense>
         </Route>
         <Route path="/bot">

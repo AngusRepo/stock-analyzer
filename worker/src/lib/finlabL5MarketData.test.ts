@@ -1,5 +1,6 @@
 import {
   buildFinLabL5MarketDataDetail,
+  fetchFinLabL5MarketDataSnapshot,
   fetchFinLabL5MarketDataQuotes,
   normalizeFinLabL5Quote,
   quoteQualityFromL5,
@@ -123,6 +124,39 @@ function assert(condition: unknown, message: string): void {
     assert(body.allow_broker_login === true, 'market-data fetch should require explicit broker-login flag')
     assert(body.symbols[0] === '2330', 'market-data fetch should send requested symbols')
     assert(quotes.get('2330')?.bestAsk === 100.1, 'market-data fetch should normalize controller L5 quotes')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})()
+
+;(async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      status: 'blocked',
+      blocked_reasons: ['SHIOAJI_CERT_PATH', 'SHIOAJI_SECRET_KEY_OR_SHIOAJI_API_SECRET'],
+      env_status: {
+        ready: false,
+        missing: ['SHIOAJI_CERT_PATH', 'SHIOAJI_SECRET_KEY_OR_SHIOAJI_API_SECRET'],
+      },
+      can_submit_real_order: false,
+      live_submit_enabled: false,
+      quotes: {},
+    }),
+  }) as Response) as any
+
+  try {
+    const snapshot = await fetchFinLabL5MarketDataSnapshot({
+      ML_CONTROLLER_URL: 'https://controller.example',
+      FINLAB_L5_MARKET_DATA_ENABLED: '1',
+      FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN: '1',
+    }, ['2885'])
+
+    assert(snapshot.status === 'blocked', 'L5 snapshot should preserve controller blocked status')
+    assert(snapshot.blockedReasons.includes('SHIOAJI_CERT_PATH'), 'L5 snapshot should preserve missing certificate reason')
+    assert(snapshot.envMissing.includes('SHIOAJI_SECRET_KEY_OR_SHIOAJI_API_SECRET'), 'L5 snapshot should preserve env missing reason')
+    assert(snapshot.quotes.size === 0, 'blocked L5 snapshot should not fabricate quotes')
   } finally {
     globalThis.fetch = originalFetch
   }

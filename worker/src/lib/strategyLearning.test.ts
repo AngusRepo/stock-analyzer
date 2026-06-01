@@ -22,6 +22,14 @@ function assert(condition: unknown, message: string): void {
   )
   assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE'), 'strategy learning replay writes must be chunked for D1 production latency')
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
+  assert(
+    source.includes('demoteStaleActiveDiscoveryStrategySpecs') &&
+      source.includes("SET status='research'") &&
+      source.includes("strategy_id NOT IN (${placeholders})") &&
+      source.includes("source_refs_json LIKE '%finlab_ai_skill%'") &&
+      source.includes('demoted_stale_active'),
+    'strategy registry seeding must demote stale FinLab AI discovery active rows that are not source-approved production specs',
+  )
 }
 
 {

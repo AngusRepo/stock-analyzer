@@ -38,9 +38,21 @@ if ($missing.Count -gt 0) {
 }
 
 $manifest = Get-Content -LiteralPath (Join-Path $Root 'infra/gcp-scheduler-jobs.json') -Raw | ConvertFrom-Json
-$intraday = @($manifest.jobs | Where-Object { $_.id -eq 'intraday-check' })[0]
-if ($intraday.path -ne '/finlab/execution/production-simulated-loop') {
-  throw "Execution release closure failed: intraday-check path is $($intraday.path)"
+$intradayJobs = @($manifest.jobs | Where-Object { [string]$_.task -eq 'intraday-check' })
+if ($intradayJobs.Count -ne 2) {
+  throw "Execution release closure failed: intraday-check must be split into two Scheduler jobs, got $($intradayJobs.Count)"
+}
+foreach ($intraday in $intradayJobs) {
+  if ($intraday.path -ne '/finlab/execution/production-simulated-loop') {
+    throw "Execution release closure failed: $($intraday.id) path is $($intraday.path)"
+  }
+}
+$intradaySchedules = @($intradayJobs | ForEach-Object { [string]$_.schedule })
+if (-not ($intradaySchedules -contains '* 1-4 * * 1-5') -or -not ($intradaySchedules -contains '0-30 5 * * 1-5')) {
+  throw "Execution release closure failed: intraday-check schedules must cover TW 09:00-13:30 only; got $($intradaySchedules -join ', ')"
+}
+if ($intradaySchedules -contains '* 1-5 * * 1-5') {
+  throw 'Execution release closure failed: intraday-check must not run until TW 13:59'
 }
 
 $router = Get-Content -LiteralPath (Join-Path $Root 'ml-controller/routers/finlab.py') -Raw

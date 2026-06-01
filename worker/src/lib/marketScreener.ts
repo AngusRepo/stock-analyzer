@@ -1834,6 +1834,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: index + 1,
         evidence: {
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
+          research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
+          strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
           strategy_pool_score: (candidate as any).strategy_pool_score ?? null,
           target_size: screenerPolicy.sizing.candidatePoolSize,
           coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
@@ -1861,6 +1863,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: index + 1,
         evidence: {
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
+          research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
+          strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
           strategy_pool_reason: (candidate as any).strategy_pool_reason ?? null,
           raw_signals: candidate.raw_signals ?? null,
           layer1_rank: (candidate as any).strategy_pool_rank ?? index + 1,
@@ -1881,6 +1885,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: entry.strategy_pool_rank ?? null,
         evidence: {
           strategy_ids: entry.strategy_pool_ids ?? [],
+          research_strategy_ids: entry.research_strategy_ids ?? [],
+          strategy_pool_fallback_source: entry.strategy_pool_fallback_source ?? null,
           strategy_pool_score: entry.strategy_pool_score ?? null,
           strategy_pool_decision: entry.strategy_pool_decision ?? null,
           source_universe: 'post_safety_hard_filter_pre_rrg',
@@ -1901,6 +1907,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: entry.strategy_pool_rank ?? null,
         evidence: {
           strategy_ids: entry.strategy_pool_ids ?? [],
+          research_strategy_ids: entry.research_strategy_ids ?? [],
+          strategy_pool_fallback_source: entry.strategy_pool_fallback_source ?? null,
           strategy_pool_score: entry.strategy_pool_score ?? null,
           market_segment: entry.market_segment ?? null,
           source_universe: 'post_safety_hard_filter_pre_rrg',
@@ -2527,6 +2535,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategy_pool_reason: entry.strategy_pool_reason,
         strategy_pool_rank: entry.strategy_pool_rank,
         strategy_pool_ids: entry.strategy_pool_ids,
+        research_strategy_ids: entry.research_strategy_ids,
+        strategy_pool_fallback_source: entry.strategy_pool_fallback_source,
         strategy_pool_score: entry.strategy_pool_score,
         strategy_watch_points: Array.from(new Set([
           ...((updated as any)?.strategy_watch_points ?? []),
@@ -2547,7 +2557,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategy_pool_decision: 'ml_queue',
         strategy_pool_reason: 'layer1_breadth_after_overlay_top_up',
         strategy_pool_rank: selectedCandidates.length + index + 1,
-        strategy_pool_ids: (candidate as any).strategy_pool_ids ?? ['layer1_breadth'],
+        strategy_pool_ids: (candidate as any).strategy_pool_ids ?? [],
+        research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
+        strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? 'layer1_breadth',
         strategy_watch_points: [
           ...((candidate as any).strategy_watch_points ?? []),
           'strategy_pool:layer1_breadth_after_overlay_top_up',
@@ -2727,6 +2739,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   finalCandidates.forEach((c, index) => {
     const sc = c as any
     const flag = selectionFlagMap.get(c.symbol)
+    const l1CandidateSeedEvidence = {
+      semantic_stage: 'l1_candidate_seed_after_overlay',
+      legacy_alias_stage: 'final_selection',
+      industry: sc.industry ?? c.sector,
+      chip_score: sc.chip_score,
+      tech_score: sc.tech_score,
+      momentum_score: sc.momentum_score,
+      highFreq: flag?.highFreq ?? false,
+      newMoney: flag?.newMoney ?? false,
+      freq20d: flag?.freq20d ?? 0,
+      strategy_tags: sc.strategy_tags ?? [],
+      strategy_pool_ids: sc.strategy_pool_ids ?? [],
+      research_strategy_ids: sc.research_strategy_ids ?? [],
+      strategy_pool_fallback_source: sc.strategy_pool_fallback_source ?? null,
+      strategy_pool_score: sc.strategy_pool_score ?? null,
+      strategy_pool_reason: sc.strategy_pool_reason ?? null,
+      l1_breadth_seed_size: finalCandidates.length,
+      layer2_owner: 'ml-controller',
+      layer2_coarse_queue_size: coarseQueueSize,
+      layer3_core_ml_target_size: maxCandidates,
+    }
     pushFunnelItem(funnelItems, {
       symbol: c.symbol,
       name: c.name,
@@ -2748,27 +2781,25 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     pushFunnelItem(funnelItems, {
       symbol: c.symbol,
       name: c.name,
+      stage: 'l1_candidate_seed_after_overlay',
+      decision: 'selected',
+      reasonCode: 'selected_for_l1_breadth_seed',
+      scoreAfter: Number(sc.score ?? 0),
+      rank: index + 1,
+      evidence: l1CandidateSeedEvidence,
+    })
+    pushFunnelItem(funnelItems, {
+      symbol: c.symbol,
+      name: c.name,
       stage: 'final_selection',
       decision: 'selected',
       reasonCode: 'selected_for_l1_breadth_seed',
       scoreAfter: Number(sc.score ?? 0),
       rank: index + 1,
       evidence: {
-        industry: sc.industry ?? c.sector,
-        chip_score: sc.chip_score,
-        tech_score: sc.tech_score,
-        momentum_score: sc.momentum_score,
-        highFreq: flag?.highFreq ?? false,
-        newMoney: flag?.newMoney ?? false,
-        freq20d: flag?.freq20d ?? 0,
-        strategy_tags: sc.strategy_tags ?? [],
-        strategy_pool_ids: sc.strategy_pool_ids ?? [],
-        strategy_pool_score: sc.strategy_pool_score ?? null,
-        strategy_pool_reason: sc.strategy_pool_reason ?? null,
-        l1_breadth_seed_size: finalCandidates.length,
-        layer2_owner: 'ml-controller',
-        layer2_coarse_queue_size: coarseQueueSize,
-        layer3_core_ml_target_size: maxCandidates,
+        ...l1CandidateSeedEvidence,
+        deprecated_stage_name: true,
+        semantic_stage: 'l1_candidate_seed_after_overlay',
       },
     })
   })

@@ -143,6 +143,18 @@ assert(cancelled.allItems[0].execution_status === 'cancelled', 'cancelled item s
 }
 
 {
+  const first = applyPendingBuyExecutionStatusUpdates([item('2330')], [
+    { symbol: '2330', status: 'pending', reason: 'allocator_open_slot', detail: 'target=100;current=0' },
+  ])
+  const second = applyPendingBuyExecutionStatusUpdates(first.allItems, [
+    { symbol: '2330', status: 'pending', reason: 'allocator_open_slot', detail: 'target=100;current=0' },
+  ])
+  assert(first.changed === true, 'first active status note should mark state changed')
+  assert(second.changed === false, 'repeated active status note must be idempotent and avoid rewriting pending-buy runs every intraday poll')
+  assert(second.activeItems.length === 1, 'idempotent active status should keep the candidate active')
+}
+
+{
   const updated = applyPendingBuyExecutionStatusUpdates([item('2330')], [
     { symbol: '2330', status: 'partially_filled', reason: 'paper_order_partial_fill', detail: 'requested=1000;filled=600;remaining=400' },
   ])

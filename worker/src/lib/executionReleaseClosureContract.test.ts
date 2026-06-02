@@ -14,14 +14,16 @@ function read(relPath: string): string {
 }
 
 const schedulerManifest = JSON.parse(read('infra/gcp-scheduler-jobs.json'))
-const intradayCheck = schedulerManifest.jobs.find((job: any) => job.id === 'intraday-check')
+const intradayCheckJobs = schedulerManifest.jobs.filter((job: any) => job.task === 'intraday-check')
 const controllerRouter = read('ml-controller/routers/finlab.py')
 const workerIndex = read('worker/src/index.ts')
 const adminReadRoutes = read('worker/src/routes/adminReadRoutes.ts')
 
 assert(
-  intradayCheck?.path === '/finlab/execution/production-simulated-loop',
-  'intraday-check scheduler must target production-simulated loop route',
+  intradayCheckJobs.length === 2 &&
+    intradayCheckJobs.every((job: any) => job.baseUrlEnv === 'ML_CONTROLLER_URL') &&
+    intradayCheckJobs.every((job: any) => job.path === '/finlab/execution/production-simulated-loop'),
+  'intraday-check schedulers must be split jobs targeting ML Controller production-simulated loop route',
 )
 assert(
   controllerRouter.includes('@router.post("/execution/production-simulated-loop")'),

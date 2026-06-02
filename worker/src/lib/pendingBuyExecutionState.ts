@@ -96,6 +96,12 @@ function isAllocatorExecutionNote(note: string): boolean {
   return note.startsWith('execution:pending:allocator_')
 }
 
+function sameStringList(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = Array.isArray(a) ? a : []
+  const right = Array.isArray(b) ? b : []
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
 export function appendPendingBuyExecutionNote<T extends PendingBuyExecutionItem>(item: T, note: string): T {
   const points = Array.isArray(item.watch_points) ? item.watch_points : []
   const nextPointsBase = isAllocatorExecutionNote(note)
@@ -176,15 +182,23 @@ export function applyPendingBuyExecutionStatusUpdates(
     if (!update || isPendingBuyTerminal(item.execution_status)) {
       return { ...item, execution_status: item.execution_status ?? 'pending' }
     }
-    changed = true
+    const previousStatus = item.execution_status ?? 'pending'
+    const previousWatchPoints = Array.isArray(item.watch_points) ? item.watch_points : []
     const noted = appendPendingBuyExecutionNote(
       item,
       formatExecutionStatusEvent(update.status, update.reason, update.detail),
     )
-    return {
+    const next = {
       ...noted,
       execution_status: update.status,
     }
+    if (
+      previousStatus !== next.execution_status
+      || !sameStringList(previousWatchPoints, next.watch_points)
+    ) {
+      changed = true
+    }
+    return next
   })
   const activeItems = allItems.filter((item) => !isPendingBuyTerminal(item.execution_status))
 

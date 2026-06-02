@@ -15,6 +15,7 @@ import {
   loadPendingBuySnapshot,
   markPendingBuyExecutionEvents,
   persistPendingBuyActiveState,
+  recordPendingBuyAuditOnly,
   type PendingBuy,
 } from './pendingBuyStore'
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
@@ -396,6 +397,15 @@ function quoteAgeMs(quoteTime?: string): number | null {
   return Math.max(0, Date.now() - ts)
 }
 
+function pendingRunIdFromMeta(meta: Record<string, unknown> | undefined): number | null {
+  const runId = Number(meta?.run_id)
+  return Number.isFinite(runId) ? runId : null
+}
+
+function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionStatus): boolean {
+  return status === 'requoted' || status === 'partially_filled' || status === 'quote_unavailable'
+}
+
 export async function runIntradayCheck(env: Bindings): Promise<void> {
   const cfg = await getTradingConfig(env.KV)
   const { hour: twHour, minute: twMin } = getTwClockParts()
@@ -456,6 +466,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   const pendingSnapshot = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
   let pendingBuys: PendingBuy[] = pendingSnapshot.pendingBuys
   if (pendingBuys.length === 0) return
+  const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
 
   const pendingSymbols = pendingBuys.map((b) => b.symbol)
   const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
@@ -927,38 +938,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     reason: string,
     detail?: string | null,
   ) => {
+    recordExecutionNote(symbol, status, reason, detail)
+    if (!shouldPersistActiveExecutionStatus(status)) return
     const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, [{ symbol, status, reason, detail }])
     pendingBuys = transition.allItems as PendingBuy[]
-    recordExecutionNote(symbol, status, reason, detail)
     if (transition.changed) stateChanged = true
   }
   const recordAllocatorDecision = (symbol: string, decision: FiveSlotDecision) => {
-    const watchPoint = formatFiveSlotDecisionWatchPoint(decision)
-    const idx = pendingBuys.findIndex((item) => item.symbol === symbol)
-    if (idx >= 0) {
-      const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
-      const nextPoints = [
-        ...points.filter((point) => {
-          const text = String(point)
-          return !text.startsWith('allocator:') && !text.startsWith('execution:pending:allocator_')
-        }),
-        watchPoint,
-      ]
-      const changed = nextPoints.length !== points.length || nextPoints.some((point, i) => point !== points[i])
-      if (changed || !pendingBuys[idx].execution_status) {
-        pendingBuys[idx] = {
-          ...pendingBuys[idx],
-          execution_status: pendingBuys[idx].execution_status ?? 'pending',
-          watch_points: nextPoints,
-        }
-        stateChanged = true
-      }
-    }
     recordExecutionNote(
       symbol,
       `allocator_${decision.action}`,
       decision.reason,
-      `target=${Math.round(decision.targetPositionValue)};current=${Math.round(decision.currentPositionValue)};budget=${Math.round(decision.budgetCap)};replace=${decision.replaceSymbol ?? 'none'}`,
+      `${formatFiveSlotDecisionWatchPoint(decision)};target=${Math.round(decision.targetPositionValue)};current=${Math.round(decision.currentPositionValue)};budget=${Math.round(decision.budgetCap)};replace=${decision.replaceSymbol ?? 'none'}`,
     )
   }
   for (const pending of [...pendingBuys]) {
@@ -982,6 +973,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           decision.reason,
           partial ? `remaining=${partial.remaining}` : null,
         )
+        continue
       } else {
         recordExecutionEvent(
           pending.symbol,
@@ -989,8 +981,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           decision.reason,
           partial ? `remaining=${partial.remaining}` : null,
         )
+        stateChanged = true
       }
-      stateChanged = true
       continue
     }
 
@@ -1030,30 +1022,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (ohlcvTradePlan) {
       executionEntryPrice = ohlcvTradePlan.entryPrice
       executionStopLoss = ohlcvTradePlan.stopLoss
-      const idx = pendingBuys.findIndex((item) => item.symbol === pending.symbol)
-      if (idx >= 0) {
-        const watchPoint = formatOhlcvTradePlanWatchPoint(ohlcvTradePlan)
-        const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
-        const nextPoints = points.some((point) => String(point).startsWith('ohlcv_trade_plan:'))
-          ? points.map((point) => String(point).startsWith('ohlcv_trade_plan:') ? watchPoint : point)
-          : [...points, watchPoint]
-        if (
-          pendingBuys[idx].ml_entry_price !== executionEntryPrice
-          || pendingBuys[idx].ml_stop_loss !== executionStopLoss
-          || nextPoints.some((point, pointIdx) => point !== points[pointIdx])
-        ) {
-          pendingBuys[idx] = {
-            ...pendingBuys[idx],
-            ml_entry_price: executionEntryPrice,
-            ml_stop_loss: executionStopLoss,
-            ml_target1: ohlcvTradePlan.target1,
-            ml_target2: ohlcvTradePlan.target2,
-            original_entry: ohlcvTradePlan.entryPrice,
-            watch_points: nextPoints,
-          }
-          stateChanged = true
-        }
-      }
+      recordExecutionNote(
+        pending.symbol,
+        'ohlcv_trade_plan',
+        'intraday_execution_plan',
+        formatOhlcvTradePlanWatchPoint(ohlcvTradePlan),
+      )
     }
     let intradayTechnicalSnapshot: ReturnType<typeof buildIntradayTechnicalSnapshot> | null = null
     const previousCloseForSnapshot = prevCloseMap.get(pending.symbol) ?? null
@@ -1093,7 +1067,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             previous_obv_temperature_60: technicalBaseline?.obvTemperature60 ?? null,
             previous_adaptive_rsi_upper_50: technicalBaseline?.adaptiveRsiUpper50 ?? null,
           },
-          pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+          pendingRunId,
           source: 'intraday_dynamic_technical_decision',
         })
       } catch (error) {
@@ -1143,7 +1117,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           production_like_market_data: finLabL5MarketDataEnabled,
           live_submit_enabled: false,
         },
-        pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+        pendingRunId,
         source: 'finlab_sinopac_l5_market_data',
       })
     }
@@ -1420,7 +1394,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           raw_status: finLabExecutionPreview.raw?.status ?? null,
           live_submit_enabled: false,
         },
-        pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+        pendingRunId,
         source: 'finlab_execution_preview',
       })
       if (
@@ -1477,7 +1451,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         mismatches: brokerReconciliation.mismatches,
         live_submit_enabled: false,
       },
-      pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+      pendingRunId,
       source: 'paper_broker_reconciliation',
     })
 
@@ -1706,5 +1680,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     await markPendingBuyExecutionEvents(env, today, pendingBuys, executionEvents, { stage: 'intraday_check', execution_events: executionAuditEvents })
   } else if (stateChanged) {
     await persistPendingBuyActiveState(env, today, pendingBuys, { stage: 'intraday_check', execution_events: executionAuditEvents })
+  } else if (executionAuditEvents.length > 0) {
+    await recordPendingBuyAuditOnly(env, today, pendingRunId, 'intraday_check', executionAuditEvents)
   }
 }

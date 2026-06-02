@@ -399,6 +399,16 @@ async function recordPendingBuyAuditEvents(
   })))
 }
 
+export async function recordPendingBuyAuditOnly(
+  env: Bindings,
+  tradeDate: string,
+  pendingRunId: number | null,
+  source: string,
+  auditEvents: Array<Record<string, unknown>>,
+): Promise<void> {
+  await recordPendingBuyAuditEvents(env, tradeDate, source, pendingRunId, auditEvents)
+}
+
 function auditEventsFromMeta(meta?: Record<string, unknown>): Array<Record<string, unknown>> {
   return Array.isArray(meta?.execution_events)
     ? meta.execution_events as Array<Record<string, unknown>>

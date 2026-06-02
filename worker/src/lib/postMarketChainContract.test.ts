@@ -67,6 +67,8 @@ assert(
 assert(
   postMarketChain.includes("if (runLearningClosures)") &&
     postMarketChain.includes('runPostVerifyLearningClosureQueueTask') &&
+    postMarketChain.includes('POST_VERIFY_LEARNING_STEPS') &&
+    postMarketChain.includes('nextPostVerifyLearningStep') &&
     postMarketChain.includes("'post-verify-learning-dispatch'") &&
     postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false })") <
       postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false })") &&
@@ -80,6 +82,13 @@ assert(
     updateOrchestrator.includes('runPostVerifyLearningClosureQueueTask') &&
     types.includes("'post_verify_learning_closure'"),
   'post-verify learning closure must be an UPDATE_QUEUE task, not synchronous Worker callback work',
+)
+assert(
+  postMarketChain.includes("'post-verify-learning-step'") &&
+    postMarketChain.includes("'post-verify-learning-closure'") &&
+    logger.includes("'post-verify-learning-step'") &&
+    logger.includes("'post-verify-learning-closure'"),
+  'post-verify learning queue must log per-step and final closure artefacts for production verification',
 )
 assert(
   postMarketChain.includes('runVerifyV2(env, ctx.runDate)'),
@@ -163,6 +172,9 @@ assert(
 )
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
+assert(logger.includes("'post-verify-learning-dispatch'"), 'post-verify-learning-dispatch must be visible in scheduler/OBS logs')
+assert(logger.includes("'post-verify-learning-step'"), 'post-verify-learning-step must be visible in scheduler/OBS logs')
+assert(logger.includes("'post-verify-learning-closure'"), 'post-verify-learning-closure must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
 assert(logger.includes("'finlab-ai-skill-discovery'"), 'FinLab AI Skill discovery must be visible in scheduler/OBS logs')

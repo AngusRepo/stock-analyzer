@@ -22,6 +22,14 @@ type ChainedTask = {
   critical?: boolean
 }
 
+const POST_VERIFY_LEARNING_STEPS = [
+  'meta-learning-shadow',
+  'finlab-ai-skill-discovery',
+  'strategy-learning',
+] as const
+
+type PostVerifyLearningStep = typeof POST_VERIFY_LEARNING_STEPS[number]
+
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 }
@@ -48,6 +56,19 @@ function truthyFlag(value: unknown): boolean {
 
 function allowHistoricalLearningCatchup(ctx: ChainContext): boolean {
   return !isCurrentBusinessDate(ctx.runDate) && truthyFlag(ctx.metadata?.allow_historical_learning_catchup)
+}
+
+function normalizePostVerifyLearningStep(value: unknown): PostVerifyLearningStep {
+  return POST_VERIFY_LEARNING_STEPS.includes(value as PostVerifyLearningStep)
+    ? value as PostVerifyLearningStep
+    : 'meta-learning-shadow'
+}
+
+function nextPostVerifyLearningStep(step: PostVerifyLearningStep): PostVerifyLearningStep | null {
+  const index = POST_VERIFY_LEARNING_STEPS.indexOf(step)
+  return index >= 0 && index < POST_VERIFY_LEARNING_STEPS.length - 1
+    ? POST_VERIFY_LEARNING_STEPS[index + 1]
+    : null
 }
 
 async function isLatestRecommendationBusinessDate(env: Bindings, runDate?: string): Promise<boolean> {
@@ -158,7 +179,11 @@ async function runStrategyLearningClosureTask(env: Bindings, ctx: ChainContext):
   return runStrategyLearningClosure(env.DB, ctx.runDate ?? new Date().toISOString().slice(0, 10))
 }
 
-async function dispatchPostVerifyLearningClosure(env: Bindings, ctx: ChainContext): Promise<string> {
+async function dispatchPostVerifyLearningClosure(
+  env: Bindings,
+  ctx: ChainContext,
+  step: PostVerifyLearningStep = 'meta-learning-shadow',
+): Promise<string> {
   const runDate = ctx.runDate ?? twDateToday()
   const runId = ctx.upstreamRunId ?? `post-verify-learning-${runDate}-${Date.now()}`
   await env.UPDATE_QUEUE.send({
@@ -169,18 +194,41 @@ async function dispatchPostVerifyLearningClosure(env: Bindings, ctx: ChainContex
     attempt: 1,
     metadata: {
       ...(ctx.metadata ?? {}),
-      source: 'post_verify_callback_chain',
+      source: String(ctx.metadata?.source ?? 'post_verify_callback_chain'),
+      step,
     },
   })
-  return `post_verify_learning_closure_dispatched run_date=${runDate} run_id=${runId}`
+  return `post_verify_learning_closure_dispatched run_date=${runDate} run_id=${runId} step=${step}`
 }
 
 export async function runPostVerifyLearningClosureQueueTask(env: Bindings, ctx: ChainContext): Promise<void> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
-  results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
-  results.push(await logChainedTask(env, ctx, 'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false }))
-  results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
+  const step = normalizePostVerifyLearningStep(ctx.metadata?.step)
+
+  if (step === 'meta-learning-shadow') {
+    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
+  } else if (step === 'finlab-ai-skill-discovery') {
+    results.push(await logChainedTask(env, ctx, 'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false }))
+  } else {
+    results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
+  }
+
+  const nextStep = nextPostVerifyLearningStep(step)
+  if (nextStep) {
+    const summary = await dispatchPostVerifyLearningClosure(env, {
+      ...ctx,
+      metadata: {
+        ...(ctx.metadata ?? {}),
+        source: 'post_verify_learning_queue',
+        previous_step: step,
+      },
+    }, nextStep)
+    results.push({ task: 'post-verify-learning-dispatch', summary, status: 'success', critical: false })
+    await logChainSummary(env, ctx, 'post-verify-learning-step', startedAt, results)
+    return
+  }
+
   await logChainSummary(env, ctx, 'post-verify-learning-closure', startedAt, results)
 }
 

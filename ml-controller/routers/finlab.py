@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
+import uuid
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -17,6 +21,9 @@ from services.finlab_production_simulated_loop import (
 from services.finlab_sinopac_l5_market_data import run_finlab_l5_market_data
 
 router = APIRouter(prefix="/finlab", tags=["finlab"])
+logger = logging.getLogger(__name__)
+WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
+WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 
 
 class FinLabBackfillRunRequest(BaseModel):
@@ -77,6 +84,51 @@ def _model_dump(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+
+async def _callback_worker_scheduler(payload: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort callback to keep Worker scheduler status in sync."""
+    if not WORKER_URL:
+        logger.warning("[FinLab callback] STOCKVISION_WORKER_URL missing; skip task=%s", payload.get("task"))
+        return {"attempted": False, "ok": False, "reason": "worker_url_missing"}
+    url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
+    headers = {"Content-Type": "application/json"}
+    if WORKER_AUTH:
+        headers["Authorization"] = f"Bearer {WORKER_AUTH}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code != 200:
+            logger.warning(
+                "[FinLab callback] Worker returned %s for task=%s: %s",
+                resp.status_code,
+                payload.get("task"),
+                resp.text[:200],
+            )
+            return {"attempted": True, "ok": False, "status_code": resp.status_code}
+        return {"attempted": True, "ok": True, "status_code": resp.status_code}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[FinLab callback] Worker unreachable task=%s: %s", payload.get("task"), exc)
+        return {"attempted": True, "ok": False, "reason": exc.__class__.__name__}
+
+
+def _scheduler_status_for_loop(result: dict[str, Any]) -> str:
+    status = str(result.get("status") or "").strip().lower()
+    if status == "completed":
+        return "success"
+    if status == "dry_run":
+        return "skipped"
+    return "error"
+
+
+def _scheduler_summary_for_loop(result: dict[str, Any]) -> str:
+    status = str(result.get("status") or "unknown")
+    cycles_attempted = result.get("cycles_attempted")
+    cycles_failed = result.get("cycles_failed")
+    if cycles_attempted is not None:
+        return f"production_simulated_loop {status} cycles={cycles_attempted} failed={cycles_failed}"
+    reason = result.get("reason")
+    return f"production_simulated_loop {status}{f' reason={reason}' if reason else ''}"
 
 
 def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[str, Any]:
@@ -198,7 +250,31 @@ async def run_finlab_execution_production_simulated_loop_route(req: FinLabProduc
     This is the preferred route name for the pre-real-order stage: live market
     data and active Worker gates are allowed, but broker submit stays disabled.
     """
-    return await _run_finlab_production_simulated_loop(req)
+    started = time.monotonic()
+    run_id = f"intraday-check-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+    result = await _run_finlab_production_simulated_loop(req)
+    duration_ms = round((time.monotonic() - started) * 1000)
+    if not req.dry_run:
+        callback = await _callback_worker_scheduler({
+            "task": "intraday-check",
+            "status": _scheduler_status_for_loop(result),
+            "summary": _scheduler_summary_for_loop(result),
+            "duration_ms": duration_ms,
+            "run_id": run_id,
+            "error": str(result.get("reason") or "") or None,
+            "metadata": {
+                "controller": "ml-controller",
+                "route": "/finlab/execution/production-simulated-loop",
+                "mode": result.get("mode"),
+                "cycles_attempted": result.get("cycles_attempted"),
+                "cycles_failed": result.get("cycles_failed"),
+                "paper_order_mode": result.get("paper_order_mode"),
+                "live_submit_enabled": result.get("live_submit_enabled"),
+                "can_submit_real_order": result.get("can_submit_real_order"),
+            },
+        })
+        result = {**result, "scheduler_callback": callback, "scheduler_run_id": run_id}
+    return result
 
 
 @router.post("/ai-factor-discovery")

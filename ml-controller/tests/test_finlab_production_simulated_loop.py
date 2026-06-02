@@ -36,6 +36,16 @@ def test_production_simulated_route_is_preferred_controller_contract() -> None:
     assert "broker submit stays disabled" in source
 
 
+def test_production_simulated_route_callbacks_worker_scheduler_status() -> None:
+    source = (ROOT / "routers" / "finlab.py").read_text(encoding="utf-8")
+
+    assert "/api/admin/scheduler-callback" in source
+    assert '"task": "intraday-check"' in source
+    assert "_scheduler_status_for_loop(result)" in source
+    assert "_scheduler_summary_for_loop(result)" in source
+    assert "scheduler_callback" in source
+
+
 def test_production_simulated_loop_uses_internal_worker_endpoint_not_admin_trigger() -> None:
     source = (ROOT / "services" / "finlab_production_simulated_loop.py").read_text(encoding="utf-8")
 

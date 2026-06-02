@@ -47,7 +47,7 @@ import {
 import { evaluatePartialFillRemainingPolicy } from './partialFillRemainingPolicy'
 import { formatExecutionStatusEvent } from './executionEvent'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
-import { shouldFailClosedPendingDebate } from './pendingDebateSla'
+import { shouldMarkPendingDebateSlaReached } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
@@ -422,14 +422,24 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending',
   )
   const pendingDebateSlaMinutes = Number((cfg.position as any).pendingDebateSlaMinutes ?? 10)
-  if (staleDebateItems.length > 0 && shouldFailClosedPendingDebate(new Date(), pendingDebateSlaMinutes)) {
-    await markPendingBuyExecutionEvents(
-      env,
-      today,
+  if (staleDebateItems.length > 0 && shouldMarkPendingDebateSlaReached(new Date(), pendingDebateSlaMinutes)) {
+    const transition = applyPendingBuyExecutionStatusUpdates(
       debateSnapshot.pendingBuys,
-      staleDebateItems.map((item) => ({ symbol: item.symbol, status: 'skipped', reason: 'debate_sla_expired' })),
-      { stage: 'debate_sla', reason: 'debate_sla_expired', sla_minutes: pendingDebateSlaMinutes },
+      staleDebateItems.map((item) => ({
+        symbol: item.symbol,
+        status: 'pending',
+        reason: 'debate_sla_waiting',
+        detail: `sla_minutes=${pendingDebateSlaMinutes}`,
+      })),
     )
+    if (transition.changed) {
+      await persistPendingBuyActiveState(
+        env,
+        today,
+        transition.activeItems as PendingBuy[],
+        { stage: 'debate_sla', reason: 'debate_sla_waiting', sla_minutes: pendingDebateSlaMinutes },
+      )
+    }
   }
 
   await pollIntradayStopLoss(env)
@@ -1062,7 +1072,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           reason: 'intraday_dynamic_decision',
           detail: {
             ...intradayTechnicalSnapshot,
-            guard_enabled: truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED),
+            guard_enabled: truthyFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED),
             previous_close: previousCloseForSnapshot,
             previous_obv_temperature_60: technicalBaseline?.obvTemperature60 ?? null,
             previous_adaptive_rsi_upper_50: technicalBaseline?.adaptiveRsiUpper50 ?? null,
@@ -1079,7 +1089,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         )
       }
     }
-    const effectiveOhlcvTradePlan = ohlcvTradePlan && intradayTechnicalSnapshot && truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+    const technicalGuardEnabled = truthyFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+    const effectiveOhlcvTradePlan = ohlcvTradePlan && intradayTechnicalSnapshot && technicalGuardEnabled
       ? {
         ...ohlcvTradePlan,
         atrDefense: Math.max(ohlcvTradePlan.atrDefense ?? 0, intradayTechnicalSnapshot.atrDefense),
@@ -1088,16 +1099,16 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
     const finLabL5Quality = finLabL5Quote
       ? quoteQualityFromL5(finLabL5Quote, {
-        maxQuoteAgeMs: optionalPositiveNumber((env as any).FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
-        maxSpreadPct: optionalPositiveNumber((env as any).FINLAB_L5_MAX_SPREAD_PCT, 0.006),
-        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber((env as any).FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
-        minTopAskVolume: optionalPositiveNumber((env as any).FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
-        minOrderBookImbalance: Number.isFinite(Number((env as any).FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
-          ? Number((env as any).FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
+        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
+        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
+        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
+        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
+        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
+          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
           : -0.7,
       })
       : null
-    const finLabL5MarketDataEnabled = truthyFlag((env as any).FINLAB_L5_MARKET_DATA_ENABLED)
+    const finLabL5MarketDataEnabled = truthyFlag(env.FINLAB_L5_MARKET_DATA_ENABLED)
     if (finLabL5MarketDataEnabled) {
       await recordPaperExecutionEvent(env, {
         tradeDate: today,
@@ -1148,13 +1159,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         adaptivePolicy.notes.join('|'),
       ].filter(Boolean).join(';'),
     )
-    const intradayTechnicalDecision = intradayTechnicalSnapshot && truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+    const closeWindowVolumeFloor = optionalPositiveNumber(env.EXECUTION_CLOSE_WINDOW_MIN_VOLUME_RATIO, 0.9)
+    const closeWindowVolumeBridge =
+      twHour === 13 &&
+      Number(baseMomentum.volumeRatio ?? 0) >= closeWindowVolumeFloor &&
+      adaptivePolicy.momentum.minVolumeRatio > closeWindowVolumeFloor
+    const intradayTechnicalDecision = intradayTechnicalSnapshot && technicalGuardEnabled
       ? resolveIntradayTechnicalDecision({
         snapshot: intradayTechnicalSnapshot,
         strategyMode: effectiveOhlcvTradePlan?.mode ?? null,
         marketRiskLevel: marketRisk.risk_level,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
-        minDistributionSkipBarCount: optionalPositiveNumber((env as any).INTRADAY_TECHNICAL_DISTRIBUTION_SKIP_MIN_BARS, 60),
+        minDistributionSkipBarCount: optionalPositiveNumber(env.INTRADAY_TECHNICAL_DISTRIBUTION_SKIP_MIN_BARS, 60),
       })
       : null
     if (intradayTechnicalDecision) {
@@ -1165,7 +1181,21 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         intradayTechnicalDecision.detail,
       )
     }
-    if (adaptivePolicy.envelopeBlockReason && truthyFlag((env as any).FINLAB_L5_ENVELOPE_GUARD_ENABLED)) {
+    const closeWindowTechnicalPass = !technicalGuardEnabled || intradayTechnicalDecision?.action === 'pass'
+    const effectiveMomentumMinVolumeRatio =
+      closeWindowVolumeBridge &&
+      closeWindowTechnicalPass
+        ? closeWindowVolumeFloor
+        : adaptivePolicy.momentum.minVolumeRatio
+    if (effectiveMomentumMinVolumeRatio !== adaptivePolicy.momentum.minVolumeRatio) {
+      recordExecutionNote(
+        pending.symbol,
+        'closing_window_volume_bridge',
+        'volume_near_miss_after_technical_pass',
+        `volume_ratio=${baseMomentum.volumeRatio ?? 'na'};min=${adaptivePolicy.momentum.minVolumeRatio}->${effectiveMomentumMinVolumeRatio}`,
+      )
+    }
+    if (adaptivePolicy.envelopeBlockReason && truthyFlag(env.FINLAB_L5_ENVELOPE_GUARD_ENABLED)) {
       recordActiveExecutionStatus(
         pending.symbol,
         'pending',
@@ -1188,7 +1218,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       marketRiskLevel: marketRisk.risk_level,
       momentum: {
         ...baseMomentum,
-        minVolumeRatio: adaptivePolicy.momentum.minVolumeRatio,
+        minVolumeRatio: effectiveMomentumMinVolumeRatio,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
         strongBreakoutVolumeRatio: adaptivePolicy.momentum.strongBreakoutVolumeRatio,
         strongBreakoutRangePosition: adaptivePolicy.momentum.strongBreakoutRangePosition,

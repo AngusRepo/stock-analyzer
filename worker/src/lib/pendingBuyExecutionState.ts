@@ -1,4 +1,4 @@
-import { formatDebateEvent, formatExecutionStatusEvent } from './executionEvent'
+import { formatExecutionStatusEvent } from './executionEvent'
 
 export type PendingBuyActiveExecutionStatus =
   | 'pending'
@@ -207,37 +207,6 @@ export function applyPendingBuyExecutionStatusUpdates(
     activeItems,
     summary: emptySummary(),
     activeSummary: summarizeActive(activeItems),
-    changed,
-  }
-}
-
-export function applyPendingBuyDebateFailure(
-  items: PendingBuyExecutionItem[],
-  reason: string,
-): PendingBuyExecutionTransition {
-  const summary = emptySummary()
-  let changed = false
-
-  const allItems = items.map((item) => {
-    if (isPendingBuyTerminal(item.execution_status)) {
-      return { ...item, execution_status: item.execution_status ?? 'pending' }
-    }
-
-    changed = true
-    summary.skipped += 1
-    return appendPendingBuyExecutionNote(appendPendingBuyExecutionNote({
-      ...item,
-      debate_status: 'failed',
-      debate_verdict: item.debate_verdict ?? 'PENDING',
-      execution_status: 'skipped' as const,
-    }, formatDebateEvent('failed', reason)), formatExecutionStatusEvent('skipped', reason))
-  })
-
-  return {
-    allItems,
-    activeItems: allItems.filter((item) => !isPendingBuyTerminal(item.execution_status)),
-    summary,
-    activeSummary: summarizeActive(allItems.filter((item) => !isPendingBuyTerminal(item.execution_status))),
     changed,
   }
 }

@@ -86,7 +86,9 @@ assert(
   'morning setup must name the previous trading day as sourceRecoDate to separate source recommendations from pending date',
 )
 assert(
-  /WHERE dr\.date = \?[\s\S]*\.bind\(\s*sourceRecoDate,\s*sourceRecoDate,\s*cb\.buyConfThreshold,\s*candidateLimit\s*\)/.test(pendingBuyOrchestrator),
+  pendingBuyOrchestrator.includes('WHERE dr.date = ?') &&
+    pendingBuyOrchestrator.includes(').bind(sourceRecoDate') &&
+    pendingBuyOrchestrator.includes('      sourceRecoDate,\n      cb.buyConfThreshold,\n      minWatchMlEdge,\n      minWatchFinalScore,\n      candidateLimit,'),
   'morning setup must bind sourceRecoDate for daily_recommendations.date instead of pendingDate',
 )
 assert(

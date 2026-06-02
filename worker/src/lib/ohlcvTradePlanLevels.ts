@@ -36,7 +36,7 @@ export interface IntradayFibonacciLevels {
   fib100: number
 }
 
-export type OhlcvEntryMode = 'breakout' | 'pullback'
+export type OhlcvEntryMode = 'breakout' | 'breakout_continuation' | 'pullback'
 
 export const DEFAULT_STRONG_BREAKOUT_CHASE_PCT = 0.018
 
@@ -296,13 +296,21 @@ export function resolveOhlcvEntryPlan(
   const buyReferenceLow = buyReference.low
   const buyReferenceHigh = buyReference.high
   const optimisticHigh = resolveOptimisticHigh(levels, options.strongBreakoutChasePct)
-  const mode: OhlcvEntryMode = latest >= confirmation ? 'breakout' : 'pullback'
-  const entryPrice = mode === 'breakout' ? confirmation : buyReferenceHigh
+  const mode: OhlcvEntryMode = latest > optimisticHigh
+    ? 'breakout_continuation'
+    : latest >= confirmation
+      ? 'breakout'
+      : 'pullback'
+  const entryPrice = mode === 'breakout_continuation'
+    ? Math.min(latest, optimisticHigh)
+    : mode === 'breakout'
+      ? confirmation
+      : buyReferenceHigh
   const stopAnchor = levels.atrLower == null
     ? levels.support
     : Math.min(levels.support, levels.atrLower)
   const stopLoss = stopAnchor < entryPrice ? stopAnchor : entryPrice * 0.97
-  const target1 = mode === 'breakout' ? optimisticHigh : confirmation
+  const target1 = mode === 'pullback' ? confirmation : optimisticHigh
   const target2Base = Math.max(optimisticHigh, target1)
   const target2 = levels.atr != null ? target2Base + levels.atr : target2Base
 

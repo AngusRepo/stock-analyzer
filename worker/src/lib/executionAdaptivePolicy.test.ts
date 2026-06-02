@@ -38,6 +38,23 @@ function assert(condition: unknown, message: string): void {
 
 {
   const policy = resolveAdaptiveExecutionPolicy({
+    strategyMode: 'breakout_continuation',
+    marketRiskLevel: 'low',
+    base: {
+      minVolumeRatio: 0.8,
+      minRangePosition: 0.3,
+      maxEntryChasePct: 0.006,
+      strongBreakoutMaxEntryChasePct: 0.018,
+    },
+  })
+  assert(policy.momentum.minVolumeRatio === 1, 'breakout continuation should require live volume, but not stale 1.2x breakout volume')
+  assert(policy.momentum.minRangePosition === 0.35, 'breakout continuation should allow mid-range reclaim when price already cleared confirmation')
+  assert(policy.policy.maxEntryChasePct === 0.01, 'breakout continuation should use a live-entry chase cap')
+  assert(policy.policy.strongBreakoutMaxEntryChasePct === 0.02, 'breakout continuation should keep a bounded strong chase cap')
+}
+
+{
+  const policy = resolveAdaptiveExecutionPolicy({
     strategyMode: 'breakout',
     marketRiskLevel: 'high',
     base: {

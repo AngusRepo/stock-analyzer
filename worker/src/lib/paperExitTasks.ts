@@ -23,6 +23,12 @@ import {
 
 const ACCOUNT_ID = 1
 
+function optionalNumber(value: unknown, fallback: number, lo: number, hi: number): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(hi, Math.max(lo, n))
+}
+
 function resolveExitSellFill(quote: IntradayOHLC): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
   const fill = resolveMarketSellFill({
     currentPrice: quote.last,
@@ -75,7 +81,13 @@ async function runPostExitDiscipline(
         exitAction: stage,
         accountId: ACCOUNT_ID,
       },
-      { enableRerank: rerankEnabled, maxPositions: cfg.position.maxPositions ?? 5 },
+      {
+        enableRerank: rerankEnabled,
+        maxPositions: cfg.position.maxPositions ?? 5,
+        executionWatchMinMlEdge: optionalNumber(env.EXECUTION_WATCH_MIN_ML_EDGE, 12, 0, 25),
+        executionWatchMinFinalScore: optionalNumber(env.EXECUTION_WATCH_MIN_FINAL_SCORE, 55, 0, 100),
+        executionWatchRiskMultiplier: optionalNumber(env.EXECUTION_WATCH_RISK_MULTIPLIER, 0.55, 0.1, 1),
+      },
     )
     console.log(
       `[${logPrefix}] post-exit ${symbol}: category=${outcome.category} cooldown=${outcome.cooldown_days}d freeze=${outcome.freeze_applied} rerank=${outcome.rerank_queued} (${outcome.reason ?? ''})`,

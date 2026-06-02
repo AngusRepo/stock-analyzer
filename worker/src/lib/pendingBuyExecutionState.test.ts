@@ -2,7 +2,6 @@ import {
   appendPendingBuyExecutionNote,
   applyPendingBuyExecutionEvents,
   applyPendingBuyExecutionStatusUpdates,
-  applyPendingBuyDebateFailure,
   applyPendingBuySlaExpiry,
   extractPartialFillRemaining,
   type PendingBuyExecutionEvent,
@@ -68,14 +67,6 @@ const cancelled = applyPendingBuyExecutionEvents([item('3008')], [
 ])
 assert(cancelled.activeItems.length === 0, 'cancelled item should not remain active')
 assert(cancelled.allItems[0].execution_status === 'cancelled', 'cancelled item should be marked')
-
-{
-  const failed = applyPendingBuyDebateFailure([item('2330'), item('2454')], 'controller_unavailable')
-  assert(failed.activeItems.length === 0, 'debate outage must fail closed instead of leaving active pending buys')
-  assert(failed.allItems.every((entry) => entry.debate_status === 'failed'), 'debate outage should mark debate failed')
-  assert(failed.allItems.every((entry) => entry.execution_status === 'skipped'), 'debate outage should skip execution')
-  assert(failed.summary.skipped === 2, 'debate outage should count skipped terminal outcomes')
-}
 
 {
   const expired = applyPendingBuySlaExpiry([item('2330'), item('2454')], 'stale_previous_session')

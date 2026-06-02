@@ -30,6 +30,29 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     'morning setup pending buys should rank by canonical Score V2 finalScore',
   )
   assert(
+    morningSetupQuery.includes('dr.has_buy_signal = 1') &&
+      morningSetupQuery.includes("json_extract(dr.score_components, '$.components.mlEdge')"),
+    'morning setup should widen execution pool with ML-qualified watch candidates instead of only final buy rows',
+  )
+  assert(
+    !morningSetupQuery.includes('WHERE dr.date = ?\n         AND dr.has_buy_signal = 1'),
+    'morning setup must not keep a standalone final-buy filter that blocks ML-qualified watch candidates',
+  )
+  assert(
+    pendingBuyOrchestrator.includes('EXECUTION_WATCH_POOL_SIZE') &&
+      pendingBuyOrchestrator.includes('EXECUTION_WATCH_MIN_ML_EDGE') &&
+      pendingBuyOrchestrator.includes('ml_qualified_watch') &&
+      pendingBuyOrchestrator.includes('execution_pool:${executionRole}'),
+    'morning setup should make the ML-qualified execution watch pool explicit and auditable',
+  )
+  assert(
+    pendingBuyOrchestrator.includes('debate_retry_pending') &&
+      pendingBuyOrchestrator.includes('debate_retry:debate_missing') &&
+      pendingBuyOrchestrator.includes("debateStatus: failedCount > 0 ? 'pending' : 'completed'") &&
+      !pendingBuyOrchestrator.includes('debate_failed_closed'),
+    'debate outages must keep the execution watch pool active for retry instead of terminal-skipping candidates',
+  )
+  assert(
     !morningSetupQuery.includes('ORDER BY dr.score DESC'),
     'morning setup pending buys must not rank by legacy daily_recommendations.score',
   )
@@ -84,7 +107,7 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
 
 {
   const postExitRecommendationQueryStart = postExit.indexOf('const { results: recs } = await ctx.db.prepare')
-  const postExitRecommendationQueryEnd = postExit.indexOf(').bind(ctx.today)', postExitRecommendationQueryStart)
+  const postExitRecommendationQueryEnd = postExit.indexOf(').bind(ctx.today,', postExitRecommendationQueryStart)
   assert(
     postExitRecommendationQueryStart >= 0 && postExitRecommendationQueryEnd > postExitRecommendationQueryStart,
     'post-exit daily recommendation query should be locatable',
@@ -108,6 +131,19 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
   assert(
     postExitRecommendationQuery.includes('dr.score_components'),
     'post-exit rerank should read canonical Score V2 payload from daily_recommendations',
+  )
+  assert(
+    postExitRecommendationQuery.includes('dr.has_buy_signal = 1') &&
+      postExitRecommendationQuery.includes("json_extract(dr.score_components, '$.components.mlEdge')") &&
+      !postExitRecommendationQuery.includes('WHERE dr.date = ?\n         AND dr.has_buy_signal = 1'),
+    'post-exit rerank should use the same final-buy plus ML-qualified watch pool as morning setup',
+  )
+  assert(
+    postExit.includes('post_exit_ml_watch_rerank') &&
+      postExit.includes('WATCH_BUY') &&
+      postExit.includes('position_cap(') &&
+      !postExit.includes('at_topK('),
+    'post-exit rerank should label ML watch replacements and avoid old top-k terminology',
   )
   assert(
     postExitRecommendationQuery.includes("json_extract(dr.score_components, '$.finalScore')"),

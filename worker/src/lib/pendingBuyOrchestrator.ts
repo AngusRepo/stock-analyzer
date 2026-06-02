@@ -24,8 +24,7 @@ import {
 import type { Bindings } from '../types'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import {
-  applyPendingBuyDebateFailure,
-  isPendingBuyTerminal,
+  applyPendingBuyExecutionStatusUpdates,
 } from './pendingBuyExecutionState'
 import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring'
 import { checkP1Mdd } from './riskChecks/p1Mdd'
@@ -49,8 +48,11 @@ interface BuyRecommendationRow {
   stock_id: number | null
   symbol: string
   name: string | null
-  signal: string
+  signal: string | null
   confidence: number
+  has_buy_signal?: number | null
+  eligible_for_ml?: number | null
+  eligible_for_pending_buy?: number | null
   reason: string | null
   score_components: unknown
   ml_entry_price: number | null
@@ -63,6 +65,7 @@ interface BuyRecommendationRow {
   market: string | null
   forecast_data?: string | null
   signal_source?: string | null
+  alpha_allocation?: string | null
   watch_points?: unknown
 }
 
@@ -104,10 +107,16 @@ async function persistPendingDebateFailure(
   pendingItems: PendingBuy[],
   reason: string,
 ): Promise<string> {
-  const transition = applyPendingBuyDebateFailure(pendingItems, reason)
-  const failedBySymbol = new Map(transition.allItems.map((item) => [item.symbol, item as PendingBuy]))
-  const nextPendingBuys = snapshot.pendingBuys.map((item) => failedBySymbol.get(item.symbol) ?? item)
-  const activeItems = nextPendingBuys.filter((item) => !isPendingBuyTerminal(item.execution_status))
+  const transition = applyPendingBuyExecutionStatusUpdates(
+    snapshot.pendingBuys,
+    pendingItems.map((item) => ({
+      symbol: item.symbol,
+      status: 'pending',
+      reason: `debate_retry:${reason}`,
+    })),
+  )
+  const nextPendingBuys = transition.allItems as PendingBuy[]
+  const activeItems = transition.activeItems as PendingBuy[]
   const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
     ? String(snapshot.meta.source_reco_date)
     : tradeDate
@@ -116,19 +125,19 @@ async function persistPendingDebateFailure(
     tradeDate,
     sourceRecoDate,
     status: 'ready',
-    debateStatus: 'failed',
+    debateStatus: 'pending',
     errorMessage: reason,
     pendingBuys: nextPendingBuys,
     kvPendingBuys: activeItems,
     meta: {
       stage: 'debate_async',
-      failure_reason: reason,
-      execution_summary: transition.summary,
-      failed_symbols: pendingItems.map((item) => item.symbol),
+      retry_reason: reason,
+      active_summary: transition.activeSummary,
+      retry_symbols: pendingItems.map((item) => item.symbol),
     },
   })
 
-  return `debate_failed_closed=${pendingItems.length} reason=${reason} active=${activeItems.length}`
+  return `debate_retry_pending=${pendingItems.length} reason=${reason} active=${activeItems.length}`
 }
 
 function getTwDate(offsetDays = 0): string {
@@ -154,6 +163,12 @@ function parseWatchPoints(raw: unknown): string[] {
 function clampNumber(value: unknown, lo: number, hi: number, fallback: number): number {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : fallback
   return Math.max(lo, Math.min(hi, numeric))
+}
+
+function optionalNumber(value: unknown, fallback: number, lo: number, hi: number): number {
+  const numeric = Number(value)
+  const resolved = Number.isFinite(numeric) ? numeric : fallback
+  return Math.max(lo, Math.min(hi, resolved))
 }
 
 function parseAlphaContext(rawForecastData: unknown): AlphaForecastContext | null {
@@ -659,10 +674,23 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
     const sourceRecoDate = prevDay
     const pendingBuyLimit = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
-    const candidateLimit = Math.max(12, pendingBuyLimit * 4)
+    const executionPoolLimit = Math.max(
+      pendingBuyLimit,
+      Math.floor(optionalNumber(
+        env.EXECUTION_WATCH_POOL_SIZE,
+        cfg.alphaFramework?.allocation?.slateSize ?? Math.max(10, pendingBuyLimit),
+        pendingBuyLimit,
+        30,
+      )),
+    )
+    const minWatchMlEdge = optionalNumber(env.EXECUTION_WATCH_MIN_ML_EDGE, 12, 0, 25)
+    const minWatchFinalScore = optionalNumber(env.EXECUTION_WATCH_MIN_FINAL_SCORE, 55, 0, 100)
+    const watchRiskMultiplier = optionalNumber(env.EXECUTION_WATCH_RISK_MULTIPLIER, 0.55, 0.1, 1)
+    const candidateLimit = Math.max(12, executionPoolLimit * 3)
     const { results } = await env.DB.prepare(`
-      SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
-             dr.watch_points, dr.score_components,
+      SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
+             dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
+             dr.watch_points, dr.score_components, dr.alpha_allocation,
              s.market AS market,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
@@ -709,10 +737,23 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
              AND p2.prediction_date IN (dr.date, ?)
            ORDER BY p2.generated_at DESC, p2.id DESC
            LIMIT 1
-        )
+       )
        WHERE dr.date = ?
-         AND dr.has_buy_signal = 1
          AND dr.confidence >= ?
+         AND COALESCE(dr.eligible_for_pending_buy, 1) = 1
+         AND (
+           dr.has_buy_signal = 1
+           OR (
+             COALESCE(dr.eligible_for_ml, 1) = 1
+             AND json_valid(dr.score_components)
+             AND COALESCE(CAST(json_extract(dr.score_components, '$.components.mlEdge') AS REAL), 0) >= ?
+             AND COALESCE(
+               CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
+               CAST(json_extract(dr.score_components, '$.total') AS REAL),
+               0
+             ) >= ?
+           )
+         )
          AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
          AND (
            SELECT sp_exec.open
@@ -722,7 +763,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             ORDER BY sp_exec.date DESC
             LIMIT 1
          ) IS NOT NULL
-        ORDER BY CASE WHEN json_valid(dr.score_components) THEN
+        ORDER BY CASE WHEN dr.has_buy_signal = 1 THEN 0 ELSE 1 END ASC,
+           CASE WHEN json_valid(dr.alpha_allocation)
+             AND json_extract(dr.alpha_allocation, '$.selected') = 1 THEN 0 ELSE 1 END ASC,
+           CASE WHEN json_valid(dr.score_components) THEN
            COALESCE(
              CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
              CAST(json_extract(dr.score_components, '$.total') AS REAL),
@@ -730,7 +774,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
            ) ELSE 0 END DESC,
            dr.confidence DESC
         LIMIT ?
-    `).bind(sourceRecoDate, sourceRecoDate, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
+    `).bind(sourceRecoDate,
+      sourceRecoDate,
+      cb.buyConfThreshold,
+      minWatchMlEdge,
+      minWatchFinalScore,
+      candidateLimit,
+    ).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
     applyRecommendationProvenance(buyRecs)
@@ -832,6 +882,23 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const forecastData = parsePredictionForecastData(rec.forecast_data)
       const alphaContext = parseAlphaContext(forecastData)
       const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(rec.stock_id)) ?? [])
+      const scoreV2 = readScoreV2Snapshot(rec)
+      if (!scoreV2) {
+        quadrantFilterLog.push({
+          symbol: rec.symbol,
+          name: rec.name ?? rec.symbol,
+          theme: 'score_v2',
+          quadrant: 'missing',
+          action: 'SCORE_V2_MISSING',
+        })
+        continue
+      }
+      const executionRole = Number(rec.has_buy_signal ?? 0) === 1
+        ? 'final_buy'
+        : 'ml_qualified_watch'
+      const pendingSignal = executionRole === 'final_buy'
+        ? (rec.signal ?? 'BUY')
+        : 'WATCH_BUY'
       if (alphaContext?.risk_overlay?.skip === true) {
         quadrantFilterLog.push({
           symbol: rec.symbol,
@@ -866,7 +933,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
 
       let debateVerdict = 'PENDING'
-      let riskPct = calcRiskPct(rec.signal, rec.confidence, undefined, cfg)
+      let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
+      if (executionRole === 'ml_qualified_watch') riskPct *= watchRiskMultiplier
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
       riskPct *= alphaSizing
       if (quadrant?.quadrant === 'Weakening') {
@@ -972,15 +1040,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[MorningSetup] ${rec.symbol} ${kellyResult.info}`)
       }
 
-      const scoreV2 = readScoreV2Snapshot(rec)
-      if (!scoreV2) {
-        entryWatchPoints.push('score_v2:missing')
-        continue
-      }
+      entryWatchPoints.push(
+        `execution_pool:${executionRole}:mlEdge=${scoreV2.components.mlEdge};finalScore=${scoreV2.finalScore}`,
+      )
       pendingBuys.push({
         symbol: rec.symbol,
         name: rec.name ?? rec.symbol,
-        signal: rec.signal,
+        signal: pendingSignal,
         confidence: rec.confidence,
         ml_entry_price: adjustedEntry,
         ml_stop_loss: adjustedStop,
@@ -1001,16 +1067,20 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         risk_pct: riskPct,
         kelly_pct: kellyResult?.pct ?? null,
         score_v2: serializeScoreV2Snapshot(scoreV2),
-        source: 'morning_setup',
+        source: executionRole === 'final_buy' ? 'morning_setup' : 'morning_setup_ml_watch',
         original_entry: originalEntry,
       })
-      if (pendingBuys.length >= pendingBuyLimit) break
+      if (pendingBuys.length >= executionPoolLimit) break
     }
 
     await persistPendingBuys(env, pendingDate, pendingBuys, {
       status: 'ready',
       count: pendingBuys.length,
       prev_day: prevDay,
+      final_buy_limit: pendingBuyLimit,
+      execution_pool_limit: executionPoolLimit,
+      execution_watch_min_ml_edge: minWatchMlEdge,
+      execution_watch_min_final_score: minWatchFinalScore,
     })
 
     if (quadrantFilterLog.length > 0) {
@@ -1122,7 +1192,11 @@ export async function reconcilePendingBuyDebates(
     }
     if (!debate) {
       failedCount += 1
-      const transition = applyPendingBuyDebateFailure([item], 'debate_missing')
+      const transition = applyPendingBuyExecutionStatusUpdates([item], [{
+        symbol: item.symbol,
+        status: 'pending',
+        reason: 'debate_retry:debate_missing',
+      }])
       nextPendingBuys.push(transition.allItems[0] as PendingBuy)
       continue
     }
@@ -1145,7 +1219,7 @@ export async function reconcilePendingBuyDebates(
     tradeDate,
     sourceRecoDate,
     status: 'ready',
-    debateStatus: failedCount > 0 ? 'failed' : 'completed',
+    debateStatus: failedCount > 0 ? 'pending' : 'completed',
     pendingBuys: nextPendingBuys,
     meta: {
       stage: 'debate_async',

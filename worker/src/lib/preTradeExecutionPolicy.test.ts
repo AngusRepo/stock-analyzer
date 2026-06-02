@@ -275,6 +275,46 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
 
 {
   const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 104.2,
+    bestAsk: 104.2,
+    entryPrice: 103,
+    momentum: {
+      volumeRatio: 1.15,
+      minVolumeRatio: 1.0,
+      strongBreakoutVolumeRatio: 1.3,
+      slope5min: 0.01,
+      rangePosition: 0.5,
+      minRangePosition: 0.35,
+      strongBreakoutRangePosition: 0.6,
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.012,
+      strongBreakoutMaxEntryChasePct: 0.02,
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'breakout_continuation',
+      confirmation: 100,
+      resistance: 103,
+      support: 96,
+      atrDefense: 95.5,
+      volumeNode: 97.5,
+      buyReferenceLow: 96,
+      buyReferenceHigh: 97.5,
+      optimisticLow: 100,
+      optimisticHigh: 103,
+    },
+  }))
+  assert(decision.action === 'BUY_AT', 'breakout continuation should be governed by bounded chase, not preempted by optimistic range')
+  assert(decision.reason === 'entry_chase_confirmed:1.17%', 'breakout continuation should expose the bounded chase premium')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
     currentPrice: 95.7,
     entryPrice: 97.5,
     tradePlan: {

@@ -77,7 +77,9 @@ async function runFinLabAiSkillDiscoveryTask(c: any, runDate?: string): Promise<
   const { runFinLabAiSkillDiscoveryClosure } = await import('./finlabAiSkillDiscovery')
   let rawFactorMinerPayload: any = null
   let rawFactorSummary = 'raw_factor_miner=skipped_no_ml_controller_url'
-  if (c.env.ML_CONTROLLER_URL) {
+  if (c.env.ML_CONTROLLER_URL && !c.env.ML_CONTROLLER_SECRET) {
+    rawFactorSummary = 'raw_factor_miner=skipped_no_controller_secret'
+  } else if (c.env.ML_CONTROLLER_URL) {
     try {
       rawFactorMinerPayload = await controllerPostJson<any>(
         c.env,

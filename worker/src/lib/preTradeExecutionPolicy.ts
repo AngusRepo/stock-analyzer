@@ -212,7 +212,7 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
         ]),
       }
     }
-    if (mode === 'breakout' && confirmation != null && currentPrice < confirmation) {
+    if (mode.includes('breakout') && confirmation != null && currentPrice < confirmation) {
       return {
         action: 'DEFER',
         reason: 'waiting_for_ohlcv_confirmation',
@@ -233,7 +233,7 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
         ]),
       }
     }
-    if (optimisticHigh != null && currentPrice > optimisticHigh) {
+    if (optimisticHigh != null && currentPrice > optimisticHigh && !mode.includes('continuation')) {
       return {
         action: 'DEFER',
         reason: 'price_above_ohlcv_optimistic_range',

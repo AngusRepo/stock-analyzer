@@ -45,6 +45,11 @@ assert(
   'buy reference zone must be an actionable band, not support-to-volume-node across the whole box',
 )
 
+const continuationPlan = resolveOhlcvEntryPlan(levels!, { latestPrice: breakoutPlan!.optimisticHigh + 0.5 })
+
+assert(continuationPlan?.mode === 'breakout_continuation', 'price beyond optimistic range should become continuation mode, not stale confirmation mode')
+assert(continuationPlan?.entryPrice === breakoutPlan!.optimisticHigh, 'continuation entry should anchor to a live executable ceiling instead of old confirmation')
+
 const watchPoint = formatOhlcvTradePlanWatchPoint(breakoutPlan!)
 
 assert(watchPoint.startsWith('ohlcv_trade_plan:'), 'OHLCV backend plan should be persisted as a watch point')

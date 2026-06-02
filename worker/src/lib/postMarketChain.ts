@@ -239,6 +239,9 @@ async function fetchFinLabRawFactorMinerPayload(env: Bindings): Promise<{
   if (!env.ML_CONTROLLER_URL) {
     return { payload: null, summary: 'raw_factor_miner=skipped_no_ml_controller_url' }
   }
+  if (!env.ML_CONTROLLER_SECRET) {
+    return { payload: null, summary: 'raw_factor_miner=skipped_no_controller_secret' }
+  }
   try {
     const payload = await controllerPostJson<FinLabRawFactorMinerPayload>(
       env,

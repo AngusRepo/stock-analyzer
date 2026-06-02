@@ -80,6 +80,14 @@ assert(
   'auto buy execution must require executable best ask instead of low/high-only inference',
 )
 assert(
+  entryTasks.includes('EXECUTION_CLOSE_WINDOW_MIN_VOLUME_RATIO') &&
+    entryTasks.includes('closing_window_volume_bridge') &&
+    entryTasks.includes('const closeWindowTechnicalPass = !technicalGuardEnabled || intradayTechnicalDecision?.action === \'pass\'') &&
+    entryTasks.includes('volume_near_miss_after_technical_pass') &&
+    entryTasks.includes('minVolumeRatio: effectiveMomentumMinVolumeRatio'),
+  'close-window execution should bridge near-miss volume after technical pass instead of deferring candidates until ROD cancellation',
+)
+assert(
   exitTasks.includes('requireBestBid: true') && workerTasks.includes('requireBestBid: true') && entryTasks.includes('requireBestBid: true'),
   'all automatic sell execution paths must require executable best bid',
 )

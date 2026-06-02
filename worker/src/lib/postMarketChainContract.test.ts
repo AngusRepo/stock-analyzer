@@ -134,8 +134,13 @@ assert(
 assert(
   postMarketChain.includes("'/finlab/ai-factor-discovery'") &&
     postMarketChain.includes('rawFactorMinerPayload') &&
+    postMarketChain.includes('raw_factor_miner=skipped_no_controller_secret') &&
     postMarketChain.indexOf('fetchFinLabRawFactorMinerPayload') < postMarketChain.indexOf('runFinLabAiSkillDiscoveryClosure(env'),
   'FinLab API raw-factor miner payload must feed the Worker discovery closure before strategy-learning runs',
+)
+assert(
+  adminTriggerWorkerTasks.includes('raw_factor_miner=skipped_no_controller_secret'),
+  'manual FinLab AI Skill discovery trigger must report missing controller token instead of surfacing a misleading controller 401',
 )
 assert(
   postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask") <

@@ -962,6 +962,24 @@ export async function processUpdateBatch(
     throw new Error(`indicator queue finalize timed out for ${triggerTime}; run_id=${runId}; done=${doneCount}/${shardCount}`)
   }
 
+  if (msg.type === 'post_verify_learning_closure') {
+    const triggerTime = msg.triggerTime
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-verify learning closure date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runPostVerifyLearningClosureQueueTask } = await import('./postMarketChain')
+    await runPostVerifyLearningClosureQueueTask(env, {
+      runDate: triggerTime,
+      upstreamRunId: msg.runId,
+      metadata: {
+        ...(msg.metadata ?? {}),
+        source: 'update_queue_post_verify_learning_closure',
+      },
+    })
+    return
+  }
+
   if (msg.type === 'post_screener_pipeline') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `${triggerTime}-post-screener`

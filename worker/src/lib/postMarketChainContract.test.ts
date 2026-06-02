@@ -10,6 +10,7 @@ const adminTriggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', '
 const adminTriggerWorkerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
+const types = fs.readFileSync('src/types.ts', 'utf8')
 const pipelineCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("if (body.task === 'pipeline'"),
   callbackRoutes.indexOf("if (body.task === 'verify-v2'"),
@@ -65,11 +66,20 @@ assert(
 )
 assert(
   postMarketChain.includes("if (runLearningClosures)") &&
+    postMarketChain.includes('runPostVerifyLearningClosureQueueTask') &&
+    postMarketChain.includes("'post-verify-learning-dispatch'") &&
     postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false })") <
       postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false })") &&
     postMarketChain.indexOf("'finlab-ai-skill-discovery', () => runFinLabAiSkillDiscoveryClosureTask(env, ctx), { critical: false })") <
       postMarketChain.indexOf("'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false })"),
-  'historical learning catch-up must run FinLab AI Skill discovery before strategy-learning so backdated reruns can consume new raw-factor specs',
+  'historical learning catch-up must dispatch queue work that runs FinLab AI Skill discovery before strategy-learning so backdated reruns can consume new raw-factor specs',
+)
+assert(
+  postMarketChain.includes("type: 'post_verify_learning_closure'") &&
+    updateOrchestrator.includes("msg.type === 'post_verify_learning_closure'") &&
+    updateOrchestrator.includes('runPostVerifyLearningClosureQueueTask') &&
+    types.includes("'post_verify_learning_closure'"),
+  'post-verify learning closure must be an UPDATE_QUEUE task, not synchronous Worker callback work',
 )
 assert(
   postMarketChain.includes('runVerifyV2(env, ctx.runDate)'),
@@ -103,9 +113,9 @@ assert(
   'adaptive params must run after LinUCB reward ledger is refreshed',
 )
 assert(
-  postMarketChain.indexOf("'obsidian-sync', () => runObsidianDaily") <
-    postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
-  'Neural meta-learning shadow evidence must not block adaptive params, report, or obsidian sync',
+  postMarketChain.indexOf("'post-verify-learning-dispatch', () => dispatchPostVerifyLearningClosure") >
+    postMarketChain.indexOf("'obsidian-sync', () => runObsidianDaily"),
+  'Neural meta-learning shadow evidence must be dispatched after adaptive params, report, and obsidian sync are already scheduled',
 )
 assert(
   postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <

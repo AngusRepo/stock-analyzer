@@ -257,7 +257,7 @@ export interface DbAlertRule {
 
 // ─── Queue Message Types ──────────────────────────────────────────────────────
 export interface UpdateQueueMsg {
-  type: 'update_batch' | 'finalize_update' | 'post_screener_pipeline' | 'news_batch' | 'source_readiness_retry'
+  type: 'update_batch' | 'finalize_update' | 'post_screener_pipeline' | 'post_verify_learning_closure' | 'news_batch' | 'source_readiness_retry'
   newsStocks?: Array<{
     id: number
     symbol: string
@@ -271,6 +271,7 @@ export interface UpdateQueueMsg {
   shardIndex?: number // 多 shard 平行更新時的 shard index
   shardCount?: number // 多 shard 平行更新時的總 shard 數
   attempt?: number    // finalize watchdog retry count
+  metadata?: Record<string, unknown>
 }
 
 // MLQueueMsg removed in Phase 3 — ML batch predict now goes through Controller

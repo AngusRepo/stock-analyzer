@@ -27,7 +27,7 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     recommendation_service = Path(__file__).resolve().parent.parent.joinpath("services", "recommendation_service.py").read_text(encoding="utf-8")
 
     assert "screener_recs_missing" in source
-    assert "l1_candidate_seed_after_overlay/final_selection ownership" in source
+    assert "layer2_coarse_ml_gate/strategy_pool_ml_queue ownership" in source
     assert "refusing watchlist fallback" in source
     assert "build_screener_seed_recommendations(" not in source
     assert "load_active_stocks" not in source
@@ -37,12 +37,13 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     assert "FROM daily_recommendations dr" in source
     assert "candidate_seed AS" in source
     assert "JOIN candidate_seed sfi" in source
-    assert "'l1_candidate_seed_after_overlay'" in source
-    assert "sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')" in source
+    assert "'layer2_coarse_ml_gate'" in source
+    assert "'strategy_pool_ml_queue'" in source
+    assert "sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass'" in source
     assert "sfi.stage_preference_rank = 1" in source
-    assert "sfi.decision = 'selected'" in source
+    assert "sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected'" in source
     assert "SELECT * FROM daily_recommendations" not in source
-    assert "sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')" in recommendation_service
+    assert "sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass'" in recommendation_service
     assert "latest screener candidate seed" in recommendation_service
     assert "score_components" in payload_builder
     pipeline_columns_start = payload_builder.index("DAILY_RECOMMENDATION_PIPELINE_COLUMNS = (")

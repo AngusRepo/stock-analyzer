@@ -2301,8 +2301,10 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
               JOIN screener_funnel_items sfi
                 ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
                AND sfi.symbol = dr.symbol
-               AND sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')
-               AND sfi.decision = 'selected'
+               AND (
+                    (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
+                 OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+               )
              WHERE dr.date = ?
                AND dr.stock_id IN ({placeholders})
             """,
@@ -2368,10 +2370,12 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
            AND NOT EXISTS (
              SELECT 1
                FROM screener_funnel_items sfi
-              WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
+             WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
                 AND sfi.symbol = dr.symbol
-                AND sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')
-                AND sfi.decision = 'selected'
+                AND (
+                     (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
+                  OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+                )
            )
         """,
         [run_date, run_date],

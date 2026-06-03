@@ -405,7 +405,23 @@ async function writeScreenerFunnel(
   ).run()
 
   if (!input.items.length) return
-  const persistedItems = input.items.slice(0, SCREENER_FUNNEL_MAX_ITEMS)
+  const criticalStageSet = new Set([
+    'layer2_coarse_ml_gate',
+    'strategy_pool_ml_queue',
+    'l1_candidate_seed_after_overlay',
+    'final_selection',
+  ])
+  const persistedItems = input.items.length <= SCREENER_FUNNEL_MAX_ITEMS
+    ? input.items
+    : (() => {
+      const critical = input.items.filter((item) => criticalStageSet.has(item.stage))
+      const nonCritical = input.items.filter((item) => !criticalStageSet.has(item.stage))
+      if (critical.length >= SCREENER_FUNNEL_MAX_ITEMS) return critical.slice(0, SCREENER_FUNNEL_MAX_ITEMS)
+      return [
+        ...nonCritical.slice(0, SCREENER_FUNNEL_MAX_ITEMS - critical.length),
+        ...critical,
+      ]
+    })()
   const batch = persistedItems.map((item) =>
     env.DB.prepare(`
       INSERT INTO screener_funnel_items

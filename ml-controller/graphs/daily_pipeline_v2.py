@@ -212,13 +212,20 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
                 ROW_NUMBER() OVER (
                     PARTITION BY sfi.symbol
                     ORDER BY
-                        CASE sfi.stage WHEN 'l1_candidate_seed_after_overlay' THEN 0 ELSE 1 END,
+                        CASE sfi.stage
+                            WHEN 'layer2_coarse_ml_gate' THEN 0
+                            WHEN 'strategy_pool_ml_queue' THEN 1
+                            WHEN 'l1_candidate_seed_after_overlay' THEN 2
+                            ELSE 3
+                        END,
                         COALESCE(sfi.rank, 999999)
                 ) AS stage_preference_rank
               FROM screener_funnel_items sfi
              WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
-               AND sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')
-               AND sfi.decision = 'selected'
+               AND (
+                    (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
+                 OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+               )
         )
         SELECT {_daily_recommendation_select("dr")}
           FROM daily_recommendations dr
@@ -233,14 +240,14 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     if not screener_recs:
         raise RuntimeError(
             "screener_recs_missing: daily pipeline requires latest screener "
-            "l1_candidate_seed_after_overlay/final_selection ownership before ML/recommendation; "
+            "layer2_coarse_ml_gate/strategy_pool_ml_queue ownership before ML/recommendation; "
             "refusing watchlist fallback"
         )
     active_stocks = build_ml_universe([], screener_recs)
 
     logger.info(
         f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
-        f"(source=latest_screener_l1_candidate_seed_after_overlay), "
+        f"(source=latest_screener_layer2_coarse_ml_gate), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {

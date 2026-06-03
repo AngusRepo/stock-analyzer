@@ -90,6 +90,30 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       }, 409)
     }
 
+    const syncRunId = syncMode && SYNC_REQUIRED_TASKS.has(task)
+      ? c.req.query('run_id') || buildRunId(task)
+      : undefined
+    if (syncRunId) {
+      await logSchedulerResult(c.env.KV, task, {
+        status: 'running',
+        summary: `sync trigger accepted; run_id=${syncRunId}; route=/api/admin/trigger/${task}`,
+        duration_ms: 0,
+        run_id: syncRunId,
+        run_date: requestedRunDate,
+        strict: true,
+        metadata: {
+          trigger_mode: 'sync',
+          force: Boolean(c.req.query('force')),
+        },
+      })
+      await putRunLog(c.env.KV, task, syncRunId, {
+        status: 'running',
+        summary: 'sync trigger accepted',
+        duration_ms: 0,
+        run_date: requestedRunDate,
+      })
+    }
+
     const longRunning = new Set([
       'pipeline',
       'evening-chain',
@@ -195,9 +219,18 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         status: classifySchedulerSummary(summary),
         summary,
         duration_ms: Date.now() - t0,
+        run_id: syncRunId,
         run_date: requestedRunDate,
       }, c.env as any)
-      return c.json({ success: true, message: `${task} 執行成功`, triggered_at: new Date().toISOString(), result })
+      if (syncRunId) {
+        await putRunLog(c.env.KV, task, syncRunId, {
+          status: classifySchedulerSummary(summary),
+          summary,
+          duration_ms: Date.now() - t0,
+          run_date: requestedRunDate,
+        })
+      }
+      return c.json({ success: true, message: `${task} 執行成功`, triggered_at: new Date().toISOString(), run_id: syncRunId, result })
     } catch (e: any) {
       await logSchedulerResult(
         c.env.KV,
@@ -206,11 +239,21 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           status: 'error',
           summary: e?.message ?? 'Unknown error',
           duration_ms: Date.now() - t0,
+          run_id: syncRunId,
           error: String(e),
           run_date: requestedRunDate,
         },
         c.env as any,
       )
+      if (syncRunId) {
+        await putRunLog(c.env.KV, task, syncRunId, {
+          status: 'error',
+          summary: e?.message ?? 'Unknown error',
+          duration_ms: Date.now() - t0,
+          error: String(e),
+          run_date: requestedRunDate,
+        })
+      }
       return c.json({ success: false, message: `${task} 執行失敗`, error: e.message }, 500)
     }
   })

@@ -73,6 +73,7 @@ assert(
 assert(
   updateOrchestrator.includes('finLabDailyPricePrimaryEnabled') &&
     updateOrchestrator.includes('triggerFinLabPrimaryMarketData') &&
+    updateOrchestrator.includes('FinLab primary market data trigger starting') &&
     updateOrchestrator.includes('continueEveningChain: true') &&
     updateOrchestrator.includes('callback will continue indicator queue') &&
     updateOrchestrator.includes('continueEveningChainAfterFinLabBackfill') &&

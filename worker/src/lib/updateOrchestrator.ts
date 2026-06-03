@@ -50,6 +50,18 @@ export function finLabDailyPricePrimaryEnabled(env: Bindings): boolean {
 
 async function triggerFinLabPrimaryMarketData(env: Bindings, runDate: string, force: boolean): Promise<string> {
   const { runFinLabV4Backfill } = await import('./controllerResearchWorkflows')
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'running',
+    summary: `FinLab primary market data trigger starting for ${runDate}`,
+    duration_ms: 0,
+    run_date: runDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `FinLab primary market data trigger starting for ${runDate}; waiting for finlab-v4-backfill spawn`,
+    duration_ms: 0,
+    run_date: runDate,
+  })
   const summary = await runFinLabV4Backfill(env, runDate, force, { continueEveningChain: true })
   if (!summary.startsWith('triggered finlab-v4-backfill')) {
     throw new Error(`FinLab primary market data trigger failed: ${summary}`)

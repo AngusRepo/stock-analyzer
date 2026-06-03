@@ -24,6 +24,15 @@ for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', '
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose evening-chain')
 
+const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
+assert(
+  triggerRoutes.includes('sync trigger accepted') &&
+    triggerRoutes.includes('SYNC_REQUIRED_TASKS.has(task)') &&
+    triggerRoutes.includes('strict: true') &&
+    triggerRoutes.includes('run_id: syncRunId'),
+  'sync-required admin triggers must write a strict durable root marker before calling the task handler',
+)
+
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 assert(updateOrchestrator.includes('indicator-queue'), 'indicator queue must have scheduler-visible run state')

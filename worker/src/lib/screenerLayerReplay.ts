@@ -328,18 +328,23 @@ export async function loadScreenerLayerReplayCandidatesFromD1(
     return { candidates: [], skipped: { missing_stock_id: rows.length } }
   }
 
-  const { results: priceRows } = await db.prepare(`
-    SELECT stock_id, date, open, close
-      FROM stock_prices
-     WHERE stock_id IN (${stockIds.map(() => '?').join(',')})
-       AND date >= ?
-       AND date <= ${dateOffsetExpression(endDate, 30)}
-       AND close IS NOT NULL
-     ORDER BY stock_id ASC, date ASC
-  `).bind(...stockIds, startDate).all<PriceReplayRow>()
+  const priceRows: PriceReplayRow[] = []
+  for (let i = 0; i < stockIds.length; i += 80) {
+    const chunk = stockIds.slice(i, i + 80)
+    const { results: chunkRows } = await db.prepare(`
+      SELECT stock_id, date, open, close
+        FROM stock_prices
+       WHERE stock_id IN (${chunk.map(() => '?').join(',')})
+         AND date >= ?
+         AND date <= ${dateOffsetExpression(endDate, 30)}
+         AND close IS NOT NULL
+       ORDER BY stock_id ASC, date ASC
+    `).bind(...chunk, startDate).all<PriceReplayRow>()
+    priceRows.push(...(chunkRows ?? []))
+  }
 
   const pricesByStock = new Map<number, PriceReplayRow[]>()
-  for (const row of priceRows ?? []) {
+  for (const row of priceRows) {
     const stockId = Number(row.stock_id)
     if (!Number.isFinite(stockId)) continue
     const bucket = pricesByStock.get(stockId) ?? []

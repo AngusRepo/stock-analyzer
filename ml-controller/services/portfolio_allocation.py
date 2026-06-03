@@ -43,6 +43,88 @@ def _sample_variance(values: list[float]) -> float:
     return statistics.variance(values)
 
 
+def _aligned_return_matrix(symbols: list[str], return_history: dict[str, list[float]]) -> list[list[float]]:
+    histories = {
+        symbol: [_to_float(value) for value in return_history.get(symbol, [])]
+        for symbol in symbols
+    }
+    common_len = min((len(values) for values in histories.values()), default=0)
+    if common_len < 2:
+        return []
+    return [
+        [histories[symbol][-common_len + idx] for symbol in symbols]
+        for idx in range(common_len)
+    ]
+
+
+def _sample_covariance_matrix(matrix: list[list[float]], var_floor: float) -> list[list[float]]:
+    n_obs = len(matrix)
+    n_assets = len(matrix[0]) if matrix else 0
+    if n_obs < 2 or n_assets == 0:
+        return []
+    means = [sum(row[col] for row in matrix) / n_obs for col in range(n_assets)]
+    cov: list[list[float]] = []
+    for left in range(n_assets):
+        row: list[float] = []
+        for right in range(n_assets):
+            value = sum(
+                (obs[left] - means[left]) * (obs[right] - means[right])
+                for obs in matrix
+            ) / max(n_obs - 1, 1)
+            row.append(value)
+        cov.append(row)
+    for idx in range(n_assets):
+        cov[idx][idx] = max(cov[idx][idx], var_floor) + var_floor
+    return cov
+
+
+def _solve_linear_system(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
+    n = len(vector)
+    if n == 0 or len(matrix) != n or any(len(row) != n for row in matrix):
+        return None
+    augmented = [list(row) + [vector[idx]] for idx, row in enumerate(matrix)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda row: abs(augmented[row][col]))
+        if abs(augmented[pivot][col]) < 1e-12:
+            return None
+        if pivot != col:
+            augmented[col], augmented[pivot] = augmented[pivot], augmented[col]
+        pivot_value = augmented[col][col]
+        for j in range(col, n + 1):
+            augmented[col][j] /= pivot_value
+        for row in range(n):
+            if row == col:
+                continue
+            factor = augmented[row][col]
+            if factor == 0:
+                continue
+            for j in range(col, n + 1):
+                augmented[row][j] -= factor * augmented[col][j]
+    return [augmented[row][n] for row in range(n)]
+
+
+def _long_only_tangent_raw(
+    symbols: list[str],
+    expected_returns: list[float],
+    covariance: list[list[float]],
+) -> dict[str, float]:
+    active = [idx for idx, edge in enumerate(expected_returns) if edge > 0]
+    raw = {symbol: 0.0 for symbol in symbols}
+    while active:
+        sub_cov = [[covariance[i][j] for j in active] for i in active]
+        sub_mu = [expected_returns[i] for i in active]
+        solution = _solve_linear_system(sub_cov, sub_mu)
+        if solution is None:
+            return {}
+        positive = [(idx, weight) for idx, weight in zip(active, solution) if weight > 1e-12]
+        if len(positive) == len(active):
+            for idx, weight in positive:
+                raw[symbols[idx]] = weight
+            return raw
+        active = [idx for idx, _ in positive]
+    return {}
+
+
 def _ranked_candidates(candidates: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
     cleaned = [row for row in candidates if _symbol(row)]
     return sorted(cleaned, key=_score, reverse=True)[: max(1, int(top_k))]
@@ -99,21 +181,24 @@ def allocate_sparse_tangent(
     max_weight: float = 0.55,
     daily_vol_floor: float = 0.01,
 ) -> dict[str, float]:
-    """Sparse tangent approximation over the current candidate set.
+    """Long-only sparse tangent weights over the current candidate set.
 
     Expected return comes from candidate expected_return/predicted_return when
-    available. Risk uses realized return variance with a volatility floor so a
-    flat low-edge series cannot dominate the portfolio. If no candidate has
-    positive expected edge, return empty weights and let the caller keep cash.
+    available. Risk uses the realized return covariance matrix with diagonal
+    regularization. If covariance evidence or positive edge is missing, return
+    empty weights and let the caller keep cash.
     """
     selected = _ranked_candidates(candidates, top_k)
-    raw: dict[str, float] = {}
+    symbols = [_symbol(row) for row in selected]
+    expected_returns = [max(0.0, _expected_return(row)) for row in selected]
+    if not any(value > 0 for value in expected_returns):
+        return {}
+    matrix = _aligned_return_matrix(symbols, return_history)
+    if not matrix:
+        return {}
     var_floor = max(1e-8, daily_vol_floor * daily_vol_floor)
-    for row in selected:
-        symbol = _symbol(row)
-        history = [_to_float(value) for value in return_history.get(symbol, [])]
-        variance = max(var_floor, _sample_variance(history))
-        raw[symbol] = max(0.0, _expected_return(row)) / variance
+    covariance = _sample_covariance_matrix(matrix, var_floor)
+    raw = _long_only_tangent_raw(symbols, expected_returns, covariance)
     if not any(value > 0 for value in raw.values()):
         return {}
     return _cap_and_renormalize(raw, max_weight=max_weight)

@@ -317,6 +317,32 @@ def test_materialize_outputs_can_apply_fundamental_features_dataset_only() -> No
     assert any("INSERT INTO canonical_fundamental_features" in sql for sql, _ in statements)
 
 
+def test_materialize_fundamental_features_accepts_finlab_chinese_margin_fields() -> None:
+    root = _root("materialize_fundamental_chinese_margin_fields")
+    for field, value in {
+        "營業毛利率": 35.5,
+        "營業利益率": 12.25,
+    }.items():
+        _write(
+            root / "raw" / "fundamental_factor_diversity" / f"{field}.parquet",
+            pl.DataFrame({"date": ["2026-03-31"], "2330": [value]}),
+        )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-05-18T00:00:00+00:00",
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        datasets=["canonical_fundamental_features"],
+    )
+
+    assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 1}
+    row = outputs.canonical_fundamental_features[0]
+    assert row["gross_margin"] == 35.5
+    assert row["operating_margin"] == 12.25
+    assert row["available_date"] == "2026-05-30"
+
+
 def test_materialize_institutional_amount_summary_uses_official_daily_amounts() -> None:
     root = _root("institutional_amount_summary")
     for field, values in {

@@ -9,11 +9,21 @@ sys.path.insert(0, str(ROOT / "ml-controller"))
 from routers.retrain_trigger import (  # noqa: E402
     UniversalRetrainRunRequest,
     build_universal_retrain_modal_payload,
+    _daily_turnover_bucket,
 )
 
 
 def test_universal_retrain_default_groups_retire_ft_transformer() -> None:
     assert UniversalRetrainRunRequest().train_model_groups == ["tree", "dlinear", "patchtst"]
+
+
+def test_universal_retrain_uses_daily_turnover_bucket_not_market_cap_estimate() -> None:
+    prices = [{"close": 100.0, "volume": 20_000_000} for _ in range(20)]
+    router_source = (ROOT / "ml-controller" / "routers" / "retrain_trigger.py").read_text(encoding="utf-8")
+
+    assert _daily_turnover_bucket(prices) == 3
+    assert "_estimate_cap_bucket" not in router_source
+    assert "avg close" not in router_source
 
 
 def test_universal_retrain_modal_payload_preserves_no_downgrade_contract() -> None:

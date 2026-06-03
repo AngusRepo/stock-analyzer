@@ -563,8 +563,8 @@ async def parameter_candidates_validation_chain(
 
     The chain is candidate-specific: same snapshot baseline/challenger replay,
     Mode B backtest, regime-aware Monte Carlo, CSCV rank-logit PBO,
-    paired partition walk-forward, and Hansen SPA data-snooping guard. Proxy
-    PBO remains proxy_pbo_blocked and cannot create a promotion_packet_id.
+    paired partition walk-forward, and Hansen SPA data-snooping guard.
+    Non-CSCV PBO remains non_cscv_pbo_blocked and cannot create a promotion_packet_id.
     """
     end_date = req.end_date or req.run_date or _twdate()
     start_date = req.start_date or (datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)).strftime("%Y-%m-%d")
@@ -599,7 +599,7 @@ async def parameter_candidates_validation_chain(
                 "candidate_id": candidate_id,
                 "source": source,
                 "reason": "sandbox_missing_or_non_config_shadow_state",
-                "proxy_pbo_blocked": True,
+                "non_cscv_pbo_blocked": True,
                 "gate": {
                     "decision": "FAIL",
                     "passed": False,
@@ -621,7 +621,7 @@ async def parameter_candidates_validation_chain(
                 "status": "INFRA_BLOCKED",
                 "reason": "sandbox_missing_or_non_config_shadow_state",
                 "decision": "FAIL",
-                "proxy_pbo_blocked": True,
+                "non_cscv_pbo_blocked": True,
             })
             continue
 
@@ -633,7 +633,7 @@ async def parameter_candidates_validation_chain(
                 "source": source,
                 "reason": "sandbox_body_unavailable",
                 "detail": exc.detail,
-                "proxy_pbo_blocked": True,
+                "non_cscv_pbo_blocked": True,
                 "gate": {
                     "decision": "FAIL",
                     "passed": False,
@@ -656,7 +656,7 @@ async def parameter_candidates_validation_chain(
                 "reason": "sandbox_body_unavailable",
                 "detail": exc.detail,
                 "decision": "FAIL",
-                "proxy_pbo_blocked": True,
+                "non_cscv_pbo_blocked": True,
             })
             continue
 
@@ -690,12 +690,12 @@ async def parameter_candidates_validation_chain(
         validation_packet = gate.get("validation_packet") if isinstance(gate.get("validation_packet"), dict) else {}
         pbo_method = (((gate.get("inputs") or {}).get("pbo") or {}).get("method") if isinstance(gate.get("inputs"), dict) else None) \
             or (((evidence.get("pbo") or {}).get("method")) if isinstance(evidence.get("pbo"), dict) else None)
-        proxy_pbo_blocked = str(pbo_method or "").lower() != "cscv_rank_logit"
-        decision = "PASS" if gate.get("decision") == "PASS" and not proxy_pbo_blocked else "FAIL"
-        if proxy_pbo_blocked:
+        non_cscv_pbo_blocked = str(pbo_method or "").lower() != "cscv_rank_logit"
+        decision = "PASS" if gate.get("decision") == "PASS" and not non_cscv_pbo_blocked else "FAIL"
+        if non_cscv_pbo_blocked:
             failed = list(gate.get("failed_gates") or [])
-            if "proxy_pbo_blocked" not in failed:
-                failed.append("proxy_pbo_blocked")
+            if "non_cscv_pbo_blocked" not in failed:
+                failed.append("non_cscv_pbo_blocked")
             gate["failed_gates"] = failed
             gate["decision"] = "FAIL"
             gate["passed"] = False
@@ -705,7 +705,7 @@ async def parameter_candidates_validation_chain(
         validation_status = classify_parameter_candidate_validation_status(
             gate,
             evidence,
-            proxy_pbo_blocked=proxy_pbo_blocked,
+            non_cscv_pbo_blocked=non_cscv_pbo_blocked,
         )
         promotion_packet_id = await _persist_parameter_candidate_evidence(
             candidate_id,
@@ -725,7 +725,7 @@ async def parameter_candidates_validation_chain(
             "failed_gates": gate.get("failed_gates") or [],
             "validation_packet_decision": validation_packet.get("decision"),
             "pbo_method": pbo_method,
-            "proxy_pbo_blocked": proxy_pbo_blocked,
+            "non_cscv_pbo_blocked": non_cscv_pbo_blocked,
             "promotion_ready": validation_status.get("promotion_ready"),
             "sample": validation_status.get("sample"),
         })

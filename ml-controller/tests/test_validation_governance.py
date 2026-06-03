@@ -12,7 +12,7 @@ from services.validation_governance import (  # noqa: E402
     build_validation_packet,
     build_validation_ladder_packet,
     data_snooping_reality_check,
-    deflated_sharpe_proxy,
+    deflated_sharpe_advisory_lower_bound,
     explain_backtest_metrics,
     hansen_spa_reality_check,
 )
@@ -59,6 +59,13 @@ def _promotion_grade_backtest() -> dict:
             "volatile": {"trades": 25, "return": 0.02},
             "sideways": {"trades": 35, "return": 0.03},
         },
+    }
+
+
+def _promotion_grade_backtest_with_returns() -> dict:
+    return {
+        **_promotion_grade_backtest(),
+        "return_series": _mode_b_backtest_with_returns()["return_series"],
     }
 
 
@@ -143,13 +150,14 @@ def test_metric_explanations_are_human_readable_chinese():
     assert "Monte Carlo" in by_metric["max_drawdown"]["interpretation_zh"]
 
 
-def test_deflated_sharpe_proxy_is_fail_closed_for_low_samples():
-    out = deflated_sharpe_proxy(2.0, 1)
+def test_deflated_sharpe_advisory_lower_bound_is_not_promotion_eligible():
+    out = deflated_sharpe_advisory_lower_bound(2.0, 1)
 
     assert out["status"] == "FAIL"
     assert out["reason"] == "sample_count_lt_2"
-    assert out["method"] == "deflated_sharpe_proxy"
+    assert out["method"] == "deflated_sharpe_advisory_lower_bound"
     assert out["exact_formula"] is False
+    assert out["promotion_eligible"] is False
     assert "skew" in out["missing_inputs"]
 
 
@@ -164,7 +172,7 @@ def test_validation_packet_declares_cpcv_cscv_governance_scope():
     assert packet["validation_scope"]["purged_cv"] == "required"
     assert packet["validation_scope"]["cpcv_cscv"] == "required"
     assert packet["validation_scope"]["pbo_method"] == "cscv_rank_logit"
-    assert packet["validation_scope"]["deflated_sharpe"] == "proxy_until_exact_inputs_available"
+    assert packet["validation_scope"]["deflated_sharpe"] == "exact_bailey_lopez_de_prado_required_for_promotion"
     assert packet["validation_scope"]["train_serve_parity"] == "required"
     assert packet["validation_scope"]["data_snooping"] == "white_reality_check_or_hansen_spa"
     assert "model_family_validation_owners_are_declared_in_training_metadata" in packet["validation_scope"]
@@ -288,7 +296,7 @@ def test_hansen_spa_reality_check_fails_when_candidate_does_not_beat_benchmark()
 def test_validation_packet_accepts_hansen_spa_data_snooping_guard():
     packet = build_validation_packet(
         source="promotion_gate",
-        backtest=_promotion_grade_backtest(),
+        backtest=_promotion_grade_backtest_with_returns(),
         monte_carlo=_monte_carlo(),
         pbo=_pbo(),
         data_snooping={
@@ -363,10 +371,26 @@ def test_promotion_validation_packet_fails_closed_without_regime_split():
     assert "regime_split_validation" in packet["failed_gates"]
 
 
-def test_promotion_validation_packet_passes_with_walk_forward_and_regime_split():
+def test_promotion_validation_packet_requires_exact_deflated_sharpe_return_series():
     packet = build_validation_packet(
         source="promotion_gate",
         backtest=_promotion_grade_backtest(),
+        monte_carlo=_monte_carlo(),
+        pbo=_pbo(),
+        data_snooping=_data_snooping_pass(),
+        walk_forward={"passed": True, "windows": 6},
+    )
+
+    dsr_gate = next(g for g in packet["gates"] if g["name"] == "deflated_sharpe")
+    assert packet["decision"] == "FAIL"
+    assert "deflated_sharpe" in packet["failed_gates"]
+    assert dsr_gate["reason"] == "exact_deflated_sharpe_return_series_required"
+
+
+def test_promotion_validation_packet_passes_with_walk_forward_and_regime_split():
+    packet = build_validation_packet(
+        source="promotion_gate",
+        backtest=_promotion_grade_backtest_with_returns(),
         monte_carlo=_monte_carlo(),
         pbo=_pbo(),
         data_snooping=_data_snooping_pass(),

@@ -12,7 +12,7 @@ function assert(condition: unknown, message: string): void {
 
 const breeze2RuntimeSource = readFileSync('src/lib/breeze2Runtime.ts', 'utf8')
 const pendingBuyOrchestratorSource = readFileSync('src/lib/pendingBuyOrchestrator.ts', 'utf8')
-const candidateInterfaceStart = breeze2RuntimeSource.indexOf('export interface Breeze2CandidateLike')
+const candidateInterfaceStart = breeze2RuntimeSource.indexOf('export interface Breeze2CandidateShape')
 const candidateInterfaceEnd = breeze2RuntimeSource.indexOf('export interface Breeze2FactCheckRequest', candidateInterfaceStart)
 assert(candidateInterfaceStart >= 0 && candidateInterfaceEnd > candidateInterfaceStart, 'Breeze2 candidate interface should be locatable')
 const candidateInterface = breeze2RuntimeSource.slice(candidateInterfaceStart, candidateInterfaceEnd)

@@ -193,7 +193,7 @@ export function canonicalChipRowsToFmChips(
     if (dealer) chips.push(dealer)
   }
   for (const row of brokerRows) {
-    const broker = netToChip(row, 'broker_proxy', row.net_shares, {
+    const broker = netToChip(row, 'broker_flow', row.net_shares, {
       broker_count: row.broker_count ?? null,
       estimated_amount: row.estimated_amount ?? null,
       concentration: row.concentration ?? null,

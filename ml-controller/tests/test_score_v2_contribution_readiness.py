@@ -16,7 +16,6 @@ def test_contribution_readiness_blocks_missing_fundamental_table_and_news_handof
     report = build_score_v2_contribution_readiness_report(
         table_names=[
             "canonical_revenue_monthly",
-            "financials",
             "theme_signals",
             "stock_theme_features",
             "external_evidence_items",
@@ -24,7 +23,6 @@ def test_contribution_readiness_blocks_missing_fundamental_table_and_news_handof
         ],
         inventory={
             "revenue_total": 38536,
-            "financials_total": 3074,
             "theme_total": 1655,
             "stock_theme_total": 39295,
             "evidence_total": 74,
@@ -58,7 +56,6 @@ def test_contribution_readiness_passes_when_live_components_are_nonzero() -> Non
         table_names=[
             "canonical_fundamental_features",
             "canonical_revenue_monthly",
-            "financials",
             "theme_signals",
             "stock_theme_features",
             "external_evidence_items",
@@ -66,7 +63,6 @@ def test_contribution_readiness_passes_when_live_components_are_nonzero() -> Non
         ],
         inventory={
             "revenue_total": 100,
-            "financials_total": 100,
             "fundamental_total": 100,
             "theme_total": 20,
             "stock_theme_total": 20,

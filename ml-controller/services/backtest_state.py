@@ -56,7 +56,7 @@ class MarketBreadthRow:
 
 @dataclass(frozen=True)
 class USMarketRow:
-    """us_market_signals table row — overnight proxy via gspc_return."""
+    """us_market_signals table row for US-leading close-to-close context."""
     date: str
     gspc_return: Optional[float]   # S&P 500 close-to-close %
     sox_return: Optional[float]    # 費半 %
@@ -348,10 +348,9 @@ def get_prev_night_drop(
 ) -> Optional[float]:
     """Return the most recent US-leading close-to-close return within N days before as_of.
 
-    Standard convention for TW open overnight adjustment: look at S&P 500 daily
-    return (close-to-close) because true overnight gap needs futures tape not
-    available in D1. Paper.ts uses this same proxy (see worker/src/index.ts
-    us_leading consumer). None when no US data in lookback window.
+    Standard convention for TW open overnight context: look at S&P 500 daily
+    return (close-to-close). None when no US data is available in the lookback
+    window.
 
     Search walks back day-by-day (max `lookback_days`) so weekend/holiday gaps
     fall through gracefully.

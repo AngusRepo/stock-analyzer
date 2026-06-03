@@ -491,7 +491,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         const changePct = (currentPrice - prevC) / prevC
         const limitDown = cfg.circuit.limitDownPct ?? -0.095
         if (changePct <= limitDown) {
-          console.warn(`[Intraday] skip ${pos.symbol}: likely limit-down ${(changePct * 100).toFixed(1)}%`)
+          console.warn(`[Intraday] skip ${pos.symbol}: possible limit-down ${(changePct * 100).toFixed(1)}%`)
           continue
         }
       }

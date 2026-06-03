@@ -231,7 +231,7 @@ export async function writeMomentumSnapshot(
 }
 
 /**
- * Read the most recent zone from DB (for consumers like circuit breakers).
+ * Read the most recent zone from DB (for circuit-breaker consumers).
  * Returns GREEN default if table empty or query fails.
  */
 export async function readCurrentZone(

@@ -597,6 +597,23 @@ def _price_mismatch_detail(latest: float, expected_current_price: float | None) 
     }
 
 
+def _true_range(row: dict[str, Any], previous_close: float) -> float:
+    return max(
+        max(0.0, row["high"] - row["low"]),
+        abs(row["high"] - previous_close),
+        abs(row["low"] - previous_close),
+    )
+
+
+def _atr_from_recent_rows(rows: list[dict[str, Any]], lookback: int) -> tuple[float, int]:
+    if len(rows) < 2:
+        return 0.0, 0
+    period = min(max(1, lookback), len(rows) - 1)
+    start = len(rows) - period
+    ranges = [_true_range(rows[idx], rows[idx - 1]["close"]) for idx in range(start, len(rows))]
+    return (sum(ranges) / len(ranges), len(ranges)) if ranges else (0.0, 0)
+
+
 def _structure_detail(
     payload: dict | None,
     policy: dict | None = None,
@@ -628,7 +645,7 @@ def _structure_detail(
         if total_volume > 0
         else sum(row["close"] for row in valuation_rows) / len(valuation_rows)
     )
-    avg_range = sum(max(0.0, row["high"] - row["low"]) for row in rows[-lookback:]) / min(len(rows), lookback)
+    atr, atr_period = _atr_from_recent_rows(rows, lookback)
     profile_low = min(row["low"] for row in valuation_rows)
     profile_high = max(row["high"] for row in valuation_rows)
     bin_count = max(8, min(48, int(math.sqrt(len(valuation_rows)) * 8)))
@@ -644,7 +661,7 @@ def _structure_detail(
         for idx in range(low_idx, high_idx + 1):
             volume_bins[idx] = volume_bins.get(idx, 0.0) + volume_share
     fair_half_width = max(
-        avg_range * overlay_policy["fair_value_atr_multiplier"],
+        atr * overlay_policy["fair_value_atr_multiplier"],
         weighted_price * overlay_policy["fair_value_min_pct"],
     )
     policy_fair_low = weighted_price - fair_half_width
@@ -682,7 +699,7 @@ def _structure_detail(
         fair_high = policy_fair_high
         value_area_volume_pct = 0.0
     optimistic_half_width = max(
-        avg_range * overlay_policy["optimistic_value_atr_multiplier"],
+        atr * overlay_policy["optimistic_value_atr_multiplier"],
         weighted_price * overlay_policy["fair_value_min_pct"],
     )
     optimistic_low = fair_high
@@ -715,7 +732,10 @@ def _structure_detail(
         "optimistic_value_status": optimistic_status,
         "upside_to_optimistic_high_pct": round(upside_to_optimistic_high_pct, 6),
         "value_area_volume_pct": round(value_area_volume_pct, 4),
-        "structure_method": "volume_profile_value_area",
+        "structure_method": "ohlcv_distributed_volume_value_area",
+        "range_width_method": "true_range_atr",
+        "atr": round(atr, 4),
+        "atr_period": atr_period,
         "price_location": location,
         "volume_weighted_price": round(weighted_price, 4),
         "latest_close": round(latest, 4),

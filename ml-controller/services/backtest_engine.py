@@ -38,7 +38,7 @@ Scope (Sprint 6a, Mode A rule-based replay):
 
 Out of scope (deferred):
   - Sprint 6b: walk-forward ML retrain (Mode B)
-  - Sprint 4-2 revisit: real HMM regime (placeholder uses market_risk.risk_level)
+  - Sprint 4-2 revisit: real HMM regime (Mode A groups by market_risk.risk_level)
   - Sprint 5: Optuna wiring (this file is the objective primitive, not the driver)
 
 Relationship to backtest_service.py (existing, NOT deprecated):
@@ -897,7 +897,7 @@ def _date_diff(d1: str, d2: str) -> int:
 #   - No DelistingMonitor (handled by point-in-time universe in data loader)
 #
 # For Hybrid Ranking in Mode A: ml_confidence is absent, so we set it to a
-# flat 0.5 placeholder and signal_tier to 0.35 (HOLD-equivalent). This makes
+# flat 0.5 neutral default and signal_tier to 0.35 (HOLD-equivalent). This makes
 # the combined_score reduce to alpha * screener_norm + const, so top-K by
 # combined_score is essentially top-K by screener score — which matches
 # "Architecture C acts as safety net" semantics when ML is silent.
@@ -1063,7 +1063,7 @@ def _mode_b_confidence_from_row(row: dict[str, Any]) -> tuple[float | None, str 
 class MLPredictionsCache:
     """Pre-loads ensemble-row predictions from D1 for the entire backtest
     date range so simulate_entries_for_date can apply realistic confidence
-    filters + Kelly sizing instead of the ml_conf_placeholder=0.60 hardcode.
+    filters + Kelly sizing instead of the Mode A neutral confidence default.
 
     Storage: dict {(symbol, date) → confidence float in [0,1]}.
     Returns None on miss (caller decides skip vs default behavior).
@@ -1267,6 +1267,39 @@ def apply_alpha_framework_to_candidates(
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
+
+def _ema_last(values: np.ndarray, period: int) -> float | None:
+    if period <= 0 or len(values) < period:
+        return None
+    alpha = 2.0 / (period + 1.0)
+    ema = float(np.mean(values[:period]))
+    for value in values[period:]:
+        ema = float(value) * alpha + ema * (1.0 - alpha)
+    return ema
+
+
+def _macd_hist_last(closes: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9) -> float | None:
+    if len(closes) < slow + signal:
+        return None
+    alpha_fast = 2.0 / (fast + 1.0)
+    alpha_slow = 2.0 / (slow + 1.0)
+    alpha_signal = 2.0 / (signal + 1.0)
+    ema_fast = _ema_last(closes[:slow], fast)
+    ema_slow = float(np.mean(closes[:slow]))
+    if ema_fast is None:
+        return None
+    macd_values: list[float] = []
+    for value in closes[slow:]:
+        ema_fast = float(value) * alpha_fast + ema_fast * (1.0 - alpha_fast)
+        ema_slow = float(value) * alpha_slow + ema_slow * (1.0 - alpha_slow)
+        macd_values.append(ema_fast - ema_slow)
+    if len(macd_values) < signal:
+        return None
+    signal_line = float(np.mean(macd_values[:signal]))
+    for macd in macd_values[signal:]:
+        signal_line = macd * alpha_signal + signal_line * (1.0 - alpha_signal)
+    return macd_values[-1] - signal_line
 
 
 def _normalize(value: float, lower: float, upper: float, max_score: float) -> float:
@@ -1572,16 +1605,13 @@ def score_multi_factor_np(
         elif 30 <= rsi < 45:
             tech_score += tiers[4]
 
-    # MACD approximation
-    if n >= 20:
-        ma12 = float(closes[-12:].mean())
-        ma26_window = min(26, n)
-        ma26 = float(closes[-ma26_window:].mean())
-        macd_approx = ma12 - ma26
-        if macd_approx > 0:
+    # MACD(12,26,9)
+    macd_hist = _macd_hist_last(closes)
+    if macd_hist is not None:
+        if macd_hist > 0:
             tech_score += 6
-            reasons.append("MACD 多頭")
-        elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
+            reasons.append("MACD bullish")
+        elif macd_hist > -sc.macd_negative_factor * latest_close / 100:
             tech_score += 2
 
     # MA alignment
@@ -1791,16 +1821,13 @@ def score_multi_factor(
         elif 30 <= rsi < 45:
             tech_score += tiers[4]
 
-    # MACD approximation
-    if n >= 20:
-        ma12 = closes[-12:].mean()
-        ma26_window = min(26, n)
-        ma26 = closes[-ma26_window:].mean()
-        macd_approx = ma12 - ma26
-        if macd_approx > 0:
+    # MACD(12,26,9)
+    macd_hist = _macd_hist_last(closes)
+    if macd_hist is not None:
+        if macd_hist > 0:
             tech_score += 6
-            reasons.append("MACD 多頭")
-        elif macd_approx > -sc.macd_negative_factor * latest_close / 100:
+            reasons.append("MACD bullish")
+        elif macd_hist > -sc.macd_negative_factor * latest_close / 100:
             tech_score += 2
 
     # MA alignment
@@ -1976,7 +2003,7 @@ def replay_screener_for_date(
       4. Same-industry cap (max_per_industry)
       5. Top-N truncation (max_candidates)
       6. Ranking: compute combined_score, then allocator-owned BUY count
-         (Mode A: ml_confidence=0.5 placeholder, signal_tier=0.35 HOLD-eq)
+         (Mode A: ml_confidence=0.5 neutral default, signal_tier=0.35 HOLD-eq)
 
     Returns list of Candidate, sorted by combined_score descending.
     """
@@ -2094,16 +2121,16 @@ def replay_screener_for_date(
     final_candidates = after_industry[: screener.max_candidates]
 
     # Ranking weights only; BUY count is owned by alphaFramework allocation.
-    # Mode A placeholder: ml_confidence = 0.5, signal_tier = 0.35 (HOLD-equiv)
-    ML_CONF_PLACEHOLDER = 0.5
-    SIGNAL_TIER_PLACEHOLDER = 0.35
+    # Mode A neutral defaults: ml_confidence = 0.5, signal_tier = 0.35 (HOLD-equiv)
+    ML_CONF_NEUTRAL_DEFAULT = 0.5
+    SIGNAL_TIER_NEUTRAL_DEFAULT = 0.35
 
     for c in final_candidates:
         screener_norm = _candidate_screener_norm(c)
         c.combined_score = (
             ranking.alpha * screener_norm
-            + ranking.beta * ML_CONF_PLACEHOLDER
-            + ranking.gamma * SIGNAL_TIER_PLACEHOLDER
+            + ranking.beta * ML_CONF_NEUTRAL_DEFAULT
+            + ranking.gamma * SIGNAL_TIER_NEUTRAL_DEFAULT
         )
 
     final_candidates.sort(key=lambda c: c.combined_score, reverse=True)
@@ -2349,8 +2376,8 @@ def diagnose_replay_for_date(
         screener_norm = _candidate_screener_norm(c)
         c.combined_score = (
             ranking.alpha * screener_norm
-            + ranking.beta * 0.5      # ML_CONF_PLACEHOLDER
-            + ranking.gamma * 0.35    # SIGNAL_TIER_PLACEHOLDER
+            + ranking.beta * 0.5      # ML_CONF_NEUTRAL_DEFAULT
+            + ranking.gamma * 0.35    # SIGNAL_TIER_NEUTRAL_DEFAULT
         )
     final_candidates.sort(key=lambda c: c.combined_score, reverse=True)
     promoted = 0
@@ -2397,18 +2424,17 @@ def diagnose_replay_for_date(
 #   - Fill price = adjusted_entry + 1 tick slippage
 #   - If no fill, candidate expires ROD (same-day cancel)
 #
-# Gap-aware proxy (Sprint 3 P0-2):
-#   Paper.ts uses TAIFEX night-session changePct. We don't have historical night
-#   session data, so Mode A uses 0050 ETF open-vs-prev-close as proxy.
-#     gap_pct = (open_T+1 - close_T) / close_T  for 0050
-#   This captures the same "overnight market expectation" signal.
+# Gap-aware replay note:
+#   Paper.ts uses TAIFEX night-session changePct. Mode A does not have
+#   historical TAIFEX night-session bars, so it must not synthesize the signal
+#   from ETF data. Gap-aware entry adjustment is disabled in Mode A.
 #
 # Position sizing (Sprint 3 P0-1):
 #   - Kelly path: calc_kelly_pct + portfolio cap
 #   - Risk-parity fallback: risk_pct / stop_pct formula
 #
 # Mode A deviations from paper.ts (documented):
-#   - No TAIFEX night session (0050 gap proxy instead)
+#   - No TAIFEX night session (gap-aware adjustment disabled)
 #   - No DebateVerdict (treat all as 'APPROVE', i.e. no downgrade path)
 #   - No sector concentration check via D1 (use Candidate.industry + sector_count)
 #   - No daily buy limit accumulator across runs (reset per backtest day)
@@ -2543,9 +2569,11 @@ class AccountState:
 
     @property
     def total_portfolio(self) -> float:
-        """cash + position market value. For sizing we use `cash + sum(cost)`
-        as a conservative proxy (paper.ts does same). Uses entry_price as the
-        'cost basis' since OpenPosition tracks entry_price (post-slippage fill)."""
+        """cash + cost-basis position value.
+
+        For sizing we use `cash + sum(cost_basis)` because OpenPosition tracks
+        entry_price after slippage.
+        """
         pos_value = sum(p.shares * p.entry_price for p in self.positions.values())
         return self.cash + pos_value
 
@@ -2680,32 +2708,6 @@ def calc_commission(tx_value: float, fees: FeeParams) -> float:
     return max(tx_value * fees.commission, fees.min_commission)
 
 
-def _gap_pct_from_benchmark(
-    dataset: BacktestDataset,
-    decision_date: str,
-    entry_date: str,
-    benchmark: str = "0050",
-) -> float:
-    """
-    Proxy for paper.ts TAIFEX night-session changePct.
-    Computes overnight gap of 0050 ETF from close(T) to open(T+1).
-
-    Returns gap in PERCENT (not ratio) to match paper.ts.nightDropPct units.
-    """
-    try:
-        close_t = dataset.get_bar(benchmark, decision_date)
-        open_t1 = dataset.get_bar(benchmark, entry_date)
-    except Exception:
-        return 0.0
-    if not close_t or not open_t1:
-        return 0.0
-    prev_close = float(close_t.get("close") or 0)
-    next_open = float(open_t1.get("open") or 0)
-    if prev_close <= 0 or next_open <= 0:
-        return 0.0
-    return (next_open - prev_close) / prev_close * 100  # percent
-
-
 def gap_aware_adjust_entry(
     ml_entry: float,
     ml_stop: float,
@@ -2777,7 +2779,7 @@ def simulate_entries_for_date(
     pos: PositionSizeParams,
     sltp: SLTPParams,
     fees: FeeParams,
-    ml_conf_placeholder: float = 0.60,
+    ml_conf_neutral_default: float = 0.60,
     replay_days: list[str] | None = None,
     # 2026-04-20 #31 Mode B params (None = Mode A behavior; backward compat)
     ml_predictions: Optional["MLPredictionsCache"] = None,
@@ -2824,7 +2826,7 @@ def simulate_entries_for_date(
 
     Pipeline:
       1. Filter candidates by has_buy_signal=1
-      2. Compute gap proxy once from 0050 benchmark
+      2. Disable gap-aware adjustment unless true TAIFEX replay data is available
       3. For each candidate:
          a. Synthesize ml_stop/ml_target from ATR × sltp params
          b. Gap-aware adjustment
@@ -2871,8 +2873,8 @@ def simulate_entries_for_date(
             if new_conf > buy_conf_threshold:
                 buy_conf_threshold = new_conf  # local rebind — caller unaffected
 
-    # Gap proxy (shared across all candidates today)
-    gap_pct = _gap_pct_from_benchmark(dataset, decision_date, entry_date)
+    # Mode A has no true historical TAIFEX night-session bars.
+    gap_pct = 0.0
 
     # Industry concentration tracker for this day
     industry_count: dict[str, int] = {}
@@ -2918,7 +2920,7 @@ def simulate_entries_for_date(
     for cand in buy_candidates:
         # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
         # filter when ml_predictions cache is provided. Mode A (cache=None) keeps
-        # using ml_conf_placeholder=0.60 hardcode.
+        # using the Mode A neutral confidence default.
         if ml_predictions is not None:
             real_conf = ml_predictions.get(cand.symbol, cand.date)
             if real_conf is None:
@@ -3035,7 +3037,7 @@ def simulate_entries_for_date(
                 adjusted_stop  *= mild_adj
 
         # Kelly or risk-parity sizing — Mode B uses real confidence when available
-        effective_conf = cand.confidence if cand.confidence is not None else ml_conf_placeholder
+        effective_conf = cand.confidence if cand.confidence is not None else ml_conf_neutral_default
         kelly_pct = calc_kelly_pct(
             confidence=effective_conf,
             entry_price=adjusted_entry,
@@ -3834,7 +3836,7 @@ def step_all_positions(
 #
 # Per-regime stratification (Mode A):
 #   Paper.ts uses market_risk.risk_level (green/yellow/orange/red/black) as a
-#   coarse proxy. Sprint 4-2 revisit will replace with real HMM regime.
+#   coarse regime bucket. Sprint 4-2 revisit will replace it with HMM regime.
 #   For now we key trades by their entry date's risk_level and group metrics.
 #
 # REALISM WARNINGS:
@@ -3851,8 +3853,8 @@ MODE_A_DEVIATIONS: list[str] = [
     "#4 No industry RRG rotation bonus (pessimistic)",
     "#5 No 處置股 filter (optimistic)",
     "#6 No ADX / liquidity tier filter (optimistic)",
-    "#7 ml_confidence=0.5 placeholder (slightly pessimistic Kelly)",
-    "#8 signal_tier=0.35 HOLD placeholder (neutral)",
+    "#7 ml_confidence=0.5 neutral default (slightly pessimistic Kelly)",
+    "#8 signal_tier=0.35 HOLD-equivalent neutral default",
     "#9 No correlation dedup (optimistic — portfolio Sharpe inflated)",
     "#10 DebateVerdict treated as APPROVE (optimistic)",
     "#11 ml_stop/target synthesized from ATR × sltp (neutral — this is the search target)",
@@ -4050,7 +4052,7 @@ def _apply_sanity_flags(m: BacktestMetrics) -> None:
     """
     if m.sharpe is not None and m.sharpe > 3.0:
         m.sanity_flags.append(
-            f"sharpe={m.sharpe:.2f} > 3.0 — likely overfit, reject for Optuna"
+            f"sharpe={m.sharpe:.2f} > 3.0 — possible overfit, reject for Optuna"
         )
     if m.total_trades < 30:
         m.sanity_flags.append(
@@ -4167,7 +4169,7 @@ def compute_metrics(
         exit_counts[cat] = exit_counts.get(cat, 0) + 1
     m.exit_distribution = exit_counts
 
-    # Per-regime stratification (Mode A uses market_risk.risk_level proxy)
+    # Per-regime stratification (Mode A groups by market_risk.risk_level)
     if regime_by_date and trades:
         regime_trades: dict[str, list[Trade]] = {}
         for t in trades:
@@ -4195,7 +4197,7 @@ def compute_metrics(
 def build_regime_map(dataset: BacktestDataset) -> dict[str, str]:
     """
     Build date → risk_level map from dataset.market_risk.
-    Used as Mode A regime proxy (Sprint 4-2 revisit will replace with HMM).
+    Used as the Mode A regime bucket (Sprint 4-2 revisit will replace with HMM).
     """
     out: dict[str, str] = {}
     if dataset.market_risk.is_empty():
@@ -4542,7 +4544,7 @@ def replay_period(
 
     # ── 2026-04-20 #31 Mode B: load historical ML predictions cache ───────
     # Mode B reads ensemble-row direction_accuracy from D1 to derive real
-    # per-(symbol, date) confidence. Mode A keeps using ml_conf_placeholder.
+    # per-(symbol, date) confidence. Mode A keeps using the neutral confidence default.
     # buyConfThreshold pulled from circuit subsection (KV trading:config).
     ml_cache: Optional[MLPredictionsCache] = None
     buy_conf_threshold: Optional[float] = None

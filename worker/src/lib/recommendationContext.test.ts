@@ -23,13 +23,13 @@ function assert(condition: unknown, message: string): void {
     },
   })
 
-  assert(watchPoint?.startsWith('Alpha 結構:'), 'market structure watch point should not pretend alpha proxy is an OHLCV trade plan')
-  assert(watchPoint?.includes('內部合理區 786.43~855.88'), 'alpha proxy should name the internal reasonable zone')
-  assert(watchPoint?.includes('內部順風區 855.88~879.03'), 'alpha proxy should name the internal optimistic zone without calling it resistance')
-  assert(watchPoint?.includes('已高於內部順風上緣 3.5%'), 'alpha proxy should translate extension into plain language')
-  assert(watchPoint?.includes('內部估值提醒偏追高'), 'alpha proxy should translate exceeded extension into action language')
-  assert(!watchPoint?.includes('前高壓力'), 'alpha proxy must not be mislabeled as OHLCV resistance')
-  assert(!watchPoint?.includes('轉強確認'), 'alpha proxy must not be mislabeled as OHLCV confirmation')
+  assert(watchPoint?.startsWith('Alpha 結構:'), 'market structure watch point should not pretend alpha structure is an OHLCV trade plan')
+  assert(watchPoint?.includes('內部合理區 786.43~855.88'), 'alpha structure should name the internal reasonable zone')
+  assert(watchPoint?.includes('內部順風區 855.88~879.03'), 'alpha structure should name the internal optimistic zone without calling it resistance')
+  assert(watchPoint?.includes('已高於內部順風上緣 3.5%'), 'alpha structure should translate extension into plain language')
+  assert(watchPoint?.includes('內部估值提醒偏追高'), 'alpha structure should translate exceeded extension into action language')
+  assert(!watchPoint?.includes('前高壓力'), 'alpha structure must not be mislabeled as OHLCV resistance')
+  assert(!watchPoint?.includes('轉強確認'), 'alpha structure must not be mislabeled as OHLCV confirmation')
   for (const internalTerm of ['POC', 'fair_value', 'optimistic_value', 'optimistic_status', 'above_fair_value']) {
     assert(!watchPoint?.includes(internalTerm), `trading plan should not expose internal quant label ${internalTerm}`)
   }

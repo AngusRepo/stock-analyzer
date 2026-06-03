@@ -245,6 +245,13 @@ def predict_regime_at_date(
     ret_5d = (twii_close - prev5_close) / prev5_close if prev5_close else 0.0
     risk_score = float(row.get("risk_score") or 50) / 100
     market_bias_20d = float(row.get("twii_bias") or 0)
+    recent_returns: list[float] = []
+    for i in range(max(1, idx - 2), idx + 1):
+        prev_close = float(all_dates["twii_close"][i - 1])
+        close = float(all_dates["twii_close"][i])
+        if prev_close:
+            recent_returns.append((close - prev_close) / prev_close)
+    realized_vol_3d = float(np.std(recent_returns)) if len(recent_returns) >= 2 else abs(ret_1d)
 
     # Same 6-feature shape as regime.get_current_market_features
     cur_feat = np.array([
@@ -253,7 +260,7 @@ def predict_regime_at_date(
         risk_score,
         market_bias_20d,
         abs(ret_1d),
-        abs(ret_1d),   # 3d vol placeholder — single-date context only
+        realized_vol_3d,
     ], dtype=float)
 
     # regime.py REGIME_INDEX_TO_EN mapping (duplicated here to avoid ml-service import)

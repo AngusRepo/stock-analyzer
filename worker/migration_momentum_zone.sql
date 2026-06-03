@@ -2,7 +2,7 @@
 --
 -- Purpose: Track the screener candidate pool's momentum-concentration state
 -- and compare against a rolling 36-month distribution. When current state is
--- in the historical left tail (< P10), the market is likely in a
+-- in the historical left tail (< P10), the market is flagged as a
 -- "momentum crash" regime (Daniel & Moskowitz 2016 JFE 122(2)), so
 -- morning-setup will size down new positions.
 --

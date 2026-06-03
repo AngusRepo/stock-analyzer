@@ -18,7 +18,7 @@ from typing import Any, Iterable, Protocol
 FINLAB_AI_FACTOR_MINER_VERSION = "finlab-ai-factor-miner-v1"
 
 
-class FinLabDataLike(Protocol):
+class FinLabDataClientProtocol(Protocol):
     def search(self, query: str, market: str | None = None) -> Any: ...
 
 
@@ -27,32 +27,32 @@ LANE_SEARCH_TERMS: dict[str, tuple[str, ...]] = {
         "RSI",
         "MACD",
         "KD",
-        "布林",
-        "均線",
-        "成交量",
+        "moving average",
+        "trend",
+        "volume",
         "momentum",
         "volatility",
     ),
     "chip": (
-        "外資",
-        "投信",
-        "自營商",
-        "三大法人",
-        "融資",
-        "融券",
-        "券商",
+        "foreign investor",
+        "investment trust",
+        "dealer",
+        "institutional flow",
+        "margin",
+        "short interest",
+        "broker flow",
         "broker",
         "margin",
     ),
     "fundamental": (
-        "月營收",
-        "營收",
+        "revenue",
+        "profit",
         "ROE",
         "EPS",
-        "毛利率",
-        "營益率",
-        "本益比",
-        "股價淨值比",
+        "gross margin",
+        "operating margin",
+        "cash flow",
+        "valuation",
         "cash flow",
     ),
 }
@@ -166,7 +166,7 @@ def _rows_from_search_result(result: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _search_finlab_data(data_client: FinLabDataLike, query: str) -> Any:
+def _search_finlab_data(data_client: FinLabDataClientProtocol, query: str) -> Any:
     try:
         return data_client.search(query, market="tw")
     except TypeError:
@@ -247,7 +247,7 @@ def _candidate_from_row(
 
 def discover_finlab_raw_factor_candidates(
     *,
-    finlab_data: FinLabDataLike | None = None,
+    finlab_data: FinLabDataClientProtocol | None = None,
     lane_search_terms: dict[str, Iterable[str]] | None = None,
     max_per_lane: int = 8,
     generated_at: str | None = None,

@@ -24,50 +24,50 @@ PRODUCT_ROOTS = {
 }
 
 TYPE_FOLDERS = {
-    "decision": "決策紀錄_decisions",
-    "architecture": "系統架構_architecture",
+    "decision": "\u6c7a\u7b56\u7d00\u9304_decisions",
+    "architecture": "\u7cfb\u7d71\u67b6\u69cb_architecture",
     "runbook": "Runbooks",
-    "research": "研究_research",
+    "research": "\u7814\u7a76_research",
     "postmortem": "Postmortems",
     "session": "Sessions",
-    "source": "文章原文_source-articles",
-    "daily": "每日文章_daily-articles",
-    "glossary": "關鍵字字典_glossary",
+    "source": "\u4f86\u6e90\u8cc7\u6599_source-articles",
+    "daily": "\u6bcf\u65e5\u6587\u7ae0_daily-articles",
+    "glossary": "\u8a5e\u5f59\u8868_glossary",
 }
 
 RESEARCH_TRACK_FOLDERS = {
-    "research-intern": "研究_research/Research-Intern",
-    "research_intern": "研究_research/Research-Intern",
-    "research intern": "研究_research/Research-Intern",
-    "research-interns": "研究_research/Research-Intern",
-    "research": "研究_research/Research-Intern",
-    "Research-Intern": "研究_research/Research-Intern",
-    "ML-Intern": "研究_research/ML-Intern",
-    "ml-intern": "研究_research/ML-Intern",
-    "ml_intern": "研究_research/ML-Intern",
-    "ml intern": "研究_research/ML-Intern",
-    "model-intern": "研究_research/ML-Intern",
+    "research-intern": "\u7814\u7a76_research/Research-Intern",
+    "research_intern": "\u7814\u7a76_research/Research-Intern",
+    "research intern": "\u7814\u7a76_research/Research-Intern",
+    "research-interns": "\u7814\u7a76_research/Research-Intern",
+    "research": "\u7814\u7a76_research/Research-Intern",
+    "Research-Intern": "\u7814\u7a76_research/Research-Intern",
+    "ML-Intern": "\u7814\u7a76_research/ML-Intern",
+    "ml-intern": "\u7814\u7a76_research/ML-Intern",
+    "ml_intern": "\u7814\u7a76_research/ML-Intern",
+    "ml intern": "\u7814\u7a76_research/ML-Intern",
+    "model-intern": "\u7814\u7a76_research/ML-Intern",
 }
 
 MOC_SUGGESTIONS = {
     "StockVision": [
         "06_MOC/MOC-Home.md",
-        "02_Products/StockVision/超級連結_moc/MOC-StockVision.md",
+        "02_Products/StockVision/\u8d85\u7d1a\u9023\u7d50_moc/MOC-StockVision.md",
     ],
 }
 
 SEARCH_SCOPE_TEMPLATES = [
     ("global_moc", "06_MOC"),
     ("global", "01_Global"),
-    ("product_moc", "{product_root}/超級連結_moc"),
-    ("decisions", "{product_root}/決策紀錄_decisions"),
-    ("architecture", "{product_root}/系統架構_architecture"),
+    ("product_moc", "{product_root}/\u8d85\u7d1a\u9023\u7d50_moc"),
+    ("decisions", "{product_root}/\u6c7a\u7b56\u7d00\u9304_decisions"),
+    ("architecture", "{product_root}/\u7cfb\u7d71\u67b6\u69cb_architecture"),
     ("runbooks", "{product_root}/Runbooks"),
     ("postmortems", "{product_root}/Postmortems"),
-    ("research", "{product_root}/研究_research"),
-    ("glossary", "{product_root}/關鍵字字典_glossary"),
-    ("source_articles", "{product_root}/文章原文_source-articles"),
-    ("daily_articles", "{product_root}/每日文章_daily-articles"),
+    ("research", "{product_root}/\u7814\u7a76_research"),
+    ("glossary", "{product_root}/\u8a5e\u5f59\u8868_glossary"),
+    ("source_articles", "{product_root}/\u4f86\u6e90\u8cc7\u6599_source-articles"),
+    ("daily_articles", "{product_root}/\u6bcf\u65e5\u6587\u7ae0_daily-articles"),
     ("sessions", "{product_root}/Sessions"),
     ("inbox", "00_Inbox"),
 ]
@@ -79,14 +79,14 @@ REQUIRED_VAULT_PATH_TEMPLATES = [
     "Templates/Decision Note.md",
     "Templates/Research Note.md",
     "{product_root}",
-    "{product_root}/超級連結_moc/MOC-StockVision.md",
-    "{product_root}/超級連結_moc/MOC-Research-Intern.md",
-    "{product_root}/超級連結_moc/MOC-ML-Intern.md",
-    "{product_root}/筆記製作規則_note-rules/Wiki Writing Rules.md",
-    "{product_root}/決策紀錄_decisions",
-    "{product_root}/系統架構_architecture",
+    "{product_root}/\u8d85\u7d1a\u9023\u7d50_moc/MOC-StockVision.md",
+    "{product_root}/\u8d85\u7d1a\u9023\u7d50_moc/MOC-Research-Intern.md",
+    "{product_root}/\u8d85\u7d1a\u9023\u7d50_moc/MOC-ML-Intern.md",
+    "{product_root}/\u898f\u5247_note-rules/Wiki Writing Rules.md",
+    "{product_root}/\u6c7a\u7b56\u7d00\u9304_decisions",
+    "{product_root}/\u7cfb\u7d71\u67b6\u69cb_architecture",
     "{product_root}/Runbooks",
-    "{product_root}/研究_research",
+    "{product_root}/\u7814\u7a76_research",
     "{product_root}/Postmortems",
     "{product_root}/Sessions",
 ]
@@ -104,24 +104,23 @@ BOOTSTRAP_GLOBAL_DIRECTORIES = [
 ]
 
 BOOTSTRAP_PRODUCT_DIRECTORIES = [
-    "文章原文_source-articles",
-    "每日文章_daily-articles",
-    "筆記製作規則_note-rules",
-    "超級連結_moc",
-    "關鍵字字典_glossary",
+    "\u4f86\u6e90\u8cc7\u6599_source-articles",
+    "\u6bcf\u65e5\u6587\u7ae0_daily-articles",
+    "\u898f\u5247_note-rules",
+    "\u8d85\u7d1a\u9023\u7d50_moc",
+    "\u8a5e\u5f59\u8868_glossary",
     "Change-Log",
-    "專案_projects",
-    "決策紀錄_decisions",
-    "系統架構_architecture",
+    "Projects",
+    "\u6c7a\u7b56\u7d00\u9304_decisions",
+    "\u7cfb\u7d71\u67b6\u69cb_architecture",
     "Runbooks",
-    "研究_research",
-    "研究_research/Research-Intern",
-    "研究_research/ML-Intern",
+    "\u7814\u7a76_research",
+    "\u7814\u7a76_research/Research-Intern",
+    "\u7814\u7a76_research/ML-Intern",
     "Postmortems",
     "Sessions",
     "Ops",
 ]
-
 SECRET_PATTERNS = [
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
@@ -279,21 +278,21 @@ def _bootstrap_file_templates(product: str) -> dict[str, str]:
     return {
         "CLAUDE.md": (
             "# Wei-Codex Wiki Governance\n\n"
-            "這個 vault 是 Wei 和 Codex 之間的長期 wiki，不是 snapshot 備份桶。\n\n"
+            "??vault ??Wei ??Codex 銋????wiki嚗???snapshot ?遢獢嗚n\n"
             "## Retrieval Rule\n\n"
-            "- 不確定、需要前情提要、或牽涉過去決策時，先查 Obsidian。\n"
-            "- Source-of-truth ladder: Obsidian -> repo -> logs/runtime -> unknown。\n"
-            "- wiki 沒找到就說 unknown，再查 repo、logs/runtime 或外部文件；不要猜。\n"
-            "- live production truth 仍以 repo code、runtime logs、database/API 狀態為準。\n\n"
+            "- 銝Ⅱ摰?閬???閬??賣??瘙箇???? Obsidian?n"
+            "- Source-of-truth ladder: Obsidian -> repo -> logs/runtime -> unknown?n"
+            "- wiki 瘝?啣停隤?unknown嚗???repo?ogs/runtime ???冽?隞塚?銝??n"
+            "- live production truth 隞誑 repo code?untime logs?atabase/API ??皞n\n"
             "## Observable Recall Receipt\n\n"
-            "- 凡是涉及過去決策、偏好、架構、工作流、Obsidian/wiki/memory 的回答，必須先執行 wiki recall。\n"
-            "- 回答必須附上 `Obsidian recall receipt`，列出 query、status、answer_policy、citations。\n"
-            "- 沒有 receipt 的回答視為未驗證，不可當作已恢復記憶。\n"
-            "- 如果 recall status 是 not_found，必須明講 wiki 沒找到相關記憶，再查 repo / logs / runtime。\n\n"
+            "- ?⊥瘨??瘙箇???憟賬瑽極雿??bsidian/wiki/memory ??蝑?敹??銵?wiki recall?n"
+            "- ??敹??? `Obsidian recall receipt`嚗???query?tatus?nswer_policy?itations?n"
+            "- 瘝? receipt ??蝑??箸撽?嚗??舐雿歇?Ｗ儔閮?n"
+            "- 憒? recall status ??not_found嚗???雓?wiki 瘝?啁???塚?? repo / logs / runtime?n\n"
             "## Session Rule\n\n"
-            "- 每次重大任務結束，先產生 Sessions/YYYY-MM-DD-topic.draft.md。\n"
-            "- 草稿可以保留未完成事項、驗證結果、風險和下一步。\n"
-            "- 不把 session draft 當成已批准架構；正式決策要另寫 decision note。\n"
+            "- 瘥活?之隞餃?蝯?嚗??Ｙ? Sessions/YYYY-MM-DD-topic.draft.md?n"
+            "- ?阮?臭誑靽??芸?????霅??◢?芸?銝?甇乓n"
+            "- 銝? session draft ?嗆?撌脫?瑽?甇??瘙箇?閬撖?decision note?n"
         ),
         "06_MOC/MOC-Home.md": (
             "# MOC-Home\n\n"
@@ -305,8 +304,8 @@ def _bootstrap_file_templates(product: str) -> dict[str, str]:
         f"{product_root}/超級連結_moc/MOC-{product}.md": (
             f"# MOC-{product}\n\n"
             "## Core\n\n"
-            "- [[決策紀錄_decisions]]\n"
-            "- [[系統架構_architecture]]\n"
+            "- [[瘙箇?蝝?decisions]]\n"
+            "- [[蝟餌絞?嗆?_architecture]]\n"
             "- [[Runbooks]]\n"
             "- [[Sessions]]\n\n"
             "## Intern Tracks\n\n"
@@ -318,7 +317,7 @@ def _bootstrap_file_templates(product: str) -> dict[str, str]:
         f"{product_root}/超級連結_moc/MOC-Research-Intern.md": (
             "# MOC-Research-Intern\n\n"
             "## Scope\n\n"
-            "- 資料來源研究\n"
+            "- 鞈?靘??弦\n"
             "- factor hypothesis\n"
             "- paper / article digestion\n\n"
             "## Linked Notes\n\n"
@@ -333,15 +332,15 @@ def _bootstrap_file_templates(product: str) -> dict[str, str]:
             "## Linked Notes\n\n"
             f"{MOC_LINK_MARKER}\n"
         ),
-        f"{product_root}/筆記製作規則_note-rules/Wiki Writing Rules.md": (
+        f"{product_root}/蝑?鋆賭?閬?_note-rules/Wiki Writing Rules.md": (
             "# Wiki Writing Rules\n\n"
             "## Core\n\n"
-            "- wiki 是 Wei-Codex 長期記憶，不是 snapshot 備份桶。\n"
-            "- 每篇 note 要能回答：這是什麼、依據是什麼、未來怎麼找回來。\n"
-            "- 涉及不確定前情時，先 recall/search wiki；找不到就說 unknown，再查 repo / logs / runtime。\n"
-            "- live production truth 不寫死在 wiki；wiki 只保存 decision、context、runbook、research、postmortem。\n\n"
+            "- wiki ??Wei-Codex ?瑟?閮嚗???snapshot ?遢獢嗚n"
+            "- 瘥? note 閬??嚗隞暻潦??隞暻潦靘獐?曉?靘n"
+            "- 瘨?銝Ⅱ摰???嚗? recall/search wiki嚗銝撠梯牧 unknown嚗???repo / logs / runtime?n"
+            "- live production truth 銝神甇餃 wiki嚗iki ?芯?摮?decision?ontext?unbook?esearch?ostmortem?n\n"
             "## Recall Receipt Rule\n\n"
-            "涉及過去決策、偏好、架構、工作流、Obsidian/wiki/memory 時，回答必須留下：\n\n"
+            "瘨??瘙箇???憟賬瑽極雿??bsidian/wiki/memory ????敹???嚗n\n"
             "```text\n"
             "Obsidian recall receipt:\n"
             "- query: \"...\"\n"
@@ -350,14 +349,14 @@ def _bootstrap_file_templates(product: str) -> dict[str, str]:
             "- citations:\n"
             "  - path or wikilink\n"
             "```\n\n"
-            "沒有 receipt 的回答視為未驗證，不可當作已恢復記憶。\n\n"
+            "瘝? receipt ??蝑??箸撽?嚗??舐雿歇?Ｗ儔閮?n\n"
             "## Session Draft Rule\n\n"
-            "- 每次重大任務結束，寫入 Sessions/YYYY-MM-DD-topic.draft.md。\n"
-            "- 草稿必須包含 changed、verification、open risks / next。\n"
-            "- draft 不等於正式決策；需要穩定結論時另寫 decision note。\n\n"
+            "- 瘥活?之隞餃?蝯?嚗神??Sessions/YYYY-MM-DD-topic.draft.md?n"
+            "- ?阮敹?? changed?erification?pen risks / next?n"
+            "- draft 銝??潭迤撘捱蝑??閬帘摰?隢??血神 decision note?n\n"
             "## Link Rule\n\n"
-            "- 優先連到 MOC、decision、architecture、runbook。\n"
-            "- source_refs 放外部 URL 或對話來源；source_files 放 repo path。\n"
+            "- ?芸??? MOC?ecision?rchitecture?unbook?n"
+            "- source_refs ?曉???URL ??閰曹?皞?source_files ??repo path?n"
         ),
         "Templates/Session Draft.md": (
             "---\n"
@@ -440,7 +439,7 @@ def _date_from_note_name(path: Path) -> datetime.date | None:
         return None
 
 
-def _reject_secret_like_content(payload: dict[str, Any]) -> None:
+def _reject_secret_pattern_content(payload: dict[str, Any]) -> None:
     parts = [
         _clean_text(payload.get("title")),
         _clean_text(payload.get("body")),
@@ -451,7 +450,7 @@ def _reject_secret_like_content(payload: dict[str, Any]) -> None:
     haystack = "\n".join(parts)
     for pattern in SECRET_PATTERNS:
         if pattern.search(haystack):
-            raise ValueError("secret_like_content")
+            raise ValueError("secret_pattern_content")
 
 
 def _yaml_list(values: list[str], indent: int = 2) -> str:
@@ -541,7 +540,7 @@ def build_wiki_note_dry_run(payload: dict[str, Any], *, now: str | None = None) 
     The return value is intentionally close to the GitHub tree payload shape,
     but it never writes to disk or GitHub.
     """
-    _reject_secret_like_content(payload)
+    _reject_secret_pattern_content(payload)
 
     product = _clean_text(payload.get("product")) or "StockVision"
     if product not in PRODUCT_ROOTS:
@@ -768,7 +767,7 @@ def build_wiki_recall_context(
             "query": query,
             "product": product,
             "answer_policy": "say_unknown_then_check_repo_or_logs",
-            "message": "wiki 沒找到相關記憶；不要猜，接著查 repo / logs / runtime，仍沒有就回答 unknown。",
+            "message": "wiki 沒找到相關記憶；請改查 repo / logs / runtime，仍無證據時標示 unknown。",
             "citations": [],
             "search": search_result,
         }
@@ -778,7 +777,7 @@ def build_wiki_recall_context(
         "query": query,
         "product": product,
         "answer_policy": "cite_wiki_hits",
-        "message": "使用 citations 中的 note path / wikilink / snippet 回答；涉及 live truth 時仍需查 repo / logs / runtime。",
+        "message": "請引用 citations 的 note path / wikilink / snippet；若需驗證 production truth，仍須查 repo / logs / runtime。",
         "citations": citations,
         "search": search_result,
     }
@@ -823,7 +822,7 @@ def build_wiki_recall_receipt(
 
 def _project_hub_relative_path(product: str, title: str, slug: str | None = None) -> str:
     clean_slug = _slugify(_clean_text(slug) or title)
-    return f"{PRODUCT_ROOTS[product]}/專案_projects/{clean_slug}.md"
+    return f"{PRODUCT_ROOTS[product]}/Projects/{clean_slug}.md"
 
 
 def ensure_project_hub(
@@ -878,11 +877,11 @@ def ensure_project_hub(
             "",
             "## Decisions",
             "",
-            "- [[決策紀錄_decisions]]",
+            "- [[瘙箇?蝝?decisions]]",
             "",
             "## Architecture",
             "",
-            "- [[系統架構_architecture]]",
+            "- [[蝟餌絞?嗆?_architecture]]",
             "",
             "## Runbooks",
             "",
@@ -978,7 +977,7 @@ def build_wiki_guard_report(
         raise ValueError(f"unsupported_product:{product}")
 
     health = inspect_wiki_vault(vault_root=vault_root, product=product, stale_days=stale_days)
-    project_path = f"{PRODUCT_ROOTS[product]}/專案_projects/{_slugify(project_slug)}.md"
+    project_path = f"{PRODUCT_ROOTS[product]}/Projects/{_slugify(project_slug)}.md"
     project_target = _resolve_vault_path(vault_root, project_path)
     project_exists = project_target.exists()
     blocking_items: list[str] = []

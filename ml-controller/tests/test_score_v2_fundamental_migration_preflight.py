@@ -39,10 +39,11 @@ def test_fundamental_migration_preflight_schema_applied_waiting_data() -> None:
     report = build_fundamental_migration_preflight_report(
         migration_sql=MIGRATION_SQL,
         table_names=["canonical_fundamental_features"],
-        inventory={"fundamental_total": 0},
+        inventory={"fundamental_total": 0, "fundamental_any_total": 1066},
     )
 
     assert report["decision"] == "SCHEMA_APPLIED_WAITING_DATA"
+    assert report["live_schema"]["fundamental_any_total"] == 1066
     assert report["allowed_next_action"] == "materialize_canonical_fundamental_features"
 
 

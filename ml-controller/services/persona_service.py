@@ -12,7 +12,7 @@ ML ensemble with market-participant perspectives:
 
 Why Taiwan-specific personas (not US investor transplants):
 
-  The ai-hedge-fund project uses personas like Buffett/Burry/Wood. Those
+  The ai-hedge-fund project uses personas such as Buffett/Burry/Wood. Those
   personas are effective for US equities but weak for TW mid/small-cap
   where the dominant participant structure is 外資/投信/散戶 and behavior
   is driven by tax cycle, quarterly reporting, and margin leverage — not
@@ -138,7 +138,7 @@ def is_window_dressing_zone(d: _date, recent_trading_dates: Sequence[str]) -> bo
     """
     Is `d` in a window-dressing zone (last 10 trading days of Mar/Jun/Sep/Dec)?
 
-    We approximate "trading day rank within month" by counting trading-day
+    We derive "trading day rank within month" by counting trading-day
     dates in the same calendar month that are <= d. If d is among the last
     10 such days in a quarter-end month, it's the dressing zone.
     """

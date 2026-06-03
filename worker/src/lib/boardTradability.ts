@@ -44,7 +44,7 @@ export function normalizeBoardType(market?: string | null): BoardType {
   return 'UNKNOWN'
 }
 
-export function isEtfLikeSymbol(symbol?: string | null): boolean {
+export function isEtfPatternSymbol(symbol?: string | null): boolean {
   const value = String(symbol ?? '').trim().toUpperCase()
   return /^00\d{2,}[A-Z]*$/.test(value) || /^0[2-9]\d{3,}[A-Z]*$/.test(value)
 }
@@ -84,7 +84,7 @@ export function resolveRecommendationGovernance(
 
 export function classifyBoard(input: BoardClassificationInput): BoardClassification {
   const marketBoard = normalizeBoardType(input.market)
-  const boardType = isEtfLikeSymbol(input.symbol) ? 'ETF' : isEmergingStylePriceRow(input) ? 'EMERGING' : marketBoard
+  const boardType = isEtfPatternSymbol(input.symbol) ? 'ETF' : isEmergingStylePriceRow(input) ? 'EMERGING' : marketBoard
 
   if (input.restricted === true) {
     return {

@@ -80,7 +80,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   )
   assert(
     activeFinLabSpecs.every((spec) => spec.thresholds.minSeedScore == null && spec.thresholds.minChipScore == null && spec.thresholds.minTechScore == null && spec.thresholds.minMomentumScore == null),
-    'active FinLab AI Skill specs must use raw row signals, not Score V2/chip/technical proxy thresholds',
+    'active FinLab AI Skill specs must use raw row signals, not legacy Score V2/chip/technical thresholds',
   )
   assert(
     activeFinLabSpecs.every((spec) => !(spec.candidatePolicy?.evidenceRequirements ?? []).includes('score_v2')),
@@ -299,7 +299,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   assert(scores.seedScore === 70, 'strategy seed score should use canonical finalScore')
   assert(
     assessment.matches.every((match) => match.status !== 'active'),
-    'Score V2 compatibility parser must not make default L1 baseline match old proxy thresholds',
+    'Score V2 compatibility parser must not make default L1 baseline match old legacy thresholds',
   )
 }
 

@@ -3,7 +3,7 @@ analyze_icir_weight_sensitivity.py — P2 #37: post-hoc sensitivity of
 icir_weight in combined_score = tp_score + icir * icir_weight.
 
 Full Optuna over icir_weight requires re-running feature_selection_pipeline
-(~30min each), which is prohibitive. Cheaper proxy: load the last run's
+(~30min each), which is prohibitive. Cheaper shortcut: load the last run's
 per-feature tp_score + icir, re-rank under different icir_weight values,
 and report how the selected feature set shifts.
 

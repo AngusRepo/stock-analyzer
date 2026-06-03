@@ -68,6 +68,89 @@ def _price_close(row: dict | None, default: float = 0.0) -> float:
     return _as_float(value, default)
 
 
+def _bucket_from_thresholds(value: float, thresholds: tuple[float, float, float, float]) -> int:
+    if value > thresholds[3]:
+        return 4
+    if value > thresholds[2]:
+        return 3
+    if value > thresholds[1]:
+        return 2
+    if value > thresholds[0]:
+        return 1
+    return 0
+
+
+def _daily_turnover_bucket(prices: list[dict]) -> int:
+    if not prices:
+        return 2
+    recent = prices[-20:] if len(prices) >= 20 else prices
+    avg_close = sum(_price_close(p) for p in recent) / len(recent)
+    avg_vol = sum(_as_float(p.get("volume"), 0.0) for p in recent) / len(recent)
+    return _bucket_from_thresholds(avg_close * avg_vol, (5e7, 2e8, 1e9, 5e9))
+
+
+def _load_bull_alignment_by_date(run_date: str) -> dict[str, float]:
+    rows = d1_client.query(
+        """
+        WITH ordered AS (
+          SELECT
+            sp.stock_id,
+            sp.date,
+            sp.close,
+            AVG(sp.close) OVER (
+              PARTITION BY sp.stock_id ORDER BY sp.date
+              ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
+            ) AS ma5,
+            AVG(sp.close) OVER (
+              PARTITION BY sp.stock_id ORDER BY sp.date
+              ROWS BETWEEN 9 PRECEDING AND CURRENT ROW
+            ) AS ma10,
+            AVG(sp.close) OVER (
+              PARTITION BY sp.stock_id ORDER BY sp.date
+              ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+            ) AS ma20,
+            AVG(sp.close) OVER (
+              PARTITION BY sp.stock_id ORDER BY sp.date
+              ROWS BETWEEN 59 PRECEDING AND CURRENT ROW
+            ) AS ma60,
+            COUNT(sp.close) OVER (
+              PARTITION BY sp.stock_id ORDER BY sp.date
+              ROWS BETWEEN 59 PRECEDING AND CURRENT ROW
+            ) AS n60
+          FROM stock_prices sp
+          JOIN stocks s ON s.id = sp.stock_id
+          WHERE sp.date <= ?
+            AND sp.close IS NOT NULL
+            AND COALESCE(s.symbol, '') NOT IN ('0050', 'TAIEX', '^TWII', '^TWOII')
+            AND instr(UPPER(COALESCE(s.market, '')), 'ETF') = 0
+            AND instr(UPPER(COALESCE(s.market, '')), 'WARRANT') = 0
+        )
+        SELECT
+          date,
+          SUM(CASE WHEN n60 >= 60 THEN 1 ELSE 0 END) AS eligible,
+          SUM(
+            CASE
+              WHEN n60 >= 60 AND ma5 > ma10 AND ma10 > ma20 AND ma20 > ma60 THEN 1
+              ELSE 0
+            END
+          ) AS aligned
+        FROM ordered
+        GROUP BY date
+        HAVING eligible > 0
+        ORDER BY date ASC
+        """,
+        [run_date],
+        timeout=120.0,
+    )
+    out: dict[str, float] = {}
+    for row in rows or []:
+        eligible = _as_float(row.get("eligible"), 0.0)
+        if eligible <= 0:
+            continue
+        out[str(row["date"])] = round(_as_float(row.get("aligned"), 0.0) / eligible, 4)
+    return out
+
+
 def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, float]:
     """Build legacy PredictRequest lifecycle_weights from model_pool.json.
 
@@ -195,13 +278,14 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     risk_row = risk_rows[0] if risk_rows else {}
 
     # ── 2. TAIEX 25 days for twii returns ───────────────────────────────────
-    twii_rows = d1_client.query(
+    twii_history_rows = d1_client.query(
         "SELECT date, close FROM stock_prices "
         "WHERE stock_id=(SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') LIMIT 1) "
-        "AND date <= ? ORDER BY date DESC LIMIT 25",
+        "AND date <= ? ORDER BY date ASC LIMIT 800",
         [run_date],
     )
-    twii_arr = [r["close"] for r in reversed(twii_rows)]
+    twii_rows = twii_history_rows[-25:]
+    twii_arr = [r["close"] for r in twii_rows]
     twii_1d = (twii_arr[-1] - twii_arr[-2]) / twii_arr[-2] if len(twii_arr) >= 2 else 0.0
     twii_5d = (twii_arr[-1] - twii_arr[-6]) / twii_arr[-6] if len(twii_arr) >= 6 else 0.0
     if len(twii_arr) >= 20:
@@ -210,10 +294,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         twii_ma20 = twii_arr[-1] if twii_arr else 0.0
     twii_bias_20d = (twii_arr[-1] - twii_ma20) / twii_ma20 if twii_arr and twii_ma20 else 0.0
 
-    # ── 3. Market history (from market_risk + 0050 ETF fallback) ─────────────
+    # Market history uses market_risk plus true TAIEX/^TWII price history.
+    # If TAIEX is missing, the payload degrades instead of substituting ETF data.
     # market_risk 只有 ~15 天（3/23 起），但 retrain 需要 3 年歷史。
-    # Fallback: 用 0050 ETF close 反算 market_return_1d/5d/bias_20d。
-    # 0050 跟 TWII 相關性 >0.99，是合理的大盤 proxy。
     history_map: dict[str, dict] = {}
 
     # 3a. market_risk 真值（有的日期用這個）
@@ -260,14 +343,6 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             "sentiment": r.get("sentiment"),
         }
 
-    # 3b. 0050 ETF fallback + ADL from full market prices
-    etf_rows = d1_client.query(
-        "SELECT sp.date, sp.close FROM stock_prices sp "
-        "JOIN stocks s ON s.id = sp.stock_id "
-        "WHERE s.symbol = '0050' AND sp.date <= ? ORDER BY sp.date ASC LIMIT 800",
-        [run_date],
-    )
-
     # 3c. ADL (Advance/Decline Line) — 每日上漲家數 - 下跌家數的累積
     # 從全市場 stock_prices 算，不依賴 market_risk 表
     adl_rows = d1_client.query(
@@ -307,7 +382,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         logger.info(f"[payload_builder] ADL computed for {len(adl_by_date)} dates from stock_prices")
 
     # 3d. Bull alignment + Limit down from stock_prices
-    # bull_alignment = % of stocks where MA5 > MA20 (proxy for MA5>10>20>60 requires more data)
+    # bull_alignment = % of stocks where MA5 > MA10 > MA20 > MA60.
     # limit_down = stocks hitting -10% daily limit
     breadth_rows = d1_client.query(
         "SELECT sp.date, "
@@ -327,18 +402,10 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             breadth_by_date[row["date"]] = (ld_count, ld_pct)
         logger.info(f"[payload_builder] Breadth computed for {len(breadth_by_date)} dates")
 
-    # bull_alignment: 需要 MA 資料，從 0050 ETF 的趨勢作 proxy
-    # 0050 在 MA20 之上 = 大盤多頭排列 proxy (1.0 or 0.0)
-    bull_by_date: dict[str, float] = {}
-    if etf_rows and len(etf_rows) >= 20:
-        for i in range(20, len(etf_rows)):
-            ma20 = sum(float(etf_rows[j]["close"]) for j in range(i - 19, i + 1)) / 20
-            ma5 = sum(float(etf_rows[j]["close"]) for j in range(i - 4, i + 1)) / 5
-            # proxy: ma5 > ma20 = bullish alignment
-            bull_by_date[etf_rows[i]["date"]] = 1.0 if ma5 > ma20 else 0.0
+    bull_by_date = _load_bull_alignment_by_date(run_date)
 
-    if etf_rows:
-        for i, row in enumerate(etf_rows):
+    if twii_history_rows:
+        for i, row in enumerate(twii_history_rows):
             date_str = row["date"]
             if date_str in history_map:
                 # market_risk 有真值，但補上 computed fields if missing
@@ -354,10 +421,10 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
                     history_map[date_str]["bull_alignment_pct"] = bull_by_date.get(date_str, 0)
                 continue
             close = float(row["close"])
-            prev1_close = float(etf_rows[i - 1]["close"]) if i >= 1 else close
-            prev5_close = float(etf_rows[i - 5]["close"]) if i >= 5 else close
+            prev1_close = float(twii_history_rows[i - 1]["close"]) if i >= 1 else close
+            prev5_close = float(twii_history_rows[i - 5]["close"]) if i >= 5 else close
             if i >= 20:
-                ma20 = sum(float(etf_rows[j]["close"]) for j in range(i - 19, i + 1)) / 20
+                ma20 = sum(float(twii_history_rows[j]["close"]) for j in range(i - 19, i + 1)) / 20
                 bias_20d = (close - ma20) / ma20 if ma20 else 0
             else:
                 bias_20d = 0
@@ -400,7 +467,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
                 "adl_trend_numeric": adl_trend,
                 "bull_alignment_pct": bull_by_date.get(date_str, 0),
             }
-        logger.info(f"[payload_builder] Market history: {len(history_rows)} from market_risk + {len(etf_rows)} from 0050 ETF = {len(history_map)} total dates")
+        logger.info(f"[payload_builder] Market history: {len(history_rows)} from market_risk + {len(twii_history_rows)} from TAIEX = {len(history_map)} total dates")
 
     # ── 3e. Merge US signals + advance_ratio into history_map (supplemental official/global time-series) ──
     us_sent_map = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
@@ -605,7 +672,7 @@ def _bulk_load_chips(
 
     `chip_data` stores TWSE/TPEX institution flow by symbol. FinLab V4.1 adds
     canonical tables where listed/OTC keeps institution nets and emerging stocks
-    expose ROTC broker proxy flow. The payload must carry that broker evidence
+    expose ROTC broker flow evidence. The payload must carry that evidence
     or recommendation reasons fall back to the old "institution balance" text.
     """
     if not symbols:
@@ -1044,16 +1111,12 @@ def _build_stock_meta(
     if prices and len(prices) >= 20:
         avg_vol = sum(_as_float(p.get("volume"), 0.0) for p in prices[-20:]) / 20
         vol_bucket = 4 if avg_vol > 50_000_000 else 3 if avg_vol > 10_000_000 else 2 if avg_vol > 2_000_000 else 1 if avg_vol > 500_000 else 0
-    # Cap bucket
-    cap_bucket = 2
-    if prices and len(prices) >= 20:
-        avg_close = sum(_price_close(p) for p in prices[-20:]) / 20
-        avg_vol = sum(_as_float(p.get("volume"), 0.0) for p in prices[-20:]) / 20
-        proxy = avg_close * avg_vol
-        cap_bucket = 4 if proxy > 5e9 else 3 if proxy > 1e9 else 2 if proxy > 2e8 else 1 if proxy > 5e7 else 0
+    liquidity_turnover_bucket = _daily_turnover_bucket(prices)
     return {
         "sector_encoded": sector_enc.get(tag, 0),
-        "market_cap_bucket": cap_bucket,
+        "market_cap_bucket": liquidity_turnover_bucket,
+        "market_cap_bucket_source": "legacy_schema_daily_turnover_bucket",
+        "liquidity_turnover_bucket": liquidity_turnover_bucket,
         "avg_volume_bucket": vol_bucket,
         "sector_peer_return_1d": round(avg[0], 6),
         "sector_peer_return_5d": round(avg[1], 6),

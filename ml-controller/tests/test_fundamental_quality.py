@@ -125,6 +125,7 @@ def test_load_fundamental_quality_by_symbol_reads_d1_inputs_fail_soft(monkeypatc
             ]
         if "canonical_fundamental_features" in sql:
             assert params == ["2330", "2026-06-05"]
+            assert "source = 'finlab.fundamental_factor_diversity'" in sql
             return [
                 {
                     "stock_id": "2330",
@@ -142,9 +143,7 @@ def test_load_fundamental_quality_by_symbol_reads_d1_inputs_fail_soft(monkeypatc
                 },
             ]
         if "FROM financials" in sql:
-            return [
-                {"stock_id": 1, "period": "2026Q1", "period_type": "quarterly", "roe": 0, "eps": 0, "pe": 99, "pb": 99, "dividend_yield": 0},
-            ]
+            raise AssertionError("legacy financials fallback must not be queried")
         raise AssertionError(sql)
 
     monkeypatch.setattr(recommendation_service.d1_client, "query", fake_query)

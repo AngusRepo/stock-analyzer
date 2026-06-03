@@ -8,7 +8,7 @@ Combinatorial Purged Cross-Validation (CPCV):
      - Test set: remaining S/2 → compute OOS performance
      - Purge: remove trades near partition boundaries to prevent leakage
   3. PBO = fraction of combinations where OOS return < 0
-  4. PBO < 0.5 → alpha credible. PBO > 0.5 → likely curve-fitting
+  4. PBO < 0.5 → alpha credible. PBO > 0.5 → possible curve-fitting
 
 Data source: backtest trades (from backtest_results) or paper_orders
 """
@@ -48,7 +48,7 @@ DEFAULT_EMBARGO_DAYS = 5        # fallback when trade/label horizon is missing
 
 @dataclass
 class PBOResult:
-    method: str = "cpcv_single_strategy_proxy"
+    method: str = "cpcv_single_strategy_non_cscv"
     n_partitions: int = 0
     n_combinations: int = 0     # C(S, S/2) total combinations evaluated
     n_trades: int = 0
@@ -472,7 +472,7 @@ def _run_cpcv(
     else:
         result.go_live_verdict = "FAIL"
         result.verdict_reason = (
-            f"PBO = {result.pbo:.1%} >= 50%. Strategy likely curve-fitting. "
+            f"PBO = {result.pbo:.1%} >= 50%. Strategy possible curve-fitting. "
             f"{result.n_oos_negative}/{len(oos_returns)} combinations lose money OOS. "
             f"Degradation IS→OOS = {result.degradation:.2%}."
         )

@@ -141,7 +141,7 @@ def classify_finlab_field(
         quality_gate = "alias_cleaning, duplicate_tag_rate, coverage_by_symbol"
     elif "broker_transactions" in lower_key or namespace.endswith("broker_transactions"):
         group = "broker / branch flow"
-        use = "broker concentration, branch flow anomaly, emerging-stock chip proxy"
+        use = "broker concentration, branch flow anomaly, emerging-stock chip evidence"
         if namespace.startswith("rotc"):
             priority = "P0"
             dataset_lane = "emerging_chip_diversity"

@@ -83,7 +83,7 @@ def classify_parameter_candidate_validation_status(
     gate: dict[str, Any] | None,
     evidence: dict[str, Any] | None,
     *,
-    proxy_pbo_blocked: bool = False,
+    non_cscv_pbo_blocked: bool = False,
     policy: PromotionPolicy | None = None,
 ) -> dict[str, Any]:
     gate = gate or {}
@@ -112,7 +112,7 @@ def classify_parameter_candidate_validation_status(
         }
 
     decision = str(gate.get("decision") or evidence.get("decision") or "").upper()
-    if decision == "PASS" and not proxy_pbo_blocked:
+    if decision == "PASS" and not non_cscv_pbo_blocked:
         return {
             "status": "PROMOTION_READY",
             "reason": "promotion_gates_passed",

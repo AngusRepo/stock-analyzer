@@ -662,13 +662,9 @@ async function runSupplementalOfficialDataBestEffortAfterFinLabBackfill(
 
 export async function fetchSupplementalOfficialData(env: Bindings, today: string): Promise<void> {
   const {
-    fetchTwseValuation,
-    fetchTpexValuation,
     fetchTwseMonthlyRevenue,
     fetchTpexMonthlyRevenue,
     fetchMarketBreadth,
-    fetchTwseFinancials,
-    fetchTpexFinancials,
   } = await import('./twseApi')
 
   try {
@@ -695,53 +691,6 @@ export async function fetchSupplementalOfficialData(env: Bindings, today: string
     }
   } catch (e) {
     console.warn('[SupplementalOfficialData] Market breadth failed:', e)
-  }
-
-  try {
-    const [twseVal, tpexVal] = await Promise.allSettled([fetchTwseValuation(today), fetchTpexValuation()])
-    const valRows = [
-      ...(twseVal.status === 'fulfilled' ? twseVal.value : []),
-      ...(tpexVal.status === 'fulfilled' ? tpexVal.value : []),
-    ]
-
-    if (valRows.length) {
-      const twNow = new Date(Date.now() + 8 * 3600_000)
-      const currentQ = `${twNow.getFullYear()}Q${Math.ceil((twNow.getMonth() + 1) / 3)}`
-
-      const stmts = valRows
-        .filter((v) => v.pe !== null || v.pb !== null || v.dividend_yield !== null)
-        .flatMap((v) => [
-          env.DB.prepare(`
-            UPDATE financials SET pe=?, pb=?, dividend_yield=?
-            WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?)
-            AND period = (
-              SELECT MAX(period)
-              FROM financials
-              WHERE stock_id = (SELECT id FROM stocks WHERE symbol=?)
-                AND period LIKE '%Q%'
-            )
-          `).bind(v.pe, v.pb, v.dividend_yield, v.symbol, v.symbol),
-          env.DB.prepare(`
-            INSERT INTO financials (stock_id, period, period_type, pe, pb, dividend_yield)
-            SELECT s.id, ?, 'quarterly', ?, ?, ?
-            FROM stocks s WHERE s.symbol = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM financials f
-              WHERE f.stock_id = s.id AND f.period LIKE '%Q%'
-            )
-          `).bind(currentQ, v.pe, v.pb, v.dividend_yield, v.symbol),
-        ])
-
-      for (let i = 0; i < stmts.length; i += 50) {
-        await env.DB.batch(stmts.slice(i, i + 50))
-      }
-
-      console.log(
-        `[SupplementalOfficialData] PER/PBR: ${valRows.length} stocks (TWSE ${twseVal.status === 'fulfilled' ? twseVal.value.length : 0} + TPEX ${tpexVal.status === 'fulfilled' ? tpexVal.value.length : 0})`,
-      )
-    }
-  } catch (e) {
-    console.warn('[SupplementalOfficialData] PER/PBR failed:', e)
   }
 
   const day = parseInt(today.slice(8, 10), 10)
@@ -777,53 +726,6 @@ export async function fetchSupplementalOfficialData(env: Bindings, today: string
     } catch (e) {
       console.warn('[SupplementalOfficialData] Monthly revenue failed:', e)
     }
-  }
-
-  try {
-    const [twseFin, tpexFin] = await Promise.allSettled([fetchTwseFinancials(), fetchTpexFinancials()])
-    const finRows = [
-      ...(twseFin.status === 'fulfilled' ? twseFin.value : []),
-      ...(tpexFin.status === 'fulfilled' ? tpexFin.value : []),
-    ]
-
-    if (finRows.length) {
-      const stmts = finRows
-        .filter((f) => f.eps !== null)
-        .map((f) => {
-          const period = `${f.year}Q${f.quarter}`
-          return env.DB.prepare(`
-            INSERT INTO financials (stock_id, period, period_type, eps, revenue, roe, operating_income, net_income, total_assets, total_liabilities)
-            SELECT s.id, ?, 'quarterly', ?, ?, ?, ?, ?, ?, ?
-            FROM stocks s WHERE s.symbol = ?
-            ON CONFLICT(stock_id, period) DO UPDATE SET
-              eps=COALESCE(excluded.eps, financials.eps),
-              revenue=COALESCE(excluded.revenue, financials.revenue),
-              roe=COALESCE(excluded.roe, financials.roe),
-              operating_income=COALESCE(excluded.operating_income, financials.operating_income),
-              net_income=COALESCE(excluded.net_income, financials.net_income),
-              total_assets=COALESCE(excluded.total_assets, financials.total_assets),
-              total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
-          `).bind(
-            period,
-            f.eps,
-            f.revenue,
-            f.roe,
-            f.operating_income,
-            f.net_income,
-            f.total_assets,
-            f.total_liabilities,
-            f.symbol,
-          )
-        })
-
-      for (let i = 0; i < stmts.length; i += 50) {
-        await env.DB.batch(stmts.slice(i, i + 50))
-      }
-
-      console.log(`[SupplementalOfficialData] Financials: ${finRows.length} entries (TWSE+TPEX EPS+ROE)`)
-    }
-  } catch (e) {
-    console.warn('[SupplementalOfficialData] Financials failed:', e)
   }
 
   if (env.ML_CONTROLLER_URL) {

@@ -265,9 +265,10 @@ async function fetchBullAlignmentCount(db: D1Database): Promise<{
       if (closes.length < 60) continue
       total++
       const ma5  = closes.slice(-5).reduce((a, b) => a + b, 0) / 5
+      const ma10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10
       const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20
       const ma60 = closes.slice(-60).reduce((a, b) => a + b, 0) / 60
-      if (ma5 > ma20 && ma20 > ma60) bullCount++
+      if (ma5 > ma10 && ma10 > ma20 && ma20 > ma60) bullCount++
     }
 
     return {

@@ -194,7 +194,8 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
     assert release_gate["pbo"]["method"] == "cscv_rank_logit"
     assert release_gate["monte_carlo"]["mdd_95th"] == 0.18
     assert release_gate["monte_carlo"]["tail_risk_diagnostics"]["loss_gt_10pct_count"] == 2
-    assert release_gate["deflated_sharpe"]["method"] == "deflated_sharpe_proxy"
+    assert release_gate["deflated_sharpe"]["method"] == "deflated_sharpe_advisory_lower_bound"
+    assert release_gate["deflated_sharpe"]["promotion_eligible"] is False
     assert release_gate["root_cause"] == "artifact_registry_missing_validation_pointer"
 
 
@@ -246,7 +247,7 @@ def test_model_artifact_validation_chain_persists_blocked_candidate_packet(monke
                 "source": "backtest",
                 "pbo": 0.12,
                 "go_live_verdict": "PASS",
-                "raw_details": '{"method":"cpcv_single_strategy_proxy"}',
+                "raw_details": '{"method":"cpcv_single_strategy_non_cscv"}',
             }]
         if "FROM monte_carlo_results" in sql:
             return [{
@@ -313,7 +314,7 @@ def test_model_artifact_validation_chain_persists_blocked_candidate_packet(monke
     assert packet["candidate_specific"] is False
     assert packet["candidate_gate"]["status"] == "MISSING"
     assert packet["release_gate"]["scope"] == "latest_global_weekly_validation"
-    assert packet["release_gate"]["pbo"]["method"] == "cpcv_single_strategy_proxy"
+    assert packet["release_gate"]["pbo"]["method"] == "cpcv_single_strategy_non_cscv"
     assert params[1] == "rolling_ic_passed"
     assert params[2] == "shadowing"
     assert params[3] == "blocked_multi_evidence_gate"

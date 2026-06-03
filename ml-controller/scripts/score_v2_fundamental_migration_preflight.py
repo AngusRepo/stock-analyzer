@@ -93,11 +93,12 @@ def _table_names(query: QueryFn) -> list[str]:
 
 def _inventory(table_names: list[str], query: QueryFn) -> dict[str, Any]:
     if "canonical_fundamental_features" not in set(table_names):
-        return {"fundamental_total": 0, "fundamental_latest_available_date": None}
+        return {"fundamental_total": 0, "fundamental_any_total": 0, "fundamental_latest_available_date": None}
     rows = query(
         """
-        SELECT COUNT(*) AS fundamental_total,
-               MAX(available_date) AS fundamental_latest_available_date
+        SELECT SUM(CASE WHEN source='finlab.fundamental_factor_diversity' THEN 1 ELSE 0 END) AS fundamental_total,
+               COUNT(*) AS fundamental_any_total,
+               MAX(CASE WHEN source='finlab.fundamental_factor_diversity' THEN available_date ELSE NULL END) AS fundamental_latest_available_date
           FROM canonical_fundamental_features
         """,
         90,

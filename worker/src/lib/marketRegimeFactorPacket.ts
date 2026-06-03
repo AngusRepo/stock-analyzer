@@ -320,7 +320,7 @@ async function legacyLeverageStress(db: D1Database, date: string, reason: string
     return { marginBillion: null, shortBillion: null, marginChangePct: null, sourceDate: null, source: 'margin_data.legacy_margin_short_amount', detail: `${reason}; legacy leverage query failed` }
   }
 }
-async function sectorBreadthProxy(db: D1Database, date: string): Promise<{ value: number | null; sourceDate: string | null; detail: string }> {
+async function sectorBreadthSignal(db: D1Database, date: string): Promise<{ value: number | null; sourceDate: string | null; detail: string }> {
   try {
     const rows = await db.prepare(`
       SELECT date, classification, quadrant, COUNT(*) AS n

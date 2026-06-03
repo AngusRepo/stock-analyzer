@@ -238,14 +238,14 @@ function candidatePoolThresholdScores(candidate: StrategyCandidatePoolCandidate)
   seedScore: number
   chipFlow: number
   technicalStructure: number
-  momentumProxy: number
+  momentumScore: number
 } {
   const canonical = deriveStrategyThresholdScores(strategyInputFromPoolCandidate(candidate))
   return {
     seedScore: canonical.seedScore,
     chipFlow: canonical.chipFlow,
     technicalStructure: canonical.technicalStructure,
-    momentumProxy: canonical.momentumProxy,
+    momentumScore: canonical.momentumScore,
   }
 }
 
@@ -294,7 +294,7 @@ function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: St
     ['score', scores.seedScore, thresholds.minSeedScore],
     ['chip', scores.chipFlow, thresholds.minChipScore],
     ['technical', scores.technicalStructure, thresholds.minTechScore],
-    ['momentum', scores.momentumProxy, thresholds.minMomentumScore],
+    ['momentum', scores.momentumScore, thresholds.minMomentumScore],
     ['closeAboveMa20Pct', raw.closeAboveMa20Pct, thresholds.minCloseAboveMa20Pct],
     ['closeAboveMa60Pct', raw.closeAboveMa60Pct, thresholds.minCloseAboveMa60Pct],
     ['volumeExpansion20', raw.volumeExpansion20, thresholds.minVolumeExpansion20],
@@ -383,7 +383,7 @@ function strategyScore(candidate: StrategyCandidatePoolCandidate, spec: Strategy
   const score = scores.seedScore
   const chip = scores.chipFlow
   const tech = scores.technicalStructure
-  const momentum = scores.momentumProxy
+  const momentum = scores.momentumScore
   const liquidity = candidateLiquidity(candidate)
   const liquidityBonus = liquidity == null ? 0 : clamp(Math.log10(Math.max(liquidity, 1)) - 7, 0, 3)
   if (!usesLegacyScoreThresholds(spec)) {
@@ -666,7 +666,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               raw_score: rawScoreForEntry(candidate, spec),
               strategy_score: scored,
               rank: 0,
-              reason: 'adaptive_empty_pool_ranked_proxy',
+              reason: 'adaptive_empty_pool_ranked_near_match',
             } satisfies StrategyPoolEntry<T>
           })
           .sort((a, b) => b.strategy_score - a.strategy_score)

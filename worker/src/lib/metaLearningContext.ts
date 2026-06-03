@@ -64,7 +64,7 @@ function normalize01(value: unknown): number | null {
   return clamp(n, 0, 1)
 }
 
-function normalizePercentLike(value: unknown): number | null {
+function normalizePercentValue(value: unknown): number | null {
   const n = finiteOrNull(value)
   if (n == null) return null
   const pct = Math.abs(n) > 1 ? n / 100 : n
@@ -115,7 +115,7 @@ export function buildExpandedMetaLearningContext(input: ExpandedMetaLearningCont
     liquidity: normalize01(input.liquidity),
     fill_quality: normalize01(input.fill_quality),
     regime: normalizeRegime(input.regime),
-    volatility: normalizePercentLike(input.volatility),
+    volatility: normalizePercentValue(input.volatility),
     market_risk: normalize01(input.market_risk),
     bias: 1,
   }

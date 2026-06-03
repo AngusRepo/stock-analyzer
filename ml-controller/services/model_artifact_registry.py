@@ -1768,7 +1768,7 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
 
     Rolling live IC is useful evidence, but it is not sufficient for production
     promotion. The final promotion lane needs a multi-evidence packet so the UI
-    cannot make a one-window shadow win look like an approval-ready artifact.
+    cannot turn a one-window shadow win into an approval-ready artifact.
     """
     blockers: list[dict[str, Any]] = []
     live_status = str(row.get("live_gate_status") or "")
@@ -1883,7 +1883,7 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             add(
                 "candidate_pbo_method_not_promotion_grade",
                 "Candidate PBO method is not promotion-grade",
-                "Run candidate-specific CSCV rank-logit PBO; proxy PBO is visible but cannot approve production.",
+                "Run candidate-specific CSCV rank-logit PBO; non-CSCV PBO is visible but cannot approve production.",
             )
 
         dsr = candidate_gate.get("deflated_sharpe") or _scoped_gate_evidence(
@@ -1940,7 +1940,7 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
         if isinstance(release_pbo, dict) and release_pbo_method and release_pbo_method != "cscv_rank_logit":
             add(
                 "release_pbo_method_not_promotion_grade",
-                "Shared release PBO method is proxy-grade",
+                "Shared release PBO method is not promotion-grade",
                 "Run global CSCV rank-logit PBO before opening this release train.",
                 severity="review",
             )

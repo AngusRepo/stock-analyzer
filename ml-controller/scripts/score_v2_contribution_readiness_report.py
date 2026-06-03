@@ -86,7 +86,6 @@ def _table_names(query: QueryFn) -> list[str]:
            AND name IN (
              'canonical_fundamental_features',
              'canonical_revenue_monthly',
-             'financials',
              'theme_signals',
              'stock_theme_features',
              'external_evidence_items',
@@ -104,16 +103,22 @@ def _table_names(query: QueryFn) -> list[str]:
 
 def _inventory(table_names: list[str], query: QueryFn) -> dict[str, Any]:
     has_fundamental = "canonical_fundamental_features" in set(table_names)
-    fundamental_count_sql = "(SELECT COUNT(*) FROM canonical_fundamental_features)" if has_fundamental else "0"
-    fundamental_latest_sql = "(SELECT MAX(available_date) FROM canonical_fundamental_features)" if has_fundamental else "NULL"
+    fundamental_count_sql = (
+        "(SELECT COUNT(*) FROM canonical_fundamental_features "
+        "WHERE source='finlab.fundamental_factor_diversity')"
+    ) if has_fundamental else "0"
+    fundamental_any_count_sql = "(SELECT COUNT(*) FROM canonical_fundamental_features)" if has_fundamental else "0"
+    fundamental_latest_sql = (
+        "(SELECT MAX(available_date) FROM canonical_fundamental_features "
+        "WHERE source='finlab.fundamental_factor_diversity')"
+    ) if has_fundamental else "NULL"
     rows = query(
         f"""
         SELECT
           (SELECT COUNT(*) FROM canonical_revenue_monthly) AS revenue_total,
           (SELECT MAX(revenue_month) FROM canonical_revenue_monthly) AS revenue_latest_month,
-          (SELECT COUNT(*) FROM financials) AS financials_total,
-          (SELECT MAX(period) FROM financials) AS financials_latest_period,
           {fundamental_count_sql} AS fundamental_total,
+          {fundamental_any_count_sql} AS fundamental_any_total,
           {fundamental_latest_sql} AS fundamental_latest_available_date,
           (SELECT COUNT(*) FROM theme_signals) AS theme_total,
           (SELECT MAX(date) FROM theme_signals) AS theme_latest_date,

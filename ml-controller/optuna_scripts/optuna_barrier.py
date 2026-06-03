@@ -173,7 +173,7 @@ def evaluate_barrier_params(
     coverage = total_labels / len(df)
     coverage_penalty = max(0, 0.5 - coverage) * 0.3
 
-    # OOS "accuracy" proxy
+    # OOS label stability score
     is_oos_gap = abs(is_win_rate - oos_win_rate)
     stability_penalty = is_oos_gap * 0.3
 

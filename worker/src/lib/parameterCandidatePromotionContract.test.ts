@@ -156,8 +156,8 @@ assert(
 
 assert(
   configPool.includes('cscv_rank_logit') &&
-    configPool.includes('proxy_pbo_blocked'),
-  'proxy PBO must stay blocked and cannot be displayed/used as promotion-grade PASS',
+    configPool.includes('non_cscv_pbo_blocked'),
+  'non-CSCV PBO must stay blocked and cannot be displayed/used as promotion-grade PASS',
 )
 
 console.log('parameter candidate promotion closure contract ok')

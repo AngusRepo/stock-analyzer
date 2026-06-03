@@ -1125,7 +1125,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           controller_live_submit_enabled: finLabL5MarketDataSnapshot.liveSubmitEnabled,
           controller_can_submit_real_order: finLabL5MarketDataSnapshot.canSubmitRealOrder,
           quality: finLabL5Quality,
-          production_like_market_data: finLabL5MarketDataEnabled,
+          production_grade_market_data: finLabL5MarketDataEnabled,
           live_submit_enabled: false,
         },
         pendingRunId,

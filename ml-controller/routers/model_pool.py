@@ -297,12 +297,12 @@ def _build_lifecycle_review_packet(
     paper_order_ab_by_model: dict | None,
     model_cpcv_by_model: dict | None = None,
 ) -> dict:
-    promote_like = [a for a in actions if str(a.get("transition") or "").startswith("promote")]
+    promote_actions = [a for a in actions if str(a.get("transition") or "").startswith("promote")]
     blocked = [a for a in actions if a.get("transition") == "promote_blocked"]
     return {
         "summary": {
             "actions": len(actions),
-            "promote_candidates": len(promote_like),
+            "promote_candidates": len(promote_actions),
             "blocked_promotions": len(blocked),
             "gate_decision": (promotion_gate or {}).get("decision"),
             "gate_passed": (promotion_gate or {}).get("passed"),

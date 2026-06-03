@@ -76,6 +76,36 @@ async function latestStockChipDate(db: D1Database, symbol: string): Promise<stri
   return legacy?.date ?? null
 }
 
+async function loadCanonicalStockFundamentals(db: D1Database, symbol: string, limit: number): Promise<any[]> {
+  const { results } = await db.prepare(`
+    SELECT stock_id AS symbol,
+           period,
+           market_segment,
+           report_date,
+           available_date,
+           revenue_growth_yoy,
+           gross_margin,
+           operating_margin,
+           roe,
+           eps,
+           pe,
+           pb,
+           dividend_yield,
+           debt_ratio,
+           current_ratio,
+           operating_cash_flow,
+           industry_quality_percentile,
+           source,
+           as_of_date
+      FROM canonical_fundamental_features
+     WHERE stock_id=?
+       AND source='finlab.fundamental_factor_diversity'
+     ORDER BY available_date DESC, period DESC
+     LIMIT ?
+  `).bind(symbol, limit).all<any>()
+  return results ?? []
+}
+
 async function loadCanonicalStockChips(db: D1Database, symbol: string, since: string): Promise<any[]> {
   const { results } = await db.prepare(`
     SELECT date,
@@ -287,10 +317,9 @@ stocks.get('/:id/financials', async (c) => {
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const limit = parsePosInt(c.req.query('limit'), 12)
 
-  const { results } = await c.env.DB.prepare(
-    'SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT ?'
-  ).bind(id, limit).all()
-  return c.json(results)
+  const stock = await c.env.DB.prepare('SELECT symbol FROM stocks WHERE id=?').bind(id).first<{ symbol: string }>()
+  if (!stock) return c.json({ error: 'stock_not_found' }, 404)
+  return c.json(await loadCanonicalStockFundamentals(c.env.DB, stock.symbol, limit))
 })
 
 // ─── GET /api/stocks/:id/monthly-revenue?months=12 ──────────────────────────
@@ -418,14 +447,8 @@ stocks.get('/:id/valuations', async (c) => {
   const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
-  const [current, history] = await Promise.all([
-    c.env.DB.prepare(
-      "SELECT * FROM financials WHERE stock_id=? AND period_type='quarterly' ORDER BY period DESC LIMIT 1"
-    ).bind(id).first(),
-    c.env.DB.prepare(
-      "SELECT * FROM financials WHERE stock_id=? AND period_type='quarterly' ORDER BY period DESC LIMIT 8"
-    ).bind(id).all().then(r => r.results),
-  ])
+  const history = await loadCanonicalStockFundamentals(c.env.DB, stock.symbol, 8)
+  const current = history[0] ?? null
 
   return c.json({ stock, current, history })
 })
@@ -504,10 +527,8 @@ stocks.get('/:id/ai-summary', async (c) => {
     c.env.DB.prepare(
       'SELECT business_desc, key_customers, key_suppliers FROM stock_profiles WHERE symbol=?'
     ).bind(stock.symbol).first<any>().catch(() => null),
-    // 最新財報
-    c.env.DB.prepare(
-      "SELECT period, eps, pe, pb, dividend_yield, roe FROM financials WHERE stock_id=? AND period LIKE '%Q%' ORDER BY period DESC LIMIT 1"
-    ).bind(id).first<any>().catch(() => null),
+    // FinLab canonical fundamentals.
+    loadCanonicalStockFundamentals(c.env.DB, stock.symbol, 1).then(rows => rows[0] ?? null).catch(() => null),
   ])
 
   let recommendation = recRow ? shapeStockAiRecommendation(recRow) : null

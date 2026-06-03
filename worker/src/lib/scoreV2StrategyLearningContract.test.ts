@@ -28,7 +28,7 @@ assert(
   !contextBlock.includes('technicalStructure: thresholdScores.technicalStructure'),
   'strategy decision context must not write Score V2 technicalStructure as strategy baseline',
 )
-assert(!contextBlock.includes('momentumProxy: thresholdScores.momentumProxy'), 'strategy decision context must not write Score V2 momentumProxy as strategy baseline')
+assert(!contextBlock.includes('momentumScore: thresholdScores.momentumScore'), 'strategy decision context must not write Score V2 momentumScore as strategy baseline')
 assert(!contextBlock.includes('chip_score'), 'strategy decision context must not write legacy chip_score')
 assert(!contextBlock.includes('tech_score'), 'strategy decision context must not write legacy tech_score')
 assert(!contextBlock.includes('momentum_score'), 'strategy decision context must not write legacy momentum_score')
@@ -77,6 +77,6 @@ for (const legacyKey of ["'score'", "'chip_score'", "'tech_score'", "'momentum_s
   assert(forbiddenSpecBlock.includes(legacyKey), `strategy specs must forbid legacy score key ${legacyKey}`)
 }
 
-assert(strategySpec.includes('record?.seedComponents'), 'strategy thresholds should read Score V2 seedComponents when momentum proxy is needed')
+assert(strategySpec.includes('record?.seedComponents'), 'strategy thresholds should read Score V2 seedComponents when momentum score is needed')
 assert(strategySpec.includes("'screenerMomentumSeed20'"), 'strategy thresholds should read the explicit screenerMomentumSeed20 seed key')
 assert(!strategySpec.includes('record?.legacyComponents'), 'strategy thresholds must not read legacyComponents from Score V2 payloads')

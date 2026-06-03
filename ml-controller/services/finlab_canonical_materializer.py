@@ -55,7 +55,7 @@ def normalize_symbol(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-    # FinLab ROTC broker rows use values like "1260 富味鄉".
+    # FinLab ROTC broker rows use values such as "1260 富味鄉".
     first = raw.split()[0].strip()
     return first or raw
 
@@ -153,8 +153,8 @@ def _lineage(run_id: str, lane: str, fields: list[str], artifact_root: Path) -> 
 
 FUNDAMENTAL_FIELD_ALIASES: dict[str, list[str]] = {
     "revenue_growth_yoy": ["revenue_growth_yoy", "revenue_yoy", "yoy"],
-    "gross_margin": ["gross_margin", "gross_margin_pct"],
-    "operating_margin": ["operating_margin", "operating_margin_pct"],
+    "gross_margin": ["gross_margin", "gross_margin_pct", "營業毛利率"],
+    "operating_margin": ["operating_margin", "operating_margin_pct", "營業利益率", "營益率"],
     "roe": ["roe", "return_on_equity"],
     "eps": ["eps"],
     "pe": ["pe", "per"],

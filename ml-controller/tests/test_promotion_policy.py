@@ -113,7 +113,7 @@ def test_promotion_policy_rejects_bad_tail_risk_and_overfit():
 
 def test_promotion_policy_rejects_proxy_pbo_even_when_metrics_look_good():
     backtest, monte_carlo, pbo = _passing_inputs()
-    pbo["method"] = "cpcv_single_strategy_proxy"
+    pbo["method"] = "cpcv_single_strategy_non_cscv"
 
     verdict = evaluate_promotion_candidate(backtest, monte_carlo, pbo)
 

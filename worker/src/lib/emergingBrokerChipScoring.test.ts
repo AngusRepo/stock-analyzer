@@ -21,7 +21,7 @@ const smallBrokerFlow = new Map<string, any>([
   ['2026-05-15', {
     foreign: 0,
     trust: 0,
-    brokerProxy: 30_000,
+    brokerFlow: 30_000,
     estimatedAmount: 1_500_000,
     brokerCount: 8,
     concentration: 0.31,
@@ -34,7 +34,7 @@ const largeBrokerFlow = new Map<string, any>([
   ['2026-05-15', {
     foreign: 0,
     trust: 0,
-    brokerProxy: 250_000,
+    brokerFlow: 250_000,
     estimatedAmount: 12_500_000,
     brokerCount: 45,
     concentration: 0.18,
@@ -46,6 +46,6 @@ const largeBrokerFlow = new Map<string, any>([
 const small = scoreMultiFactor(prices, smallBrokerFlow, 0, 50)
 const large = scoreMultiFactor(prices, largeBrokerFlow, 0, 50)
 
-assert(small.chip_score < large.chip_score, 'emerging broker proxy score must vary with broker amount/intensity')
-assert(small.reasons.some((reason) => reason.includes('券商分點')), 'emerging broker reason should use broker wording')
-assert(!small.reasons.some((reason) => reason.includes('法人佔成交')), 'emerging broker reason must not use listed/OTC institution wording')
+assert(small.chip_score < large.chip_score, 'emerging broker flow score must vary with broker amount/intensity')
+assert(small.reasons.some((reason) => reason.includes('broker_flow_5d')), 'emerging broker reason should use broker wording')
+assert(!small.reasons.some((reason) => reason.includes('institutional_turnover_intensity')), 'emerging broker reason must not use listed/OTC institution wording')

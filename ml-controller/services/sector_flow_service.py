@@ -313,11 +313,11 @@ def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[
 
 
 def _load_symbol_turnover_snapshots(as_of_date: str) -> TurnoverSnapshots:
-    """Load current and previous trading-day turnover by symbol.
+    """Load current and previous trading-day close-volume notional by symbol.
 
-    D1 stores volume but not traded value, so turnover is approximated as
-    close * volume. Shares are computed against all symbols with a price row
-    for that trading date.
+    D1 stock_prices stores close and share volume. The persisted sector_flow
+    turnover fields therefore mean close-volume notional share, not official
+    exchange-reported traded value.
     """
     date_rows = d1_client.query(
         """

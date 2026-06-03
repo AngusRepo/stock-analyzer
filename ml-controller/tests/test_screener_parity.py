@@ -233,7 +233,7 @@ FIXTURES: list[dict] = [
         "marketReturn5d": 0.0,
     },
     # ── RSI overbought but no blunting: 20 flat + last few up only ────────
-    # Actually use steady up with large step: RSI > 75 very likely
+    # Actually use steady up with large step: RSI > 75 expected
     {
         "id": "rsi_overbought_tier",
         "bars": make_bars(steady_up(20, 50.0, 3.0)),   # aggressive up → RSI > 75

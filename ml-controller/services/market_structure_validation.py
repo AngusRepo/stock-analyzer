@@ -93,7 +93,7 @@ def _stat(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "coverage_rate": round(sum(1 for hit in coverage if hit) / len(coverage), 4) if coverage else None,
         "avg_forward_return": round(mean(returns), 6) if returns else None,
         "hit_rate": round(sum(1 for value in returns if value > 0) / len(returns), 4) if returns else None,
-        "avg_drawdown_proxy": round(mean([min(0.0, value) for value in returns]), 6) if returns else None,
+        "avg_negative_forward_return": round(mean([min(0.0, value) for value in returns]), 6) if returns else None,
     }
 
 
@@ -147,8 +147,8 @@ def validate_market_structure(rows: list[dict[str, Any]], *, min_samples: int = 
 
     gated_stat = _stat(gated)
     non_gated_stat = _stat(non_gated)
-    if gated and non_gated and gated_stat["avg_drawdown_proxy"] is not None and non_gated_stat["avg_drawdown_proxy"] is not None:
-        if gated_stat["avg_drawdown_proxy"] < non_gated_stat["avg_drawdown_proxy"]:
+    if gated and non_gated and gated_stat["avg_negative_forward_return"] is not None and non_gated_stat["avg_negative_forward_return"] is not None:
+        if gated_stat["avg_negative_forward_return"] < non_gated_stat["avg_negative_forward_return"]:
             warnings.append({
                 "level": "warning",
                 "reason": "gate_group_has_worse_downside",

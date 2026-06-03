@@ -102,6 +102,54 @@ def test_per_stock_misc_chunks_all_bulk_queries(monkeypatch):
     assert rows[1]["revenue_yoy"] == 12.5
 
 
+def test_bull_alignment_uses_full_market_ma_stack(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_query(sql, params=None, timeout=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return [{"date": "2026-05-29", "eligible": 100, "aligned": 58}]
+
+    monkeypatch.setattr(payload_builder.d1_client, "query", fake_query)
+
+    out = payload_builder._load_bull_alignment_by_date("2026-05-29")
+
+    assert out["2026-05-29"] == 0.58
+    assert "ma5 > ma10 AND ma10 > ma20 AND ma20 > ma60" in str(captured["sql"])
+    assert "s.symbol = '0050'" not in str(captured["sql"])
+    assert captured["params"] == ["2026-05-29"]
+    assert captured["timeout"] == 120.0
+
+
+def test_stock_meta_labels_legacy_market_cap_slot_as_turnover_bucket():
+    prices = [
+        {"close": 100.0, "volume": 20_000_000}
+        for _ in range(20)
+    ]
+
+    meta = payload_builder._build_stock_meta(
+        "2330",
+        {"2330": "semi"},
+        {"semi": 7},
+        {"semi": (0.01, 0.02)},
+        {"2330": (0.03, 0.06)},
+        prices,
+    )
+
+    assert meta["market_cap_bucket"] == meta["liquidity_turnover_bucket"]
+    assert meta["market_cap_bucket_source"] == "legacy_schema_daily_turnover_bucket"
+
+
+def test_market_env_source_no_longer_queries_0050_as_market_history():
+    source = Path(__file__).resolve().parent.parent.joinpath("services", "payload_builder.py").read_text(encoding="utf-8")
+
+    assert "WHERE s.symbol = '0050'" not in source
+    assert "from 0050 ETF" not in source
+    assert "".join(["MA5", " > ", "MA20"]) not in source
+    assert "twii_history_rows" in source
+
+
 def test_build_payloads_handles_avg_price_only_latest_row(monkeypatch):
     captured_as_of: dict[str, object] = {}
     prices = [

@@ -95,11 +95,11 @@ def test_l5_market_data_uses_injected_account_without_order_methods() -> None:
     assert result["quotes"]["2330"]["l5_depth_levels"] == 5
 
 
-def test_l5_market_data_route_exposes_production_like_market_data_contract() -> None:
+def test_l5_market_data_route_exposes_production_grade_market_data_contract() -> None:
     source = (ROOT / "routers" / "finlab.py").read_text(encoding="utf-8")
 
     assert '@router.post("/execution/l5-market-data")' in source
     assert "run_finlab_l5_market_data" in source
-    assert 'payload["production_like_market_data"] = True' in source
+    assert 'payload["production_grade_market_data"] = True' in source
     assert 'payload["live_submit_enabled"] = False' in source
     assert 'payload["can_submit_real_order"] = False' in source

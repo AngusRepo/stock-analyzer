@@ -59,7 +59,7 @@ interface CountRow {
   candidate_count?: number
   active_count?: number
   emerging_recommendations?: number
-  pending_buy_emerging_like?: number
+  pending_buy_emerging_style?: number
   top_concept_symbols?: number
   top_unmapped_symbols?: number
   top_other_symbols?: number
@@ -777,20 +777,20 @@ export function buildSurfaceRoleConsistencyCheck(input: {
 
 export function buildBoardLaneContractCheck(input: {
   emergingRecommendations: number
-  pendingBuyEmergingLike: number
+  pendingBuyEmergingStyle: number
 }): DataQualityCheck {
   const emergingRecommendations = Number(input.emergingRecommendations ?? 0)
-  const pendingBuyEmergingLike = Number(input.pendingBuyEmergingLike ?? 0)
+  const pendingBuyEmergingStyle = Number(input.pendingBuyEmergingStyle ?? 0)
   return {
     id: 'board_lane_contract',
     label: 'Board lane contract',
-    status: pendingBuyEmergingLike > 0 ? 'fail' : 'ok',
-    summary: pendingBuyEmergingLike > 0
-      ? `${pendingBuyEmergingLike} emerging-style pending buys detected`
+    status: pendingBuyEmergingStyle > 0 ? 'fail' : 'ok',
+    summary: pendingBuyEmergingStyle > 0
+      ? `${pendingBuyEmergingStyle} emerging-style pending buys detected`
       : `emerging watchlist=${emergingRecommendations}; pending buys contain no emerging-style rows`,
     metrics: {
       emerging_recommendations: emergingRecommendations,
-      pending_buy_emerging_like: pendingBuyEmergingLike,
+      pending_buy_emerging_style: pendingBuyEmergingStyle,
     },
   }
 }
@@ -1130,7 +1130,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
                    ) IS NOT NULL
                  )
                )
-          ) AS pending_buy_emerging_like`,
+          ) AS pending_buy_emerging_style`,
       targetDate,
       targetDate,
     ).catch((): CountRow => ({})),
@@ -1343,7 +1343,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     }),
     buildBoardLaneContractCheck({
       emergingRecommendations: Number(boardLaneStats.emerging_recommendations ?? 0),
-      pendingBuyEmergingLike: Number(boardLaneStats.pending_buy_emerging_like ?? 0),
+      pendingBuyEmergingStyle: Number(boardLaneStats.pending_buy_emerging_style ?? 0),
     }),
     buildModelIcEvidenceCheck(modelIcEvidence.results ?? []),
     buildSchemaCheck((schemaRows.results ?? []).map((row) => row.name)),

@@ -81,7 +81,8 @@ def build_fundamental_migration_preflight_report(
     has_create_table = f"create table if not exists {TABLE_NAME}" in normalized
     has_primary_key = "primary key(stock_id, period, source)" in normalized
     table_exists = TABLE_NAME in tables
-    fundamental_rows = _int(inventory.get("fundamental_total"))
+    fundamental_rows = _int(inventory.get("fundamental_total") or inventory.get("fundamental_finlab_total"))
+    fundamental_any_rows = _int(inventory.get("fundamental_any_total"))
 
     checks = [
         {
@@ -141,6 +142,7 @@ def build_fundamental_migration_preflight_report(
         "live_schema": {
             "table_exists": table_exists,
             "fundamental_total": fundamental_rows,
+            "fundamental_any_total": fundamental_any_rows,
             "fundamental_latest_available_date": inventory.get("fundamental_latest_available_date"),
         },
         "apply_command_hint": (
@@ -150,7 +152,11 @@ def build_fundamental_migration_preflight_report(
         "readback_sql": [
             "SELECT name FROM sqlite_master WHERE type='table' AND name='canonical_fundamental_features';",
             "PRAGMA table_info(canonical_fundamental_features);",
-            "SELECT COUNT(*) AS fundamental_total, MAX(available_date) AS latest_available_date FROM canonical_fundamental_features;",
+            (
+                "SELECT COUNT(*) AS fundamental_total, MAX(available_date) AS latest_available_date "
+                "FROM canonical_fundamental_features WHERE source='finlab.fundamental_factor_diversity';"
+            ),
+            "SELECT source, COUNT(*) AS n FROM canonical_fundamental_features GROUP BY source ORDER BY n DESC;",
         ],
         "allowed_next_action": allowed_next_action,
     }

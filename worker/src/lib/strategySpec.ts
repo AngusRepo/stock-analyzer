@@ -129,7 +129,7 @@ export interface StrategyThresholdScores {
   seedScore: number
   chipFlow: number
   technicalStructure: number
-  momentumProxy: number
+  momentumScore: number
   source: 'score_v2' | 'missing_score_v2'
 }
 
@@ -327,7 +327,7 @@ export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput)
       seedScore: canonicalFinal ?? snapshot.finalScore,
       chipFlow: snapshot.components.chipFlow,
       technicalStructure: snapshot.components.technicalStructure,
-      momentumProxy: seedComponentNumber(record, 'screenerMomentumSeed20')
+      momentumScore: seedComponentNumber(record, 'screenerMomentumSeed20')
         ?? snapshot.technicalBreakdown?.volumeConfirmation
         ?? 0,
       source: 'score_v2',
@@ -338,7 +338,7 @@ export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput)
     seedScore: 0,
     chipFlow: 0,
     technicalStructure: 0,
-    momentumProxy: 0,
+    momentumScore: 0,
     source: 'missing_score_v2',
   }
 }
@@ -417,7 +417,7 @@ export function assessCandidateAgainstStrategySpecs(
     if (!meetsMinimum(scores.seedScore, t.minSeedScore)) continue
     if (!meetsMinimum(scores.chipFlow, t.minChipScore)) continue
     if (!meetsMinimum(scores.technicalStructure, t.minTechScore)) continue
-    if (!meetsMinimum(scores.momentumProxy, t.minMomentumScore)) continue
+    if (!meetsMinimum(scores.momentumScore, t.minMomentumScore)) continue
     if (!meetsRawSignalThresholds(raw, t)) continue
 
     matches.push({

@@ -21,7 +21,7 @@ assert(
   thresholdScoresBlock.includes('technicalStructure: canonical.technicalStructure'),
   'candidate pool should use canonical technical structure only',
 )
-assert(thresholdScoresBlock.includes('momentumProxy: canonical.momentumProxy'), 'candidate pool should use canonical momentum proxy only')
+assert(thresholdScoresBlock.includes('momentumScore: canonical.momentumScore'), 'candidate pool should use canonical momentum score only')
 
 const deriveScoresStart = strategySpec.indexOf('export function deriveStrategyThresholdScores')
 const deriveScoresEnd = strategySpec.indexOf('export function assessCandidateAgainstStrategySpecs', deriveScoresStart)

@@ -35,8 +35,8 @@ const canonical = canonicalChipRowsToFmChips(
 )
 
 assert(canonical.length === 4, 'canonical rows should convert institutional and ROTC broker flow into FMChip rows')
-assert(canonical.some(row => row.name === 'broker_proxy' && row.stock_id === '6682'), 'ROTC broker flow must become broker_proxy chip input')
-assert(canonical.find(row => row.name === 'broker_proxy')?.broker_count === 9, 'broker_count should be preserved for watch points')
+assert(canonical.some(row => row.name === 'broker_flow' && row.stock_id === '6682'), 'ROTC broker flow must become broker_flow chip input')
+assert(canonical.find(row => row.name === 'broker_flow')?.broker_count === 9, 'broker_count should be preserved for watch points')
 
 const fallback = [
   { date: '2026-05-15', stock_id: '2330', name: 'foreign', buy: 1, sell: 0, source: 'legacy.chip_data' },

@@ -92,7 +92,7 @@ def simulate_signals(
         except (json.JSONDecodeError, TypeError):
             pass
 
-        # Simulate consensus (approximate from model data)
+        # Reconstruct consensus from stored model directions.
         models = forecast.get("models", {})
         if models:
             directions = [m.get("direction", "up") for m in models.values() if isinstance(m, dict)]

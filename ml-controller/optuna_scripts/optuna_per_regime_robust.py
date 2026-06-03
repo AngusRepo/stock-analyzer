@@ -111,7 +111,7 @@ def _sharpe_from_trades(trades: list[Trade]) -> Optional[float]:
     rets = np.array([float(t.profit_ratio or 0) for t in trades])
     if rets.std() == 0:
         return None
-    # Approximate annualization: avg trades/year ~ 60 (assuming ~5d hold)
+    # Annualization convention: avg trades/year ~ 60 (assuming ~5d hold)
     return float(rets.mean() / rets.std() * (60 ** 0.5))
 
 

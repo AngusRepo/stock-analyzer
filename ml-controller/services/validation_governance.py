@@ -25,7 +25,7 @@ VALIDATION_SCOPE = {
     "dynamic_embargo": "required",
     "cpcv_cscv": "required",
     "pbo_method": "cscv_rank_logit",
-    "deflated_sharpe": "proxy_until_exact_inputs_available",
+    "deflated_sharpe": "exact_bailey_lopez_de_prado_required_for_promotion",
     "monte_carlo": "block_or_regime_bootstrap_required",
     "walk_forward": "required_before_final_promotion",
     "train_serve_parity": "required",
@@ -33,12 +33,12 @@ VALIDATION_SCOPE = {
     "data_snooping": "white_reality_check_or_hansen_spa",
     "model_family_validation_owners_are_declared_in_training_metadata": "required",
     "known_gaps": [
-        "exact_deflated_sharpe_requires_skew_kurtosis_and_trial_metadata",
+        "replay_without_return_series_uses_advisory_lower_bound_only",
     ],
 }
 
 
-DSR_PROXY_MISSING_INPUTS = [
+DSR_ADVISORY_MISSING_INPUTS = [
     "skew",
     "kurtosis",
     "return_series",
@@ -159,27 +159,27 @@ def _sample_moments(values: list[float]) -> tuple[float, float, float]:
     return mean, skew, kurtosis
 
 
-def deflated_sharpe_proxy(
+def deflated_sharpe_advisory_lower_bound(
     sharpe: Any,
     sample_count: Any,
     *,
     trials: int = 20,
     min_adjusted_sharpe: float = 0.25,
 ) -> dict[str, Any]:
-    """Conservative DSR proxy when full DSR inputs are not persisted.
+    """Conservative replay-only lower bound when full DSR inputs are missing.
 
-    Exact Deflated Sharpe needs skew, kurtosis, return series, and the
-    effective number of trials. Until those are available, this proxy is
-    intentionally fail-closed and explicitly labeled.
+    Production promotion uses deflated_sharpe_exact. This helper exists only
+    for replay packets that do not carry raw return_series.
     """
 
     raw_sharpe = _as_float(sharpe, 0.0)
     n = max(0, _as_int(sample_count, 0))
     t = max(1, _as_int(trials, 20))
     common = {
-        "method": "deflated_sharpe_proxy",
+        "method": "deflated_sharpe_advisory_lower_bound",
         "exact_formula": False,
-        "missing_inputs": DSR_PROXY_MISSING_INPUTS,
+        "promotion_eligible": False,
+        "missing_inputs": DSR_ADVISORY_MISSING_INPUTS,
         "raw_sharpe": raw_sharpe,
         "sample_count": n,
         "trials": t,
@@ -256,8 +256,8 @@ def deflated_sharpe_exact(
     sharpe = mean / std
     normal = NormalDist()
     gamma = 0.5772156649015329
-    # Expected maximum Sharpe under multiple trials, from Bailey/Lopez de Prado
-    # approximation. Clamp quantile inputs to avoid numerical extremes.
+    # Expected maximum Sharpe under multiple trials from Bailey/Lopez de Prado.
+    # Clamp quantile inputs to avoid numerical extremes.
     p1 = min(max(1.0 - 1.0 / t, 1e-6), 1 - 1e-6)
     p2 = min(max(1.0 - 1.0 / (t * math.e), 1e-6), 1 - 1e-6)
     variance_sr = max(1e-12, (1.0 - skew * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe * sharpe) / max(n - 1, 1))
@@ -297,7 +297,7 @@ def deflated_sharpe_evidence(
             trials=trials,
             min_probability=min_probability,
         )
-    return deflated_sharpe_proxy(
+    return deflated_sharpe_advisory_lower_bound(
         backtest.get("sharpe"),
         backtest.get("total_trades"),
         trials=trials,
@@ -1048,7 +1048,14 @@ def build_validation_packet(
         min_adjusted_sharpe=_as_float(p.get("min_deflated_sharpe"), 0.25),
         min_probability=_as_float(p.get("min_deflated_sharpe_probability"), 0.70),
     )
-    gates.append(_gate("deflated_sharpe", bool(dsr["passed"]), reason=dsr["reason"], evidence=dsr))
+    dsr_exact = bool(dsr.get("exact_formula"))
+    dsr_passed = bool(dsr["passed"]) and (dsr_exact or not promotion_required)
+    dsr_reason = (
+        dsr["reason"]
+        if dsr_passed or dsr_exact or not promotion_required
+        else "exact_deflated_sharpe_return_series_required"
+    )
+    gates.append(_gate("deflated_sharpe", dsr_passed, reason=dsr_reason, evidence=dsr))
 
     if monte_carlo:
         mc_method = str(monte_carlo.get("simulation_method") or "").lower()

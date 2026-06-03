@@ -18,21 +18,30 @@ def _history_from_returns(returns: list[float], start_day: int = 1) -> dict[str,
     }
 
 
-def test_lppls_weekly_bubble_monitor_warns_on_accelerating_uptrend():
+def test_lppls_weekly_bubble_monitor_requires_exact_score_input():
     returns = [0.002] * 25 + [0.006] * 10 + [0.012] * 10 + [0.020] * 10
     monitors = build_regime_monitors({"history": _history_from_returns(returns)})
 
     lppls = monitors["lppls_weekly_bubble"]
 
     assert lppls["decision_effect"] == "context_only"
+    assert lppls["status"] == "missing_exact_input"
+    assert lppls["score"] is None
+    assert lppls["method"] == "exact_lppls_score_required"
+    assert lppls["signals"]["required_input"] == "market_env.lppls_bubble_score"
+
+
+def test_lppls_weekly_bubble_monitor_uses_provided_score():
+    monitors = build_regime_monitors({"lppls_bubble_score": 0.82})
+    lppls = monitors["lppls_weekly_bubble"]
+
+    assert lppls["decision_effect"] == "context_only"
     assert lppls["status"] == "warning"
-    assert lppls["score"] >= 0.70
-    assert lppls["method"] == "lppls_weekly_proxy_v1"
-    assert lppls["signals"]["momentum_8w"] > 0
-    assert lppls["signals"]["acceleration_4w"] > 0
+    assert lppls["score"] == 0.82
+    assert lppls["method"] == "provided_lppls_score"
 
 
-def test_hawkes_contagion_monitor_warns_on_clustered_negative_shocks():
+def test_hawkes_contagion_monitor_requires_exact_intensity_input():
     returns = [0.001] * 35 + [-0.026, -0.031, -0.018, -0.024, -0.029, -0.010, -0.022]
     history = _history_from_returns(returns)
     for key in list(history)[-7:]:
@@ -43,20 +52,30 @@ def test_hawkes_contagion_monitor_warns_on_clustered_negative_shocks():
     hawkes = monitors["hawkes_contagion"]
 
     assert hawkes["decision_effect"] == "context_only"
+    assert hawkes["status"] == "missing_exact_input"
+    assert hawkes["score"] is None
+    assert hawkes["method"] == "exact_hawkes_intensity_required"
+    assert hawkes["signals"]["required_input"] == "market_env.hawkes_contagion_intensity"
+
+
+def test_hawkes_contagion_monitor_uses_provided_intensity():
+    monitors = build_regime_monitors({"hawkes_contagion_intensity": 0.81})
+    hawkes = monitors["hawkes_contagion"]
+
+    assert hawkes["decision_effect"] == "context_only"
     assert hawkes["status"] == "warning"
-    assert hawkes["score"] >= 0.70
-    assert hawkes["method"] == "hawkes_exponential_decay_proxy_v1"
-    assert hawkes["signals"]["shock_count_10d"] >= 5
+    assert hawkes["score"] == 0.81
+    assert hawkes["method"] == "provided_hawkes_score"
 
 
-def test_monitors_are_available_but_not_warning_in_normal_market():
+def test_monitors_without_exact_inputs_are_not_available_in_normal_market():
     returns = [0.001, -0.001, 0.002, 0.0, 0.001] * 12
     monitors = build_regime_monitors({"history": _history_from_returns(returns), "us_vix": 17.0})
 
-    assert monitors["lppls_weekly_bubble"]["status"] == "available"
-    assert monitors["lppls_weekly_bubble"]["score"] < 0.70
-    assert monitors["hawkes_contagion"]["status"] == "available"
-    assert monitors["hawkes_contagion"]["score"] < 0.70
+    assert monitors["lppls_weekly_bubble"]["status"] == "missing_exact_input"
+    assert monitors["lppls_weekly_bubble"]["score"] is None
+    assert monitors["hawkes_contagion"]["status"] == "missing_exact_input"
+    assert monitors["hawkes_contagion"]["score"] is None
 
 
 def test_monitor_inputs_preserve_flat_zero_return_sessions():

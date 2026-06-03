@@ -71,6 +71,34 @@ async function loadLatestCanonicalStockChip(db: D1Database, symbol: string): Pro
   `).bind(symbol).first<any>().catch(() => null)
 }
 
+async function loadLatestCanonicalFundamental(db: D1Database, symbol: string): Promise<any | null> {
+  return await db.prepare(`
+    SELECT stock_id AS symbol,
+           period,
+           report_date,
+           available_date,
+           revenue_growth_yoy,
+           gross_margin,
+           operating_margin,
+           roe,
+           eps,
+           pe,
+           pb,
+           dividend_yield,
+           debt_ratio,
+           current_ratio,
+           operating_cash_flow,
+           industry_quality_percentile,
+           source,
+           as_of_date
+      FROM canonical_fundamental_features
+     WHERE stock_id=?
+       AND source='finlab.fundamental_factor_diversity'
+     ORDER BY available_date DESC, period DESC
+     LIMIT 1
+  `).bind(symbol).first<any>().catch(() => null)
+}
+
 async function loadCanonicalStockChipSeries(db: D1Database, symbol: string, limit: number): Promise<{ results: any[] }> {
   const canonical = await db.prepare(`
     SELECT date,
@@ -235,7 +263,7 @@ llm.post('/analyst-summary', authMiddleware, async (c) => {
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
-    c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
+    loadLatestCanonicalFundamental(c.env.DB, result.stock.symbol),
     loadLatestCanonicalStockChip(c.env.DB, result.stock.symbol),
   ])
 
@@ -255,7 +283,7 @@ llm.post('/ask', authMiddleware, async (c) => {
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
-    c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
+    loadLatestCanonicalFundamental(c.env.DB, result.stock.symbol),
     loadLatestCanonicalStockChip(c.env.DB, result.stock.symbol),
   ])
 

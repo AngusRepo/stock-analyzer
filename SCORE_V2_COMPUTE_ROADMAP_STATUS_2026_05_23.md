@@ -353,11 +353,10 @@ No deploy, retrain, scheduler mutation, commit, or push was performed. On 2026-0
   - `worker/migration_score_v2_fundamental_quality.sql`
   - readback decision: `ALREADY_APPLIED`
   - table: `canonical_fundamental_features`
-- Added and applied the approved production D1 seed repair:
-  - `worker/repair_score_v2_fundamental_seed_from_d1.sql`
-  - source: existing D1 `financials` plus `canonical_revenue_monthly`
-  - no-lookahead guard: `available_date = max(quarter_end + 60d, financials.created_at_date)`
-  - readback: `fundamental_total=1066`, `symbols=1066`, `max_available_date=2026-04-29`
+- Superseded legacy D1 fundamental repair:
+  - legacy repair SQL has been removed from the repo.
+  - current policy is FinLab-only canonical fundamental materialization via `source='finlab.fundamental_factor_diversity'`.
+  - any production rows from older non-FinLab repair runs must be ignored by code paths and removed by an explicit D1 cleanup run.
 - Re-ran contribution readiness:
   - `canonical_fundamental_features_missing` is resolved
   - remaining root causes: `fundamental_quality_live_zero`, `news_theme_handoff_missing`
@@ -371,7 +370,7 @@ No deploy, retrain, scheduler mutation, commit, or push was performed. On 2026-0
   - next production step requires Wei approval: deploy Worker/ml-controller changes and rerun the daily screener/evening recommendation path, then re-run read-only contribution/replay gates.
 - Deploy-preflight evidence:
   - `npm run deploy -- --dry-run --outdir ..\.tmp\wrangler-dry-run` from `worker` passed; Worker upload preview was `1630.68 KiB / gzip 366.16 KiB` and bindings resolved.
-  - `ml-controller\.venv\Scripts\python.exe -m pytest ml-controller\tests\test_score_v2_prod_readiness.py ml-controller\tests\test_score_v2_fundamental_seed_sql.py ml-controller\tests\test_score_v2_fundamental_migration_preflight.py ml-controller\tests\test_score_v2_contribution_readiness.py ml-controller\tests\test_score_v2_news_theme_handoff.py ml-controller\tests\test_score_v2_readonly_replay_audit.py -q -p no:cacheprovider` passed with `28 passed`.
+  - seed-SQL tests are removed; current validation is canonical FinLab materialization plus contribution/readiness contracts.
   - `powershell -ExecutionPolicy Bypass -File scripts\p9_gate.ps1` passed after aligning the gate's Worker contract-test compiler flags with the Worker tsconfig (`ES2022`, `WebWorker`, Node default imports).
   - `gaOptimizerPush.test.ts` now provides a minimal D1 mock so the GA optimizer push contract exercises parameter-candidate recording without crashing on missing `DB.batch()`.
   - `deploy_ml_controller.sh --check-only` passed with service/job/verify/optuna images in sync at revision `ml-controller-00285-jdr`; no deploy was performed.

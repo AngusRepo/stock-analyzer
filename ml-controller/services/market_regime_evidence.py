@@ -130,12 +130,12 @@ def _atr_vturn(market_env: dict[str, Any], rows: list[dict[str, Any]]) -> dict[s
     if len(returns) >= 5:
         mean = sum(returns) / len(returns)
         realized_vol = math.sqrt(sum((x - mean) ** 2 for x in returns) / len(returns))
-    vol_proxy = atr_pct if atr_pct is not None else realized_vol
+    volatility_signal = atr_pct if atr_pct is not None else realized_vol
     prior_two_down = len(returns) >= 3 and returns[-2] < 0 and returns[-3] < 0
 
-    if vol_proxy is None and ret_1d is None and vix is None:
+    if volatility_signal is None and ret_1d is None and vix is None:
         return _dimension("missing", "neutral", {}, "atr_vturn_missing")
-    if ret_1d is not None and ret_1d >= 0.018 and prior_two_down and (vol_proxy is None or vol_proxy >= 0.012):
+    if ret_1d is not None and ret_1d >= 0.018 and prior_two_down and (volatility_signal is None or volatility_signal >= 0.012):
         return _dimension("derived", "bullish", {
             "twii_return_1d": ret_1d,
             "atr_pct": atr_pct,
@@ -145,7 +145,7 @@ def _atr_vturn(market_env: dict[str, Any], rows: list[dict[str, Any]]) -> dict[s
     if (
         ret_1d is not None
         and (
-            (ret_1d <= -0.02 and vol_proxy is not None and vol_proxy >= 0.018)
+            (ret_1d <= -0.02 and volatility_signal is not None and volatility_signal >= 0.018)
             or (ret_1d <= -0.015 and vix is not None and vix >= 30)
         )
     ):

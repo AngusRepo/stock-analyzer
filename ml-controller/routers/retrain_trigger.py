@@ -5,7 +5,7 @@ Sprint 6b: Self-contained retrain trigger.
 Uses payload_builder to pull D1 data and build payloads,
 then calls Modal retrain_single_stock for each stock.
 
-Unlike /batch-retrain (which needs caller to supply payloads),
+Different from /batch-retrain (which needs caller to supply payloads),
 this endpoint builds everything server-side from D1.
 """
 import os
@@ -530,25 +530,23 @@ def _build_sector_encoding() -> dict[str, int]:
     return _SECTOR_ENCODING
 
 
-def _estimate_cap_bucket(prices: list[dict]) -> int:
-    """Estimate market_cap_bucket from avg close × avg volume (proxy).
-    0=micro, 1=small, 2=mid, 3=large, 4=mega
-    """
+def _daily_turnover_bucket(prices: list[dict]) -> int:
+    """Bucket by 20-day average daily turnover for the legacy stock_meta slot."""
     if not prices:
         return 2
     recent = prices[-20:] if len(prices) >= 20 else prices
     avg_close = sum(float(p.get("close", 0)) for p in recent) / len(recent)
     avg_vol = sum(float(p.get("volume", 0)) for p in recent) / len(recent)
-    proxy = avg_close * avg_vol  # ~daily turnover (NTD)
-    if proxy > 5_000_000_000:
-        return 4  # mega
-    if proxy > 1_000_000_000:
-        return 3  # large
-    if proxy > 200_000_000:
-        return 2  # mid
-    if proxy > 50_000_000:
-        return 1  # small
-    return 0  # micro
+    turnover = avg_close * avg_vol
+    if turnover > 5_000_000_000:
+        return 4
+    if turnover > 1_000_000_000:
+        return 3
+    if turnover > 200_000_000:
+        return 2
+    if turnover > 50_000_000:
+        return 1
+    return 0
 
 
 def _volume_bucket(prices: list[dict]) -> int:
@@ -780,7 +778,7 @@ async def trigger_universal_retrain(
     market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
 
     # 2a. B-lite regime-conditional training window.
-    # VIX + TWII bias proxy decides prices lookback via TrainingPolicy.
+    # VIX + TWII bias decide prices lookback via TrainingPolicy.
     # Future HMM/KV regime source should only replace TrainingPolicy inputs.
     training_policy = TrainingPolicy.from_env()
     vix = getattr(market_env, "us_vix", 18) or 18
@@ -955,6 +953,7 @@ async def trigger_universal_retrain(
             "us_sox_return": market_env.us_sox_return,
             "us_vix": market_env.us_vix,
         }
+        liquidity_turnover_bucket = _daily_turnover_bucket(px)
         per_stock_payloads.append({
             "stock_id": sid,
             "symbol": sym,
@@ -966,7 +965,9 @@ async def trigger_universal_retrain(
             "market_env": me_lite,
             "stock_meta": {
                 "sector_encoded": sector_enc.get(sector_tag, 0),
-                "market_cap_bucket": _estimate_cap_bucket(px),
+                "market_cap_bucket": liquidity_turnover_bucket,
+                "market_cap_bucket_source": "legacy_schema_daily_turnover_bucket",
+                "liquidity_turnover_bucket": liquidity_turnover_bucket,
                 "avg_volume_bucket": _volume_bucket(px),
             },
         })

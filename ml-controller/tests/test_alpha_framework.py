@@ -158,7 +158,9 @@ def test_risk_overlay_exposes_multi_horizon_volatility_and_market_structure():
     assert overlay["volatility_detail"]["expansion_ratio"] >= 0
     assert overlay["liquidity_detail"]["median_volume"] >= 500_000
     assert overlay["liquidity_detail"]["last_volume_ratio"] > 0
-    assert overlay["structure_detail"]["structure_method"] == "volume_profile_value_area"
+    assert overlay["structure_detail"]["structure_method"] == "ohlcv_distributed_volume_value_area"
+    assert overlay["structure_detail"]["range_width_method"] == "true_range_atr"
+    assert overlay["structure_detail"]["atr_period"] > 0
     assert overlay["structure_detail"]["poc_price"] > 0
     assert overlay["structure_detail"]["fair_value_low"] < overlay["structure_detail"]["fair_value_high"]
     assert overlay["structure_detail"]["optimistic_value_low"] >= overlay["structure_detail"]["fair_value_high"]
@@ -199,7 +201,8 @@ def test_market_structure_value_area_uses_volume_profile_bins():
     overlay = build_risk_overlay(payload, confidence=0.8)
     structure = overlay.structure_detail
 
-    assert structure["structure_method"] == "volume_profile_value_area"
+    assert structure["structure_method"] == "ohlcv_distributed_volume_value_area"
+    assert structure["range_width_method"] == "true_range_atr"
     assert 149 <= structure["poc_price"] <= 153
     assert structure["fair_value_low"] >= 145
     assert structure["fair_value_high"] >= structure["fair_value_low"]
@@ -594,6 +597,23 @@ def test_risk_overlay_uses_policy_fair_value_zone_width():
 
     assert narrow_overlay.structure_detail["price_location"] == "above_fair_value"
     assert wide_overlay.structure_detail["price_location"] == "in_fair_value"
+
+
+def test_market_structure_range_width_uses_true_range_atr_not_high_low_average():
+    payload = _payload("2454", [100, 100, 120, 121])
+
+    overlay = build_risk_overlay(payload, confidence=0.80, policy=normalize_alpha_policy({
+        "riskOverlay": {
+            "fairValueRangeLookback": 3,
+            "fairValueAtrMultiplier": 1.0,
+            "fairValueMinPct": 0.0,
+        }
+    }))
+    structure = overlay.structure_detail
+
+    assert structure["range_width_method"] == "true_range_atr"
+    assert structure["atr_period"] == 3
+    assert structure["atr"] == pytest.approx(10.4133, abs=0.001)
 
 
 def test_build_alpha_context_uses_policy_scoring_and_execution_overlay():

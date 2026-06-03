@@ -335,10 +335,10 @@ def _load_rrg_inputs_from_snapshot(
 
 
 def _load_paper_orders(limit: int = 500) -> list[dict]:
-    """For sltp / signal search.
-    paper_orders 沒 realized_pnl 欄位，這裡只抓 sell orders 給 sltp/signal scripts，
-    它們內部會自己計算 pnl proxy。
-    Phase 後續：應該 JOIN buy/sell pairs 算精確 per-trade pnl_pct。
+    """Load sell-side paper orders for SL/TP and signal search.
+
+    Per-trade PnL must come from persisted order fields or explicit buy/sell
+    pair joins in the objective script.
     """
     return d1_query(
         "SELECT * FROM paper_orders WHERE side='sell' ORDER BY created_at DESC LIMIT ?",

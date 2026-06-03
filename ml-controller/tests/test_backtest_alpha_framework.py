@@ -3,9 +3,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.backtest_engine import Candidate, apply_alpha_framework_to_candidates  # noqa: E402
+from services.backtest_engine import Candidate, _macd_hist_last, apply_alpha_framework_to_candidates  # noqa: E402
 
 
 def _candidate(symbol: str, score: float) -> Candidate:
@@ -63,3 +65,16 @@ def test_alpha_framework_allocation_changes_backtest_candidate_selection():
     assert out[0].alpha_allocation["selected"] is True
     assert out[0].alpha_context["edge_bucket"] == "defensive_accumulation"
     assert out[1].has_buy_signal == 0
+
+
+def test_backtest_macd_uses_ema_signal_not_sma_difference():
+    closes = np.array(
+        [100 + index * 0.4 + (2.0 if index % 7 == 0 else 0.0) for index in range(60)],
+        dtype=np.float64,
+    )
+
+    macd_hist = _macd_hist_last(closes)
+    sma_difference = float(closes[-12:].mean() - closes[-26:].mean())
+
+    assert macd_hist is not None
+    assert abs(macd_hist - sma_difference) > 0.01

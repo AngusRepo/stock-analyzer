@@ -411,7 +411,7 @@ export interface BulkValuationRow {
   pb: number | null
 }
 
-export async function fetchTwseValuation(date: string): Promise<BulkValuationRow[]> {
+async function fetchTwseValuation(date: string): Promise<BulkValuationRow[]> {
   const url = `https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_ALL?date=${twseDate(date)}&response=json`
   const res = await fetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
@@ -507,7 +507,7 @@ export async function fetchTpexMonthlyRevenue(): Promise<MonthlyRevenueRow[]> {
 
 // ─── TPEX 財報（openapi EPS + ROE）─────────────────────────────────────────
 
-export async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
+async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
   const incomeUrls = [
     'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O',     // 一般業
     'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_Obasi', // 金融業
@@ -595,7 +595,7 @@ export async function fetchTpexFinancials(): Promise<BulkFinancialRow[]> {
 
 // ─── TPEX PER/PBR/殖利率（全市場）────────────────────────────────────────────
 
-export async function fetchTpexValuation(): Promise<BulkValuationRow[]> {
+async function fetchTpexValuation(): Promise<BulkValuationRow[]> {
   const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis', {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     signal: AbortSignal.timeout(30000),
@@ -670,7 +670,7 @@ export interface BulkFinancialRow {
   roe: number | null                // %
 }
 
-export async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
+async function fetchTwseFinancials(): Promise<BulkFinancialRow[]> {
   // 並行抓損益表 + 資產負債表（一般業 + 金融業 + 保險業）
   const incomeUrls = [
     'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_ci',   // 一般業

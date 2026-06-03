@@ -625,22 +625,16 @@ def _score_v2_seed_inputs_from_payload(payload: dict[str, Any] | None, *, ml_sco
 def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date: str) -> dict[str, dict[str, Any]]:
     """Read D1 fundamental inputs and return Score V2 fundamental-quality payloads.
 
-    This is read-only and fail-soft. Missing canonical tables should not block
-    the daily pipeline; they simply leave fundamentalQuality at 0 until the
-    FinLab structured materialization is promoted.
+    This is read-only and fail-soft. Missing FinLab canonical rows should not
+    block the daily pipeline; they leave fundamentalQuality at 0 until FinLab
+    structured materialization is available.
     """
 
     if not screener_recs:
         return {}
     symbols = sorted({str(row.get("symbol") or "").strip() for row in screener_recs if row.get("symbol")})
-    stock_ids = sorted({
-        int(row.get("stock_id") or row.get("id"))
-        for row in screener_recs
-        if str(row.get("stock_id") or row.get("id") or "").isdigit()
-    })
     revenue_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
     canonical_financial_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
-    financial_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in stock_ids}
 
     if symbols:
         try:
@@ -676,6 +670,7 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
                     FROM canonical_fundamental_features
                     WHERE stock_id IN ({placeholders})
                       AND available_date <= ?
+                      AND source = 'finlab.fundamental_factor_diversity'
                     ORDER BY stock_id, available_date, period
                     """,
                     [*chunk, decision_date],
@@ -688,43 +683,15 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[reco] canonical_fundamental_features unavailable for fundamental quality: %s", exc)
 
-    if stock_ids:
-        try:
-            for chunk in _chunked(stock_ids):
-                placeholders = ",".join("?" for _ in chunk)
-                rows = d1_client.query(
-                    f"""
-                    SELECT stock_id, period, period_type, revenue, revenue_growth_yoy,
-                           eps, roe, pe, pb, dividend_yield
-                    FROM financials
-                    WHERE stock_id IN ({placeholders})
-                      AND period_type IN ('quarterly', 'annual')
-                    ORDER BY stock_id, period
-                    """,
-                    chunk,
-                    timeout=60,
-                )
-                for row in rows or []:
-                    stock_id = int(row.get("stock_id") or 0)
-                    if stock_id in financial_by_stock_id:
-                        financial_by_stock_id[stock_id].append(dict(row))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[reco] financials unavailable for fundamental quality: %s", exc)
-
     out: dict[str, dict[str, Any]] = {}
     for rec in screener_recs:
         symbol = str(rec.get("symbol") or "").strip()
-        stock_id_raw = rec.get("stock_id") or rec.get("id")
-        stock_id = int(stock_id_raw) if str(stock_id_raw or "").isdigit() else None
         if not symbol:
             continue
-        financial_rows = canonical_financial_by_symbol.get(symbol) or (
-            financial_by_stock_id.get(stock_id, []) if stock_id is not None else []
-        )
         out[symbol] = score_fundamental_quality(
             decision_date=decision_date,
             revenue_rows=revenue_by_symbol.get(symbol, []),
-            financial_rows=financial_rows,
+            financial_rows=canonical_financial_by_symbol.get(symbol, []),
         )
     return out
 
@@ -1177,7 +1144,7 @@ def build_reason(s: dict) -> str:
             f", broker_count={s.get('broker_count_latest', 'N/A')}"
         )
     elif market_segment == "EMERGING":
-        chip_context = "emerging broker chip proxy unavailable"
+        chip_context = "emerging broker flow evidence unavailable"
     else:
         net_amount = _score_number(s.get("foreign_net_5d")) + _score_number(s.get("trust_net_5d")) + _score_number(s.get("dealer_net_5d"))
         chip_context = f"法人5日淨額 {net_amount:.1f} 億"
@@ -1236,7 +1203,7 @@ def build_watch_points(s: dict) -> list[str]:
     market_segment = str(s.get("market_segment") or "").upper()
     broker_rows = int(s.get("broker_rows") or 0)
     if market_segment == "EMERGING" and broker_rows > 0:
-        points.append("興櫃籌碼採 FinLab 券商分點 proxy；不可與上市櫃三大法人直接同比")
+        points.append("興櫃籌碼採 FinLab 券商分點流；不可與上市櫃三大法人直接同比")
     elif market_segment == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
         points.append("興櫃券商分點資料不足；暫不以三大法人語意判讀")
     if "BUY" in sig and forecast_pct < 0:
@@ -2249,7 +2216,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
 
 
 def _build_per_model_insert_sql() -> str:
-    """Like INSERT_PREDICTIONS_SQL but accepts model_name as parameter."""
+    """Same contract as INSERT_PREDICTIONS_SQL but accepts model_name as parameter."""
     return f"""
 INSERT INTO predictions (
     {COL_STOCK_ID}, {COL_MODEL_NAME}, {COL_GENERATED_AT}, {COL_PREDICTION_DATE}, {COL_HORIZON}, {COL_DIRECTION_ACCURACY},

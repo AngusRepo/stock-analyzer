@@ -65,7 +65,6 @@ def build_score_v2_contribution_readiness_report(
 
     fundamental_table_exists = "canonical_fundamental_features" in tables
     revenue_total = _int(inventory.get("revenue_total"))
-    financials_total = _int(inventory.get("financials_total"))
     fundamental_total = _int(inventory.get("fundamental_total"))
     latest_fundamental_nonzero = _int(latest_daily.get("fundamental_nonzero"))
     latest_daily_n = _int(latest_daily.get("n"))
@@ -81,13 +80,12 @@ def build_score_v2_contribution_readiness_report(
     _check(
         checks,
         "fundamental_source_inputs",
-        revenue_total > 0 or financials_total > 0 or fundamental_total > 0,
+        revenue_total > 0 or fundamental_total > 0,
         {
             "canonical_revenue_monthly": revenue_total,
-            "financials": financials_total,
             "canonical_fundamental_features": fundamental_total,
         },
-        "> 0 source rows",
+        "> 0 FinLab canonical source rows",
     )
     _check(
         checks,
@@ -169,7 +167,7 @@ def build_score_v2_contribution_readiness_report(
         "input_summary": {
             "tables": sorted(tables),
             "revenue_latest_month": inventory.get("revenue_latest_month"),
-            "financials_latest_period": inventory.get("financials_latest_period"),
+            "fundamental_latest_available_date": inventory.get("fundamental_latest_available_date"),
             "theme_latest_date": inventory.get("theme_latest_date"),
             "stock_theme_latest_date": inventory.get("stock_theme_latest_date"),
             "evidence_latest_published_at": inventory.get("evidence_latest_published_at"),

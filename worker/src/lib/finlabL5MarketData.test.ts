@@ -120,7 +120,7 @@ function assert(condition: unknown, message: string): void {
       FINLAB_L5_MARKET_DATA_ENABLED: '1',
       FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN: '1',
     }, ['2330'])
-    assert(url.endsWith('/finlab/execution/l5-market-data'), 'production-like L5 fetch should call market-data route')
+    assert(url.endsWith('/finlab/execution/l5-market-data'), 'production-grade L5 fetch should call market-data route')
     assert(body.allow_broker_login === true, 'market-data fetch should require explicit broker-login flag')
     assert(body.symbols[0] === '2330', 'market-data fetch should send requested symbols')
     assert(quotes.get('2330')?.bestAsk === 100.1, 'market-data fetch should normalize controller L5 quotes')

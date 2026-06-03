@@ -1,44 +1,44 @@
-"""
-optuna_screener.py — Sprint 5.2: Screener factor-weights Optuna search via backtest_engine
+﻿"""
+optuna_screener.py ??Sprint 5.2: Screener factor-weights Optuna search via backtest_engine
 
-搜尋空間（15 dim）：score_multi_factor 內部的評分公式權重 + 流動性過濾帶
+??蝛粹?嚗?5 dim嚗?score_multi_factor ?折???撘???+ 瘚??折?瞈曉葆
 
   Liquidity filters (2):
-    minAvgVolume             [200k, 800k]   20 日均量下限
-    minDailyTurnover         [3M, 15M]      日均週轉金額下限
+    minAvgVolume             [200k, 800k]   20 ?亙?????
+    minDailyTurnover         [3M, 15M]      ?亙??梯???銝?
 
   Chip score (0-40, 4 dims):
-    chipScoreTiers[0]        [28, 42]       Tier 0 籌碼強度最高分
+    chipScoreTiers[0]        [28, 42]       Tier 0 蝐Ⅳ撘瑕漲?擃?
     chipScoreTiers[1]        [20, 32]       Tier 1
     chipIntensityThresholds[0] [0.12, 0.30] Tier 0 threshold
     chipIntensityThresholds[1] [0.06, 0.14] Tier 1 threshold
-    consecBuyBonusTiers[0]   [2, 8]         ≥5 天連買 bonus
+    consecBuyBonusTiers[0]   [2, 8]         ?? 憭拚?眺 bonus
 
   Technical score (0-30, 5 dims):
-    rsiScoreTiers[0]         [8, 16]        RSI 55-75 sweet spot 給分
-    rsiScoreTiers[3]         [4, 12]        RSI >75 過熱給分
-    macdNegativeFactor       [0.2, 1.0]     MACD 容忍度
-    keltnerMultiplier        [1.0, 2.5]     Keltner 突破寬度
-    natrThreshold            [2.0, 5.0]     低波動定義
+    rsiScoreTiers[0]         [8, 16]        RSI 55-75 sweet spot 蝯血?
+    rsiScoreTiers[3]         [4, 12]        RSI >75 ?蝯血?
+    macdNegativeFactor       [0.2, 1.0]     MACD 摰孵?摨?
+    keltnerMultiplier        [1.0, 2.5]     Keltner 蝒撖砍漲
+    natrThreshold            [2.0, 5.0]     雿郭??蝢?
 
   Momentum score (0-20, 2 dims):
-    excessReturnRangeHi      [0.03, 0.10]   超額報酬 normalize 上界
-    volRatioRangeHi          [2.0, 4.0]     量比 normalize 上界
+    excessReturnRangeHi      [0.03, 0.10]   頞??梢 normalize 銝?
+    volRatioRangeHi          [2.0, 4.0]     ?? normalize 銝?
 
-Objective (Sprint 3 P0-3 pattern)：NSGA-II Multi-Objective
+Objective (Sprint 3 P0-3 pattern)嚗SGA-II Multi-Objective
   Obj 1: BacktestMetrics.sharpe       (maximize)
   Obj 2: BacktestMetrics.max_drawdown (minimize)
 
-Mode A hardcode overrides（見 memory/project_sprint_5_2_hardcode_overrides.md）:
+Mode A hardcode overrides嚗? memory/project_sprint_5_2_hardcode_overrides.md嚗?
   Override #1: ranking.alpha=1.0 / beta=0.0 / gamma=0.0
-    — Mode A 用 placeholder constants，rank 數學上只看 screener_norm。
-       Alpha=1.0 讓 screener 權重變化 100% 反映到 top-K。Sprint 6b revert。
+    ??Mode A ??neutral constants嚗ank ?詨飛銝??screener_norm??
+       Alpha=1.0 霈?screener 甈?霈? 100% ????top-K?print 6b revert??
   Override #2: MIN_FILL_RATE=0.30 hardcoded reject threshold
-    — Sprint 6b 改讀 KV。
+    ??Sprint 6b ?寡? KV??
 
-Realism caveat: backtest_engine Mode A 有 15 個 documented deviation (Sharpe ±0.3~0.8)，
-  Optuna 結果「只能做相對比較」，不能當 absolute production prediction。
-  詳見 memory/project_backtest_engine_design_rationale.md
+Realism caveat: backtest_engine Mode A ??15 ??documented deviation (Sharpe 簣0.3~0.8)嚗?
+  Optuna 蝯???賢??詨?瘥???銝??absolute production prediction??
+  閰唾? memory/project_backtest_engine_design_rationale.md
 """
 from __future__ import annotations
 import logging
@@ -115,25 +115,25 @@ def _default_baseline_params() -> dict:
 
 def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
     """Build a params override dict matching trading:config shape for this trial."""
-    # ── Liquidity filters (2) ───────────────────────────────────────────────
+    # ?? Liquidity filters (2) ???????????????????????????????????????????????
     min_avg_vol      = trial.suggest_int("minAvgVolume",    200_000, 800_000, step=50_000)
     min_daily_to     = trial.suggest_int("minDailyTurnover", 3_000_000, 15_000_000, step=1_000_000)
 
-    # ── Chip score weights (5 dims, tiers [0] and [1] free, [2-4] scaled linearly) ──
+    # ?? Chip score weights (5 dims, tiers [0] and [1] free, [2-4] scaled linearly) ??
     chip_tier0       = trial.suggest_int("chipScoreTier0", 28, 42, step=2)
     chip_tier1       = trial.suggest_int("chipScoreTier1", 20, 32, step=2)
     chip_th0         = trial.suggest_float("chipIntensityTh0", 0.12, 0.30, step=0.02)
     chip_th1         = trial.suggest_float("chipIntensityTh1", 0.06, 0.14, step=0.01)
     consec_bonus0    = trial.suggest_int("consecBuyBonus0", 2, 8, step=1)
 
-    # ── Technical score weights (5 dims) ────────────────────────────────────
+    # ?? Technical score weights (5 dims) ????????????????????????????????????
     rsi_tier0        = trial.suggest_int("rsiScoreTier0", 8, 16, step=1)    # RSI 55-75
     rsi_tier3        = trial.suggest_int("rsiScoreTier3", 4, 12, step=1)    # RSI >75
     macd_neg_factor  = trial.suggest_float("macdNegativeFactor", 0.2, 1.0, step=0.1)
     keltner_mult     = trial.suggest_float("keltnerMultiplier",  1.0, 2.5, step=0.25)
     natr_threshold   = trial.suggest_float("natrThreshold",      2.0, 5.0, step=0.5)
 
-    # ── Momentum score ranges (2 dims) ──────────────────────────────────────
+    # ?? Momentum score ranges (2 dims) ??????????????????????????????????????
     excess_ret_hi    = trial.suggest_float("excessReturnRangeHi", 0.03, 0.10, step=0.01)
     vol_ratio_hi     = trial.suggest_float("volRatioRangeHi",     2.0, 4.0, step=0.25)
 
@@ -147,7 +147,7 @@ def _build_trial_params(trial: optuna.Trial, baseline: dict) -> dict:
     base_vol_ratio  = list(base_screener.get("volRatioRange", [0.7, 2.5]))
 
     # Scale lower tiers linearly to preserve monotonic decrease shape
-    # chipScoreTiers[2,3,4] = tier1 * [0.7, 0.43, 0.18] ≈ original proportions [20/28, 12/28, 5/28]
+    # chipScoreTiers[2,3,4] = tier1 * [0.7, 0.43, 0.18] ??original proportions [20/28, 12/28, 5/28]
     chip_tier2 = round(chip_tier1 * 0.70)
     chip_tier3 = round(chip_tier1 * 0.43)
     chip_tier4 = round(chip_tier1 * 0.18)
@@ -215,7 +215,7 @@ def _check_constraints(trial_params: dict) -> Optional[str]:
     # Removed: minAvgVolume * minPrice > minDailyTurnover cross-constraint.
     # Reason: minPrice=15 is the hard floor, not the avg price (median ~208 TWD).
     # Using 15 falsely rejects 23% of trials. minAvgVolume and minDailyTurnover
-    # are independent liquidity filters — no industry precedent for cross-checking.
+    # are independent liquidity filters ??no industry precedent for cross-checking.
     # See Sprint 5.2 reject diagnostics (2026-04-09).
 
     return None
@@ -309,7 +309,7 @@ def create_objective(
             trial.set_user_attr("fill_rate_observed", float(metrics.fill_rate or 0.0))
             return PENALTY
 
-        # Valid trial — report to Optuna
+        # Valid trial ??report to Optuna
         _bump("valid")
         sharpe = float(metrics.sharpe or 0.0)
         max_dd = float(metrics.max_drawdown or 1.0)
@@ -334,7 +334,7 @@ def run_search(
     Sprint 5.2 entry point. Loads stratified subset + BacktestDataset, runs NSGA-II
     Pareto optimization over screener factor weights, returns best-sharpe trial.
     """
-    # ── Date defaults: 90 day window ending today (TW) ──────────────────────
+    # ?? Date defaults: 90 day window ending today (TW) ??????????????????????
     if end_date is None:
         tw_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
         snapshot_end_date = latest_snapshot_business_end_date(
@@ -355,7 +355,7 @@ def run_search(
         f"subset_size={subset_size} window={start_date}~{end_date}"
     )
 
-    # ── Step 1: stratified subset (M12 fix: tradable universe, not in_current_watchlist) ──
+    # ?? Step 1: stratified subset (M12 fix: tradable universe, not in_current_watchlist) ??
     symbols = select_stratified_subset(
         target_size=subset_size,
         end_date=end_date,
@@ -363,11 +363,11 @@ def run_search(
     )
     if not symbols:
         raise RuntimeError(
-            "stratified_subset returned empty — check D1 stocks/stock_prices state"
+            "stratified_subset returned empty ??check D1 stocks/stock_prices state"
         )
     logger.info(f"[optuna_screener] subset picked: {len(symbols)} symbols")
 
-    # ── Step 2: pre-load dataset once ───────────────────────────────────────
+    # ?? Step 2: pre-load dataset once ???????????????????????????????????????
     dataset, data_access = BacktestDataset.load_for_research(
         lane="optuna.screener",
         start_date=start_date,
@@ -377,9 +377,9 @@ def run_search(
         mode=data_mode,
     )
 
-    # ── Step 3: Optuna NSGA-II Pareto search ────────────────────────────────
+    # ?? Step 3: Optuna NSGA-II Pareto search ????????????????????????????????
     study = optuna.create_study(
-        directions=["maximize", "minimize"],  # sharpe↑, max_dd↓
+        directions=["maximize", "minimize"],  # sharpe?? max_dd??
         sampler=NSGAIISampler(seed=42),
         study_name="screener_factor_weights_pareto_s52",
     )
@@ -396,7 +396,7 @@ def run_search(
     logger.info(f"[optuna_screener] reject breakdown (top-level): {reject_summary}")
     logger.info(f"[optuna_screener] reject breakdown (details): {reject_details}")
 
-    # ── Step 4: extract Pareto front ────────────────────────────────────────
+    # ?? Step 4: extract Pareto front ????????????????????????????????????????
     pareto_trials = [t for t in study.best_trials if t.values and t.values[0] > -1e8]
     if not pareto_trials:
         raise RuntimeError(
@@ -461,7 +461,7 @@ def run_search(
         "subset_size": len(symbols),
         "date_window": f"{start_date}~{end_date}",
         "realism_note": (
-            "Mode A has 15 documented deviations from production (Sharpe ±0.3~0.8). "
+            "Mode A has 15 documented deviations from production (Sharpe 簣0.3~0.8). "
             "Use results for RELATIVE parameter ranking only, not absolute prediction. "
             "Ranking alpha/beta/gamma hardcoded to 1/0/0 (Sprint 6b will revert). "
             "See memory/project_sprint_5_2_hardcode_overrides.md"

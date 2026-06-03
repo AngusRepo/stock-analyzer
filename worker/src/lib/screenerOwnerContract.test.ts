@@ -152,7 +152,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(strategyCandidatePool.includes('lowLoadTotalCap: 128'), 'strategy candidate pool should expose adaptive 128 low-load cap')
   assert(strategyCandidatePool.includes('hardTotalCap: 160'), 'strategy candidate pool should expose hard 160 cap')
   assert(strategyCandidatePool.includes('researchOnlyQueue'), 'strategy candidate pool should route overflow into research-only queue instead of silently dropping')
-  assert(strategyCandidatePool.includes('adaptive_empty_pool_ranked_proxy'), 'empty strict strategy pools must still emit explicit shadow proxy candidates instead of leaving UI untagged')
+  assert(strategyCandidatePool.includes('adaptive_empty_pool_ranked_near_match'), 'empty strict strategy pools must still emit explicit shadow near-match candidates instead of leaving UI untagged')
   assert(strategySpec.includes('canonicalFinal ?? snapshot.finalScore'), 'strategy pools must use canonical Score V2 finalScore or total, not scalar storage fallback')
   assert(strategySpec.includes("'bull', 'sideways', 'volatile'"), 'trend strategy must remain available in volatile regime for shadow candidate discovery')
   assert(strategySpec.includes("'bull', 'sideways', 'bear', 'volatile'"), 'defensive strategy must remain available in volatile regime for shadow candidate discovery')

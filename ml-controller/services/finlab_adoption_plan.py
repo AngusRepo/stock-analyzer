@@ -26,7 +26,7 @@ LANE_ASSET_USE = {
     "chip_diversity": "institutional flow, margin/lending and broker concentration shadow features",
     "emerging_price_diversity": "emerging-stock price, liquidity and spread watchlist context",
     "emerging_revenue_diversity": "emerging-stock revenue momentum watchlist context",
-    "emerging_chip_diversity": "emerging-stock broker flow proxy and concentration checks",
+    "emerging_chip_diversity": "emerging-stock broker flow evidence and concentration checks",
     "global_context": "US leading, world index, morning setup and regime context",
     "regime_context": "derivatives, macro, hedge pressure and low-frequency regime evidence",
     "research": "non-core global datasets and benchmark-only research candidates",

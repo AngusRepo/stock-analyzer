@@ -94,7 +94,7 @@ def test_prod_readiness_passes_when_rollout_and_required_roadmap_flags_are_done(
     assert report["blockers"] == []
 
 
-def test_fundamental_live_zero_points_to_deploy_rerun_after_seed_is_applied() -> None:
+def test_fundamental_live_zero_points_to_deploy_rerun_after_finlab_rows_exist() -> None:
     report = build_score_v2_prod_readiness_report(
         roadmap_status={},
         replay_gate_report=_replay_gate(["component_nonzero_fundamentalQuality"]),

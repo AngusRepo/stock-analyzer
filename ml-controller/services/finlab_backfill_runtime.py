@@ -70,7 +70,7 @@ def _as_jsonable(value: Any) -> Any:
     return str(value)
 
 
-def _records_from_dataframe_like(dataset: Any) -> list[dict[str, Any]]:
+def _records_from_dataframe_records(dataset: Any) -> list[dict[str, Any]]:
     if hasattr(dataset, "to_dicts"):
         return [dict(row) for row in dataset.to_dicts()]
 
@@ -131,7 +131,7 @@ def rows_from_dataset(dataset: Any) -> list[dict[str, Any]]:
             return [dict(row) for row in rows if isinstance(row, dict)]
         return [dict(dataset)]
 
-    records = _records_from_dataframe_like(dataset)
+    records = _records_from_dataframe_records(dataset)
     if records:
         has_symbol = any("symbol" in row or "stock_id" in row for row in records)
         has_date = any("date" in row for row in records)
@@ -143,11 +143,11 @@ def rows_from_dataset(dataset: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_symbol(row: dict[str, Any]) -> str:
-    return str(row.get("symbol") or row.get("stock_id") or row.get("證券代號") or "").strip()
+    return str(row.get("symbol") or row.get("stock_id") or row.get("霅隞??") or "").strip()
 
 
 def _normalize_date(row: dict[str, Any]) -> str:
-    for key in ("date", "period", "published_at", "年月", "資料日期"):
+    for key in ("date", "period", "published_at", "撟湔?", "鞈??交?"):
         value = row.get(key)
         if value not in (None, ""):
             return str(_as_jsonable(value))[:10]

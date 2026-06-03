@@ -471,7 +471,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series)} succeeded"
             )
         else:
-            logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
+            logger.info("[Pipeline V2] DLinear universal: 0 succeeded (trained weights may be missing in GCS)")
     elif isinstance(dlinear_raw, dict) and dlinear_raw.get("results") == []:
         logger.debug(f"[Pipeline V2] DLinear skipped: {dlinear_raw.get('error')}")
     else:
@@ -491,7 +491,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series)} succeeded"
             )
         else:
-            logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
+            logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (trained weights may be missing in GCS)")
     elif isinstance(patchtst_raw, dict) and patchtst_raw.get("results") == []:
         logger.debug(f"[Pipeline V2] PatchTST skipped: {patchtst_raw.get('error')}")
     else:

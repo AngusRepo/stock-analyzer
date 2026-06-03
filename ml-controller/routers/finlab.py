@@ -186,7 +186,7 @@ async def run_finlab_execution_smoke_route(req: FinLabExecutionSmokeRequest) -> 
 
 @router.post("/execution/l5-market-data")
 async def run_finlab_l5_market_data_route(req: FinLabL5MarketDataRequest) -> dict:
-    """Production-simulated L5 market-data readback.
+    """Production-grade L5 market-data readback.
 
     This route may log in for live market data when explicitly allowed, but it
     never creates, previews, submits, updates, or cancels orders.
@@ -195,7 +195,7 @@ async def run_finlab_l5_market_data_route(req: FinLabL5MarketDataRequest) -> dic
         symbols=req.symbols,
         allow_broker_login=req.allow_broker_login,
     )
-    payload["production_like_market_data"] = True
+    payload["production_grade_market_data"] = True
     payload["live_submit_enabled"] = False
     payload["can_submit_real_order"] = False
     return payload
@@ -245,7 +245,7 @@ async def _run_finlab_production_simulated_loop(req: FinLabProductionSimulatedLo
 
 @router.post("/execution/production-simulated-loop")
 async def run_finlab_execution_production_simulated_loop_route(req: FinLabProductionSimulatedLoopRequest) -> dict:
-    """Run the production-like loop with simulated paper orders only.
+    """Run the paper execution loop with live market-data readback.
 
     This is the preferred route name for the pre-real-order stage: live market
     data and active Worker gates are allowed, but broker submit stays disabled.

@@ -18,7 +18,7 @@ function scoreV2Payload(input: {
   finalScore?: number
   chipFlow: number
   technicalStructure: number
-  momentumProxy: number
+  momentumScore: number
   mlEdge?: number
   fundamentalQuality?: number
   newsTheme?: number
@@ -36,11 +36,11 @@ function scoreV2Payload(input: {
       trendStructure: 6,
       volatilityStructure: 4,
       reversalExtreme: 4,
-      volumeConfirmation: Math.min(6, input.momentumProxy),
+      volumeConfirmation: Math.min(6, input.momentumScore),
       executionRisk: 1,
     },
     seedComponents: {
-      screenerMomentumSeed20: input.momentumProxy,
+      screenerMomentumSeed20: input.momentumScore,
     },
   }
   if (input.finalScore != null) payload.finalScore = input.finalScore
@@ -88,12 +88,12 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const finalScore = 72 - index * 0.15
   const chipFlow = index % 4 === 0 ? 24 : 19
   const technicalStructure = 24 - (index % 5)
-  const momentumProxy = 12 - (index % 3)
+  const momentumScore = 12 - (index % 3)
   return {
     symbol: `${2300 + n}`,
     name: `Stock ${n}`,
     industry: index % 3 === 0 ? 'Semiconductor' : index % 3 === 1 ? 'Network' : 'Other',
-    score_components: scoreV2Payload({ finalScore, chipFlow, technicalStructure, momentumProxy }),
+    score_components: scoreV2Payload({ finalScore, chipFlow, technicalStructure, momentumScore }),
     raw_signals: rawSignalPayload({
       closeAboveMa20Pct: 0.01 + (index % 5) * 0.01,
       volumeExpansion20: 0.95 + (index % 6) * 0.08,
@@ -165,7 +165,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       finalScore: 76,
       chipFlow: 25,
       technicalStructure: 24,
-      momentumProxy: 12,
+      momentumScore: 12,
     }),
     raw_signals: rawSignalPayload({ closeAboveMa20Pct: 0.06, volumeExpansion20: 1.45, return20d: 0.1 }),
     market_segment: 'LISTED',
@@ -180,7 +180,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       finalScore: 42,
       chipFlow: 8,
       technicalStructure: 8,
-      momentumProxy: 2,
+      momentumScore: 2,
     }),
     raw_signals: rawSignalPayload({ closeAboveMa20Pct: -0.08, volumeExpansion20: 0.6, return20d: -0.1 }),
     current_price: 40,
@@ -295,7 +295,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     score_components: scoreV2Payload({
       chipFlow: 24,
       technicalStructure: 22,
-      momentumProxy: 10,
+      momentumScore: 10,
       mlEdge: 14,
       fundamentalQuality: 8,
       newsTheme: 2,
@@ -363,14 +363,14 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 
 {
   const activeNoMatchSpec = {
-    id: 'active_no_proxy_spec_v1',
+    id: 'active_no_full_universe_spec_v1',
     version: STRATEGY_SPEC_VERSION,
-    name: 'Active no proxy test',
+    name: 'Active no full-universe fill test',
     status: 'active' as const,
     owner: 'strategy' as const,
     alphaBucket: 'trend_following' as const,
     supportedRegimes: ['bull' as const],
-    thesis: 'Active production strategies must not emit full-universe proxy candidates when strict and near-match evidence is empty.',
+    thesis: 'Active production strategies must not emit full-universe fill candidates when strict and near-match evidence is empty.',
     thresholds: { minCloseAboveMa20Pct: 0.4, minVolumeExpansion20: 3, minReturn20d: 0.5, minPrice: 10 },
     candidatePolicy: { poolQuota: 8, costBudget: 8 },
     riskNotes: ['test only'],

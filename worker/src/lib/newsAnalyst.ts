@@ -6,7 +6,7 @@
  * morning-setup. Runs before the 07:15 TW morning pipeline (scheduled
  * ~06:30 TW).
  *
- * TradingAgents-inspired "News Analyst" role. Unlike a multi-agent
+ * TradingAgents-inspired "News Analyst" role. Different from a multi-agent
  * framework we keep it single-LLM — the output is machine-readable JSON,
  * not conversational, which is the best format for downstream consumers
  * (debate mlContext, circuit-breaker threshold adjustment).

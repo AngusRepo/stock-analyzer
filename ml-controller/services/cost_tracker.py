@@ -16,7 +16,7 @@ Pricing table (USD per 1M tokens, input / output, 2026-04 rates):
   gemini-3.1-flash-lite:      0.075 / 0.30
   gemini-2.5-flash-lite:      0.10 / 0.40
   deepseek-v3:                0.14 / 0.28
-  gemma-27b (via Gemini API): 0.05 / 0.10  (approximate)
+  gemma-27b (via Gemini API): 0.05 / 0.10  (published-rate estimate)
 
 Modal cost estimation:
   Uses public per-second Modal rates for CPU, memory, and common GPUs.
@@ -74,7 +74,7 @@ def _est_llm_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     """Estimate LLM cost in USD. Falls back to 0 for unknown models."""
     if not model:
         return 0.0
-    # Normalise: strip suffixes like '-20250929'
+    # Normalise: strip dated suffixes such as '-20250929'
     key = model.lower().strip()
     # Try exact match first, then prefix match.
     rate = _PRICE_PER_1K.get(key)

@@ -450,7 +450,7 @@ void (async () => {
 {
   const check = buildBoardLaneContractCheck({
     emergingRecommendations: 4,
-    pendingBuyEmergingLike: 0,
+    pendingBuyEmergingStyle: 0,
   })
   assert(check.status === 'ok', 'emerging recommendations are allowed only as watchlist lane')
 }
@@ -458,7 +458,7 @@ void (async () => {
 {
   const check = buildBoardLaneContractCheck({
     emergingRecommendations: 4,
-    pendingBuyEmergingLike: 1,
+    pendingBuyEmergingStyle: 1,
   })
   assert(check.status === 'fail', 'emerging-style pending buys must fail the quality gate')
 }

@@ -54,6 +54,7 @@ export interface CanonicalBrokerFlowRow {
 export interface ScreenerPriceRow {
   symbol: string
   market: string | null
+  canonical_market_segment?: string | null
   date: string
   open: number | null
   high: number | null
@@ -322,11 +323,22 @@ export async function loadMarketDataFromD1(
   const maxDate = tradingDates[tradingDates.length - 1]
 
   const { results: priceRows } = await env.DB.prepare(
-    `SELECT s.symbol, s.market, sp.date,
+    `SELECT s.symbol,
+            CASE
+              WHEN UPPER(COALESCE(cm.market_segment, '')) IN ('EMERGING', 'ESB', 'ROTC') THEN 'EMERGING'
+              WHEN UPPER(COALESCE(cm.market_segment, '')) = 'ETF' THEN 'ETF'
+              ELSE s.market
+            END AS market,
+            cm.market_segment AS canonical_market_segment,
+            sp.date,
             sp.open, sp.high, sp.low, sp.close,
             sp.volume, sp.avg_price
      FROM stock_prices sp
      JOIN stocks s ON sp.stock_id = s.id
+     LEFT JOIN canonical_market_daily cm
+       ON cm.stock_id = s.symbol
+      AND cm.date = sp.date
+      AND cm.source = 'finlab.rotc_price'
      WHERE sp.date >= ? AND sp.date <= ?
      ORDER BY s.symbol, sp.date`,
   ).bind(minDate, maxDate)
@@ -359,11 +371,22 @@ export async function loadMarketDataFromD1(
         const chunk = emergingSymbols.slice(i, i + chunkSize)
         const placeholders = chunk.map(() => '?').join(',')
         const { results } = await env.DB.prepare(
-          `SELECT s.symbol, s.market, sp.date,
+          `SELECT s.symbol,
+                  CASE
+                    WHEN UPPER(COALESCE(cm.market_segment, '')) IN ('EMERGING', 'ESB', 'ROTC') THEN 'EMERGING'
+                    WHEN UPPER(COALESCE(cm.market_segment, '')) = 'ETF' THEN 'ETF'
+                    ELSE s.market
+                  END AS market,
+                  cm.market_segment AS canonical_market_segment,
+                  sp.date,
                   sp.open, sp.high, sp.low, sp.close,
                   sp.volume, sp.avg_price
              FROM stock_prices sp
              JOIN stocks s ON sp.stock_id = s.id
+             LEFT JOIN canonical_market_daily cm
+               ON cm.stock_id = s.symbol
+              AND cm.date = sp.date
+              AND cm.source = 'finlab.rotc_price'
             WHERE s.symbol IN (${placeholders})
               AND sp.date >= ? AND sp.date <= ?
             ORDER BY s.symbol, sp.date`,

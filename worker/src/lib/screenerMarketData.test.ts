@@ -49,6 +49,17 @@ const rows: ScreenerPriceRow[] = [
     volume: 541991,
     avg_price: null,
   },
+  {
+    symbol: '6682',
+    market: 'EMERGING',
+    date: '2026-05-04',
+    open: 70.52,
+    high: 72.9,
+    low: 66.6,
+    close: 70.2,
+    volume: 3642320,
+    avg_price: 69.92,
+  },
 ]
 
 const result = splitPriceRowsByBoard(rows)
@@ -70,9 +81,17 @@ assert(
   '7820 historical emerging-style rows must not leak into emerging lane after OTC listing',
 )
 assert(
+  result.emergingResearchPrices.some((row) => row.stock_id === '6682'),
+  'explicit FinLab EMERGING market rows must route to emerging research even when OHLC is executable',
+)
+assert(
+  !result.allPrices.some((row) => row.stock_id === '6682'),
+  'explicit FinLab EMERGING rows must not enter auto-tradable listed/OTC lane',
+)
+assert(
   !result.allPrices.some((row) => row.stock_id === '0050'),
   'ETF-like symbols must be excluded from the tradable screener hard gate',
 )
 assert(result.laneCounts.tradable === 1, 'only 7820 should count as tradable')
-assert(result.laneCounts.emerging_watchlist === 1, 'only 3585 should count as emerging research')
+assert(result.laneCounts.emerging_watchlist === 2, '3585 and explicit FinLab EMERGING 6682 should count as emerging research')
 assert(result.laneCounts.research_only === 1, 'ETF should count as research-only hard-gate exclusion')

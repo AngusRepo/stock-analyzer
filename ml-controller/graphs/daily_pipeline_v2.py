@@ -323,6 +323,92 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
 
+    def _formal_layer3_chunk_size() -> int:
+        raw = os.environ.get("FORMAL_LAYER3_BATCH_CHUNK_SIZE")
+        try:
+            value = int(float(raw)) if raw is not None else 16
+        except (TypeError, ValueError):
+            value = 16
+        return max(1, min(64, value))
+
+    def _chunk_series(series: list[dict], chunk_size: int) -> list[list[dict]]:
+        return [series[i:i + chunk_size] for i in range(0, len(series), chunk_size)]
+
+    async def _run_formal_layer3_chunked(
+        *,
+        series: list[dict],
+        models: list[str],
+    ) -> dict:
+        if not models:
+            return {"error": "Layer3 formal adapters inactive or model_pool missing", "overlays": {}, "blockers": {}}
+        if not series:
+            return {"overlays": {model_name: [] for model_name in models}, "blockers": {}}
+
+        chunk_size = _formal_layer3_chunk_size()
+        chunks = _chunk_series(series, chunk_size)
+        logger.info(
+            "[Pipeline V2] Layer3 formal adapters chunked dispatch: "
+            f"models={models} chunks={len(chunks)} chunk_size={chunk_size}"
+        )
+
+        async def _run_one(model_name: str) -> tuple[str, dict]:
+            calls = [
+                modal_client.layer3_formal_batch_predict(
+                    chunk,
+                    horizon=5,
+                    models=[model_name],
+                )
+                for chunk in chunks
+            ]
+            chunk_results = await asyncio.gather(*calls, return_exceptions=True)
+            overlays: list[dict] = []
+            blockers: dict[str, str] = {}
+            for chunk_index, result in enumerate(chunk_results):
+                if isinstance(result, BaseException):
+                    blockers[model_name] = f"chunk_{chunk_index}_exception:{result}"
+                    logger.warning(
+                        "[Pipeline V2] Layer3 formal adapter chunk failed: "
+                        f"model={model_name} chunk={chunk_index + 1}/{len(chunks)} error={result}"
+                    )
+                    continue
+                if not isinstance(result, dict):
+                    blockers[model_name] = f"chunk_{chunk_index}_invalid_payload"
+                    logger.warning(
+                        "[Pipeline V2] Layer3 formal adapter chunk returned invalid payload: "
+                        f"model={model_name} chunk={chunk_index + 1}/{len(chunks)} payload={result}"
+                    )
+                    continue
+                if result.get("error"):
+                    blockers[model_name] = str(result.get("error"))
+                    logger.warning(
+                        "[Pipeline V2] Layer3 formal adapter chunk returned error: "
+                        f"model={model_name} chunk={chunk_index + 1}/{len(chunks)} error={result.get('error')}"
+                    )
+                    continue
+                model_overlays = result.get("overlays") if isinstance(result.get("overlays"), dict) else {}
+                rows = model_overlays.get(model_name) or []
+                overlays.extend(row for row in rows if isinstance(row, dict))
+                result_blockers = result.get("blockers") if isinstance(result.get("blockers"), dict) else {}
+                if result_blockers.get(model_name):
+                    blockers[model_name] = str(result_blockers.get(model_name))
+            return model_name, {"overlays": overlays, "blockers": blockers}
+
+        model_results = await asyncio.gather(
+            *[_run_one(model_name) for model_name in models],
+            return_exceptions=True,
+        )
+        combined_overlays: dict[str, list[dict]] = {model_name: [] for model_name in models}
+        combined_blockers: dict[str, str] = {}
+        for result in model_results:
+            if isinstance(result, BaseException):
+                combined_blockers["formal_layer3"] = str(result)
+                logger.warning(f"[Pipeline V2] Layer3 formal adapter model task failed: {result}")
+                continue
+            model_name, payload = result
+            combined_overlays[model_name] = payload.get("overlays") or []
+            combined_blockers.update(payload.get("blockers") or {})
+        return {"overlays": combined_overlays, "blockers": combined_blockers}
+
     results = await batch_predict(payloads)
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -419,9 +505,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if pool_versions_loaded and model_status.get(model_name) == "production_adapter_active"
     ]
     formal_layer3_task = (
-        modal_client.layer3_formal_batch_predict(
-            sequence_series,
-            horizon=5,
+        _run_formal_layer3_chunked(
+            series=sequence_series,
             models=formal_layer3_models,
         )
         if formal_layer3_models

@@ -1410,7 +1410,6 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan:
     { label: '模型限價', value: modelEntry ?? '-', note: '', tone: 'neutral' },
     { label: '買入參考區', value: zones.buyReferenceZone, note: '', tone: 'good' },
     { label: '可追價上限區', value: zones.chaseCeilingZone, note: '', tone: 'warn' },
-    { label: '突破追價區', value: zones.breakoutChaseZone, note: '', tone: 'good' },
     { label: '前高壓力', value: zones.resistance ?? '-', note: '', tone: 'warn' },
     { label: '轉強確認', value: zones.confirmation ?? '-', note: '', tone: 'good' },
     { label: '關鍵支撐', value: zones.support ?? '-', note: '', tone: 'good' },

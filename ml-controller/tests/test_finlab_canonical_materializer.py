@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "ml-controller"))
 
 from services.finlab_canonical_materializer import (
+    FinLabCanonicalOutputs,
     build_d1_upsert_statements,
     build_emerging_broker_rows,
     build_fundamental_feature_rows,
@@ -315,6 +316,53 @@ def test_materialize_outputs_can_apply_fundamental_features_dataset_only() -> No
     assert outputs.canonical_fundamental_features[0]["available_date"] == "2026-05-30"
     statements = build_d1_upsert_statements(outputs)
     assert any("INSERT INTO canonical_fundamental_features" in sql for sql, _ in statements)
+
+
+def test_build_d1_upsert_statements_sanitizes_non_finite_fundamental_values() -> None:
+    outputs = FinLabCanonicalOutputs(
+        run_id="finlab-v4-test",
+        generated_at="2026-06-03T00:00:00+00:00",
+        artifact_root="data/tmp/test",
+        canonical_market_daily=[],
+        canonical_chip_daily=[],
+        canonical_institutional_amount_daily=[],
+        canonical_revenue_monthly=[],
+        canonical_fundamental_features=[
+            {
+                "stock_id": "2330",
+                "period": "2026-03-31",
+                "market_segment": "LISTED_OTC",
+                "report_date": "2026-03-31",
+                "available_date": "2026-05-30",
+                "revenue_growth_yoy": float("nan"),
+                "gross_margin": float("inf"),
+                "operating_margin": float("-inf"),
+                "roe": 20.0,
+                "eps": 3.0,
+                "source": "finlab.fundamental_factor_diversity",
+                "lineage_json": "{}",
+                "as_of_date": "2026-06-03",
+            }
+        ],
+        canonical_broker_flow_daily=[],
+        finlab_taxonomy_tags=[],
+        data_source_inventory=[],
+        source_quality_metrics=[],
+        manifest={
+            "run_id": "finlab-v4-test",
+            "generated_at": "2026-06-03T00:00:00+00:00",
+            "row_counts": {"canonical_fundamental_features": 1},
+            "freshness": {},
+            "checksum": "sha256:test",
+        },
+    )
+
+    statements = build_d1_upsert_statements(outputs)
+    _, params = next(item for item in statements if "INSERT INTO canonical_fundamental_features" in item[0])
+    assert params[5] is None
+    assert params[6] is None
+    assert params[7] is None
+    assert params[8] == 20.0
 
 
 def test_materialize_fundamental_features_accepts_finlab_chinese_margin_fields() -> None:

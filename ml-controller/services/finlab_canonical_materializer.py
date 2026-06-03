@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -889,7 +890,13 @@ def _row_statements(
     update_columns: list[str],
 ) -> list[tuple[str, list[Any]]]:
     sql = _upsert_statement(table, columns, conflict_columns, update_columns)
-    return [(sql, [row.get(column) for column in columns]) for row in rows]
+    return [(sql, [_d1_param(row.get(column)) for column in columns]) for row in rows]
+
+
+def _d1_param(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def _positive_float(value: Any) -> float | None:

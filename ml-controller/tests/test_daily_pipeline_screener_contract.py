@@ -45,6 +45,8 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     assert "SELECT * FROM daily_recommendations" not in source
     assert "sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass'" in recommendation_service
     assert "latest screener candidate seed" in recommendation_service
+    assert "COALESCE(dr.recommendation_lane, 'tradable') = 'tradable'" in recommendation_service
+    assert "COALESCE(dr.eligible_for_ml, 1) = 1" in recommendation_service
     assert "score_components" in payload_builder
     pipeline_columns_start = payload_builder.index("DAILY_RECOMMENDATION_PIPELINE_COLUMNS = (")
     pipeline_columns_end = payload_builder.index(")", pipeline_columns_start)

@@ -2367,6 +2367,8 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
         SELECT dr.stock_id
           FROM daily_recommendations dr
          WHERE dr.date = ?
+           AND COALESCE(dr.recommendation_lane, 'tradable') = 'tradable'
+           AND COALESCE(dr.eligible_for_ml, 1) = 1
            AND NOT EXISTS (
              SELECT 1
                FROM screener_funnel_items sfi

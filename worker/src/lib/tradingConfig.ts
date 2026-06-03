@@ -220,9 +220,10 @@ export interface TradingConfig {
     maxCandidates: number        // Bottom-up 最終候選上限（預設 25）
     emergingMaxCandidates: number // 興櫃研究觀察候選上限（不進 pending buys，預設 24）
     candidatePoolSize?: number   // Screener enrichment top pool（預設由 screenerPolicy 解析）
-    coarseMlQueueSize?: number   // 送入 ml-controller Layer 2 coarse ML gate 的上市櫃 queue
+    coarseMlQueueSize?: number   // Legacy telemetry only; formal L2 input is strategy-hit count
     mlShortlistSize?: number     // Layer 3 core family ML shortlist（預設由 screenerPolicy 解析）
     emergingResearchSize?: number // 興櫃研究 shortlist（預設由 screenerPolicy 解析）
+    coarseMlKeepRatio?: number   // Layer 2 coarse ML keep ratio; no fixed 80 hard cap
     scoreCalibrationEnabled?: boolean
     scoreCalibrationMinSize?: number
     scoreCalibrationPercentileWeight?: number
@@ -523,6 +524,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     emergingMaxCandidates: 24,
     candidatePoolSize: 200,
     coarseMlQueueSize: 80,
+    coarseMlKeepRatio: 0.75,
     mlShortlistSize: 35,
     emergingResearchSize: 24,
     scoreCalibrationEnabled: true,

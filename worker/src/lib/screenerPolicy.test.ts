@@ -34,6 +34,7 @@ function assert(condition: unknown, message: string): void {
 
   assert(policy.sizing.candidatePoolSize === 180, 'candidate pool size should accept bounded adaptive delta')
   assert(policy.sizing.coarseMlQueueSize === 70, 'coarse ML queue size should accept adaptive delta')
+  assert(policy.sizing.coarseMlKeepRatio === 0.75, 'coarse ML gate should use ratio semantics, not a fixed queue cap')
   assert(policy.sizing.mlShortlistSize === 45, 'core ML shortlist size should accept adaptive delta')
   assert(policy.sizing.emergingResearchSize === 30, 'emerging research size should accept adaptive delta')
 }

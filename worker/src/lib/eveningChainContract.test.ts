@@ -56,6 +56,17 @@ assert(
   'evening chain must run screener before pipeline/ML',
 )
 assert(
+  updateOrchestrator.includes("type: 'post_indicator_screener'") &&
+    updateOrchestrator.includes('continuePostIndicatorScreener') &&
+    updateOrchestrator.includes('indicator queue complete; post-indicator screener continuation queued'),
+  'indicator finalizer must queue a retryable post-indicator screener continuation instead of running heavy screener under the finalize lock',
+)
+assert(
+  updateOrchestrator.indexOf("type: 'post_indicator_screener'") <
+    updateOrchestrator.indexOf("type: 'post_screener_pipeline'"),
+  'event-driven chain must queue screener continuation before pipeline continuation',
+)
+assert(
   updateOrchestrator.includes('pipeline already running for') &&
     updateOrchestrator.includes("status: 'triggered'"),
   'evening chain must not overwrite a successful in-flight pipeline trigger with success/LOCKED telemetry',

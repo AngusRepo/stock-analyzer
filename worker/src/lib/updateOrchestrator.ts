@@ -316,6 +316,28 @@ async function finalizeUpdateChain(
     })
     console.warn('[Queue] Dataset manifest write failed:', e)
   }
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `indicator queue complete; post-indicator screener continuation queued for ${triggerTime}; run_id=${runId}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  await env.UPDATE_QUEUE.send({
+    type: 'post_indicator_screener',
+    cursor: 0,
+    triggerTime,
+    runId,
+    shardCount,
+    attempt: 1,
+  })
+}
+
+async function continuePostIndicatorScreener(
+  env: Bindings,
+  deps: ProcessUpdateBatchDeps,
+  triggerTime: string,
+  runId: string,
+): Promise<void> {
   await checkAlerts(env)
 
   try {
@@ -358,7 +380,7 @@ async function finalizeUpdateChain(
       run_date: triggerTime,
     })
     console.warn('[Queue] Event-driven screener failed:', e)
-    return
+    throw e
   }
 
   await logSchedulerResult(env.KV, 'evening-chain', {
@@ -372,7 +394,6 @@ async function finalizeUpdateChain(
     cursor: 0,
     triggerTime,
     runId,
-    shardCount,
     attempt: 1,
   })
 }
@@ -879,6 +900,17 @@ export async function processUpdateBatch(
         source: 'update_queue_post_verify_learning_closure',
       },
     })
+    return
+  }
+
+  if (msg.type === 'post_indicator_screener') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `${triggerTime}-post-indicator-screener`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-indicator screener date ${triggerTime}, skipping.`)
+      return
+    }
+    await continuePostIndicatorScreener(env, deps, triggerTime, runId)
     return
   }
 

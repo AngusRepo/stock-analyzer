@@ -1852,7 +1852,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   applyScreenerScoreCalibration(scored, screenerPolicy.scoreCalibration)
   debugLog.push(
     `[Step 2b] score calibration ${screenerPolicy.scoreCalibration.enabled ? screenerPolicy.scoreCalibration.method : 'disabled'} ` +
-    `pool=${screenerPolicy.sizing.candidatePoolSize} coarse=${screenerPolicy.sizing.coarseMlQueueSize} ` +
+    `pool=${screenerPolicy.sizing.candidatePoolSize} coarse_keep_ratio=${screenerPolicy.sizing.coarseMlKeepRatio} ` +
     `shortlist=${screenerPolicy.sizing.mlShortlistSize} ` +
     `emerging=${screenerPolicy.sizing.emergingResearchSize}`,
   )
@@ -1930,7 +1930,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     debugLog.push(
       `[Step 2c] layer1_breadth=${layer1BreadthPlan.version} source=${source} ` +
       `source_universe=${strategySourceUniverse.length} layer1=${layer1BreadthPool.length}/${screenerPolicy.sizing.candidatePoolSize} ` +
-      `coarse_seed=${layer2CoarseQueueSeed.length}/${coarseQueueSize} core_ml=${maxCandidates} ` +
+      `coarse_seed=${layer2CoarseQueueSeed.length} keep_ratio=${screenerPolicy.sizing.coarseMlKeepRatio} core_ml=${maxCandidates} ` +
       `research_only=${strategySelectionPlan.researchOnlyQueue.length} overflow=${strategySelectionPlan.telemetry.overflow_count} ` +
       `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode}`,
     )
@@ -1953,7 +1953,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
           strategy_pool_score: (candidate as any).strategy_pool_score ?? null,
           target_size: screenerPolicy.sizing.candidatePoolSize,
-          coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
+          coarse_ml_queue_size_legacy: screenerPolicy.sizing.coarseMlQueueSize,
+          coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
           core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
           chip_score: candidate.chip_score,
           tech_score: candidate.tech_score,
@@ -1987,7 +1988,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_pool_reason: (candidate as any).strategy_pool_reason ?? null,
           raw_signals: candidate.raw_signals ?? null,
           layer1_rank: (candidate as any).strategy_pool_rank ?? index + 1,
-          coarse_ml_queue_size: screenerPolicy.sizing.coarseMlQueueSize,
+          coarse_ml_queue_size_legacy: screenerPolicy.sizing.coarseMlQueueSize,
+          coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
           core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
         },
       })
@@ -2043,7 +2045,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   } catch (e) {
     const rawSignalSorted = [...strategySourceUniverse].sort((a, b) => rawSignalEmergencyFallbackScore(b) - rawSignalEmergencyFallbackScore(a))
     layer1BreadthPool = rawSignalSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
-    layer2CoarseQueueSeed = layer1BreadthPool.slice(0, coarseQueueSize)
+    layer2CoarseQueueSeed = layer1BreadthPool.slice(0, screenerPolicy.sizing.candidatePoolSize)
     overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
     strategySelectionTelemetry = {
       version: 'layer1-breadth-fallback',
@@ -2659,7 +2661,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     industryCount.set(c.industry, cnt + 1)
     return true
   })
-  const selectionTargetSize = screenerPolicy.sizing.coarseMlQueueSize
+  const selectionTargetSize = screenerPolicy.sizing.candidatePoolSize
   const dynamicThemeCap = Number((sc as any).maxPerIndustryTheme ?? Math.max(3, Math.ceil(selectionTargetSize * 0.18)))
   const dynamicSubindustryCap = Number((sc as any).maxPerSubindustry ?? Math.max(2, Math.ceil(selectionTargetSize * 0.14)))
   const beforeTaxonomyCap = afterIndustryLimit.length
@@ -2692,8 +2694,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   if (layer1BreadthPool.length > 0) {
     const layer1TargetSize = screenerPolicy.sizing.candidatePoolSize
     const updatedBySymbol = new Map(scored.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
-    const diversityEligibleSymbols = new Set(afterIndustryLimit.map((candidate) => String(candidate.symbol || '').trim()))
-    const layer1Queue = layer1BreadthPool
+    const layer1Queue = layer2CoarseQueueSeed
       .filter((candidate) => {
         const symbol = String(candidate.symbol || '').trim()
         const isFormalStrategyHit =
@@ -2701,7 +2702,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           String((candidate as any).strategy_pool_fallback_source ?? '') !== 'raw_signal_top_up' &&
           ((candidate as any).strategy_pool_ids ?? []).length > 0
         if (!isFormalStrategyHit) return false
-        return updatedBySymbol.has(symbol) && diversityEligibleSymbols.has(symbol)
+        return updatedBySymbol.has(symbol)
       })
       .slice(0, layer1TargetSize)
     const selectedSymbols = new Set(layer1Queue.map((candidate: any) => String(candidate.symbol || '').trim()))
@@ -2786,14 +2787,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
     debugLog.push(
       `[Step 5] layer1 breadth seed applied: selected=${selectedCandidates.length}+observe_topup=${topUpCandidates.length}/${layer1TargetSize} ` +
-      `controller_l2_target=${coarseQueueSize} core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
+      `controller_l2_keep_ratio=${screenerPolicy.sizing.coarseMlKeepRatio} core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
     )
   } else {
     debugLog.push(`[Step 5] layer1 breadth unavailable; fallback to score-ranked L1 seed ${screenerPolicy.sizing.candidatePoolSize}`)
   }
   const step5Msg = `[Step 5] ${scored.length} 瑼????璆凌${maxPerIndustry} ??${afterIndustryLimit.length} 瑼???coarse ${coarseQueueSize} ??${finalCandidates.length} 瑼???core target ${maxCandidates}`
   debugLog.push(step5Msg)
-  debugLog.push(`[Step 5] L1 seed=${finalCandidates.length}; controller L2 target=${coarseQueueSize}; controller L3 target=${maxCandidates}`)
+  debugLog.push(`[Step 5] L1 seed=${finalCandidates.length}; controller L2 keep ratio=${screenerPolicy.sizing.coarseMlKeepRatio}; controller L3 target=${maxCandidates}`)
 
   // 鋡怎璆凋??祟??
   const removedByIndustry = scored.filter(c => !afterIndustryLimit.includes(c)).slice(0, 10)
@@ -2963,7 +2964,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_pool_reason: sc.strategy_pool_reason ?? null,
       l1_breadth_seed_size: finalCandidates.length,
       layer2_owner: 'ml-controller',
-      layer2_coarse_queue_size: coarseQueueSize,
+      layer2_coarse_queue_size_legacy: coarseQueueSize,
+      layer2_coarse_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
       layer3_core_ml_target_size: maxCandidates,
     }
     pushFunnelItem(funnelItems, {
@@ -2977,7 +2979,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       evidence: {
         layer_contract: 'ml-controller runs LightGBM/XGBoost/ExtraTrees coarse rank before core family ML',
         worker_seed_only: true,
-        coarse_ml_queue_size: coarseQueueSize,
+        coarse_ml_queue_size_legacy: coarseQueueSize,
+        coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
         core_ml_shortlist_size: maxCandidates,
         strategy_pool_ids: sc.strategy_pool_ids ?? [],
         strategy_family_ids: sc.strategy_family_ids ?? [],
@@ -3300,6 +3303,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       metadata: {
         candidatePoolSize: screenerPolicy.sizing.candidatePoolSize,
         coarseMlQueueSize: screenerPolicy.sizing.coarseMlQueueSize,
+        coarseMlKeepRatio: screenerPolicy.sizing.coarseMlKeepRatio,
         mlShortlistSize: screenerPolicy.sizing.mlShortlistSize,
         emergingResearchSize: screenerPolicy.sizing.emergingResearchSize,
         strategyCandidatePool: strategySelectionTelemetry,

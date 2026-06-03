@@ -172,6 +172,7 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe'
     target_size: number
     coarse_ml_queue_size: number
+    coarse_ml_target_size: number
     strategy_selected_count: number
     raw_signal_top_up_count: number
     source_universe_count: number
@@ -966,7 +967,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     .map((candidate, index) => annotateLayer1TopUp(candidate, strategySelected.length + index + 1))
 
   const breadthPool = [...strategySelected, ...topUp].slice(0, targetSize)
-  const formalCoarseQueue = strategySelected.slice(0, coarseMlQueueSize)
+  const formalCoarseQueue = strategySelected
 
   return {
     version: `${STRATEGY_CANDIDATE_POOL_VERSION}:layer1-breadth-v1`,
@@ -979,6 +980,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe',
       target_size: targetSize,
       coarse_ml_queue_size: formalCoarseQueue.length,
+      coarse_ml_target_size: coarseMlQueueSize,
       strategy_selected_count: strategySelected.length,
       raw_signal_top_up_count: topUp.length,
       source_universe_count: featureEnrichedUniverse.length,

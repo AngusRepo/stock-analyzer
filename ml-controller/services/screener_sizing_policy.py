@@ -26,6 +26,13 @@ def _positive_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
     return _clamp(round(n), minimum, maximum)
 
 
+def _ratio(value: Any, fallback: float, minimum: float, maximum: float) -> float:
+    n = _finite_number(value)
+    if n is None:
+        return fallback
+    return max(minimum, min(maximum, float(n)))
+
+
 def _adaptive_delta(base: int, delta: Any, minimum: int, maximum: int) -> int:
     n = _finite_number(delta)
     if n is None:
@@ -43,7 +50,7 @@ def _first_present(raw: dict[str, Any], *keys: str) -> Any:
 def resolve_controller_screener_sizing(
     trading_config: dict[str, Any] | None,
     adaptive_params: dict[str, Any] | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | float]:
     """Mirror Worker screener sizing semantics for controller-side ML gates."""
     config = trading_config if isinstance(trading_config, dict) else {}
     raw = config.get("screener") if isinstance(config.get("screener"), dict) else {}
@@ -61,6 +68,12 @@ def resolve_controller_screener_sizing(
         80,
         30,
         160,
+    )
+    coarse_ml_keep_ratio = _ratio(
+        _first_present(raw, "coarseMlKeepRatio", "coarse_ml_keep_ratio"),
+        0.75,
+        0.25,
+        1.0,
     )
     ml_shortlist_base = _positive_int(
         _first_present(
@@ -130,6 +143,7 @@ def resolve_controller_screener_sizing(
     return {
         "candidate_pool_size": candidate_pool_size,
         "coarse_ml_queue_size": coarse_ml_queue_size,
+        "coarse_ml_keep_ratio": coarse_ml_keep_ratio,
         "ml_shortlist_size": ml_shortlist_size,
         "core_family_rank_size": core_family_rank_size,
         "emerging_research_size": emerging_research_size,

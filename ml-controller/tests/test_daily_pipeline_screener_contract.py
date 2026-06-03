@@ -24,6 +24,7 @@ from services.screener_sizing_policy import resolve_controller_screener_sizing  
 def test_daily_pipeline_refuses_watchlist_screener_fallback():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
     payload_builder = Path(__file__).resolve().parent.parent.joinpath("services", "payload_builder.py").read_text(encoding="utf-8")
+    recommendation_service = Path(__file__).resolve().parent.parent.joinpath("services", "recommendation_service.py").read_text(encoding="utf-8")
 
     assert "screener_recs_missing" in source
     assert "l1_candidate_seed_after_overlay/final_selection ownership" in source
@@ -41,6 +42,8 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     assert "sfi.stage_preference_rank = 1" in source
     assert "sfi.decision = 'selected'" in source
     assert "SELECT * FROM daily_recommendations" not in source
+    assert "sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')" in recommendation_service
+    assert "latest screener candidate seed" in recommendation_service
     assert "score_components" in payload_builder
     pipeline_columns_start = payload_builder.index("DAILY_RECOMMENDATION_PIPELINE_COLUMNS = (")
     pipeline_columns_end = payload_builder.index(")", pipeline_columns_start)
@@ -77,7 +80,13 @@ def test_daily_pipeline_runs_coarse_feature_gate_before_heavy_sequence_models():
     assert "pool_versions_loaded and model_status.get(model_name)" in source
     assert 'models=["GNN", "TimesFM"]' not in source
     assert "resolve_controller_screener_sizing(" in source
-    assert 'core_target_size = screener_sizing["coarse_ml_queue_size"]' in source
+    assert "_resolve_coarse_ml_gate_target(" in source
+    assert "coarseMlKeepRatio" in source
+    helper_start = source.index("def _resolve_coarse_ml_gate_target(")
+    helper_end = source.index("def _coerce_ic_value", helper_start)
+    helper_source = source[helper_start:helper_end]
+    assert 'screener_sizing.get("coarse_ml_queue_size")' not in helper_source
+    assert "return min(input_count, ratio_target)" in helper_source
     assert "apply_core_ml_gate(" in source
     assert "apply_core_family_rank(" in source
     assert "require_lifecycle_weights=True" in source
@@ -95,6 +104,7 @@ def test_controller_screener_sizing_matches_worker_layer_contract():
             "screener": {
                 "candidatePoolSize": 200,
                 "coarseMlQueueSize": 80,
+                "coarseMlKeepRatio": 0.75,
                 "mlShortlistSize": 40,
                 "emergingResearchSize": 24,
             },
@@ -111,6 +121,7 @@ def test_controller_screener_sizing_matches_worker_layer_contract():
 
     assert policy["candidate_pool_size"] == 180
     assert policy["coarse_ml_queue_size"] == 70
+    assert policy["coarse_ml_keep_ratio"] == 0.75
     assert policy["ml_shortlist_size"] == 45
     assert policy["core_family_rank_size"] == 45
     assert policy["emerging_research_size"] == 30

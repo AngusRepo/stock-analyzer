@@ -221,7 +221,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(!oldTopScoreSymbols.has('8999'), 'test fixture must keep niche candidate outside old score-top pool')
   assert(plan.breadthPool.some((candidate) => candidate.symbol === '8999'), 'L1 breadth pool should include raw-signal priced strategy fit outside old score-top pool')
   assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe', 'L1 selection order must keep raw-signal top-up in observe-only evidence')
-  assert(plan.coarseQueue.length <= 8, 'Layer2 coarse queue should be sliced from formal strategy hits only')
+  assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_decision === 'ml_queue'), 'Layer2 coarse queue should contain formal strategy hits before controller-side coarse ML pruning')
+  assert(Number((plan.telemetry as any).coarse_ml_target_size) === 8, 'Layer2 coarse queue should preserve the controller target size as telemetry')
   assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_fallback_source !== 'raw_signal_top_up'), 'raw-signal top-up must not enter formal L2 coarse queue')
 }
 

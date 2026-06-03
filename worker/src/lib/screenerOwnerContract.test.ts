@@ -146,6 +146,8 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('strategyCandidatePool'), 'screener funnel metadata should include strategy candidate pool telemetry')
   assert(marketScreener.includes('layer1_strategy_breadth_gate'), 'screener must persist Layer 1 strategy breadth gate evidence')
   assert(marketScreener.includes('layer2_coarse_ml_gate'), 'screener must persist Layer 2 coarse queue evidence')
+  assert(marketScreener.includes('const layer1Queue = layer2CoarseQueueSeed'), 'daily_recommendations seed must read the formal Layer1 strategy-hit queue, not the post-diversity score fallback')
+  assert(marketScreener.includes('coarse_ml_keep_ratio'), 'Layer2 evidence must expose proportional keep semantics')
   assert(marketScreener.includes('core_ml_shortlist_size'), 'screener metadata must expose Layer 3 core ML target size')
   assert(strategyCandidatePool.includes('baseTotalBudget: 64'), 'strategy candidate pool should keep 64 as the base ML allocation budget')
   assert(strategyCandidatePool.includes('normalTotalCap: 96'), 'strategy candidate pool should expose adaptive 96 normal cap')

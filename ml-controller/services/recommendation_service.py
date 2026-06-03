@@ -2301,7 +2301,7 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
               JOIN screener_funnel_items sfi
                 ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
                AND sfi.symbol = dr.symbol
-               AND sfi.stage = 'final_selection'
+               AND sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')
                AND sfi.decision = 'selected'
              WHERE dr.date = ?
                AND dr.stock_id IN ({placeholders})
@@ -2349,7 +2349,7 @@ def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], ru
 
 
 def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str) -> int:
-    """Keep only rows owned by the latest screener final_selection for run_date."""
+    """Keep only rows owned by the latest screener candidate seed for run_date."""
     if not recommendations:
         return 0
     rows = d1_client.query(
@@ -2370,7 +2370,7 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
                FROM screener_funnel_items sfi
               WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
                 AND sfi.symbol = dr.symbol
-                AND sfi.stage = 'final_selection'
+                AND sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection')
                 AND sfi.decision = 'selected'
            )
         """,
@@ -2392,7 +2392,7 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
         )
         if not run:
             logger.warning(
-                "[recommendation_service] No latest screener final_selection run for run_date=%s; skip stale cleanup",
+                "[recommendation_service] No latest screener candidate-seed run for run_date=%s; skip stale cleanup",
                 run_date,
             )
         return 0
@@ -2412,7 +2412,7 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
         changes += int(((result or {}).get("meta") or {}).get("changes") or 0)
     if changes:
         logger.warning(
-            "[recommendation_service] Deleted %s daily_recommendations rows outside latest screener final_selection for run_date=%s",
+            "[recommendation_service] Deleted %s daily_recommendations rows outside latest screener candidate seed for run_date=%s",
             changes,
             run_date,
         )

@@ -102,6 +102,7 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
     "screener": {
         "candidatePoolSize": 200,
         "coarseMlQueueSize": 80,
+        "coarseMlKeepRatio": 0.75,
         "mlShortlistSize": 35,
         "emergingResearchSize": 24,
     },

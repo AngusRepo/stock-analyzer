@@ -575,10 +575,14 @@ def test_daily_pipeline_serving_ic_bundle_backfills_missing_formal_layer3_slots(
     assert pool["formal_layer3_slots"]["TimesFM"]["status"] == "production_adapter_active"
     assert "GNN" in bundle["diagnostics"]
     assert "TimesFM" in bundle["diagnostics"]
-    assert "GNN" not in bundle["weights"]
-    assert "TimesFM" not in bundle["weights"]
+    assert bundle["weights"]["GNN"] > 0
+    assert bundle["weights"]["TimesFM"] > 0
+    assert "TabM" not in bundle["weights"]
+    assert "iTransformer" not in bundle["weights"]
     assert bundle["diagnostics"]["GNN"]["ic_source"] == "missing"
     assert bundle["diagnostics"]["TimesFM"]["ic_source"] == "missing"
+    assert bundle["diagnostics"]["GNN"]["weight_source"] == "formal_adapter_warm_start_prior"
+    assert bundle["diagnostics"]["TimesFM"]["weight_source"] == "formal_adapter_warm_start_prior"
 
 
 def test_daily_pipeline_builds_expected_return_calibration_from_verified_outcomes(monkeypatch):

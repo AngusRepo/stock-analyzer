@@ -5,6 +5,7 @@ import type { TradingConfig } from './tradingConfig'
 export interface ScreenerSizingPolicy {
   candidatePoolSize: number
   coarseMlQueueSize: number
+  coarseMlKeepRatio: number
   mlShortlistSize: number
   emergingResearchSize: number
 }
@@ -57,6 +58,7 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
 
   const candidatePoolBase = positiveInt(raw.candidatePoolSize, 200, 180, 240)
   const coarseMlQueueBase = positiveInt(raw.coarseMlQueueSize, 80, 30, 160)
+  const coarseMlKeepRatio = clamp(finiteNumber(raw.coarseMlKeepRatio) ?? 0.75, 0.25, 1)
   const mlShortlistBase = positiveInt(raw.mlShortlistSize ?? raw.maxCandidates, 35, 15, 80)
   const emergingResearchBase = positiveInt(raw.emergingResearchSize ?? raw.emergingMaxCandidates, 24, 0, 80)
 
@@ -85,6 +87,7 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
     sizing: {
       candidatePoolSize,
       coarseMlQueueSize,
+      coarseMlKeepRatio,
       mlShortlistSize,
       emergingResearchSize,
     },

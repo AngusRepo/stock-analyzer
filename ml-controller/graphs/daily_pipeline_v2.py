@@ -354,7 +354,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         state.get("trading_config"),
         state.get("adaptive_params"),
     )
-    core_target_size = screener_sizing["coarse_ml_queue_size"]
+    core_target_size = _resolve_coarse_ml_gate_target(
+        len(payloads),
+        screener_sizing,
+        state.get("trading_config"),
+    )
     coarse_ranked = sorted(
         (
             {
@@ -889,6 +893,26 @@ def _prediction_eligible_for_topk(pred: dict) -> bool:
     return True
 
 
+def _resolve_coarse_ml_gate_target(
+    input_count: int,
+    screener_sizing: dict[str, Any],
+    trading_config: dict[str, Any] | None = None,
+) -> int:
+    """Resolve Layer 2 keep count from a ratio, not the legacy queue-size cap."""
+    _ = screener_sizing
+    if input_count <= 0:
+        return 0
+    config = trading_config if isinstance(trading_config, dict) else {}
+    raw = config.get("screener") if isinstance(config.get("screener"), dict) else {}
+    try:
+        keep_ratio = float(raw.get("coarseMlKeepRatio", raw.get("coarse_ml_keep_ratio", 0.75)) or 0.75)
+    except (TypeError, ValueError):
+        keep_ratio = 0.75
+    keep_ratio = max(0.25, min(1.0, keep_ratio))
+    ratio_target = max(1, math.ceil(input_count * keep_ratio))
+    return min(input_count, ratio_target)
+
+
 def _coerce_ic_value(value: Any) -> float | None:
     if isinstance(value, dict):
         for key in ("ic", "rolling_ic", "ic_4w_avg", "value"):
@@ -965,6 +989,10 @@ def _ic_weighting_policy(ev2_cfg: dict | None = None) -> dict[str, Any]:
         "pooled_segment_floor": float(raw.get("pooledSegmentFloor", 0.0025) or 0.0025),
         "pooled_segment_fallback_multiplier": float(raw.get("pooledSegmentFallbackMultiplier", 0.25) or 0.25),
         "pooled_segment_cap": float(raw.get("pooledSegmentCap", 0.015) or 0.015),
+        "formal_adapter_warm_start_enabled": bool(raw.get("formalAdapterWarmStartEnabled", True)),
+        "formal_adapter_warm_start_multiplier": float(raw.get("formalAdapterWarmStartMultiplier", 0.5) or 0.5),
+        "formal_adapter_warm_start_floor": float(raw.get("formalAdapterWarmStartFloor", 0.0025) or 0.0025),
+        "formal_adapter_warm_start_cap": float(raw.get("formalAdapterWarmStartCap", 0.01) or 0.01),
     }
 
 
@@ -1056,7 +1084,7 @@ def _build_serving_ic_bundle(
     weights: dict[str, float] = {}
     diagnostics: dict[str, dict] = {}
 
-    def _add_entry(name: str, entry: dict, *, include_weight: bool = True) -> None:
+    def _add_entry(name: str, entry: dict, *, include_weight: bool = True, formal_adapter: bool = False) -> None:
         ic_value, source = _entry_serving_ic(entry, None if scope == "GLOBAL" else scope)
         multiplier, validation_status, validation_reason = _validation_multiplier(entry)
         sample_count = _entry_ic_sample_count(entry, source)
@@ -1097,6 +1125,31 @@ def _build_serving_ic_bundle(
                     "pooled_floor_weight": round(float(fallback_weight), 8),
                     "pooled_shrinkage_reason": pooled_shrinkage.get("reason"),
                 }
+        if (
+            include_weight
+            and formal_adapter
+            and policy.get("formal_adapter_warm_start_enabled")
+            and source == "missing"
+            and effective_weight is None
+            and multiplier > 0
+        ):
+            warm_weight = min(
+                float(policy["formal_adapter_warm_start_cap"]),
+                max(
+                    float(policy["formal_adapter_warm_start_floor"]),
+                    float(policy["prior_ic"]) * float(policy["formal_adapter_warm_start_multiplier"]),
+                ),
+            )
+            effective_weight = warm_weight * max(0.0, float(multiplier or 0.0))
+            shrinkage = {
+                **shrinkage,
+                "reason": "formal_adapter_warm_start_prior",
+                "prior_ic": float(policy["prior_ic"]),
+                "warm_start_multiplier": float(policy["formal_adapter_warm_start_multiplier"]),
+                "warm_start_floor": float(policy["formal_adapter_warm_start_floor"]),
+                "warm_start_cap": float(policy["formal_adapter_warm_start_cap"]),
+                "effective_weight": round(float(effective_weight), 8),
+            }
         if include_weight and effective_weight is not None:
             weights[name] = float(effective_weight)
         diagnostics[name] = {
@@ -1108,6 +1161,8 @@ def _build_serving_ic_bundle(
             "validation_multiplier": multiplier,
             "validation_status": validation_status,
             "validation_reason": validation_reason,
+            "effective_weight": round(float(effective_weight), 8) if effective_weight is not None else None,
+            "weight_source": shrinkage.get("reason") if isinstance(shrinkage, dict) else None,
             "last_ic_status": entry.get("last_ic_status"),
             "last_ic_root_cause": entry.get("last_ic_root_cause"),
             "last_ic_sample_count": entry.get("last_ic_sample_count"),
@@ -1117,7 +1172,12 @@ def _build_serving_ic_bundle(
         _add_entry(name, entry, include_weight=True)
     for name, entry in ((pool or {}).get("formal_layer3_slots") or {}).items():
         slot_status = str((entry or {}).get("status") or "").strip()
-        _add_entry(name, entry, include_weight=slot_status == "production_adapter_active")
+        _add_entry(
+            name,
+            entry,
+            include_weight=slot_status == "production_adapter_active",
+            formal_adapter=slot_status == "production_adapter_active",
+        )
     return {"scope": scope, "weights": weights, "diagnostics": diagnostics}
 
 
@@ -1627,7 +1687,11 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         trading_cfg,
         state.get("adaptive_params"),
     )
-    core_ml_target_size = screener_sizing["coarse_ml_queue_size"]
+    core_ml_target_size = _resolve_coarse_ml_gate_target(
+        len(screener_recs),
+        screener_sizing,
+        trading_cfg,
+    )
     final = apply_core_ml_gate(
         final,
         state["predictions"],

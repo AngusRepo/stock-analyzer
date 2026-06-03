@@ -1658,24 +1658,63 @@ def _model_rank_score(prediction: dict, model_name: str) -> float | None:
     return _finite_rank_score(rank_scores.get(model_name))
 
 
-def build_core_family_vote(prediction: dict | None) -> dict[str, Any]:
-    """Layer 3 formal family vote from production model outputs only."""
+def _positive_lifecycle_weights(prediction: dict) -> dict[str, float] | None:
+    ev2 = prediction.get("ensemble_v2")
+    if not isinstance(ev2, dict):
+        return None
+    weights = ev2.get("weights")
+    if isinstance(weights, dict):
+        out: dict[str, float] = {}
+        for name, raw in weights.items():
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value > 0:
+                out[str(name)] = value
+        return out
+    contributors = ev2.get("contributing_models")
+    if isinstance(contributors, list):
+        return {str(name): 1.0 for name in contributors if str(name)}
+    return None
+
+
+def build_core_family_vote(
+    prediction: dict | None,
+    *,
+    require_lifecycle_weights: bool = False,
+) -> dict[str, Any]:
+    """Layer 3 formal family vote from lifecycle-positive production outputs."""
     pred = prediction if isinstance(prediction, dict) else {}
+    lifecycle_weights = _positive_lifecycle_weights(pred)
     families: dict[str, dict[str, Any]] = {}
     active_families: list[str] = []
     family_scores: list[float] = []
     inactive_models: list[str] = []
+    inactive_lifecycle_models: list[str] = []
 
     for family_name, model_names in _CORE_FAMILY_MODEL_GROUPS.items():
         model_scores: dict[str, float] = {}
+        weighted_sum = 0.0
+        weight_sum = 0.0
         for model_name in model_names:
+            lifecycle_weight = lifecycle_weights.get(model_name) if lifecycle_weights is not None else None
+            if require_lifecycle_weights and lifecycle_weights is None:
+                inactive_lifecycle_models.append(model_name)
+                continue
+            if lifecycle_weights is not None and lifecycle_weight is None:
+                inactive_lifecycle_models.append(model_name)
+                continue
             score = _model_rank_score(pred, model_name)
             if score is not None:
                 model_scores[model_name] = round(score, 6)
+                weight = float(lifecycle_weight if lifecycle_weight is not None else 1.0)
+                weighted_sum += score * weight
+                weight_sum += weight
             else:
                 inactive_models.append(model_name)
         if model_scores:
-            family_score = sum(model_scores.values()) / len(model_scores)
+            family_score = weighted_sum / weight_sum if weight_sum > 0 else sum(model_scores.values()) / len(model_scores)
             active_families.append(family_name)
             family_scores.append(family_score)
             families[family_name] = {
@@ -1683,10 +1722,15 @@ def build_core_family_vote(prediction: dict | None) -> dict[str, Any]:
                 "score": round(family_score, 6),
                 "models": model_scores,
                 "model_count": len(model_scores),
+                "lifecycle_weighted": lifecycle_weights is not None,
             }
         else:
             families[family_name] = {
-                "status": "inactive_missing_artifact",
+                "status": (
+                    "inactive_lifecycle_weight"
+                    if lifecycle_weights is not None or require_lifecycle_weights
+                    else "inactive_missing_artifact"
+                ),
                 "score": None,
                 "models": {},
                 "expected_models": list(model_names),
@@ -1701,6 +1745,12 @@ def build_core_family_vote(prediction: dict | None) -> dict[str, Any]:
         "active_families": active_families,
         "families": families,
         "inactive_formal_models": sorted(set(inactive_models)),
+        "inactive_lifecycle_models": sorted(set(inactive_lifecycle_models)),
+        "lifecycle_weight_source": (
+            "ensemble_v2.weights"
+            if lifecycle_weights is not None
+            else "ensemble_v2_required_missing" if require_lifecycle_weights else "model_output_fallback"
+        ),
     }
 
 
@@ -1743,6 +1793,7 @@ def apply_core_family_rank(
     target_size: int | None = None,
     min_active_families: int = 2,
     strict: bool = True,
+    require_lifecycle_weights: bool = False,
 ) -> list[dict]:
     """Rank Layer 2 shortlist with formal family votes and persist evidence."""
     if not recommendations:
@@ -1755,7 +1806,7 @@ def apply_core_family_rank(
     for row in recommendations:
         symbol = str(row.get("symbol") or "")
         pred = predictions.get(symbol) if isinstance(predictions, dict) else None
-        vote = build_core_family_vote(pred)
+        vote = build_core_family_vote(pred, require_lifecycle_weights=require_lifecycle_weights)
         if isinstance(pred, dict):
             pred["core_family_vote"] = vote
         if int(vote.get("active_family_count") or 0) < min_active_families:

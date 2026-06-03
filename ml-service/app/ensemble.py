@@ -36,6 +36,7 @@ _MODEL_FAMILY = {
     "PatchTST": "learned_sequence",
     "iTransformer": "learned_sequence",
     "TimesFM": "foundation_sequence",
+    "GNN": "graph",
 }
 
 

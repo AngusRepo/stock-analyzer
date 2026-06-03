@@ -70,7 +70,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
       return counts
     }, {})
   assert(
-    Object.values(activeBucketCounts).every((count) => count <= 3),
+    Object.values(activeBucketCounts).every((count) => count <= 4),
     'source-approved active strategy specs must stay curated by alpha bucket; discovery duplicates should remain research until promotion',
   )
 }
@@ -79,10 +79,12 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   const activeFinLabSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.id.startsWith('finlab_ai_skill_') && spec.status === 'active')
   assert(activeFinLabSpecs.length >= 8, 'FinLab AI Skill production specs should widen L1 diversity beyond the first seeded batch')
   const activeProductionOwnerSpecs = activeFinLabSpecs.filter((spec) => spec.ownerType === 'strategy')
-  const activeFeatureSpecs = activeFinLabSpecs.filter((spec) => spec.ownerType === 'feature')
-  assert(activeProductionOwnerSpecs.length >= 6, 'FinLab AI Skill production owner specs should stay curated after feature-level duplicate convergence')
-  assert(activeFeatureSpecs.some((spec) => spec.id === 'finlab_ai_skill_volume_breakout_v1'), 'duplicate volume breakout should be retained as a feature, not a production owner')
-  assert(activeFeatureSpecs.some((spec) => spec.id === 'finlab_ai_skill_rsi_volume_reclaim_v1'), 'duplicate RSI reclaim should be retained as a feature, not a production owner')
+  assert(activeProductionOwnerSpecs.length >= 8, 'FinLab AI Skill production owner specs should stay curated and remain eligible for L2')
+  assert(activeProductionOwnerSpecs.some((spec) => spec.id === 'finlab_ai_skill_volume_breakout_v1'), 'volume breakout should be a production owner variant, not silently downgraded to feature')
+  assert(activeProductionOwnerSpecs.some((spec) => spec.id === 'finlab_ai_skill_rsi_volume_reclaim_v1'), 'RSI reclaim should be a production owner variant, not silently downgraded to feature')
+  assert(activeProductionOwnerSpecs.some((spec) => spec.familyId === 'SMC_STRUCTURE_RECLAIM'), 'SMC structure reclaim family should have an active production owner')
+  assert(activeProductionOwnerSpecs.some((spec) => spec.familyId === 'SECTOR_ROTATION_CORE'), 'sector rotation core family should have an active production owner')
+  assert(new Set(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').map((spec) => spec.familyId)).size === 6, 'active strategy specs should cover all 6 strategy families')
   assert(
     activeProductionOwnerSpecs.every((spec) => (spec.candidatePolicy?.maxMlShare ?? 1) > 0),
     'active FinLab AI Skill production-owner specs must be eligible for the L2 coarse ML queue',
@@ -234,6 +236,49 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
+  const assessment = assessCandidateAgainstStrategySpecs({
+    symbol: '6789',
+    current_price: 42,
+    raw_signals: {
+      close: 42,
+      return20d: 0.03,
+      technicalIndicators: {
+        displacementPct: 0.012,
+        liquiditySweepBullish: 1,
+        bosBullish: 0,
+        chochBullish: 1,
+        bestFvgStrength: 0.2,
+      },
+    },
+  }, DEFAULT_STRATEGY_SPECS)
+  assert(
+    assessment.matches.some((match) => match.specId === 'finlab_ai_skill_smc_structure_reclaim_v1'),
+    'SMC structure reclaim should match real liquidity sweep/BOS/CHOCH/FVG primitives without Score V2',
+  )
+}
+
+{
+  const assessment = assessCandidateAgainstStrategySpecs({
+    symbol: '7788',
+    current_price: 55,
+    raw_signals: {
+      close: 55,
+      volumeExpansion20: 0.9,
+      factorSignals: {
+        sectorFlowCore: 1,
+        sectorRsRatio: 104,
+        sectorRsMomentum: 2.5,
+        sectorTurnoverShareDelta: 0.01,
+      },
+    },
+  }, DEFAULT_STRATEGY_SPECS)
+  assert(
+    assessment.matches.some((match) => match.specId === 'finlab_ai_skill_sector_rotation_core_v1'),
+    'sector rotation core should match canonical sector_flow raw factors without Score V2',
+  )
+}
+
+{
   const validation = validateStrategySpec({
     ...DEFAULT_STRATEGY_SPECS[0],
     thresholds: {
@@ -355,6 +400,9 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
         closeAboveMa60Pct: 0.02,
         volumeExpansion20: 1.25,
         return20d: 0.06,
+        technicalIndicators: {
+          macdHist: 0.1,
+        },
       },
     },
     { symbol: '0000', current_price: 12 },

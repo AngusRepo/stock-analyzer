@@ -501,10 +501,13 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const selected = selection.mlQueue.find((candidate) => candidate.symbol === '9977') as any
   assert(selected, 'shared duplicate active families should still produce one ML queue candidate')
   const ids = selected.strategy_pool_ids ?? []
-  assert(ids.length === 2, 'ML queue evidence should keep only one active representative per alpha bucket')
-  assert(ids.filter((id: string) => id.startsWith('active_trend_')).length === 1, 'duplicate active trend strategies must converge to one representative')
+  assert(ids.length === 3, 'ML queue evidence should retain every active strategy hit while family ids remain deduped')
+  assert(ids.filter((id: string) => id.startsWith('active_trend_')).length === 2, 'same-family active variants must remain visible for diversity attribution')
   assert(ids.includes('active_mean_reversion_v1'), 'different alpha bucket can remain as a separate representative')
   assert(!ids.includes('research_trend_duplicate_v1'), 'research duplicate must not leak into production strategy ids')
+  assert((selected.strategy_family_ids ?? []).length === 2, 'family governance should stay deduped even when multiple variants match')
+  assert((selected.strategy_variant_ids ?? []).includes('active_trend_a_v1'), 'variant evidence should include same-family variant A')
+  assert((selected.strategy_variant_ids ?? []).includes('active_trend_b_v1'), 'variant evidence should include same-family variant B')
   assert((selected.research_strategy_ids ?? []).includes('research_trend_duplicate_v1'), 'research duplicate should remain visible as attribution')
 }
 

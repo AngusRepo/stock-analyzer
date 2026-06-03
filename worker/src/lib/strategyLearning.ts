@@ -381,6 +381,10 @@ export function registryRowToStrategySpec(row: StrategySpecRegistryRow): Strateg
     thesis: row.thesis,
     thresholds: parseJson(row.thresholds_json, {}),
     candidatePolicy: candidatePolicyForRegistryRow(row, defaultSpec),
+    familyId: defaultSpec?.familyId,
+    variantId: defaultSpec?.variantId,
+    ownerType: defaultSpec?.ownerType,
+    promotionStatus: defaultSpec?.promotionStatus,
     riskNotes: parseJson(row.risk_notes_json, []),
     createdBy: 'p5_strategy_governance',
   })

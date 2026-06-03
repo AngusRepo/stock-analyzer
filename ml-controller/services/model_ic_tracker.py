@@ -11,6 +11,7 @@ import math
 from typing import Any
 
 from services.legacy_prediction_namespace import base_model_name, is_legacy_model_candidate_name
+from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 ALPHA_PREDICTION_MODELS = (
     "XGBoost",
@@ -29,6 +30,24 @@ FORMAL_LAYER3_MODELS = (
 )
 
 PRODUCTION_IC_SEGMENTS = {"LISTED", "OTC", "UNKNOWN"}
+
+
+def ensure_formal_layer3_slots(pool: dict[str, Any], created_at: str = "weekly_ic_tracker") -> dict[str, Any]:
+    defaults = build_research_benchmark_manifest(created_at)
+    existing = pool.get("formal_layer3_slots")
+    if not isinstance(existing, dict) or not existing:
+        existing = pool.get("research_benchmarks") if isinstance(pool.get("research_benchmarks"), dict) else {}
+    merged: dict[str, dict[str, Any]] = {}
+    for name, entry in defaults.items():
+        current = existing.get(name) if isinstance(existing, dict) else None
+        merged[name] = {**entry, **current} if isinstance(current, dict) else dict(entry)
+    if isinstance(existing, dict):
+        for name, entry in existing.items():
+            if name not in merged:
+                merged[name] = entry
+    pool["formal_layer3_slots"] = merged
+    pool.setdefault("research_benchmarks", merged)
+    return pool
 
 
 def tracked_model_names() -> tuple[str, ...]:
@@ -238,6 +257,7 @@ def apply_weekly_ic_to_pool(
     append_history: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
     """Mutate model_pool dict with computed IC values."""
+    ensure_formal_layer3_slots(pool)
     pool_changes: dict[str, dict[str, Any]] = {}
     changed = False
 

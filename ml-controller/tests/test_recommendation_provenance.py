@@ -800,6 +800,38 @@ def test_core_family_vote_counts_formal_gnn_and_timesfm_when_served():
     assert "TimesFM" not in vote["inactive_formal_models"]
 
 
+def test_core_family_vote_uses_positive_ensemble_lifecycle_weights_when_available():
+    prediction = {
+        "rank_scores": {
+            "XGBoost": 0.70,
+            "LightGBM": 0.80,
+            "GNN": 0.99,
+        },
+        "timesfm": {"forecast_pct": 0.08},
+        "ensemble_v2": {
+            "contributing_models": ["XGBoost", "LightGBM"],
+            "weights": {
+                "XGBoost": 0.02,
+                "LightGBM": 0.04,
+                "GNN": 0.0,
+                "TimesFM": 0.0,
+            },
+        },
+    }
+
+    vote = recommendation_service.build_core_family_vote(prediction)
+
+    expected_tree = ((0.70 * 0.02) + (0.80 * 0.04)) / 0.06
+    assert vote["lifecycle_weight_source"] == "ensemble_v2.weights"
+    assert vote["active_family_count"] == 1
+    assert vote["active_families"] == ["tree"]
+    assert vote["families"]["tree"]["score"] == pytest.approx(expected_tree)
+    assert vote["families"]["graph"]["status"] == "inactive_lifecycle_weight"
+    assert vote["families"]["foundation_sequence"]["status"] == "inactive_lifecycle_weight"
+    assert "GNN" in vote["inactive_lifecycle_models"]
+    assert "TimesFM" in vote["inactive_lifecycle_models"]
+
+
 def test_core_family_rank_reorders_by_family_score_and_persists_evidence():
     rows = [
         {
@@ -855,6 +887,28 @@ def test_core_family_rank_fails_closed_when_only_tree_family_is_available():
 
     with pytest.raises(ValueError, match="core_family_rank_requires_2_active_families"):
         recommendation_service.apply_core_family_rank(rows, predictions, target_size=1)
+
+
+def test_core_family_rank_requires_lifecycle_weights_in_production_mode():
+    rows = [{"symbol": "A", "score": 95}]
+    predictions = {
+        "A": {
+            "rank_scores": {"XGBoost": 0.72, "CatBoost": 0.70, "GNN": 0.99},
+            "timesfm": {"forecast_pct": 0.08},
+        }
+    }
+
+    with pytest.raises(ValueError, match="core_family_rank_requires_2_active_families"):
+        recommendation_service.apply_core_family_rank(
+            rows,
+            predictions,
+            target_size=1,
+            require_lifecycle_weights=True,
+        )
+    vote = predictions["A"]["core_family_vote"]
+    assert vote["lifecycle_weight_source"] == "ensemble_v2_required_missing"
+    assert vote["active_family_count"] == 0
+    assert set(vote["inactive_lifecycle_models"]) >= {"XGBoost", "GNN", "TimesFM"}
 
 
 def test_build_return_history_from_payloads_uses_close_to_close_returns():

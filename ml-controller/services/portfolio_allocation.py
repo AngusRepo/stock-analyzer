@@ -78,6 +78,15 @@ def _sample_covariance_matrix(matrix: list[list[float]], var_floor: float) -> li
     return cov
 
 
+def _diagonal_covariance_matrix(size: int, var_floor: float) -> list[list[float]]:
+    if size <= 0:
+        return []
+    return [
+        [var_floor if left == right else 0.0 for right in range(size)]
+        for left in range(size)
+    ]
+
+
 def _solve_linear_system(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
     n = len(vector)
     if n == 0 or len(matrix) != n or any(len(row) != n for row in matrix):
@@ -185,19 +194,23 @@ def allocate_sparse_tangent(
 
     Expected return comes from candidate expected_return/predicted_return when
     available. Risk uses the realized return covariance matrix with diagonal
-    regularization. If covariance evidence or positive edge is missing, return
-    empty weights and let the caller keep cash.
+    regularization. If covariance evidence is unavailable but positive edge
+    exists, fall back to a diagonal variance-floor matrix instead of reverting
+    to rank-topK. If positive edge is missing, return empty weights and keep
+    cash.
     """
     selected = _ranked_candidates(candidates, top_k)
     symbols = [_symbol(row) for row in selected]
     expected_returns = [max(0.0, _expected_return(row)) for row in selected]
     if not any(value > 0 for value in expected_returns):
         return {}
-    matrix = _aligned_return_matrix(symbols, return_history)
-    if not matrix:
-        return {}
     var_floor = max(1e-8, daily_vol_floor * daily_vol_floor)
-    covariance = _sample_covariance_matrix(matrix, var_floor)
+    matrix = _aligned_return_matrix(symbols, return_history)
+    covariance = (
+        _sample_covariance_matrix(matrix, var_floor)
+        if matrix
+        else _diagonal_covariance_matrix(len(symbols), var_floor)
+    )
     raw = _long_only_tangent_raw(symbols, expected_returns, covariance)
     if not any(value > 0 for value in raw.values()):
         return {}

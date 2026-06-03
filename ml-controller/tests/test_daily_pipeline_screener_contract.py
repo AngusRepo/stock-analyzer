@@ -72,10 +72,15 @@ def test_daily_pipeline_runs_coarse_feature_gate_before_heavy_sequence_models():
     assert feature_call < core_gate < sequence_call
     assert "core_ml_gate_by_symbol" in source
     assert "LightGBM+XGBoost+ExtraTrees" in source
+    assert "formal_layer3_models = [" in source
+    assert 'model_status.get(model_name) == "production_adapter_active"' in source
+    assert "pool_versions_loaded and model_status.get(model_name)" in source
+    assert 'models=["GNN", "TimesFM"]' not in source
     assert "resolve_controller_screener_sizing(" in source
     assert 'core_target_size = screener_sizing["coarse_ml_queue_size"]' in source
     assert "apply_core_ml_gate(" in source
     assert "apply_core_family_rank(" in source
+    assert "require_lifecycle_weights=True" in source
     assert 'core_family_target_size = screener_sizing["core_family_rank_size"]' in source
     assert "core_family_vote" in source
     assert "topKOverrideEnabled" not in source

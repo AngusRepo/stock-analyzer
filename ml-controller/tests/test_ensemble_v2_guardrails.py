@@ -55,6 +55,108 @@ def test_attach_ensemble_v2_can_use_alpha_alternate_models_when_feature_models_f
     assert ev2["weight_total"] > 0
 
 
+def test_attach_ensemble_v2_counts_gnn_as_graph_family_from_overlay_payload():
+    pred = {
+        "rank_scores": {},
+        "gnn": {"forecast_pct": 0.05},
+        "timesfm": {"forecast_pct": 0.03},
+    }
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"GNN": "production_adapter_active", "TimesFM": "production_adapter_active"},
+        ic_weights={"GNN": 0.04, "TimesFM": 0.03},
+        degraded_dampening=1.0,
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["avg_rank"] > 0.5
+    assert ev2["contributing_models"] == ["GNN", "TimesFM"]
+    assert ev2["family_vote"]["members"]["graph"] == ["GNN"]
+    assert ev2["family_vote"]["members"]["foundation_sequence"] == ["TimesFM"]
+
+
+def test_attach_ensemble_v2_blocks_formal_pending_slots_even_with_ic_or_cold_start():
+    pred_with_ic = {
+        "rank_scores": {
+            "TabM": 0.99,
+        },
+        "itransformer": {"forecast_pct": 0.08},
+    }
+
+    attach_ensemble_v2(
+        pred_with_ic,
+        model_status={
+            "TabM": "formal_slot_pending_artifact",
+            "iTransformer": "formal_slot_pending_artifact",
+        },
+        ic_weights={
+            "TabM": 0.20,
+            "iTransformer": 0.20,
+        },
+        degraded_dampening=1.0,
+    )
+
+    ev2 = pred_with_ic["ensemble_v2"]
+    assert ev2["signal"] == "HOLD"
+    assert ev2["contributing_models"] == []
+    assert ev2["weight_total"] == 0.0
+    assert ev2["reason"] == "no_positive_lifecycle_weight"
+    assert ev2["weights"]["TabM"] == 0.0
+    assert ev2["weights"]["iTransformer"] == 0.0
+
+    pred_cold_start = {
+        "rank_scores": {
+            "TabM": 0.99,
+        },
+        "itransformer": {"forecast_pct": 0.08},
+    }
+    attach_ensemble_v2(
+        pred_cold_start,
+        model_status={
+            "TabM": "formal_slot_pending_artifact",
+            "iTransformer": "formal_slot_pending_artifact",
+        },
+        ic_weights={},
+        degraded_dampening=1.0,
+    )
+
+    cold_ev2 = pred_cold_start["ensemble_v2"]
+    assert cold_ev2["signal"] == "HOLD"
+    assert cold_ev2["contributing_models"] == []
+    assert cold_ev2["weight_total"] == 0.0
+    assert cold_ev2["reason"] == "no_positive_lifecycle_weight"
+
+
+def test_attach_ensemble_v2_pending_ic_does_not_block_active_cold_start():
+    pred = {
+        "rank_scores": {
+            "XGBoost": 0.72,
+            "TabM": 0.99,
+        },
+    }
+
+    attach_ensemble_v2(
+        pred,
+        model_status={
+            "XGBoost": "active",
+            "TabM": "formal_slot_pending_artifact",
+        },
+        ic_weights={
+            "TabM": 0.20,
+        },
+        degraded_dampening=1.0,
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["reason"] == "cold_start_equal_weight"
+    assert ev2["contributing_models"] == ["XGBoost"]
+    assert ev2["weights"]["XGBoost"] == 1.0
+    assert ev2["weights"]["TabM"] == 0.0
+    assert ev2["family_vote"]["members"]["tree_tabular"] == ["XGBoost"]
+    assert "tabular_neural" not in ev2["family_vote"]["members"]
+
+
 def test_attach_ensemble_v2_does_not_count_state_space_overlays_as_alpha_votes():
     pred = {
         "rank_scores": {},
@@ -158,12 +260,18 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
     status, ic_weights, degraded, cfg, used_pool, pool_snapshot = daily_pipeline_v2._load_pool_and_ic()
 
     assert used_pool is True
-    assert status == {"XGBoost": "active", "CatBoost": "degraded"}
+    assert status["XGBoost"] == "active"
+    assert status["CatBoost"] == "degraded"
+    assert status["GNN"] == "production_adapter_active"
+    assert status["TimesFM"] == "production_adapter_active"
+    assert status["TabM"] == "formal_slot_pending_artifact"
+    assert status["iTransformer"] == "formal_slot_pending_artifact"
     assert ic_weights["XGBoost"] == 0.037
     assert ic_weights["CatBoost"] == 0.012
     assert degraded == 1.0
     assert cfg["buyThreshold"] == 0.7
     assert pool_snapshot["models"]["XGBoost"]["rolling_ic"] == 0.037
+    assert set(pool_snapshot["formal_layer3_slots"]) >= {"TabM", "GNN", "iTransformer", "TimesFM"}
 
 
 def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatch):
@@ -201,6 +309,12 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
     pool = {
         "models": {
             "TabM": {
+                "status": "active",
+                "rolling_ic": 0.12,
+                "last_ic_status": "insufficient_samples",
+                "last_ic_root_cause": "verification_missing",
+            },
+            "LightGBM": {
                 "status": "active",
                 "rolling_ic": 0.12,
                 "last_ic_status": "insufficient_samples",
@@ -244,7 +358,9 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
 
     status, ic_weights, *_ = daily_pipeline_v2._load_pool_and_ic()
 
-    assert status["TabM"] == "active"
+    assert status["LightGBM"] == "active"
+    assert "LightGBM" not in ic_weights
+    assert status["TabM"] == "formal_slot_pending_artifact"
     assert "TabM" not in ic_weights
     assert "DLinear" not in ic_weights
     assert ic_weights["PatchTST"] == 0.07
@@ -334,6 +450,135 @@ def test_daily_pipeline_loads_formal_layer3_active_adapter_ic(monkeypatch):
     assert ic_weights["GNN"] == 0.021
     assert ic_weights["TimesFM"] == 0.018
     assert "TabM" not in ic_weights
+
+
+def test_daily_pipeline_model_pool_versions_preserve_formal_adapter_status(monkeypatch):
+    import sys
+    import types
+
+    graph_mod = types.ModuleType("langgraph.graph")
+    graph_mod.END = object()
+    graph_mod.StateGraph = object
+    sqlite_mod = types.ModuleType("langgraph.checkpoint.sqlite")
+    sqlite_mod.SqliteSaver = object
+    types_mod = types.ModuleType("langgraph.types")
+    types_mod.RetryPolicy = object
+    retry_mod = types.ModuleType("langgraph.pregel.types")
+    retry_mod.RetryPolicy = object
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.checkpoint.sqlite", sqlite_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.types", types_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.pregel.types", retry_mod)
+    httpx_mod = types.ModuleType("httpx")
+    httpx_mod.AsyncClient = object
+    monkeypatch.setitem(sys.modules, "httpx", httpx_mod)
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+    google_storage_mod.Client = object
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
+
+    from graphs import daily_pipeline_v2
+
+    pool = {
+        "models": {},
+        "formal_layer3_slots": {
+            "GNN": {"status": "production_adapter_active", "version": "v2"},
+            "TimesFM": {"status": "production_adapter_active", "version": "v1"},
+            "TabM": {"status": "formal_slot_pending_artifact", "version": "v9"},
+        },
+    }
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            import json
+
+            return json.dumps(pool)
+
+    class Bucket:
+        def blob(self, path):
+            return Blob()
+
+    class Client:
+        def bucket(self, name):
+            return Bucket()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(google_storage_mod, "Client", lambda: Client())
+
+    status, active_versions, used_pool = daily_pipeline_v2._load_model_pool_versions()
+
+    assert used_pool is True
+    assert status["GNN"] == "production_adapter_active"
+    assert status["TimesFM"] == "production_adapter_active"
+    assert status["TabM"] == "formal_slot_pending_artifact"
+    assert active_versions["GNN"] == "v2"
+    assert active_versions["TimesFM"] == "v1"
+    assert "TabM" not in active_versions
+
+
+def test_daily_pipeline_serving_ic_bundle_includes_active_formal_layer3_slots(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    pool = {
+        "models": {
+            "XGBoost": {"status": "active", "rolling_ic": 0.04},
+        },
+        "formal_layer3_slots": {
+            "GNN": {
+                "status": "production_adapter_active",
+                "rolling_ic": 0.025,
+                "last_ic_status": "computed",
+                "last_ic_root_cause": "ok",
+                "last_ic_sample_count": 40,
+            },
+            "TimesFM": {
+                "status": "production_adapter_active",
+                "last_ic_by_segment": {"LISTED": {"ic": 0.032, "n_samples": 35}},
+                "last_ic_status": "computed",
+                "last_ic_root_cause": "ok",
+            },
+            "TabM": {
+                "status": "formal_slot_pending_artifact",
+                "rolling_ic": 0.5,
+            },
+        },
+    }
+
+    bundle = daily_pipeline_v2._build_serving_ic_bundle(pool, "LISTED")
+
+    assert bundle["weights"]["XGBoost"] > 0
+    assert bundle["weights"]["GNN"] > 0
+    assert bundle["weights"]["TimesFM"] > 0
+    assert "TabM" not in bundle["weights"]
+    assert bundle["diagnostics"]["TabM"]["ic_value"] == 0.5
+
+
+def test_daily_pipeline_serving_ic_bundle_backfills_missing_formal_layer3_slots(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    pool = {
+        "models": {
+            "XGBoost": {"status": "active", "rolling_ic": 0.04},
+        },
+    }
+
+    bundle = daily_pipeline_v2._build_serving_ic_bundle(pool, "LISTED")
+
+    assert set(pool["formal_layer3_slots"]) >= {"TabM", "GNN", "iTransformer", "TimesFM"}
+    assert pool["formal_layer3_slots"]["GNN"]["status"] == "production_adapter_active"
+    assert pool["formal_layer3_slots"]["TimesFM"]["status"] == "production_adapter_active"
+    assert "GNN" in bundle["diagnostics"]
+    assert "TimesFM" in bundle["diagnostics"]
+    assert "GNN" not in bundle["weights"]
+    assert "TimesFM" not in bundle["weights"]
+    assert bundle["diagnostics"]["GNN"]["ic_source"] == "missing"
+    assert bundle["diagnostics"]["TimesFM"]["ic_source"] == "missing"
 
 
 def test_daily_pipeline_builds_expected_return_calibration_from_verified_outcomes(monkeypatch):

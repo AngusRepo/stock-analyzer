@@ -22,6 +22,7 @@ import { loadTradingRestrictionSet } from './tradingRestrictions'
 import { isEtfPatternSymbol } from './boardTradability'
 import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
+import { buildPriceActionStructure } from './priceActionStructure'
 import {
   buildFinLabTaxonomyThemeSignals,
   refreshStockThemeFeaturesFromSignals,
@@ -527,6 +528,11 @@ interface StrategyRawFundamentalSignals {
   source?: string | null
 }
 
+interface StrategyRawFactorSignalPatch {
+  factorSignals?: Record<string, number | null>
+  source?: string | null
+}
+
 interface StrategyRawSignals extends StrategyRawFundamentalSignals {
   close?: number | null
   ma20?: number | null
@@ -732,14 +738,90 @@ async function loadStrategyRawFundamentalSignals(
   return fundamentals
 }
 
+async function loadStrategyRawSectorRotationSignals(
+  env: Bindings,
+  symbols: string[],
+  endDate: string,
+): Promise<Map<string, StrategyRawFactorSignalPatch>> {
+  const out = new Map<string, StrategyRawFactorSignalPatch>()
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  if (!uniqueSymbols.length) return out
+
+  for (const chunk of chunkArray(uniqueSymbols, D1_IN_CHUNK_SIZE)) {
+    const placeholders = chunk.map(() => '?').join(',')
+    try {
+      const { results } = await env.DB.prepare(`
+        SELECT s.symbol,
+               MAX(COALESCE(s.net_amount, 0)) AS sector_net_amount,
+               MAX(CASE WHEN s.classification = 'top' THEN 1 ELSE 0 END) AS sector_flow_core,
+               MAX(COALESCE(s.volume_ratio, 0)) AS sector_volume_ratio,
+               MAX(COALESCE(f.rs_ratio, 0)) AS sector_rs_ratio,
+               MAX(COALESCE(f.rs_momentum, -999)) AS sector_rs_momentum,
+               MAX(COALESCE(f.turnover_share_delta, -999)) AS sector_turnover_share_delta
+          FROM sector_flow_stocks s
+          LEFT JOIN sector_flow f
+            ON f.date = s.date
+           AND f.sector = s.theme
+           AND f.classification IN ('theme', 'industry_theme', 'industry', 'subindustry')
+         WHERE s.symbol IN (${placeholders})
+           AND s.date = (
+             SELECT MAX(date)
+               FROM sector_flow_stocks
+              WHERE date <= ?
+           )
+         GROUP BY s.symbol
+      `).bind(...chunk, endDate).all<{
+        symbol: string
+        sector_net_amount: number | null
+        sector_flow_core: number | null
+        sector_volume_ratio: number | null
+        sector_rs_ratio: number | null
+        sector_rs_momentum: number | null
+        sector_turnover_share_delta: number | null
+      }>()
+      for (const row of results ?? []) {
+        out.set(row.symbol, {
+          source: 'sector_flow_stocks+sector_flow',
+          factorSignals: {
+            sectorNetAmount: finiteOrNull(row.sector_net_amount),
+            sectorFlowCore: finiteOrNull(row.sector_flow_core),
+            sectorVolumeRatio: finiteOrNull(row.sector_volume_ratio),
+            sectorRsRatio: finiteOrNull(row.sector_rs_ratio),
+            sectorRsMomentum: finiteOrNull(row.sector_rs_momentum),
+            sectorTurnoverShareDelta: finiteOrNull(row.sector_turnover_share_delta),
+          },
+        })
+      }
+    } catch {
+      // Older local D1 snapshots may not have sector_flow_stocks yet.
+    }
+  }
+  return out
+}
+
 function deriveStrategyRawSignals(
   prices: FMStockPrice[],
   chipDates: Map<string, ChipDayNet> | undefined,
   fundamentals?: StrategyRawFundamentalSignals,
+  extraFactors?: StrategyRawFactorSignalPatch,
 ): StrategyRawSignals {
   const latest = prices[prices.length - 1]
-  const closes = prices.map((price) => finiteOrNull(price.close)).filter((value): value is number => value != null)
-  const volumes = prices.map((price) => finiteOrNull(price.Trading_Volume)).filter((value): value is number => value != null)
+  const indicatorRows = prices
+    .map((price) => ({
+      date: price.date,
+      open: finiteOrNull(price.open),
+      high: finiteOrNull(price.max),
+      low: finiteOrNull(price.min),
+      close: finiteOrNull(price.close),
+      volume: finiteOrNull(price.Trading_Volume) ?? 0,
+    }))
+    .filter((row): row is { date: string; open: number; high: number; low: number; close: number; volume: number } =>
+      row.open != null && row.high != null && row.low != null && row.close != null && row.high >= row.low,
+    )
+  const closes = indicatorRows.map((row) => row.close)
+  const highs = indicatorRows.map((row) => row.high)
+  const lows = indicatorRows.map((row) => row.low)
+  const volumes = indicatorRows.map((row) => row.volume)
   const close = latest ? finiteOrNull(latest.close) : null
   const ma20 = avg(closes.slice(-20))
   const ma60 = avg(closes.slice(-60))
@@ -751,7 +833,38 @@ function deriveStrategyRawSignals(
   const volumeExpansion20 = avgVol5 != null && avgVol20 != null && avgVol20 > 0 ? avgVol5 / avgVol20 : null
   const return20d = latestIndex >= 20 ? pctChange(closes[latestIndex], closes[latestIndex - 20]) : null
   const return60d = latestIndex >= 60 ? pctChange(closes[latestIndex], closes[latestIndex - 60]) : null
-  const latestRsi14 = rsi14(closes)
+  const technicals = computeTechnicalIndicators(closes, highs, lows, volumes)
+  const latestRsi14 = technicals.rsi14 ?? rsi14(closes)
+  const bbBandwidthPct = technicals.bbUpper != null && technicals.bbLower != null && technicals.bbMid != null && technicals.bbMid > 0
+    ? (technicals.bbUpper - technicals.bbLower) / technicals.bbMid
+    : null
+  const bbPctB = close != null && technicals.bbUpper != null && technicals.bbLower != null && technicals.bbUpper > technicals.bbLower
+    ? (close - technicals.bbLower) / (technicals.bbUpper - technicals.bbLower)
+    : null
+  const diTrend = technicals.plusDi14 != null && technicals.minusDi14 != null
+    ? technicals.plusDi14 - technicals.minusDi14
+    : null
+  const ohlcvRows = indicatorRows.map((row) => ({
+    date: row.date,
+    open: row.open,
+    high: row.high,
+    low: row.low,
+    close: row.close,
+    volume: row.volume,
+  }))
+  const latestOhlcv = ohlcvRows[ohlcvRows.length - 1]
+  const priorSwingWindow = ohlcvRows.slice(Math.max(0, ohlcvRows.length - 21), Math.max(0, ohlcvRows.length - 1))
+  const priorSwingHigh = priorSwingWindow.length ? Math.max(...priorSwingWindow.map((row) => row.high)) : null
+  const priorSwingLow = priorSwingWindow.length ? Math.min(...priorSwingWindow.map((row) => row.low)) : null
+  const displacementPct = latestOhlcv && latestOhlcv.close > latestOhlcv.open
+    ? (latestOhlcv.close - latestOhlcv.open) / Math.max(0.01, latestOhlcv.close)
+    : 0
+  const bosBullish = latestOhlcv && priorSwingHigh != null && latestOhlcv.close > priorSwingHigh ? 1 : 0
+  const liquiditySweepBullish = latestOhlcv && priorSwingLow != null && latestOhlcv.low < priorSwingLow && latestOhlcv.close > priorSwingLow ? 1 : 0
+  const chochBullish = liquiditySweepBullish && (closeAboveMa20Pct == null || closeAboveMa20Pct >= -0.04) && displacementPct >= 0.004 ? 1 : 0
+  const priceAction = ohlcvRows.length >= 5 ? buildPriceActionStructure(ohlcvRows, { latestPrice: close }) : null
+  const bestFvg = priceAction?.bestFvg ?? null
+  const bestOrderBlock = priceAction?.bestOrderBlock ?? null
   const chipRows = [...(chipDates?.entries() ?? [])]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .slice(-5)
@@ -784,6 +897,7 @@ function deriveStrategyRawSignals(
       'stock_prices',
       chipRows.some((row) => String(row.source || '').includes('canonical')) ? 'canonical_chip_or_broker_flow' : null,
       fundamentals?.source ?? null,
+      extraFactors?.source ?? null,
     ].filter(Boolean).join('+'),
   }
 
@@ -796,6 +910,34 @@ function deriveStrategyRawSignals(
       return20d,
       return60d,
       rsi14: latestRsi14,
+      macd: technicals.macd,
+      macdSignal: technicals.macdSignal,
+      macdHist: technicals.macdHist,
+      bbUpper: technicals.bbUpper,
+      bbMid: technicals.bbMid,
+      bbLower: technicals.bbLower,
+      bbBandwidthPct,
+      bbPctB,
+      atr14: technicals.atr14,
+      plusDi14: technicals.plusDi14,
+      minusDi14: technicals.minusDi14,
+      adx14: technicals.adx14,
+      diTrend,
+      cci20: technicals.cci20,
+      volumeWeightedRsi14: technicals.volumeWeightedRsi14,
+      volumeMomentumDivergence132710: technicals.volumeMomentumDivergence132710,
+      squeezeOn: technicals.squeezeOn,
+      squeezeRelease: technicals.squeezeRelease,
+      squeezeMomentum: technicals.squeezeMomentum,
+      obvTemperature60: technicals.obvTemperature60,
+      displacementPct,
+      bosBullish,
+      liquiditySweepBullish,
+      chochBullish,
+      bestFvgStrength: bestFvg?.strength ?? null,
+      bestFvgRetested: bestFvg?.status === 'retested' ? 1 : 0,
+      bestOrderBlockStrength: bestOrderBlock?.strength ?? null,
+      bestOrderBlockRetested: bestOrderBlock?.status === 'retested' ? 1 : 0,
     },
     factorSignals: {
       closeAboveMa20Pct,
@@ -817,6 +959,7 @@ function deriveStrategyRawSignals(
       pe: base.pe ?? null,
       pb: base.pb ?? null,
       dividendYield: base.dividendYield ?? null,
+      ...(extraFactors?.factorSignals ?? {}),
     },
   }
 }
@@ -1639,9 +1782,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     universe.map((row) => row.stockId),
     endDate,
   )
+  const rawSectorRotationSignals = await loadStrategyRawSectorRotationSignals(
+    env,
+    universe.map((row) => row.stockId),
+    endDate,
+  )
   debugLog.push(
     `[Step 1b] raw strategy signals: fundamentals=${rawFundamentalSignals.size}/${universe.length} ` +
-    `sources=finlab.canonical_fundamental_features+canonical_revenue_monthly`,
+    `sector_rotation=${rawSectorRotationSignals.size}/${universe.length} ` +
+    `sources=finlab.canonical_fundamental_features+canonical_revenue_monthly+sector_flow_stocks`,
   )
 
   type ScoredCandidate = ScreenerCandidate & {
@@ -1668,7 +1817,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const taxonomy = taxonomyProfiles.get(stockId)
     const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '?嗡?')
 
-    const raw_signals = deriveStrategyRawSignals(prices, chipDates, rawFundamentalSignals.get(stockId))
+    const raw_signals = deriveStrategyRawSignals(
+      prices,
+      chipDates,
+      rawFundamentalSignals.get(stockId),
+      rawSectorRotationSignals.get(stockId),
+    )
 
     scored.push({
       symbol: stockId,

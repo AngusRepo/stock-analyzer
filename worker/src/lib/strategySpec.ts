@@ -57,8 +57,23 @@ export interface StrategySpecThresholds {
   maxTechnicalIndicators?: Record<string, number>
   minFactorSignals?: Record<string, number>
   maxFactorSignals?: Record<string, number>
+  dsl?: StrategySignalDsl
   includeIndustries?: string[]
   excludeIndustries?: string[]
+}
+
+export type StrategySignalOperator = '>=' | '>' | '<=' | '<' | '==' | '!='
+
+export interface StrategySignalCondition {
+  signal: string
+  op: StrategySignalOperator
+  value: number | string | boolean
+}
+
+export interface StrategySignalDsl {
+  all?: StrategySignalCondition[]
+  any?: StrategySignalCondition[]
+  not?: StrategySignalCondition[]
 }
 
 export interface StrategyRawSignals {
@@ -233,12 +248,6 @@ export function inferStrategyOwnerType(spec: Pick<StrategySpec, 'id' | 'status'>
   if (spec.status === 'retired') return 'retired'
   const id = cleanText(spec.id)
   if (id === 'finlab_ai_skill_discovery_v1') return 'observe'
-  if (
-    id === 'finlab_ai_skill_volume_breakout_v1' ||
-    id === 'finlab_ai_skill_rsi_volume_reclaim_v1'
-  ) {
-    return 'feature'
-  }
   if (spec.status === 'research' || spec.status === 'shadow') return 'observe'
   return 'strategy'
 }
@@ -449,6 +458,65 @@ function meetsSignalMap(
   return true
 }
 
+function signalValue(raw: StrategyRawSignals, signalPath: string): unknown {
+  const path = cleanText(signalPath)
+  if (!path) return null
+  const aliases: Record<string, string> = {
+    'technical.': 'technicalIndicators.',
+    'factor.': 'factorSignals.',
+    'factors.': 'factorSignals.',
+  }
+  const normalized = Object.entries(aliases).reduce(
+    (current, [from, to]) => current.startsWith(from) ? `${to}${current.slice(from.length)}` : current,
+    path,
+  )
+  const parts = normalized.split('.').filter(Boolean)
+  let cursor: unknown = raw as Record<string, unknown>
+  for (const part of parts) {
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return null
+    cursor = (cursor as Record<string, unknown>)[part]
+  }
+  return cursor
+}
+
+function compareSignal(rawValue: unknown, condition: StrategySignalCondition): boolean {
+  const op = condition.op
+  const expected = condition.value
+  if (typeof expected === 'number') {
+    const actual = finiteNumber(rawValue)
+    if (actual == null) return false
+    if (op === '>=') return actual >= expected
+    if (op === '>') return actual > expected
+    if (op === '<=') return actual <= expected
+    if (op === '<') return actual < expected
+    if (op === '==') return actual === expected
+    if (op === '!=') return actual !== expected
+    return false
+  }
+  if (typeof expected === 'boolean') {
+    const actual = Boolean(finiteNumber(rawValue) ?? rawValue)
+    if (op === '==') return actual === expected
+    if (op === '!=') return actual !== expected
+    return false
+  }
+  const actualText = cleanText(rawValue)
+  const expectedText = cleanText(expected)
+  if (op === '==') return actualText === expectedText
+  if (op === '!=') return actualText !== expectedText
+  return false
+}
+
+function meetsSignalDsl(raw: StrategyRawSignals, dsl?: StrategySignalDsl): boolean {
+  if (!dsl) return true
+  const all = dsl.all ?? []
+  const any = dsl.any ?? []
+  const not = dsl.not ?? []
+  if (all.some((condition) => !compareSignal(signalValue(raw, condition.signal), condition))) return false
+  if (any.length && !any.some((condition) => compareSignal(signalValue(raw, condition.signal), condition))) return false
+  if (not.some((condition) => compareSignal(signalValue(raw, condition.signal), condition))) return false
+  return true
+}
+
 function meetsRawSignalThresholds(raw: StrategyRawSignals, thresholds: StrategySpecThresholds): boolean {
   const minChecks: Array<[unknown, number | undefined]> = [
     [raw.closeAboveMa20Pct, thresholds.minCloseAboveMa20Pct],
@@ -480,6 +548,7 @@ function meetsRawSignalThresholds(raw: StrategyRawSignals, thresholds: StrategyS
     && maxChecks.every(([value, max]) => meetsMaximum(value, max))
     && meetsSignalMap(raw.technicalIndicators, thresholds.minTechnicalIndicators, thresholds.maxTechnicalIndicators)
     && meetsSignalMap(raw.factorSignals, thresholds.minFactorSignals, thresholds.maxFactorSignals)
+    && meetsSignalDsl(raw, thresholds.dsl)
 }
 
 export function assessCandidateAgainstStrategySpecs(
@@ -527,6 +596,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'Trend following seed',
     status: 'active',
     owner: 'strategy',
+    familyId: 'TREND_RECLAIM_CONTINUATION',
+    variantId: 'ma_macd_adx_reclaim_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'trend_following',
     supportedRegimes: ['bull', 'sideways', 'volatile'],
     thesis: 'Select stocks with durable price structure and trend continuation evidence before ML ranking.',
@@ -536,6 +609,13 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
       minCloseAboveMa60Pct: -0.02,
       minVolumeExpansion20: 0.9,
       minReturn20d: 0,
+      dsl: {
+        any: [
+          { signal: 'technicalIndicators.macdHist', op: '>=', value: 0 },
+          { signal: 'technicalIndicators.adx14', op: '>=', value: 18 },
+          { signal: 'technicalIndicators.diTrend', op: '>=', value: 0 },
+        ],
+      },
     },
     candidatePolicy: { poolQuota: 14, costBudget: 18, evidenceRequirements: ['raw_price_structure', 'raw_volume', 'raw_momentum'] },
     riskNotes: ['Trend continuation can crowd quickly; allocation and execution gates remain the final owners.'],
@@ -547,6 +627,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'Breakout volume expansion seed',
     status: 'active',
     owner: 'strategy',
+    familyId: 'VOLATILITY_CONTRACTION_BREAKOUT',
+    variantId: 'bb_vcp_squeeze_release_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'breakout_vol_expansion',
     supportedRegimes: ['bull', 'volatile'],
     thesis: 'Select price bases that show volume-confirmed breakout pressure before heavy ML ranking.',
@@ -556,6 +640,13 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
       minCloseAboveMa60Pct: 0,
       minVolumeExpansion20: 1.2,
       minReturn20d: 0,
+      dsl: {
+        any: [
+          { signal: 'technicalIndicators.squeezeRelease', op: '>=', value: 1 },
+          { signal: 'technicalIndicators.squeezeMomentum', op: '>=', value: 0.2 },
+          { signal: 'technicalIndicators.bbBandwidthPct', op: '<=', value: 0.12 },
+        ],
+      },
     },
     candidatePolicy: { poolQuota: 12, costBudget: 16, evidenceRequirements: ['raw_price_structure', 'raw_volume', 'raw_breakout'] },
     riskNotes: ['Breakout candidates need slippage and reversal checks at allocation time.'],
@@ -567,6 +658,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'Defensive accumulation seed',
     status: 'active',
     owner: 'strategy',
+    familyId: 'SMART_MONEY_ACCUMULATION',
+    variantId: 'institutional_accumulation_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'defensive_accumulation',
     supportedRegimes: ['bull', 'sideways', 'bear', 'volatile'],
     thesis: 'Select stocks with constructive chip flow and tolerable technical structure for defensive accumulation.',
@@ -586,6 +681,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI quality trend',
     status: 'active',
     owner: 'strategy',
+    familyId: 'REVENUE_QUALITY_MOMENTUM',
+    variantId: 'quality_trend_revenue_profitability_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'trend_following',
     supportedRegimes: ['bull', 'sideways', 'volatile'],
     thesis: 'Use FinLab raw fundamentals, revenue growth, price trend and volume evidence to admit quality-trend candidates into L1.',
@@ -613,6 +712,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI chip accumulation',
     status: 'active',
     owner: 'strategy',
+    familyId: 'SMART_MONEY_ACCUMULATION',
+    variantId: 'institutional_chip_accumulation_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'defensive_accumulation',
     supportedRegimes: ['bull', 'sideways', 'bear', 'volatile'],
     thesis: 'Use FinLab raw institution flow and broker concentration evidence to widen L1 with accumulation candidates that old high-score ranking misses.',
@@ -635,6 +738,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI volume breakout',
     status: 'active',
     owner: 'strategy',
+    familyId: 'VOLATILITY_CONTRACTION_BREAKOUT',
+    variantId: 'volume_breakout_bb_squeeze_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'breakout_vol_expansion',
     supportedRegimes: ['bull', 'volatile'],
     thesis: 'Use raw price, moving-average and volume-expansion evidence to add breakout candidates before L2 coarse ML.',
@@ -644,6 +751,13 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
       minCloseAboveMa60Pct: 0,
       minVolumeExpansion20: 1.2,
       minReturn20d: 0,
+      dsl: {
+        any: [
+          { signal: 'technicalIndicators.squeezeRelease', op: '>=', value: 1 },
+          { signal: 'technicalIndicators.bbBandwidthPct', op: '<=', value: 0.14 },
+          { signal: 'technicalIndicators.volumeMomentumDivergence132710', op: '>=', value: 0 },
+        ],
+      },
     },
     candidatePolicy: {
       poolQuota: 18,
@@ -660,6 +774,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI reversion value',
     status: 'active',
     owner: 'strategy',
+    familyId: 'REVENUE_QUALITY_MOMENTUM',
+    variantId: 'quality_value_reversion_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'mean_reversion',
     supportedRegimes: ['sideways', 'bear', 'volatile'],
     thesis: 'Use raw valuation, profitability and mild reversion evidence to admit neglected value-reversion candidates that improve L1 diversity.',
@@ -686,6 +804,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI revenue revision breakout',
     status: 'active',
     owner: 'strategy',
+    familyId: 'REVENUE_QUALITY_MOMENTUM',
+    variantId: 'revenue_revision_breakout_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'breakout_vol_expansion',
     supportedRegimes: ['bull', 'sideways', 'volatile'],
     thesis: 'Use FinLab-mined revenue revision factors plus raw price reclaim and volume confirmation to expand L1 beyond old score-ranked candidates.',
@@ -724,6 +846,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI broker accumulation reclaim',
     status: 'active',
     owner: 'strategy',
+    familyId: 'SMART_MONEY_ACCUMULATION',
+    variantId: 'broker_accumulation_reclaim_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'defensive_accumulation',
     supportedRegimes: ['bull', 'sideways', 'bear', 'volatile'],
     thesis: 'Use mined broker participation persistence, low concentration and mild technical reclaim to admit accumulation names that broad scores may miss.',
@@ -759,6 +885,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI quality value reacceleration',
     status: 'active',
     owner: 'strategy',
+    familyId: 'REVENUE_QUALITY_MOMENTUM',
+    variantId: 'quality_value_reacceleration_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'mean_reversion',
     supportedRegimes: ['sideways', 'bear', 'volatile'],
     thesis: 'Use raw valuation, profitability and revenue reacceleration factors to add neglected quality-value candidates into L1 diversity.',
@@ -794,6 +924,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     name: 'FinLab AI RSI volume reclaim',
     status: 'active',
     owner: 'strategy',
+    familyId: 'TREND_RECLAIM_CONTINUATION',
+    variantId: 'rsi_macd_adx_volume_reclaim_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
     alphaBucket: 'trend_following',
     supportedRegimes: ['bull', 'sideways', 'volatile'],
     thesis: 'Use mined RSI reclaim and volume expansion structure to catch early trend repair before old aggregate scores become high.',
@@ -808,6 +942,13 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
       maxTechnicalIndicators: {
         rsi14: 65,
       },
+      dsl: {
+        any: [
+          { signal: 'technicalIndicators.macdHist', op: '>=', value: 0 },
+          { signal: 'technicalIndicators.adx14', op: '>=', value: 16 },
+          { signal: 'technicalIndicators.diTrend', op: '>=', value: 0 },
+        ],
+      },
     },
     candidatePolicy: {
       poolQuota: 16,
@@ -816,6 +957,80 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
       maxMlShare: 0.2,
     },
     riskNotes: ['Active breadth strategy; L2/L3 must reject weak repair patterns and avoid direct production mutation from later discoveries.'],
+    createdBy: 'p5_strategy_governance',
+  },
+  {
+    id: 'finlab_ai_skill_smc_structure_reclaim_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'FinLab AI SMC structure reclaim',
+    status: 'active',
+    owner: 'strategy',
+    familyId: 'SMC_STRUCTURE_RECLAIM',
+    variantId: 'liquidity_sweep_bos_displacement_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
+    alphaBucket: 'mean_reversion',
+    supportedRegimes: ['bull', 'sideways', 'volatile'],
+    thesis: 'Scan raw OHLCV structure for liquidity sweep, BOS/CHOCH and displacement evidence before ML ranking.',
+    thresholds: {
+      minPrice: 10,
+      maxReturn20d: 0.14,
+      minTechnicalIndicators: {
+        displacementPct: 0.006,
+      },
+      dsl: {
+        any: [
+          { signal: 'technicalIndicators.liquiditySweepBullish', op: '>=', value: 1 },
+          { signal: 'technicalIndicators.bosBullish', op: '>=', value: 1 },
+          { signal: 'technicalIndicators.chochBullish', op: '>=', value: 1 },
+          { signal: 'technicalIndicators.bestFvgStrength', op: '>=', value: 0.1 },
+          { signal: 'technicalIndicators.bestOrderBlockStrength', op: '>=', value: 0.1 },
+        ],
+      },
+    },
+    candidatePolicy: {
+      poolQuota: 16,
+      costBudget: 18,
+      evidenceRequirements: ['finlab_ai_skill', 'raw_factor_mining', 'raw_technical_indicator_mining', 'raw_price_action_structure', 'liquidity_sweep', 'bos_choch', 'displacement'],
+      maxMlShare: 0.2,
+    },
+    riskNotes: ['Active breadth strategy; Order Block and FVG zones still refine entry in L4/L5 instead of directly triggering orders.'],
+    createdBy: 'p5_strategy_governance',
+  },
+  {
+    id: 'finlab_ai_skill_sector_rotation_core_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'FinLab AI sector rotation core',
+    status: 'active',
+    owner: 'strategy',
+    familyId: 'SECTOR_ROTATION_CORE',
+    variantId: 'sector_flow_core_rs_rotation_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
+    alphaBucket: 'trend_following',
+    supportedRegimes: ['bull', 'sideways', 'volatile'],
+    thesis: 'Use canonical sector_flow stock detail plus RRG-style relative strength to admit leading theme core stocks into L1.',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.75,
+      minFactorSignals: {
+        sectorFlowCore: 1,
+      },
+      dsl: {
+        any: [
+          { signal: 'factorSignals.sectorRsRatio', op: '>=', value: 100 },
+          { signal: 'factorSignals.sectorRsMomentum', op: '>=', value: 0 },
+          { signal: 'factorSignals.sectorTurnoverShareDelta', op: '>=', value: 0 },
+        ],
+      },
+    },
+    candidatePolicy: {
+      poolQuota: 16,
+      costBudget: 18,
+      evidenceRequirements: ['finlab_ai_skill', 'sector_flow', 'sector_flow_stocks', 'relative_strength_rotation'],
+      maxMlShare: 0.2,
+    },
+    riskNotes: ['Active breadth strategy; sector rotation widens L1 breadth, but final buy decision still requires L2/L3 edge and allocation risk acceptance.'],
     createdBy: 'p5_strategy_governance',
   },
   {

@@ -43,6 +43,19 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'finlab_ai_skill_rsi_volume_reclaim_v1')
+  assert(spec != null, 'RSI volume reclaim default spec should exist')
+  const registryRow = strategySpecToRegistryRow(spec!, '2026-06-03T00:00:00.000Z')
+  const restored = registryRowToStrategySpec(registryRow)
+  assert(
+    restored.familyId === 'TREND_RECLAIM_CONTINUATION',
+    'registry conversion must preserve default family governance instead of re-inferring volume reclaim as volatility',
+  )
+  assert(restored.ownerType === 'strategy', 'registry conversion must preserve production ownerType for default active specs')
+  assert(restored.variantId === spec!.variantId, 'registry conversion must preserve variantId for default active specs')
+}
+
+{
   const staleLegacyRow = strategySpecToRegistryRow({
     ...DEFAULT_STRATEGY_SPECS[0],
     status: 'shadow' as const,

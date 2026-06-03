@@ -48,6 +48,15 @@ def test_sparse_tangent_does_not_fallback_to_equal_weight_without_positive_edge(
     assert weights == {}
 
 
+def test_sparse_tangent_uses_diagonal_risk_floor_when_return_history_missing():
+    weights = allocate_sparse_tangent(_candidates(), {}, top_k=2, max_weight=0.70)
+
+    assert set(weights) == {"NOISY", "STEADY"}
+    assert sum(weights.values()) == pytest.approx(1.0)
+    assert weights["NOISY"] > weights["STEADY"]
+    assert weights["NOISY"] <= 0.70
+
+
 def test_portfolio_allocation_benchmark_compares_against_rank_topk_with_metrics():
     baseline = allocate_rank_topk_equal_weight(_candidates(), top_k=2)
     report = build_portfolio_allocation_benchmark(

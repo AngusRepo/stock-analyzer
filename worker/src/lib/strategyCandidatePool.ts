@@ -135,6 +135,7 @@ type StrategyPoolAggregate<T extends StrategyCandidatePoolCandidate = StrategyCa
 type StrategyPoolStrategyRef = {
   strategy_id: string
   family_id: StrategyFamilyId
+  variant_id: string
   alpha_bucket: AlphaFrameworkBucket
   strategy_score: number
 }
@@ -349,7 +350,7 @@ function strategyCanEnterMlQueue(entry: StrategyPoolEntry): boolean {
   return entry.strategy_status === 'active' && entry.owner_type === 'strategy' && finiteNumber(entry.max_ml_share) !== 0
 }
 
-function chooseCanonicalActiveStrategyRefs(
+function mergeActiveStrategyRefs(
   prevRefs: StrategyPoolStrategyRef[],
   entry: StrategyPoolEntry,
 ): StrategyPoolStrategyRef[] {
@@ -359,29 +360,31 @@ function chooseCanonicalActiveStrategyRefs(
   const next: StrategyPoolStrategyRef = {
     strategy_id: entry.strategy_id,
     family_id: entry.family_id,
+    variant_id: entry.variant_id,
     alpha_bucket: entry.alpha_bucket,
     strategy_score: entry.strategy_score,
   }
-  const index = refs.findIndex((ref) => ref.family_id === next.family_id)
+  const index = refs.findIndex((ref) => ref.strategy_id === next.strategy_id)
   if (index < 0) {
     refs.push(next)
   } else {
     const prev = refs[index]
-    if (
-      next.strategy_score > prev.strategy_score ||
-      (next.strategy_score === prev.strategy_score && next.strategy_id.localeCompare(prev.strategy_id) < 0)
-    ) {
+    if (next.strategy_score > prev.strategy_score) {
       refs[index] = next
     }
   }
-  return refs.sort((a, b) => String(a.family_id).localeCompare(String(b.family_id)))
+  return refs.sort((a, b) => {
+    const familyOrder = String(a.family_id).localeCompare(String(b.family_id))
+    if (familyOrder !== 0) return familyOrder
+    return a.strategy_id.localeCompare(b.strategy_id)
+  })
 }
 
 function aggregateStrategyIds<T extends StrategyCandidatePoolCandidate>(
   prev: StrategyPoolAggregate<T> | undefined,
   entry: StrategyPoolEntry<T>,
 ): Pick<StrategyPoolAggregate<T>, 'strategy_ids' | 'research_strategy_ids' | 'active_strategy_refs'> {
-  const activeRefs = chooseCanonicalActiveStrategyRefs(prev?.active_strategy_refs ?? [], entry)
+  const activeRefs = mergeActiveStrategyRefs(prev?.active_strategy_refs ?? [], entry)
   const researchIds = [...(prev?.research_strategy_ids ?? [])]
   if (!strategyCanEnterMlQueue(entry)) {
     researchIds.push(entry.strategy_id)
@@ -645,7 +648,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         .slice(0, Math.min(quota, costBudget))
         .map((entry, index) => ({ ...entry, rank: index + 1 }))
 
-      if (!entries.length) {
+      if (!entries.length && !spec.thresholds.dsl) {
         usedAdaptiveNearMatch = true
         entries = candidates
           .map((candidate) => {
@@ -741,7 +744,7 @@ function annotateSelection<T extends StrategyCandidatePoolCandidate>(
   candidate.strategy_pool_rank = rank
   candidate.strategy_pool_ids = strategyIds
   candidate.strategy_family_ids = uniqueTexts(entry.active_strategy_refs.map((ref) => ref.family_id))
-  candidate.strategy_variant_ids = uniqueTexts([entry.variant_id])
+  candidate.strategy_variant_ids = uniqueTexts(entry.active_strategy_refs.map((ref) => ref.variant_id))
   candidate.strategy_owner_types = uniqueTexts([entry.owner_type]) as StrategyOwnerType[]
   candidate.research_strategy_ids = entry.research_strategy_ids
   candidate.strategy_pool_decision = decision

@@ -229,6 +229,38 @@ def test_apply_weekly_ic_updates_formal_layer3_slot_without_shadow_entry():
     assert "GNN::challenger" not in changes
 
 
+def test_apply_weekly_ic_backfills_formal_layer3_slots_for_legacy_pool():
+    pool = {"models": {}}
+    per_model_ic = {
+        "GNN": {
+            "status": "computed",
+            "ic": 0.05,
+            "n_samples": 48,
+            "score_sources": {"forecast_data.rank_score": 48},
+        },
+        "TimesFM": {
+            "status": "computed",
+            "ic": 0.04,
+            "n_samples": 52,
+            "score_sources": {"forecast_data.rank_score": 52},
+        },
+    }
+
+    changes, changed = apply_weekly_ic_to_pool(pool, per_model_ic, history_max=26)
+
+    assert changed is True
+    assert set(pool["formal_layer3_slots"]) >= {"TabM", "GNN", "iTransformer", "TimesFM"}
+    assert pool["formal_layer3_slots"]["GNN"]["status"] == "production_adapter_active"
+    assert pool["formal_layer3_slots"]["TimesFM"]["status"] == "production_adapter_active"
+    assert pool["formal_layer3_slots"]["GNN"]["weekly_ic"] == [0.05]
+    assert pool["formal_layer3_slots"]["TimesFM"]["weekly_ic"] == [0.04]
+    assert pool["formal_layer3_slots"]["GNN"]["ic_4w_avg"] == 0.05
+    assert pool["formal_layer3_slots"]["TimesFM"]["ic_4w_avg"] == 0.04
+    assert changes["GNN"]["history_len"] == 1
+    assert changes["TimesFM"]["history_len"] == 1
+    assert pool["research_benchmarks"] == pool["formal_layer3_slots"]
+
+
 def test_apply_weekly_ic_records_sample_diagnostics_even_when_insufficient():
     pool = {
         "models": {

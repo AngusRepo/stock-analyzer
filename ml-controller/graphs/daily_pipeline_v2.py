@@ -35,6 +35,7 @@ from services.payload_builder import (
 )
 from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
+from services.model_upgrade_research_track import build_research_benchmark_manifest
 from services.legacy_prediction_namespace import strip_legacy_candidate_prediction_fields
 from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
@@ -407,10 +408,19 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if model_status.get("PatchTST", "active") in ("active", "degraded")
         else _skip_batch("PatchTST retired by model_pool")
     )
-    formal_layer3_task = modal_client.layer3_formal_batch_predict(
-        sequence_series,
-        horizon=5,
-        models=["GNN", "TimesFM"],
+    formal_layer3_models = [
+        model_name
+        for model_name in ("GNN", "TimesFM")
+        if pool_versions_loaded and model_status.get(model_name) == "production_adapter_active"
+    ]
+    formal_layer3_task = (
+        modal_client.layer3_formal_batch_predict(
+            sequence_series,
+            horizon=5,
+            models=formal_layer3_models,
+        )
+        if formal_layer3_models
+        else _skip_batch("Layer3 formal adapters inactive or model_pool missing")
     )
     state_space_mode = _state_space_overlay_mode()
     state_space_models = {
@@ -781,6 +791,26 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 # A: ML_POOL-aware ensemble merge helpers (pure Python, no Modal)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _ensure_formal_layer3_slots(pool: dict | None) -> dict:
+    if not isinstance(pool, dict):
+        return {}
+    created_at = datetime.now(timezone.utc).date().isoformat()
+    defaults = build_research_benchmark_manifest(created_at)
+    existing = pool.get("formal_layer3_slots")
+    if not isinstance(existing, dict) or not existing:
+        existing = pool.get("research_benchmarks") if isinstance(pool.get("research_benchmarks"), dict) else {}
+    merged: dict[str, dict] = {}
+    for name, entry in defaults.items():
+        current = existing.get(name) if isinstance(existing, dict) else None
+        merged[name] = {**entry, **current} if isinstance(current, dict) else dict(entry)
+    if isinstance(existing, dict):
+        for name, entry in existing.items():
+            if name not in merged:
+                merged[name] = entry
+    pool["formal_layer3_slots"] = merged
+    pool.setdefault("research_benchmarks", merged)
+    return pool
+
 
 def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], bool]:
     """Load active versions for batch predictors.
@@ -807,7 +837,7 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], bool]:
         if not blob.exists():
             return {}, active_defaults, False
 
-        pool = _json.loads(blob.download_as_text())
+        pool = _ensure_formal_layer3_slots(_json.loads(blob.download_as_text()))
         status: dict[str, str] = {}
         active_versions = dict(active_defaults)
         for name, entry in (pool.get("models") or {}).items():
@@ -817,6 +847,11 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], bool]:
         for name, entry in (pool.get("state_overlays") or {}).items():
             status[name] = entry.get("status", "active")
             if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
+                active_versions[name] = entry["version"]
+        for name, entry in (pool.get("formal_layer3_slots") or {}).items():
+            slot_status = entry.get("status", "formal_slot_pending_artifact")
+            status[name] = slot_status
+            if slot_status == "production_adapter_active" and entry.get("version"):
                 active_versions[name] = entry["version"]
         return status, active_versions, True
     except Exception as e:
@@ -1016,10 +1051,12 @@ def _build_serving_ic_bundle(
     market_segment: str | None = None,
     ev2_cfg: dict | None = None,
 ) -> dict:
+    pool = _ensure_formal_layer3_slots(pool)
     scope = _normalize_market_segment(market_segment) or "GLOBAL"
     weights: dict[str, float] = {}
     diagnostics: dict[str, dict] = {}
-    for name, entry in ((pool or {}).get("models") or {}).items():
+
+    def _add_entry(name: str, entry: dict, *, include_weight: bool = True) -> None:
         ic_value, source = _entry_serving_ic(entry, None if scope == "GLOBAL" else scope)
         multiplier, validation_status, validation_reason = _validation_multiplier(entry)
         sample_count = _entry_ic_sample_count(entry, source)
@@ -1060,7 +1097,7 @@ def _build_serving_ic_bundle(
                     "pooled_floor_weight": round(float(fallback_weight), 8),
                     "pooled_shrinkage_reason": pooled_shrinkage.get("reason"),
                 }
-        if effective_weight is not None:
+        if include_weight and effective_weight is not None:
             weights[name] = float(effective_weight)
         diagnostics[name] = {
             "scope": scope,
@@ -1075,6 +1112,12 @@ def _build_serving_ic_bundle(
             "last_ic_root_cause": entry.get("last_ic_root_cause"),
             "last_ic_sample_count": entry.get("last_ic_sample_count"),
         }
+
+    for name, entry in ((pool or {}).get("models") or {}).items():
+        _add_entry(name, entry, include_weight=True)
+    for name, entry in ((pool or {}).get("formal_layer3_slots") or {}).items():
+        slot_status = str((entry or {}).get("status") or "").strip()
+        _add_entry(name, entry, include_weight=slot_status == "production_adapter_active")
     return {"scope": scope, "weights": weights, "diagnostics": diagnostics}
 
 
@@ -1176,7 +1219,7 @@ def _load_pool_and_ic():
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
             return {}, {}, 1.0, {}, False, {}
-        pool = _json.loads(pool_blob.download_as_text())
+        pool = _ensure_formal_layer3_slots(_json.loads(pool_blob.download_as_text()))
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}
 
@@ -1595,6 +1638,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         final,
         state["predictions"],
         target_size=core_family_target_size,
+        require_lifecycle_weights=True,
     )
     active_family_counts = [
         int(((row.get("core_family_vote") or {}).get("active_family_count") or 0))

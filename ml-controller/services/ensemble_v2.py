@@ -4,6 +4,7 @@ import math
 
 
 _SRC_KEY_MODEL = (
+    ("gnn", "GNN"),
     ("dlinear", "DLinear"),
     ("patchtst", "PatchTST"),
     ("itransformer", "iTransformer"),
@@ -20,6 +21,7 @@ _MODEL_FAMILY = {
     "PatchTST": "learned_sequence",
     "iTransformer": "learned_sequence",
     "TimesFM": "foundation_sequence",
+    "GNN": "graph",
 }
 
 
@@ -77,15 +79,18 @@ def _forecast_fields(avg_rank: float, ev2_cfg: dict | None = None) -> dict:
 
 def _compute_lifecycle_weight(status: str, ic_value: float, degraded_dampening: float) -> float:
     base = max(0.0, float(ic_value or 0.0))
-    if status in ("retired", "challenger"):
-        return 0.0
-    if status == "degraded":
+    normalized = str(status or "").strip()
+    if normalized == "degraded":
         return base * max(0.0, degraded_dampening)
+    if normalized not in {"active", "production_adapter_active"}:
+        return 0.0
     return base
 
 
-def _has_observed_ic(merged: dict[str, float], ic_weights: dict) -> bool:
+def _has_observed_ic(merged: dict[str, float], ic_weights: dict, model_status: dict) -> bool:
     for name in merged:
+        if _cold_start_weight(model_status.get(name, "active"), degraded_dampening=1.0) <= 0:
+            continue
         try:
             if abs(float(ic_weights.get(name, 0.0) or 0.0)) > 1e-12:
                 return True
@@ -95,10 +100,11 @@ def _has_observed_ic(merged: dict[str, float], ic_weights: dict) -> bool:
 
 
 def _cold_start_weight(status: str, degraded_dampening: float) -> float:
-    if status in ("retired", "challenger"):
-        return 0.0
-    if status == "degraded":
+    normalized = str(status or "").strip()
+    if normalized == "degraded":
         return max(0.0, float(degraded_dampening))
+    if normalized not in {"active", "production_adapter_active"}:
+        return 0.0
     return 1.0
 
 
@@ -167,7 +173,11 @@ def attach_ensemble_v2(
     if not merged:
         return
 
-    observed_ic_models = set((ev2_cfg or {}).get("observedIcModels") or [])
+    observed_ic_models = {
+        str(name)
+        for name in ((ev2_cfg or {}).get("observedIcModels") or [])
+        if _cold_start_weight(model_status.get(str(name), "active"), degraded_dampening) > 0
+    }
     weights = {
         name: _compute_lifecycle_weight(
             model_status.get(name, "active"),
@@ -179,7 +189,7 @@ def attach_ensemble_v2(
     weight_total = sum(weights.values())
 
     if weight_total <= 0:
-        if not (_has_observed_ic(merged, ic_weights) or (set(merged) & observed_ic_models)):
+        if not (_has_observed_ic(merged, ic_weights, model_status) or (set(merged) & observed_ic_models)):
             weights = {
                 name: _cold_start_weight(model_status.get(name, "active"), degraded_dampening)
                 for name in merged

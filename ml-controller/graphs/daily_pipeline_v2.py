@@ -338,6 +338,14 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             value = 16
         return max(1, min(64, value))
 
+    def _formal_layer3_chunk_timeout_sec() -> float:
+        raw = os.environ.get("FORMAL_LAYER3_CHUNK_TIMEOUT_SEC")
+        try:
+            value = float(raw) if raw is not None else 180.0
+        except (TypeError, ValueError):
+            value = 180.0
+        return max(15.0, min(420.0, value))
+
     def _chunk_series(series: list[dict], chunk_size: int) -> list[list[dict]]:
         return [series[i:i + chunk_size] for i in range(0, len(series), chunk_size)]
 
@@ -352,30 +360,40 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             return {"overlays": {model_name: [] for model_name in models}, "blockers": {}}
 
         chunk_size = _formal_layer3_chunk_size()
+        chunk_timeout_sec = _formal_layer3_chunk_timeout_sec()
         chunks = _chunk_series(series, chunk_size)
         logger.info(
             "[Pipeline V2] Layer3 formal adapters chunked dispatch: "
-            f"models={models} chunks={len(chunks)} chunk_size={chunk_size}"
+            f"models={models} chunks={len(chunks)} chunk_size={chunk_size} "
+            f"chunk_timeout_sec={chunk_timeout_sec:.1f}"
         )
 
-        async def _run_one(model_name: str) -> tuple[str, dict]:
-            calls = [
+        async def _run_one_chunk(model_name: str, chunk: list[dict], chunk_index: int) -> dict:
+            return await asyncio.wait_for(
                 modal_client.layer3_formal_batch_predict(
                     chunk,
                     horizon=5,
                     models=[model_name],
-                )
-                for chunk in chunks
+                ),
+                timeout=chunk_timeout_sec,
+            )
+
+        async def _run_one(model_name: str) -> tuple[str, dict]:
+            calls = [
+                _run_one_chunk(model_name, chunk, chunk_index)
+                for chunk_index, chunk in enumerate(chunks)
             ]
             chunk_results = await asyncio.gather(*calls, return_exceptions=True)
             overlays: list[dict] = []
             blockers: dict[str, str] = {}
             for chunk_index, result in enumerate(chunk_results):
                 if isinstance(result, BaseException):
-                    blockers[model_name] = f"chunk_{chunk_index}_exception:{result}"
+                    exc_type = type(result).__name__
+                    blockers[model_name] = f"chunk_{chunk_index}_{exc_type}:{result}"
                     logger.warning(
                         "[Pipeline V2] Layer3 formal adapter chunk failed: "
-                        f"model={model_name} chunk={chunk_index + 1}/{len(chunks)} error={result}"
+                        f"model={model_name} chunk={chunk_index + 1}/{len(chunks)} "
+                        f"exc={exc_type} error={result}"
                     )
                     continue
                 if not isinstance(result, dict):

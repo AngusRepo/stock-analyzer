@@ -25,9 +25,9 @@ const alphaContext = {
 
   assert(zones.source === 'ohlcv', 'OHLCV plan should be the primary source when available')
   assert(zones.buyReferenceZone === '58.40~61.20', 'buy reference zone must use OHLCV support and volume node')
-  assert(zones.optimisticPriceRange === '65.40~69.00', 'optimistic price range must use OHLCV confirmation and resistance')
+  assert(zones.chaseCeilingZone === '65.40~69.00', 'chase ceiling zone must use OHLCV confirmation and resistance')
   assert(zones.breakoutChaseZone === '65.40~66.58', 'breakout chase zone should start from OHLCV confirmation')
-  assert(!zones.optimisticPriceRange.includes('80.00'), 'OHLCV optimistic range must not reuse alpha optimistic value high')
+  assert(!zones.chaseCeilingZone.includes('80.00'), 'OHLCV chase ceiling zone must not reuse alpha optimistic value high')
 }
 
 {
@@ -40,7 +40,7 @@ const alphaContext = {
     resistance: 65.4,
   }, alphaContext)
 
-  assert(zones.optimisticPriceRange === '65.40~66.58', 'OHLCV optimistic range must not sit below the breakout chase ceiling')
+  assert(zones.chaseCeilingZone === '65.40~66.58', 'OHLCV chase ceiling zone must not sit below the breakout chase ceiling')
   assert(zones.breakoutChaseZone === '65.40~66.58', 'breakout chase zone should stay aligned with the optimistic buyable ceiling')
 }
 
@@ -49,5 +49,6 @@ const alphaContext = {
 
   assert(zones.source === 'alpha_fallback', 'alpha values are allowed only as fallback when OHLCV is missing')
   assert(zones.buyReferenceZone === '50.00~52.00', 'fallback buy reference should use alpha fair low and POC')
-  assert(zones.optimisticPriceRange === '55.00~80.00', 'fallback optimistic range should be visibly alpha-derived')
+  assert(zones.chaseCeilingZone === '55.00~80.00', 'fallback chase ceiling zone should be visibly alpha-derived')
+  assert(zones.optimisticPriceRange === zones.chaseCeilingZone, 'legacy optimisticPriceRange alias should stay compatible')
 }

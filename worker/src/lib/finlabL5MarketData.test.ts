@@ -1,5 +1,6 @@
 import {
   buildFinLabL5MarketDataDetail,
+  evaluateL5OrderBookPersistence,
   fetchFinLabL5MarketDataSnapshot,
   fetchFinLabL5MarketDataQuotes,
   normalizeFinLabL5Quote,
@@ -85,6 +86,68 @@ function assert(condition: unknown, message: string): void {
   assert(detail.provider === 'finlab_sinopac', 'audit detail should default to FinLab/Sinopac provider')
   assert(detail.l5_depth_levels === 5, 'audit detail should expose observed L5 depth')
   assert(detail.live_submit_enabled === false, 'market-data detail must make live submit disabled explicit')
+}
+
+{
+  const quotes = [
+    normalizeFinLabL5Quote('2330', {
+      bid_prices: [99.9, 99.8, 99.7, 99.6, 99.5],
+      ask_prices: [100.1, 100.2, 100.3, 100.4, 100.5],
+      bid_volumes: [14, 12, 10, 8, 6],
+      ask_volumes: [10, 9, 8, 7, 6],
+    }, new Date('2026-05-28T01:00:00Z')),
+    normalizeFinLabL5Quote('2330', {
+      bid_prices: [99.92, 99.9, 99.8, 99.7, 99.6],
+      ask_prices: [100.1, 100.12, 100.2, 100.3, 100.4],
+      bid_volumes: [18, 14, 12, 10, 8],
+      ask_volumes: [7, 7, 6, 5, 4],
+    }, new Date('2026-05-28T01:00:01Z')),
+    normalizeFinLabL5Quote('2330', {
+      bid_prices: [99.95, 99.92, 99.9, 99.8, 99.7],
+      ask_prices: [100.1, 100.12, 100.14, 100.2, 100.3],
+      bid_volumes: [22, 16, 14, 12, 10],
+      ask_volumes: [4, 5, 4, 4, 3],
+    }, new Date('2026-05-28T01:00:02Z')),
+  ]
+  const persistence = evaluateL5OrderBookPersistence(quotes, {
+    minSamples: 3,
+    minPositiveImbalanceRatio: 0.8,
+    minAverageImbalance: 0.1,
+    minTopAskVolumeDropRatio: 0.3,
+  })
+  assert(persistence.status === 'boost', 'persistent bid support should boost entry confidence')
+  assert(persistence.reasons.includes('l5_persistent_bid_support'), 'persistence should explain bid support')
+  assert(persistence.metrics.bestAskConsumedCount >= 1, 'persistence should count visible ask absorption')
+  assert((persistence.metrics.spreadCompressionPct ?? 0) > 0, 'persistence should measure spread compression')
+}
+
+{
+  const quotes = [
+    normalizeFinLabL5Quote('2330', {
+      bid_prices: [99.9, 99.8, 99.7, 99.6, 99.5],
+      ask_prices: [100.1, 100.2, 100.3, 100.4, 100.5],
+      bid_volumes: [2, 2, 2, 2, 2],
+      ask_volumes: [18, 18, 18, 18, 18],
+    }, new Date('2026-05-28T01:00:00Z')),
+    normalizeFinLabL5Quote('2330', {
+      bid_prices: [99.9, 99.8, 99.7, 99.6, 99.5],
+      ask_prices: [100.1, 100.2, 100.3, 100.4, 100.5],
+      bid_volumes: [3, 2, 2, 2, 2],
+      ask_volumes: [22, 20, 18, 18, 18],
+    }, new Date('2026-05-28T01:00:01Z')),
+    normalizeFinLabL5Quote('2330', {
+      bid_prices: [99.9, 99.8, 99.7, 99.6, 99.5],
+      ask_prices: [100.1, 100.2, 100.3, 100.4, 100.5],
+      bid_volumes: [2, 2, 2, 2, 2],
+      ask_volumes: [24, 22, 20, 20, 18],
+    }, new Date('2026-05-28T01:00:02Z')),
+  ]
+  const persistence = evaluateL5OrderBookPersistence(quotes, {
+    minSamples: 3,
+    minAverageImbalance: 0.05,
+  })
+  assert(persistence.status === 'degraded', 'persistent ask-heavy book should degrade entry confidence')
+  assert(persistence.reasons.includes('l5_average_imbalance_weak'), 'persistence should explain weak average imbalance')
 }
 
 ;(async () => {

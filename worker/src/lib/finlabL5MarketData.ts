@@ -36,6 +36,34 @@ export interface L5QuoteQuality {
   }
 }
 
+export interface L5OrderBookPersistenceOptions {
+  minSamples?: number
+  minPositiveImbalanceRatio?: number
+  minAverageImbalance?: number
+  minPositiveImbalance?: number
+  maxAverageSpreadPct?: number
+  minSpreadCompressionPct?: number
+  minTopAskVolumeDropRatio?: number
+  minBidDepthGrowthRatio?: number
+  maxAskDepthGrowthRatio?: number
+}
+
+export interface L5OrderBookPersistence {
+  status: 'boost' | 'neutral' | 'degraded' | 'blocked'
+  reasons: string[]
+  metrics: {
+    samples: number
+    positiveImbalanceRatio: number | null
+    averageImbalance: number | null
+    averageSpreadPct: number | null
+    spreadCompressionPct: number | null
+    topAskVolumeDropRatio: number | null
+    bidDepthGrowthRatio: number | null
+    askDepthGrowthRatio: number | null
+    bestAskConsumedCount: number
+  }
+}
+
 export interface FinLabL5MarketDataSnapshot {
   status: string | null
   blockedReasons: string[]
@@ -122,6 +150,21 @@ function sum(values: number[]): number {
   return values.reduce((acc, value) => acc + value, 0)
 }
 
+function finiteMetric(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function average(values: number[]): number | null {
+  if (!values.length) return null
+  return roundMetric(values.reduce((acc, value) => acc + value, 0) / values.length)
+}
+
+function depthRatio(first: number, last: number): number | null {
+  if (!Number.isFinite(first) || first <= 0 || !Number.isFinite(last)) return null
+  return roundMetric((last - first) / first)
+}
+
 export function normalizeFinLabL5Quote(
   symbol: string,
   payload: Record<string, unknown> | null | undefined,
@@ -197,6 +240,135 @@ export function quoteQualityFromL5(
       topAskVolume: quote.askVolumes[0] ?? null,
       orderBookImbalance: quote.orderBookImbalance,
     },
+  }
+}
+
+export function evaluateL5OrderBookPersistence(
+  quotes: Array<FinLabL5Quote | null | undefined>,
+  options: L5OrderBookPersistenceOptions = {},
+): L5OrderBookPersistence {
+  const thresholds = {
+    minSamples: Math.max(2, Math.floor(options.minSamples ?? 3)),
+    minPositiveImbalanceRatio: options.minPositiveImbalanceRatio ?? 0.6,
+    minAverageImbalance: options.minAverageImbalance ?? 0.05,
+    minPositiveImbalance: options.minPositiveImbalance ?? 0.03,
+    maxAverageSpreadPct: options.maxAverageSpreadPct ?? 0.006,
+    minSpreadCompressionPct: options.minSpreadCompressionPct ?? 0,
+    minTopAskVolumeDropRatio: options.minTopAskVolumeDropRatio ?? 0.2,
+    minBidDepthGrowthRatio: options.minBidDepthGrowthRatio ?? 0,
+    maxAskDepthGrowthRatio: options.maxAskDepthGrowthRatio ?? 0.15,
+  }
+  const clean = quotes
+    .filter((quote): quote is FinLabL5Quote => !!quote)
+    .filter((quote) => quote.bestBid != null && quote.bestAsk != null)
+  const emptyMetrics: L5OrderBookPersistence['metrics'] = {
+    samples: clean.length,
+    positiveImbalanceRatio: null,
+    averageImbalance: null,
+    averageSpreadPct: null,
+    spreadCompressionPct: null,
+    topAskVolumeDropRatio: null,
+    bidDepthGrowthRatio: null,
+    askDepthGrowthRatio: null,
+    bestAskConsumedCount: 0,
+  }
+  if (clean.length < thresholds.minSamples) {
+    return {
+      status: 'neutral',
+      reasons: ['insufficient_l5_persistence_samples'],
+      metrics: emptyMetrics,
+    }
+  }
+
+  const imbalances = clean
+    .map((quote) => finiteMetric(quote.orderBookImbalance))
+    .filter((value): value is number => value != null)
+  const spreads = clean
+    .map((quote) => finiteMetric(quote.spreadPct))
+    .filter((value): value is number => value != null && value >= 0)
+  const first = clean[0]
+  const last = clean[clean.length - 1]
+  const firstSpread = finiteMetric(first.spreadPct)
+  const lastSpread = finiteMetric(last.spreadPct)
+  const firstTopAsk = finiteMetric(first.askVolumes[0]) ?? 0
+  const lastTopAsk = finiteMetric(last.askVolumes[0]) ?? 0
+  const firstBidDepth = sum(first.bidVolumes)
+  const lastBidDepth = sum(last.bidVolumes)
+  const firstAskDepth = sum(first.askVolumes)
+  const lastAskDepth = sum(last.askVolumes)
+  const positiveImbalanceRatio = imbalances.length
+    ? roundMetric(imbalances.filter((value) => value >= thresholds.minPositiveImbalance).length / imbalances.length)
+    : null
+  const averageImbalance = average(imbalances)
+  const averageSpreadPct = average(spreads)
+  const spreadCompressionPct = firstSpread != null && firstSpread > 0 && lastSpread != null
+    ? roundMetric((firstSpread - lastSpread) / firstSpread)
+    : null
+  const topAskVolumeDropRatio = firstTopAsk > 0
+    ? roundMetric((firstTopAsk - lastTopAsk) / firstTopAsk)
+    : null
+  const bidDepthGrowthRatio = depthRatio(firstBidDepth, lastBidDepth)
+  const askDepthGrowthRatio = depthRatio(firstAskDepth, lastAskDepth)
+  let bestAskConsumedCount = 0
+  for (let i = 1; i < clean.length; i += 1) {
+    const prev = clean[i - 1]
+    const curr = clean[i]
+    const prevAsk = finitePositive(prev.bestAsk)
+    const currAsk = finitePositive(curr.bestAsk)
+    const prevTop = finiteMetric(prev.askVolumes[0]) ?? 0
+    const currTop = finiteMetric(curr.askVolumes[0]) ?? 0
+    if (prevAsk != null && currAsk != null && currAsk >= prevAsk && prevTop > 0 && currTop < prevTop) {
+      bestAskConsumedCount += 1
+    }
+  }
+
+  const metrics: L5OrderBookPersistence['metrics'] = {
+    samples: clean.length,
+    positiveImbalanceRatio,
+    averageImbalance,
+    averageSpreadPct,
+    spreadCompressionPct,
+    topAskVolumeDropRatio,
+    bidDepthGrowthRatio,
+    askDepthGrowthRatio,
+    bestAskConsumedCount,
+  }
+  const failed: string[] = []
+  if (positiveImbalanceRatio != null && positiveImbalanceRatio < thresholds.minPositiveImbalanceRatio) {
+    failed.push('l5_imbalance_not_persistent')
+  }
+  if (averageImbalance != null && averageImbalance < thresholds.minAverageImbalance) {
+    failed.push('l5_average_imbalance_weak')
+  }
+  if (averageSpreadPct != null && averageSpreadPct > thresholds.maxAverageSpreadPct) {
+    failed.push('l5_average_spread_wide')
+  }
+  if (spreadCompressionPct != null && spreadCompressionPct < thresholds.minSpreadCompressionPct) {
+    failed.push('l5_spread_not_compressing')
+  }
+  if (askDepthGrowthRatio != null && askDepthGrowthRatio > thresholds.maxAskDepthGrowthRatio) {
+    failed.push('l5_ask_wall_growing')
+  }
+
+  const supportive = [
+    positiveImbalanceRatio != null && positiveImbalanceRatio >= thresholds.minPositiveImbalanceRatio,
+    averageImbalance != null && averageImbalance >= thresholds.minAverageImbalance,
+    spreadCompressionPct != null && spreadCompressionPct >= thresholds.minSpreadCompressionPct,
+    topAskVolumeDropRatio != null && topAskVolumeDropRatio >= thresholds.minTopAskVolumeDropRatio,
+    bidDepthGrowthRatio != null && bidDepthGrowthRatio >= thresholds.minBidDepthGrowthRatio,
+    bestAskConsumedCount > 0,
+  ].filter(Boolean).length
+
+  if (failed.includes('l5_average_spread_wide') || failed.includes('l5_average_imbalance_weak')) {
+    return { status: 'degraded', reasons: failed, metrics }
+  }
+  if (failed.length > 0) {
+    return { status: 'neutral', reasons: failed, metrics }
+  }
+  return {
+    status: supportive >= 4 ? 'boost' : 'neutral',
+    reasons: supportive >= 4 ? ['l5_persistent_bid_support'] : ['l5_persistence_neutral'],
+    metrics,
   }
 }
 

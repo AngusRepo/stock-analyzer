@@ -1,3 +1,5 @@
+import type { EntryPriceModelV2 } from './entryPriceModelV2'
+
 export type PreTradeAction = 'BUY_AT' | 'REQUOTE' | 'DEFER' | 'SKIP'
 
 export type QuoteSource = 'shioaji' | 'yahoo' | 'none'
@@ -22,6 +24,15 @@ export interface PreTradePolicyConfig {
   maxQuoteAgeMs?: number
   maxEntryChasePct?: number
   strongBreakoutMaxEntryChasePct?: number
+}
+
+export interface PreTradeOpeningFastPathContext {
+  enabled?: boolean
+  minutesSinceOpen?: number | null
+  maxMinutes?: number
+  allowTrendUnavailable?: boolean
+  maxPremiumPct?: number
+  l5Status?: string | null
 }
 
 export interface PreTradeOhlcvTradePlan {
@@ -57,6 +68,8 @@ export interface PreTradeExecutionInput {
   quoteSource: QuoteSource
   marketRiskLevel?: string | null
   momentum?: PreTradeMomentumContext | null
+  entryModelV2?: EntryPriceModelV2 | null
+  openingFastPath?: PreTradeOpeningFastPathContext | null
   tradePlan?: PreTradeOhlcvTradePlan | null
   technical?: PreTradeTechnicalContext | null
   policy: PreTradePolicyConfig
@@ -101,6 +114,33 @@ function metricDetail(items: Array<[string, number | null | undefined]>): string
     .filter(([, value]) => value != null && Number.isFinite(Number(value)))
     .map(([key, value]) => `${key}=${roundPrice(Number(value))}`)
     .join(';')
+}
+
+function openingFastPathIsActive(input: PreTradeExecutionInput): boolean {
+  const ctx = input.openingFastPath
+  if (!ctx?.enabled) return false
+  const minutesSinceOpen = Number(ctx.minutesSinceOpen ?? 999)
+  const maxMinutes = Number(ctx.maxMinutes ?? 10)
+  if (!Number.isFinite(minutesSinceOpen) || !Number.isFinite(maxMinutes)) return false
+  if (minutesSinceOpen < 0 || minutesSinceOpen > maxMinutes) return false
+  const l5Status = String(ctx.l5Status ?? '').toLowerCase()
+  return !['blocked', 'missing', 'error'].includes(l5Status)
+}
+
+function canBypassOpeningTrendError(input: PreTradeExecutionInput, error: string): boolean {
+  if (!openingFastPathIsActive(input)) return false
+  if (!input.openingFastPath?.allowTrendUnavailable) return false
+  return /^trend_http_|trend_unavailable|early_open_trend_unavailable/i.test(error)
+}
+
+function openingFastPathDetail(input: PreTradeExecutionInput): string {
+  const ctx = input.openingFastPath
+  return [
+    `minutes_since_open=${Number(ctx?.minutesSinceOpen ?? -1)}`,
+    `max_minutes=${Number(ctx?.maxMinutes ?? 10)}`,
+    `max_premium=${roundMetric(Number(ctx?.maxPremiumPct ?? 0))}`,
+    ctx?.l5Status ? `l5=${ctx.l5Status}` : null,
+  ].filter(Boolean).join(';')
 }
 
 export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTradeExecutionDecision {
@@ -167,7 +207,9 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
   }
 
   const momentum = input.momentum
-  if (momentum?.error) {
+  const openingFastPathActive = openingFastPathIsActive(input)
+  const openingTrendBypass = momentum?.error ? canBypassOpeningTrendError(input, momentum.error) : false
+  if (momentum?.error && !openingTrendBypass) {
     return { action: 'DEFER', reason: `momentum_unavailable:${momentum.error}` }
   }
   if (momentum?.volumeRatio != null && momentum.volumeRatio < (momentum.minVolumeRatio ?? 0.8)) {
@@ -192,12 +234,13 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
     }
   }
 
+  const entryModelV2 = input.entryModelV2?.modelVersion === 'entry_price_model_v2' ? input.entryModelV2 : null
   const tradePlan = input.tradePlan?.source === 'ohlcv' ? input.tradePlan : null
   if (tradePlan) {
     const support = finitePositive(tradePlan.support)
     const atrDefense = finitePositive(tradePlan.atrDefense)
     const confirmation = finitePositive(tradePlan.confirmation)
-    const optimisticHigh = finitePositive(tradePlan.optimisticHigh ?? tradePlan.resistance)
+    const chaseCeiling = finitePositive(entryModelV2?.chaseCeiling ?? tradePlan.optimisticHigh ?? tradePlan.resistance)
     const buyReferenceHigh = finitePositive(tradePlan.buyReferenceHigh ?? tradePlan.volumeNode ?? tradePlan.support)
     const mode = String(tradePlan.mode ?? '').toLowerCase()
 
@@ -222,7 +265,14 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
         ]),
       }
     }
-    if (mode === 'pullback' && buyReferenceHigh != null && confirmation != null && currentPrice > buyReferenceHigh && currentPrice < confirmation) {
+    const openingMaxPremiumPct = Number(input.openingFastPath?.maxPremiumPct ?? 0)
+    const openingPullbackFastPath =
+      openingFastPathActive &&
+      openingMaxPremiumPct > 0 &&
+      currentPrice > entryPrice &&
+      ((currentPrice - entryPrice) / entryPrice) <= openingMaxPremiumPct &&
+      (chaseCeiling == null || currentPrice <= chaseCeiling)
+    if (mode === 'pullback' && buyReferenceHigh != null && confirmation != null && currentPrice > buyReferenceHigh && currentPrice < confirmation && !openingPullbackFastPath) {
       return {
         action: 'DEFER',
         reason: 'between_buy_reference_and_confirmation',
@@ -233,15 +283,15 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
         ]),
       }
     }
-    if (optimisticHigh != null && currentPrice > optimisticHigh && !mode.includes('continuation')) {
+    if (chaseCeiling != null && currentPrice > chaseCeiling && !mode.includes('continuation')) {
       return {
         action: 'DEFER',
-        reason: 'price_above_ohlcv_optimistic_range',
+        reason: entryModelV2 ? 'price_above_chase_ceiling' : 'price_above_ohlcv_optimistic_range',
         detail: metricDetail([
           ['current', currentPrice],
-          ['optimistic_high', optimisticHigh],
+          ['chase_ceiling', chaseCeiling],
           ['confirmation', confirmation],
-        ]),
+        ]) + (entryModelV2 ? `;anchor_source=${entryModelV2.anchorSource}` : ''),
       }
     }
   }
@@ -260,15 +310,19 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
     const allowedChasePct = strongBreakoutOk
       ? Math.max(maxEntryChasePct, strongBreakoutMaxEntryChasePct)
       : maxEntryChasePct
+    const effectiveAllowedChasePct = openingFastPathActive
+      ? Math.max(allowedChasePct, Number(input.openingFastPath?.maxPremiumPct ?? 0))
+      : allowedChasePct
     const chaseMomentumOk =
       (momentum?.volumeRatio == null || momentum.volumeRatio >= (momentum.minVolumeRatio ?? 0.8)) &&
       (momentum?.slope5min == null || momentum.slope5min >= 0) &&
       (momentum?.rangePosition == null || momentum.rangePosition >= (momentum.minRangePosition ?? 0.3))
-    if (allowedChasePct > 0 && chasePremiumPct >= 0 && chasePremiumPct <= allowedChasePct) {
-      if (chaseMomentumOk) {
+    if (effectiveAllowedChasePct > 0 && chasePremiumPct >= 0 && chasePremiumPct <= effectiveAllowedChasePct) {
+      if (chaseMomentumOk || openingTrendBypass) {
         return {
           action: 'BUY_AT',
-          reason: `${strongBreakoutOk && chasePremiumPct > maxEntryChasePct ? 'strong_breakout_chase_confirmed' : 'entry_chase_confirmed'}:${(chasePremiumPct * 100).toFixed(2)}%`,
+          reason: `${openingTrendBypass ? 'opening_fast_path_entry' : strongBreakoutOk && chasePremiumPct > maxEntryChasePct ? 'strong_breakout_chase_confirmed' : 'entry_chase_confirmed'}:${(chasePremiumPct * 100).toFixed(2)}%`,
+          detail: openingTrendBypass ? openingFastPathDetail(input) : undefined,
           limitPrice: roundPrice(chaseLimit),
         }
       }
@@ -281,9 +335,10 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
         `entry=${roundPrice(entryPrice)}`,
         bestAsk != null ? `bestAsk=${roundPrice(bestAsk)}` : null,
         `premium=${roundMetric(chasePremiumPct)}`,
-        `max=${roundMetric(allowedChasePct)}`,
+        `max=${roundMetric(effectiveAllowedChasePct)}`,
         `normal_max=${roundMetric(maxEntryChasePct)}`,
         `strong_breakout=${strongBreakoutOk ? '1' : '0'}`,
+        openingFastPathActive ? 'opening_fast_path=1' : null,
       ].filter(Boolean).join(';'),
     }
   }

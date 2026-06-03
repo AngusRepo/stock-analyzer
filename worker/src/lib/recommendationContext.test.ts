@@ -1,4 +1,4 @@
-import { buildMarketStructureWatchPoint, buildMlDiagnostics, buildMlVoteSummary, compactRecommendationForCard } from './recommendationContext'
+﻿import { buildMarketStructureWatchPoint, buildMlDiagnostics, buildMlVoteSummary, compactRecommendationForCard } from './recommendationContext'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -23,19 +23,16 @@ function assert(condition: unknown, message: string): void {
     },
   })
 
-  assert(watchPoint?.startsWith('Alpha 結構:'), 'market structure watch point should not pretend alpha structure is an OHLCV trade plan')
-  assert(watchPoint?.includes('內部合理區 786.43~855.88'), 'alpha structure should name the internal reasonable zone')
-  assert(watchPoint?.includes('內部順風區 855.88~879.03'), 'alpha structure should name the internal optimistic zone without calling it resistance')
-  assert(watchPoint?.includes('已高於內部順風上緣 3.5%'), 'alpha structure should translate extension into plain language')
-  assert(watchPoint?.includes('內部估值提醒偏追高'), 'alpha structure should translate exceeded extension into action language')
-  assert(!watchPoint?.includes('前高壓力'), 'alpha structure must not be mislabeled as OHLCV resistance')
-  assert(!watchPoint?.includes('轉強確認'), 'alpha structure must not be mislabeled as OHLCV confirmation')
-  for (const internalTerm of ['POC', 'fair_value', 'optimistic_value', 'optimistic_status', 'above_fair_value']) {
+  assert(watchPoint?.startsWith('Alpha 價格結構:'), 'market structure watch point should expose readable price-structure context')
+  assert(watchPoint?.includes('日線價值代理區 786.43~855.88'), 'alpha structure should downgrade fair value into a daily proxy zone')
+  assert(watchPoint?.includes('追價上限區 855.88~879.03'), 'alpha structure should name the chase ceiling without calling it valuation')
+  assert(watchPoint?.includes('已高於追價上限 3.5%'), 'alpha structure should translate chase extension into plain language')
+  assert(watchPoint?.includes('超過追價上限，需等待回落或強突破確認'), 'alpha structure should translate exceeded extension into action language')
+  assert(watchPoint?.includes('非逐價成交量'), 'alpha structure must disclose that the current POC/fair value is not true price-level volume')
+  for (const internalTerm of ['optimistic_value', 'optimistic_status', 'above_fair_value']) {
     assert(!watchPoint?.includes(internalTerm), `trading plan should not expose internal quant label ${internalTerm}`)
   }
-}
-
-const forecastData = {
+}const forecastData = {
   core_family_vote: {
     schema_version: 'core_family_vote_v1',
     family_score: 0.64,

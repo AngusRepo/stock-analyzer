@@ -1,5 +1,5 @@
 import type { StrategySpec, StrategySpecCandidatePolicy, StrategySpecStatus, StrategySpecThresholds } from './strategySpec'
-import { STRATEGY_SPEC_VERSION, validateStrategySpec } from './strategySpec'
+import { STRATEGY_SPEC_VERSION, normalizeStrategySpecGovernance, validateStrategySpec } from './strategySpec'
 import {
   normalizeResearchExperimentInput,
   putResearchExperiment,
@@ -204,7 +204,7 @@ export function buildFinLabAiSkillStrategySpecDraft(
   const alphaBucket = input.alphaBucket ?? 'mean_reversion'
   const includeIndustries = tag && shouldBindTagToIndustry(input) ? [tag] : undefined
 
-  const spec: StrategySpec = {
+  const spec: StrategySpec = normalizeStrategySpecGovernance({
     id: safeStrategyId(input),
     version: STRATEGY_SPEC_VERSION,
     name: `FinLab AI Skill ${tag || slug(input.hypothesis).replace(/_/g, ' ') || 'strategy'} discovery`,
@@ -229,7 +229,7 @@ export function buildFinLabAiSkillStrategySpecDraft(
       ...(factorRefs.length ? [`factor_refs=${factorRefs.join('|')}`] : []),
     ],
     createdBy: 'p5_strategy_governance',
-  }
+  })
 
   const validation = validateStrategySpec(spec)
   errors.push(...validation.errors)

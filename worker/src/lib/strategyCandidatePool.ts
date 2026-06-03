@@ -2,8 +2,12 @@ import {
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
+  normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
+  type StrategyFamilyId,
+  type StrategyOwnerType,
+  type StrategyPromotionStatus,
   type StrategySpec,
   type StrategySpecStatus,
 } from './strategySpec'
@@ -70,6 +74,9 @@ export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   strategy_pool_score?: number
   strategy_pool_rank?: number
   strategy_pool_ids?: string[]
+  strategy_family_ids?: string[]
+  strategy_variant_ids?: string[]
+  strategy_owner_types?: StrategyOwnerType[]
   research_strategy_ids?: string[]
   strategy_pool_fallback_source?: string
   strategy_pool_decision?: StrategyQueueDecision
@@ -84,6 +91,10 @@ export interface StrategyPoolEntry<T extends StrategyCandidatePoolCandidate = St
   strategy_name: string
   alpha_bucket: AlphaFrameworkBucket
   strategy_status: StrategySpecStatus
+  family_id: StrategyFamilyId
+  variant_id: string
+  owner_type: StrategyOwnerType
+  promotion_status: StrategyPromotionStatus
   quota: number
   cost_budget: number
   evidence_requirements: string[]
@@ -102,6 +113,9 @@ export interface StrategyPool<T extends StrategyCandidatePoolCandidate = Strateg
   strategy_name: string
   alpha_bucket: AlphaFrameworkBucket
   strategy_status: StrategySpecStatus
+  family_id: StrategyFamilyId
+  owner_type: StrategyOwnerType
+  promotion_status: StrategyPromotionStatus
   quota: number
   cost_budget: number
   evidence_requirements: string[]
@@ -120,6 +134,7 @@ type StrategyPoolAggregate<T extends StrategyCandidatePoolCandidate = StrategyCa
 
 type StrategyPoolStrategyRef = {
   strategy_id: string
+  family_id: StrategyFamilyId
   alpha_bucket: AlphaFrameworkBucket
   strategy_score: number
 }
@@ -153,7 +168,7 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
   researchOnlyQueue: T[]
   selection: StrategyCandidateSelection<T>
   telemetry: {
-    selection_order: 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up'
+    selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe'
     target_size: number
     coarse_ml_queue_size: number
     strategy_selected_count: number
@@ -331,7 +346,7 @@ function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
 }
 
 function strategyCanEnterMlQueue(entry: StrategyPoolEntry): boolean {
-  return entry.strategy_status === 'active' && finiteNumber(entry.max_ml_share) !== 0
+  return entry.strategy_status === 'active' && entry.owner_type === 'strategy' && finiteNumber(entry.max_ml_share) !== 0
 }
 
 function chooseCanonicalActiveStrategyRefs(
@@ -343,10 +358,11 @@ function chooseCanonicalActiveStrategyRefs(
 
   const next: StrategyPoolStrategyRef = {
     strategy_id: entry.strategy_id,
+    family_id: entry.family_id,
     alpha_bucket: entry.alpha_bucket,
     strategy_score: entry.strategy_score,
   }
-  const index = refs.findIndex((ref) => ref.alpha_bucket === next.alpha_bucket)
+  const index = refs.findIndex((ref) => ref.family_id === next.family_id)
   if (index < 0) {
     refs.push(next)
   } else {
@@ -358,7 +374,7 @@ function chooseCanonicalActiveStrategyRefs(
       refs[index] = next
     }
   }
-  return refs.sort((a, b) => String(a.alpha_bucket).localeCompare(String(b.alpha_bucket)))
+  return refs.sort((a, b) => String(a.family_id).localeCompare(String(b.family_id)))
 }
 
 function aggregateStrategyIds<T extends StrategyCandidatePoolCandidate>(
@@ -545,7 +561,8 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
 
   return specs
     .filter((spec) => spec.status !== 'retired')
-    .map((spec) => {
+    .map((rawSpec) => {
+      const spec = normalizeStrategySpecGovernance(rawSpec)
       const validation = validateStrategySpec(spec)
       const runtimePolicy = policyForSpec(spec)
       const quota = boundedQuota(runtimePolicy.poolQuota, policy)
@@ -562,6 +579,9 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           strategy_name: spec.name,
           alpha_bucket: spec.alphaBucket,
           strategy_status: spec.status,
+          family_id: spec.familyId!,
+          owner_type: spec.ownerType!,
+          promotion_status: spec.promotionStatus!,
           quota,
           cost_budget: costBudget,
           evidence_requirements: evidenceRequirements,
@@ -579,6 +599,9 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           strategy_name: spec.name,
           alpha_bucket: spec.alphaBucket,
           strategy_status: spec.status,
+          family_id: spec.familyId!,
+          owner_type: spec.ownerType!,
+          promotion_status: spec.promotionStatus!,
           quota,
           cost_budget: costBudget,
           evidence_requirements: evidenceRequirements,
@@ -601,6 +624,10 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
             strategy_name: spec.name,
             alpha_bucket: spec.alphaBucket,
             strategy_status: spec.status,
+            family_id: spec.familyId!,
+            variant_id: spec.variantId!,
+            owner_type: spec.ownerType!,
+            promotion_status: spec.promotionStatus!,
             quota,
             cost_budget: costBudget,
             evidence_requirements: evidenceRequirements,
@@ -630,6 +657,10 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               strategy_name: spec.name,
               alpha_bucket: spec.alphaBucket,
               strategy_status: spec.status,
+              family_id: spec.familyId!,
+              variant_id: spec.variantId!,
+              owner_type: spec.ownerType!,
+              promotion_status: spec.promotionStatus!,
               quota,
               cost_budget: costBudget,
               evidence_requirements: evidenceRequirements,
@@ -657,6 +688,10 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
               strategy_name: spec.name,
               alpha_bucket: spec.alphaBucket,
               strategy_status: spec.status,
+              family_id: spec.familyId!,
+              variant_id: spec.variantId!,
+              owner_type: spec.ownerType!,
+              promotion_status: spec.promotionStatus!,
               quota,
               cost_budget: costBudget,
               evidence_requirements: evidenceRequirements,
@@ -679,6 +714,9 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         strategy_name: spec.name,
         alpha_bucket: spec.alphaBucket,
         strategy_status: spec.status,
+        family_id: spec.familyId!,
+        owner_type: spec.ownerType!,
+        promotion_status: spec.promotionStatus!,
         quota,
         cost_budget: costBudget,
         evidence_requirements: evidenceRequirements,
@@ -692,7 +730,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
 }
 
 function annotateSelection<T extends StrategyCandidatePoolCandidate>(
-  entry: StrategyPoolEntry<T>,
+  entry: StrategyPoolAggregate<T>,
   decision: StrategyQueueDecision,
   reason: string,
   rank: number,
@@ -702,6 +740,9 @@ function annotateSelection<T extends StrategyCandidatePoolCandidate>(
   candidate.strategy_pool_score = entry.strategy_score
   candidate.strategy_pool_rank = rank
   candidate.strategy_pool_ids = strategyIds
+  candidate.strategy_family_ids = uniqueTexts(entry.active_strategy_refs.map((ref) => ref.family_id))
+  candidate.strategy_variant_ids = uniqueTexts([entry.variant_id])
+  candidate.strategy_owner_types = uniqueTexts([entry.owner_type]) as StrategyOwnerType[]
   candidate.research_strategy_ids = entry.research_strategy_ids
   candidate.strategy_pool_decision = decision
   candidate.strategy_pool_reason = reason
@@ -709,6 +750,7 @@ function annotateSelection<T extends StrategyCandidatePoolCandidate>(
     ...(candidate.strategy_tags ?? []),
     `strategy_pool:${STRATEGY_CANDIDATE_POOL_VERSION}`,
     ...strategyIds.map((id) => `strategy:${id}`),
+    ...candidate.strategy_family_ids.map((id) => `strategy_family:${id}`),
   ])
   candidate.strategy_watch_points = uniqueTexts([
     ...(candidate.strategy_watch_points ?? []),
@@ -858,17 +900,21 @@ function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
   rank: number,
 ): T {
   const cloned = cloneCandidate(candidate)
-  cloned.strategy_pool_decision = 'ml_queue'
-  cloned.strategy_pool_reason = 'raw_signal_top_up_after_strategy_quota'
+  cloned.strategy_pool_decision = 'research_only_queue'
+  cloned.strategy_pool_reason = 'raw_signal_top_up_observe_after_strategy_quota'
   cloned.strategy_pool_rank = rank
   cloned.strategy_pool_ids = []
+  cloned.strategy_family_ids = []
+  cloned.strategy_variant_ids = []
+  cloned.strategy_owner_types = ['observe']
   cloned.research_strategy_ids = []
   cloned.strategy_pool_fallback_source = 'raw_signal_top_up'
   cloned.strategy_pool_score = rawSignalFallbackValue(candidate)
-  cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:raw_signal_top_up'])
+  cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:raw_signal_top_up_observe'])
   cloned.strategy_watch_points = uniqueTexts([
     ...(cloned.strategy_watch_points ?? []),
-    'strategy_pool:raw_signal_top_up_after_strategy_quota',
+    'strategy_pool:raw_signal_top_up_observe_after_strategy_quota',
+    'strategy_pool:not_formal_l2_queue',
   ])
   return cloned
 }
@@ -917,18 +963,19 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     .map((candidate, index) => annotateLayer1TopUp(candidate, strategySelected.length + index + 1))
 
   const breadthPool = [...strategySelected, ...topUp].slice(0, targetSize)
+  const formalCoarseQueue = strategySelected.slice(0, coarseMlQueueSize)
 
   return {
     version: `${STRATEGY_CANDIDATE_POOL_VERSION}:layer1-breadth-v1`,
     sourceUniverseCount: featureEnrichedUniverse.length,
     breadthPool,
-    coarseQueue: breadthPool.slice(0, coarseMlQueueSize),
+    coarseQueue: formalCoarseQueue,
     researchOnlyQueue: selection.researchOnlyQueue,
     selection,
     telemetry: {
-      selection_order: 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up',
+      selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe',
       target_size: targetSize,
-      coarse_ml_queue_size: coarseMlQueueSize,
+      coarse_ml_queue_size: formalCoarseQueue.length,
       strategy_selected_count: strategySelected.length,
       raw_signal_top_up_count: topUp.length,
       source_universe_count: featureEnrichedUniverse.length,

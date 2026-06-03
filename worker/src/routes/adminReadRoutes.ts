@@ -134,6 +134,53 @@ adminReadRoutes.get('/api/admin/execution/pre-pilot-evidence', async (c) => {
   }))
 })
 
+adminReadRoutes.get('/api/admin/entry-model/replay', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildEntryModelReplayReportFromD1 } = await import('../lib/entryModelReplay')
+  const symbols = (c.req.query('symbols') ?? '')
+    .split(',')
+    .map((symbol) => symbol.trim())
+    .filter(Boolean)
+  const startDate = c.req.query('start') ?? c.req.query('start_date') ?? c.req.query('date') ?? twToday()
+  const endDate = c.req.query('end') ?? c.req.query('end_date') ?? c.req.query('date') ?? startDate
+  const requestedLimit = Number.parseInt(c.req.query('limit') ?? '250', 10)
+  return c.json({
+    success: true,
+    mode: 'read_only_replay',
+    report: await buildEntryModelReplayReportFromD1(c.env.DB, {
+      startDate,
+      endDate,
+      limit: Number.isFinite(requestedLimit) ? requestedLimit : 250,
+      symbols,
+      minRank: c.req.query('min_rank') != null ? Number(c.req.query('min_rank')) : undefined,
+      maxRank: c.req.query('max_rank') != null ? Number(c.req.query('max_rank')) : undefined,
+    }),
+  })
+})
+
+adminReadRoutes.get('/api/admin/screener/layer-replay', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildScreenerLayerReplayReportFromD1 } = await import('../lib/screenerLayerReplay')
+  const startDate = c.req.query('start') ?? c.req.query('start_date') ?? c.req.query('date') ?? twToday()
+  const endDate = c.req.query('end') ?? c.req.query('end_date') ?? c.req.query('date') ?? startDate
+  const requestedLimit = Number.parseInt(c.req.query('limit') ?? '1000', 10)
+  return c.json({
+    success: true,
+    mode: 'read_only_replay',
+    report: await buildScreenerLayerReplayReportFromD1(c.env.DB, {
+      startDate,
+      endDate,
+      limit: Number.isFinite(requestedLimit) ? requestedLimit : 1000,
+      l2KeepRatio: c.req.query('l2_keep_ratio') != null ? Number(c.req.query('l2_keep_ratio')) : undefined,
+      l3KeepRatio: c.req.query('l3_keep_ratio') != null ? Number(c.req.query('l3_keep_ratio')) : undefined,
+    }),
+  })
+})
+
 adminReadRoutes.get('/api/admin/observability/events', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
@@ -252,6 +299,29 @@ adminReadRoutes.get('/api/admin/strategy/policy-state', async (c) => {
     latest: await getLatestStrategyPolicyState(c.env.DB),
     preview: summary.policy_state_preview,
     promotion_gate: summary.promotion_gate,
+  })
+})
+
+adminReadRoutes.get('/api/admin/strategy/inventory', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { buildStrategyInventoryReport } = await import('../lib/strategyInventoryReport')
+  const statuses = (c.req.query('statuses') ?? c.req.query('status') ?? 'active')
+    .split(',')
+    .map((status) => status.trim())
+    .filter(Boolean) as any
+  const requestedPairs = Number.parseInt(c.req.query('limit_pairs') ?? c.req.query('limitPairs') ?? '100', 10)
+  const requestedThreshold = Number(c.req.query('overlap_threshold') ?? c.req.query('overlapThreshold') ?? 0.85)
+  return c.json({
+    success: true,
+    mode: 'read_only_inventory',
+    report: await buildStrategyInventoryReport(c.env.DB, {
+      date: c.req.query('date') ?? twToday(),
+      statuses,
+      overlapThreshold: Number.isFinite(requestedThreshold) ? requestedThreshold : 0.85,
+      limitPairs: Number.isFinite(requestedPairs) ? requestedPairs : 100,
+    }),
   })
 })
 

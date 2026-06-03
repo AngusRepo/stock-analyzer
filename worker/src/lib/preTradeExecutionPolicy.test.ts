@@ -267,10 +267,156 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
       optimisticLow: 100,
       optimisticHigh: 103,
     },
+    entryModelV2: {
+      modelVersion: 'entry_price_model_v2',
+      anchorSource: 'daily_proxy_fallback',
+      poc: 97.5,
+      vah: null,
+      val: null,
+      discountLow: 96,
+      discountHigh: 100,
+      equilibrium: 100,
+      premiumLow: 100,
+      premiumHigh: 103,
+      orderBlockLow: null,
+      orderBlockHigh: null,
+      fvgLow: null,
+      fvgHigh: null,
+      retestStatus: 'none',
+      entryLow: 96,
+      entryHigh: 100,
+      preferredEntry: 100,
+      chaseCeiling: 103,
+      stopAnchor: 95.5,
+      l5Support: { quoteAgeMs: null, spreadPct: null, depthOk: false, imbalance: null },
+      confidence: 0.45,
+      fallbackReason: 'ohlcv_trade_plan_proxy',
+    },
   }))
-  assert(decision.action === 'DEFER', 'backend must not chase above the OHLCV optimistic range')
-  assert(decision.reason === 'price_above_ohlcv_optimistic_range', 'optimistic range gate should use OHLCV resistance')
-  assert(decision.detail?.includes('optimistic_high=103'), 'optimistic range gate should expose the OHLCV ceiling')
+  assert(decision.action === 'DEFER', 'backend must not chase above the v2 chase ceiling')
+  assert(decision.reason === 'price_above_chase_ceiling', 'v2 gate should use chase ceiling semantics')
+  assert(decision.detail?.includes('chase_ceiling=103'), 'v2 gate should expose the chase ceiling')
+  assert(decision.detail?.includes('anchor_source=daily_proxy_fallback'), 'v2 gate should expose the anchor source')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 100.8,
+    bestAsk: 100.8,
+    entryPrice: 100,
+    momentum: {
+      error: 'trend_http_404',
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 103,
+      resistance: 102.5,
+      support: 96,
+      atrDefense: 95.5,
+      volumeNode: 98,
+      buyReferenceLow: 98,
+      buyReferenceHigh: 100,
+      optimisticLow: 103,
+      optimisticHigh: 104,
+    },
+  }))
+  assert(decision.action === 'DEFER', 'without opening fast path, missing trend data should still defer')
+  assert(decision.reason === 'momentum_unavailable:trend_http_404', 'trend error should remain visible')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 100.8,
+    bestAsk: 100.8,
+    entryPrice: 100,
+    momentum: {
+      error: 'trend_http_404',
+    },
+    openingFastPath: {
+      enabled: true,
+      minutesSinceOpen: 4,
+      maxMinutes: 10,
+      allowTrendUnavailable: true,
+      maxPremiumPct: 0.012,
+      l5Status: 'pass',
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 103,
+      resistance: 102.5,
+      support: 96,
+      atrDefense: 95.5,
+      volumeNode: 98,
+      buyReferenceLow: 98,
+      buyReferenceHigh: 100,
+      optimisticLow: 103,
+      optimisticHigh: 104,
+    },
+  }))
+  assert(decision.action === 'BUY_AT', 'opening fast path should allow bounded early quote entry when trend is not ready')
+  assert(decision.reason === 'opening_fast_path_entry:0.80%', 'opening fast path should expose the bounded premium')
+  assert(decision.limitPrice === 100.8, 'opening fast path should use executable best ask as limit')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 104.5,
+    bestAsk: 104.5,
+    entryPrice: 100,
+    momentum: {
+      error: 'trend_http_404',
+    },
+    openingFastPath: {
+      enabled: true,
+      minutesSinceOpen: 4,
+      maxMinutes: 10,
+      allowTrendUnavailable: true,
+      maxPremiumPct: 0.012,
+      l5Status: 'pass',
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 103,
+      resistance: 102.5,
+      support: 96,
+      atrDefense: 95.5,
+      volumeNode: 98,
+      buyReferenceLow: 98,
+      buyReferenceHigh: 100,
+      optimisticLow: 103,
+      optimisticHigh: 104,
+    },
+    entryModelV2: {
+      modelVersion: 'entry_price_model_v2',
+      anchorSource: 'daily_proxy_fallback',
+      poc: 98,
+      vah: null,
+      val: null,
+      discountLow: 96,
+      discountHigh: 100,
+      equilibrium: 100,
+      premiumLow: 100,
+      premiumHigh: 104,
+      orderBlockLow: null,
+      orderBlockHigh: null,
+      fvgLow: null,
+      fvgHigh: null,
+      retestStatus: 'none',
+      entryLow: 98,
+      entryHigh: 100,
+      preferredEntry: 100,
+      chaseCeiling: 104,
+      stopAnchor: 95.5,
+      l5Support: { quoteAgeMs: null, spreadPct: null, depthOk: true, imbalance: 0.1 },
+      confidence: 0.45,
+      fallbackReason: 'ohlcv_trade_plan_proxy',
+    },
+  }))
+  assert(decision.action === 'DEFER', 'opening fast path must not override the v2 chase ceiling')
+  assert(decision.reason === 'price_above_chase_ceiling', 'over-ceiling early quote should stay deferred')
 }
 
 {

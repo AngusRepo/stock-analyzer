@@ -4,6 +4,15 @@ import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 export const STRATEGY_SPEC_VERSION = 'strategy-spec-v1'
 
 export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'
+export type StrategyFamilyId =
+  | 'VOLATILITY_CONTRACTION_BREAKOUT'
+  | 'TREND_RECLAIM_CONTINUATION'
+  | 'SMART_MONEY_ACCUMULATION'
+  | 'SMC_STRUCTURE_RECLAIM'
+  | 'REVENUE_QUALITY_MOMENTUM'
+  | 'SECTOR_ROTATION_CORE'
+export type StrategyOwnerType = 'strategy' | 'feature' | 'observe' | 'retired'
+export type StrategyPromotionStatus = 'production' | 'candidate' | 'research' | 'retired'
 
 export interface StrategyCandidateInput {
   symbol: string
@@ -97,6 +106,10 @@ export interface StrategySpec {
   name: string
   status: StrategySpecStatus
   owner: 'strategy'
+  familyId?: StrategyFamilyId
+  variantId?: string
+  ownerType?: StrategyOwnerType
+  promotionStatus?: StrategyPromotionStatus
   alphaBucket: AlphaFrameworkBucket
   supportedRegimes: AlphaFrameworkRegime[]
   thesis: string
@@ -153,6 +166,18 @@ const FORBIDDEN_SPEC_KEYS = [
   'promote',
 ]
 
+const STRATEGY_FAMILY_IDS = new Set<StrategyFamilyId>([
+  'VOLATILITY_CONTRACTION_BREAKOUT',
+  'TREND_RECLAIM_CONTINUATION',
+  'SMART_MONEY_ACCUMULATION',
+  'SMC_STRUCTURE_RECLAIM',
+  'REVENUE_QUALITY_MOMENTUM',
+  'SECTOR_ROTATION_CORE',
+])
+
+const STRATEGY_OWNER_TYPES = new Set<StrategyOwnerType>(['strategy', 'feature', 'observe', 'retired'])
+const STRATEGY_PROMOTION_STATUSES = new Set<StrategyPromotionStatus>(['production', 'candidate', 'research', 'retired'])
+
 function finiteNumber(value: unknown): number | null {
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n : null
@@ -176,6 +201,64 @@ function parseRecord(value: unknown): Record<string, unknown> | null {
 
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+export function inferStrategyFamilyId(spec: Pick<StrategySpec, 'id' | 'alphaBucket'>): StrategyFamilyId {
+  const id = cleanText(spec.id).toLowerCase()
+  const tokens = new Set(id.split(/[^a-z0-9]+/).filter(Boolean))
+  const hasToken = (...items: string[]) => items.some((item) => tokens.has(item))
+  if (hasToken('sector', 'rotation', 'industry')) return 'SECTOR_ROTATION_CORE'
+  if (hasToken('revenue', 'quality', 'value', 'fundamental')) {
+    return 'REVENUE_QUALITY_MOMENTUM'
+  }
+  if (hasToken('broker', 'chip', 'accumulation', 'defensive')) {
+    return 'SMART_MONEY_ACCUMULATION'
+  }
+  if (hasToken('smc', 'liquidity', 'choch', 'bos', 'sweep')) {
+    return 'SMC_STRUCTURE_RECLAIM'
+  }
+  if (hasToken('breakout', 'squeeze', 'vcp', 'volume')) {
+    return 'VOLATILITY_CONTRACTION_BREAKOUT'
+  }
+  if (hasToken('trend', 'reclaim', 'rsi', 'macd')) {
+    return 'TREND_RECLAIM_CONTINUATION'
+  }
+  if (spec.alphaBucket === 'breakout_vol_expansion') return 'VOLATILITY_CONTRACTION_BREAKOUT'
+  if (spec.alphaBucket === 'defensive_accumulation') return 'SMART_MONEY_ACCUMULATION'
+  if (spec.alphaBucket === 'trend_following') return 'TREND_RECLAIM_CONTINUATION'
+  return 'REVENUE_QUALITY_MOMENTUM'
+}
+
+export function inferStrategyOwnerType(spec: Pick<StrategySpec, 'id' | 'status'>): StrategyOwnerType {
+  if (spec.status === 'retired') return 'retired'
+  const id = cleanText(spec.id)
+  if (id === 'finlab_ai_skill_discovery_v1') return 'observe'
+  if (
+    id === 'finlab_ai_skill_volume_breakout_v1' ||
+    id === 'finlab_ai_skill_rsi_volume_reclaim_v1'
+  ) {
+    return 'feature'
+  }
+  if (spec.status === 'research' || spec.status === 'shadow') return 'observe'
+  return 'strategy'
+}
+
+export function inferStrategyPromotionStatus(spec: Pick<StrategySpec, 'status'>): StrategyPromotionStatus {
+  if (spec.status === 'active') return 'production'
+  if (spec.status === 'candidate' || spec.status === 'shadow') return 'candidate'
+  if (spec.status === 'retired') return 'retired'
+  return 'research'
+}
+
+export function normalizeStrategySpecGovernance(spec: StrategySpec): StrategySpec {
+  const familyId = spec.familyId ?? inferStrategyFamilyId(spec)
+  return {
+    ...spec,
+    familyId,
+    variantId: cleanText(spec.variantId) || spec.id,
+    ownerType: spec.ownerType ?? inferStrategyOwnerType(spec),
+    promotionStatus: spec.promotionStatus ?? inferStrategyPromotionStatus(spec),
+  }
 }
 
 function numberMap(value: unknown): Record<string, number | null> {
@@ -210,6 +293,9 @@ export function validateStrategySpec(spec: StrategySpec): StrategySpecValidation
   if (!cleanText(spec.thesis)) errors.push('thesis_missing')
   if (!spec.supportedRegimes?.length) errors.push('supported_regimes_missing')
   if (!spec.alphaBucket) errors.push('alpha_bucket_missing')
+  if (spec.familyId != null && !STRATEGY_FAMILY_IDS.has(spec.familyId)) errors.push('family_id_invalid')
+  if (spec.ownerType != null && !STRATEGY_OWNER_TYPES.has(spec.ownerType)) errors.push('owner_type_invalid')
+  if (spec.promotionStatus != null && !STRATEGY_PROMOTION_STATUSES.has(spec.promotionStatus)) errors.push('promotion_status_invalid')
   for (const keyPath of walkKeys(spec)) {
     const leaf = keyPath.split('.').pop() ?? keyPath
     if (FORBIDDEN_SPEC_KEYS.includes(leaf)) errors.push(`forbidden_key:${keyPath}`)
@@ -434,7 +520,7 @@ export function assessCandidateAgainstStrategySpecs(
   return { matches, tags, watchPoints }
 }
 
-export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
+const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
   {
     id: 'trend_following_seed_v1',
     version: STRATEGY_SPEC_VERSION,
@@ -752,3 +838,5 @@ export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = [
     createdBy: 'p5_strategy_governance',
   },
 ]
+
+export const DEFAULT_STRATEGY_SPECS: StrategySpec[] = DEFAULT_STRATEGY_SPEC_DRAFTS.map(normalizeStrategySpecGovernance)

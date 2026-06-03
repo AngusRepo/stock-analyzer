@@ -220,8 +220,9 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 
   assert(!oldTopScoreSymbols.has('8999'), 'test fixture must keep niche candidate outside old score-top pool')
   assert(plan.breadthPool.some((candidate) => candidate.symbol === '8999'), 'L1 breadth pool should include raw-signal priced strategy fit outside old score-top pool')
-  assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up', 'L1 selection order must be strategy quota before raw-signal top-up')
-  assert(plan.coarseQueue.length <= 8, 'Layer2 coarse queue should be sliced from the L1 breadth pool')
+  assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe', 'L1 selection order must keep raw-signal top-up in observe-only evidence')
+  assert(plan.coarseQueue.length <= 8, 'Layer2 coarse queue should be sliced from formal strategy hits only')
+  assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_fallback_source !== 'raw_signal_top_up'), 'raw-signal top-up must not enter formal L2 coarse queue')
 }
 
 {
@@ -513,8 +514,10 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     coarseMlQueueSize: 2,
     regime: 'bull',
   })
-  const topUp = plan.breadthPool.find((candidate: any) => candidate.strategy_pool_reason === 'raw_signal_top_up_after_strategy_quota') as any
-  assert(topUp, 'empty strategy pools should still top up Layer1 from raw signals')
+  const topUp = plan.breadthPool.find((candidate: any) => candidate.strategy_pool_reason === 'raw_signal_top_up_observe_after_strategy_quota') as any
+  assert(topUp, 'empty strategy pools should still expose raw signals as Layer1 observe evidence')
   assert((topUp.strategy_pool_ids ?? []).length === 0, 'raw signal top-up must not masquerade as a registered production strategy id')
   assert(topUp.strategy_pool_fallback_source === 'raw_signal_top_up', 'raw signal top-up source should be explicit outside strategy ids')
+  assert(topUp.strategy_pool_decision === 'research_only_queue', 'raw signal top-up must not enter formal production ML queue')
+  assert(plan.coarseQueue.length === 0, 'empty strategy pools must not fill formal L2 queue with raw-signal observe candidates')
 }

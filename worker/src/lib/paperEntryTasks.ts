@@ -25,8 +25,11 @@ import { evaluatePreTradeExecution, type PreTradeMomentumContext } from './preTr
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
 import {
   buildFinLabL5MarketDataDetail,
+  evaluateL5OrderBookPersistence,
   fetchFinLabL5MarketDataSnapshot,
+  normalizeFinLabL5Quote,
   quoteQualityFromL5,
+  type FinLabL5Quote,
 } from './finlabL5MarketData'
 import { fetchFinLabExecutionPreview } from './finlabExecutionPreviewClient'
 import { buildStockVisionOrderIntent } from './stockvisionOrderIntent'
@@ -66,7 +69,10 @@ import {
   batchLoadOhlcvTradePlanLevelsBySymbol,
   formatOhlcvTradePlanWatchPoint,
   resolveOhlcvEntryPlan,
+  type OhlcvRow,
 } from './ohlcvTradePlanLevels'
+import { buildEntryPriceModelV2FromOhlcvPlan, buildVolumeProfileV2 } from './entryPriceModelV2'
+import { buildPriceActionStructure } from './priceActionStructure'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
@@ -77,9 +83,21 @@ function truthyFlag(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
+function enabledFlag(value: unknown, fallback = false): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) return fallback
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  return fallback
+}
+
 function optionalPositiveNumber(value: unknown, fallback: number): number {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+function minutesSinceTwMarketOpen(hour: number, minute: number): number {
+  return hour * 60 + minute - 9 * 60
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -218,6 +236,62 @@ interface IntradaySnapshotSample {
   totalVolume: number
 }
 
+function parseFinLabL5EventQuote(symbol: string, row: { created_at?: string | null; detail_json?: string | null }): FinLabL5Quote | null {
+  try {
+    const detail = row.detail_json ? JSON.parse(row.detail_json) : null
+    if (!detail || typeof detail !== 'object') return null
+    return normalizeFinLabL5Quote(symbol, {
+      provider: detail.provider,
+      price: detail.last_price,
+      best_bid: detail.best_bid,
+      best_ask: detail.best_ask,
+      bid_prices: detail.bid_prices,
+      ask_prices: detail.ask_prices,
+      bid_volumes: detail.bid_volumes,
+      ask_volumes: detail.ask_volumes,
+      source_time: detail.source_time,
+      received_at: detail.received_at ?? row.created_at,
+      status: detail.status,
+    }, row.created_at ? new Date(row.created_at) : new Date())
+  } catch {
+    return null
+  }
+}
+
+async function loadRecentFinLabL5QuoteHistory(
+  env: Pick<Bindings, 'DB'>,
+  tradeDate: string,
+  symbol: string,
+  currentQuote: FinLabL5Quote | null,
+  limit = 5,
+): Promise<FinLabL5Quote[]> {
+  const cleanSymbol = String(symbol ?? '').trim()
+  if (!cleanSymbol) return currentQuote ? [currentQuote] : []
+  try {
+    const previousLimit = Math.max(0, Math.min(20, Math.floor(limit)) - (currentQuote ? 1 : 0))
+    const previousQuotes: FinLabL5Quote[] = []
+    if (previousLimit > 0) {
+      const { results } = await env.DB.prepare(`
+        SELECT detail_json, created_at
+          FROM paper_execution_events
+         WHERE trade_date = ?
+           AND symbol = ?
+           AND side = 'buy'
+           AND event_type = 'finlab_l5_market_data'
+         ORDER BY created_at DESC
+         LIMIT ?
+      `).bind(tradeDate, cleanSymbol, previousLimit).all<{ detail_json?: string | null; created_at?: string | null }>()
+      for (const row of [...(results ?? [])].reverse()) {
+        const quote = parseFinLabL5EventQuote(cleanSymbol, row)
+        if (quote) previousQuotes.push(quote)
+      }
+    }
+    return currentQuote ? [...previousQuotes, currentQuote] : previousQuotes
+  } catch {
+    return currentQuote ? [currentQuote] : []
+  }
+}
+
 function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
   const startMs = parseEventTimeMs(row.created_at)
   if (startMs == null) return null
@@ -274,6 +348,31 @@ function samplesToRollingBars(samples: IntradaySnapshotSample[], intervalMs: num
     previousTotalVolume = Math.max(previousTotalVolume ?? 0, bucket.lastTotalVolume)
   }
   return bars
+}
+
+function formatIntradayBarTime(startMs: number): string {
+  const d = new Date(startMs + 8 * 3600_000)
+  return `${String(d.getUTCHours()).padStart(2, '0')}${String(d.getUTCMinutes()).padStart(2, '0')}${String(d.getUTCSeconds()).padStart(2, '0')}`
+}
+
+function rollingBarsToOhlcvRows(tradeDate: string, bars: IntradayRollingBar[]): OhlcvRow[] {
+  return bars
+    .filter((bar) => (
+      Number.isFinite(bar.open) &&
+      Number.isFinite(bar.high) &&
+      Number.isFinite(bar.low) &&
+      Number.isFinite(bar.close) &&
+      bar.high >= bar.low
+    ))
+    .map((bar) => ({
+      date: tradeDate,
+      time: formatIntradayBarTime(bar.startMs),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: Math.max(0, Number(bar.volume ?? 0)),
+    }))
 }
 
 async function loadIntradayTechnicalRollingBars(
@@ -409,6 +508,7 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
 export async function runIntradayCheck(env: Bindings): Promise<void> {
   const cfg = await getTradingConfig(env.KV)
   const { hour: twHour, minute: twMin } = getTwClockParts()
+  const minutesSinceOpen = minutesSinceTwMarketOpen(twHour, twMin)
   const isMarketOpen = isTwIntradayTradingMinute()
 
   if (!isMarketOpen) return
@@ -1027,6 +1127,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue
     }
     const ohlcvTradePlan = resolveOhlcvEntryPlan(ohlcvLevelsBySymbol.get(pending.symbol), { latestPrice: price })
+    let entryModelV2 = ohlcvTradePlan
+      ? buildEntryPriceModelV2FromOhlcvPlan(ohlcvTradePlan)
+      : null
     let executionEntryPrice = pending.ml_entry_price
     let executionStopLoss = pending.ml_stop_loss
     if (ohlcvTradePlan) {
@@ -1052,6 +1155,39 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           price,
           currentTotalVolume,
         )
+        if (ohlcvTradePlan) {
+          const intradayRows = rollingBarsToOhlcvRows(today, rollingBars)
+          const intradayProfile = buildVolumeProfileV2(intradayRows, {
+            binCount: Math.max(12, Math.min(48, intradayRows.length * 4)),
+            valueAreaPct: 0.7,
+          })
+          if (intradayProfile.poc != null && intradayProfile.vah != null && intradayProfile.val != null) {
+            entryModelV2 = buildEntryPriceModelV2FromOhlcvPlan(ohlcvTradePlan, {
+              anchorSource: 'intraday_volume_profile',
+              profile: intradayProfile,
+              priceActionStructure: buildPriceActionStructure(intradayRows, { latestPrice: price }),
+            })
+            recordExecutionNote(
+              pending.symbol,
+              'entry_model_v2_intraday_profile',
+              'intraday_volume_profile_active',
+              [
+                `poc=${intradayProfile.poc}`,
+                `vah=${intradayProfile.vah}`,
+                `val=${intradayProfile.val}`,
+                `value_area=${intradayProfile.valueAreaVolumePct}`,
+                `bars=${intradayRows.length}`,
+              ].join(';'),
+            )
+          } else {
+            recordExecutionNote(
+              pending.symbol,
+              'entry_model_v2_daily_proxy_fallback',
+              'intraday_volume_profile_unavailable',
+              `bars=${intradayRows.length}`,
+            )
+          }
+        }
         intradayTechnicalSnapshot = buildIntradayTechnicalSnapshot({
           symbol: pending.symbol,
           previousClose: previousCloseForSnapshot,
@@ -1109,6 +1245,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       })
       : null
     const finLabL5MarketDataEnabled = truthyFlag(env.FINLAB_L5_MARKET_DATA_ENABLED)
+    const finLabL5Persistence = finLabL5MarketDataEnabled
+      ? evaluateL5OrderBookPersistence(
+        await loadRecentFinLabL5QuoteHistory(env, today, pending.symbol, finLabL5Quote, 5),
+      )
+      : null
     if (finLabL5MarketDataEnabled) {
       await recordPaperExecutionEvent(env, {
         tradeDate: today,
@@ -1125,12 +1266,21 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           controller_live_submit_enabled: finLabL5MarketDataSnapshot.liveSubmitEnabled,
           controller_can_submit_real_order: finLabL5MarketDataSnapshot.canSubmitRealOrder,
           quality: finLabL5Quality,
+          persistence: finLabL5Persistence,
           production_grade_market_data: finLabL5MarketDataEnabled,
           live_submit_enabled: false,
         },
         pendingRunId,
         source: 'finlab_sinopac_l5_market_data',
       })
+      if (finLabL5Persistence) {
+        recordExecutionNote(
+          pending.symbol,
+          `l5_persistence_${finLabL5Persistence.status}`,
+          finLabL5Persistence.reasons.join(',') || 'l5_persistence_neutral',
+          JSON.stringify(finLabL5Persistence.metrics),
+        )
+      }
     }
     const baseMomentum = await loadPreTradeMomentum(env, cfg, pending.symbol, price)
     const adaptivePolicy = resolveAdaptiveExecutionPolicy({
@@ -1204,6 +1354,27 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       )
       continue
     }
+    const openingFastPath = {
+      enabled: enabledFlag(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_ENABLED, true),
+      minutesSinceOpen,
+      maxMinutes: optionalPositiveNumber(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_MAX_MINUTES, 10),
+      allowTrendUnavailable: enabledFlag(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_ALLOW_TREND_UNAVAILABLE, true),
+      maxPremiumPct: optionalPositiveNumber(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_MAX_PREMIUM_PCT, 0.012),
+      l5Status: finLabL5Quality?.status ?? null,
+    }
+    if (openingFastPath.enabled && minutesSinceOpen >= 0 && minutesSinceOpen <= openingFastPath.maxMinutes) {
+      recordExecutionNote(
+        pending.symbol,
+        'opening_fast_path_context',
+        'entry_model_v2_opening_fast_path',
+        [
+          `minutes_since_open=${minutesSinceOpen}`,
+          `max_minutes=${openingFastPath.maxMinutes}`,
+          `max_premium=${openingFastPath.maxPremiumPct}`,
+          `l5=${openingFastPath.l5Status ?? 'na'}`,
+        ].join(';'),
+      )
+    }
     const preTrade = evaluatePreTradeExecution({
       symbol: pending.symbol,
       currentPrice: price,
@@ -1223,6 +1394,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         strongBreakoutVolumeRatio: adaptivePolicy.momentum.strongBreakoutVolumeRatio,
         strongBreakoutRangePosition: adaptivePolicy.momentum.strongBreakoutRangePosition,
       },
+      entryModelV2,
+      openingFastPath,
       tradePlan: effectiveOhlcvTradePlan
         ? {
           source: effectiveOhlcvTradePlan.source,

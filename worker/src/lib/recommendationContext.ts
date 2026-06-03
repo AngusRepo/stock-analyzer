@@ -368,6 +368,29 @@ export function buildMarketStructureWatchPoint(alphaContext: any): string | null
   const optimisticHighText = formatPrice(optimisticHigh ?? high)
   const optimisticLowText = formatPrice(optimisticLow ?? high)
   const plan: string[] = []
+  if (latestText) plan.push(`現價 ${latestText}`)
+  if (fairLowText && fairHighText) plan.push(`日線價值代理區 ${fairLowText}~${fairHighText}`)
+  if (optimisticLowText && optimisticHighText && optimisticLowText !== optimisticHighText) {
+    plan.push(`追價上限區 ${optimisticLowText}~${optimisticHighText}`)
+  } else if (optimisticHighText) {
+    plan.push(`追價上限 ${optimisticHighText}`)
+  }
+  if (location === 'above_fair_value') {
+    plan.push('現價高於日線代理區')
+  } else if (location === 'below_fair_value') {
+    plan.push('現價低於日線代理區')
+  } else if (location === 'in_fair_value') {
+    plan.push('現價位於日線代理區')
+  }
+  const v2Upside = Number(upsideToOptimisticHighPct)
+  if (Number.isFinite(v2Upside) && optimisticHighText) {
+    const pct = Math.abs(v2Upside * 100).toFixed(1).replace(/\.0$/, '')
+    plan.push(v2Upside < 0 ? `已高於追價上限 ${pct}%` : `距追價上限 ${pct}%`)
+  }
+  if (optimisticStatus === 'exceeded') plan.push('超過追價上限，需等待回落或強突破確認')
+  if (windowStart && windowEnd) plan.push(`回看區間 ${windowStart}~${windowEnd}`)
+  plan.push('POC/fair value 為日線 OHLCV proxy，非逐價成交量')
+  return plan.length ? `Alpha 價格結構: ${plan.join('；')}` : null
 
   if (latestText) plan.push(`現價 ${latestText}`)
   if (fairLowText && fairHighText) {

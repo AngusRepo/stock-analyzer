@@ -249,9 +249,9 @@ const LIQUIDITY_TEXT: Record<string, string> = {
 }
 
 const LOCATION_TEXT: Record<string, string> = {
-  below_fair_value: '低於公平價區：看起來偏便宜，但要確認不是弱勢破位。',
-  in_fair_value: '位於公平價區：價格相對合理，不算明顯追高或折價。',
-  above_fair_value: '高於公平價區：偏追高，若同時高波動或量薄就要特別小心。',
+  below_fair_value: '低於日線價值代理區：可能偏折價，但要確認不是弱勢破位。',
+  in_fair_value: '位於日線價值代理區：價格在日線 proxy 附近，不代表真實公平價。',
+  above_fair_value: '高於日線價值代理區：偏追高，若同時高波動或量薄就要特別小心。',
   unknown: '公平價位置不足：資料不夠完整，不能過度解讀。',
 }
 
@@ -1409,7 +1409,7 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan:
     { label: '現價', value: zones.latest ?? '-', note: '', tone: 'neutral' },
     { label: '模型限價', value: modelEntry ?? '-', note: '', tone: 'neutral' },
     { label: '買入參考區', value: zones.buyReferenceZone, note: '', tone: 'good' },
-    { label: '樂觀價格區間', value: zones.optimisticPriceRange, note: '', tone: 'warn' },
+    { label: '可追價上限區', value: zones.chaseCeilingZone, note: '', tone: 'warn' },
     { label: '突破追價區', value: zones.breakoutChaseZone, note: '', tone: 'good' },
     { label: '前高壓力', value: zones.resistance ?? '-', note: '', tone: 'warn' },
     { label: '轉強確認', value: zones.confirmation ?? '-', note: '', tone: 'good' },
@@ -1597,7 +1597,7 @@ function normalizeWatchPoint(point: string): string {
     const optimisticHelp = optimisticExceeded
       ? '內部上緣已低於現價，前台視為追高風險。'
       : '內部量價估計只作 Alpha 輔助，不當成交易線位。'
-    return `Market structure：Alpha 內部估值 proxy=${support}~${confirmation}；內部順風區=${confirmation}~${resistance}；內部量能節點=${volumeNode}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：${optimisticHelp} 實際買入參考區與樂觀價格區間以 OHLCV 動態線位為準。`
+    return `Market structure：Alpha 日線價值代理=${support}~${confirmation}；內部可追價上限=${confirmation}~${resistance}；日線量能代理節點=${volumeNode}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：${optimisticHelp} 實際買入參考區與可追價上限以 OHLCV 動態線位為準。`
   }
   if (point.startsWith('ohlcv_trade_plan:')) {
     const mode = extractTokenValue(point, 'mode') ?? '-'
@@ -1609,7 +1609,7 @@ function normalizeWatchPoint(point: string): string {
     const support = extractTokenValue(point, 'support') ?? '-'
     const atrDefense = extractTokenValue(point, 'atr_defense') ?? '-'
     const volumeNode = extractTokenValue(point, 'volume_node') ?? '-'
-    return `OHLCV 交易線位：模式=${mode}；預計入場=${entry}；買入參考區=${buyReference}；樂觀價格區間=${optimisticRange}；轉強確認=${confirmation}；前高壓力=${resistance}；關鍵支撐=${support}；ATR 防守=${atrDefense}；量能節點=${volumeNode}。`
+    return `OHLCV 交易線位：模式=${mode}；預計入場=${entry}；買入參考區=${buyReference}；可追價上限區=${optimisticRange}；轉強確認=${confirmation}；前高壓力=${resistance}；關鍵支撐=${support}；ATR 防守=${atrDefense}；量能節點=${volumeNode}。`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'

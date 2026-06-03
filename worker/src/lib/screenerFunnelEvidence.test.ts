@@ -23,7 +23,7 @@ function assert(condition: unknown, message: string): void {
       reason_code: 'selected_by_strategy_pool',
       rank: 18,
       score_after: 72,
-      evidence: JSON.stringify({ strategy_ids: ['trend_breakout'], selection_order: 'full_feature_enriched_universe_strategy_quota_then_raw_signal_top_up' }),
+      evidence: JSON.stringify({ strategy_ids: ['trend_breakout'], selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe' }),
     },
     {
       symbol: '2330',

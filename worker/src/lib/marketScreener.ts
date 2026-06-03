@@ -1781,16 +1781,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode}`,
     )
     layer1BreadthPool.forEach((candidate, index) => {
+      const isObserveTopUp = String((candidate as any).strategy_pool_fallback_source ?? '') === 'raw_signal_top_up'
       pushFunnelItem(funnelItems, {
         symbol: candidate.symbol,
         name: candidate.name,
         stage: 'layer1_strategy_breadth_gate',
-        decision: 'pass',
+        decision: isObserveTopUp ? 'observe' : 'pass',
         reasonCode: String((candidate as any).strategy_pool_reason ?? 'strategy_breadth_seed'),
         scoreAfter: candidate.score,
         rank: index + 1,
         evidence: {
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
+          strategy_family_ids: (candidate as any).strategy_family_ids ?? [],
+          strategy_variant_ids: (candidate as any).strategy_variant_ids ?? [],
+          strategy_owner_types: (candidate as any).strategy_owner_types ?? [],
           research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
           strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
           strategy_pool_score: (candidate as any).strategy_pool_score ?? null,
@@ -1806,6 +1810,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           source_universe_count: strategySourceUniverse.length,
           selection_order: layer1BreadthPlan.telemetry.selection_order,
           layer_contract: 'L1 keeps breadth; RRG/news/PTT/heavy ML are not selection owners here',
+          formal_l2_queue: !isObserveTopUp,
         },
       })
     })
@@ -1820,6 +1825,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: index + 1,
         evidence: {
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
+          strategy_family_ids: (candidate as any).strategy_family_ids ?? [],
+          strategy_variant_ids: (candidate as any).strategy_variant_ids ?? [],
+          strategy_owner_types: (candidate as any).strategy_owner_types ?? [],
           research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
           strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
           strategy_pool_reason: (candidate as any).strategy_pool_reason ?? null,
@@ -1842,6 +1850,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: entry.strategy_pool_rank ?? null,
         evidence: {
           strategy_ids: entry.strategy_pool_ids ?? [],
+          strategy_family_ids: entry.strategy_family_ids ?? [],
+          strategy_variant_ids: entry.strategy_variant_ids ?? [],
+          strategy_owner_types: entry.strategy_owner_types ?? [],
           research_strategy_ids: entry.research_strategy_ids ?? [],
           strategy_pool_fallback_source: entry.strategy_pool_fallback_source ?? null,
           strategy_pool_score: entry.strategy_pool_score ?? null,
@@ -1864,6 +1875,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: entry.strategy_pool_rank ?? null,
         evidence: {
           strategy_ids: entry.strategy_pool_ids ?? [],
+          strategy_family_ids: entry.strategy_family_ids ?? [],
+          strategy_variant_ids: entry.strategy_variant_ids ?? [],
+          strategy_owner_types: entry.strategy_owner_types ?? [],
           research_strategy_ids: entry.research_strategy_ids ?? [],
           strategy_pool_fallback_source: entry.strategy_pool_fallback_source ?? null,
           strategy_pool_score: entry.strategy_pool_score ?? null,
@@ -2528,6 +2542,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const layer1Queue = layer1BreadthPool
       .filter((candidate) => {
         const symbol = String(candidate.symbol || '').trim()
+        const isFormalStrategyHit =
+          String((candidate as any).strategy_pool_decision ?? '') === 'ml_queue' &&
+          String((candidate as any).strategy_pool_fallback_source ?? '') !== 'raw_signal_top_up' &&
+          ((candidate as any).strategy_pool_ids ?? []).length > 0
+        if (!isFormalStrategyHit) return false
         return updatedBySymbol.has(symbol) && diversityEligibleSymbols.has(symbol)
       })
       .slice(0, layer1TargetSize)
@@ -2541,6 +2560,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategy_pool_reason: entry.strategy_pool_reason,
         strategy_pool_rank: entry.strategy_pool_rank,
         strategy_pool_ids: entry.strategy_pool_ids,
+        strategy_family_ids: entry.strategy_family_ids,
+        strategy_variant_ids: entry.strategy_variant_ids,
+        strategy_owner_types: entry.strategy_owner_types,
         research_strategy_ids: entry.research_strategy_ids,
         strategy_pool_fallback_source: entry.strategy_pool_fallback_source,
         strategy_pool_score: entry.strategy_pool_score,
@@ -2560,21 +2582,41 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       .slice(0, Math.max(0, layer1TargetSize - selectedCandidates.length))
       .map((candidate, index) => ({
         ...candidate,
-        strategy_pool_decision: 'ml_queue',
-        strategy_pool_reason: 'layer1_breadth_after_overlay_top_up',
+        strategy_pool_decision: 'research_only_queue',
+        strategy_pool_reason: 'layer1_breadth_after_overlay_top_up_observe',
         strategy_pool_rank: selectedCandidates.length + index + 1,
         strategy_pool_ids: (candidate as any).strategy_pool_ids ?? [],
+        strategy_family_ids: (candidate as any).strategy_family_ids ?? [],
+        strategy_variant_ids: (candidate as any).strategy_variant_ids ?? [],
+        strategy_owner_types: ['observe'],
         research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
         strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? 'layer1_breadth',
         strategy_watch_points: [
           ...((candidate as any).strategy_watch_points ?? []),
-          'strategy_pool:layer1_breadth_after_overlay_top_up',
+          'strategy_pool:layer1_breadth_after_overlay_top_up_observe',
+          'strategy_pool:not_formal_l2_queue',
         ],
       }))
+    topUpCandidates.slice(0, D1_IN_CHUNK_SIZE).forEach((candidate, index) => {
+      pushFunnelItem(funnelItems, {
+        symbol: candidate.symbol,
+        name: candidate.name,
+        stage: 'layer1_raw_signal_observe',
+        decision: 'observe',
+        reasonCode: String((candidate as any).strategy_pool_reason ?? 'raw_signal_observe'),
+        scoreAfter: Number((candidate as any).score ?? 0),
+        rank: index + 1,
+        evidence: {
+          strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
+          strategy_pool_decision: (candidate as any).strategy_pool_decision ?? null,
+          formal_l2_queue: false,
+          source_universe: 'post_diversity_universe',
+        },
+      })
+    })
     finalCandidates = dedupeScreenerCandidatesBySymbol(
       annotateCandidatesWithStrategySpecs([
         ...(selectedCandidates as any[]),
-        ...(topUpCandidates as any[]),
       ] as ScreenerCandidate[]),
     )
     strategySelectionTelemetry = {
@@ -2582,13 +2624,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       post_diversity_universe_count: afterIndustryLimit.length,
       layer1_breadth_count: layer1BreadthPool.length,
       coarse_queue_count: layer2CoarseQueueSeed.length,
-      top_up_count: topUpCandidates.length,
+      top_up_count: 0,
+      raw_signal_observe_count: topUpCandidates.length,
       selected_after_overlay_count: selectedCandidates.length,
-      l1_seed_count: selectedCandidates.length + topUpCandidates.length,
+      l1_seed_count: selectedCandidates.length,
       core_ml_shortlist_size: maxCandidates,
     }
     debugLog.push(
-      `[Step 5] layer1 breadth seed applied: selected=${selectedCandidates.length}+topup=${topUpCandidates.length}/${layer1TargetSize} ` +
+      `[Step 5] layer1 breadth seed applied: selected=${selectedCandidates.length}+observe_topup=${topUpCandidates.length}/${layer1TargetSize} ` +
       `controller_l2_target=${coarseQueueSize} core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
     )
   } else {
@@ -2757,6 +2800,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       freq20d: flag?.freq20d ?? 0,
       strategy_tags: sc.strategy_tags ?? [],
       strategy_pool_ids: sc.strategy_pool_ids ?? [],
+      strategy_family_ids: sc.strategy_family_ids ?? [],
+      strategy_variant_ids: sc.strategy_variant_ids ?? [],
+      strategy_owner_types: sc.strategy_owner_types ?? [],
       research_strategy_ids: sc.research_strategy_ids ?? [],
       strategy_pool_fallback_source: sc.strategy_pool_fallback_source ?? null,
       strategy_pool_score: sc.strategy_pool_score ?? null,
@@ -2780,6 +2826,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         coarse_ml_queue_size: coarseQueueSize,
         core_ml_shortlist_size: maxCandidates,
         strategy_pool_ids: sc.strategy_pool_ids ?? [],
+        strategy_family_ids: sc.strategy_family_ids ?? [],
+        strategy_variant_ids: sc.strategy_variant_ids ?? [],
+        strategy_owner_types: sc.strategy_owner_types ?? [],
         strategy_pool_score: sc.strategy_pool_score ?? null,
         strategy_pool_reason: sc.strategy_pool_reason ?? null,
       },

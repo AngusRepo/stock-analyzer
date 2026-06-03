@@ -21,6 +21,10 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     assert(validation.ok, `${spec.id} should be valid: ${validation.errors.join(',')}`)
     assert(spec.candidatePolicy?.poolQuota != null, `${spec.id} should define strategy-first pool quota`)
     assert((spec.candidatePolicy?.evidenceRequirements ?? []).length > 0, `${spec.id} should define evidence requirements`)
+    assert(spec.familyId != null, `${spec.id} should declare a strategy family`)
+    assert(spec.variantId != null, `${spec.id} should declare a strategy variant`)
+    assert(spec.ownerType != null, `${spec.id} should declare ownerType`)
+    assert(spec.promotionStatus != null, `${spec.id} should declare promotionStatus`)
   }
 }
 
@@ -74,9 +78,14 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 {
   const activeFinLabSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.id.startsWith('finlab_ai_skill_') && spec.status === 'active')
   assert(activeFinLabSpecs.length >= 8, 'FinLab AI Skill production specs should widen L1 diversity beyond the first seeded batch')
+  const activeProductionOwnerSpecs = activeFinLabSpecs.filter((spec) => spec.ownerType === 'strategy')
+  const activeFeatureSpecs = activeFinLabSpecs.filter((spec) => spec.ownerType === 'feature')
+  assert(activeProductionOwnerSpecs.length >= 6, 'FinLab AI Skill production owner specs should stay curated after feature-level duplicate convergence')
+  assert(activeFeatureSpecs.some((spec) => spec.id === 'finlab_ai_skill_volume_breakout_v1'), 'duplicate volume breakout should be retained as a feature, not a production owner')
+  assert(activeFeatureSpecs.some((spec) => spec.id === 'finlab_ai_skill_rsi_volume_reclaim_v1'), 'duplicate RSI reclaim should be retained as a feature, not a production owner')
   assert(
-    activeFinLabSpecs.every((spec) => (spec.candidatePolicy?.maxMlShare ?? 1) > 0),
-    'active FinLab AI Skill specs must be eligible for the L2 coarse ML queue',
+    activeProductionOwnerSpecs.every((spec) => (spec.candidatePolicy?.maxMlShare ?? 1) > 0),
+    'active FinLab AI Skill production-owner specs must be eligible for the L2 coarse ML queue',
   )
   assert(
     activeFinLabSpecs.every((spec) => spec.thresholds.minSeedScore == null && spec.thresholds.minChipScore == null && spec.thresholds.minTechScore == null && spec.thresholds.minMomentumScore == null),

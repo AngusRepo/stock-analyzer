@@ -115,6 +115,17 @@ export function explainExecutionEvent(raw: string): string | null {
         '成交活躍度不足，先不追單。',
       ].filter(Boolean).join(' ')
     }
+    if (event.reason.startsWith('opening_fast_path_entry') || /opening fast path entry/i.test(combined)) {
+      const premium = event.reason.split(':')[1] ?? extractNumber(combined, /opening fast path entry[: ]+([0-9.]+%)/i)
+      const maxPremium = formatPct(detailMap.max_premium, 2, false)
+      return [
+        '開盤快路：opening_fast_path_entry，9:00-9:10 早盤 trend 尚未穩定時，用券商即時報價/L5 與可追價上限判斷。',
+        premium ? `本次追價 ${premium}` : null,
+        maxPremium ? `上限 ${maxPremium}` : null,
+        detailMap.l5 ? `L5=${detailMap.l5}` : null,
+        '仍受 chase ceiling、支撐破位、風險與成交量條件限制。',
+      ].filter(Boolean).join(' ')
+    }
     if (event.reason.startsWith('price_above_entry') || /price above entry/i.test(combined)) {
       const premium = formatPct(detailMap.premium, 2, false)
       const max = formatPct(detailMap.max, 2, false)
@@ -139,10 +150,10 @@ export function explainExecutionEvent(raw: string): string | null {
     }
     if (event.reason.startsWith('price_above_ohlcv_optimistic_range')) {
       return [
-        '盤中暫緩進場：price_above_ohlcv_optimistic_range（現價高於 OHLCV 樂觀價格區間）。',
+        '盤中暫緩進場：price_above_ohlcv_optimistic_range（現價高於 OHLCV 可追價上限）。',
         detailMap.current ? `現價 ${detailMap.current}` : null,
-        detailMap.optimistic_high ? `區間上緣 ${detailMap.optimistic_high}` : null,
-        '強勢股可以追，但不追到前高壓力上方失去風險報酬。',
+        detailMap.optimistic_high ? `可追價上限 ${detailMap.optimistic_high}` : null,
+        '等待回落、重新突破確認，或 L5 買盤持續支撐再評估。',
       ].filter(Boolean).join(' ')
     }
     if (event.reason.startsWith('ohlcv_support_lost')) {

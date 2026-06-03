@@ -22,6 +22,12 @@ assert(
   'intraday execution must evaluate L5 quote quality before formal execution promotion',
 )
 assert(
+  paperEntryTasks.includes('loadRecentFinLabL5QuoteHistory') &&
+    paperEntryTasks.includes('evaluateL5OrderBookPersistence') &&
+    paperEntryTasks.includes('persistence: finLabL5Persistence'),
+  'intraday execution must evaluate L5 persistence from recent same-symbol market-data events',
+)
+assert(
   paperEntryTasks.includes('resolveAdaptiveExecutionPolicy'),
   'intraday execution must resolve adaptive execution thresholds by strategy and market state',
 )

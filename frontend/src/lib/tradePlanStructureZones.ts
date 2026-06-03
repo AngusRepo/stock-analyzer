@@ -32,6 +32,7 @@ export type TradePlanStructureZones = {
   volumeNode: string | null
   buyReferenceZone: string
   optimisticPriceRange: string
+  chaseCeilingZone: string
   breakoutChaseZone: string
 }
 
@@ -88,6 +89,7 @@ export function buildTradePlanStructureZones(
   const buyReferenceLow = usesOhlcv ? (plan?.buyReferenceLow ?? supportValue) : supportValue
   const buyReferenceHigh = usesOhlcv ? (plan?.buyReferenceHigh ?? volumeNodeValue) : volumeNodeValue
 
+  const chaseCeilingZone = rangeText(optimisticLow, optimisticHigh)
   return {
     source,
     latest: priceText(latestValue),
@@ -97,7 +99,8 @@ export function buildTradePlanStructureZones(
     atrDefense: priceText(atrDefenseValue),
     volumeNode: priceText(volumeNodeValue),
     buyReferenceZone: rangeText(buyReferenceLow, buyReferenceHigh),
-    optimisticPriceRange: rangeText(optimisticLow, optimisticHigh),
+    optimisticPriceRange: chaseCeilingZone,
+    chaseCeilingZone,
     breakoutChaseZone: rangeText(confirmationValue, breakoutLimit),
   }
 }

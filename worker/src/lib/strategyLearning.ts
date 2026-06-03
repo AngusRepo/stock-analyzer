@@ -2,6 +2,7 @@ import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
+  normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
   type StrategySpec,
@@ -369,7 +370,7 @@ function shouldPreferDefaultSpecOverRegistry(row: StrategySpecRegistryRow, defau
 export function registryRowToStrategySpec(row: StrategySpecRegistryRow): StrategySpec {
   const defaultSpec = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === row.strategy_id)
   if (shouldPreferDefaultSpecOverRegistry(row, defaultSpec)) return { ...defaultSpec!, thresholds: { ...defaultSpec!.thresholds } }
-  return {
+  return normalizeStrategySpecGovernance({
     id: row.strategy_id,
     version: row.version,
     name: row.name,
@@ -382,7 +383,7 @@ export function registryRowToStrategySpec(row: StrategySpecRegistryRow): Strateg
     candidatePolicy: candidatePolicyForRegistryRow(row, defaultSpec),
     riskNotes: parseJson(row.risk_notes_json, []),
     createdBy: 'p5_strategy_governance',
-  }
+  })
 }
 
 export async function upsertStrategySpecRegistry(

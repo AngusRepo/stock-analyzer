@@ -6,6 +6,7 @@ export type ScoreBreakdownRow = {
   value: number
   max: number
   color: string
+  explanation?: string
 }
 
 export type ScoreBreakdownViewModel = {
@@ -37,11 +38,11 @@ const SCORE_V2_WEIGHTS = {
 } as const
 
 const SCORE_V2_TECHNICAL = [
-  ['trendStructure', '趨勢結構', 7, 'bg-violet-500'],
-  ['volatilityStructure', '波動結構', 5, 'bg-sky-500'],
-  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500'],
-  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500'],
-  ['executionRisk', '執行風險', 2, 'bg-rose-500'],
+  ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '趨勢結構目前缺少方向指標，不能只靠單日價格變動下結論。'],
+  ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '波動結構目前缺少穩定度指標，突破或回測要保守確認。'],
+  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500', '轉折極端目前缺少過熱/過冷指標，進場要等位置確認。'],
+  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '量能確認目前缺少成交量佐證，突破前要等量能放大。'],
+  ['executionRisk', '執行風險', 2, 'bg-rose-500', '執行風險目前缺少流動性佐證，實際下單要保守處理。'],
 ] as const
 
 function parseObject(raw: unknown): Record<string, any> | null {
@@ -128,6 +129,7 @@ function row(
   value: unknown,
   max: unknown,
   color: string,
+  explanation?: string,
 ): ScoreBreakdownRow {
   const maxValue = round1(Math.max(0, finiteNumber(max)))
   return {
@@ -136,6 +138,7 @@ function row(
     value: normalizeScoreToMax(value, maxValue),
     max: maxValue,
     color,
+    explanation,
   }
 }
 
@@ -151,7 +154,7 @@ function scoreV2TechnicalRows(payload: Record<string, any>): ScoreBreakdownRow[]
   const breakdown = parseObject(payload.technicalBreakdown) ?? {}
   return SCORE_V2_TECHNICAL
     .filter(([key]) => breakdown[key] != null)
-    .map(([key, label, max, color]) => row(key, label, breakdown[key], max, color))
+    .map(([key, label, max, color, explanation]) => row(key, label, breakdown[key], max, color, explanation))
 }
 
 function storageSource(rec: Record<string, any>, payload: Record<string, any> | null): Record<string, any> {
@@ -178,8 +181,8 @@ function storageTechnicalRows(rec: Record<string, any>, payload: Record<string, 
   const tech = source.tech ?? rec.tech_score
   const momentum = source.screenerMomentum ?? rec.momentum_score
   const rows: ScoreBreakdownRow[] = []
-  if (tech != null) rows.push(row('trendStructure', '趨勢結構', rescale(tech, 30, 7), 7, 'bg-violet-500'))
-  if (momentum != null) rows.push(row('volumeConfirmation', '量能確認', rescale(momentum, 20, 6), 6, 'bg-cyan-500'))
+  if (tech != null) rows.push(row('trendStructure', '趨勢結構', rescale(tech, 30, 7), 7, 'bg-violet-500', 'storage projection 僅作 fallback；正式判讀以 score_components 技術細項為準。'))
+  if (momentum != null) rows.push(row('volumeConfirmation', '量能確認', rescale(momentum, 20, 6), 6, 'bg-cyan-500', 'storage projection 僅作 fallback；正式判讀以 score_components 技術細項為準。'))
   return rows
 }
 

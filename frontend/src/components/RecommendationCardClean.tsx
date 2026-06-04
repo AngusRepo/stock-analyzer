@@ -1,4 +1,18 @@
-import { useState, type ElementType } from 'react'
+import { useEffect, useRef, useState, type ElementType } from 'react'
+import {
+  CandlestickSeries,
+  ColorType,
+  CrosshairMode,
+  HistogramSeries,
+  LineSeries,
+  LineStyle,
+  createChart,
+  type ChartOptions,
+  type DeepPartial,
+  type IChartApi,
+  type Time,
+} from 'lightweight-charts'
+import { useQuery } from '@tanstack/react-query'
 import {
   AlertCircle,
   BarChart3,
@@ -9,11 +23,16 @@ import {
   ShieldCheck,
   TrendingDown,
   TrendingUp,
+  Users,
   Zap,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent'
+import { stocksApi } from '@/lib/api'
+import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
+import { buildTradingPlanLevels, normalizeOhlcvRows, type TradingPlanLevels } from '@/lib/tradingPlanLevels'
+import { buildTradePlanStructureZones } from '@/lib/tradePlanStructureZones'
 import { cn } from '@/lib/utils'
 
 type AlphaContext = {
@@ -36,6 +55,17 @@ type AlphaContext = {
   latestClose?: string | number | null
 }
 
+type EntryPriceModelV2Ui = {
+  anchorSource: string
+  entry: string | null
+  preferred: string | null
+  chaseCeiling: string | null
+  premium: string | null
+  discount: string | null
+  poc: string | null
+  fallback: string | null
+}
+
 type MlVoteSummary = {
   bullish?: number
   bearish?: number
@@ -56,6 +86,15 @@ type MlVoteSummary = {
   }
   icWeightScope?: string
   validationBlockedModels?: string[]
+  coreFamilyVote?: CoreFamilyVoteSummary | null
+}
+
+type CoreFamilyVoteSummary = {
+  schema_version?: string
+  family_score?: number
+  active_family_count?: number
+  active_families?: string[]
+  inactive_formal_models?: string[]
 }
 
 type MlDiagnosticsSummary = {
@@ -128,7 +167,7 @@ function isAlphaPredictionModelName(raw: unknown): boolean {
 }
 
 export const AI_TOP_PICK_EXPLANATION =
-  '名詞解釋：基礎分 = 籌碼 + 技術 + ML；Alpha 調整是風控與市場狀態對分數的加減；Slate 是清單分散與配置順序，不會再直接加到預測分數。ML 摘要是模型投票/共識與校準後預期報酬，用來輔助判斷，但仍要搭配 alpha bucket、market structure 和盤中再評估。投票門檻會依 trading:config、adaptive params 與 regime 動態調整，不再用固定值解讀。POC 是計算區間內成交量重心，fair value 是同一區間估出的合理價格帶。'
+  '閱讀提示：基礎分由 ML Edge、籌碼流、技術結構、基本面與新聞題材組成；Alpha 調整會依風控與市場狀態加減分；Slate 只影響清單分散與配置順序，不再直接加到預測分數。ML 摘要提供模型共識與校準後預期報酬，最後仍要搭配 alpha bucket、market structure 與盤中再評估。'
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
@@ -162,6 +201,17 @@ function displayForecastPct(summary: MlVoteSummary | null): number | null {
   const raw = summary.forecast_pct
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return null
   return Math.abs(raw) <= 0.2 ? raw * 100 : raw
+}
+
+function coreFamilyVoteBadgeText(summary: MlVoteSummary | null): string | null {
+  const vote = parseObject(summary?.coreFamilyVote)
+  if (!vote) return null
+  const active = Number(vote.active_family_count ?? vote.activeFamilyCount ?? 0)
+  const score = Number(vote.family_score ?? vote.familyScore ?? NaN)
+  if (!Number.isFinite(active) || active <= 0) return null
+  const familyTotal = Math.max(5, Object.keys(parseObject(vote.families) ?? {}).length)
+  const scoreText = Number.isFinite(score) ? ` ${Math.round(score * 100)}` : ''
+  return `Family ${active}/${familyTotal}${scoreText}`
 }
 
 function normalizeForecastPctForUi(raw: unknown): number | null {
@@ -230,9 +280,9 @@ const LIQUIDITY_TEXT: Record<string, string> = {
 }
 
 const LOCATION_TEXT: Record<string, string> = {
-  below_fair_value: '低於公平價區：看起來偏便宜，但要確認不是弱勢破位。',
-  in_fair_value: '位於公平價區：價格相對合理，不算明顯追高或折價。',
-  above_fair_value: '高於公平價區：偏追高，若同時高波動或量薄就要特別小心。',
+  below_fair_value: '低於日線價值代理區：可能偏折價，但要確認不是弱勢破位。',
+  in_fair_value: '位於日線價值代理區：價格在日線 proxy 附近，不代表真實公平價。',
+  above_fair_value: '高於日線價值代理區：偏追高，若同時高波動或量薄就要特別小心。',
   unknown: '公平價位置不足：資料不夠完整，不能過度解讀。',
 }
 
@@ -260,6 +310,33 @@ function normalizeWatchPoints(raw: unknown): string[] {
 function extractValue(text: string, key: string): string | null {
   const match = text.match(new RegExp(`${key}=([^,]+)`))
   return match?.[1]?.trim() ?? null
+}
+
+function extractTokenValue(text: string, key: string): string | null {
+  const match = text.match(new RegExp(`${key}=([^\\s;]+)`))
+  return match?.[1]?.trim() ?? null
+}
+
+function cleanEntryModelToken(value: string | null): string | null {
+  if (!value) return null
+  const clean = value.trim()
+  return clean && clean.toLowerCase() !== 'na' ? clean : null
+}
+
+function entryModelV2FromWatchPoints(points: string[]): EntryPriceModelV2Ui | null {
+  const point = points.find((item) => item.startsWith('entry_price_model_v2:'))
+  if (!point) return null
+  const anchorSource = cleanEntryModelToken(extractTokenValue(point, 'source')) ?? 'unknown'
+  return {
+    anchorSource,
+    entry: cleanEntryModelToken(extractTokenValue(point, 'entry')),
+    preferred: cleanEntryModelToken(extractTokenValue(point, 'preferred')),
+    chaseCeiling: cleanEntryModelToken(extractTokenValue(point, 'chase_ceiling')),
+    premium: cleanEntryModelToken(extractTokenValue(point, 'premium')),
+    discount: cleanEntryModelToken(extractTokenValue(point, 'discount')),
+    poc: cleanEntryModelToken(extractTokenValue(point, 'poc')),
+    fallback: cleanEntryModelToken(extractTokenValue(point, 'fallback')),
+  }
 }
 
 function extractSizing(text: string): number | null {
@@ -333,6 +410,39 @@ function parseObject(raw: unknown): any | null {
   }
 }
 
+type TradePlanContext = {
+  source: 'ohlcv' | 'alpha_fallback'
+  entryModelV2?: EntryPriceModelV2Ui | null
+  latest: number | null
+  resistance: number | null
+  confirmation: number | null
+  support: number | null
+  atrDefense: number | null
+  volumeNode: number | null
+  buyReferenceLow?: number | null
+  buyReferenceHigh?: number | null
+  optimisticLow?: number | null
+  optimisticHigh?: number | null
+  ma20: number | null
+  ma60: number | null
+  levels: TradingPlanLevels | null
+}
+
+const STRONG_BREAKOUT_CHASE_PCT = 0.018
+
+function scoreV2PayloadFromRec(rec: any): any | null {
+  const raw = parseObject(rec?.score_components) ?? parseObject(rec?.score_v2)
+  const nested = parseObject(raw?.payload)
+  const payload = nested?.version === 'score_v2' || nested?.source === 'score_v2' ? nested : raw
+  if (!payload) return null
+  const hasScoreV2Marker = payload.version === 'score_v2' || payload.source === 'score_v2'
+  const hasScoreV2Score = Number.isFinite(Number(payload.finalScore ?? payload.total))
+  const hasScoreV2Components = parseObject(payload.components) != null
+  return hasScoreV2Marker && (hasScoreV2Score || hasScoreV2Components)
+    ? { ...payload, version: 'score_v2', source: payload.source ?? 'score_v2' }
+    : null
+}
+
 function scoreComponentValue(rec: any, key: string): number {
   const row = buildScoreBreakdownViewModel(rec ?? {}).rows.find((item) => item.key === key)
   return Number.isFinite(row?.value) ? Number(row?.value) : 0
@@ -341,11 +451,13 @@ function scoreComponentValue(rec: any, key: string): number {
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const persisted = parseObject(rec.ml_vote_summary)
   if (persisted && Number(persisted.total ?? 0) <= ALPHA_PREDICTION_MODEL_NAMES.length) {
+    const persistedCoreFamilyVote = parseObject(persisted.coreFamilyVote ?? persisted.core_family_vote)
     const reported = Number(persisted.reported ?? 0)
     const evidence = Number(persisted.bullish ?? 0) + Number(persisted.bearish ?? 0) + Number(persisted.flat ?? 0)
-    if (reported > 0 || evidence > 0 || scoreComponentValue(rec, 'mlEdge') <= 0) {
+    if (persistedCoreFamilyVote || reported > 0 || evidence > 0 || scoreComponentValue(rec, 'mlEdge') <= 0) {
       return {
         ...persisted,
+        coreFamilyVote: persistedCoreFamilyVote ?? persisted.coreFamilyVote ?? null,
         forecastPct: normalizePersistedForecastPctForUi(persisted),
       }
     }
@@ -363,6 +475,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   const thresholds = forecast?.ensemble_v2?.rank_signal_thresholds && typeof forecast.ensemble_v2.rank_signal_thresholds === 'object'
     ? forecast.ensemble_v2.rank_signal_thresholds
     : null
+  const coreFamilyVote = parseObject(forecast?.core_family_vote ?? forecast?.coreFamilyVote ?? forecast?.ensemble_v2?.family_vote)
   const trackedWeightKeys = Object.keys(weights).filter(isAlphaPredictionModelName)
   const total = Math.max(ALPHA_PREDICTION_MODEL_NAMES.length, trackedWeightKeys.length, models.length)
   if (!forecast || total <= 0) return null
@@ -390,6 +503,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     validationBlockedModels: Object.entries(diagnostics)
       .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
       .map(([name]) => name),
+    coreFamilyVote,
   }
 }
 
@@ -448,13 +562,15 @@ function mlMetadataGapText(rec: any, summary: MlVoteSummary | null): string | nu
   const reported = Number(summary?.reported ?? 0)
   const votes = Number(summary?.bullish ?? 0) + Number(summary?.bearish ?? 0) + Number(summary?.flat ?? 0)
   if (summary && (reported > 0 || votes > 0)) return null
-  return `ML 分數 ${fmtNumber(mlScore, 1)} 來自後端 scalar score，但投票明細尚未對齊 business date，暫不顯示 0/8 這種誤導訊息。`
+  return `ML 分數 ${fmtNumber(mlScore, 1)} 來自後端 scalar score，但投票明細尚未對齊 business date，暫不顯示 0/N 這種誤導訊息。`
 }
 
 function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
   if (!summary) return null
   const total = Number(summary.total ?? 0)
   if (!Number.isFinite(total) || total <= 0) return null
+  const familyText = coreFamilyVoteBadgeText(summary)
+  if (familyText) return familyText
   const bullish = Number(summary.bullish ?? 0)
   const bearish = Number(summary.bearish ?? 0)
   const missing = Number(summary.missing ?? Math.max(0, total - bullish - bearish - Number(summary.flat ?? 0)))
@@ -504,6 +620,8 @@ function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | nu
   if (!summary) return null
   const total = Number(summary.total ?? 0)
   if (!Number.isFinite(total) || total <= 0) return null
+  const familyText = coreFamilyVoteBadgeText(summary)
+  if (familyText) return familyText
   const bullish = Number(summary.bullish ?? 0)
   const bearish = Number(summary.bearish ?? 0)
   const flat = Number(summary.flat ?? Math.max(0, total - bullish - bearish))
@@ -573,17 +691,7 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
 
 function translateRecommendationReason(reason: unknown): string {
   if (typeof reason !== 'string') return ''
-  return reason
-    .replace(
-      /Signal Provenance \(ensemble Top-K\): BUY forced at ensemble layer \(signal_raw=([^,)]*), avg_rank=([^)]+)\)\. Judge on business merit and industry context, not raw signal strength\./g,
-      '訊號來源：此檔由 ensemble Top-K 納入，原始訊號為 $1，平均排名 $2；代表它是排序入選，不是模型自然強買。',
-    )
-    .replace(
-      /Signal Provenance \(ranking promoted\): BUY flipped at recommendation layer \(ensemble_v2\.signal=([^,)]*), avg_rank=([^)]+)\)\. Treat as ranking promotion, not a naturally strong BUY\./g,
-      '訊號來源：此檔由推薦層從 $1 提升為買進，平均排名 $2；需用分數、產業脈絡與盤中再評估輔助判讀。',
-    )
-    .replace(/(^|[^校準])預期 ([+-]\d+(?:\.\d+)?%)/g, '$1校準預期 $2')
-    .trim()
+  return reason.trim()
 }
 
 function alphaContextFromRec(rec: any, points: string[]): AlphaContext | null {
@@ -626,44 +734,80 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
       <span className="w-14 text-right font-mono text-muted-foreground">
-        {formatUnitScore(safeValue, safeMax)}
+        {fmtNumber(safeValue, 1)}/{fmtNumber(safeMax, 0)}
       </span>
     </div>
   )
 }
 
+function signedText(value: number | null | undefined, decimals = 1): string {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '-'
+  return `${n >= 0 ? '+' : ''}${n.toFixed(decimals)}`
+}
+
+function ScoreFormulaSummary({ viewModel }: { viewModel: ReturnType<typeof buildScoreBreakdownViewModel> }) {
+  return (
+    <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">基礎分數與 Alpha 調整</p>
+        <span className="font-mono text-xs text-muted-foreground">
+          {fmtNumber(viewModel.finalScore, 1)} = {fmtNumber(viewModel.baseScore, 1)} {viewModel.alphaAdjustment >= 0 ? '+' : '-'} {fmtNumber(Math.abs(viewModel.alphaAdjustment), 1)}
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-md border border-border/40 bg-muted/20 p-2">
+          <p className="text-[10px] text-muted-foreground">基礎分數</p>
+          <p className="mt-0.5 font-mono text-lg font-semibold">{fmtNumber(viewModel.baseScore, 1)}</p>
+        </div>
+        <div className="rounded-md border border-sky-500/25 bg-sky-500/[0.06] p-2">
+          <p className="text-[10px] text-sky-700 dark:text-sky-300">Alpha 調整</p>
+          <p className="mt-0.5 font-mono text-lg font-semibold text-sky-700 dark:text-sky-300">{signedText(viewModel.alphaAdjustment)}</p>
+        </div>
+        <div className="rounded-md border border-primary/25 bg-primary/[0.06] p-2">
+          <p className="text-[10px] text-muted-foreground">最終分數</p>
+          <p className="mt-0.5 font-mono text-lg font-semibold text-primary">{fmtNumber(viewModel.finalScore, 1)}</p>
+        </div>
+      </div>
+      {Math.abs(viewModel.residual) >= 0.1 && (
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+          資料校準差 {signedText(viewModel.residual)}，代表後端總分與目前可拆解欄位仍有不同步。
+        </p>
+      )}
+    </div>
+  )
+}
+
+function alphaDetailsFromRec(rec: any): any[] {
+  const payload = scoreV2PayloadFromRec(rec)
+  const alphaReason = parseObject(payload?.alphaReason)
+  const details = Array.isArray(alphaReason?.details) ? alphaReason.details : []
+  return details.filter((item: any) => item && item.value != null)
+}
+
 function ScoreBreakdownV2({ rec }: { rec: any }) {
   const viewModel = buildScoreBreakdownViewModel(rec)
-  const components = parseObject(rec.score_components)
   const riskText = viewModel.riskFlags.length > 0 ? viewModel.riskFlags.join(', ') : '無'
-  const alphaDetails = components?.alphaReason?.details?.filter((item: any) => item && item.value != null) ?? []
+  const alphaDetails = alphaDetailsFromRec(rec)
 
   return (
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-muted-foreground">Score V2 分解</span>
-        <span className="font-mono text-foreground">
-          {fmtNumber(viewModel.finalScore, 1)} = {fmtNumber(viewModel.baseScore, 1)}
-          {viewModel.alphaAdjustment >= 0 ? ' + ' : ' - '}{fmtNumber(Math.abs(viewModel.alphaAdjustment), 1)}
-          {Math.abs(viewModel.residual) >= 0.1 && `${viewModel.residual >= 0 ? ' + ' : ' - '}${fmtNumber(Math.abs(viewModel.residual), 1)}`}
-        </span>
-      </div>
-      <div className="grid gap-1.5 text-muted-foreground sm:grid-cols-2">
-        {viewModel.rows.map((item) => (
-          <span key={item.key}>{item.label}: {fmtNumber(item.value, 1)} / {fmtNumber(item.max, 0)}</span>
-        ))}
-        <span>基礎分數: {fmtNumber(viewModel.baseScore, 1)}</span>
-        <span>Alpha 調整: {viewModel.alphaAdjustment >= 0 ? '+' : ''}{fmtNumber(viewModel.alphaAdjustment, 1)}</span>
-        {Math.abs(viewModel.residual) >= 0.1 && (
-          <span>資料校準差: {viewModel.residual >= 0 ? '+' : ''}{fmtNumber(viewModel.residual, 1)}</span>
-        )}
-        <span>最終分數: {fmtNumber(viewModel.finalScore, 1)}</span>
+        <span className="font-mono text-[11px] text-muted-foreground">技術結構 + Alpha 明細</span>
       </div>
       {viewModel.technicalRows.length > 0 && (
-        <div className="mt-2 space-y-1 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
+        <div className="mt-2 space-y-2 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
           <p className="font-medium text-foreground/80">技術結構細項</p>
           {viewModel.technicalRows.map((item) => (
-            <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+            <div key={item.key} className="space-y-1">
+              <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
+              {item.explanation && (
+                <p className="pl-[72px] text-[11px] leading-relaxed text-muted-foreground/85 sm:pl-[74px]">
+                  {item.explanation}
+                </p>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -683,11 +827,755 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
           Alpha 調整目前沒有細項，風險旗標: {riskText}
         </p>
       )}
-      {Math.abs(viewModel.residual) >= 0.1 && (
-        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          分數存在校準差，通常代表後端總分與目前可拆解欄位仍有不同步；Score V2 會優先採用後端 score_components。
+    </div>
+  )
+}
+
+function reasonTextFromValue(raw: unknown): string | null {
+  if (!raw) return null
+  if (typeof raw === 'string') {
+    const text = raw.trim()
+    return text ? translateRecommendationReason(text) : null
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null
+  const obj = raw as Record<string, any>
+  return reasonTextFromValue(obj.reason ?? obj.text ?? obj.summary ?? obj.recommendation_reason)
+}
+
+function breeze2WatchPointSummary(point: string): string | null {
+  const body = point.replace(/^breeze2:/i, '').trim()
+  if (!body) return null
+  const context = body.match(/^([a-z_]+)\s+/i)?.[1]
+  const fact = body.match(/\bfact=([0-9.]+)/i)?.[1]
+  const hype = body.match(/\bhype=([0-9.]+)/i)?.[1]
+  const quality = body.match(/\bquality=([0-9.]+)/i)?.[1]
+  const flags = body.match(/\bflags=([^ ]+)/i)?.[1]
+  const contextLabel: Record<string, string> = {
+    candidate_context: '候選脈絡',
+    watchlist_context: '觀察名單脈絡',
+    human_review: '需人工複核',
+    insufficient_evidence: '佐證不足',
+  }
+  const parts = [
+    context ? contextLabel[context] ?? context.replace(/_/g, ' ') : null,
+    fact ? `事實支撐 ${Number(fact).toFixed(2)}` : null,
+    hype ? `題材熱度 ${Number(hype).toFixed(2)}` : null,
+    quality ? `來源品質 ${Number(quality).toFixed(2)}` : null,
+    flags && flags !== 'none' ? `旗標 ${flags.replace(/_/g, ' ')}` : null,
+  ].filter(Boolean)
+  return parts.length ? `Breeze2 影子線：${parts.join('；')}。` : null
+}
+
+function breeze2ReasonFromRec(rec: any): string | null {
+  const scoreV2 = scoreV2PayloadFromRec(rec)
+  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
+  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
+  const breezeWatchPoint = normalizeWatchPoints(rec.watch_points).find((point) => point.startsWith('breeze2:'))
+  const breezeWatchSummary = breezeWatchPoint ? breeze2WatchPointSummary(breezeWatchPoint) : null
+  return reasonTextFromValue(rec.breeze2_reason_shadow)
+    ?? reasonTextFromValue(rec.breeze2_reason)
+    ?? reasonTextFromValue(rec.breeze2_shadow_reason)
+    ?? reasonTextFromValue(reasonVariants?.breeze2 ?? reasonVariants?.Breeze2)
+    ?? reasonTextFromValue(variants?.breeze2 ?? variants?.Breeze2)
+    ?? breezeWatchSummary
+}
+
+function geminiVariantReasonFromRec(rec: any): string | null {
+  const scoreV2 = scoreV2PayloadFromRec(rec)
+  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
+  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
+  return reasonTextFromValue(rec.gemini_reason)
+    ?? reasonTextFromValue(rec.gemini_reason_shadow)
+    ?? reasonTextFromValue(reasonVariants?.gemini ?? reasonVariants?.Gemini)
+    ?? reasonTextFromValue(variants?.gemini ?? variants?.Gemini)
+}
+
+function planPrice(value: unknown): string | null {
+  return fmtOptionalNumber(value as any, 2)
+}
+
+function buildOhlcvTradePlanContext(rec: any, context: AlphaContext | null, priceRows: any[]): TradePlanContext {
+  const entryModelV2 = entryModelV2FromWatchPoints(normalizeWatchPoints(rec.watch_points))
+  const levels = buildTradingPlanLevels(normalizeOhlcvRows(priceRows))
+  if (levels) {
+    return {
+      source: 'ohlcv',
+      entryModelV2,
+      latest: levels.latestClose,
+      resistance: levels.resistance,
+      confirmation: levels.confirmation,
+      support: levels.support,
+      atrDefense: levels.atrLower,
+      volumeNode: levels.volumeNode,
+      buyReferenceLow: levels.buyReferenceLow,
+      buyReferenceHigh: levels.buyReferenceHigh,
+      optimisticLow: levels.optimisticLow,
+      optimisticHigh: levels.optimisticHigh,
+      ma20: levels.ma20,
+      ma60: levels.ma60,
+      levels,
+    }
+  }
+
+  const latest = numericPrice(context?.latestClose ?? rec.current_price ?? rec.close ?? rec.latest_close)
+  const fairLow = numericPrice(context?.fairValueLow)
+  const fairHigh = numericPrice(context?.fairValueHigh)
+  const poc = numericPrice(context?.poc)
+  const optimisticHigh = numericPrice(context?.optimisticValueHigh ?? rec.target_price ?? rec.targetPrice)
+  return {
+    source: 'alpha_fallback',
+    entryModelV2,
+    latest,
+    resistance: optimisticHigh ?? fairHigh,
+    confirmation: fairHigh ?? optimisticHigh,
+    support: fairLow ?? poc,
+    atrDefense: fairLow ?? poc,
+    volumeNode: poc,
+    buyReferenceLow: null,
+    buyReferenceHigh: null,
+    optimisticLow: null,
+    optimisticHigh: null,
+    ma20: null,
+    ma60: null,
+    levels: null,
+  }
+}
+
+function compactLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function PlanBlock({ title, accent, lines }: { title: string; accent: string; lines: string[] }) {
+  return (
+    <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
+      <div className={cn('w-1 shrink-0', accent)} />
+      <div className="min-w-0 flex-1 p-3">
+        <p className="text-xs font-medium text-foreground">{title}</p>
+        <div className="mt-1.5 space-y-1 text-xs leading-relaxed text-muted-foreground">
+          {lines.filter(Boolean).map((line, index) => (
+            <p key={`${title}-${index}`}>{line}</p>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type TradePlanReadRow = {
+  label: string
+  value: string
+  note: string
+  tone?: 'good' | 'warn' | 'neutral'
+}
+
+function tradePlanToneClass(tone: TradePlanReadRow['tone']) {
+  if (tone === 'good') return 'text-emerald-600 dark:text-emerald-300'
+  if (tone === 'warn') return 'text-amber-600 dark:text-amber-300'
+  return 'text-sky-700 dark:text-sky-300'
+}
+
+function TradePlanRow({ row }: { row: TradePlanReadRow }) {
+  return (
+    <div className="grid gap-1 border-b border-border/30 py-2 last:border-b-0 sm:grid-cols-[6.5rem_8.5rem_1fr] sm:items-start">
+      <span className="text-[11px] font-semibold text-foreground/85">{row.label}</span>
+      <span className={cn('w-fit rounded-sm border border-current/20 bg-background/70 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+        {row.value}
+      </span>
+      <span className="text-xs leading-relaxed text-muted-foreground">{row.note}</span>
+    </div>
+  )
+}
+
+function ProviderReasonCompare({
+  geminiReason,
+  geminiWatchPoints,
+  breeze2Reason,
+  breeze2WatchPoints,
+}: {
+  geminiReason: string
+  geminiWatchPoints: string[]
+  breeze2Reason: string | null
+  breeze2WatchPoints: string[]
+}) {
+  const geminiPoints = geminiWatchPoints.filter(Boolean).slice(0, 3)
+  const breezePoints = breeze2WatchPoints.filter(Boolean).slice(0, 3)
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.05] p-3">
+        <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">Gemini 3.1 Flash</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{geminiReason}</p>
+        {geminiPoints.length > 0 && (
+          <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
+            {geminiPoints.map((point, index) => (
+              <li key={`gemini-${index}`} className="flex gap-1.5">
+                <span className="mt-0.5 text-blue-500">•</span>
+                <span>{normalizeWatchPoint(point)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="rounded-md border border-emerald-500/20 bg-emerald-500/[0.05] p-3">
+        <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">Breeze2</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          {breeze2Reason ?? 'Breeze2 尚未回寫逐檔中文總結；目前正式資料只有模型流程指標，還不能和 Gemini 做逐字理由比較。'}
         </p>
-      )}
+        {breezePoints.length > 0 && (
+          <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
+            {breezePoints.map((point, index) => (
+              <li key={`breeze2-${index}`} className="flex gap-1.5">
+                <span className="mt-0.5 text-emerald-500">•</span>
+                <span>{normalizeWatchPoint(point)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function numericPrice(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function klineChartOptions(width: number): DeepPartial<ChartOptions> {
+  return {
+    width,
+    height: 260,
+    autoSize: true,
+    layout: {
+      background: { type: ColorType.Solid, color: 'transparent' },
+      textColor: '#94a3b8',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+    },
+    grid: {
+      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      horzLines: { color: 'rgba(148, 163, 184, 0.10)' },
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(148, 163, 184, 0.18)',
+      scaleMargins: { top: 0.16, bottom: 0.22 },
+    },
+    timeScale: {
+      borderColor: 'rgba(148, 163, 184, 0.18)',
+      timeVisible: false,
+      secondsVisible: false,
+      rightOffset: 8,
+      barSpacing: 8,
+      minBarSpacing: 5,
+    },
+    crosshair: {
+      mode: CrosshairMode.MagnetOHLC,
+      horzLine: { color: 'rgba(56, 189, 248, 0.28)' },
+      vertLine: { color: 'rgba(56, 189, 248, 0.28)' },
+    },
+  }
+}
+
+type KlineCandle = {
+  time: Time
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
+function priceRowTime(row: any): Time {
+  return String(row?.date ?? '').slice(0, 10) as Time
+}
+
+function positivePrice(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function addCalendarDays(time: Time | undefined, days: number): Time | null {
+  if (!time || typeof time !== 'string') return null
+  const date = new Date(`${time}T00:00:00Z`)
+  if (Number.isNaN(date.getTime())) return null
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10) as Time
+}
+
+function priceRowsToCandles(rows: any[], limit = 42): KlineCandle[] {
+  const candles: KlineCandle[] = []
+  let prevClose: number | null = null
+  for (const item of rows.slice(-limit)) {
+    const time = priceRowTime(item)
+    const close = positivePrice(item.close ?? item.avg_price)
+    if (!time || close == null) continue
+    const avg = positivePrice(item.avg_price)
+    const rawHigh = positivePrice(item.high)
+    const rawLow = positivePrice(item.low)
+    const rawOpen = positivePrice(item.open)
+    const open = rawOpen ?? prevClose ?? avg ?? close
+    const high = Math.max(rawHigh ?? close, open, close)
+    const low = Math.min(rawLow ?? close, open, close)
+    candles.push({ time, open, high, low, close })
+    prevClose = close
+  }
+  return candles
+}
+
+function priceRowsToVolume(rows: any[], candles: KlineCandle[], limit = 42) {
+  const candleByTime = new Map(candles.map((candle) => [String(candle.time), candle]))
+  return rows
+    .slice(-limit)
+    .map((item) => {
+      const time = priceRowTime(item)
+      const candle = candleByTime.get(String(time))
+      const value = Number(item.volume ?? item.Trading_Volume ?? item.trading_volume)
+      return {
+        time,
+        value: Number.isFinite(value) ? value : 0,
+        color: candle && candle.close >= candle.open ? 'rgba(239, 68, 68, 0.28)' : 'rgba(16, 185, 129, 0.28)',
+      }
+    })
+    .filter((item) => Boolean(item.time))
+}
+
+function KLinePlanSketch({
+  rec,
+  priceRows,
+  isLoading,
+  plan,
+}: {
+  rec: any
+  priceRows: any[]
+  isLoading: boolean
+  plan: TradePlanContext
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const latest = plan.latest
+  const support = plan.support ?? plan.volumeNode ?? latest
+  const confirmation = plan.confirmation ?? plan.resistance
+  const resistance = plan.resistance ?? confirmation
+  const optimisticHigh = plan.optimisticHigh ?? resistance
+  const atrDefense = plan.atrDefense
+  const volumeNode = plan.volumeNode
+  const prices = [latest, support, confirmation, resistance, atrDefense, volumeNode].filter((value): value is number => value != null)
+  const candles = priceRowsToCandles(priceRows)
+  const volume = priceRowsToVolume(priceRows, candles)
+  const lastTime = candles[candles.length - 1]?.time
+  const nextTime = addCalendarDays(lastTime, 1)
+  const targetTime = addCalendarDays(lastTime, 3)
+  const projection = latest && optimisticHigh && lastTime && nextTime && targetTime
+    ? [
+      { time: lastTime, value: latest },
+      { time: nextTime, value: confirmation ?? latest },
+      { time: targetTime, value: optimisticHigh },
+    ]
+    : []
+  const chartKey = JSON.stringify({
+    symbol: rec.symbol,
+    latest,
+    support,
+    confirmation,
+    resistance,
+    optimisticHigh,
+    atrDefense,
+    volumeNode,
+    rows: candles.map((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close]),
+  })
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || candles.length === 0) return
+
+    const chart = createChart(container, klineChartOptions(container.clientWidth || 420))
+    chartRef.current = chart
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#ef4444',
+      downColor: '#22c55e',
+      borderUpColor: '#ef4444',
+      borderDownColor: '#22c55e',
+      wickUpColor: '#fca5a5',
+      wickDownColor: '#86efac',
+      priceLineVisible: false,
+    })
+    candleSeries.setData(candles)
+
+    if (volume.length) {
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }, 1)
+      volumeSeries.setData(volume)
+    }
+
+    if (projection.length) {
+      const projectionSeries = chart.addSeries(LineSeries, {
+        color: '#38bdf8',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      projectionSeries.setData(projection)
+    }
+
+    if (resistance) {
+      candleSeries.createPriceLine({
+        price: resistance,
+        color: '#f87171',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: '前高壓力',
+      })
+    }
+    if (confirmation) {
+      candleSeries.createPriceLine({
+        price: confirmation,
+        color: '#38bdf8',
+        lineWidth: 1,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: '轉強確認',
+      })
+    }
+    if (support) {
+      candleSeries.createPriceLine({
+        price: support,
+        color: '#22c55e',
+        lineWidth: 1,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: '關鍵支撐',
+      })
+    }
+
+    if (volumeNode) {
+      candleSeries.createPriceLine({
+        price: volumeNode,
+        color: '#a78bfa',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: '量能節點',
+      })
+    }
+
+    if (atrDefense) {
+      candleSeries.createPriceLine({
+        price: atrDefense,
+        color: '#f43f5e',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'ATR 防守',
+      })
+    }
+
+    chart.panes()[1]?.setHeight(64)
+    chart.timeScale().fitContent()
+    if (candles.length > 32) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, candles.length - 32),
+        to: candles.length + 5,
+      })
+    }
+
+    let resizeObserver: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[0]
+        if (!entry) return
+        chart.applyOptions({ width: Math.max(280, Math.floor(entry.contentRect.width)) })
+      })
+      resizeObserver.observe(container)
+    }
+
+    return () => {
+      resizeObserver?.disconnect()
+      chart.remove()
+      chartRef.current = null
+    }
+  }, [chartKey])
+
+  if (isLoading && candles.length === 0) {
+    return <div className="h-[300px] animate-pulse rounded-md border border-border/50 bg-background/60" />
+  }
+
+  if (prices.length === 0 || candles.length === 0) {
+    return (
+      <div className="rounded-md border border-border/50 bg-background/60 p-3 text-xs text-muted-foreground">
+        K線策略圖：價格資料不足，暫時只能保留文字交易計劃。
+      </div>
+    )
+  }
+  return (
+    <div className="overflow-hidden rounded-md border border-border/50 bg-background/60">
+      <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+        <span className="text-xs font-medium text-foreground">K線交易計劃圖</span>
+        <span className="font-mono text-[11px] text-muted-foreground">Lightweight Charts</span>
+      </div>
+      <div ref={containerRef} className="h-[260px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
+      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-5">
+        <span className="font-mono text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
+        <span className="font-mono text-sky-500">轉強 {confirmation ? fmtNumber(confirmation, 2) : '-'}</span>
+        <span className="font-mono text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
+        <span className="font-mono text-violet-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
+        <span className="font-mono text-rose-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
+      </div>
+    </div>
+  )
+}
+
+function scoreTone(value: number, high: number, low: number): TradePlanReadRow['tone'] {
+  if (value >= high) return 'good'
+  if (value <= low) return 'warn'
+  return 'neutral'
+}
+
+function technicalPlanNote(rec: any): string {
+  const vm = buildScoreBreakdownViewModel(rec)
+  const rows = vm.technicalRows
+  const trend = rows.find((row) => row.key === 'trendStructure')?.explanation
+  const volume = rows.find((row) => row.key === 'volumeConfirmation')?.explanation
+  const execution = rows.find((row) => row.key === 'executionRisk')?.explanation
+  return [trend, volume, execution].filter(Boolean).slice(0, 2).join(' ')
+    || '技術資料不足，先以盤中量價確認。'
+}
+
+function chipPlanNote(rec: any): string {
+  const scoreV2 = scoreV2PayloadFromRec(rec)
+  const evidence = parseObject(scoreV2?.chipEvidence) ?? parseObject(rec.chip_evidence)
+  if (evidence?.broker_net_amount_5d_billion != null) {
+    const amount = Number(evidence.broker_net_amount_5d_billion)
+    const direction = amount >= 0 ? '買超' : '賣超'
+    const brokerCount = evidence.broker_count_latest ?? evidence.broker_count ?? null
+    return `興櫃券商分點近5日${direction}${fmtChipAmount(amount)}${brokerCount ? `，參與券商 ${brokerCount} 家` : ''}，只作籌碼輔助判讀。`
+  }
+  const net = Number(rec.chip_cash_total_5d ?? rec.foreign_net_5d)
+  if (Number.isFinite(net)) {
+    const direction = net >= 0 ? '買超' : '賣超'
+    return `法人5日估算${direction}${fmtChipAmount(net)}，這是股數乘收盤價的 proxy，不等於官方成交金額。`
+  }
+  return '籌碼來源不足，不能把法人流向當主要理由。'
+}
+
+function geminiReasonForCompare(rec: any, reason: string): string {
+  const variant = geminiVariantReasonFromRec(rec)
+  if (variant) return variant
+  const clean = compactLine(reason)
+  if (!clean || clean.startsWith('Score V2 ')) {
+    const signal = rec.signal ? `訊號 ${rec.signal}` : '訊號待確認'
+    return `Gemini 逐檔理由尚未回寫；目前只保留 ${signal} 與 Score V2 結構化資料，避免把分數摘要偽裝成投資建議。`
+  }
+  return clean
+}
+
+function reasonVariantWatchPoints(rec: any, provider: 'gemini' | 'breeze2'): string[] {
+  const scoreV2 = scoreV2PayloadFromRec(rec)
+  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
+  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
+  const entry = parseObject(reasonVariants?.[provider])
+    ?? parseObject(reasonVariants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
+    ?? parseObject(variants?.[provider])
+    ?? parseObject(variants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
+  const points = normalizeWatchPoints(entry?.watchPoints ?? entry?.watch_points)
+  if (points.length > 0) return points
+  if (provider === 'gemini') return displayWatchPoints(normalizeWatchPoints(rec.watch_points)).slice(0, 3)
+  return []
+}
+
+function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
+  const vm = buildScoreBreakdownViewModel(rec)
+  const ml = vm.rows.find((row) => row.key === 'mlEdge')?.value ?? 0
+  const chip = vm.rows.find((row) => row.key === 'chipFlow')?.value ?? 0
+  const technical = vm.rows.find((row) => row.key === 'technicalStructure')?.value ?? 0
+  const latest = planPrice(context?.latestClose ?? rec.current_price)
+  const support = planPrice(context?.fairValueLow ?? context?.poc)
+  const confirmation = planPrice(context?.fairValueHigh ?? context?.optimisticValueHigh)
+  const resistance = planPrice(context?.optimisticValueHigh ?? context?.fairValueHigh)
+  const volumeNode = planPrice(context?.poc)
+  const regime = shortLabelFor(context?.regime, REGIME_TEXT)
+  const bucket = shortLabelFor(context?.bucket)
+  const location = shortLabelFor(context?.location, LOCATION_TEXT)
+  const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummaryFromRec(rec)) ?? '模型共識尚未明確'
+  return [
+    {
+      label: '模型共識',
+      value: `${fmtNumber(ml, 1)}/25`,
+      note: mlSummary,
+      tone: scoreTone(ml, 18, 10),
+    },
+    {
+      label: '籌碼流',
+      value: `${fmtNumber(chip, 1)}/25`,
+      note: chipPlanNote(rec),
+      tone: scoreTone(chip, 18, 10),
+    },
+    {
+      label: '技術結構',
+      value: `${fmtNumber(technical, 1)}/25`,
+      note: technicalPlanNote(rec),
+      tone: scoreTone(technical, 18, 10),
+    },
+    {
+      label: 'Alpha 結構',
+      value: `${bucket} / ${regime}`,
+      note: `現價 ${latest ?? '-'}，價格位置 ${location}；Alpha 只作部位與風控輔助，不直接當目標價。`,
+      tone: context?.skip ? 'warn' : 'neutral',
+    },
+    {
+      label: '交易線位',
+      value: `壓力 ${resistance ?? '-'} / 支撐 ${support ?? '-'}`,
+      note: `轉強確認 ${confirmation ?? '-'}；量能節點 ${volumeNode ?? '-'}。`,
+      tone: 'neutral',
+    },
+  ]
+}
+
+function chipPlanValue(rec: any): string {
+  const evidence = parseObject(scoreV2PayloadFromRec(rec)?.chipEvidence) ?? parseObject(rec.chip_evidence)
+  const brokerAmount = Number(evidence?.broker_net_amount_5d_billion)
+  if (Number.isFinite(brokerAmount)) {
+    return `${brokerAmount >= 0 ? '買超' : '賣超'} ${Math.abs(brokerAmount).toFixed(2)} 億`
+  }
+  const net = Number(rec.chip_cash_total_5d ?? rec.foreign_net_5d)
+  return Number.isFinite(net)
+    ? `${net >= 0 ? '買超' : '賣超'} ${Math.abs(net).toFixed(2)} 億`
+    : '資料不足'
+}
+
+function alphaStructureValue(context: AlphaContext | null): string {
+  const parts = [
+    context?.bucket ? `策略 ${shortLabelFor(context.bucket)}` : null,
+    context?.regime ? `大盤 ${shortLabelFor(context.regime, REGIME_TEXT)}` : null,
+    context?.location ? `位置 ${shortLabelFor(context.location, LOCATION_TEXT)}` : null,
+    context?.scoreAdjustment != null ? `Alpha ${signedText(Number(context.scoreAdjustment))}` : null,
+    context?.sizing != null ? `部位 x${fmtNumber(context.sizing, 2)}` : null,
+    context?.skip ? '風控暫停' : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' / ') : 'Alpha 結構資料不足'
+}
+
+function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan: TradePlanContext): TradePlanReadRow[] {
+  const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
+  const modelEntry = planPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.entryPrice)
+  const entryModel = plan.entryModelV2
+  const sourceText = entryModel
+    ? `Entry Model V2 / ${entryModel.anchorSource}`
+    : zones.source === 'ohlcv'
+      ? 'OHLCV daily fallback'
+      : 'Alpha daily proxy fallback'
+  const entryZone = entryModel?.entry ?? zones.buyReferenceZone
+  const preferredEntry = entryModel?.preferred ?? modelEntry ?? '-'
+  const chaseCeiling = entryModel?.chaseCeiling ?? zones.chaseCeilingZone
+  const pocSource = entryModel
+    ? `${entryModel.poc ?? '-'} / ${entryModel.anchorSource}`
+    : `${zones.volumeNode ?? '-'} / ${zones.source === 'ohlcv' ? 'OHLCV volume proxy' : 'Alpha proxy'}`
+  return [
+    { label: '現價', value: zones.latest ?? '-', note: '', tone: 'neutral' },
+    { label: '偏好買入價', value: preferredEntry, note: '', tone: 'neutral' },
+    { label: '建議買入區間', value: entryZone, note: '', tone: 'good' },
+    { label: '可追價上限', value: chaseCeiling, note: '', tone: 'warn' },
+    { label: '前高壓力', value: zones.resistance ?? '-', note: '', tone: 'warn' },
+    { label: '轉強確認', value: zones.confirmation ?? '-', note: '', tone: 'good' },
+    { label: '關鍵支撐', value: zones.support ?? '-', note: '', tone: 'good' },
+    { label: 'ATR 防守', value: zones.atrDefense ?? '-', note: '', tone: 'warn' },
+    { label: 'POC / 量能節點來源', value: pocSource, note: '', tone: entryModel?.anchorSource === 'intraday_volume_profile' ? 'good' : 'neutral' },
+    { label: '線位來源', value: sourceText, note: entryModel?.fallback ?? '', tone: entryModel?.fallback ? 'warn' : zones.source === 'ohlcv' ? 'good' : 'warn' },
+    { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
+    { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
+  ]
+}
+
+function FocusedTradePlanRow({ row }: { row: TradePlanReadRow }) {
+  return (
+    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-start gap-3 border-b border-border/30 py-2 last:border-b-0">
+      <span className="text-[11px] font-semibold text-foreground/80">{row.label}</span>
+      <span className={cn('min-w-0 break-words font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+        {row.value}
+      </span>
+    </div>
+  )
+}
+
+function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: AlphaContext | null; reason: string }) {
+  const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
+  const inlineRows = Array.isArray(rec.price_candles)
+    ? rec.price_candles
+    : Array.isArray(rec.prices)
+      ? rec.prices
+      : []
+  const { data: fetchedRows = [], isLoading } = useQuery({
+    queryKey: ['recommendation-card-kline', stockId],
+    queryFn: () => stocksApi.prices(stockId, 120),
+    enabled: Number.isFinite(stockId) && stockId > 0 && inlineRows.length === 0,
+    staleTime: 5 * 60_000,
+  })
+  const priceRows = inlineRows.length > 0 ? inlineRows : (fetchedRows as any[])
+  const plan = buildOhlcvTradePlanContext(rec, context, priceRows)
+  const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
+  const breeze2Reason = breeze2ReasonFromRec(rec)
+  const latestClose = zones.latest
+  const resistance = zones.resistance
+  const support = zones.support
+  const atrDefense = zones.atrDefense
+  const stop = atrDefense ?? support ?? '近端支撐'
+  const alphaAdj = context?.scoreAdjustment == null ? 'Alpha 調整資料不足' : `Alpha 調整 ${signedText(Number(context.scoreAdjustment))}`
+  const sizing = context?.sizing == null ? '部位倍率待定' : `部位倍率 x${fmtNumber(context.sizing, 2)}`
+  const marketLine = [
+    latestClose ? `現價 ${latestClose}` : null,
+    resistance ? `前高壓力 ${resistance}` : null,
+    support ? `關鍵支撐 ${support}` : null,
+    atrDefense ? `ATR 防守 ${atrDefense}` : null,
+  ].filter(Boolean).join('，')
+  const tradePlanRows = buildFocusedTradePlanRows(rec, context, plan)
+  const geminiReason = geminiReasonForCompare(rec, reason)
+  const geminiWatchPoints = reasonVariantWatchPoints(rec, 'gemini')
+  const breeze2WatchPoints = reasonVariantWatchPoints(rec, 'breeze2')
+
+  return (
+    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
+      <p className="mb-2 flex items-center gap-1 text-xs font-medium text-sky-700 dark:text-sky-300">
+        <ShieldCheck className="h-3 w-3" />
+        推薦理由 / Alpha 交易計劃
+      </p>
+      <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground/85">
+        StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生交易計劃；Gemini 與 Breeze2 只負責旁路文字解讀，不決定進出場。
+      </p>
+      <div className="grid gap-2">
+        <KLinePlanSketch rec={rec} priceRows={priceRows} isLoading={isLoading} plan={plan} />
+        <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
+          <div className="w-1 shrink-0 bg-sky-400" />
+          <div className="min-w-0 flex-1 p-3">
+            <p className="text-xs font-medium text-foreground">盤勢判讀</p>
+            <p className="hidden">
+              {marketLine || '市場結構資料不足，先以盤中價量與風控為主。'}
+            </p>
+            <div className="mt-2">
+              {tradePlanRows.map((row) => (
+                <FocusedTradePlanRow key={row.label} row={row} />
+              ))}
+            </div>
+          </div>
+        </div>
+        <PlanBlock
+          title="風控規則"
+          accent="bg-amber-400"
+          lines={[
+            `${alphaAdj}；${sizing}；${context?.skip ? '風控層標記 skip，暫不自動進場。' : '未被風控層標記 skip。'}`,
+            `跌破 ${stop} 或量縮後失守支撐，先降倉，不用硬凹。`,
+            '這是系統交易計劃，不是個別投資建議。',
+          ]}
+        />
+      </div>
+      <ProviderReasonCompare
+        geminiReason={geminiReason}
+        geminiWatchPoints={geminiWatchPoints}
+        breeze2Reason={breeze2Reason}
+        breeze2WatchPoints={breeze2WatchPoints}
+      />
     </div>
   )
 }
@@ -698,20 +1586,17 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
   const volatility = context.volatility ?? 'unknown'
   const liquidity = context.liquidity ?? 'unknown'
   const location = context.location ?? 'unknown'
-  const fairValue = context.fairValueLow || context.fairValueHigh
-    ? `${fmtNumber(context.fairValueLow, 2)} ~ ${fmtNumber(context.fairValueHigh, 2)}`
-    : '-'
-  const optimisticValue = context.optimisticValueLow || context.optimisticValueHigh
-    ? `${fmtNumber(context.optimisticValueLow, 2)} ~ ${fmtNumber(context.optimisticValueHigh, 2)}`
-    : '-'
+  const support = fmtOptionalNumber(context.fairValueLow ?? context.poc, 2) ?? '-'
+  const confirmation = fmtOptionalNumber(context.fairValueHigh ?? context.optimisticValueHigh, 2) ?? '-'
+  const resistance = fmtOptionalNumber(context.optimisticValueHigh ?? context.fairValueHigh, 2) ?? '-'
+  const volumeNode = fmtOptionalNumber(context.poc, 2) ?? '-'
   const optimisticExceeded = context.optimisticValueStatus === 'exceeded'
     || (Number(context.latestClose) > 0
       && Number(context.optimisticValueHigh) > 0
       && Number(context.latestClose) > Number(context.optimisticValueHigh))
-  const optimisticLabel = optimisticExceeded ? '順風上緣已低於現價' : '樂觀情境區間'
   const optimisticHelp = optimisticExceeded
-    ? '目前價格已高於近端量價估出的順風上緣，這不是樂觀目標價，而是偏追高提醒。'
-    : '樂觀情境是順風時的上緣假設，不是保證目標價。'
+    ? '目前價格已高於內部順風上緣估計，前台視為追高提醒，不當成目標價。'
+    : '內部量價估計只作線位輔助，前台以可交易線位做判讀。'
   const sizingText = fmtOptionalNumber(context.sizing, 2)
   const scoreAdjText = fmtOptionalNumber(context.scoreAdjustment, 1)
   return (
@@ -727,9 +1612,10 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <span>Alpha 調整：{scoreAdjText == null ? '資料不足' : `${Number(context.scoreAdjustment) >= 0 ? '+' : ''}${scoreAdjText}`}</span>
         <span>波動：{shortLabelFor(volatility, VOL_TEXT)}</span>
         <span>流動性：{shortLabelFor(liquidity, LIQUIDITY_TEXT)}</span>
-        <span>POC：{fmtNumber(context.poc, 2)}</span>
-        <span>Fair value：{fairValue}</span>
-        {optimisticValue !== '-' && <span>{optimisticLabel}：{optimisticValue}</span>}
+        <span>內部量能 proxy：{volumeNode}</span>
+        <span>內部合理區下緣：{support}</span>
+        <span>內部合理區上緣：{confirmation}</span>
+        <span>內部順風區上緣：{resistance}</span>
         {context.window && <span>計算區間：{context.window}</span>}
         {context.latestClose != null && <span>區間最後收盤價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
@@ -739,7 +1625,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         <p>{REGIME_TEXT[regime] ?? 'Regime 是目前大盤狀態，用來調整不同策略類型的權重。'}</p>
         <p>{VOL_TEXT[volatility] ?? VOL_TEXT.unknown} {LIQUIDITY_TEXT[liquidity] ?? LIQUIDITY_TEXT.unknown}</p>
         <p>
-          Market structure：{LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp}
+          Market structure：{LOCATION_TEXT[location] ?? LOCATION_TEXT.unknown} {optimisticHelp} 實際交易線位以 OHLCV 動態線位為準。
         </p>
       </div>
       {context.skip && (
@@ -752,6 +1638,12 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
 }
 
 function normalizeWatchPoint(point: string): string {
+  if (point.startsWith('allocator:')) {
+    const summary = describeAllocatorDecision([point])
+    if (summary) {
+      return `5-slot 資金配置：${summary.title}。${summary.detail}。這只代表槽位與資金允許，仍需通過盤中報價、price_above_entry、range_position_low、量能與限價成交檢核。`
+    }
+  }
   if (point.startsWith('Alpha bucket:') || point.startsWith('Alpha overlay:')) {
     const ctx = contextFromWatchPoints([point])
     const bucket = ctx?.bucket ?? 'unknown'
@@ -763,19 +1655,28 @@ function normalizeWatchPoint(point: string): string {
   }
   if (point.startsWith('Market structure:')) {
     const ctx = contextFromWatchPoints([point])
-    const fairValue = ctx?.fairValueLow || ctx?.fairValueHigh
-      ? `${fmtNumber(ctx?.fairValueLow, 2)} ~ ${fmtNumber(ctx?.fairValueHigh, 2)}`
-      : '-'
-    const optimisticValue = ctx?.optimisticValueLow || ctx?.optimisticValueHigh
-      ? `${fmtNumber(ctx?.optimisticValueLow, 2)} ~ ${fmtNumber(ctx?.optimisticValueHigh, 2)}`
-      : null
+    const support = fmtOptionalNumber(ctx?.fairValueLow ?? ctx?.poc, 2) ?? '-'
+    const confirmation = fmtOptionalNumber(ctx?.fairValueHigh ?? ctx?.optimisticValueHigh, 2) ?? '-'
+    const resistance = fmtOptionalNumber(ctx?.optimisticValueHigh ?? ctx?.fairValueHigh, 2) ?? '-'
+    const volumeNode = fmtOptionalNumber(ctx?.poc, 2) ?? '-'
     const optimisticExceeded = ctx?.optimisticValueStatus === 'exceeded'
       || (Number(ctx?.latestClose) > 0 && Number(ctx?.optimisticValueHigh) > 0 && Number(ctx?.latestClose) > Number(ctx?.optimisticValueHigh))
-    const optimisticLabel = optimisticExceeded ? '順風上緣已低於現價' : '樂觀情境'
     const optimisticHelp = optimisticExceeded
-      ? '目前價格已高於順風上緣，這是偏追高提醒，不是樂觀目標價。'
-      : '樂觀情境是順風時的上緣假設，不是保證目標價。'
-    return `Market structure：POC=${fmtNumber(ctx?.poc, 2)}；fair value=${fairValue}${optimisticValue ? `；${optimisticLabel}=${optimisticValue}` : ''}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：這是量價結構位置與追高/低估提醒；${optimisticHelp}`
+      ? '內部上緣已低於現價，前台視為追高風險。'
+      : '內部量價估計只作 Alpha 輔助，不當成交易線位。'
+    return `Market structure：Alpha 日線價值代理=${support}~${confirmation}；內部可追價上限=${confirmation}~${resistance}；日線量能代理節點=${volumeNode}；價格位置=${shortLabelFor(ctx?.location, LOCATION_TEXT)}。白話：${optimisticHelp} 實際買入參考區與可追價上限以 OHLCV 動態線位為準。`
+  }
+  if (point.startsWith('ohlcv_trade_plan:')) {
+    const mode = extractTokenValue(point, 'mode') ?? '-'
+    const entry = extractTokenValue(point, 'entry') ?? '-'
+    const buyReference = extractTokenValue(point, 'buy_reference') ?? '-'
+    const optimisticRange = extractTokenValue(point, 'optimistic_range') ?? '-'
+    const confirmation = extractTokenValue(point, 'confirmation') ?? '-'
+    const resistance = extractTokenValue(point, 'resistance') ?? '-'
+    const support = extractTokenValue(point, 'support') ?? '-'
+    const atrDefense = extractTokenValue(point, 'atr_defense') ?? '-'
+    const volumeNode = extractTokenValue(point, 'volume_node') ?? '-'
+    return `OHLCV 交易線位：模式=${mode}；預計入場=${entry}；買入參考區=${buyReference}；可追價上限區=${optimisticRange}；轉強確認=${confirmation}；前高壓力=${resistance}；關鍵支撐=${support}；ATR 防守=${atrDefense}；量能節點=${volumeNode}。`
   }
   if (point.startsWith('ML ensemble:')) {
     const bullish = point.match(/bullish=([^,]+)/)?.[1] ?? '-'
@@ -795,22 +1696,44 @@ function isContextWatchPoint(point: string): boolean {
   return normalized.startsWith('Alpha bucket:')
     || normalized.startsWith('Alpha overlay:')
     || normalized.startsWith('Market structure:')
+    || normalized.startsWith('ohlcv_trade_plan:')
+    || normalized.startsWith('entry_price_model_v2:')
+    || normalized.startsWith('Alpha 結構:')
     || normalized.startsWith('ML ensemble:')
     || normalized.startsWith('screener_funnel:')
     || normalized.startsWith('Alpha bucket：')
     || normalized.startsWith('Alpha overlay：')
     || normalized.startsWith('Market structure：')
+    || normalized.startsWith('OHLCV 交易線位：')
+    || normalized.startsWith('Alpha 結構：')
     || normalized.startsWith('ML ensemble：')
+}
+
+function isRawDebugWatchPoint(point: string): boolean {
+  const normalized = point.trim()
+  return normalized.startsWith('breeze2:')
+    || /^market_segment:/i.test(normalized)
+    || /^chip_source=/i.test(normalized)
+    || /(?:^|,)source_date=/i.test(normalized)
+    || /broker_net_(?:amount|shares)_5d=/i.test(normalized)
+    || /broker_count=|concentration=/i.test(normalized)
+    || /^quality=/i.test(normalized)
 }
 
 function executionWatchPointKey(point: string): string {
   const event = parseExecutionEvent(point)
   if (!event) return point.trim()
   if (event.kind === 'execution' && event.status === 'stale_quote') return 'execution:stale_quote'
-  if (event.kind === 'execution' && event.status === 'deferred') {
-    if (event.reason.startsWith('volume_ratio_low')) return 'execution:deferred:volume_ratio_low'
-    if (event.reason.startsWith('momentum_unavailable')) return 'execution:deferred:momentum_unavailable'
-    if (event.reason.startsWith('price_above_entry')) return 'execution:deferred:price_above_entry'
+  if (event.kind === 'execution' && (event.status === 'deferred' || event.status === 'pending')) {
+    if (event.reason.startsWith('range_position_low')) return 'execution:waiting:range_position_low'
+    if (event.reason.startsWith('volume_ratio_low')) return 'execution:waiting:volume_ratio_low'
+    if (event.reason.startsWith('momentum_unavailable')) return 'execution:waiting:momentum_unavailable'
+    if (event.reason.startsWith('price_above_entry')) return 'execution:waiting:price_above_entry'
+    if (event.reason.startsWith('waiting_for_ohlcv_confirmation')) return 'execution:waiting:ohlcv_confirmation'
+    if (event.reason.startsWith('price_above_ohlcv_optimistic_range')) return 'execution:waiting:ohlcv_optimistic_range'
+    if (event.reason.startsWith('ohlcv_support_lost')) return 'execution:waiting:ohlcv_support_lost'
+    if (event.reason.startsWith('between_buy_reference_and_confirmation')) return 'execution:waiting:ohlcv_mid_range'
+    if (event.reason.startsWith('falling_5min')) return 'execution:waiting:falling_5min'
   }
   return `${event.kind}:${event.status}:${event.reason}`
 }
@@ -818,7 +1741,7 @@ function executionWatchPointKey(point: string): string {
 function displayWatchPoints(points: string[]): string[] {
   const latestByKey = new Map<string, string>()
   for (const point of points) {
-    if (isContextWatchPoint(point)) continue
+    if (isContextWatchPoint(point) || isRawDebugWatchPoint(point)) continue
     const key = executionWatchPointKey(point)
     if (latestByKey.has(key)) latestByKey.delete(key)
     latestByKey.set(key, point)
@@ -844,291 +1767,6 @@ function normalizeEvidenceLinks(raw: unknown): EvidenceLink[] {
   return links
 }
 
-function finiteRecNumber(rec: any, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = Number(rec?.[key])
-    if (Number.isFinite(value)) return value
-  }
-  return null
-}
-
-function fmtSignedPct(value: number | string | null | undefined, decimals = 2): string {
-  if (value == null || value === '') return '-'
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return '-'
-  const normalized = Math.abs(numeric) <= 1 ? numeric * 100 : numeric
-  return `${normalized >= 0 ? '+' : ''}${normalized.toFixed(decimals)}%`
-}
-
-function fmtVolume(raw: number | string | null | undefined): string {
-  if (raw == null || raw === '') return '-'
-  const value = Number(raw)
-  if (!Number.isFinite(value) || value <= 0) return '-'
-  if (value >= 1_000_000) return `${Math.round(value / 1000).toLocaleString()} 張`
-  if (value >= 1000) return `${Math.round(value).toLocaleString()} 張`
-  return `${Math.round(value).toLocaleString()}`
-}
-
-function compactText(raw: unknown, maxLength = 150): string {
-  const text = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : ''
-  if (!text) return '後端尚未提供完整推薦理由，請展開查看分數、ML 與市場結構。'
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
-}
-
-function scoreRailColor(key: string): string {
-  const colors: Record<string, string> = {
-    mlEdge: 'bg-emerald-400',
-    chipFlow: 'bg-cyan-400',
-    technicalStructure: 'bg-violet-400',
-    fundamentalQuality: 'bg-amber-400',
-    newsTheme: 'bg-sky-400',
-  }
-  return colors[key] ?? 'bg-slate-400'
-}
-
-function unitScore(value: number, max: number): number {
-  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) return 0
-  return Math.max(0, Math.min(1, value / max))
-}
-
-function formatUnitScore(value: number, max: number): string {
-  return unitScore(value, max).toFixed(2)
-}
-
-function formatTotalUnitScore(score: number): string {
-  if (!Number.isFinite(score)) return '0.00'
-  const ratio = score <= 1 ? score : score / 100
-  return Math.max(0, Math.min(1, ratio)).toFixed(2)
-}
-
-function ScoreRing({ score }: { score: number }) {
-  const safeScore = Number.isFinite(score) ? Math.max(0, Math.min(100, score <= 1 ? score * 100 : score)) : 0
-  const color = safeScore >= 70 ? '#34d399' : safeScore >= 50 ? '#22d3ee' : safeScore >= 35 ? '#fbbf24' : '#fb7185'
-  return (
-    <div className="relative grid h-16 w-16 shrink-0 place-items-center">
-      <div
-        className="absolute inset-0 rounded-full"
-        style={{
-          background: `conic-gradient(${color} ${safeScore}%, rgba(148,163,184,0.18) ${safeScore}%)`,
-        }}
-      />
-      <div className="absolute inset-1 rounded-full border border-white/5 bg-[#07101b]" />
-      <div className="relative text-center">
-        <div className="font-mono text-base font-bold leading-none text-cyan-200">{formatTotalUnitScore(safeScore)}</div>
-        <div className="mt-0.5 text-[9px] text-slate-400">score</div>
-      </div>
-    </div>
-  )
-}
-
-function CompactScoreRail({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0
-  return (
-    <div className="grid grid-cols-[4rem_minmax(0,1fr)_3.6rem] items-center gap-2 text-[11px]">
-      <span className="truncate font-medium text-slate-300">{label}</span>
-      <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
-        <div className={cn('h-full rounded-full', color)} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-right font-mono text-slate-400">
-        {formatUnitScore(value, max)}
-      </span>
-    </div>
-  )
-}
-
-function MetricTile({ label, value, tone = 'neutral' }: {
-  label: string
-  value: string
-  tone?: 'positive' | 'negative' | 'neutral' | 'warning'
-}) {
-  const toneClass = {
-    positive: 'text-emerald-300',
-    negative: 'text-rose-300',
-    neutral: 'text-slate-100',
-    warning: 'text-amber-300',
-  }[tone]
-  return (
-    <div className="rounded-lg border border-slate-800 bg-[#08111d]/85 px-2.5 py-2">
-      <div className="text-[10px] text-slate-500">{label}</div>
-      <div className={cn('mt-0.5 truncate font-mono text-xs font-semibold', toneClass)}>{value}</div>
-    </div>
-  )
-}
-
-function factorLine(label: string, value: string, tone: 'positive' | 'negative' | 'neutral' | 'warning' = 'neutral') {
-  return { label, value, tone }
-}
-
-type LayerTraceItem = {
-  layer: 'L1' | 'L2' | 'L3' | 'L4'
-  label: string
-  value: string
-  tone: 'positive' | 'negative' | 'neutral' | 'warning'
-}
-
-function parseArrayText(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.map((item) => String(item ?? '').trim()).filter(Boolean)
-  if (typeof raw === 'string' && raw.trim()) {
-    try {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) return parsed.map((item) => String(item ?? '').trim()).filter(Boolean)
-    } catch {
-      return raw.split(/[,\s|]+/).map((item) => item.trim()).filter(Boolean)
-    }
-  }
-  return []
-}
-
-function screenerEvidenceFromRec(rec: any): Record<string, any> {
-  return parseObject(rec.screener_funnel_evidence) ?? {}
-}
-
-function screenerTimelineFromRec(rec: any): Array<Record<string, any>> {
-  const raw = rec.screener_funnel_timeline
-  if (Array.isArray(raw)) return raw.filter((item): item is Record<string, any> => item && typeof item === 'object')
-  if (typeof raw === 'string' && raw.trim()) {
-    try {
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed) ? parsed.filter((item): item is Record<string, any> => item && typeof item === 'object') : []
-    } catch {
-      return []
-    }
-  }
-  return []
-}
-
-function latestTimelineStage(timeline: Array<Record<string, any>>, patterns: RegExp[]): Record<string, any> | null {
-  for (let index = timeline.length - 1; index >= 0; index--) {
-    const stage = String(timeline[index].stage ?? '')
-    if (patterns.some((pattern) => pattern.test(stage))) return timeline[index]
-  }
-  return null
-}
-
-const STRATEGY_FAMILY_LABELS: Array<[RegExp, string]> = [
-  [/(volatility|breakout|squeeze|vcp|bb)/i, '波動收斂突破'],
-  [/(trend|reclaim|continuation|macd|adx|ma)/i, '趨勢回收延續'],
-  [/(smart|money|chip|broker|accumulation|foreign|trust)/i, '主力籌碼累積'],
-  [/(smc|liquidity|sweep|bos|choch|displacement)/i, 'SMC 結構回收'],
-  [/(revenue|quality|fundamental|eps|roe|margin)/i, '營收品質動能'],
-  [/(sector|rotation|theme|industry|group)/i, '族群輪動核心'],
-]
-
-function strategyFamilyLabel(id: string): string {
-  const hit = STRATEGY_FAMILY_LABELS.find(([pattern]) => pattern.test(id))
-  return hit?.[1] ?? '策略命中'
-}
-
-function strategyIdsFromRec(rec: any, evidence: Record<string, any>): string[] {
-  const direct = [
-    ...parseArrayText(evidence.strategy_ids),
-    ...parseArrayText(evidence.strategy_pool_ids),
-    ...parseArrayText(rec.strategy_pool_ids),
-  ]
-  const pools = Array.isArray(evidence.strategy_pool) ? evidence.strategy_pool : []
-  for (const pool of pools) {
-    if (pool && typeof pool === 'object') direct.push(...parseArrayText((pool as any).strategy_ids))
-  }
-  return [...new Set(direct.map((item) => item.trim()).filter(Boolean))]
-}
-
-function allocationFromRec(rec: any): Record<string, any> | null {
-  return parseObject(rec.alpha_allocation)
-}
-
-function formatAllocationWeight(raw: unknown): string {
-  const value = Number(raw)
-  if (!Number.isFinite(value)) return '-'
-  const pct = Math.abs(value) <= 1 ? value * 100 : value
-  return `${pct.toFixed(1)}%`
-}
-
-function buildLayerTrace(rec: any, evidence: Record<string, any>, timeline: Array<Record<string, any>>, mlDiagnostics: MlDiagnosticsSummary | null): LayerTraceItem[] {
-  const strategyIds = strategyIdsFromRec(rec, evidence)
-  const l2 = latestTimelineStage(timeline, [/l2/i, /coarse/i, /ml_queue/i])
-  const l3Active = Number(mlDiagnostics?.activeWeightCount ?? 0)
-  const l3Total = Number(mlDiagnostics?.totalAlphaModels ?? ALPHA_PREDICTION_MODEL_NAMES.length)
-  const allocation = allocationFromRec(rec)
-  const selected = allocation?.selected === true || rec.alpha_selected === true
-  const weight = allocation?.target_weight ?? allocation?.weight ?? allocation?.final_weight ?? rec.target_weight
-  return [
-    {
-      layer: 'L1',
-      label: 'Strategy',
-      value: strategyIds.length ? `${strategyIds.length} 策略` : '未標策略',
-      tone: strategyIds.length ? 'positive' : 'warning',
-    },
-    {
-      layer: 'L2',
-      label: 'Coarse',
-      value: l2 ? String(l2.reason_code ?? l2.decision ?? 'pass') : String(rec.screener_funnel_reason ?? 'funnel'),
-      tone: String(l2?.decision ?? '').includes('drop') ? 'negative' : 'neutral',
-    },
-    {
-      layer: 'L3',
-      label: 'Family ML',
-      value: `${Number.isFinite(l3Active) ? l3Active : 0}/${Number.isFinite(l3Total) ? l3Total : ALPHA_PREDICTION_MODEL_NAMES.length} active`,
-      tone: l3Active > 0 ? 'positive' : 'warning',
-    },
-    {
-      layer: 'L4',
-      label: 'Allocation',
-      value: selected ? `selected ${formatAllocationWeight(weight)}` : 'not selected',
-      tone: selected ? 'positive' : 'warning',
-    },
-  ]
-}
-
-function LayerTraceStrip({ items }: { items: LayerTraceItem[] }) {
-  return (
-    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-      {items.map((item) => (
-        <div key={item.layer} className="rounded-lg border border-slate-800 bg-[#08111d]/85 px-2 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className={cn(
-              'font-mono text-[10px] font-bold',
-              item.tone === 'positive' && 'text-emerald-300',
-              item.tone === 'negative' && 'text-rose-300',
-              item.tone === 'warning' && 'text-amber-300',
-              item.tone === 'neutral' && 'text-slate-300',
-            )}>{item.layer}</span>
-            <span className="truncate text-[9px] text-slate-500">{item.label}</span>
-          </div>
-          <div className="mt-1 truncate font-mono text-[10px] text-slate-300">{item.value}</div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function StrategyFamilyPanel({ strategyIds }: { strategyIds: string[] }) {
-  if (!strategyIds.length) {
-    return (
-      <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-2.5 text-[11px] leading-5 text-amber-200">
-        L1 尚未提供 strategy id，這檔目前只能靠 funnel reason 與 Score V2 判讀。
-      </div>
-    )
-  }
-  const grouped = new Map<string, string[]>()
-  for (const id of strategyIds) {
-    const family = strategyFamilyLabel(id)
-    grouped.set(family, [...(grouped.get(family) ?? []), id])
-  }
-  return (
-    <div className="rounded-lg border border-cyan-400/15 bg-cyan-400/[0.045] p-2.5">
-      <div className="mb-2 text-[11px] font-semibold text-cyan-200">L1 Strategy Family / Variant</div>
-      <div className="space-y-1.5">
-        {[...grouped.entries()].map(([family, ids]) => (
-          <div key={family} className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-2 text-[11px] leading-5">
-            <span className="text-slate-400">{family}</span>
-            <span className="truncate font-mono text-cyan-100">{ids.slice(0, 4).join(' / ')}{ids.length > 4 ? ` +${ids.length - 4}` : ''}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
   const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG.HOLD
@@ -1139,9 +1777,6 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
   const mlDiagnostics = mlDiagnosticsFromRec(rec)
-  const screenerEvidence = screenerEvidenceFromRec(rec)
-  const screenerTimeline = screenerTimelineFromRec(rec)
-  const strategyIds = strategyIdsFromRec(rec, screenerEvidence)
   const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const chip5dRaw = rec.chip_cash_total_5d ?? (
@@ -1155,152 +1790,79 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
   const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
-  const finalScore = Number.isFinite(scoreViewModel.finalScore) ? scoreViewModel.finalScore : Number(rec.score ?? 0)
-  const currentPrice = finiteRecNumber(rec, ['current_price', 'latest_price', 'close', 'close_price', 'last_price'])
-    ?? (Number.isFinite(Number(alphaContext?.latestClose)) ? Number(alphaContext?.latestClose) : null)
-  const changePct = finiteRecNumber(rec, ['change_pct', 'price_change_pct', 'return_1d', 'daily_return_pct'])
-  const volume = finiteRecNumber(rec, ['volume', 'trading_volume', '成交量', 'volume_shares'])
-  const mlScore = scoreComponentValue(rec, 'mlEdge')
-  const chipScore = scoreComponentValue(rec, 'chipFlow')
-  const technicalScore = scoreComponentValue(rec, 'technicalStructure')
-  const fundamentalScore = scoreComponentValue(rec, 'fundamentalQuality')
-  const fairValue = alphaContext?.fairValueLow || alphaContext?.fairValueHigh
-    ? `${fmtNumber(alphaContext?.fairValueLow, 2)}~${fmtNumber(alphaContext?.fairValueHigh, 2)}`
-    : '-'
-  const chaseCeiling = alphaContext?.optimisticValueHigh != null
-    ? fmtNumber(alphaContext.optimisticValueHigh, 2)
-    : '-'
-  const positionLabel = alphaContext?.location
-    ? shortLabelFor(alphaContext.location, LOCATION_TEXT)
-    : '價格位置待同步'
-  const layerTrace = buildLayerTrace(rec, screenerEvidence, screenerTimeline, mlDiagnostics)
-  const factorLines = [
-    factorLine('ML', `${formatUnitScore(mlScore, 25)}${mlSummary ? ` · ${compactText(mlSummary, 68)}` : ''}`, unitScore(mlScore, 25) >= 0.5 ? 'positive' : 'warning'),
-    factorLine(chipBadgeLabel, `${formatUnitScore(chipScore, 25)} · 5日 ${fmtChipAmount(chip5dRaw)}`, chipPositive ? 'positive' : 'neutral'),
-    factorLine('技術', `${formatUnitScore(technicalScore, 25)}${rec.rsi14 != null ? ` · RSI ${fmtNumber(rec.rsi14, 1)}` : ''}`, unitScore(technicalScore, 25) >= 0.5 ? 'positive' : 'warning'),
-    factorLine('基本', `${formatUnitScore(fundamentalScore, 20)}`, unitScore(fundamentalScore, 20) >= 0.5 ? 'positive' : 'neutral'),
-    factorLine('位置', `value ${fairValue} · chase ${chaseCeiling}`, alphaContext?.location === 'above_fair_value' ? 'warning' : 'neutral'),
-  ]
 
   return (
     <div className={cn(
-      'overflow-hidden rounded-xl border bg-[#07101b] text-slate-100 shadow-[0_18px_55px_rgba(0,0,0,0.22)] transition-all',
+      'rounded-xl border transition-all',
       rank === 1
-        ? 'border-amber-400/55'
-        : 'border-slate-800 hover:border-slate-700',
+        ? 'border-amber-500/40 bg-amber-500/[0.06] shadow-sm'
+        : 'border-border/50 bg-card hover:border-border',
     )}>
       <div
-        className="cursor-pointer select-none p-3 sm:p-4"
+        className="flex cursor-pointer select-none items-center gap-3 p-3 sm:p-4"
         onClick={() => setExpanded((value) => !value)}
       >
-        <div className="flex items-start gap-3">
-          <div className={cn(
-            'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold',
-            rank === 1 ? 'bg-amber-400 text-[#08111d]' :
-            rank === 2 ? 'bg-slate-400 text-[#08111d]' :
-            rank === 3 ? 'bg-orange-400 text-[#08111d]' :
-            'bg-slate-800 text-slate-300',
-          )}>
-            {rank}
+        <div className={cn(
+          'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold',
+          rank === 1 ? 'bg-amber-400 text-white' :
+          rank === 2 ? 'bg-gray-400 text-white' :
+          rank === 3 ? 'bg-orange-400 text-white' :
+          'bg-muted text-muted-foreground',
+        )}>
+          {rank}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold">{rec.symbol}</span>
+            <span className="truncate text-sm text-muted-foreground">{rec.name}</span>
+            {rec.sector && (
+              <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">{rec.sector}</Badge>
+            )}
           </div>
-
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-base font-bold text-cyan-200">{rec.symbol}</span>
-              <span className="truncate text-sm font-medium text-slate-200">{rec.name}</span>
-              {isEmerging && (
-                <Badge variant="outline" className="border-amber-400/35 bg-amber-400/10 px-1.5 py-0 text-[10px] text-amber-200">
-                  興櫃研究
-                </Badge>
-              )}
-              {rec.sector && (
-                <Badge variant="outline" className="shrink-0 border-slate-700 bg-slate-900/70 px-1.5 py-0 text-[10px] text-slate-300">{rec.sector}</Badge>
-              )}
-              <Badge className={cn('px-1.5 py-0 text-[10px]', sig.color)}>
-                <SigIcon className="mr-1 h-2.5 w-2.5" />
-                {sig.label}
-              </Badge>
-            </div>
-
-            <div className="mt-2 grid gap-1.5">
-              {scoreViewModel.rows.map((item) => (
-                <CompactScoreRail
-                  key={item.key}
-                  label={item.label}
-                  value={item.value}
-                  max={item.max}
-                  color={scoreRailColor(item.key)}
-                />
-              ))}
-            </div>
-          </div>
-
-          <ScoreRing score={finalScore} />
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <MetricTile label="收盤 / 現價" value={currentPrice == null ? '-' : fmtNumber(currentPrice, 2)} />
-          <MetricTile
-            label="漲跌"
-            value={changePct == null ? '-' : fmtSignedPct(changePct)}
-            tone={changePct == null ? 'neutral' : changePct >= 0 ? 'negative' : 'positive'}
-          />
-          <MetricTile label="成交量" value={fmtVolume(volume)} />
-          <MetricTile label={chipBadgeLabel} value={fmtChipAmount(chip5dRaw)} tone={chipPositive ? 'negative' : 'positive'} />
-        </div>
-
-        <div className="mt-3">
-          <LayerTraceStrip items={layerTrace} />
-        </div>
-
-        <div className="mt-3 rounded-lg border border-slate-800 bg-[#0a1422]/90 p-2.5">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="border-cyan-400/25 bg-cyan-400/10 px-1.5 py-0 text-[10px] text-cyan-200">
-              {positionLabel}
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <Badge className={cn('px-1.5 py-0 text-[10px]', sig.color)}>
+              <SigIcon className="mr-1 h-2.5 w-2.5" />
+              {sig.label}
             </Badge>
+            <span className={cn('flex items-center gap-1 text-xs', chipPositive ? 'text-red-500' : 'text-emerald-500')}>
+              <Users className="h-3 w-3" />
+              {chipBadgeLabel} {fmtChipAmount(chip5dRaw)}
+            </span>
+            {rec.rsi14 != null && (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <BarChart3 className="h-3 w-3" />
+                RSI {fmtNumber(rec.rsi14, 1)}
+              </span>
+            )}
+            {(mlSummary || mlMetadataGap) && (
+              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-emerald-700 dark:text-emerald-300">
+                ML {mlSummary ?? `分數 ${fmtNumber(scoreComponentValue(rec, 'mlEdge'), 1)}，投票明細待同步`}
+              </Badge>
+            )}
             {alphaContext?.bucket && (
-              <Badge variant="outline" className="gap-1 border-sky-400/25 bg-sky-400/10 px-1.5 py-0 text-[10px] text-sky-200">
+              <Badge variant="outline" className="gap-1 border-sky-500/40 bg-sky-500/10 px-1.5 py-0 text-[10px] text-sky-700 dark:text-sky-300">
                 <ShieldCheck className="h-2.5 w-2.5" />
                 {labelFor(alphaContext.bucket)}
               </Badge>
             )}
           </div>
-          <div className="grid gap-1.5">
-            {factorLines.map((item) => (
-              <div key={item.label} className="grid grid-cols-[3rem_minmax(0,1fr)] gap-2 text-[11px] leading-5">
-                <span className="font-semibold text-slate-400">{item.label}</span>
-                <span className={cn(
-                  'truncate font-mono',
-                  item.tone === 'positive' && 'text-emerald-300',
-                  item.tone === 'negative' && 'text-rose-300',
-                  item.tone === 'warning' && 'text-amber-300',
-                  item.tone === 'neutral' && 'text-slate-300',
-                )}>
-                  {item.value}
-                </span>
-              </div>
-            ))}
-          </div>
         </div>
 
-        <div className="mt-3 rounded-lg border border-slate-800 bg-[#090f1a]/80 p-2.5">
-          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-slate-300">
-            <BarChart3 className="h-3 w-3 text-cyan-300" />
-            推薦摘要
-          </div>
-          <p className="text-xs leading-5 text-slate-400">
-            {compactText(displayReason)}
-          </p>
+        <div className="shrink-0 text-right">
+          <div className="text-lg font-bold text-primary">{Math.round(scoreViewModel.finalScore)}</div>
+          <div className="text-[10px] text-muted-foreground">最終分</div>
         </div>
 
-        <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
-          <span>{expanded ? '收合診斷' : '展開完整 Score V2 / ML / 市場結構'}</span>
-          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        </div>
+        {expanded ? (
+          <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+        )}
       </div>
 
       {evidenceLinks.length > 0 && (
-        <div className="flex flex-wrap gap-2 border-t border-slate-800 px-4 py-2">
+        <div className="flex flex-wrap gap-2 border-t border-border/30 px-4 py-2">
           {evidenceLinks.map((link) => (
             <a
               key={`${link.source}:${link.url}`}
@@ -1308,7 +1870,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               target="_blank"
               rel="noreferrer"
               onClick={(event) => event.stopPropagation()}
-              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-300 hover:border-sky-500/45"
+              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-700 hover:border-sky-500/45 dark:text-sky-300"
             >
               <ExternalLink className="h-3 w-3 shrink-0" />
               <span className="shrink-0 font-mono uppercase">{link.source}</span>
@@ -1319,22 +1881,26 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
       )}
 
       {expanded && (
-        <div className="space-y-4 border-t border-slate-800 px-4 pb-4 pt-3">
+        <div className="space-y-4 border-t border-border/40 px-4 pb-4 pt-3">
+          <ScoreFormulaSummary viewModel={scoreViewModel} />
+
           <div className="space-y-1.5">
-            <p className="mb-2 text-xs font-medium text-slate-400">基礎分數</p>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">五構面基礎分數</p>
             {scoreViewModel.rows.map((item) => (
-              <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
+              <div key={item.key} className="space-y-1">
+                <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
+                {item.explanation && (
+                  <p className="pl-[72px] text-[11px] leading-relaxed text-muted-foreground/85 sm:pl-[74px]">
+                    {item.explanation}
+                  </p>
+                )}
+              </div>
             ))}
           </div>
 
           <ScoreBreakdownV2 rec={rec} />
 
-          <StrategyFamilyPanel strategyIds={strategyIds} />
-
-          <div>
-            <p className="mb-1.5 text-xs font-medium text-slate-400">推薦理由</p>
-            <p className="whitespace-pre-line text-sm leading-relaxed text-slate-200">{displayReason}</p>
-          </div>
+          <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
 
           {(mlSummary || mlMetadataGap || mlDiagnostics) && (
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
@@ -1344,17 +1910,15 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             </div>
           )}
 
-          <AlphaContextBlock context={alphaContext} />
-
           {noticePoints.length > 0 && (
             <div>
-              <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-slate-400">
+              <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
                 <AlertCircle className="h-3 w-3" />
                 注意事項
               </p>
               <ul className="space-y-1">
                 {noticePoints.map((point, index) => (
-                  <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-slate-400">
+                  <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
                     <span className="mt-0.5 shrink-0 text-amber-500">!</span>
                     {normalizeWatchPoint(point)}
                   </li>
@@ -1364,7 +1928,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           )}
 
           {rec.confidence != null && (
-            <p className="text-[11px] text-slate-500">
+            <p className="text-[11px] text-muted-foreground">
               ML 信心度 {(Number(rec.confidence) * 100).toFixed(0)}%
               {rec.current_price != null && (
                 <span className="ml-3">{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>

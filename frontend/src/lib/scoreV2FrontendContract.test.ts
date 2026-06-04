@@ -6,11 +6,16 @@ function assert(condition: unknown, message: string): void {
 
 const viewModel = readFileSync('src/lib/scoreV2ViewModel.ts', 'utf8')
 const recommendationCard = readFileSync('src/components/RecommendationCardClean.tsx', 'utf8')
+const pipelinePage = readFileSync('src/pages/PipelinePage.tsx', 'utf8')
 const pipelineTemplate = readFileSync('../ml-controller/templates/pipeline.md.j2', 'utf8')
 
+const scoreFormulaStart = recommendationCard.indexOf('function ScoreFormulaSummary')
 const scoreBreakdownStart = recommendationCard.indexOf('function ScoreBreakdownV2')
 const scoreBreakdownEnd = recommendationCard.indexOf('function AlphaContextBlock')
+assert(scoreFormulaStart >= 0 && scoreBreakdownStart > scoreFormulaStart, 'ScoreFormulaSummary block should be locatable')
 assert(scoreBreakdownStart >= 0 && scoreBreakdownEnd > scoreBreakdownStart, 'ScoreBreakdownV2 block should be locatable')
+
+const scoreFormula = recommendationCard.slice(scoreFormulaStart, scoreBreakdownStart)
 const scoreBreakdown = recommendationCard.slice(scoreBreakdownStart, scoreBreakdownEnd)
 
 for (const label of ['ML Edge', '籌碼流', '技術結構', '基本面', '新聞題材']) {
@@ -21,24 +26,12 @@ for (const label of ['趨勢結構', '波動結構', '轉折極端', '量能確�
   assert(viewModel.includes(label), `Score V2 technical detail should expose readable label: ${label}`)
 }
 
-for (const text of ['Score V2 分解', '基礎分數', 'Alpha 調整', '技術結構細項', 'Alpha 調整明細', 'score_components']) {
+for (const text of ['基礎分數與 Alpha 調整', '基礎分數', 'Alpha 調整', '最終分數']) {
+  assert(scoreFormula.includes(text), `Recommendation card formula summary should render: ${text}`)
+}
+
+for (const text of ['Score V2 分解', '技術結構 + Alpha 明細', '技術結構細項', 'Alpha 調整明細', 'item.explanation']) {
   assert(scoreBreakdown.includes(text), `Recommendation card Score V2 block should render: ${text}`)
-}
-
-for (const text of ['function ScoreRing', 'function MetricTile', 'function CompactScoreRail', 'function LayerTraceStrip', 'function StrategyFamilyPanel', '推薦摘要', '展開完整 Score V2 / ML / 市場結構']) {
-  assert(recommendationCard.includes(text), `Recommendation card should keep the rich single-stock layout: ${text}`)
-}
-
-for (const text of ['formatUnitScore', 'formatTotalUnitScore', 'L1', 'L2', 'L3', 'L4', 'Strategy Family / Variant']) {
-  assert(recommendationCard.includes(text), `Recommendation card should expose normalized new-flow trace: ${text}`)
-}
-
-for (const model of ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']) {
-  assert(recommendationCard.includes(`'${model}'`), `Recommendation card active model pool should include ${model}`)
-}
-
-for (const retiredModel of ['FT-Transformer', 'Chronos']) {
-  assert(!recommendationCard.includes(`'${retiredModel}'`), `Recommendation card should not expose retired model ${retiredModel}`)
 }
 
 assert(!scoreBreakdown.includes('chip_score'), 'Recommendation card Score V2 block should not render legacy chip_score')
@@ -47,10 +40,72 @@ assert(!scoreBreakdown.includes('ml_score'), 'Recommendation card Score V2 block
 assert(!scoreBreakdown.includes('嚗'), 'Recommendation card Score V2 block should not contain mojibake punctuation')
 
 assert(
-  !pipelineTemplate.includes("selectattr('ml_score', 'defined')"),
-  'pipeline template should not count ML stage by legacy ml_score column',
+  recommendationCard.includes('function scoreV2PayloadFromRec')
+    && recommendationCard.includes('rec?.score_components')
+    && recommendationCard.includes('parseObject(rec?.score_components) ?? parseObject(rec?.score_v2)'),
+  'Recommendation card should consume production score_components before falling back to score_v2',
+)
+
+assert(
+  recommendationCard.includes('fmtNumber(safeValue, 1)}/{fmtNumber(safeMax, 0)')
+    && !recommendationCard.includes('formatUnitScore')
+    && !recommendationCard.includes('formatTotalUnitScore'),
+  'Recommendation card should display Score V2 points instead of normalized 0.xx ratios',
+)
+
+for (const model of ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']) {
+  assert(recommendationCard.includes(`'${model}'`), `Recommendation card active model pool should include ${model}`)
+}
+
+for (const retiredModel of ['CatBoost', 'FT-Transformer', 'Chronos']) {
+  assert(!recommendationCard.includes(`'${retiredModel}'`), `Recommendation card should not expose retired model ${retiredModel}`)
+}
+
+assert(
+  recommendationCard.includes('coreFamilyVoteBadgeText')
+    && recommendationCard.includes('coreFamilyVote'),
+  'Recommendation card should surface Layer3 core family vote evidence in the ML badge',
+)
+
+for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '風控規則', 'Gemini 3.1 Flash', 'Breeze2', 'Alpha 規則引擎']) {
+  assert(scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should render: ${text}`)
+}
+
+assert(!scoreBreakdown.includes('方案 A | 突破追價'), 'Recommendation card should not render plan A copy')
+assert(!scoreBreakdown.includes('方案 B | 拉回低吸'), 'Recommendation card should not render plan B copy')
+
+for (const text of ['偏好買入價', '建議買入區間', '可追價上限', '前高壓力', '轉強確認', '關鍵支撐', 'ATR 防守', 'POC / 量能節點來源']) {
+  assert(scoreBreakdown.includes(text), `Recommendation card should use user-facing trading-plan label: ${text}`)
+}
+
+for (const text of ['Entry Model V2 /', 'OHLCV daily fallback', 'Alpha daily proxy fallback']) {
+  assert(scoreBreakdown.includes(text), `Recommendation card should prefer Entry Model V2 evidence or explicitly label fallback: ${text}`)
+}
+
+for (const text of ['entryModelV2FromWatchPoints', 'entry_price_model_v2:']) {
+  assert(recommendationCard.includes(text), `Recommendation card should parse Entry Model V2 evidence: ${text}`)
+}
+
+for (const text of ['KLinePlanSketch', 'K線交易計劃圖', 'Lightweight Charts', 'createChart', 'CandlestickSeries', 'TradePlanRow', 'ATR 防守']) {
+  assert(scoreBreakdown.includes(text), `Recommendation card trading plan should render structured rows and chart: ${text}`)
+}
+
+for (const text of ['isRawDebugWatchPoint', 'market_segment:', 'chip_source=', 'broker_net_(?:amount|shares)_5d']) {
+  assert(recommendationCard.includes(text), `Recommendation card should filter raw debug watch point: ${text}`)
+}
+
+assert(!scoreBreakdown.includes('compactLine(reason),'), '盤勢判讀 should not repeat the raw score/reason paragraph as a row')
+assert(!scoreBreakdown.includes('項目：'), 'Trade plan rows should not render label/value as prose prefixes')
+assert(!scoreBreakdown.includes('判讀：'), 'Trade plan rows should keep item note as a structured column, not duplicated prose')
+assert(!recommendationCard.includes('<AlphaContextBlock'), 'AlphaContextBlock should not render separately from recommendation reason')
+
+assert(
+  pipelinePage.includes('buildScoreBreakdownViewModel'),
+  'pipeline page should consume Score V2 through the shared view model',
 )
 assert(
-  pipelineTemplate.includes("selectattr('signal', 'defined')"),
-  'pipeline template should count ML stage by signal availability',
+  pipelineTemplate.includes('Score V2 canonical view')
+    && pipelineTemplate.includes('score_v2_final_score')
+    && pipelineTemplate.includes("selectattr('signal', 'defined')"),
+  'pipeline template should render Score V2 canonical scores and count ML stage by signal availability',
 )

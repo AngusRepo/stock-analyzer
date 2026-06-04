@@ -149,7 +149,8 @@ function worstStatus(factors: MarketRiskFactor[]): FactorStatus {
 }
 
 function latestSourceDate(factors: MarketRiskFactor[]) {
-  return factors.map((factor) => factor.source_date).filter(Boolean).sort().at(-1) ?? null
+  const dates = factors.map((factor) => factor.source_date).filter(Boolean).sort()
+  return dates.length ? dates[dates.length - 1] : null
 }
 
 function uniqueText(values: Array<string | null | undefined>) {

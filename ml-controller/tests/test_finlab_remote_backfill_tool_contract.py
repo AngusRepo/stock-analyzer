@@ -32,3 +32,9 @@ def test_cleanup_finlab_trading_restrictions_reads_d1_changes(monkeypatch):
     monkeypatch.setattr(tool, "d1_exec", lambda _sql, _params=None: {"meta": {"changes": 7}})
 
     assert tool.cleanup_finlab_trading_restrictions(retention_days=31) == 7
+
+
+def test_remote_backfill_tool_bootstraps_cloud_run_app_root():
+    source = TOOL_PATH.read_text(encoding="utf-8")
+
+    assert "for candidate in (ROOT, ROOT / \"ml-controller\")" in source

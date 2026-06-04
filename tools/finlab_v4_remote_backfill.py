@@ -16,9 +16,9 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ML_CONTROLLER_ROOT = ROOT / "ml-controller"
-if str(ML_CONTROLLER_ROOT) not in sys.path:
-    sys.path.insert(0, str(ML_CONTROLLER_ROOT))
+for candidate in (ROOT, ROOT / "ml-controller"):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
 
 
 @dataclass(frozen=True)

@@ -6,11 +6,35 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.model_ic_tracker import (  # noqa: E402
+    ALPHA_PREDICTION_MODELS,
+    EXPERIMENTAL_SHADOW_MODELS,
     apply_weekly_ic_to_pool,
     compute_weekly_ic_from_rows,
     market_segment_from_prediction_row,
     rank_score_from_prediction_row,
+    tracked_model_names,
 )
+
+
+def test_tracked_model_names_follow_refactored_l3_pool():
+    assert ALPHA_PREDICTION_MODELS == (
+        "LightGBM",
+        "XGBoost",
+        "ExtraTrees",
+        "TabM",
+        "GNN",
+        "DLinear",
+        "PatchTST",
+        "iTransformer",
+        "TimesFM",
+    )
+    assert EXPERIMENTAL_SHADOW_MODELS == ("ResidualMLP",)
+    tracked = tracked_model_names()
+    assert "CatBoost" not in tracked
+    assert "FT-Transformer" not in tracked
+    assert "Chronos" not in tracked
+    assert "GNN::challenger" not in tracked
+    assert "ResidualMLP::challenger" in tracked
 
 
 def test_rank_score_uses_forecast_rank_score_only():
@@ -119,38 +143,38 @@ def test_emerging_predictions_do_not_count_toward_production_ic():
 
 def test_compute_weekly_ic_marks_constant_scores_as_undefined_variance():
     rows = [
-        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": 0.01},
-        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": -0.02},
-        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": 0.03},
-        {"model_name": "FT-Transformer", "forecast_data": '{"rank_score": 0}', "actual_return_pct": -0.04},
+        {"model_name": "TabM", "forecast_data": '{"rank_score": 0}', "actual_return_pct": 0.01},
+        {"model_name": "TabM", "forecast_data": '{"rank_score": 0}', "actual_return_pct": -0.02},
+        {"model_name": "TabM", "forecast_data": '{"rank_score": 0}', "actual_return_pct": 0.03},
+        {"model_name": "TabM", "forecast_data": '{"rank_score": 0}', "actual_return_pct": -0.04},
     ]
 
-    result = compute_weekly_ic_from_rows(rows, min_samples=4, all_tracked=("FT-Transformer",))
+    result = compute_weekly_ic_from_rows(rows, min_samples=4, all_tracked=("TabM",))
 
-    assert result["FT-Transformer"]["status"] == "undefined_variance"
-    assert result["FT-Transformer"]["root_cause"] == "undefined_variance"
-    assert result["FT-Transformer"]["ic"] is None
-    assert result["FT-Transformer"]["n_samples"] == 4
-    assert result["FT-Transformer"]["error"] == "rank_score_or_actual_return_has_zero_cross_sectional_variance"
+    assert result["TabM"]["status"] == "undefined_variance"
+    assert result["TabM"]["root_cause"] == "undefined_variance"
+    assert result["TabM"]["ic"] is None
+    assert result["TabM"]["n_samples"] == 4
+    assert result["TabM"]["error"] == "rank_score_or_actual_return_has_zero_cross_sectional_variance"
 
 
 def test_compute_weekly_ic_reports_actionable_root_causes():
     rows = [
         {"model_name": "XGBoost", "forecast_data": '{"rank_score": 1}', "actual_return_pct": 0.01, "verified_at": None},
-        {"model_name": "CatBoost", "forecast_data": '{"rank_score": 1}', "actual_return_pct": None, "verified_at": "2026-05-01"},
+        {"model_name": "GNN", "forecast_data": '{"rank_score": 1}', "actual_return_pct": None, "verified_at": "2026-05-01"},
         {"model_name": "LightGBM", "forecast_data": "{}", "actual_return_pct": 0.01, "verified_at": "2026-05-01"},
     ]
 
     result = compute_weekly_ic_from_rows(
         rows,
         min_samples=2,
-        all_tracked=("XGBoost", "CatBoost", "LightGBM", "DLinear"),
+        all_tracked=("XGBoost", "GNN", "LightGBM", "DLinear"),
     )
 
     assert result["XGBoost"]["root_cause"] == "verification_missing"
     assert result["XGBoost"]["diagnostics"]["unverified_rows"] == 1
-    assert result["CatBoost"]["root_cause"] == "outcome_missing"
-    assert result["CatBoost"]["diagnostics"]["missing_outcome_rows"] == 1
+    assert result["GNN"]["root_cause"] == "outcome_missing"
+    assert result["GNN"]["diagnostics"]["missing_outcome_rows"] == 1
     assert result["LightGBM"]["root_cause"] == "ranking_signal_missing"
     assert result["LightGBM"]["diagnostics"]["missing_score_rows"] == 1
     assert result["DLinear"]["root_cause"] == "prediction_missing"

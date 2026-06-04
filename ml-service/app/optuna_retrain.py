@@ -6,7 +6,6 @@ optimal hyperparameters for the current stock's data distribution.
 
 Search spaces:
   XGBoost:    depth[3-6], lr[0.01-0.1], n_estimators[100-300]
-  CatBoost:   depth[3-7], lr[0.01-0.1], iterations[100-300]
   ExtraTrees: depth[4-8], n_estimators[100-300], min_samples_split[3-10]
   LightGBM:   depth[3-7], lr[0.01-0.1], n_leaves[20-60]
 """
@@ -39,31 +38,6 @@ def _optuna_xgboost(X_train, y_train, X_val, y_val) -> dict:
             "verbosity": 0,
         }
         m = XGBClassifier(**params)
-        m.fit(X_train, y_train)
-        return float(m.score(X_val, y_val))
-
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=N_TRIALS, show_progress_bar=False)
-    return study.best_params
-
-
-def _optuna_catboost(X_train, y_train, X_val, y_val) -> dict:
-    """Optuna search for CatBoost hyperparameters."""
-    import optuna
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    from catboost import CatBoostClassifier
-
-    def objective(trial):
-        params = {
-            "iterations": trial.suggest_int("iterations", 100, 300, step=50),
-            "depth": trial.suggest_int("depth", 3, 7),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
-            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 10.0),
-            "loss_function": "Logloss",
-            "random_seed": 42,
-            "verbose": 0,
-        }
-        m = CatBoostClassifier(**params)
         m.fit(X_train, y_train)
         return float(m.score(X_val, y_val))
 
@@ -128,7 +102,6 @@ def _optuna_lightgbm(X_train, y_train, X_val, y_val) -> dict:
 
 OPTUNA_SEARCHERS = {
     "XGBoost": _optuna_xgboost,
-    "CatBoost": _optuna_catboost,
     "ExtraTrees": _optuna_extratrees,
     "LightGBM": _optuna_lightgbm,
 }
@@ -142,7 +115,7 @@ def search_best_params(
 ) -> Optional[dict]:
     """
     Run Optuna search for a model. Returns best_params dict or None.
-    FT-Transformer is excluded (PyTorch, needs different optimization).
+    Retired models are excluded from active Optuna search.
     """
     searcher = OPTUNA_SEARCHERS.get(model_name)
     if not searcher:

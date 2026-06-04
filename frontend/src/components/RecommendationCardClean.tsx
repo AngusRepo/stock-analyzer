@@ -1461,18 +1461,23 @@ function alphaStructureValue(context: AlphaContext | null): string {
 function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan: TradePlanContext): TradePlanReadRow[] {
   const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
   const modelEntry = planPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.entryPrice)
-  const entryModel = plan.entryModelV2
-  const sourceText = entryModel
-    ? `Entry Model V2 / ${entryModel.anchorSource}`
-    : zones.source === 'ohlcv'
-      ? 'OHLCV daily fallback'
-      : 'Alpha daily proxy fallback'
-  const entryZone = entryModel?.entry ?? zones.buyReferenceZone
-  const preferredEntry = entryModel?.preferred ?? modelEntry ?? '-'
-  const chaseCeiling = entryModel?.chaseCeiling ?? zones.chaseCeilingZone
-  const pocSource = entryModel
-    ? `${entryModel.poc ?? '-'} / ${entryModel.anchorSource}`
-    : `${zones.volumeNode ?? '-'} / ${zones.source === 'ohlcv' ? 'OHLCV volume proxy' : 'Alpha proxy'}`
+  const entryModel: EntryPriceModelV2Ui = plan.entryModelV2 ?? {
+    anchorSource: 'missing_intraday_tick_anchor',
+    entry: null,
+    preferred: null,
+    chaseCeiling: null,
+    premium: null,
+    discount: null,
+    poc: null,
+    fallback: 'missing_entry_model_v2_anchor',
+  }
+  const isTrueVolumeAnchor = entryModel.anchorSource === 'intraday_volume_profile' || entryModel.anchorSource === 'tick_volume_profile'
+  const sourceText = `Entry Model V2 / ${entryModel.anchorSource}`
+  const entryZone = entryModel.entry ?? zones.buyReferenceZone
+  const preferredEntry = entryModel.preferred ?? modelEntry ?? '-'
+  const chaseCeiling = entryModel.chaseCeiling ?? zones.chaseCeilingZone
+  const pocSource = `${entryModel.poc ?? '-'} / ${entryModel.anchorSource}`
+  const sourceNote = entryModel.fallback ?? ''
   return [
     { label: '現價', value: zones.latest ?? '-', note: '', tone: 'neutral' },
     { label: '偏好買入價', value: preferredEntry, note: '', tone: 'neutral' },
@@ -1482,8 +1487,8 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan:
     { label: '轉強確認', value: zones.confirmation ?? '-', note: '', tone: 'good' },
     { label: '關鍵支撐', value: zones.support ?? '-', note: '', tone: 'good' },
     { label: 'ATR 防守', value: zones.atrDefense ?? '-', note: '', tone: 'warn' },
-    { label: 'POC / 量能節點來源', value: pocSource, note: '', tone: entryModel?.anchorSource === 'intraday_volume_profile' ? 'good' : 'neutral' },
-    { label: '線位來源', value: sourceText, note: entryModel?.fallback ?? '', tone: entryModel?.fallback ? 'warn' : zones.source === 'ohlcv' ? 'good' : 'warn' },
+    { label: 'POC / 量能節點來源', value: pocSource, note: '', tone: isTrueVolumeAnchor ? 'good' : 'warn' },
+    { label: '線位來源', value: sourceText, note: sourceNote, tone: isTrueVolumeAnchor ? 'good' : 'warn' },
     { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
     { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
   ]

@@ -62,8 +62,8 @@ def _prediction_with_ensemble_v2() -> dict:
         },
         "models": {
             "XGBoost": {"direction": "up"},
-            "CatBoost": {"direction": "up"},
-            "Chronos": {"direction": "up"},
+            "ExtraTrees": {"direction": "up"},
+            "DLinear": {"direction": "up"},
         },
     }
 
@@ -602,37 +602,39 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
     summary = build_ml_vote_summary_data(
         {
             "rank_scores": {
+                "LightGBM": 0.61,
                 "XGBoost": 0.61,
-                "CatBoost": 0.58,
                 "ExtraTrees": 0.52,
-                "LightGBM": 0.47,
-                "FT-Transformer": 0.56,
+                "TabM": 0.56,
+                "GNN": 0.47,
             },
-            "chronos": {"forecast_pct": 0.02},
             "dlinear": {"forecast_pct": -0.01},
             "patchtst": {"forecast_pct": 0.015},
+            "itransformer": {"forecast_pct": 0.02},
+            "timesfm": {"forecast_pct": -0.02},
             "ensemble_v2": {
                 "forecast_pct": 0.0066,
                 "weights": {
+                    "LightGBM": 0.02,
                     "XGBoost": 0.02,
-                    "CatBoost": 0.03,
                     "ExtraTrees": 0.02,
-                    "LightGBM": 0.06,
-                    "FT-Transformer": 0.0,
-                    "Chronos": 0.24,
+                    "TabM": 0.0,
+                    "GNN": 0.06,
                     "DLinear": 0.0,
                     "PatchTST": 0.17,
+                    "iTransformer": 0.24,
+                    "TimesFM": 0.0,
                 },
-                "contributing_models": ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "Chronos", "PatchTST"],
+                "contributing_models": ["LightGBM", "XGBoost", "ExtraTrees", "GNN", "PatchTST", "iTransformer"],
             },
         },
         {"up": 0, "down": 0, "total": 0},
     )
 
-    assert summary["reported"] == 8
+    assert summary["reported"] == 9
     assert summary["missing"] == 0
     assert summary["activeWeightCount"] == 6
-    assert summary["zeroWeightModels"] == ["FT-Transformer", "DLinear"]
+    assert summary["zeroWeightModels"] == ["TabM", "DLinear", "TimesFM"]
 
 
 def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):

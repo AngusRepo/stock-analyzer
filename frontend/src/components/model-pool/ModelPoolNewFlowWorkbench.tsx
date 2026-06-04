@@ -12,7 +12,7 @@ import {
   type Time,
 } from 'lightweight-charts'
 import {
-  MODEL_POOL_NEAR_PRODUCTION_IDS,
+  MODEL_POOL_PRODUCTION_SLOT_IDS,
   MODEL_POOL_RETIRED_MODEL_IDS,
   MODEL_UPGRADE_CANDIDATES,
 } from '@/lib/modelUpgradeTrack'
@@ -40,9 +40,9 @@ type ModelPoolNewFlowWorkbenchProps = {
 }
 
 const RETIRED_MODELS = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
-const NEAR_PRODUCTION_MODELS = new Set<string>(MODEL_POOL_NEAR_PRODUCTION_IDS)
+const PRODUCTION_SLOT_MODELS = new Set<string>(MODEL_POOL_PRODUCTION_SLOT_IDS)
 const COARSE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])
-const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees', 'CatBoost'])
+const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])
 const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer', 'TimesFM'])
 const GRAPH_MODELS = new Set(['GNN'])
 const TABULAR_NEURAL_MODELS = new Set(['TabM'])
@@ -150,7 +150,7 @@ export default function ModelPoolNewFlowWorkbench({
   const serving = useMemo(() => liveModels.filter(([, model]) => isServing(model)), [liveModels])
   const coarse = useMemo(() => [...COARSE_MODELS].map((name) => [name, byName.get(name)] as const), [byName])
   const nearProduction = useMemo(
-    () => MODEL_UPGRADE_CANDIDATES.filter((candidate) => NEAR_PRODUCTION_MODELS.has(candidate.id)),
+    () => MODEL_UPGRADE_CANDIDATES.filter((candidate) => PRODUCTION_SLOT_MODELS.has(candidate.id)),
     [],
   )
   const familyCounts = useMemo(() => {
@@ -281,7 +281,7 @@ export default function ModelPoolNewFlowWorkbench({
             </div>
           </div>
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-300">L3 near-production candidates</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-300">L3 production targets</p>
             <div className="mt-2 grid gap-2">
               {nearProduction.map((candidate) => {
                 const row = latestStatusFor(candidate.id, statusRows)

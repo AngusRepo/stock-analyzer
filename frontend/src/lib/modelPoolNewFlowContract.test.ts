@@ -18,7 +18,7 @@ const workbench = fs.readFileSync(workbenchPath, 'utf8')
 
 assert(page.includes('ModelPoolNewFlowWorkbench'), 'ModelPool page should render the new flow cockpit')
 assert(page.includes('PromotionQueuePanelV2'), 'ModelPool page should keep promotion and parameter governance as its own V2 section')
-assert(page.includes('UpgradeTrackPanelV2'), 'ModelPool page should render near-production L3 tracks through V2')
+assert(page.includes('UpgradeTrackPanelV2'), 'ModelPool page should render artifact-gated L3 tracks through V2')
 assert(!page.includes('{false &&'), 'ModelPool page must not hide old retired/shadow UI in a false render branch')
 assert(page.includes('L2 coarse、L3 family ML、近 production 候選'), 'ModelPool title copy should describe the new screener flow')
 assert(page.includes('!isRetiredModelName(name)'), 'ModelPool visible model list should filter retired ML from the main surface')
@@ -30,8 +30,8 @@ assert(workbench.includes('createSeriesMarkers'), 'New model pool cockpit should
 assert(workbench.includes('L2 coarse -> L3 family'), 'New model pool cockpit should describe the L2/L3 ownership split')
 
 for (const id of ['TabM', 'GNN', 'iTransformer', 'TimesFM']) {
-  assert(track.includes(`id: '${id}'`), `${id} should be listed as a near-production model candidate`)
-  assert(workbench.includes(id), `${id} should appear in the near-production cockpit`)
+  assert(track.includes(`id: '${id}'`), `${id} should be listed as a production L3 slot`)
+  assert(workbench.includes(id), `${id} should appear in the L3 model cockpit`)
 }
 
 for (const retired of ['FT-Transformer', 'Chronos', 'Chronos2ZeroShot', 'Chronos2LoRA', 'ResidualMLP']) {
@@ -41,6 +41,8 @@ for (const retired of ['FT-Transformer', 'Chronos', 'Chronos2ZeroShot', 'Chronos
 assert(!track.includes("id: 'ResidualMLP'"), 'ResidualMLP should not be a visible upgrade candidate')
 assert(!track.includes("id: 'Chronos2ZeroShot'"), 'Chronos2ZeroShot should not be a visible upgrade candidate')
 assert(!track.includes("id: 'Chronos2LoRA'"), 'Chronos2LoRA should not be a visible upgrade candidate')
-assert(!track.includes('benchmark-only'), 'Near-production candidates should not be described as benchmark-only')
+assert(track.includes('production_slot_member'), 'L3 target models must be represented as formal production slots')
+assert(!track.includes('MODEL_POOL_NEAR_PRODUCTION_IDS'), 'L3 production slots must not be labeled near-production')
+assert(!track.includes('benchmark-only'), 'L3 target candidates should not be described as benchmark-only')
 assert(track.includes('formal_layer3_slots'), 'TimesFM evidence should explicitly require formal L3 slot wiring')
 assert(page.includes('Promotion & Parameter Governance'), 'Promotion section should explain parameter and version governance in visible copy')

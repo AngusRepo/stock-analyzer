@@ -1136,7 +1136,7 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
 
 
 class FtArchReq(BaseModel):
-    """FT-T architecture Optuna request (#29)."""
+    """Retired FT-Transformer architecture Optuna request."""
     n_trials: int = 20
     subset_size: int | None = None  # None = full ~681K, int = subsample for coarse
     gcs_prefix: str = "universal"
@@ -1144,49 +1144,10 @@ class FtArchReq(BaseModel):
 
 @router.post("/ft_arch")
 async def run_ft_arch(req: FtArchReq = Body(default=FtArchReq())):
-    """FT-T architecture search — GPU Modal. Result saved to GCS audit trail.
-
-    LOCKED constraints (see feedback_ft_transformer_tuning.md): no warmup, no
-    cosine decay, PATIENCE production stays 16. Search only varies
-    d_model / n_heads / n_layers / dropout with shorter in-trial patience.
-
-    Result is NOT auto-pushed to KV — Wei manually applies winning config to
-    main.py FTTransformer + re-runs production retrain to produce challenger.
-    """
-    from services.modal_client import _modal_ft_arch_search
-    logger.info(
-        f"[Optuna/ft_arch] start n_trials={req.n_trials} "
-        f"subset_size={req.subset_size} gcs_prefix={req.gcs_prefix}"
+    raise HTTPException(
+        status_code=410,
+        detail="FT-Transformer is retired from the production model pool; architecture search is disabled.",
     )
-    result = await _modal_ft_arch_search({
-        "n_trials":    req.n_trials,
-        "subset_size": req.subset_size,
-        "gcs_prefix":  req.gcs_prefix,
-    })
-    if isinstance(result, dict) and result.get("error"):
-        raise HTTPException(502, f"Modal ft_arch_search failed: {result['error']}")
-
-    return {
-        "status": "completed",
-        "source": "ft_arch",
-        "best_ic":       result.get("best_ic"),
-        "best_params":   result.get("best_params"),
-        "n_trials":      result.get("n_trials"),
-        "gcs_audit_path": result.get("gcs_audit_path"),
-        "contract": _contract_meta(
-            source="ft_arch",
-            scope="research_only",
-            sample_scope=f"gcs_prefix={req.gcs_prefix}, subset_size={req.subset_size or 'full'}",
-            applies_to_production=False,
-            push_target="none_manual_apply_only",
-            effective_fields=[],
-            excluded_fields=list((result.get("best_params") or {}).keys()),
-            notes=[
-                "FT architecture search does not auto-push to production.",
-                "Winning params still require manual code/application plus retrain before any production effect.",
-            ],
-        ),
-    }
 
 
 class L2SensitivityReq(BaseModel):

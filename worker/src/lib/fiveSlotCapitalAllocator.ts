@@ -1,3 +1,5 @@
+import type { ScoreV2SnapshotSummary } from './scoreV2Taxonomy'
+
 export type FiveSlotAllocatorAction = 'buy' | 'add' | 'replace' | 'hold' | 'skip'
 
 export interface FiveSlotAllocatorConfig {
@@ -29,6 +31,7 @@ export interface FiveSlotCandidate {
   symbol: string
   confidence?: number | null
   score?: number | null
+  score_v2?: Pick<ScoreV2SnapshotSummary, 'finalScore' | 'total'> | null
   riskPct?: number | null
 }
 
@@ -74,10 +77,16 @@ export function inferFiveSlotTargetExposure(marketRiskLevel: string | null | und
 
 export function fiveSlotConfidenceMultiplier(candidate: FiveSlotCandidate): number {
   const confidence = finiteNumber(candidate.confidence, 0.6)
-  const score = finiteNumber(candidate.score, 60)
+  const score = scoreV2FinalScore(candidate)
   const confidenceLeg = clamp((confidence - 0.55) / 0.30, 0, 1)
   const scoreLeg = clamp((score - 55) / 30, 0, 1)
   return clamp(0.75 + (confidenceLeg * 0.35) + (scoreLeg * 0.15), 0.75, 1.25)
+}
+
+function scoreV2FinalScore(candidate: FiveSlotCandidate): number {
+  const payload = candidate.score_v2
+  if (!payload || typeof payload !== 'object') return finiteNumber(candidate.score, 0)
+  return clamp(finiteNumber(payload.finalScore ?? payload.total, 0), 0, 100)
 }
 
 function holdingValue(holding: FiveSlotHolding): number {
@@ -87,7 +96,7 @@ function holdingValue(holding: FiveSlotHolding): number {
 
 function candidateRank(candidate: FiveSlotCandidate): number {
   const confidence = finiteNumber(candidate.confidence, 0.6)
-  const score = finiteNumber(candidate.score, confidence * 100)
+  const score = scoreV2FinalScore(candidate)
   const riskPct = finiteNumber(candidate.riskPct, 0.01)
   return score + confidence * 20 + riskPct * 500
 }
@@ -291,4 +300,21 @@ export function buildFiveSlotCapitalPlan(input: {
   }
 
   return { targetExposure, targetSlotValue, decisions }
+}
+
+export function buildFiveSlotExecutionDecision(input: {
+  account: FiveSlotAllocatorAccount
+  marketRiskLevel: string | null | undefined
+  config: FiveSlotAllocatorConfig
+  holdings: FiveSlotHolding[]
+  candidate: FiveSlotCandidate
+}): FiveSlotDecision | null {
+  const plan = buildFiveSlotCapitalPlan({
+    account: input.account,
+    marketRiskLevel: input.marketRiskLevel,
+    config: input.config,
+    holdings: input.holdings,
+    candidates: [input.candidate],
+  })
+  return plan.decisions.get(input.candidate.symbol) ?? null
 }

@@ -47,14 +47,15 @@ export interface AdaptiveMetaLayerGovernance {
 
 export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
   alpha_vote_models: [
-    'XGBoost',
-    'CatBoost',
-    'ExtraTrees',
     'LightGBM',
-    'FT-Transformer',
-    'Chronos',
+    'XGBoost',
+    'ExtraTrees',
+    'TabM',
+    'GNN',
     'DLinear',
     'PatchTST',
+    'iTransformer',
+    'TimesFM',
   ],
   state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
   meta_optimizers: ['GAOptimizer'],

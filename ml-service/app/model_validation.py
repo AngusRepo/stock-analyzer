@@ -181,86 +181,8 @@ def fit_predict_ft_transformer_cpcv(
     *,
     params: dict[str, Any] | None = None,
 ) -> np.ndarray:
-    """Train a small FT-Transformer fold and return rank-regression scores.
-
-    This adapter is intentionally parameterized because full FT CPCV can be
-    expensive. The architecture path is shared with persisted FT bundles so
-    train/serve/CPCV do not become separate owners.
-    """
-
-    try:
-        import torch
-        import torch.nn as nn
-    except ImportError as exc:
-        raise RuntimeError("FT-Transformer CPCV adapter requires torch runtime") from exc
-    from sklearn.preprocessing import StandardScaler
-
-    from .ft_transformer import build_ft_transformer, rank_from_ft_regression_output
-
-    p = dict(params or {})
-    seed = _as_int(p.get("seed"), 42)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    device = torch.device(str(p.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")))
-    arch = {
-        "d_model": _as_int(p.get("d_model"), 64),
-        "n_heads": _as_int(p.get("n_heads"), 4),
-        "n_layers": _as_int(p.get("n_layers"), 2),
-        "dropout": _as_float(p.get("dropout"), 0.10),
-        "head_type": "regression",
-    }
-    max_epochs = max(1, _as_int(p.get("max_epochs"), 5))
-    batch_size = max(8, _as_int(p.get("batch_size"), 512))
-    lr = _as_float(p.get("lr"), 2e-4)
-    margin = _as_float(p.get("margin"), 0.0)
-
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(np.asarray(X[train_idx], dtype=np.float32)).astype(np.float32)
-    X_test = scaler.transform(np.asarray(X[test_idx], dtype=np.float32)).astype(np.float32)
-    X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
-    X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
-    y_train = np.asarray(y[train_idx], dtype=np.float32)
-
-    model, _ = build_ft_transformer(X_train.shape[1], "regression", {"arch": arch})
-    model.to(device).train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=5e-5)
-    loss_fn = nn.MarginRankingLoss(margin=margin)
-
-    def _pairwise_loss(preds: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        batch = preds.shape[0]
-        if batch < 2:
-            return torch.mean(preds * 0.0)
-        n_pairs = min(512, batch * (batch - 1) // 2)
-        idx_i = torch.randint(0, batch, (n_pairs,), device=preds.device)
-        idx_j = torch.randint(0, batch, (n_pairs,), device=preds.device)
-        mask = idx_i != idx_j
-        idx_i, idx_j = idx_i[mask], idx_j[mask]
-        target = torch.sign(labels[idx_i] - labels[idx_j])
-        non_tie = target != 0
-        if non_tie.sum() == 0:
-            return torch.mean(preds * 0.0)
-        return loss_fn(preds[idx_i[non_tie]], preds[idx_j[non_tie]], target[non_tie])
-
-    for _ in range(max_epochs):
-        perm = np.random.permutation(len(X_train))
-        for start in range(0, len(perm), batch_size):
-            bi = perm[start:start + batch_size]
-            xb = torch.tensor(X_train[bi], device=device)
-            yb = torch.tensor(y_train[bi], device=device)
-            optimizer.zero_grad()
-            preds = model(xb).float()
-            loss = _pairwise_loss(preds, yb)
-            loss.backward()
-            optimizer.step()
-
-    model.eval()
-    out: list[np.ndarray] = []
-    with torch.no_grad():
-        for start in range(0, len(X_test), batch_size):
-            xb = torch.tensor(X_test[start:start + batch_size], device=device)
-            out.append(model(xb).float().cpu().numpy())
-    raw = np.asarray(np.concatenate(out), dtype=float).reshape(-1)
-    return np.asarray([rank_from_ft_regression_output(v) for v in raw], dtype=float)
+    """Retired adapter kept fail-closed for stale policy payloads."""
+    raise RuntimeError("FT-Transformer CPCV adapter is retired; use TabM artifact evidence")
 
 
 def evaluate_model_cpcv_rank_ic(

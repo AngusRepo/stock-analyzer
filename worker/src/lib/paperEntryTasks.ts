@@ -21,6 +21,21 @@ import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from
 import { checkCircuitBreakers, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
 import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext } from './preTradeExecutionPolicy'
+import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
+import {
+  buildFinLabL5MarketDataDetail,
+  fetchFinLabL5MarketDataQuotes,
+  quoteQualityFromL5,
+} from './finlabL5MarketData'
+import { fetchFinLabExecutionPreview } from './finlabExecutionPreviewClient'
+import { buildStockVisionOrderIntent } from './stockvisionOrderIntent'
+import { buildPaperBrokerReconciliation } from './paperBrokerReconciliation'
+import {
+  buildIntradayTechnicalSnapshot,
+  floorRollingBarIntervalMs,
+  resolveIntradayTechnicalDecision,
+  type IntradayRollingBar,
+} from './intradayTechnicalSnapshot'
 import { getTwClockParts, isTwIntradayTradingMinute } from './twMarketSession'
 import {
   appendPendingBuyExecutionNote,
@@ -36,19 +51,47 @@ import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
 import { loadTradingRestrictionSet, refreshOfficialTradingRestrictions } from './tradingRestrictions'
-import { readScoreV2Snapshot, scoreV2ComponentPercentages } from './scoreV2Taxonomy'
+import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 import {
   buildFiveSlotCapitalPlan,
+  buildFiveSlotExecutionDecision,
   fiveSlotHoldingWeaknessScore,
   formatFiveSlotDecisionWatchPoint,
   type FiveSlotDecision,
   type FiveSlotCandidate,
   type FiveSlotHolding,
 } from './fiveSlotCapitalAllocator'
+import {
+  batchLoadOhlcvTradePlanLevelsBySymbol,
+  formatOhlcvTradePlanWatchPoint,
+  resolveOhlcvEntryPlan,
+} from './ohlcvTradePlanLevels'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
 const EXECUTION_RESTRICTED_REFRESH_TTL_MS = 30 * 60_000
+
+function truthyFlag(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+function optionalPositiveNumber(value: unknown, fallback: number): number {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+function finiteNumber(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function parseEventTimeMs(value: unknown): number | null {
+  if (!value) return null
+  const text = String(value)
+  const parsed = new Date(text.includes('T') ? text : text.replace(' ', 'T')).getTime()
+  return Number.isFinite(parsed) ? parsed : null
+}
 
 function addRestrictedSymbolsFromRaw(target: Set<string>, raw: string | null): void {
   if (!raw) return
@@ -133,6 +176,144 @@ async function loadExecutionBlockedSymbols(env: Bindings, tradeDate: string): Pr
   return blocked
 }
 
+interface IntradayTechnicalBaseline {
+  obvTemperature60: number | null
+  adaptiveRsiUpper50: number | null
+}
+
+async function batchGetIntradayTechnicalBaselines(
+  db: D1Database,
+  symbols: string[],
+  beforeDate: string,
+): Promise<Map<string, IntradayTechnicalBaseline>> {
+  const clean = [...new Set(symbols.map((symbol) => String(symbol).trim()).filter(Boolean))]
+  const out = new Map<string, IntradayTechnicalBaseline>()
+  if (clean.length === 0) return out
+  const placeholders = clean.map(() => '?').join(',')
+  const { results } = await db.prepare(`
+    SELECT s.symbol,
+           ti.obv_temperature_60 AS obvTemperature60,
+           ti.adaptive_rsi_upper_50 AS adaptiveRsiUpper50
+      FROM technical_indicators ti
+      JOIN stocks s ON s.id = ti.stock_id
+     WHERE s.symbol IN (${placeholders})
+       AND ti.date < ?
+     ORDER BY s.symbol, ti.date DESC
+  `).bind(...clean, beforeDate).all<any>()
+  for (const row of results ?? []) {
+    const symbol = String(row.symbol ?? '')
+    if (!symbol || out.has(symbol)) continue
+    out.set(symbol, {
+      obvTemperature60: finiteNumber(row.obvTemperature60),
+      adaptiveRsiUpper50: finiteNumber(row.adaptiveRsiUpper50),
+    })
+  }
+  return out
+}
+
+interface IntradaySnapshotSample {
+  startMs: number
+  close: number
+  totalVolume: number
+}
+
+function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
+  const startMs = parseEventTimeMs(row.created_at)
+  if (startMs == null) return null
+  try {
+    const detail = row.detail_json ? JSON.parse(row.detail_json) : null
+    const close = finiteNumber(detail?.latestClose)
+    if (close == null || close <= 0) return null
+    return {
+      startMs,
+      close,
+      totalVolume: Math.max(0, finiteNumber(detail?.totalVolume) ?? 0),
+    }
+  } catch {
+    return null
+  }
+}
+
+function samplesToRollingBars(samples: IntradaySnapshotSample[], intervalMs: number): IntradayRollingBar[] {
+  const ordered = [...samples].sort((a, b) => a.startMs - b.startMs)
+  const buckets = new Map<number, { open: number; high: number; low: number; close: number; lastTotalVolume: number }>()
+  for (const sample of ordered) {
+    const bucketMs = Math.floor(sample.startMs / intervalMs) * intervalMs
+    const bucket = buckets.get(bucketMs)
+    if (!bucket) {
+      buckets.set(bucketMs, {
+        open: sample.close,
+        high: sample.close,
+        low: sample.close,
+        close: sample.close,
+        lastTotalVolume: sample.totalVolume,
+      })
+    } else {
+      bucket.high = Math.max(bucket.high, sample.close)
+      bucket.low = Math.min(bucket.low, sample.close)
+      bucket.close = sample.close
+      bucket.lastTotalVolume = Math.max(bucket.lastTotalVolume, sample.totalVolume)
+    }
+  }
+
+  const bars: IntradayRollingBar[] = []
+  let previousTotalVolume: number | null = null
+  for (const [startMs, bucket] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
+    const volume = previousTotalVolume == null
+      ? Math.max(0, bucket.lastTotalVolume)
+      : Math.max(0, bucket.lastTotalVolume - previousTotalVolume)
+    bars.push({
+      startMs,
+      open: bucket.open,
+      high: bucket.high,
+      low: bucket.low,
+      close: bucket.close,
+      volume,
+    })
+    previousTotalVolume = Math.max(previousTotalVolume ?? 0, bucket.lastTotalVolume)
+  }
+  return bars
+}
+
+async function loadIntradayTechnicalRollingBars(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+  currentPrice: number,
+  currentTotalVolume: number,
+): Promise<IntradayRollingBar[]> {
+  const intervalMs = floorRollingBarIntervalMs(Number((env as any).INTRADAY_TECHNICAL_BAR_INTERVAL_MS ?? 30_000))
+  const lookback = Math.max(6, Math.min(120, Math.floor(Number((env as any).INTRADAY_TECHNICAL_BAR_LOOKBACK ?? 40))))
+  const { results } = await env.DB.prepare(`
+    SELECT created_at, detail_json
+      FROM paper_execution_events
+     WHERE trade_date = ?
+       AND symbol = ?
+       AND event_type = 'intraday_technical_decision'
+     ORDER BY id DESC
+     LIMIT ?
+  `).bind(tradeDate, symbol, lookback).all<{ created_at: string | null; detail_json: string | null }>()
+  const samples = (results ?? [])
+    .map(parseIntradaySnapshotSample)
+    .filter((sample): sample is IntradaySnapshotSample => sample != null)
+  samples.push({
+    startMs: Date.now(),
+    close: currentPrice,
+    totalVolume: Math.max(0, currentTotalVolume),
+  })
+  const bars = samplesToRollingBars(samples, intervalMs)
+  return bars.length > 0
+    ? bars.slice(-lookback)
+    : [{
+      startMs: Date.now(),
+      open: currentPrice,
+      high: currentPrice,
+      low: currentPrice,
+      close: currentPrice,
+      volume: Math.max(0, currentTotalVolume),
+    }]
+}
+
 async function loadPreTradeMomentum(
   env: Bindings,
   cfg: Awaited<ReturnType<typeof getTradingConfig>>,
@@ -188,9 +369,11 @@ async function loadPreTradeMomentum(
     return {
       volumeRatio,
       minVolumeRatio: cfg.momentum?.minVolumeRatio ?? 0.8,
+      strongBreakoutVolumeRatio: cfg.momentum?.strongBreakoutVolumeRatio ?? 1.5,
       slope5min: trendData?.slope_5min ?? null,
       rangePosition,
       minRangePosition: cfg.momentum?.minRangePosition ?? 0.3,
+      strongBreakoutRangePosition: cfg.momentum?.strongBreakoutRangePosition ?? 0.7,
       error: trendData ? null : `trend_http_${trendRes.status}`,
     }
   } catch (error) {
@@ -282,6 +465,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   })
   const priceMap = new Map<string, number>()
   for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
+  const finLabL5MarketDataMap = await fetchFinLabL5MarketDataQuotes(env as any, pendingSymbols)
 
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
   if (zeroPriceSymbols.length > 0) {
@@ -410,7 +594,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       candidates: pendingBuys.map((pending) => ({
         symbol: pending.symbol,
         confidence: pending.confidence,
-        score: pending.score,
+        score_v2: pending.score_v2 ?? null,
         riskPct: pending.risk_pct,
       })),
     })
@@ -432,6 +616,37 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       if (soldSwapSymbols.has(weakest.symbol)) continue
       const weakPos = (fullPositions ?? []).find((p: any) => p.symbol === weakest.symbol)
       if (!weakPos) continue
+
+      const replacementQuote = ohlcMap.get(pending.symbol)
+      const replacementPrice = priceMap.get(pending.symbol)
+      const replacementFill = resolveLimitBuyFill({
+        currentPrice: Number(replacementPrice ?? 0),
+        limitPrice: Number(pending.ml_entry_price ?? 0),
+        bestAsk: replacementQuote?.ask,
+        bestBid: replacementQuote?.bid,
+        intradayLow: replacementQuote?.low,
+        intradayHigh: replacementQuote?.high,
+        slippageTicks: cfg.position.fillSlippageTicks ?? 1,
+        requireBestAsk: true,
+      })
+      if (replacementQuote?.source !== 'shioaji' || !replacementFill.fillable || replacementFill.fillPrice == null) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: today,
+          symbol: pending.symbol,
+          eventType: 'pending_buy',
+          status: 'allocator_skip',
+          reason: 'auto_swap_replacement_not_executable',
+          detail: {
+            sell_symbol: weakest.symbol,
+            replacement_source: replacementQuote?.source ?? 'missing',
+            replacement_price: replacementPrice ?? null,
+            replacement_entry: pending.ml_entry_price ?? null,
+            fill_reason: replacementFill.reason,
+          },
+          source: 'auto_swap',
+        })
+        continue
+      }
 
       const daysHeld = weakPos.entry_date
         ? Math.floor((Date.now() + 8 * 3600_000 - new Date(weakPos.entry_date).getTime()) / 86400_000)
@@ -564,6 +779,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   }
 
   const atrMap = await batchGetATR(env.DB, pendingSymbols)
+  const technicalBaselineMap = await batchGetIntradayTechnicalBaselines(env.DB, pendingSymbols, today).catch((error) => {
+    console.warn('[Intraday] technical baselines unavailable:', error)
+    return new Map<string, IntradayTechnicalBaseline>()
+  })
+  const ohlcvLevelsBySymbol = await batchLoadOhlcvTradePlanLevelsBySymbol(env.DB, pendingSymbols, today).catch((error) => {
+    console.warn('[Intraday] OHLCV trade plan levels unavailable:', error)
+    return new Map()
+  })
 
   const recentSells = await env.DB.prepare(
     "SELECT SUM(total_cost) as unsettled FROM paper_orders WHERE account_id=? AND side='sell' AND created_at > datetime('now', '-2 days')",
@@ -612,23 +835,54 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
   const blockedSymbols = await loadExecutionBlockedSymbols(env, today)
 
-  const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map((pos: any) => ({
-    symbol: String(pos.symbol),
-    shares: Number(pos.shares ?? 0),
-    avgCost: Number(pos.avg_cost ?? 0),
-    lastPrice: posValueMap.get(String(pos.symbol)) ?? Number(pos.avg_cost ?? 0),
-    daysHeld: pos.entry_date
-      ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
-      : 0,
-    tp1Hit: Boolean(pos.tp1_hit),
-  }))
-  const capitalCandidates: FiveSlotCandidate[] = pendingBuys.map((pending) => ({
-    symbol: pending.symbol,
-    confidence: pending.confidence,
-    score: pending.score,
-    riskPct: pending.risk_pct,
-  }))
-  const capitalPlan = buildFiveSlotCapitalPlan({
+  const toCapitalHolding = (pos: any): FiveSlotHolding => {
+    const symbol = String(pos.symbol)
+    return {
+      symbol,
+      shares: Number(pos.shares ?? 0),
+      avgCost: Number(pos.avg_cost ?? 0),
+      lastPrice: priceMap.get(symbol) ?? posValueMap.get(symbol) ?? Number(pos.avg_cost ?? 0),
+      daysHeld: pos.entry_date
+        ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
+        : 0,
+      tp1Hit: Boolean(pos.tp1_hit),
+    }
+  }
+  const loadCurrentCapitalHoldings = async (): Promise<FiveSlotHolding[]> => {
+    const { results } = await env.DB.prepare(`
+      SELECT symbol, name, shares, avg_cost, entry_date, tp1_hit
+      FROM paper_positions WHERE account_id=? AND shares>0
+    `).bind(ACCOUNT_ID).all<any>()
+    return (results ?? []).map(toCapitalHolding)
+  }
+  const buildExecutionAllocatorDecision = async (pending: PendingBuy): Promise<FiveSlotDecision | null> => {
+    const candidate: FiveSlotCandidate = {
+      symbol: pending.symbol,
+      confidence: pending.confidence,
+      score_v2: pending.score_v2 ?? null,
+      riskPct: pending.risk_pct,
+    }
+    return buildFiveSlotExecutionDecision({
+      account: {
+        cash: Number((acc as any).cash ?? 0),
+        totalPortfolio,
+        dailyRemaining: Math.max(0, DAILY_BUY_LIMIT - dailyBuyTotal),
+      },
+      marketRiskLevel: marketRisk.risk_level,
+      config: {
+        maxPositions: maxPos,
+        maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+        maxPctOfCash: cfg.position.maxPctOfCash,
+        dailyBuyLimit: DAILY_BUY_LIMIT,
+        minPositionValue: cfg.position.minPositionValue ?? 30_000,
+        swapThreshold: cfg.position.swapThreshold,
+      },
+      holdings: await loadCurrentCapitalHoldings(),
+      candidate,
+    })
+  }
+  const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map(toCapitalHolding)
+  const capitalPlanPreview = buildFiveSlotCapitalPlan({
     account: {
       cash: Number((acc as any).cash ?? 0),
       totalPortfolio,
@@ -644,11 +898,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       swapThreshold: cfg.position.swapThreshold,
     },
     holdings: capitalHoldings,
-    candidates: capitalCandidates,
+    candidates: [],
   })
   console.log(
-    `[Allocator] 5-slot exposure=${(capitalPlan.targetExposure * 100).toFixed(0)}% ` +
-    `slot=${Math.round(capitalPlan.targetSlotValue)} holdings=${capitalHoldings.length}/${maxPos}`,
+    `[Allocator] 5-slot exposure=${(capitalPlanPreview.targetExposure * 100).toFixed(0)}% ` +
+    `slot=${Math.round(capitalPlanPreview.targetSlotValue)} holdings=${capitalHoldings.length}/${maxPos}`,
   )
 
   let stateChanged = false
@@ -660,7 +914,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     reason: string,
     detail?: string | null,
   ) => {
-    executionEvents.push({ symbol, status, reason })
+    executionEvents.push({ symbol, status, reason, detail: detail ?? null })
     executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
   }
   const recordExecutionNote = (symbol: string, status: string, reason: string, detail?: string | null) => {
@@ -682,7 +936,13 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const idx = pendingBuys.findIndex((item) => item.symbol === symbol)
     if (idx >= 0) {
       const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
-      const nextPoints = [...points.filter((point) => !String(point).startsWith('allocator:')), watchPoint]
+      const nextPoints = [
+        ...points.filter((point) => {
+          const text = String(point)
+          return !text.startsWith('allocator:') && !text.startsWith('execution:pending:allocator_')
+        }),
+        watchPoint,
+      ]
       const changed = nextPoints.length !== points.length || nextPoints.some((point, i) => point !== points[i])
       if (changed || !pendingBuys[idx].execution_status) {
         pendingBuys[idx] = {
@@ -740,7 +1000,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue
     }
 
-    const allocatorDecision = capitalPlan.decisions.get(pending.symbol)
+    const allocatorDecision = await buildExecutionAllocatorDecision(pending)
     if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision)
     if (!allocatorDecision || allocatorDecision.action === 'skip' || allocatorDecision.action === 'hold') {
       const reason = allocatorDecision?.reason ?? 'allocator_no_plan'
@@ -763,24 +1023,219 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       console.log(`[Intraday] ${pending.symbol}: ${reason}`)
       continue
     }
+    const ohlcvTradePlan = resolveOhlcvEntryPlan(ohlcvLevelsBySymbol.get(pending.symbol), { latestPrice: price })
+    let executionEntryPrice = pending.ml_entry_price
+    let executionStopLoss = pending.ml_stop_loss
+    if (ohlcvTradePlan) {
+      executionEntryPrice = ohlcvTradePlan.entryPrice
+      executionStopLoss = ohlcvTradePlan.stopLoss
+      const idx = pendingBuys.findIndex((item) => item.symbol === pending.symbol)
+      if (idx >= 0) {
+        const watchPoint = formatOhlcvTradePlanWatchPoint(ohlcvTradePlan)
+        const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
+        const nextPoints = points.some((point) => String(point).startsWith('ohlcv_trade_plan:'))
+          ? points.map((point) => String(point).startsWith('ohlcv_trade_plan:') ? watchPoint : point)
+          : [...points, watchPoint]
+        if (
+          pendingBuys[idx].ml_entry_price !== executionEntryPrice
+          || pendingBuys[idx].ml_stop_loss !== executionStopLoss
+          || nextPoints.some((point, pointIdx) => point !== points[pointIdx])
+        ) {
+          pendingBuys[idx] = {
+            ...pendingBuys[idx],
+            ml_entry_price: executionEntryPrice,
+            ml_stop_loss: executionStopLoss,
+            ml_target1: ohlcvTradePlan.target1,
+            ml_target2: ohlcvTradePlan.target2,
+            original_entry: ohlcvTradePlan.entryPrice,
+            watch_points: nextPoints,
+          }
+          stateChanged = true
+        }
+      }
+    }
+    let intradayTechnicalSnapshot: ReturnType<typeof buildIntradayTechnicalSnapshot> | null = null
+    const previousCloseForSnapshot = prevCloseMap.get(pending.symbol) ?? null
+    if (previousCloseForSnapshot != null && previousCloseForSnapshot > 0) {
+      try {
+        const technicalBaseline = technicalBaselineMap.get(pending.symbol) ?? null
+        const currentTotalVolume = Number(currentOhlc?.totalVolume ?? 0)
+        const rollingBars = await loadIntradayTechnicalRollingBars(
+          env,
+          pending.symbol,
+          today,
+          price,
+          currentTotalVolume,
+        )
+        intradayTechnicalSnapshot = buildIntradayTechnicalSnapshot({
+          symbol: pending.symbol,
+          previousClose: previousCloseForSnapshot,
+          previousAtr14: atrMap.get(pending.symbol) ?? price * cfg.exit.fallbackAtrPct,
+          previousObvTemperature60: technicalBaseline?.obvTemperature60 ?? null,
+          previousAdaptiveRsiUpper50: technicalBaseline?.adaptiveRsiUpper50 ?? null,
+          sessionHigh: currentOhlc?.high ?? null,
+          sessionLow: currentOhlc?.low ?? null,
+          sessionTotalVolume: currentTotalVolume,
+          rollingBars,
+        })
+        await recordPaperExecutionEvent(env, {
+          tradeDate: today,
+          symbol: pending.symbol,
+          side: 'buy',
+          eventType: 'intraday_technical_decision',
+          status: intradayTechnicalSnapshot.adaptiveRsiState,
+          reason: 'intraday_dynamic_decision',
+          detail: {
+            ...intradayTechnicalSnapshot,
+            guard_enabled: truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED),
+            previous_close: previousCloseForSnapshot,
+            previous_obv_temperature_60: technicalBaseline?.obvTemperature60 ?? null,
+            previous_adaptive_rsi_upper_50: technicalBaseline?.adaptiveRsiUpper50 ?? null,
+          },
+          pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+          source: 'intraday_dynamic_technical_decision',
+        })
+      } catch (error) {
+        recordExecutionNote(
+          pending.symbol,
+          'intraday_technical_decision_error',
+          'intraday_dynamic_decision_failed',
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    }
+    const effectiveOhlcvTradePlan = ohlcvTradePlan && intradayTechnicalSnapshot && truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+      ? {
+        ...ohlcvTradePlan,
+        atrDefense: Math.max(ohlcvTradePlan.atrDefense ?? 0, intradayTechnicalSnapshot.atrDefense),
+      }
+      : ohlcvTradePlan
+    const finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
+    const finLabL5Quality = finLabL5Quote
+      ? quoteQualityFromL5(finLabL5Quote, {
+        maxQuoteAgeMs: optionalPositiveNumber((env as any).FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
+        maxSpreadPct: optionalPositiveNumber((env as any).FINLAB_L5_MAX_SPREAD_PCT, 0.006),
+        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber((env as any).FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
+        minTopAskVolume: optionalPositiveNumber((env as any).FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
+        minOrderBookImbalance: Number.isFinite(Number((env as any).FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
+          ? Number((env as any).FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
+          : -0.7,
+      })
+      : null
+    const finLabL5MarketDataEnabled = truthyFlag((env as any).FINLAB_L5_MARKET_DATA_ENABLED)
+    if (finLabL5MarketDataEnabled) {
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: pending.symbol,
+        side: 'buy',
+        eventType: 'finlab_l5_market_data',
+        status: finLabL5Quality?.status ?? 'missing',
+        reason: finLabL5Quality?.reasons.join(',') || (finLabL5Quote ? 'l5_market_data_pass' : 'l5_market_data_missing'),
+        detail: {
+          ...buildFinLabL5MarketDataDetail(finLabL5Quote),
+          quality: finLabL5Quality,
+          production_like_market_data: finLabL5MarketDataEnabled,
+          live_submit_enabled: false,
+        },
+        pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+        source: 'finlab_sinopac_l5_market_data',
+      })
+    }
+    const baseMomentum = await loadPreTradeMomentum(env, cfg, pending.symbol, price)
+    const adaptivePolicy = resolveAdaptiveExecutionPolicy({
+      strategyMode: effectiveOhlcvTradePlan?.mode ?? null,
+      marketRiskLevel: marketRisk.risk_level,
+      l5Quality: finLabL5Quality,
+      base: {
+        minVolumeRatio: cfg.momentum?.minVolumeRatio ?? 0.8,
+        minRangePosition: cfg.momentum?.minRangePosition ?? 0.3,
+        maxEntryChasePct: cfg.position.maxEntryChasePct,
+        strongBreakoutMaxEntryChasePct: cfg.position.strongBreakoutMaxEntryChasePct,
+        strongBreakoutVolumeRatio: cfg.momentum?.strongBreakoutVolumeRatio ?? 1.5,
+        strongBreakoutRangePosition: cfg.momentum?.strongBreakoutRangePosition ?? 0.7,
+      },
+    })
+    recordExecutionNote(
+      pending.symbol,
+      'adaptive_gate_live',
+      'adaptive_execution_policy',
+      [
+        `volume_min=${adaptivePolicy.momentum.minVolumeRatio}`,
+        `range_min=${adaptivePolicy.momentum.minRangePosition}`,
+        `chase_max=${adaptivePolicy.policy.maxEntryChasePct}`,
+        `strong_chase_max=${adaptivePolicy.policy.strongBreakoutMaxEntryChasePct}`,
+        finLabL5Quality ? `l5=${finLabL5Quality.status}` : null,
+        adaptivePolicy.notes.join('|'),
+      ].filter(Boolean).join(';'),
+    )
+    const intradayTechnicalDecision = intradayTechnicalSnapshot && truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+      ? resolveIntradayTechnicalDecision({
+        snapshot: intradayTechnicalSnapshot,
+        strategyMode: effectiveOhlcvTradePlan?.mode ?? null,
+        marketRiskLevel: marketRisk.risk_level,
+        minRangePosition: adaptivePolicy.momentum.minRangePosition,
+      })
+      : null
+    if (intradayTechnicalDecision) {
+      recordExecutionNote(
+        pending.symbol,
+        intradayTechnicalDecision.action === 'pass' ? 'technical_pass' : 'pending',
+        intradayTechnicalDecision.reason,
+        intradayTechnicalDecision.detail,
+      )
+    }
+    if (adaptivePolicy.envelopeBlockReason && truthyFlag((env as any).FINLAB_L5_ENVELOPE_GUARD_ENABLED)) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'pending',
+        adaptivePolicy.envelopeBlockReason,
+        'finlab_l5_envelope_guard',
+      )
+      continue
+    }
     const preTrade = evaluatePreTradeExecution({
       symbol: pending.symbol,
       currentPrice: price,
-      entryPrice: pending.ml_entry_price,
-      stopLoss: pending.ml_stop_loss,
-      originalEntry: (pending as any).original_entry ?? pending.ml_entry_price,
+      entryPrice: executionEntryPrice,
+      bestAsk: currentOhlc?.ask,
+      stopLoss: executionStopLoss,
+      originalEntry: effectiveOhlcvTradePlan?.entryPrice ?? (pending as any).original_entry ?? pending.ml_entry_price,
       retryCount: (pending as any).retry_count ?? 0,
       previousClose: prevCloseMap.get(pending.symbol) ?? null,
       quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
       quoteSource: currentOhlc?.source === 'shioaji' ? 'shioaji' : currentOhlc?.source === 'yahoo' ? 'yahoo' : 'none',
       marketRiskLevel: marketRisk.risk_level,
-      momentum: await loadPreTradeMomentum(env, cfg, pending.symbol, price),
+      momentum: {
+        ...baseMomentum,
+        minVolumeRatio: adaptivePolicy.momentum.minVolumeRatio,
+        minRangePosition: adaptivePolicy.momentum.minRangePosition,
+        strongBreakoutVolumeRatio: adaptivePolicy.momentum.strongBreakoutVolumeRatio,
+        strongBreakoutRangePosition: adaptivePolicy.momentum.strongBreakoutRangePosition,
+      },
+      tradePlan: effectiveOhlcvTradePlan
+        ? {
+          source: effectiveOhlcvTradePlan.source,
+          mode: effectiveOhlcvTradePlan.mode,
+          confirmation: effectiveOhlcvTradePlan.confirmation,
+          resistance: effectiveOhlcvTradePlan.resistance,
+          support: effectiveOhlcvTradePlan.support,
+          atrDefense: effectiveOhlcvTradePlan.atrDefense,
+          volumeNode: effectiveOhlcvTradePlan.volumeNode,
+          buyReferenceLow: effectiveOhlcvTradePlan.buyReferenceLow,
+          buyReferenceHigh: effectiveOhlcvTradePlan.buyReferenceHigh,
+          optimisticLow: effectiveOhlcvTradePlan.optimisticLow,
+          optimisticHigh: effectiveOhlcvTradePlan.optimisticHigh,
+        }
+        : null,
+      technical: intradayTechnicalDecision,
       policy: {
         limitUpPct: cfg.circuit.limitUpPct ?? 0.095,
         requoteDeviationMax: cfg.position.requoteDeviationMax,
         requoteDiscount: cfg.position.requoteDiscount,
         requoteStopFallback: cfg.position.requoteStopFallback,
-        maxQuoteAgeMs: (cfg.position as any).maxQuoteAgeMs ?? 15_000,
+        maxQuoteAgeMs: cfg.position.maxQuoteAgeMs,
+        maxEntryChasePct: adaptivePolicy.policy.maxEntryChasePct,
+        strongBreakoutMaxEntryChasePct: adaptivePolicy.policy.strongBreakoutMaxEntryChasePct,
       },
     })
 
@@ -790,14 +1245,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         ;(pendingBuys[idx] as any).original_entry = (pending as any).original_entry ?? pending.ml_entry_price
         ;(pendingBuys[idx] as any).retry_count = preTrade.retryCount ?? ((pending as any).retry_count ?? 0) + 1
         pendingBuys[idx].ml_entry_price = preTrade.nextEntryPrice
-        pendingBuys[idx].ml_stop_loss = preTrade.nextStopLoss ?? pending.ml_stop_loss
+        pendingBuys[idx].ml_stop_loss = preTrade.nextStopLoss ?? executionStopLoss
         pendingBuys[idx] = appendPendingBuyExecutionNote(
           pendingBuys[idx],
-          formatExecutionStatusEvent('requoted', preTrade.reason, `${pending.ml_entry_price}->${preTrade.nextEntryPrice}`),
+          formatExecutionStatusEvent('requoted', preTrade.reason, `${executionEntryPrice}->${preTrade.nextEntryPrice}`),
         ) as PendingBuy
-        recordActiveExecutionStatus(pending.symbol, 'requoted', preTrade.reason, `${pending.ml_entry_price}->${preTrade.nextEntryPrice}`)
+        recordActiveExecutionStatus(pending.symbol, 'requoted', preTrade.reason, `${executionEntryPrice}->${preTrade.nextEntryPrice}`)
       }
-      console.log(`[PreTrade] requote ${pending.symbol}: ${pending.ml_entry_price} -> ${preTrade.nextEntryPrice} (${preTrade.reason})`)
+      console.log(`[PreTrade] requote ${pending.symbol}: ${executionEntryPrice} -> ${preTrade.nextEntryPrice} (${preTrade.reason})`)
       stateChanged = true
       continue
     }
@@ -807,18 +1262,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         : preTrade.reason.startsWith('untrusted_quote_source:')
           ? 'quote_unavailable'
           : 'pending'
-      recordActiveExecutionStatus(pending.symbol, activeStatus, preTrade.reason)
+      recordActiveExecutionStatus(pending.symbol, activeStatus, preTrade.reason, preTrade.detail ?? null)
       console.log(`[PreTrade] defer ${pending.symbol}: ${preTrade.reason}`)
       continue
     }
     if (preTrade.action === 'SKIP') {
       console.log(`[PreTrade] skip ${pending.symbol}: ${preTrade.reason}`)
-      recordExecutionEvent(pending.symbol, 'skipped', preTrade.reason)
+      recordExecutionEvent(pending.symbol, 'skipped', preTrade.reason, preTrade.detail ?? null)
       stateChanged = true
       continue
     }
 
-    const limitPrice = preTrade.limitPrice ?? pending.ml_entry_price
+    const limitPrice = preTrade.limitPrice ?? executionEntryPrice
     const fill = resolveLimitBuyFill({
       currentPrice: price,
       limitPrice,
@@ -919,6 +1374,61 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
     }
     const requestedShares = shares
+    const orderIntent = buildStockVisionOrderIntent({
+      accountId: ACCOUNT_ID,
+      tradeDate: today,
+      pending,
+      limitPrice,
+      currentPrice: price,
+      budget,
+      shares: requestedShares,
+      strategyMode: effectiveOhlcvTradePlan?.mode ?? null,
+      marketRiskLevel: marketRisk.risk_level,
+      quote: {
+        bestAsk: currentOhlc?.ask ?? null,
+        bestBid: currentOhlc?.bid ?? null,
+        source: currentOhlc?.source ?? 'none',
+        quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
+      },
+      adaptivePolicy: {
+        maxEntryChasePct: adaptivePolicy.policy.maxEntryChasePct,
+        minVolumeRatio: adaptivePolicy.momentum.minVolumeRatio,
+        minRangePosition: adaptivePolicy.momentum.minRangePosition,
+      },
+    })
+    const finLabExecutionPreview = await fetchFinLabExecutionPreview(env as any, orderIntent)
+    if (finLabExecutionPreview) {
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: pending.symbol,
+        side: 'buy',
+        eventType: 'finlab_execution_preview',
+        status: finLabExecutionPreview.status,
+        reason: finLabExecutionPreview.visible_reason,
+        detail: {
+          previewOnly: true,
+          intent: orderIntent,
+          blocked_reasons: finLabExecutionPreview.blocked_reasons ?? [],
+          warnings: finLabExecutionPreview.warnings ?? [],
+          raw_status: finLabExecutionPreview.raw?.status ?? null,
+          live_submit_enabled: false,
+        },
+        pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+        source: 'finlab_execution_preview',
+      })
+      if (
+        truthyFlag((env as any).FINLAB_EXECUTION_PREVIEW_GUARD_ENABLED) &&
+        ['blocked', 'error'].includes(String(finLabExecutionPreview.status).toLowerCase())
+      ) {
+        recordActiveExecutionStatus(
+          pending.symbol,
+          'pending',
+          finLabExecutionPreview.visible_reason,
+          'finlab_execution_preview_guard',
+        )
+        continue
+      }
+    }
     const executableVolume = Number(currentOhlc?.totalVolume ?? 0)
     shares = applyPartialFill(shares, fillPrice, executableVolume, cfg)
     const isPartialFill = shares < requestedShares
@@ -931,6 +1441,38 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const commission = calcCommission(txValue, cfg)
     const totalCost = txValue + commission
     if (totalCost > acc.cash || dailyBuyTotal + totalCost > DAILY_BUY_LIMIT) continue
+    const brokerReconciliation = buildPaperBrokerReconciliation({
+      intent: orderIntent,
+      finlabPreview: finLabExecutionPreview,
+      simulatedFill: {
+        fillable: true,
+        fillPrice,
+        shares,
+        reason: isPartialFill ? 'paper_order_partial_fill' : 'paper_order_created',
+      },
+      l5: {
+        bestAsk: finLabL5Quote?.bestAsk ?? currentOhlc?.ask ?? null,
+        bestBid: finLabL5Quote?.bestBid ?? currentOhlc?.bid ?? null,
+        spreadPct: finLabL5Quote?.spreadPct ?? null,
+        orderBookImbalance: finLabL5Quote?.orderBookImbalance ?? null,
+      },
+    })
+    await recordPaperExecutionEvent(env, {
+      tradeDate: today,
+      symbol: pending.symbol,
+      side: 'buy',
+      eventType: 'paper_broker_reconciliation',
+      status: brokerReconciliation.status,
+      reason: brokerReconciliation.mismatches[0] ?? brokerReconciliation.simulatedFillReason,
+      detail: {
+        ...brokerReconciliation.detail,
+        expected_slippage_pct: brokerReconciliation.expectedSlippagePct,
+        mismatches: brokerReconciliation.mismatches,
+        live_submit_enabled: false,
+      },
+      pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+      source: 'paper_broker_reconciliation',
+    })
 
     const volPct = atr14 / fillPrice
     const regimeLabel = await getCurrentSltpRegime(env.KV)
@@ -1040,6 +1582,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             pre_trade_action: preTrade.action,
             pre_trade_reason: preTrade.reason,
             quote_source: currentOhlc?.source ?? 'none',
+            order_intent: orderIntent,
+            intraday_technical_decision: intradayTechnicalDecision,
+            finlab_preview_status: finLabExecutionPreview?.status ?? null,
+            finlab_preview_reason: finLabExecutionPreview?.visible_reason ?? null,
+            paper_broker_reconciliation_status: brokerReconciliation.status,
             intent_key: intent.intentKey,
           }),
         ),
@@ -1091,43 +1638,38 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     try {
       const recRow = await env.DB.prepare(
-        `SELECT score_components, chip_score, tech_score, momentum_score, ml_score, score
+        `SELECT score_components
            FROM daily_recommendations
           WHERE date=? AND symbol=?`,
       ).bind(today, pending.symbol).first<any>()
       if (recRow) {
         const scoreV2 = readScoreV2Snapshot(recRow)
-        const pct = scoreV2ComponentPercentages(scoreV2)
-        const decisionScoreComponents = JSON.stringify({
-          ...scoreV2.payload,
-          finalScore: scoreV2.finalScore,
-          alphaAdjustment: scoreV2.alphaAdjustment,
-        })
-        await env.DB.prepare(`
-          INSERT OR REPLACE INTO decision_logs
-            (date, symbol, action, score_components, chip_score, tech_score, ml_score, total_score,
-             chip_pct, tech_pct, ml_pct, ml_signal, ml_confidence,
-             debate_verdict, debate_summary, market_risk, sector, entry_price)
-          VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          today,
-          pending.symbol,
-          decisionScoreComponents,
-          scoreV2.components.chipFlow,
-          scoreV2.components.technicalStructure,
-          scoreV2.components.mlEdge,
-          scoreV2.finalScore,
-          pct.chipPct,
-          pct.technicalPct,
-          pct.mlPct,
-          pending.signal,
-          pending.confidence,
-          pending.debate_verdict ?? null,
-          null,
-          marketRisk?.risk_level ?? null,
-          recSector,
-          fillPrice,
-        ).run()
+        if (!scoreV2) {
+          console.warn(`[PaperEntry] missing Score V2 payload for decision log: ${pending.symbol}`)
+        } else {
+          const decisionScoreComponents = JSON.stringify({
+            ...scoreV2.payload,
+            finalScore: scoreV2.finalScore,
+            alphaAdjustment: scoreV2.alphaAdjustment,
+          })
+          await env.DB.prepare(`
+            INSERT OR REPLACE INTO decision_logs
+              (date, symbol, action, score_components, ml_signal, ml_confidence,
+               debate_verdict, debate_summary, market_risk, sector, entry_price)
+            VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            today,
+            pending.symbol,
+            decisionScoreComponents,
+            pending.signal,
+            pending.confidence,
+            pending.debate_verdict ?? null,
+            null,
+            marketRisk?.risk_level ?? null,
+            recSector,
+            fillPrice,
+          ).run()
+        }
       }
     } catch (e) {
       console.warn('[L2] Decision log failed:', e)

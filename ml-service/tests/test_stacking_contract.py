@@ -58,7 +58,7 @@ def test_meta_predict_uses_bundle_model_order():
         [
             _pred("XGBoost", "up", 0.81, 0.03),
             _pred("DLinear", "down", 0.72, -0.02),
-            _pred("Chronos", "up", 0.66, 0.01),
+            _pred("PatchTST", "up", 0.66, 0.01),
         ],
         {
             "scaler": _IdentityScaler(),
@@ -75,10 +75,10 @@ def test_build_rank_meta_features_uses_one_rank_per_model():
     features = build_rank_meta_features(
         {
             "XGBoost": 0.82,
-            "CatBoost": 0.74,
-            "Chronos": 0.63,
+            "LightGBM": 0.74,
+            "PatchTST": 0.63,
         },
-        model_order=["XGBoost", "CatBoost", "Chronos", "DLinear"],
+        model_order=["XGBoost", "LightGBM", "PatchTST", "DLinear"],
     )
 
     assert features.shape == (4,)
@@ -92,14 +92,14 @@ def test_train_rank_stacker_oof_returns_rank_regression_bundle():
     for i in range(120):
         base = i / 119
         xgb = np.clip(base + rng.normal(0, 0.02), 0, 1)
-        cat = np.clip(base * 0.9 + 0.05 + rng.normal(0, 0.02), 0, 1)
-        rows.append({"XGBoost": xgb, "CatBoost": cat, "Chronos": 1 - xgb})
-        y.append(np.clip((xgb + cat) / 2, 0, 1))
+        lgbm = np.clip(base * 0.9 + 0.05 + rng.normal(0, 0.02), 0, 1)
+        rows.append({"XGBoost": xgb, "LightGBM": lgbm, "PatchTST": 1 - xgb})
+        y.append(np.clip((xgb + lgbm) / 2, 0, 1))
 
     bundle = train_rank_stacker_oof(
         rows,
         np.array(y),
-        model_order=["XGBoost", "CatBoost", "Chronos"],
+        model_order=["XGBoost", "LightGBM", "PatchTST"],
         min_samples=60,
     )
 
@@ -107,24 +107,25 @@ def test_train_rank_stacker_oof_returns_rank_regression_bundle():
     assert bundle["target_type"] == "rank"
     assert bundle["model_family"] == "ridge_rank_stacker"
     assert bundle["meta_feature_dim"] == 3
-    assert bundle["model_order"] == ["XGBoost", "CatBoost", "Chronos"]
+    assert bundle["model_order"] == ["XGBoost", "LightGBM", "PatchTST"]
     assert "target_dir" not in bundle
 
-    pred = rank_meta_predict({"XGBoost": 0.9, "CatBoost": 0.86, "Chronos": 0.1}, bundle)
+    pred = rank_meta_predict({"XGBoost": 0.9, "LightGBM": 0.86, "PatchTST": 0.1}, bundle)
     assert 0.0 <= pred <= 1.0
     assert pred > 0.65
 
 
 def test_default_v2_rank_model_order_covers_alpha_prediction_models_only():
     assert MODEL_ORDER == [
-        "XGBoost",
-        "CatBoost",
-        "ExtraTrees",
         "LightGBM",
-        "FT-Transformer",
-        "Chronos",
+        "XGBoost",
+        "ExtraTrees",
+        "TabM",
+        "GNN",
         "DLinear",
         "PatchTST",
+        "iTransformer",
+        "TimesFM",
     ]
 
 
@@ -132,27 +133,27 @@ def test_build_oos_rank_rows_aligns_model_predictions():
     rows, model_order = build_oos_rank_rows(
         {
             "XGBoost": np.array([0.1, 0.9]),
-            "CatBoost": np.array([0.2, 0.8]),
-            "Chronos": np.array([0.3, 0.7]),
+            "LightGBM": np.array([0.2, 0.8]),
+            "PatchTST": np.array([0.3, 0.7]),
         },
         target_len=2,
     )
 
-    assert model_order == ["XGBoost", "CatBoost", "Chronos"]
+    assert model_order == ["LightGBM", "XGBoost", "PatchTST"]
     assert rows == [
-        {"XGBoost": 0.1, "CatBoost": 0.2, "Chronos": 0.3},
-        {"XGBoost": 0.9, "CatBoost": 0.8, "Chronos": 0.7},
+        {"XGBoost": 0.1, "LightGBM": 0.2, "PatchTST": 0.3},
+        {"XGBoost": 0.9, "LightGBM": 0.8, "PatchTST": 0.7},
     ]
 
 
 def test_apply_rank_stacker_adds_rank_only_when_bundle_is_v2_rank():
-    rank_scores = {"XGBoost": 0.8, "CatBoost": 0.7}
-    ic_weights = {"XGBoost": 0.03, "CatBoost": 0.02}
+    rank_scores = {"XGBoost": 0.8, "LightGBM": 0.7}
+    ic_weights = {"XGBoost": 0.03, "LightGBM": 0.02}
     rank_bundle = {
         "target_type": "rank",
         "scaler": _IdentityScaler(),
         "model": _MeanRankModel(),
-        "model_order": ["XGBoost", "CatBoost"],
+        "model_order": ["XGBoost", "LightGBM"],
         "eval_ic": 0.04,
     }
 

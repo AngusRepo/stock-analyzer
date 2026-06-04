@@ -31,6 +31,7 @@ SECRET_KEY = os.environ.get("SHIOAJI_SECRET_KEY", "")
 PERSON_ID  = os.environ.get("SHIOAJI_PERSON_ID", "")
 ACCOUNT_ID = os.environ.get("SHIOAJI_ACCOUNT_ID", "")
 SERVICE_TOKEN = os.environ.get("PROXY_SERVICE_TOKEN", "")  # Worker 驗證用
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
 
 # ── 全域狀態 ────────────────────────────────────────────────────────────────
 api = None
@@ -217,6 +218,8 @@ app = FastAPI(title="Shioaji Quote Proxy", version="1.0.0", lifespan=lifespan)
 # ── Auth Middleware ──────────────────────────────────────────────────────────
 def verify_token(authorization: str | None):
     if not SERVICE_TOKEN:
+        if ENVIRONMENT == "production":
+            raise HTTPException(500, "PROXY_SERVICE_TOKEN not configured")
         return  # 未設定 token → 不驗證（開發模式）
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Unauthorized")
@@ -234,6 +237,7 @@ def health():
         "bidask_subscribed_count": len(bidask_subscribed),
         "cached_ticks": len(last_ticks),
         "cached_bidasks": len(last_bidasks),
+        "auth_configured": bool(SERVICE_TOKEN),
         "market_hours": is_market_hours(),
         "tw_time": get_tw_now().isoformat(),
     }

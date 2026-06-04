@@ -24,11 +24,8 @@ Produces per-window model bank + HMM snapshots. Downstream consumers:
 
 Compute
 ───────
-12 windows × (tree [CPU] + FT-T [GPU]) = 24 Modal jobs
-With tree max_containers=3 and FT-T max_containers=2 parallel, wall clock:
-  ~12 × max(tree_time_per_window, ftt_time_per_window) / parallel_factor
-  ≈ 12 × 15min / 2 ≈ 90 min if parallel
-  Sequential fallback: 12 × 15min = 3 hr
+Walk-forward retrain covers active tree models only. FT-Transformer is retired
+and must not be scheduled as a walk-forward child job.
 
 HMM training is fast (~1 min per window on CPU, max_containers=3).
 """
@@ -56,7 +53,7 @@ logger = logging.getLogger(__name__)
 ML_SERVICE_URL    = os.environ.get("ML_SERVICE_URL", "")
 ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 
-MODELS_ALL = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+MODELS_ALL = ["LightGBM", "XGBoost", "ExtraTrees"]
 
 
 @dataclass
@@ -66,7 +63,6 @@ class WalkForwardWindowResult:
     test_range: tuple[str, str]
     hmm_result: Optional[dict] = None
     tree_result: Optional[dict] = None
-    ftt_result: Optional[dict] = None
     model_metrics: dict[str, dict] = field(default_factory=dict)
     error: Optional[str] = None
 
@@ -300,9 +296,9 @@ async def _train_one_window(
     models: list[str],
     batch_count: int,
 ) -> WalkForwardWindowResult:
-    """Execute full pipeline for one window: HMM → tree train → FT-T train.
+    """Execute full pipeline for one window: HMM → active tree train.
 
-    Tree and FT-T are spawned in parallel (two separate Modal containers).
+    Active tree models are trained as the walk-forward model bank.
     HMM is trained first because it's fast and later windows may not need
     re-training if the market_env hasn't changed much.
     """
@@ -328,7 +324,7 @@ async def _train_one_window(
         result.error = f"hmm: {e}"
         return result
 
-    # Step 2 & 3: Tree + FT-T in parallel
+    # Step 2 & 3: active tree/coarse train. Retired models are ignored here.
     train_payload = {
         "window_id": window.window_id,
         "train_start": window.train_start,
@@ -339,35 +335,27 @@ async def _train_one_window(
         "skip_feature_pool": False,
     }
 
-    need_tree = any(m in models for m in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"])
-    need_ftt = "FT-Transformer" in models
+    active_tree_models = {"LightGBM", "XGBoost", "ExtraTrees"}
+    ignored_models = sorted(set(models) - active_tree_models)
+    if ignored_models:
+        logger.info("[WalkForward] ignoring retired/non-walk-forward models: %s", ignored_models)
+    need_tree = any(m in active_tree_models for m in models)
 
     tasks = []
     if need_tree:
         tasks.append(("tree", modal_client._modal_train_wf_tree_window(dict(train_payload))))
-    if need_ftt:
-        ftt_payload = dict(train_payload)
-        ftt_payload["skip_feature_pool"] = True
-        tasks.append(("ftt", modal_client._modal_train_wf_ftt_window(ftt_payload)))
 
-    # Run both concurrently
     if tasks:
         raw_results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
         for (kind, _), r in zip(tasks, raw_results):
             if isinstance(r, BaseException):
                 logger.error(f"[WalkForward] w{window.window_id} {kind} crashed: {r}")
-                if kind == "tree":
-                    result.tree_result = {"error": f"exception: {r}"}
-                else:
-                    result.ftt_result = {"error": f"exception: {r}"}
+                result.tree_result = {"error": f"exception: {r}"}
             else:
-                if kind == "tree":
-                    result.tree_result = r
-                else:
-                    result.ftt_result = r
+                result.tree_result = r
 
     # Consolidate per-model metrics
-    for partial in (result.tree_result or {}, result.ftt_result or {}):
+    for partial in (result.tree_result or {},):
         if not partial or partial.get("error"):
             continue
         for model_name, model_info in (partial.get("results") or {}).items():
@@ -396,8 +384,8 @@ async def run_walk_forward(
     """Real walk-forward orchestrator — triggers Modal retrains per window.
 
     concurrent_windows: how many windows to train concurrently (bounded by Modal
-                       max_containers — tree=3, ftt=2). Default 2 to respect
-                       FT-T's tighter cap.
+                       tree max_containers). Default 2 keeps GCS and Modal load
+                       predictable.
     """
     models = models or MODELS_ALL
     trading_days = [d for d in dataset.trading_days if start_date <= d <= end_date]
@@ -437,7 +425,7 @@ async def run_walk_forward(
             "dry_run": True,
             "planned_windows": len(windows),
             "planned_retrains": len(windows) * len(models),
-            "estimated_gpu_wall_clock_hours": len(windows) * 15 / 60 / max(1, concurrent_windows),
+            "estimated_tree_wall_clock_hours": len(windows) * 15 / 60 / max(1, concurrent_windows),
         }
         return run
 

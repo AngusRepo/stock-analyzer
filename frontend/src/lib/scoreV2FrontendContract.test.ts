@@ -78,8 +78,12 @@ for (const text of ['偏好買入價', '建議買入區間', '可追價上限', 
   assert(scoreBreakdown.includes(text), `Recommendation card should use user-facing trading-plan label: ${text}`)
 }
 
-for (const text of ['Entry Model V2 /', 'OHLCV daily fallback', 'Alpha daily proxy fallback']) {
+for (const text of ['Entry Model V2 /', 'missing_intraday_tick_anchor', 'missing_entry_model_v2_anchor']) {
   assert(scoreBreakdown.includes(text), `Recommendation card should prefer Entry Model V2 evidence or explicitly label fallback: ${text}`)
+}
+
+for (const text of ['OHLCV volume proxy', 'Alpha proxy']) {
+  assert(!scoreBreakdown.includes(text), `Recommendation card must not present proxy volume nodes as true POC evidence: ${text}`)
 }
 
 for (const text of ['entryModelV2FromWatchPoints', 'entry_price_model_v2:']) {

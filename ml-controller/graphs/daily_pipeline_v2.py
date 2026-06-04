@@ -1,8 +1,8 @@
 """
-daily_pipeline_v2.py — Real LangGraph StateGraph for daily prediction pipeline
+daily_pipeline_v2.py ??Real LangGraph StateGraph for daily prediction pipeline
 2026-04-07 LangGraph A+B refactor
 
-Replaces graphs/daily_pipeline.py which was a "fake LangGraph" — fire-and-forget
+Replaces graphs/daily_pipeline.py which was a "fake LangGraph" ??fire-and-forget
 HTTP shell where state held only step_status, not domain data.
 
 Real LangGraph this time:
@@ -10,7 +10,7 @@ Real LangGraph this time:
   - Nodes are pure functions reading & writing state
   - All D1/ML calls done by ml-controller directly (no fire-and-forget to worker)
   - Checkpointer disabled until a durable async backend is selected
-  - Linear edges screener_load → market_env → payloads → ml_predict → recommend → llm_reasons → write_d1
+  - Linear edges screener_load ??market_env ??payloads ??ml_predict ??recommend ??llm_reasons ??write_d1
 """
 from __future__ import annotations
 import asyncio
@@ -118,9 +118,9 @@ def _breeze2_reason_shadow_provider() -> str:
     return provider if provider in {"context", "modal_generation"} else "context"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# State schema — typed, contains domain data (not just step_status)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
+# State schema ??typed, contains domain data (not just step_status)
+# ?????????????????????????????????????????????????????????????????????????????
 
 class PipelineStateV2(TypedDict, total=False):
     """
@@ -141,23 +141,23 @@ class PipelineStateV2(TypedDict, total=False):
 
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
-    predictions: dict                       # symbol → ml result
+    predictions: dict                       # symbol ??ml result
     final_recommendations: list[dict]       # after filter + scoring + ranking
     sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
-    llm_reasons: dict                       # symbol → {reason, watchPoints}
+    llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
     breeze2_reason_shadow: dict             # symbol -> advisory-only Breeze2 shadow reason
 
     # Outputs
     sector_flow_summary: dict               # Phase 6: RRG compute result (concept + industry)
-    persona_opinions: dict                  # symbol → {trust:{...}, retail:{...}} (Taiwan-persona augmentation)
+    persona_opinions: dict                  # symbol ??{trust:{...}, retail:{...}} (Taiwan-persona augmentation)
     metrics: dict                           # timing, counts
     errors: Annotated[list[str], operator.add]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Nodes
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 async def node_load_inputs(state: PipelineStateV2) -> dict:
     """
@@ -228,13 +228,13 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
 
 async def node_ml_predict(state: PipelineStateV2) -> dict:
     """
-    Single batch_predict call — modal.map() (or httpx parallel concurrency=20).
+    Single batch_predict call ??modal.map() (or httpx parallel concurrency=20).
     No serial sub-batching: all stocks at once, controller-side parallel.
 
-    2026-04-19 ML_POOL Stage 0.1+0.2+0.3 + A:
-    - Parallel batch: 5 feature models + Chronos + DLinear + PatchTST.
-    - Per-stock merged signal: time_series → rank via sigmoid, weighted by
-      ic_weights × lifecycle_weights from model_pool.json.
+    2026-06-04 ML_POOL new L3 family:
+    - Parallel batch: tree/tabular/graph alpha predictors + DLinear/PatchTST/iTransformer/TimesFM.
+    - Per-stock merged signal: time_series ??rank via sigmoid, weighted by
+      ic_weights ? lifecycle_weights from model_pool.json.
     - Original signal preserved as r["signal"] for backward compat;
       merged exposed as r["ensemble_v2"] = {avg_rank, signal, contributing_models}.
     """
@@ -245,36 +245,41 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     payloads = state["payloads"]
     n = len(payloads)
-    logger.info(f"[Pipeline V2] node_ml_predict: {n} stocks (batch feature models + Chronos)")
+    logger.info(f"[Pipeline V2] node_ml_predict: {n} stocks (batch feature models + L3 sequence family)")
 
     if not payloads:
         return {"predictions": {}}
 
     # Build shared close-price series once for time-series predictors.
-    chronos_series = build_state_space_series_from_payloads(payloads)
+    sequence_series = build_state_space_series_from_payloads(payloads)
 
     # Parallel: alpha predictors + state overlays.
     # Kalman/Markov are state overlays only; they do not enter alpha challenger.
-    model_status, active_versions, challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+    model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
 
     feat_task = batch_predict(payloads)
-    chronos_task = (
-        modal_client.chronos_batch_predict(chronos_series, horizon=5, num_samples=20)
-        if model_status.get("Chronos", "active") in ("active", "degraded")
-        else _skip_batch("Chronos retired by model_pool")
-    )
     dlinear_task = (
-        modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
+        modal_client.dlinear_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
         if model_status.get("DLinear", "active") in ("active", "degraded")
         else _skip_batch("DLinear retired by model_pool")
     )
     patchtst_task = (
-        modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version=active_versions.get("PatchTST", "v1"))
+        modal_client.patchtst_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("PatchTST", "v1"))
         if model_status.get("PatchTST", "active") in ("active", "degraded")
         else _skip_batch("PatchTST retired by model_pool")
+    )
+    itransformer_task = (
+        modal_client.itransformer_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("iTransformer", "v1"))
+        if model_status.get("iTransformer", "active") in ("active", "degraded")
+        else _skip_batch("iTransformer retired by model_pool")
+    )
+    timesfm_task = (
+        modal_client.timesfm_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("TimesFM", "v1"))
+        if model_status.get("TimesFM", "active") in ("active", "degraded")
+        else _skip_batch("TimesFM retired by model_pool")
     )
     state_space_mode = _state_space_overlay_mode()
     state_space_models = {
@@ -292,7 +297,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             try:
                 spawn_info = await asyncio.to_thread(
                     modal_client.spawn_state_space_overlays_batch_predict,
-                    chronos_series,
+                    sequence_series,
                     horizon=5,
                     version_by_model=state_space_models,
                 )
@@ -302,62 +307,34 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 logger.warning(f"[Pipeline V2] State-space overlays shadow spawn failed: {exc}")
                 return {"error": f"state-space overlays shadow spawn failed: {exc}", "results": []}
         return await modal_client.state_space_overlays_batch_predict(
-            chronos_series,
+            sequence_series,
             horizon=5,
             version_by_model=state_space_models,
         )
 
     state_space_task = _shadow_state_space_overlays()
-    dlinear_ch_task = (
-        modal_client.dlinear_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["DLinear"])
-        if challenger_versions.get("DLinear")
-        else _skip_batch("DLinear challenger absent")
-    )
-    patchtst_ch_task = (
-        modal_client.patchtst_batch_predict(chronos_series, horizon_used=5, version=challenger_versions["PatchTST"])
-        if challenger_versions.get("PatchTST")
-        else _skip_batch("PatchTST challenger absent")
-    )
     (
         results,
-        chronos_raw,
         dlinear_raw,
         patchtst_raw,
         state_space_raw,
-        dlinear_ch_raw,
-        patchtst_ch_raw,
+        itransformer_raw,
+        timesfm_raw,
     ) = await asyncio.gather(
         feat_task,
-        chronos_task,
         dlinear_task,
         patchtst_task,
         state_space_task,
-        dlinear_ch_task,
-        patchtst_ch_task,
+        itransformer_task,
+        timesfm_task,
         return_exceptions=True,
     )
 
-    # Guard against Chronos total failure (don't let it block feature preds)
-    chronos_map: dict[str, dict] = {}
-    if isinstance(chronos_raw, BaseException):
-        logger.warning(f"[Pipeline V2] Chronos batch failed entirely: {chronos_raw} — skipping Chronos layer")
-    elif isinstance(chronos_raw, dict) and not chronos_raw.get("error"):
-        for cr in chronos_raw.get("results") or []:
-            sym = cr.get("symbol")
-            if sym and not cr.get("error"):
-                chronos_map[sym] = cr
-        logger.info(
-            f"[Pipeline V2] Chronos universal: {len(chronos_map)}/{len(chronos_series)} succeeded"
-        )
-    elif isinstance(chronos_raw, dict) and chronos_raw.get("results") == []:
-        logger.debug(f"[Pipeline V2] Chronos skipped: {chronos_raw.get('error')}")
-    else:
-        logger.warning(f"[Pipeline V2] Chronos batch returned error: {chronos_raw}")
 
-    # Guard against DLinear total failure (Stage 0.2 — may have no trained weights yet)
+    # Guard against DLinear total failure (Stage 0.2 ??may have no trained weights yet)
     dlinear_map: dict[str, dict] = {}
     if isinstance(dlinear_raw, BaseException):
-        logger.warning(f"[Pipeline V2] DLinear batch failed entirely: {dlinear_raw} — skipping DLinear layer")
+        logger.warning(f"[Pipeline V2] DLinear batch failed entirely: {dlinear_raw} ??skipping DLinear layer")
     elif isinstance(dlinear_raw, dict) and not dlinear_raw.get("error"):
         for dr in dlinear_raw.get("results") or []:
             sym = dr.get("symbol")
@@ -365,7 +342,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 dlinear_map[sym] = dr
         if dlinear_map:
             logger.info(
-                f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(chronos_series)} succeeded"
+                f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series)} succeeded"
             )
         else:
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
@@ -374,10 +351,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     else:
         logger.warning(f"[Pipeline V2] DLinear batch returned error: {dlinear_raw}")
 
-    # Guard against PatchTST total failure (Stage 0.3 — may have no trained weights yet)
+    # Guard against PatchTST total failure (Stage 0.3 ??may have no trained weights yet)
     patchtst_map: dict[str, dict] = {}
     if isinstance(patchtst_raw, BaseException):
-        logger.warning(f"[Pipeline V2] PatchTST batch failed entirely: {patchtst_raw} — skipping PatchTST layer")
+        logger.warning(f"[Pipeline V2] PatchTST batch failed entirely: {patchtst_raw} ??skipping PatchTST layer")
     elif isinstance(patchtst_raw, dict) and not patchtst_raw.get("error"):
         for pr in patchtst_raw.get("results") or []:
             sym = pr.get("symbol")
@@ -385,7 +362,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 patchtst_map[sym] = pr
         if patchtst_map:
             logger.info(
-                f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(chronos_series)} succeeded"
+                f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series)} succeeded"
             )
         else:
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
@@ -430,7 +407,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                         fallback_count += 1
                         if reason:
                             fallback_reasons[str(reason)] = fallback_reasons.get(str(reason), 0) + 1
-            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(chronos_series)} succeeded fallback={fallback_count}"
+            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(sequence_series)} succeeded fallback={fallback_count}"
             if fallback_count:
                 logger.warning(f"{log_msg} reasons={fallback_reasons}")
             else:
@@ -456,9 +433,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     markov_raw = state_space_overlays.get("MarkovSwitching", {})
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
-
-    dlinear_ch_map = _drain_ts_result(dlinear_ch_raw, "DLinear::challenger", chronos_series)
-    patchtst_ch_map = _drain_ts_result(patchtst_ch_raw, "PatchTST::challenger", chronos_series)
+    itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_series)
+    timesfm_map = _drain_ts_result(timesfm_raw, "TimesFM", sequence_series)
 
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
@@ -466,25 +442,18 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         return {"predictions": {}}
 
     def _attach_alt_sources(row: dict, sym: str) -> None:
-        if sym in chronos_map:
-            row["chronos"] = chronos_map[sym]
         if sym in dlinear_map:
             row["dlinear"] = dlinear_map[sym]
         if sym in patchtst_map:
             row["patchtst"] = patchtst_map[sym]
+        if sym in itransformer_map:
+            row["itransformer"] = itransformer_map[sym]
+        if sym in timesfm_map:
+            row["timesfm"] = timesfm_map[sym]
         if sym in kalman_map:
             row["kalman_filter"] = kalman_map[sym]
         if sym in markov_map:
             row["markov_switching"] = markov_map[sym]
-
-    def _attach_challenger_shadow(row: dict, sym: str) -> None:
-        challenger_scores = row.setdefault("challenger_rank_scores", {})
-        if sym in dlinear_ch_map and dlinear_ch_map[sym].get("forecast_pct") is not None:
-            challenger_scores["DLinear"] = _ts_to_rank(float(dlinear_ch_map[sym]["forecast_pct"]))
-        if sym in patchtst_ch_map and patchtst_ch_map[sym].get("forecast_pct") is not None:
-            challenger_scores["PatchTST"] = _ts_to_rank(float(patchtst_ch_map[sym]["forecast_pct"]))
-        if not challenger_scores:
-            row.pop("challenger_rank_scores", None)
 
     def _last_close(payload: dict) -> float:
         prices = payload.get("prices") or []
@@ -505,9 +474,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     def _build_alt_only_prediction(sym: str, payload: dict, feature_error: str | None) -> dict | None:
         sources = [
-            ("Chronos", chronos_map.get(sym)),
             ("DLinear", dlinear_map.get(sym)),
             ("PatchTST", patchtst_map.get(sym)),
+            ("iTransformer", itransformer_map.get(sym)),
+            ("TimesFM", timesfm_map.get(sym)),
         ]
         usable = [(name, row) for name, row in sources if row and row.get("forecast_pct") is not None]
         if not usable:
@@ -579,7 +549,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
         _attach_alt_sources(row, sym)
-        _attach_challenger_shadow(row, sym)
         pred_map[sym] = row
 
     degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
@@ -597,9 +566,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         logger.warning(f"[Pipeline V2] Feature batch returned {error_count} row errors; sample={sample_errors}")
     logger.info(
         f"[Pipeline V2] ML predict done: {len(pred_map)}/{n} succeeded, "
-        f"{error_count} errors, chronos={sum(1 for v in pred_map.values() if 'chronos' in v)}, "
+        f"{error_count} errors, "
         f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
         f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}, "
+        f"itransformer={sum(1 for v in pred_map.values() if 'itransformer' in v)}, "
+        f"timesfm={sum(1 for v in pred_map.values() if 'timesfm' in v)}, "
         f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
         f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
         f"alt_fallback={alt_fallback_count}, "
@@ -607,7 +578,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
-    # ── A: ML_POOL ensemble merge (8 alpha models with lifecycle) ──
+    # ?? A: ML_POOL ensemble merge (8 alpha models with lifecycle) ??
     # 2026-05-06: IC is lane-aware and empirical-Bayes shrunk before serving.
     # Short-sample negative IC no longer hard-zeros a model; confirmed negative
     # IC plus failed validation still fail-closed.
@@ -638,7 +609,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         )
 
         # #B Option 1 Top-K override (2026-04-21): regression-on-rank predictions
-        # compress to [0.43, 0.58] under realistic R² 0.02-0.05, never hitting
+        # compress to [0.43, 0.58] under realistic R簡 0.02-0.05, never hitting
         # absolute 0.70 BUY threshold. Industry-standard fix: sort top K by
         # avg_rank desc, force BUY regardless of absolute threshold. Confidence
         # override gives downstream (paper.ts morning-setup SQL + debate prompt)
@@ -686,9 +657,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     return {"predictions": pred_map, "prediction_dispersion": dispersion}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # A: ML_POOL-aware ensemble merge helpers (pure Python, no Modal)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 
 def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[str, str], bool]:
@@ -703,6 +674,8 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
     active_defaults = {
         "DLinear": "v1",
         "PatchTST": "v1",
+        "iTransformer": "v1",
+        "TimesFM": "v1",
         "KalmanFilter": "v1",
         "MarkovSwitching": "v1",
     }
@@ -1058,9 +1031,9 @@ def _load_pool_and_ic():
       - model_status: per-model "active"/"degraded"/"challenger"/"retired"
       - ic_weights: from model_pool.json rolling_ic/ic_4w_avg/latest weekly_ic
       - degraded_dampening: from trading:config.mlPool.degradedDampening
-      - ev2_cfg: from trading:config.ensemble_v2 — thresholds + Top-K override
+      - ev2_cfg: from trading:config.ensemble_v2 ??thresholds + Top-K override
         config (#B Option 1 2026-04-21 fix for "bot no-buy" mystery). Empty
-        dict when KV absent → _attach_ensemble_v2 + top-K loop fall back to
+        dict when KV absent ??_attach_ensemble_v2 + top-K loop fall back to
         hardcoded defaults matching ml-service ensemble.rank_to_signal.
     """
     import json as _json
@@ -1244,13 +1217,6 @@ def _monotonic_smooth_return_bins(bins: list[dict[str, Any]]) -> list[dict[str, 
     return smoothed
 
 
-def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
-    """Sigmoid map for time-series forecast → rank-like 0~1 (mirror of
-    ml-service ensemble.time_series_to_rank)."""
-    import math
-    return 1.0 / (1.0 + math.exp(-forecast_pct * scale))
-
-
 def _attach_ensemble_v2(
     pred: dict,
     model_status: dict,
@@ -1284,11 +1250,11 @@ def _attach_ensemble_v2(
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:
     """
-    Taiwan-persona augmentation layer (投信 + 散戶 contrarian).
+    Taiwan-persona augmentation layer (?縑 + ?? contrarian).
 
     For each active stock with a payload, compute two opinions using
     chip_data (trust_net) and margin_data (margin_balance) already loaded
-    into the payload, plus concept-level PTT sentiment via stock_tags →
+    into the payload, plus concept-level PTT sentiment via stock_tags ??
     concept_buzz.
 
     Written to persona_opinions D1 table AND returned in state for the
@@ -1302,7 +1268,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     if not payloads:
         return {"persona_opinions": {}}
 
-    # ── Bulk-load concept sentiment: symbol → best_concept → sentiment_avg ──
+    # ?? Bulk-load concept sentiment: symbol ??best_concept ??sentiment_avg ??
     # One query each for tags + buzz, then join in memory. Keeps D1 QPS low.
     symbols = [p.get("stock_id") or p.get("symbol") for p in payloads]
     symbols = [s for s in symbols if s]
@@ -1342,7 +1308,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     except Exception as e:
         logger.warning(f"[Pipeline V2] persona sentiment lookup failed (non-fatal): {e}")
 
-    # ── Compute per-symbol opinions ─────────────────────────────────────────
+    # ?? Compute per-symbol opinions ?????????????????????????????????????????
     from datetime import date as _date
     try:
         today_dt = _date.fromisoformat(run_date)
@@ -1389,7 +1355,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
             "retail": retail.to_dict(),
         }
 
-    # ── Persist to D1 (non-fatal) ───────────────────────────────────────────
+    # ?? Persist to D1 (non-fatal) ???????????????????????????????????????????
     try:
         written = write_persona_opinions(d1_client, opinions)
         logger.info(f"[Pipeline V2] persona opinions written: {written}/{len(opinions)}")
@@ -1426,7 +1392,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     logger.info("[Pipeline V2] node_recommend")
 
     # Phase 2: persona weight is KV-controllable for safe rollout
-    #   ml:persona_score_weight — float, default 1.0, 0 = disabled, 0.5 = shadow
+    #   ml:persona_score_weight ??float, default 1.0, 0 = disabled, 0.5 = shadow
     try:
         persona_weight = float(
             kv_client.get_json("ml:persona_score_weight", default=1.0) or 1.0
@@ -1507,7 +1473,7 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
     if not candidates:
         return {"llm_reasons": {}}
 
-    # Top themes from sector_flow_summary (Phase 6 — node_compute_sector_flow populates)
+    # Top themes from sector_flow_summary (Phase 6 ??node_compute_sector_flow populates)
     # Optional context for LLM prompt; empty list is acceptable fallback.
     top_themes: list[str] = []
     sf = state.get("sector_flow_summary") or {}
@@ -1598,9 +1564,9 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     return {"metrics": metrics}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def _snapshot_export_start_date(run_date: str) -> str:
     """Resolve the rolling research snapshot window from the pipeline run date."""
@@ -1699,9 +1665,9 @@ def _to_dict(obj: Any) -> dict:
     return dict(obj) if obj else {}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Build graph
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 _graph_singleton: Any = None
 
@@ -1710,7 +1676,7 @@ def build_graph():
     """Build and compile the LangGraph StateGraph."""
     g = StateGraph(PipelineStateV2)
 
-    # 2026-04-08 P2: Retry policy for ml_predict — protects against transient
+    # 2026-04-08 P2: Retry policy for ml_predict ??protects against transient
     # Modal infra failures (grpc disconnect, control plane hiccup). Per-task
     # timeouts are already caught per-item by P1 return_exceptions, so retry
     # only fires when batch_predict itself raises (rare).
@@ -1759,16 +1725,16 @@ def build_graph():
 
 
 def get_graph():
-    """Lazy singleton — build once per Cloud Run container."""
+    """Lazy singleton ??build once per Cloud Run container."""
     global _graph_singleton
     if _graph_singleton is None:
         _graph_singleton = build_graph()
     return _graph_singleton
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Public runner
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict:
     """
@@ -1797,7 +1763,7 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
 
     graph = get_graph()
     try:
-        # No checkpointer → no config needed
+        # No checkpointer ??no config needed
         final_state = await graph.ainvoke(initial_state)
         elapsed = asyncio.get_event_loop().time() - t0
         logger.info(f"[Pipeline V2] Completed in {elapsed:.1f}s: {final_state.get('metrics', {})}")

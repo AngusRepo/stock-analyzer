@@ -1,4 +1,4 @@
-﻿"""StockVision Modal ML service.
+"""StockVision Modal ML service.
 
 Modal owns heavy ML compute functions such as prediction, retraining, feature
 selection, walk-forward validation, and health/audit endpoints. Cloud Run
@@ -34,19 +34,9 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
     .pip_install_from_requirements(str(_LOCAL_REQ))
-    .run_commands(
-        "python -c \""
-        "from chronos import Chronos2Pipeline; "
-        "Chronos2Pipeline.from_pretrained('amazon/chronos-2', device_map='cpu')"
-        "\" || echo 'Chronos pre-download skipped (not installed)'",
-    )
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
-
-# Chronos baseline note:
-# Modal image preloads amazon/chronos-2. Optional LoRA fine-tuned Chronos-2 is
-# loaded at runtime via CHRONOS2_LORA_MODEL_ID when configured.
 
 # Secrets: GCS credentials plus Cloudflare D1/KV/API credentials.
 gcs_secret = modal.Secret.from_name("gcs-credentials")
@@ -335,7 +325,6 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "active_count": len(fs_pool.get("active", [])),
                 "reserve_count": len(fs_pool.get("reserve", [])),
                 "tree_active_count": len(fs_pool.get("tree_active", []) or fs_pool.get("active", [])),
-                "ft_active_count": len(fs_pool.get("ft_active", [])),
                 "target_permutation_n": fs_target_perm.get("n_permutations"),
                 "k_sweep_trials": fs_k_sweep.get("actual_trials") or fs_k_sweep.get("n_trials"),
                 "objective_cache_hits": fs_k_sweep.get("objective_cache_hits"),
@@ -350,7 +339,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         print("[Orchestrator] Non-monthly -> skip feature selection")
         result["stages"]["feature_selection"] = {"status": "skipped"}
 
-    # Stage 2: Train via two containers in parallel: CPU tree models + GPU FT-T.
+    # Stage 2: Train production groups; retired FT endpoints remain fail-closed.
     from app.training_finalizer import (
         build_retrain_followup_payload,
         expected_oos_artifact_groups,
@@ -396,13 +385,6 @@ def retrain_orchestrator(payload: dict) -> dict:
             "mergeable": training_group_feature_policy("tree").mergeable_oos,
             "models": models_for_training_group("tree"),
             "note": training_group_feature_policy("tree").note,
-        },
-        "ftt": {
-            "spawn": lambda p: train_ftt_model.spawn(p),
-            "payload": lambda: build_group_train_payload(base_train_payload, "ftt"),
-            "mergeable": training_group_feature_policy("ftt").mergeable_oos,
-            "models": models_for_training_group("ftt"),
-            "note": training_group_feature_policy("ftt").note,
         },
         "dlinear": {
             "spawn": lambda p: train_dlinear_universal.spawn(p),
@@ -460,7 +442,6 @@ def retrain_orchestrator(payload: dict) -> dict:
             print(f"[Orchestrator] Spawned group={group} models={spec['models']}")
 
         tree_result = {}
-        ftt_result = {}
         aux_train = {}
         if handles.get("tree") is not None:
             tree_result = handles["tree"].get()
@@ -471,16 +452,6 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "elapsed_s": tree_result.get("elapsed_s"),
                 "error": tree_result.get("error"),
                 "gcs_io": tree_result.get("gcs_io"),
-            }
-        if handles.get("ftt") is not None:
-            ftt_result = handles["ftt"].get()
-            partial_results["ftt"] = ftt_result
-            coverage["ftt"] = {
-                **coverage.get("ftt", {}),
-                "status": "error" if ftt_result.get("error") else "ok",
-                "elapsed_s": ftt_result.get("elapsed_s"),
-                "error": ftt_result.get("error"),
-                "gcs_io": ftt_result.get("gcs_io"),
             }
         for group in ("dlinear", "patchtst"):
             if handles.get(group) is not None:
@@ -497,7 +468,7 @@ def retrain_orchestrator(payload: dict) -> dict:
 
         # Merge results + IC tracking from spawned groups. Kept side-effect free
         # so a detached finalizer can reuse the same contract later.
-        reduced_train = reduce_training_group_results(tree_result, ftt_result, aux_train)
+        reduced_train = reduce_training_group_results(tree_result, aux_train)
         merged_results = reduced_train["merged_results"]
         merged_ic = reduced_train["merged_ic"]
         circuit_breaker = reduced_train["circuit_breaker"]
@@ -515,8 +486,6 @@ def retrain_orchestrator(payload: dict) -> dict:
             candidate_models = set(reduced_train["candidate_models"])
             for model_name in sorted(candidate_models):
                 if model_name in (tree_result.get("challenger_registrations") or {}):
-                    continue
-                if model_name in (ftt_result.get("challenger_registrations") or {}):
                     continue
                 try:
                     version = candidate_version
@@ -551,11 +520,9 @@ def retrain_orchestrator(payload: dict) -> dict:
             "circuit_breaker": circuit_breaker,
             "challenger_registrations": {
                 **(tree_result.get("challenger_registrations") or {}),
-                **(ftt_result.get("challenger_registrations") or {}),
                 **challenger_registrations,
             },
             "tree_elapsed_s": tree_result.get("elapsed_s"),
-            "ftt_elapsed_s": ftt_result.get("elapsed_s"),
             "aux_train": {
                 k: {
                     "status": "ok" if "error" not in v else "error",
@@ -571,7 +538,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             from app.stacking import save_meta_learner, train_rank_stacker_oof
 
             oos_payloads = []
-            for group, partial in (("tree", tree_result), ("ftt", ftt_result)):
+            for group, partial in (("tree", tree_result),):
                 artifact = (partial or {}).get("oos_artifact") or {}
                 artifact_path = artifact.get("path")
                 if not artifact_path:
@@ -916,9 +883,9 @@ def prep_universal_batch(payload: dict) -> dict:
 
 
 @app.function(
-    gpu="L4",                    # FT-Transformer needs GPU; L4 24GB for 631K full samples
-    memory=4096,                 # 631K samples x 106 features plus tree training overhead
-    timeout=7200,                # 120 min: tree models ~5 min + FT-T GPU full train ~90 min
+    gpu="L4",                    # Sequence training can use GPU; tree-only groups run in CPU split jobs.
+    memory=4096,
+    timeout=7200,
     scaledown_window=60,
     max_containers=1,
 )
@@ -958,9 +925,7 @@ def train_universal_from_gcs(payload: dict) -> dict:
     return train_result
 
 
-# Two-container split: tree models on CPU + FT-T on GPU.
-# Saves ~30 min GPU idle time + enables parallel training.
-# Orchestrator spawns both, waits for both, then merges results for IC gate.
+# Split training: tree models run on CPU; sequence models use their own artifact paths.
 
 @app.function(
     cpu=2,
@@ -992,7 +957,7 @@ def train_tree_model(payload: dict) -> dict:
     max_containers=1,
 )
 def train_tree_models(payload: dict) -> dict:
-    """CPU-only: XGBoost + CatBoost + ExtraTrees + LightGBM."""
+    """CPU-only: LightGBM + XGBoost + ExtraTrees."""
     _setup_env()
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     from app.training_finalizer import reduce_tree_model_child_results
@@ -1021,84 +986,32 @@ def train_tree_models(payload: dict) -> dict:
 
 
 @app.function(
-    gpu="L4",
-    memory=4096,
-    timeout=10800,               # 180 min for FT-T on full samples.
+    cpu=1,
+    memory=512,
+    timeout=60,
     scaledown_window=60,
     max_containers=1,
 )
 def train_ftt_model(payload: dict) -> dict:
-    """GPU L4: FT-Transformer only (uses all features, skip_feature_pool=True)."""
-    _setup_env()
-    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
-    from app.training_policy import build_group_train_payload
-    try:
-        req = UniversalTrainRequest(**build_group_train_payload(payload, "ftt"))
-        return _train(req)
-    except Exception as e:
-        return {"error": str(e), "type": "ftt_model"}
+    """Retired Modal endpoint kept fail-closed for old callers."""
+    return {"error": "FT-Transformer retired from production training", "type": "ftt_model", "status": "retired"}
 
 
 @app.function(
-    gpu="L4",
-    memory=4096,
-    timeout=21600,               # 360 min for architecture search trials plus buffer.
+    cpu=1,
+    memory=512,
+    timeout=60,
     scaledown_window=60,
     max_containers=1,
 )
 def ft_transformer_arch_search(payload: dict) -> dict:
-    """GPU L4: FT-Transformer architecture Optuna search (#29).
+    """Retired Modal endpoint kept fail-closed for old callers."""
+    return {
+        "error": "FT-Transformer retired from production training",
+        "type": "ft_arch_search",
+        "status": "retired",
+    }
 
-    LOCKED (see feedback_ft_transformer_tuning.md): no warmup / no cosine decay /
-    PATIENCE stays 16 in production. Search only varies d_model / n_heads /
-    n_layers / dropout with shorter patience=8 for throughput. Winning config is
-    manually applied to main.py FTTransformer then re-trained with production
-    settings. DO NOT auto-push to KV.
-
-    Payload:
-      n_trials     (int, default 20): coarse=20, full=50
-      subset_size  (int | null): null = full data, int = subsample X_train
-      gcs_prefix   (str, default "universal")
-    """
-    _setup_env()
-    try:
-        import json, io
-        from datetime import datetime
-        import numpy as np
-        from google.cloud import storage
-        from app.optuna_fttransformer_arch import load_prep_data_from_gcs, run_search
-
-        gcs_prefix  = payload.get("gcs_prefix", "universal")
-        n_trials    = int(payload.get("n_trials", 20))
-        subset_size = payload.get("subset_size")
-
-        X_tr, y_tr, X_val, y_val = load_prep_data_from_gcs(gcs_prefix)
-
-        if isinstance(subset_size, int) and 0 < subset_size < len(X_tr):
-            rng = np.random.RandomState(42)
-            idx = np.sort(rng.choice(len(X_tr), subset_size, replace=False))
-            X_tr, y_tr = X_tr[idx], y_tr[idx]
-
-        result = run_search(X_tr, y_tr, X_val, y_val, n_trials=n_trials,
-                            save_path="/tmp/ft_arch_optuna.json")
-
-        # Audit trail to GCS for traceability
-        now_iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        gcs_key = f"{gcs_prefix}/ft_arch_optuna_{now_iso}.json"
-        bucket_name = _get_gcs_bucket_name()
-        if not bucket_name:
-            raise RuntimeError("GCS bucket not configured")
-        bucket = storage.Client().bucket(bucket_name)
-        bucket.blob(gcs_key).upload_from_string(
-            json.dumps(result, indent=2), content_type="application/json",
-        )
-        result["gcs_audit_path"] = f"gs://{bucket.name}/{gcs_key}"
-        return result
-    except Exception as e:
-        return {"error": str(e), "type": "ft_arch_search"}
-
-
-# Walk-forward Modal functions.
 
 @app.function(
     cpu=2,
@@ -1108,7 +1021,7 @@ def ft_transformer_arch_search(payload: dict) -> dict:
     max_containers=3,   # allow 3 windows in parallel for tree path
 )
 def train_wf_tree_window(payload: dict) -> dict:
-    """CPU-only walk-forward: XGBoost + CatBoost + ExtraTrees + LightGBM for one window.
+    """CPU-only walk-forward: LightGBM + XGBoost + ExtraTrees for one window.
 
     payload: window_id, train_start, train_end, test_start, test_end, batch_count,
              feature_pool_path (2026-04-19 N2: per-window pool to eliminate look-ahead)
@@ -1122,7 +1035,7 @@ def train_wf_tree_window(payload: dict) -> dict:
         feature_pool_path = payload.get("feature_pool_path") or f"{gcs_prefix}/feature_pool.json"
         req = UniversalTrainRequest(
             batch_count=payload.get("batch_count", 5),
-            models_filter=["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"],
+            models_filter=["XGBoost", "ExtraTrees", "LightGBM"],
             skip_feature_pool=payload.get("skip_feature_pool", False),
             train_start=payload["train_start"],
             train_end=payload["train_end"],
@@ -1145,39 +1058,20 @@ def train_wf_tree_window(payload: dict) -> dict:
 
 
 @app.function(
-    gpu="L4",
-    memory=4096,
-    timeout=3600,  # 60 min per window for FT-T on short train windows.
+    cpu=1,
+    memory=512,
+    timeout=60,
     scaledown_window=60,
-    max_containers=2,   # allow 2 windows on GPU in parallel
+    max_containers=1,
 )
 def train_wf_ftt_window(payload: dict) -> dict:
-    """GPU walk-forward: FT-Transformer for one window."""
-    _setup_env()
-    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
-    try:
-        gcs_prefix = f"walk_forward/w{payload['window_id']}"
-        req = UniversalTrainRequest(
-            batch_count=payload.get("batch_count", 5),
-            models_filter=["FT-Transformer"],
-            skip_feature_pool=True,   # FT-T benefits from full features
-            train_start=payload["train_start"],
-            train_end=payload["train_end"],
-            test_start=payload["test_start"],
-            test_end=payload["test_end"],
-            gcs_prefix=gcs_prefix,
-            window_id=payload["window_id"],
-            skip_weekly_backup=True,
-        )
-        return _train(req)
-    except Exception as e:
-        import traceback
-        return {
-            "error": str(e),
-            "trace": traceback.format_exc()[:2000],
-            "window_id": payload.get("window_id"),
-            "type": "wf_ftt",
-        }
+    """Retired Modal endpoint kept fail-closed for old callers."""
+    return {
+        "error": "FT-Transformer retired from walk-forward training",
+        "type": "wf_ftt_window",
+        "status": "retired",
+        "window_id": payload.get("window_id"),
+    }
 
 
 @app.function(
@@ -1239,7 +1133,7 @@ def train_wf_hmm_window(payload: dict) -> dict:
 )
 def walk_forward_orchestrator(payload: dict) -> dict:
     """Walk-forward orchestrator that runs the full pipeline across windows.
-    all windows, calling train_wf_tree_window / train_wf_ftt_window / train_wf_hmm_window
+    all windows, calling train_wf_tree_window / train_wf_hmm_window.
     internally. Persists aggregate result to GCS walk_forward/runs/{start}_{end}.json.
 
     payload:
@@ -1263,7 +1157,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     windows = payload["windows"]
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
-    models = payload.get("models") or ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+    models = payload.get("models") or ["XGBoost", "ExtraTrees", "LightGBM"]
     concurrent = int(payload.get("concurrent_windows", 2))
     start_date = payload["start_date"]
     end_date = payload["end_date"]
@@ -1281,7 +1175,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     fs_force_refresh = bool(payload.get("fs_force_refresh", False))
 
     async def _run_one(window: dict) -> dict:
-        """Run feature selection, HMM, and tree/FT-T training for one window."""
+        """Run feature selection, HMM, and tree training for one window."""
         wid = window["window_id"]
         gcs_prefix = f"walk_forward/w{wid}"
         result = {
@@ -1292,7 +1186,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         }
 
         # Step 0: per-window feature selection prevents future leakage in the tree path.
-        # Tree training waits for this; FT-T (skip_feature_pool=True) does not need pool.
+        # Tree training waits for this pool.
         # On FS error, fallback to running tree without pool (skip_feature_pool=True)
         # so the run does not abort entirely.
         fs_ok = False
@@ -1334,7 +1228,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             print(f"[WF-Orchestrator] w{wid} HMM crashed: {e}")
             result["hmm_result"] = {"error": str(e)}
 
-        # Step 2+3: tree + ftt in parallel
+        # Step 2+3: active tree family
         train_payload = {
             "window_id": wid,
             "train_start": window["train_start"],
@@ -1345,8 +1239,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "skip_feature_pool": False,
         }
 
-        need_tree = any(m in models for m in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"])
-        need_ftt = "FT-Transformer" in models
+        need_tree = any(m in models for m in ["XGBoost", "ExtraTrees", "LightGBM"])
         tasks = []
         if need_tree:
             tree_payload = dict(train_payload)
@@ -1358,11 +1251,6 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 # If FS failed, do not use a stale global pool that can leak across windows.
                 tree_payload["skip_feature_pool"] = True
             tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
-        if need_ftt:
-            ftt_payload = dict(train_payload)
-            ftt_payload["skip_feature_pool"] = True
-            tasks.append(("ftt", train_wf_ftt_window.remote.aio(ftt_payload)))
-
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
@@ -1373,7 +1261,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     result[f"{kind}_result"] = r
 
         # Consolidate per-model metrics
-        for partial in [result.get("tree_result") or {}, result.get("ftt_result") or {}]:
+        for partial in [result.get("tree_result") or {}]:
             if not partial or partial.get("error"):
                 continue
             for model_name, m in (partial.get("results") or {}).items():
@@ -1716,6 +1604,56 @@ def patchtst_universal_predict(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "patchtst_universal_predict"}
 
 
+# L3 sequence family: iTransformer artifact-backed batch predict.
+@app.function(
+    cpu=2,
+    memory=4096,
+    timeout=300,
+    scaledown_window=300,
+    max_containers=1,
+)
+def itransformer_universal_predict(payload: dict) -> dict:
+    """Batch iTransformer forecast for the watchlist."""
+    _setup_env()
+    from app.itransformer_universal import itransformer_batch_predict
+    try:
+        results = itransformer_batch_predict(
+            series_list=payload.get("series_list") or [],
+            horizon_used=payload.get("horizon_used", 5),
+            version=payload.get("version", "v1"),
+        )
+        return {"results": results, "n_input": len(payload.get("series_list") or []),
+                "n_success": sum(1 for r in results if not r.get("error"))}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "itransformer_universal_predict"}
+
+
+# L3 sequence family: TimesFM config-backed batch predict.
+@app.function(
+    gpu="L4",
+    memory=8192,
+    timeout=600,
+    scaledown_window=300,
+    max_containers=1,
+)
+def timesfm_universal_predict(payload: dict) -> dict:
+    """Batch TimesFM forecast for the watchlist."""
+    _setup_env()
+    from app.timesfm_universal import timesfm_batch_predict
+    try:
+        results = timesfm_batch_predict(
+            series_list=payload.get("series_list") or [],
+            horizon_used=payload.get("horizon_used", 5),
+            version=payload.get("version", "v1"),
+        )
+        return {"results": results, "n_input": len(payload.get("series_list") or []),
+                "n_success": sum(1 for r in results if not r.get("error"))}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "timesfm_universal_predict"}
+
+
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict (KalmanFilter + MarkovSwitching)
 @app.function(
     cpu=2,
@@ -1759,47 +1697,25 @@ def state_space_universal_predict(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "state_space_universal_predict"}
 
 
-# 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
+# Retired Chronos universal batch predictor.
 @app.function(
-    cpu=2,
-    memory=8192,              # Chronos-2 production baseline
-    timeout=900,              # 15 min cap for CPU Chronos-2 batch inference
-    scaledown_window=300,     # keep container warm 5 min for back-to-back calls
-    max_containers=1,         # singleton pipeline in module cache, one container fine
+    cpu=1,
+    memory=512,
+    timeout=60,
+    scaledown_window=60,
+    max_containers=1,
 )
 def chronos_universal_predict(payload: dict) -> dict:
-    """Batch Chronos foundation model forecast for the watchlist.
-
-    Replaces per-stock per-call invocation pattern (models.py:run_chronos
-    called 33 times with fresh pipeline each) with a single batch call that
-    reuses a module-cached pipeline.
-
-    payload:
-        series_list: list of {symbol: str, prices: list[float]}
-        horizon: int (default 5)
-        num_samples: int (default 20)
-        model_id: str (optional override; production baseline is amazon/chronos-2)
-
-    Returns:
-        {"results": [{symbol, model, forecast_pct, up_prob, confidence,
-                      direction, n_samples} | {symbol, error}]}
-    """
-    _setup_env()
-    from app.chronos_universal import chronos_batch_predict
-    try:
-        results = chronos_batch_predict(
-            series_list=payload.get("series_list") or [],
-            horizon=payload.get("horizon", 5),
-            num_samples=payload.get("num_samples", 20),
-            model_id=payload.get("model_id", "amazon/chronos-2"),
-        )
-        return {"results": results, "n_input": len(payload.get("series_list") or []), "n_success": sum(1 for r in results if not r.get("error"))}
-    except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc(), "type": "chronos_universal"}
+    """Retired Modal endpoint kept fail-closed for old callers."""
+    return {
+        "error": "Chronos retired from the production model pool",
+        "results": [],
+        "n_input": len(payload.get("series_list") or []),
+        "n_success": 0,
+        "status": "retired",
+    }
 
 
-# 2026-04-19 N2: Walk-forward per-window feature selection
 @app.function(
     cpu=4,
     memory=8192,

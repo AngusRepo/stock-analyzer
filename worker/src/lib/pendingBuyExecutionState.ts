@@ -28,6 +28,7 @@ export interface PendingBuyExecutionEvent {
   symbol: string
   status: PendingBuyTerminalExecutionStatus
   reason: string
+  detail?: string | null
 }
 
 export interface PendingBuyExecutionStatusUpdate {
@@ -91,13 +92,20 @@ export function isPendingBuyTerminal(status: PendingBuyExecutionStatus | null | 
   return TERMINAL_STATUSES.includes(status as PendingBuyTerminalExecutionStatus)
 }
 
+function isAllocatorExecutionNote(note: string): boolean {
+  return note.startsWith('execution:pending:allocator_')
+}
+
 export function appendPendingBuyExecutionNote<T extends PendingBuyExecutionItem>(item: T, note: string): T {
   const points = Array.isArray(item.watch_points) ? item.watch_points : []
-  if (points.includes(note)) return { ...item, execution_status: item.execution_status ?? 'pending' }
+  const nextPointsBase = isAllocatorExecutionNote(note)
+    ? points.filter((point) => !isAllocatorExecutionNote(point))
+    : points
+  if (nextPointsBase.includes(note)) return { ...item, execution_status: item.execution_status ?? 'pending' }
   return {
     ...item,
     execution_status: item.execution_status ?? 'pending',
-    watch_points: [...points, note],
+    watch_points: [...nextPointsBase, note],
   }
 }
 
@@ -143,7 +151,7 @@ export function applyPendingBuyExecutionEvents(
     return {
       ...item,
       execution_status: event.status,
-      watch_points: appendPendingBuyExecutionNote(item, formatExecutionStatusEvent(event.status, event.reason)).watch_points,
+      watch_points: appendPendingBuyExecutionNote(item, formatExecutionStatusEvent(event.status, event.reason, event.detail)).watch_points,
     }
   })
 

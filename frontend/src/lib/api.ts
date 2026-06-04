@@ -750,7 +750,7 @@ export type ResearchExperimentsResponse = {
 
 export type ModelUpgradeResearchStatusRow = {
   candidate_id: string
-  stage: 'production_slot_member' | 'shadow_challenger' | 'benchmark_only' | 'meta_optimizer' | 'state_space_overlay'
+  stage: 'production_slot_member' | 'production_artifact_required' | 'shadow_challenger' | 'benchmark_only' | 'meta_optimizer' | 'state_space_overlay'
   family: string
   role: string
   registry_status: 'track_only' | 'experiment_missing' | 'evaluation_pending' | 'needs_attention' | 'ready_for_review' | 'approved_for_patch' | 'rejected'

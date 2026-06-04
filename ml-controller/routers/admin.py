@@ -13,10 +13,9 @@ Why (2026-04-21 T1.0 Option A):
   image, so this endpoint can subprocess-call `modal deploy /app/ml-service/
   modal_app.py` from anywhere (cron, deploy script, CI, manual curl).
 
-  First use case: absorbs roadmap #13 (#29a.4 Modal redeploy — surface FT-T
-  Optuna crash fixes from ml-service/app/optuna_fttransformer_arch.py). Future:
-  #14 FT-T arch Optuna monthly cron can auto-redeploy Modal when arch search
-  space params change, no manual intervention.
+  The endpoint is retained for controlled Modal redeploys of active training
+  and inference functions. Retired model research paths are not redeployed
+  through this route.
 
 Migration safety harness (2026-04-21 #11 / M33):
   /admin/migration_safety_check runs 3 parity layers when swapping signal

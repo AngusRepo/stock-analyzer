@@ -4,9 +4,10 @@ import math
 
 
 _SRC_KEY_MODEL = (
-    ("chronos", "Chronos"),
     ("dlinear", "DLinear"),
     ("patchtst", "PatchTST"),
+    ("itransformer", "iTransformer"),
+    ("timesfm", "TimesFM"),
 )
 
 

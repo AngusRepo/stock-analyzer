@@ -1106,34 +1106,6 @@ def get_features(
     return X, y, available
 
 
-def get_catboost_features(
-    df: pl.DataFrame,
-    target_col: str = "target_rank",
-) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """CatBoost 專用：原始特徵 + 滯後特徵"""
-    base = [c for c in FEATURE_COLS if c in df.columns]
-    extra = [c for c in CATBOOST_EXTRA_COLS if c in df.columns]
-    all_cols = base + extra
-    if target_col not in df.columns:
-        raise ValueError(f"target_col '{target_col}' not found in DataFrame.")
-    select_cols = all_cols + [target_col]
-    if "target_5d" in df.columns and "target_5d" not in select_cols:
-        select_cols = select_cols + ["target_5d"]
-    required_targets = [target_col]
-    if "target_5d" in select_cols:
-        required_targets.append("target_5d")
-    df_clean, report = sanitize_feature_frame(
-        df.select(select_cols),
-        feature_cols=all_cols,
-        required_target_cols=required_targets,
-    )
-    if report.get("features") or report.get("target_rows_dropped"):
-        print(f"[Features] catboost feature sanitizer: {report}")
-    X = df_clean.select(all_cols).to_numpy()
-    y = df_clean[target_col].to_numpy()
-    return X, y, all_cols
-
-
 def get_lgbm_features(X: np.ndarray) -> np.ndarray:
     """LightGBM 專用：rank transform"""
     from scipy.stats import rankdata

@@ -184,10 +184,18 @@ def candidate_type_from_retrain(*, is_monthly: bool | None, explicit: str | None
 def model_artifact_path(model_name: str, version: str) -> str:
     folder = model_name.lower().replace("-", "_")
     ext = {
-        "Chronos": "json",
+        "LightGBM": "joblib",
+        "XGBoost": "joblib",
+        "ExtraTrees": "joblib",
+        "TabM": "joblib",
+        "GNN": "joblib",
         "DLinear": "pt",
         "PatchTST": "pt",
-    }.get(model_name, "joblib")
+        "iTransformer": "pt",
+        "TimesFM": "json",
+    }.get(model_name)
+    if ext is None:
+        raise ValueError(f"{model_name} is not a managed production artifact model")
     return f"universal/{folder}/{version}.{ext}"
 
 
@@ -1356,6 +1364,7 @@ def update_live_gate_from_ic(
     bridge keeps the ownership clean: it only updates artifacts selected by the
     release-train policy, and it writes evidence; it does not promote champions.
     """
+    allowed_live_shadow_models = {"ResidualMLP"}
     rows = list_artifact_registry(limit=limit)
     selection = build_candidate_selection(rows)
     selected: dict[str, dict[str, Any]] = {}
@@ -1363,6 +1372,10 @@ def update_live_gate_from_ic(
         for key in ("monthly_release_candidate", "weekly_drift_candidate"):
             candidate = model_selection.get(key)
             if isinstance(candidate, dict) and candidate.get("artifact_id"):
+                candidate_type = str(candidate.get("candidate_type") or "")
+                candidate_model_name = str(candidate.get("model_name") or model_name)
+                if candidate_type != "model_family_shadow" or candidate_model_name not in allowed_live_shadow_models:
+                    continue
                 selected[str(candidate["artifact_id"])] = candidate | {
                     "_selection_slot": key,
                     "_model_name": model_name,

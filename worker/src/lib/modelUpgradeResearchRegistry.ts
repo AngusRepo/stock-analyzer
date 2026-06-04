@@ -80,7 +80,10 @@ function cleanText(value: unknown): string {
 }
 
 function requiresExperimentRegistry(candidate: ModelUpgradeCandidate): boolean {
-  return candidate.stage === 'shadow_challenger' || candidate.stage === 'benchmark_only'
+  return candidate.stage === 'shadow_challenger' ||
+    candidate.stage === 'benchmark_only' ||
+    candidate.stage === 'production_artifact_required' ||
+    candidate.stage === 'production_slot_member'
 }
 
 function candidateAliases(candidate: ModelUpgradeCandidate): string[] {
@@ -119,25 +122,39 @@ export function experimentMatchesModelUpgradeCandidate(
 function seedInputForCandidate(candidate: ModelUpgradeCandidate): Parameters<typeof normalizeResearchExperimentInput>[0] {
   const isBenchmark = candidate.stage === 'benchmark_only'
   const isShadow = candidate.stage === 'shadow_challenger'
+  const isArtifactRequired = candidate.stage === 'production_artifact_required'
+  const isProductionSlot = candidate.stage === 'production_slot_member'
   return {
     id: `model-upgrade-${candidate.id.toLowerCase()}-${P7_MODEL_UPGRADE_TRACK_VERSION}`,
-    status: isShadow ? 'running' : 'queued',
-    hypothesis: isBenchmark
+    status: isShadow || isProductionSlot ? 'running' : 'queued',
+    hypothesis: isProductionSlot
+      ? `${candidate.id} production_slot_member: monitor artifact-backed serving, OOS IC, lifecycle weight, cost profile, and serving parity.`
+      : isArtifactRequired
+      ? `${candidate.id} production_artifact_required: run dry-run evaluation for artifact, OOS IC, CPCV/PBO, cost profile, and serving parity before production activation.`
+      : isBenchmark
       ? `${candidate.id} model_benchmark: use Strategy Lab dry-run to evaluate ${candidate.family} as benchmark-only evidence before any shadow challenger promotion.`
       : `${candidate.id} shadow evaluation: run Strategy Lab shadow evidence checks for OOS IC, CPCV/PBO, cost profile, and data-slice readiness before any production vote.`,
     sourceRefs: ['strategy-lab-ui', 'model-upgrade-track', P7_MODEL_UPGRADE_TRACK_VERSION],
-    strategySpecIds: [isBenchmark ? 'model_family_benchmark_v1' : 'model_family_shadow_v1'],
+    strategySpecIds: [isProductionSlot ? 'model_family_production_slot_member_v1' : isArtifactRequired ? 'model_family_production_artifact_required_v1' : isBenchmark ? 'model_family_benchmark_v1' : 'model_family_shadow_v1'],
     dataSlice: {
       start_date: '2026-04-01',
-      lane: isShadow ? 'tradable_shadow' : 'research_benchmark',
-      benchmark_candidates: isBenchmark ? [candidate.id] : [],
+      lane: isProductionSlot ? 'production_slot_member' : isArtifactRequired ? 'production_artifact_required' : isShadow ? 'tradable_shadow' : 'research_benchmark',
+      benchmark_candidates: (isBenchmark || isArtifactRequired) ? [candidate.id] : [],
       shadow_candidates: isShadow ? [candidate.id] : [],
       production_mutation_allowed: false,
     },
-    metrics: isBenchmark
+    metrics: isProductionSlot
+      ? ['production_artifact', 'oos_ic', 'lifecycle_weight', 'serving_parity', 'cost_profile']
+      : isArtifactRequired
+      ? ['production_artifact', 'oos_ic', 'cpcv_pbo', 'cost_profile', 'serve_feature_parity']
+      : isBenchmark
       ? ['model_benchmark', 'oos_ic', 'cpcv_pbo', 'cost_sensitivity', 'data_slice_report']
       : ['shadow_rank_ic', 'oos_ic', 'cpcv_pbo', 'cost_profile', 'data_slice_report'],
-    followUp: isBenchmark
+    followUp: isProductionSlot
+      ? ['monitor production slot health', 'inspect missing artifact or IC blockers', 'do not mutate serving without Wei approval']
+      : isArtifactRequired
+      ? ['run artifact-required dry-run plan', 'inspect artifact and IC blockers', 'request Wei approval before production activation']
+      : isBenchmark
       ? ['run model_benchmark dry-run plan', 'inspect blockers', 'decide whether to promote to shadow challenger or reject']
       : ['run shadow evaluation dry-run plan', 'inspect shadow rows and rank IC', 'keep production unchanged until review packet passes'],
   }
@@ -149,6 +166,8 @@ export async function ensureModelUpgradeResearchRegistry(
 ): Promise<{ created: string[]; existing: string[]; total: number }> {
   assertOwnerCanOwn('research', 'experiment_registry')
   const candidates = [
+    ...listModelUpgradeCandidates('production_slot_member'),
+    ...listModelUpgradeCandidates('production_artifact_required'),
     ...listModelUpgradeCandidates('shadow_challenger'),
     ...listModelUpgradeCandidates('benchmark_only'),
   ]

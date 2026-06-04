@@ -40,7 +40,7 @@ const paperEntryTasks = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
     'paper entry decision log should write Score V2 finalScore into total_score',
   )
   assert(
-    paperEntryTasks.includes('score_components, chip_score') &&
+    paperEntryTasks.includes('score_components, ml_signal') &&
       paperEntryTasks.includes('decisionScoreComponents') &&
       paperEntryTasks.includes('finalScore: scoreV2.finalScore'),
     'paper entry decision log should persist canonical Score V2 payload into decision_logs.score_components',

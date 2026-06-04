@@ -92,7 +92,7 @@ async def test_promote_check_blocks_demote_when_family_min_would_break(monkeypat
     pool = {
         "schema_version": "1.0",
         "models": {
-            "Chronos": _entry(family="time_series"),
+            "TimesFM": _entry(family="time_series"),
             "DLinear": _entry(family="time_series", consecutive_negative_weeks=3),
             "PatchTST": _entry(status="degraded", family="time_series", consecutive_negative_weeks=6),
         },
@@ -121,7 +121,7 @@ async def test_promote_check_discards_mature_failed_challenger(monkeypatch):
         "schema_version": "1.0",
         "models": {
             "XGBoost": _entry(ic_4w_avg=0.03, challenger=challenger),
-            "CatBoost": _entry(),
+            "LightGBM": _entry(),
             "ExtraTrees": _entry(),
         },
     }
@@ -158,7 +158,7 @@ async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
         "schema_version": "1.0",
         "models": {
             "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
-            "CatBoost": _entry(),
+            "LightGBM": _entry(),
             "ExtraTrees": _entry(),
         },
     }
@@ -176,13 +176,14 @@ async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
         )
     )
 
-    blocked = [a for a in result["actions"] if a["transition"] == "promote_blocked"]
-    assert blocked
-    assert "missing_shadow_ab:XGBoost" in blocked[0]["preconditions_failed"]
+    discards = [a for a in result["actions"] if a["transition"] == "discard_challenger"]
+    assert discards
+    assert discards[0]["model"] == "XGBoost"
+    assert "legacy model_pool challenger slot disabled" in discards[0]["reason"]
     packet = result["lifecycle_review_packet"]
-    assert packet["summary"]["blocked_promotions"] == 1
+    assert packet["summary"]["blocked_promotions"] == 0
     assert packet["required_evidence"]["shadow_ab"]
-    assert packet["blocked"][0]["model"] == "XGBoost"
+    assert not packet["blocked"]
 
 
 @pytest.mark.asyncio
@@ -206,7 +207,7 @@ async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
         "schema_version": "1.0",
         "models": {
             "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
-            "CatBoost": _entry(),
+            "LightGBM": _entry(),
             "ExtraTrees": _entry(),
         },
     }
@@ -241,11 +242,13 @@ async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
     )
 
     promotes = [a for a in result["actions"] if a["transition"] == "promote"]
-    assert promotes
-    assert result["shadow_ab_by_model"]["XGBoost"]["decision"] == "PASS"
-    assert result["paper_order_ab_by_model"]["XGBoost"]["decision"] == "PASS"
-    assert result["lifecycle_review_packet"]["summary"]["promote_candidates"] == 1
-    assert result["lifecycle_review_packet"]["shadow_ab_by_model"]["XGBoost"]["decision"] == "PASS"
+    assert not promotes
+    discards = [a for a in result["actions"] if a["transition"] == "discard_challenger"]
+    assert discards and discards[0]["model"] == "XGBoost"
+    assert result["shadow_ab_by_model"] is None
+    assert result["paper_order_ab_by_model"] is None
+    assert result["lifecycle_review_packet"]["summary"]["promote_candidates"] == 0
+    assert result["lifecycle_review_packet"]["shadow_ab_by_model"] == {}
 
 
 @pytest.mark.asyncio
@@ -262,7 +265,7 @@ async def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch)
         "schema_version": "1.0",
         "models": {
             "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
-            "CatBoost": _entry(),
+            "LightGBM": _entry(),
             "ExtraTrees": _entry(),
         },
     }
@@ -283,8 +286,9 @@ async def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch)
     )
 
     blocked = [a for a in result["actions"] if a["transition"] == "promote_blocked"]
-    assert blocked
-    assert "missing_model_cpcv:XGBoost" in blocked[0]["preconditions_failed"]
+    assert not blocked
+    discards = [a for a in result["actions"] if a["transition"] == "discard_challenger"]
+    assert discards and discards[0]["model"] == "XGBoost"
     assert result["model_cpcv_by_model"] == {}
     assert result["lifecycle_review_packet"]["required_evidence"]["model_cpcv"]
 
@@ -310,24 +314,22 @@ async def test_promote_check_apply_rejects_disabled_promotion_governance(monkeyp
         "schema_version": "1.0",
         "models": {
             "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
-            "CatBoost": _entry(),
+            "LightGBM": _entry(),
             "ExtraTrees": _entry(),
         },
     }
     _install_fake_gcs(monkeypatch, pool)
 
-    with pytest.raises(HTTPException) as exc:
-        await model_pool.promote_check(
-            model_pool.PromoteCheckRequest(
-                apply=True,
-                confirm=True,
-                require_promotion_gate=False,
-            )
+    result = await model_pool.promote_check(
+        model_pool.PromoteCheckRequest(
+            apply=True,
+            confirm=True,
+            require_promotion_gate=False,
         )
+    )
 
-    assert exc.value.status_code == 400
-    assert "cannot disable production promotion governance" in exc.value.detail
-    assert "promotion_gate" in exc.value.detail
+    assert result["applied_count"] == 1
+    assert result["actions"][0]["transition"] == "discard_challenger"
 
 
 @pytest.mark.asyncio
@@ -351,7 +353,7 @@ async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
         "schema_version": "1.0",
         "models": {
             "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
-            "CatBoost": _entry(),
+            "LightGBM": _entry(),
             "ExtraTrees": _entry(),
         },
     }
@@ -371,8 +373,10 @@ async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
     )
 
     promotes = [a for a in result["actions"] if a["transition"] == "promote"]
-    assert promotes
-    assert result["model_cpcv_by_model"]["XGBoost"]["decision"] == "PASS"
+    assert not promotes
+    discards = [a for a in result["actions"] if a["transition"] == "discard_challenger"]
+    assert discards and discards[0]["model"] == "XGBoost"
+    assert "XGBoost" not in result["model_cpcv_by_model"]
 
 
 @pytest.mark.asyncio
@@ -397,7 +401,7 @@ async def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypa
         "schema_version": "1.0",
         "models": {
             "XGBoost": _entry(ic_4w_avg=0.01, challenger=challenger),
-            "CatBoost": _entry(),
+            "LightGBM": _entry(),
             "ExtraTrees": _entry(),
         },
     }
@@ -428,6 +432,6 @@ async def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypa
     assert result["applied_count"] == 1
     saved = json.loads(bucket.pool_blob.download_as_text())
     active = saved["models"]["XGBoost"]
-    assert active["version"] == "v2"
-    assert active["last_model_cpcv"]["decision"] == "PASS"
+    assert active["version"] == "v1"
+    assert "last_model_cpcv" not in active
     assert "challenger" not in active

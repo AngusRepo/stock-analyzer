@@ -95,14 +95,15 @@ interface CountRow {
 }
 
 export const EXPECTED_V2_MODELS = [
-  'XGBoost',
   'LightGBM',
-  'CatBoost',
+  'XGBoost',
   'ExtraTrees',
-  'FT-Transformer',
-  'Chronos',
+  'TabM',
+  'GNN',
   'DLinear',
   'PatchTST',
+  'iTransformer',
+  'TimesFM',
 ] as const
 
 export const DATA_QUALITY_EOD_READY_MINUTE_TW = 18 * 60 + 30

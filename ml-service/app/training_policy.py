@@ -201,14 +201,13 @@ class ValidationGovernancePolicy:
 
 
 PREDICT_ONLY_MODEL_NOTES = {
-    "Chronos": "Foundation forecast slot; zero-shot serving plus optional LoRA adapter, validated by forecast/outcome evidence",
     "KalmanFilter": "Per-stock state-space inference; no universal train artifact",
     "MarkovSwitching": "Per-stock state-space inference; shared hyperparams only",
 }
 
 
-TREE_MODEL_NAMES = ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM")
-FULL_TABULAR_MODEL_NAMES = ("FT-Transformer",)
+TREE_MODEL_NAMES = ("LightGBM", "XGBoost", "ExtraTrees")
+FULL_TABULAR_MODEL_NAMES: tuple[str, ...] = ()
 SEQUENCE_MODEL_GROUPS = ("dlinear", "patchtst")
 
 
@@ -251,14 +250,6 @@ TRAINING_GROUP_FEATURE_POLICIES: dict[str, TrainingGroupFeaturePolicy] = {
         skip_feature_pool=False,
         mergeable_oos=True,
         note="Tree models use selected tabular features from feature_pool.tree_active.",
-    ),
-    "ftt": TrainingGroupFeaturePolicy(
-        group="ftt",
-        models=FULL_TABULAR_MODEL_NAMES,
-        feature_source="feature_pool.ft_active",
-        skip_feature_pool=True,
-        mergeable_oos=True,
-        note="FT-Transformer uses the full tabular feature set declared by feature_pool.ft_active.",
     ),
     "dlinear": TrainingGroupFeaturePolicy(
         group="dlinear",
@@ -309,23 +300,31 @@ MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
         )
         for name in TREE_MODEL_NAMES
     },
-    "FT-Transformer": ModelFeaturePolicy(
-        model="FT-Transformer",
-        family="full_tabular_transformer",
-        feature_policy_type="wide_tabular_with_missingness",
-        feature_source="feature_pool.ft_active",
-        selection_owner="feature_selection_pipeline",
-        selection_required=False,
+    "TabM": ModelFeaturePolicy(
+        model="TabM",
+        family="tabular_neural",
+        feature_policy_type="selected_tabular_artifact_required",
+        feature_source="feature_pool.tree_active",
+        selection_owner="artifact_registration_preflight",
+        selection_required=True,
         uses_missingness_mask=True,
         requires_schema_parity=True,
         mergeable_oos=True,
-        allowed_selection_methods=(
-            "schema_parity",
-            "missingness_mask",
-            "target_permutation_evidence_reference",
-            "ic_icir_evidence_reference",
-        ),
-        note="FT-Transformer keeps the wide tabular schema but must carry missingness/schema parity evidence.",
+        allowed_selection_methods=_TABULAR_SELECTION_METHODS + ("production_artifact",),
+        note="TabM is a formal L3 production slot; serving is artifact-backed and fails closed when schema parity or lifecycle evidence is missing.",
+    ),
+    "GNN": ModelFeaturePolicy(
+        model="GNN",
+        family="cross_stock_graph",
+        feature_policy_type="graph_artifact_required",
+        feature_source="graph_feature_contract",
+        selection_owner="artifact_registration_preflight",
+        selection_required=True,
+        uses_missingness_mask=True,
+        requires_schema_parity=True,
+        mergeable_oos=True,
+        allowed_selection_methods=("graph_spec", "production_artifact", "positive_ic"),
+        note="GNN is a formal L3 production slot; serving is graph-artifact-backed and fails closed when graph evidence or lifecycle evidence is missing.",
     ),
     "DLinear": ModelFeaturePolicy(
         model="DLinear",
@@ -353,18 +352,31 @@ MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
         allowed_selection_methods=("sequence_window_contract", "sequence_oos_ic"),
         note="PatchTST follows channel-independent sequence windows, not tabular all-features.",
     ),
-    "Chronos": ModelFeaturePolicy(
-        model="Chronos",
-        family="foundation_time_series",
-        feature_policy_type="chronos2_zero_shot_lora_time_series",
-        feature_source="chronos2.context.close_series",
-        selection_owner="chronos_universal",
+    "iTransformer": ModelFeaturePolicy(
+        model="iTransformer",
+        family="sequence_transformer",
+        feature_policy_type="time_series_artifact_required",
+        feature_source="sequence_records.close_only",
+        selection_owner="artifact_registration_preflight",
         selection_required=False,
         uses_missingness_mask=False,
-        requires_schema_parity=False,
+        requires_schema_parity=True,
         mergeable_oos=False,
-        allowed_selection_methods=("chronos2_context_window", "chronos2_member_contract"),
-        note="Chronos is the Chronos-2 production slot and does not consume tree/FT feature selection.",
+        allowed_selection_methods=("sequence_window_contract", "production_artifact", "positive_ic"),
+        note="iTransformer is a formal L3 sequence production slot; serving is artifact-backed and fails closed when sequence evidence is missing.",
+    ),
+    "TimesFM": ModelFeaturePolicy(
+        model="TimesFM",
+        family="foundation_time_series",
+        feature_policy_type="foundation_time_series_artifact_required",
+        feature_source="sequence_records.close_only",
+        selection_owner="artifact_registration_preflight",
+        selection_required=False,
+        uses_missingness_mask=False,
+        requires_schema_parity=True,
+        mergeable_oos=False,
+        allowed_selection_methods=("forecast_validation", "production_artifact", "positive_ic"),
+        note="TimesFM is a formal L3 foundation sequence production slot; serving is artifact-backed and fails closed when forecast evidence is missing.",
     ),
 }
 
@@ -462,17 +474,8 @@ def build_model_feature_policy_metadata(
 
 @dataclass(frozen=True)
 class UniversalTrainingPolicy:
-    default_train_groups: tuple[str, ...] = ("tree", "ftt", "dlinear", "patchtst")
+    default_train_groups: tuple[str, ...] = ("tree", "dlinear", "patchtst")
     sequence_min_len: int = 65
-    ftt_d_model: int = 128
-    ftt_n_heads: int = 8
-    ftt_n_layers: int = 3
-    ftt_dropout: float = 0.12
-    ftt_max_epochs: int = 120
-    ftt_lr: float = 2e-4
-    ftt_patience: int = 16
-    ftt_batch_size: int = 1024
-    ftt_margin: float = 0.0
 
     @classmethod
     def from_env(cls) -> "UniversalTrainingPolicy":
@@ -482,20 +485,16 @@ class UniversalTrainingPolicy:
                 cls.default_train_groups,
             ),
             sequence_min_len=_env_int("UNIVERSAL_SEQUENCE_MIN_LEN", cls.sequence_min_len),
-            ftt_d_model=_env_int("UNIVERSAL_FTT_D_MODEL", cls.ftt_d_model),
-            ftt_n_heads=_env_int("UNIVERSAL_FTT_N_HEADS", cls.ftt_n_heads),
-            ftt_n_layers=_env_int("UNIVERSAL_FTT_N_LAYERS", cls.ftt_n_layers),
-            ftt_dropout=_env_float("UNIVERSAL_FTT_DROPOUT", cls.ftt_dropout),
-            ftt_max_epochs=_env_int("UNIVERSAL_FTT_MAX_EPOCHS", cls.ftt_max_epochs),
-            ftt_lr=_env_float("UNIVERSAL_FTT_LR", cls.ftt_lr),
-            ftt_patience=_env_int("UNIVERSAL_FTT_PATIENCE", cls.ftt_patience),
-            ftt_batch_size=_env_int("UNIVERSAL_FTT_BATCH_SIZE", cls.ftt_batch_size),
-            ftt_margin=_env_float("UNIVERSAL_FTT_MARGIN", cls.ftt_margin),
         )
 
     def requested_groups(self, payload: dict[str, Any] | None = None) -> list[str]:
         payload = payload or {}
-        return _coerce_str_list(payload.get("train_model_groups"), self.default_train_groups)
+        active_groups = set(TRAINING_GROUP_FEATURE_POLICIES)
+        return [
+            group
+            for group in _coerce_str_list(payload.get("train_model_groups"), self.default_train_groups)
+            if group in active_groups
+        ]
 
     def sequence_min_length(self, payload: dict[str, Any] | None = None) -> int:
         payload = payload or {}
@@ -508,28 +507,9 @@ class UniversalTrainingPolicy:
         candidate_version: str,
     ) -> dict[str, float | int | str | bool]:
         payload = payload or {}
-        model_cpcv_policy = payload.get("model_cpcv_policy") or {
-            "family_adapters": {
-                "FT-Transformer": {
-                    "enabled": True,
-                    "explicit_enable": True,
-                    "max_epochs": _coerce_int(payload.get("ftt_cpcv_max_epochs"), 3),
-                    "batch_size": _coerce_int(payload.get("ftt_cpcv_batch_size"), 512),
-                    "seed": _coerce_int(payload.get("ftt_cpcv_seed"), 42),
-                }
-            }
-        }
+        model_cpcv_policy = payload.get("model_cpcv_policy") or {"family_adapters": {}}
         return {
             "batch_count": _coerce_int(payload.get("batch_count"), 5),
-            "ftt_d_model": _coerce_int(payload.get("ftt_d_model"), self.ftt_d_model),
-            "ftt_n_heads": _coerce_int(payload.get("ftt_n_heads"), self.ftt_n_heads),
-            "ftt_n_layers": _coerce_int(payload.get("ftt_n_layers"), self.ftt_n_layers),
-            "ftt_dropout": _coerce_float(payload.get("ftt_dropout"), self.ftt_dropout),
-            "ftt_max_epochs": _coerce_int(payload.get("ftt_max_epochs"), self.ftt_max_epochs),
-            "ftt_lr": _coerce_float(payload.get("ftt_lr"), self.ftt_lr),
-            "ftt_patience": _coerce_int(payload.get("ftt_patience"), self.ftt_patience),
-            "ftt_batch_size": _coerce_int(payload.get("ftt_batch_size"), self.ftt_batch_size),
-            "ftt_margin": _coerce_float(payload.get("ftt_margin"), self.ftt_margin),
             "output_model_version": candidate_version,
             "register_challengers": False,
             "model_cpcv_policy": model_cpcv_policy,

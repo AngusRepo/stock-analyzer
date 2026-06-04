@@ -38,7 +38,7 @@ def _feature_prediction(symbol: str = "2330") -> dict:
         "signal": "BUY",
         "direction": "up",
         "confidence": 0.7,
-        "rank_scores": {"XGBoost": 0.72, "CatBoost": 0.68},
+        "rank_scores": {"XGBoost": 0.72, "ExtraTrees": 0.68},
     }
 
 
@@ -53,7 +53,6 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None):
         return state_space_result or {"results": []}
 
     monkeypatch.setattr(daily_pipeline_v2, "batch_predict", fake_batch_predict)
-    monkeypatch.setattr(modal_client, "chronos_batch_predict", empty_ts)
     monkeypatch.setattr(modal_client, "dlinear_batch_predict", empty_ts)
     monkeypatch.setattr(modal_client, "patchtst_batch_predict", empty_ts)
     monkeypatch.setattr(modal_client, "state_space_overlays_batch_predict", fake_state_space)
@@ -62,7 +61,6 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None):
         "_load_model_pool_versions",
         lambda: (
             {
-                "Chronos": "retired",
                 "DLinear": "retired",
                 "PatchTST": "retired",
                 "KalmanFilter": "active",

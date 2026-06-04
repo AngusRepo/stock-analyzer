@@ -79,34 +79,11 @@ adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
 
-  const { getTradingConfig, setTradingConfig, DEFAULT_TRADING_CONFIG, mergeAlphaFrameworkConfig } = await import('../lib/tradingConfig')
+  const { getTradingConfig, setTradingConfig, buildChampionTradingConfig } = await import('../lib/tradingConfig')
   const current = await getTradingConfig(c.env.KV)
-  const d = DEFAULT_TRADING_CONFIG
-  const filled = {
-    fees: { ...d.fees, ...current.fees },
-    circuit: { ...d.circuit, ...current.circuit },
-    exit: { ...d.exit, ...current.exit },
-    position: {
-      ...d.position,
-      ...current.position,
-      kelly: { ...d.position.kelly, ...(current.position?.kelly ?? {}) },
-      swapWeights: { ...d.position.swapWeights, ...(current.position?.swapWeights ?? {}) },
-    },
-    screener: { ...d.screener, ...current.screener },
-    rrg: { ...d.rrg, ...current.rrg },
-    barrier: { ...d.barrier, ...current.barrier },
-    ranking: { ...d.ranking, ...current.ranking },
-    ensemble_v2: { ...d.ensemble_v2, ...(current as any).ensemble_v2 },
-    signal: { ...d.signal, ...current.signal },
-    sltp: { ...d.sltp, ...current.sltp },
-    L2_formula: { ...d.L2_formula, ...current.L2_formula },
-    risk: { ...d.risk, ...(current as any).risk },
-    intraday: { ...d.intraday, ...(current as any).intraday },
-    momentum: { ...d.momentum, ...(current as any).momentum },
-    alphaFramework: mergeAlphaFrameworkConfig((current as any).alphaFramework ?? (current as any).alpha_framework),
-  }
+  const filled = buildChampionTradingConfig(current as any)
 
-  await setTradingConfig(c.env.KV, filled as any)
+  await setTradingConfig(c.env.KV, filled as any, { source: 'admin_push_defaults' })
   return c.json({
     success: true,
     message: 'Schema defaults 已補齊到 KV，既有值會保留',

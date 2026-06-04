@@ -164,7 +164,7 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
                 "max_drawdown": 0.2,
             }]
         return [{
-            "artifact_id": "CatBoost:v20260518:monthly_release",
+            "artifact_id": "ExtraTrees:v20260518:monthly_release",
             "offline_gate_failed_gates": "[]",
             "offline_evidence_json": '{"gate":{"decision":"STRONG_PASS"},"registration":{"model_cpcv":{"decision":"PASS"}}}',
             "live_evidence_json": "{}",
@@ -172,7 +172,7 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
 
     monkeypatch.setattr(registry.d1_client, "query", fake_query)
 
-    rows = registry.list_artifact_registry(model_name="CatBoost", limit=1)
+    rows = registry.list_artifact_registry(model_name="ExtraTrees", limit=1)
     offline = rows[0]["offline_evidence_json"]
 
     assert offline["pbo"]["pbo"] == 0.12
@@ -394,12 +394,10 @@ def test_update_live_gate_from_ic_marks_selected_candidate_not_enough_data(monke
         min_samples=50,
     )
 
-    assert result["selected"] == 1
-    assert result["updated"] == 1
-    assert result["updates"][0]["artifact_id"] == "XGBoost:vW:weekly_drift"
-    assert result["updates"][0]["live_gate_status"] == "shadowing_not_enough_data"
-    assert result["updates"][0]["action_context"]["evidence_status"] == "collecting"
-    assert "model-ic-tracker" in result["updates"][0]["action_context"]["scheduler_dependency"]
+    assert result["selected"] == 0
+    assert result["updated"] == 0
+    assert result["updates"] == []
+    assert executed == []
 
 
 def test_promotion_queue_includes_backend_owned_action_context():
@@ -426,7 +424,7 @@ def test_promotion_queue_includes_backend_owned_action_context():
     assert "promotion_controller" in row["action_context"]["affected_downstream"]
 
 
-def test_update_live_gate_from_ic_passes_when_shadow_beats_production(monkeypatch):
+def test_update_live_gate_from_ic_ignores_active_model_challenger_rows(monkeypatch):
     executed: list[dict[str, object]] = []
 
     def fake_query(sql, params=None, timeout=60.0):
@@ -458,19 +456,13 @@ def test_update_live_gate_from_ic_passes_when_shadow_beats_production(monkeypatc
         min_samples=50,
     )
 
-    assert result["updates"][0]["state"] == "shadowing"
-    assert result["updates"][0]["live_gate_status"] == "rolling_ic_passed"
-    assert result["updates"][0]["promotion_decision"] == "needs_multi_evidence_gate"
-    assert result["updates"][0]["root_cause"] == "rolling_ic_passed_needs_multi_evidence"
-    assert result["updates"][0]["action_context"]["evidence_status"] == "blocked"
-    assert "rolling_ic_only" in {
-        item["code"] for item in result["updates"][0]["action_context"]["blockers"]
-    }
-    assert executed[0]["params"][0] == "shadowing"
-    assert executed[0]["params"][1] == "rolling_ic_passed"
+    assert result["selected"] == 0
+    assert result["updated"] == 0
+    assert result["updates"] == []
+    assert executed == []
 
 
-def test_update_live_gate_from_ic_blocks_relative_win_when_shadow_ic_still_negative(monkeypatch):
+def test_update_live_gate_from_ic_ignores_retired_model_challenger_rows(monkeypatch):
     executed: list[dict[str, object]] = []
 
     def fake_query(sql, params=None, timeout=60.0):
@@ -502,13 +494,10 @@ def test_update_live_gate_from_ic_blocks_relative_win_when_shadow_ic_still_negat
         min_samples=50,
     )
 
-    update = result["updates"][0]
-    assert update["state"] == "shadowing"
-    assert update["live_gate_status"] == "failed"
-    assert update["promotion_decision"] == "reject_or_keep_shadowing"
-    assert update["root_cause"] == "shadow_beats_champion_but_absolute_ic_negative"
-    assert executed[0]["params"][0] == "shadowing"
-    assert executed[0]["params"][1] == "failed"
+    assert result["selected"] == 0
+    assert result["updated"] == 0
+    assert result["updates"] == []
+    assert executed == []
 
 
 def test_build_promotion_queue_requires_approval_for_weekly_drift():
@@ -615,8 +604,8 @@ def test_build_promotion_queue_hides_stale_row_when_pointer_already_promoted():
     queue = registry.build_promotion_queue(
         [
             {
-                "artifact_id": "CatBoost:v20260517170259:monthly_release",
-                "model_name": "CatBoost",
+                "artifact_id": "ExtraTrees:v20260517170259:monthly_release",
+                "model_name": "ExtraTrees",
                 "version": "v20260517170259",
                 "candidate_type": "monthly_release",
                 "state": "live_gate_passed",
@@ -626,7 +615,7 @@ def test_build_promotion_queue_hides_stale_row_when_pointer_already_promoted():
                 "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
             },
         ],
-        champion_versions={"CatBoost": "v20260517170259"},
+        champion_versions={"ExtraTrees": "v20260517170259"},
     )
 
     assert queue["queue"] == []

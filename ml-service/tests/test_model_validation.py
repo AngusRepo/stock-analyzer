@@ -99,31 +99,11 @@ def test_evaluate_model_cpcv_rank_ic_uses_purged_combinatorial_splits():
     assert len(seen) == 10
 
 
-def test_fit_predict_ft_transformer_cpcv_returns_rank_signal():
-    pytest.importorskip("torch")
-
+def test_fit_predict_ft_transformer_cpcv_is_retired_fail_closed():
     X = np.linspace(0.0, 1.0, 80, dtype=np.float32).reshape(-1, 1)
     y = X[:, 0].astype(np.float32)
     train_idx = np.arange(0, 60)
     test_idx = np.arange(60, 80)
 
-    preds = fit_predict_ft_transformer_cpcv(
-        X,
-        y,
-        train_idx,
-        test_idx,
-        params={
-            "d_model": 8,
-            "n_heads": 2,
-            "n_layers": 1,
-            "dropout": 0.0,
-            "max_epochs": 2,
-            "batch_size": 32,
-            "lr": 0.001,
-            "seed": 7,
-        },
-    )
-
-    assert len(preds) == len(test_idx)
-    assert np.isfinite(preds).all()
-    assert np.std(preds) > 1e-8
+    with pytest.raises(RuntimeError, match="retired"):
+        fit_predict_ft_transformer_cpcv(X, y, train_idx, test_idx, params={})

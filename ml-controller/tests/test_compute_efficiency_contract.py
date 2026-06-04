@@ -463,7 +463,7 @@ def test_build_compute_efficiency_report_from_events_accepts_high_spec_speedup()
         baseline_events=[
             {
                 "provider": "modal",
-                "job_name": "train_ftt_model",
+                "job_name": "train_patchtst_universal",
                 "wall_sec": 3310,
                 "compute_sec": 3310,
                 "est_usd": 0.8,
@@ -483,7 +483,7 @@ def test_build_compute_efficiency_report_from_events_accepts_high_spec_speedup()
         optimized_events=[
             {
                 "provider": "modal",
-                "job_name": "train_ftt_model",
+                "job_name": "train_patchtst_universal",
                 "wall_sec": 2400,
                 "compute_sec": 2400,
                 "est_usd": 0.58,
@@ -552,8 +552,10 @@ def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_require
             "optuna_k_sweep": 1014.3,
             "target_permutation": 758.6,
             "signal_sanity_gate": 478.7,
-            "ft_transformer": 862.0,
+            "tree_models": 862.0,
+            "dlinear": 0.0,
             "patchtst": 506.2,
+            "l3_artifact_registry": 0.0,
             "shap_audit": 288.4,
         },
         baseline_stages={
@@ -561,8 +563,10 @@ def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_require
             "optuna_k_sweep": 1014.3,
             "target_permutation": 758.6,
             "signal_sanity_gate": 478.7,
-            "ft_transformer": 862.0,
+            "tree_models": 862.0,
+            "dlinear": 0.0,
             "patchtst": 506.2,
+            "l3_artifact_registry": 0.0,
             "shap_audit": 288.4,
         },
     )

@@ -33,10 +33,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "retrain_orchestrator": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
     "train_universal_from_gcs": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_tree_models": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
-    "train_ftt_model": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
-    "ft_transformer_arch_search": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_wf_tree_window": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
-    "train_wf_ftt_window": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_wf_hmm_window": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "walk_forward_orchestrator": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "shap_feature_audit": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
@@ -45,11 +42,12 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "dlinear_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
     "train_patchtst_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "patchtst_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "itransformer_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "timesfm_universal_predict": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "research_model_benchmark": {"cpu": 2.0, "memory_mb": 8192, "gpu": "L4"},
     "breeze2_research_context": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
     "breeze2_reason_generation": {"cpu": 2.0, "memory_mb": 16384, "gpu": "L4"},
     "state_space_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
-    "chronos_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "feature_selection_per_window": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
     "update_arf_reward": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
 }
@@ -508,8 +506,8 @@ async def _modal_shap_audit(payload: dict) -> dict:
 
 
 async def _modal_ft_arch_search(payload: dict) -> dict:
-    """#29 FT-T architecture Optuna on GPU L4 (2026-04-20)."""
-    return await _modal_remote_call("ft_transformer_arch_search", payload)
+    """Retired FT-Transformer architecture-search guard."""
+    return {"error": "FT-Transformer retired from the production model pool", "status": "retired"}
 
 
 async def _modal_batch_arf(payloads: list[dict]) -> list[dict]:
@@ -538,7 +536,7 @@ async def _modal_train_wf_tree_window(payload: dict) -> dict:
 
 
 async def _modal_train_wf_ftt_window(payload: dict) -> dict:
-    return await _modal_remote_call("train_wf_ftt_window", payload)
+    return {"error": "FT-Transformer retired from walk-forward training", "status": "retired"}
 
 
 async def _modal_train_wf_hmm_window(payload: dict) -> dict:
@@ -551,22 +549,14 @@ def _spawn_wf_tree_window(payload: dict):
     return fn.spawn(payload)
 
 
-# 2026-04-19 ML_POOL Stage 0.1: Chronos universal batch predictor
+# Retired Chronos guard.
 async def _modal_chronos_universal_predict(payload: dict) -> dict:
-    return await _modal_remote_call("chronos_universal_predict", payload)
+    return {"error": "Chronos retired from the production model pool", "results": []}
 
 
 async def chronos_batch_predict(series_list: list[dict], horizon: int = 5, num_samples: int = 20) -> dict:
-    """Universal Chronos forecast for a batch of stocks.
-
-    series_list: [{"symbol": str, "prices": list[float]}]
-    Returns: {"results": [...], "n_input": int, "n_success": int}
-    """
-    return await _modal_chronos_universal_predict({
-        "series_list": series_list,
-        "horizon": horizon,
-        "num_samples": num_samples,
-    })
+    """Fail-closed retired Chronos batch endpoint."""
+    return {"error": "Chronos retired from the production model pool", "results": [], "n_input": len(series_list or []), "n_success": 0}
 
 
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal helpers
@@ -611,6 +601,32 @@ async def _modal_patchtst_universal_predict(payload: dict) -> dict:
 async def patchtst_batch_predict(series_list: list[dict], horizon_used: int = 5, version: str = "v1") -> dict:
     """Universal PatchTST forecast for a batch of stocks."""
     return await _modal_patchtst_universal_predict({
+        "series_list": series_list,
+        "horizon_used": horizon_used,
+        "version": version,
+    })
+
+
+async def _modal_itransformer_universal_predict(payload: dict) -> dict:
+    return await _modal_remote_call("itransformer_universal_predict", payload)
+
+
+async def itransformer_batch_predict(series_list: list[dict], horizon_used: int = 5, version: str = "v1") -> dict:
+    """Artifact-backed iTransformer forecast for a batch of stocks."""
+    return await _modal_itransformer_universal_predict({
+        "series_list": series_list,
+        "horizon_used": horizon_used,
+        "version": version,
+    })
+
+
+async def _modal_timesfm_universal_predict(payload: dict) -> dict:
+    return await _modal_remote_call("timesfm_universal_predict", payload)
+
+
+async def timesfm_batch_predict(series_list: list[dict], horizon_used: int = 5, version: str = "v1") -> dict:
+    """Config-backed TimesFM forecast for a batch of stocks."""
+    return await _modal_timesfm_universal_predict({
         "series_list": series_list,
         "horizon_used": horizon_used,
         "version": version,
@@ -767,9 +783,8 @@ def spawn_state_space_overlays_batch_predict(
 
 
 def _spawn_wf_ftt_window(payload: dict):
-    """Spawn FT-T training (returns handle)."""
-    fn = _lookup("train_wf_ftt_window")
-    return fn.spawn(payload)
+    """Retired FT-Transformer walk-forward guard."""
+    raise RuntimeError("FT-Transformer retired from walk-forward training")
 
 
 def spawn_walk_forward_orchestrator(payload: dict):

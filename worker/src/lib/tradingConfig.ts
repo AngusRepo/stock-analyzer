@@ -42,6 +42,9 @@ export interface AlphaFrameworkConfig {
     fairValueMinPct: number
   }
   allocation: {
+    engine: string
+    controller: string
+    buySignalCount: number
     slateSize: number
     scoreRoundDecimals: number
     weights: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
@@ -187,6 +190,9 @@ export interface TradingConfig {
     requoteDeviationMax: number  // 重掛 entry 偏離容忍（預設 0.05）
     requoteDiscount: number      // 重掛新 entry 折扣（預設 0.985）
     requoteStopFallback: number  // ml_stop_loss fallback 係數（預設 0.92）
+    maxQuoteAgeMs: number        // broker quote 最大可接受延遲（預設 60000ms）
+    maxEntryChasePct: number     // 強勢股盤中追價上限（預設 0.006 = 0.6%）
+    strongBreakoutMaxEntryChasePct: number // 量價確認突破追價上限（預設 0.018 = 1.8%）
     // ── 2026-04-18 #36: calcRiskPct tiers 從 paper.ts hardcode 搬過來 ──────
     riskPctBaseline: number                // 預設一般信號 risk（預設 0.01 = 1%）
     riskPctBuy: number                     // BUY 且 conf≥buyConf 時（預設 0.015 = 1.5%）
@@ -263,7 +269,9 @@ export interface TradingConfig {
     alpha: number                // screener weight 預設 0.40
     beta: number                 // ml_confidence weight 預設 0.40
     gamma: number                // signal_tier weight 預設 0.20
-    screenerDenominator: number  // (chip+tech) 正規化分母（預設 60）
+    // Deprecated compatibility only. Score V2 screener ranking uses
+    // canonical chipFlow + technicalStructure, not this legacy denominator.
+    screenerDenominator: number
     promoteMinConf: number       // promoted row 的 confidence 保底（預設 0.60，對齊 buyConfThreshold）
   }
   // ── #B Option 1 (2026-04-21): ensemble_v2 thresholds + Top-K override ─────
@@ -283,7 +291,8 @@ export interface TradingConfig {
     buyThreshold: number             // 絕對 BUY 門檻（預設 0.70）
     sellThreshold: number            // 絕對 SELL 門檻（預設 0.30）
     strongSellThreshold: number      // 絕對 STRONG_SELL 門檻（預設 0.15）
-    topKOverrideEnabled: boolean     // Top-K 補救開關（預設 true，解 no-buy）
+    topKOverrideEnabled: boolean     // Top-K 補救開關（預設 false，legacy rollback only）
+    allowLegacyTopKOverride: boolean // rollback-only guard; sparse tangent is production owner
     topKCount: number                // 強制 BUY 的 top-K 數（預設 3，對齊 ranking.topK）
     topKConfidenceOverride: number   // Top-K 強制 BUY 時的 confidence（預設 0.72）
   }
@@ -401,6 +410,8 @@ export interface TradingConfig {
   momentum: {
     minVolumeRatio: number               // 最低 volume ratio vs 20d avg（預設 0.8）
     minRangePosition: number             // 最低 day range position（預設 0.3 = 30%）
+    strongBreakoutVolumeRatio: number    // 強勢突破最低 volume ratio（預設 1.5）
+    strongBreakoutRangePosition: number  // 強勢突破最低 day range position（預設 0.7）
     // 2026-04-18 #36 Round 2
     tradingDayMinutes: number            // 台股交易時段分鐘數（預設 270 = 9:00-13:30）
     minutesFractionFloor: number         // minutesSinceOpen/total 下限（預設 0.1 防早盤分母太小）
@@ -495,6 +506,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     requoteDeviationMax: 0.05,  // 重掛 entry 偏離容忍（預設 0.05 = 5%，超過棄單）
     requoteDiscount: 0.985,     // 重掛新 entry 折扣（預設 0.985 = 下修 1.5%）
     requoteStopFallback: 0.92,  // ml_stop_loss 缺失時回退係數（預設 0.92 = entry × 0.92）
+    maxQuoteAgeMs: 60_000,
+    maxEntryChasePct: 0.006,
+    strongBreakoutMaxEntryChasePct: 0.018,
     // 2026-04-18 #36
     riskPctBaseline: 0.01,
     riskPctBuy: 0.015,
@@ -568,6 +582,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     alpha: 0.40,
     beta: 0.40,
     gamma: 0.20,
+    // Deprecated compatibility only; kept for older KV/config shapes.
     screenerDenominator: 60,
     promoteMinConf: 0.60,
   },
@@ -577,7 +592,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     buyThreshold: 0.70,
     sellThreshold: 0.30,
     strongSellThreshold: 0.15,
-    topKOverrideEnabled: true,
+    topKOverrideEnabled: false,
+    allowLegacyTopKOverride: false,
     topKCount: 3,
     topKConfidenceOverride: 0.72,
   },
@@ -668,6 +684,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   momentum: {
     minVolumeRatio: 0.8,
     minRangePosition: 0.3,
+    strongBreakoutVolumeRatio: 1.5,
+    strongBreakoutRangePosition: 0.7,
     // Round 2
     tradingDayMinutes: 270,
     minutesFractionFloor: 0.1,
@@ -698,6 +716,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
       fairValueMinPct: 0.01,
     },
     allocation: {
+      engine: 'sparse_tangent_inverse_risk',
+      controller: 'OnlinePortfolioBandit',
+      buySignalCount: 3,
       slateSize: 10,
       scoreRoundDecimals: 1,
       weights: {
@@ -867,6 +888,9 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
     allocation: {
       ...d.allocation,
       ...rawAllocation,
+      engine: rawAllocation.engine ?? rawAllocation.method ?? d.allocation.engine,
+      controller: rawAllocation.controller ?? d.allocation.controller,
+      buySignalCount: rawAllocation.buySignalCount ?? rawAllocation.buy_signal_count ?? d.allocation.buySignalCount,
       slateSize: rawAllocation.slateSize ?? rawAllocation.slate_size ?? d.allocation.slateSize,
       scoreRoundDecimals: rawAllocation.scoreRoundDecimals ?? rawAllocation.score_round_decimals ?? d.allocation.scoreRoundDecimals,
       weights: {
@@ -969,15 +993,19 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
   }
 }
 
+export function buildChampionTradingConfig(current?: Partial<any> | null): TradingConfig {
+  return mergeConfig(current ?? {})
+}
+
 export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> {
   // In-memory cache（同一個 Worker isolate 內有效）
   if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached
 
   try {
     const raw = await kv.get(KV_KEY, 'json') as Partial<TradingConfig> | null
-    _cached = raw ? mergeConfig(raw) : DEFAULT_TRADING_CONFIG
+    _cached = buildChampionTradingConfig(raw)
   } catch {
-    _cached = DEFAULT_TRADING_CONFIG
+    _cached = buildChampionTradingConfig(null)
   }
   _cachedAt = Date.now()
   return _cached
@@ -1389,6 +1417,12 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     errors.push('maxPositionPct must be 0.01-0.50')
   if (config.position.dailyBuyLimit < 0)
     errors.push('dailyBuyLimit must be >= 0')
+  if (!isFiniteNumber(config.position.maxQuoteAgeMs) || config.position.maxQuoteAgeMs < 10_000 || config.position.maxQuoteAgeMs > 180_000)
+    errors.push('position.maxQuoteAgeMs must be 10000-180000')
+  if (!isFiniteNumber(config.position.maxEntryChasePct) || config.position.maxEntryChasePct < 0 || config.position.maxEntryChasePct > 0.03)
+    errors.push('position.maxEntryChasePct must be 0-0.03')
+  if (!isFiniteNumber(config.position.strongBreakoutMaxEntryChasePct) || config.position.strongBreakoutMaxEntryChasePct < 0 || config.position.strongBreakoutMaxEntryChasePct > 0.03)
+    errors.push('position.strongBreakoutMaxEntryChasePct must be 0-0.03')
   if (config.barrier.upperMult < 0.5 || config.barrier.upperMult > 10)
     errors.push('barrier.upperMult must be 0.5-10')
   if (config.barrier.lowerMult < 0.5 || config.barrier.lowerMult > 10)
@@ -1397,6 +1431,10 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     errors.push('momentum.minVolumeRatio must be 0-5')
   if (!isFiniteNumber(config.momentum.minRangePosition) || config.momentum.minRangePosition < 0 || config.momentum.minRangePosition > 1)
     errors.push('momentum.minRangePosition must be 0-1')
+  if (!isFiniteNumber(config.momentum.strongBreakoutVolumeRatio) || config.momentum.strongBreakoutVolumeRatio < 0 || config.momentum.strongBreakoutVolumeRatio > 5)
+    errors.push('momentum.strongBreakoutVolumeRatio must be 0-5')
+  if (!isFiniteNumber(config.momentum.strongBreakoutRangePosition) || config.momentum.strongBreakoutRangePosition < 0 || config.momentum.strongBreakoutRangePosition > 1)
+    errors.push('momentum.strongBreakoutRangePosition must be 0-1')
   if (!Number.isInteger(config.momentum.avgVolumeLookbackDays) || config.momentum.avgVolumeLookbackDays < 1 || config.momentum.avgVolumeLookbackDays > 120)
     errors.push('momentum.avgVolumeLookbackDays must be an integer between 1 and 120')
   if (!isFiniteNumber(config.momentum.intradayVolumeLotSize) || config.momentum.intradayVolumeLotSize <= 0 || config.momentum.intradayVolumeLotSize > 10_000)
@@ -1474,6 +1512,10 @@ export function validateTradingConfig(config: TradingConfig): string[] {
   } else {
     if (!Number.isInteger(allocation.slateSize) || allocation.slateSize < 1 || allocation.slateSize > 30)
       errors.push('alphaFramework.allocation.slateSize must be an integer between 1 and 30')
+    if (allocation.engine !== 'sparse_tangent_inverse_risk')
+      errors.push('alphaFramework.allocation.engine must be sparse_tangent_inverse_risk')
+    if (!Number.isInteger(allocation.buySignalCount) || allocation.buySignalCount < 1 || allocation.buySignalCount > 30)
+      errors.push('alphaFramework.allocation.buySignalCount must be an integer between 1 and 30')
     if (!Number.isInteger(allocation.scoreRoundDecimals) || allocation.scoreRoundDecimals < 0 || allocation.scoreRoundDecimals > 6)
       errors.push('alphaFramework.allocation.scoreRoundDecimals must be an integer between 0 and 6')
     const regimes: AlphaFrameworkRegime[] = ['bull', 'bear', 'volatile', 'sideways']

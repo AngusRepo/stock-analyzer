@@ -1,6 +1,6 @@
 """Training finalization helpers for split universal retrain.
 
-Tree, FT, and sequence models run in separate Modal jobs. This module keeps the
+Tree and sequence models run in separate Modal jobs. This module keeps the
 join contract explicit so the orchestrator can fail closed and train the rank
 stacker from standard OOS artifacts instead of relying on one monolithic job.
 """
@@ -13,10 +13,9 @@ from typing import Iterable
 
 import numpy as np
 
-TREE_MODELS = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM"]
-FTT_MODELS = ["FT-Transformer"]
+TREE_MODELS = ["LightGBM", "XGBoost", "ExtraTrees"]
 SEQUENCE_GROUPS = {"dlinear", "patchtst"}
-OOS_ARTIFACT_GROUPS = {"tree", "ftt"}
+OOS_ARTIFACT_GROUPS = {"tree"}
 SEQUENCE_MODEL_BY_GROUP = {"dlinear": "DLinear", "patchtst": "PatchTST"}
 
 
@@ -33,8 +32,6 @@ def derive_oos_artifact_group(models_filter: list[str] | None) -> str:
     ordered = list(models_filter)
     if ordered == TREE_MODELS:
         return "tree"
-    if ordered == FTT_MODELS:
-        return "ftt"
     return "custom_" + "_".join(_safe_slug(name) for name in ordered)
 
 
@@ -99,7 +96,6 @@ def validate_sequence_series(
 
 def reduce_training_group_results(
     tree_result: dict | None,
-    ftt_result: dict | None,
     aux_train: dict[str, dict] | None = None,
 ) -> dict:
     """Reduce split training results into the orchestrator finalization contract.
@@ -116,7 +112,7 @@ def reduce_training_group_results(
     circuit_breaker = False
     total_samples = 0
 
-    for group, partial in (("tree", tree_result or {}), ("ftt", ftt_result or {})):
+    for group, partial in (("tree", tree_result or {}),):
         if not partial:
             continue
         if partial.get("error"):
@@ -362,7 +358,10 @@ def build_retrain_followup_payload(
 
 
 def _ordered_model_names(names: Iterable[str]) -> list[str]:
-    order = {name: idx for idx, name in enumerate(TREE_MODELS + FTT_MODELS)}
+    order = {
+        name: idx
+        for idx, name in enumerate([*TREE_MODELS, *SEQUENCE_MODEL_BY_GROUP.values()])
+    }
     return sorted({str(name) for name in names}, key=lambda name: (order.get(name, 999), name))
 
 

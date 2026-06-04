@@ -17,6 +17,8 @@ pytest-cache-files-*/
 .tmp/
 .bug-hunter/
 worker/.tmp/
+worker/.tmp-test-run*/
+.playwright-cli/
 *.log
 scripts/data/
 scripts/backfill_output*

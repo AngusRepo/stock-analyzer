@@ -57,19 +57,20 @@ def _model_artifact_path(model_name: str, version: str) -> str:
         return f"per_stock_state_space/kalman/hyperparams_{version}.json"
     if model_name == "MarkovSwitching":
         return f"per_stock_state_space/markov_switching/hyperparams_{version}.json"
-    if model_name in {"ResidualMLP", "GNN"}:
-        ext = "joblib" if model_name == "ResidualMLP" else "json"
+    if model_name == "ResidualMLP":
+        ext = "joblib"
         folder = model_name.lower().replace("-", "_")
         return f"experimental_shadow/{folder}/{version}.{ext}"
     ext_map = {
-        "XGBoost": "joblib",
-        "CatBoost": "joblib",
-        "ExtraTrees": "joblib",
         "LightGBM": "joblib",
-        "FT-Transformer": "joblib",
-        "Chronos": "json",
+        "XGBoost": "joblib",
+        "ExtraTrees": "joblib",
+        "TabM": "joblib",
+        "GNN": "joblib",
         "DLinear": "pt",
         "PatchTST": "pt",
+        "iTransformer": "pt",
+        "TimesFM": "json",
     }
     ext = ext_map.get(model_name)
     if ext is None:
@@ -188,8 +189,8 @@ def _lifecycle_diagnosis(
         blockers.append(str(root_cause))
     if sample_count <= 0:
         blockers.append("ic_sample_missing")
-    if model_name == "FT-Transformer" and metadata_exists and not metadata_feature_count:
-        blockers.append("ft_feature_metadata_missing")
+    if metadata_exists and not metadata_feature_count and model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
+        blockers.append("feature_metadata_missing")
 
     if is_challenger and sample_count <= 0 and metadata_exists:
         status = "awaiting_live_shadow"
@@ -197,7 +198,7 @@ def _lifecycle_diagnosis(
     elif not blockers:
         status = "ok"
         reason = "IC, samples, metadata are present."
-    elif "metadata_missing" in blockers or "ft_feature_metadata_missing" in blockers:
+    elif "metadata_missing" in blockers or "feature_metadata_missing" in blockers:
         status = "artifact_mismatch"
         reason = "Artifact metadata is missing or incomplete; train/serve schema cannot be audited."
     elif "prediction_missing" in blockers:
@@ -984,11 +985,8 @@ async def promote_check(req: PromoteCheckRequest):
     """Stage 4: scan model_pool.json for lifecycle transitions.
 
     Checks (per ML_POOL_ARCHITECTURE.md + 4-state machine):
-      Challenger -> Active (promote):
-        1. shadow_since older than min_shadow_weeks
-        2. challenger.ic_4w_avg > active.ic_4w_avg + promote_margin
-        3. challenger.ic_4w_avg > 0
-        4. family balance preserved (feature + time-series active minimums)
+      Legacy model_pool challenger:
+        discarded; production promotion is owned by artifact registry gates.
       Active -> Degraded (demote):
         consecutive_negative_weeks >= demote_consec_weeks
       Degraded -> Retired (retire):
@@ -1017,25 +1015,43 @@ async def promote_check(req: PromoteCheckRequest):
 
     # Family balance baseline: count current active alpha predictors per family.
     def _family_actives(p: dict) -> dict[str, int]:
-        counts = {"feature": 0, "time_series": 0}
+        counts = {"tree": 0, "tabular": 0, "graph": 0, "time_series": 0}
         for entry in p.get("models", {}).values():
             if entry.get("status") == "active":
-                fam = entry.get("balance_family", "feature")
+                fam = entry.get("balance_family", "tree")
+                if fam == "feature":
+                    fam = "tree"
                 counts[fam] = counts.get(fam, 0) + 1
         return counts
-    MIN_PER_FAMILY = {"feature": 3, "time_series": 2}
+    MIN_PER_FAMILY = {"tree": 2, "tabular": 1, "graph": 1, "time_series": 2}
     projected_actives = _family_actives(pool)
 
     actions: list[dict] = []
     for name, entry in pool.get("models", {}).items():
         status = entry.get("status", "active")
-        family = entry.get("balance_family", "feature")
+        family = entry.get("balance_family", "tree")
+        if family == "feature":
+            family = "tree"
         ic_4w = entry.get("ic_4w_avg")
         consec_neg = entry.get("consecutive_negative_weeks", 0) or 0
         weekly_ic = entry.get("weekly_ic") or []
         challenger = entry.get("challenger") or {}
 
-        # Promote check (challenger -> active)
+        if challenger:
+            actions.append({
+                "model": name,
+                "transition": "discard_challenger",
+                "from": f"challenger:{challenger.get('version')}",
+                "to": None,
+                "reason": "legacy model_pool challenger slot disabled; use artifact_registry promotion gates",
+                "ic_active_4w": ic_4w,
+                "ic_challenger_4w": challenger.get("ic_4w_avg"),
+                "weekly_ic_count": len(challenger.get("weekly_ic") or []),
+            })
+            challenger = {}
+
+        # Promote check (challenger -> active) is retained only as unreachable
+        # compatibility code after legacy challenger discard above.
         if challenger:
             ch_4w = challenger.get("ic_4w_avg")
             shadow_since_str = challenger.get("shadow_since")
@@ -1844,19 +1860,19 @@ async def init_pool(req: InitPoolRequest):
     iso_now = datetime.now(timezone.utc).isoformat()
     managed = [
         # (name, model_type, balance_family, ext)
-        ("XGBoost",         "feature",                "feature",     "joblib"),
-        ("CatBoost",        "feature",                "feature",     "joblib"),
-        ("ExtraTrees",      "feature",                "feature",     "joblib"),
-        ("LightGBM",        "feature",                "feature",     "joblib"),
-        ("FT-Transformer",  "feature",                "feature",     "joblib"),
-        ("Chronos",         "time_series_foundation", "time_series", "json"),
+        ("LightGBM",        "tree_feature",           "tree",        "joblib"),
+        ("XGBoost",         "tree_feature",           "tree",        "joblib"),
+        ("ExtraTrees",      "tree_feature",           "tree",        "joblib"),
+        ("TabM",            "tabular_neural",         "tabular",     "joblib"),
+        ("GNN",             "cross_stock_graph",      "graph",       "joblib"),
         ("DLinear",         "time_series_learnable",  "time_series", "pt"),
         ("PatchTST",        "time_series_learnable",  "time_series", "pt"),
+        ("iTransformer",    "time_series_transformer","time_series", "pt"),
+        ("TimesFM",         "time_series_foundation", "time_series", "json"),
     ]
     shadow_managed = [
         # (name, model_type, balance_family, ext)
         ("ResidualMLP", "experimental_mlp", "experimental", "joblib"),
-        ("GNN", "experimental_graph", "experimental", "json"),
     ]
     state_overlays = ["KalmanFilter", "MarkovSwitching"]
     models = {}
@@ -1942,7 +1958,7 @@ async def init_pool(req: InitPoolRequest):
 
 
 # ---------------------------------------------------------------------------
-# Chronos config marker (foundation model, no weights, just a version stub)
+# Retired Chronos guard
 # ---------------------------------------------------------------------------
 
 
@@ -1956,28 +1972,8 @@ class WriteChronosConfigRequest(BaseModel):
 
 @router.post("/write_chronos_config")
 async def write_chronos_config(req: WriteChronosConfigRequest):
-    """Write Chronos version config to GCS (foundation model, no weights).
-
-    Stage 1 needs every managed model to have an artifact at its versioned
-    path so model_pool.json entries stay valid. For Chronos the artifact is
-    a config JSON capturing which HuggingFace model_id is in production.
-    """
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="write_chronos_config requires confirm=true")
-    import json as _json
-    from datetime import datetime, timezone
-    from google.cloud import storage
-    bucket = storage.Client().bucket(_bucket_name())
-    cfg = {
-        "version": req.version,
-        "model_id": req.model_id,
-        "horizon_default": req.horizon_default,
-        "num_samples_default": req.num_samples_default,
-        "strategy": "Chronos-2 production replacement; zero-shot plus optional LoRA member",
-        "saved_at": datetime.now(timezone.utc).isoformat(),
-    }
-    path = f"universal/chronos/{req.version}.json"
-    bucket.blob(path).upload_from_string(
-        _json.dumps(cfg, indent=2), content_type="application/json"
+    """Fail-closed retired Chronos config writer."""
+    raise HTTPException(
+        status_code=410,
+        detail="Chronos is retired from the production model pool; use TimesFM/iTransformer artifact gates instead.",
     )
-    return {"status": "written", "path": path, "config": cfg}

@@ -1094,15 +1094,14 @@ def update_feature_pool(
     cluster_result: dict,
     tp_stats: dict,
     ic_results: dict | None = None,
-    all_feature_names: list[str] | None = None,  # for ft_active (full 106 features)
+    all_feature_names: list[str] | None = None,
     k_sweep_result: dict | None = None,           # P0-2: Pareto K sweep result
     gate_result: dict | None = None,              # P0-9: Signal Sanity Gate result
     extra_evidence: dict | None = None,
 ) -> dict:
-    """Build feature_pool.json structure with dual pool output.
+    """Build feature_pool.json structure for governed active training.
 
-    tree_active: filtered features for tree models (XGBoost/CatBoost/ExtraTrees/LightGBM)
-    ft_active:   all feature names for FT-Transformer (skip_feature_pool=True path)
+    tree_active: filtered features for tree models (LightGBM/XGBoost/ExtraTrees)
     active:      backward-compat alias for tree_active
     """
     from datetime import UTC, datetime
@@ -1111,7 +1110,6 @@ def update_feature_pool(
     dropped = cluster_result.get("dropped_features", [])
     reserve = sorted(set(reserve + dropped))
     tree_active = sorted(active)
-    ft_active = sorted(all_feature_names) if all_feature_names else tree_active
     model_policies = {
         name: policy.to_dict()
         for name, policy in MODEL_FEATURE_POLICIES.items()
@@ -1122,7 +1120,6 @@ def update_feature_pool(
         "method": "target_permutation_2.0",
         "active": tree_active,           # backward compat
         "tree_active": tree_active,      # explicit: tree models use this
-        "ft_active": ft_active,          # FT-T uses the governed wide tabular schema
         "reserve": reserve,
         "candidate": [],
         "feature_policy_schema_version": "feature-pool-policy-v1",
@@ -1134,12 +1131,6 @@ def update_feature_pool(
                 "feature_count": len(tree_active),
                 "selection_required": True,
                 "methods": ["signal_sanity_gate", "target_permutation", "correlation_clustering", "ic_icir", "optuna_k_sweep", "diversity_guard"],
-            },
-            "ftt": {
-                "feature_source": "feature_pool.ft_active",
-                "feature_count": len(ft_active),
-                "selection_required": False,
-                "methods": ["schema_parity", "missingness_mask", "selection_evidence_reference"],
             },
             "governance": extra_evidence or {},
         },
@@ -1474,7 +1465,7 @@ def run_feature_selection_pipeline(
         cluster_result["feature_to_group"],
     )
 
-    # ── 9. Build and save feature pool (dual pool: tree_active + ft_active) ──
+    # ── 9. Build and save governed active tree feature pool ──
     pool = update_feature_pool(
         active_final, reserve_final,
         all_feature_names=feature_names,

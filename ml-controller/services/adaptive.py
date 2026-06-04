@@ -11,14 +11,15 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 
 ALPHA_VOTE_MODELS = [
-    "XGBoost",
-    "CatBoost",
-    "ExtraTrees",
     "LightGBM",
-    "FT-Transformer",
-    "Chronos",
+    "XGBoost",
+    "ExtraTrees",
+    "TabM",
+    "GNN",
     "DLinear",
     "PatchTST",
+    "iTransformer",
+    "TimesFM",
 ]
 STATE_SPACE_OVERLAYS = ["KalmanFilter", "MarkovSwitching"]
 META_OPTIMIZERS = ["GAOptimizer"]

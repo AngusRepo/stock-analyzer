@@ -39,13 +39,16 @@ Schema (model_pool.json):
   }
 }
 
-8 universal models managed in v1 bootstrap:
-  Feature family (5):
-    XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer
-  Time-series family (3):
-    Chronos (foundation, no weights — version is a config marker)
-    DLinear (learnable)
-    PatchTST (learnable)
+9 alpha models managed by the refactored L3 family pool:
+  Tree family:
+    LightGBM / XGBoost / ExtraTrees
+  Tabular neural / graph targets:
+    TabM / GNN
+  Time-series family:
+    DLinear / PatchTST / iTransformer / TimesFM
+
+Retired alpha models:
+  CatBoost / FT-Transformer / Chronos
 
 State-space (KalmanFilter, MarkovSwitching) handled by Stage 6.
 """
@@ -68,14 +71,21 @@ _POOL_CACHE_LOADED_AT: float = 0.0
 SCHEMA_VERSION = "1.0"
 
 ALPHA_PREDICTION_MODELS = (
-    "XGBoost",
-    "CatBoost",
-    "ExtraTrees",
     "LightGBM",
-    "FT-Transformer",
-    "Chronos",
+    "XGBoost",
+    "ExtraTrees",
+    "TabM",
+    "GNN",
     "DLinear",
     "PatchTST",
+    "iTransformer",
+    "TimesFM",
+)
+
+RETIRED_ALPHA_MODELS = (
+    "CatBoost",
+    "FT-Transformer",
+    "Chronos",
 )
 
 STATE_SPACE_OVERLAY_MODELS = (
@@ -85,7 +95,6 @@ STATE_SPACE_OVERLAY_MODELS = (
 
 EXPERIMENTAL_CHALLENGER_MODELS = {
     "ResidualMLP": ("tabular_neural_shadow", "experimental", "joblib"),
-    "GNN": ("cross_stock_graph_shadow", "experimental", "json"),
 }
 
 META_OPTIMIZERS = {
@@ -98,33 +107,6 @@ META_OPTIMIZERS = {
 }
 
 RESEARCH_BENCHMARK_MODELS = {
-    "TabM": {
-        "status": "benchmark_only",
-        "model_type": "tabular_deep_learning",
-        "family": "tabular",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["feature_policy", "walk_forward", "pbo", "cost_profile"],
-    },
-    "iTransformer": {
-        "status": "benchmark_only",
-        "model_type": "time_series_transformer",
-        "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["sequence_policy", "walk_forward", "pbo", "cost_profile"],
-    },
-    "TimesFM": {
-        "status": "benchmark_only",
-        "model_type": "foundation_time_series",
-        "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
-    },
     "Moirai": {
         "status": "benchmark_only",
         "model_type": "foundation_time_series",
@@ -136,22 +118,26 @@ RESEARCH_BENCHMARK_MODELS = {
     },
 }
 
-# 8 active alpha prediction models managed by ML_POOL.
+# 9 alpha prediction model slots managed by ML_POOL.
 # State-space overlays and meta optimizers live in separate namespaces below.
 MANAGED_MODELS = {
     # name → (model_type, balance_family, gcs_extension)
-    "XGBoost":          ("feature",                    "feature",     "joblib"),
-    "CatBoost":         ("feature",                    "feature",     "joblib"),
-    "ExtraTrees":       ("feature",                    "feature",     "joblib"),
-    "LightGBM":         ("feature",                    "feature",     "joblib"),
-    "FT-Transformer":   ("feature",                    "feature",     "joblib"),
-    "Chronos":          ("time_series_foundation",     "time_series", "json"),
+    "LightGBM":         ("tree_feature",               "tree",        "joblib"),
+    "XGBoost":          ("tree_feature",               "tree",        "joblib"),
+    "ExtraTrees":       ("tree_feature",               "tree",        "joblib"),
+    "TabM":             ("tabular_neural",             "tabular",     "joblib"),
+    "GNN":              ("cross_stock_graph",          "graph",       "joblib"),
     "DLinear":          ("time_series_learnable",      "time_series", "pt"),
     "PatchTST":         ("time_series_learnable",      "time_series", "pt"),
+    "iTransformer":     ("time_series_transformer",    "time_series", "pt"),
+    "TimesFM":          ("time_series_foundation",     "time_series", "json"),
 }
 
 # Family balance guards for active alpha predictors:
 MIN_ACTIVE_PER_FAMILY = {
+    "tree": 2,
+    "tabular": 1,
+    "graph": 1,
     "feature":     3,    # ≥3 of 5 feature models must stay active
     "time_series": 2,    # ≥2 of 3 time-series must stay active
 }
@@ -432,7 +418,7 @@ def get_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optiona
 
 
 def get_shadow_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
-    """Return registered experimental shadow path for MLP/GNN-style candidates."""
+    """Return the registered ResidualMLP experimental shadow path."""
     pool = pool or load_pool()
     if not pool:
         return None
@@ -500,7 +486,7 @@ def register_shadow_challenger(
 ) -> dict:
     """Register an experimental predictor that must not vote until promoted.
 
-    This is for ResidualMLP/GNN. GAOptimizer is deliberately excluded because
+    This is only for ResidualMLP. GAOptimizer is deliberately excluded because
     it belongs to the meta_optimizer layer and does not emit stock forecasts.
     """
     if model_name not in EXPERIMENTAL_CHALLENGER_MODELS:
@@ -551,7 +537,7 @@ def state_space_hyperparams_path(model_name: str, version: str = "v1") -> str:
     """e.g. ('KalmanFilter', 'v1') → 'per_stock_state_space/kalman/hyperparams_v1.json'
 
     State-space models follow the per_stock_state_space/ folder convention to
-    distinguish them from universal/ (where 8-model pooled artifacts live).
+    distinguish them from universal/ (where alpha-model pooled artifacts live).
     Hyperparams are SHARED across all stocks; per-stock state is computed
     online at inference and not persisted.
     """

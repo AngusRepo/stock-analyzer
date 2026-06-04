@@ -49,12 +49,7 @@ def _get_model_cache_stats() -> dict[str, int]:
 
 
 def _get_ft_runtime_cache_stats() -> dict[str, int]:
-    try:
-        from .ft_transformer import get_ft_runtime_cache_stats
-
-        return get_ft_runtime_cache_stats()
-    except Exception:
-        return {}
+    return {}
 
 
 def _stats_delta(after: dict, before: dict) -> dict[str, int]:
@@ -87,12 +82,6 @@ def _load_model_pool() -> dict | None:
     return load_pool()
 
 
-def _get_pool_challenger_path(model_name: str, pool: dict | None) -> str | None:
-    from .model_pool import get_challenger_path
-
-    return get_challenger_path(model_name, pool=pool)
-
-
 def _get_pool_shadow_challenger_path(model_name: str, pool: dict | None) -> str | None:
     from .model_pool import get_shadow_challenger_path
 
@@ -102,8 +91,8 @@ def _get_pool_shadow_challenger_path(model_name: str, pool: dict | None) -> str 
 def _shadow_challenger_names(pool: dict | None) -> tuple[str, ...]:
     shadow_models = (pool or {}).get("shadow_models", {}) if pool else {}
     if isinstance(shadow_models, dict) and shadow_models:
-        return tuple(str(name) for name in shadow_models.keys())
-    return ("ResidualMLP", "GNN")
+        return tuple(name for name in (str(name) for name in shadow_models.keys()) if name == "ResidualMLP")
+    return ("ResidualMLP",)
 
 
 def _load_feature_artifact(model_name: str, explicit_path: str | None = None) -> tuple[Any, dict | None]:
@@ -188,46 +177,6 @@ def _record_feature_error(
     target.append(message)
 
 
-def _predict_ft_transformer_batch(
-    model_name: str,
-    bundle: dict,
-    rows: list[tuple[_FeatureBatchContext, np.ndarray]],
-    *,
-    challenger: bool = False,
-) -> None:
-    import torch
-
-    scaler = bundle["scaler"]
-    n_feat = bundle.get("n_features", rows[0][1].shape[1])
-    valid_rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
-    for ctx, x_row in rows:
-        if x_row.shape[1] != n_feat:
-            suffix = "challenger dim mismatch" if challenger else (
-                f"dim mismatch (predict={x_row.shape[1]}, train={n_feat}), skipped"
-            )
-            _record_feature_error(ctx, f"{model_name}: {suffix}", challenger=challenger)
-            continue
-        valid_rows.append((ctx, x_row))
-    if not valid_rows:
-        return
-
-    from .ft_transformer import rank_from_ft_regression_output, rebuild_ft_transformer_from_bundle
-
-    x_batch = np.vstack([row for _ctx, row in valid_rows])
-    x_scaled = scaler.transform(x_batch).astype(np.float32)
-    x_scaled = np.nan_to_num(x_scaled, nan=0.0, posinf=0.0, neginf=0.0)
-    ftt, ftt_type, _ftt_arch = rebuild_ft_transformer_from_bundle(bundle)
-    with torch.no_grad():
-        raw = ftt(torch.tensor(x_scaled))
-    if ftt_type == "regression":
-        raw_values = raw.reshape(-1).detach().cpu().numpy()
-        scores = [rank_from_ft_regression_output(float(value)) for value in raw_values]
-    else:
-        scores = torch.softmax(raw, dim=-1)[:, 1].detach().cpu().numpy().tolist()
-    for (ctx, _row), score in zip(valid_rows, scores):
-        _record_feature_score(ctx, model_name, score, challenger=challenger)
-
-
 def _apply_artifact_batch_predictions(
     contexts: list[_FeatureBatchContext],
     model_name: str,
@@ -244,15 +193,6 @@ def _apply_artifact_batch_predictions(
             prefix = "challenger " if challenger else ""
             _record_feature_error(ctx, f"{model_name}: {prefix}{exc}", challenger=challenger)
     if not rows:
-        return
-
-    if model_name == "FT-Transformer":
-        try:
-            _predict_ft_transformer_batch(model_name, model_obj, rows, challenger=challenger)
-        except Exception as exc:  # noqa: BLE001
-            prefix = "challenger " if challenger else ""
-            for ctx, _row in rows:
-                _record_feature_error(ctx, f"{model_name}: {prefix}{exc}", challenger=challenger)
         return
 
     x_batch = np.vstack([row for _ctx, row in rows])
@@ -316,31 +256,6 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
         _apply_artifact_batch_predictions(contexts, model_name, model_obj, meta)
 
     if pool:
-        for model_name in _FEATURE_MODEL_NAMES_V2:
-            try:
-                ch_path = _get_pool_challenger_path(model_name, pool=pool)
-            except Exception as exc:  # noqa: BLE001
-                for ctx in contexts:
-                    _record_feature_error(ctx, f"{model_name}: challenger {exc}", challenger=True)
-                continue
-            if not ch_path:
-                continue
-            try:
-                model_obj, meta = _load_feature_artifact(model_name, explicit_path=ch_path)
-            except Exception as exc:  # noqa: BLE001
-                for ctx in contexts:
-                    _record_feature_error(ctx, f"{model_name}: challenger {exc}", challenger=True)
-                continue
-            if model_obj is None:
-                for ctx in contexts:
-                    _record_feature_error(
-                        ctx,
-                        f"{model_name}: challenger artifact missing at {ch_path}",
-                        challenger=True,
-                    )
-                continue
-            _apply_artifact_batch_predictions(contexts, model_name, model_obj, meta, challenger=True)
-
         for model_name in _shadow_challenger_names(pool):
             try:
                 shadow_path = _get_pool_shadow_challenger_path(model_name, pool=pool)
@@ -420,7 +335,9 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
             "errors": [],
         }
 
-    active_models = ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"]
+    from .prediction_runtime import _FEATURE_MODEL_NAMES_V2
+
+    active_models = list(_FEATURE_MODEL_NAMES_V2)
     errors: list[str] = []
     active_loaded = 0
     challenger_loaded = 0
@@ -428,7 +345,7 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
 
     try:
         from .model_store import load_model
-        from .model_pool import get_challenger_path, load_pool
+        from .model_pool import load_pool
     except Exception as exc:  # noqa: BLE001 - telemetry must not block prediction.
         return {
             "active_attempted": len(active_models),
@@ -451,18 +368,6 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
     except Exception as exc:  # noqa: BLE001
         pool = {}
         errors.append(f"model_pool: {type(exc).__name__}: {exc}")
-
-    for model_name in active_models:
-        try:
-            ch_path = get_challenger_path(model_name, pool=pool) if pool else None
-            if not ch_path:
-                continue
-            challenger_attempted += 1
-            model_obj, _meta = load_model(0, model_name, explicit_path=ch_path)
-            if model_obj is not None:
-                challenger_loaded += 1
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{model_name} challenger: {type(exc).__name__}: {exc}")
 
     return {
         "active_attempted": len(active_models),

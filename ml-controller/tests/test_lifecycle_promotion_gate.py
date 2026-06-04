@@ -199,10 +199,10 @@ def test_apply_promotion_gate_blocks_promote_without_model_cpcv_evidence():
 
 
 def test_apply_promotion_gate_blocks_promote_when_model_cpcv_fails():
-    actions = [{"model": "FT-Transformer", "transition": "promote"}]
+    actions = [{"model": "TabM", "transition": "promote"}]
     gate = {"passed": True, "decision": "PASS", "failed_gates": []}
     cpcv = {
-        "FT-Transformer": {
+        "TabM": {
             "decision": "FAIL",
             "method": "purged_cpcv_rank_ic",
             "failed_gates": ["cpcv_oos_ic"],

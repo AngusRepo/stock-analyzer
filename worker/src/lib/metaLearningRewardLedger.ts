@@ -161,10 +161,16 @@ function armIdsForRow(row: LinUcbRewardSourceRow): string[] {
 
 function modelFamilyArm(modelName: unknown): string {
   const name = String(modelName ?? '').toLowerCase()
-  if (['xgboost', 'catboost', 'extratrees', 'lightgbm', 'ft-transformer', 'ft_transformer'].some((part) => name.includes(part))) {
-    return 'feature_family'
+  if (['xgboost', 'extratrees', 'lightgbm'].some((part) => name.includes(part))) {
+    return 'tree_family'
   }
-  if (['chronos', 'dlinear', 'patchtst'].some((part) => name.includes(part))) {
+  if (['tabm'].some((part) => name.includes(part))) {
+    return 'tabular_neural_family'
+  }
+  if (['gnn'].some((part) => name.includes(part))) {
+    return 'graph_family'
+  }
+  if (['dlinear', 'patchtst', 'itransformer', 'timesfm'].some((part) => name.includes(part))) {
     return 'time_series_family'
   }
   return 'do_nothing'

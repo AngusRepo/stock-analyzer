@@ -49,3 +49,6 @@ binding = "AI"
 [vars]
 ENVIRONMENT = "production"
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
+FINLAB_L5_MARKET_DATA_ENABLED = "1"
+FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN = "0"
+SHIOAJI_L5_PROXY_FALLBACK_ENABLED = "1"

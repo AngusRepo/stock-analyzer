@@ -11,26 +11,26 @@ import math
 from typing import Any
 
 ALPHA_PREDICTION_MODELS = (
-    "XGBoost",
-    "CatBoost",
-    "ExtraTrees",
     "LightGBM",
-    "FT-Transformer",
-    "Chronos",
+    "XGBoost",
+    "ExtraTrees",
+    "TabM",
+    "GNN",
     "DLinear",
     "PatchTST",
+    "iTransformer",
+    "TimesFM",
 )
 
 EXPERIMENTAL_SHADOW_MODELS = (
     "ResidualMLP",
-    "GNN",
 )
 
 PRODUCTION_IC_SEGMENTS = {"LISTED", "OTC", "UNKNOWN"}
 
 
 def tracked_model_names() -> tuple[str, ...]:
-    challengers = tuple(f"{name}::challenger" for name in ALPHA_PREDICTION_MODELS + EXPERIMENTAL_SHADOW_MODELS)
+    challengers = tuple(f"{name}::challenger" for name in EXPERIMENTAL_SHADOW_MODELS)
     return ALPHA_PREDICTION_MODELS + challengers
 
 

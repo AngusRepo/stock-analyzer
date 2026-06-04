@@ -305,8 +305,8 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     """Structured ML vote evidence for UI/OBS; text reasons are derived elsewhere."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
     tracked = [
-        "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
-        "Chronos", "DLinear", "PatchTST",
+        "LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN",
+        "DLinear", "PatchTST", "iTransformer", "TimesFM",
     ]
     weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
     active_weight_count = 0
@@ -334,7 +334,12 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
                     model_scores[name] = float(rank_scores[name])
             except (TypeError, ValueError):
                 continue
-    for src_key, model_name in (("chronos", "Chronos"), ("dlinear", "DLinear"), ("patchtst", "PatchTST")):
+    for src_key, model_name in (
+        ("dlinear", "DLinear"),
+        ("patchtst", "PatchTST"),
+        ("itransformer", "iTransformer"),
+        ("timesfm", "TimesFM"),
+    ):
         sig = (ml or {}).get(src_key) or {}
         try:
             if sig.get("forecast_pct") is not None:
@@ -1408,10 +1413,12 @@ def write_predictions_to_d1(
         # Stages 2+3: active rows model_name='{name}'; challenger rows
         # model_name='{name}::challenger' (Stage 3 shadow IC tracking).
         per_model_scores = _extract_per_model_scores_for_d1(data)
-        # Stage 3: extract challenger scores from feature and pipeline_v2
-        # time-series alpha challenger shadow predictions.
+        # ResidualMLP is the only shadow challenger allowed to write challenger
+        # rows. Active L3 models must not re-enter D1 as ::challenger.
         challenger_scores = data.get("challenger_rank_scores") or {}
         for ch_name, ch_score in (challenger_scores or {}).items():
+            if str(ch_name) != "ResidualMLP":
+                continue
             try:
                 per_model_scores[f"{ch_name}::challenger"] = float(ch_score)
             except (TypeError, ValueError):
@@ -1478,17 +1485,17 @@ def write_predictions_to_d1(
 # Models whose rank scores we want stored for alpha IC tracking.
 # State-space overlays explain regime/risk context rather than vote as alpha.
 _PER_MODEL_TRACKED = (
-    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer",
-    "Chronos", "DLinear", "PatchTST",
+    "LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN",
+    "DLinear", "PatchTST", "iTransformer", "TimesFM",
 )
 
 
 def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     """Pull out per-model rank scores from one stock's prediction dict.
 
-    For 5 feature models: read pred["rank_scores"][model_name] (raw 0~1
+    For tree/tabular/graph models: read pred["rank_scores"][model_name] (raw 0~1
       from predict_stock_v2).
-    For 3 time-series alpha predictors: sigmoid-map .forecast_pct → 0~1
+    For time-series alpha predictors: sigmoid-map .forecast_pct → 0~1
       (mirror of pipeline_v2._ts_to_rank with scale=12).
 
     Returns subset of _PER_MODEL_TRACKED that have a usable score in the dict.
@@ -1496,7 +1503,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     import math
     out: dict[str, float] = {}
     rank_scores = pred.get("rank_scores") or {}
-    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "FT-Transformer"):
+    for name in ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"):
         v = rank_scores.get(name)
         if v is not None:
             try:
@@ -1505,9 +1512,10 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
                 pass
     # Time-series alpha predictors: forecast_pct → sigmoid rank.
     _SRC_KEY_MODEL = (
-        ("chronos",          "Chronos"),
         ("dlinear",          "DLinear"),
         ("patchtst",         "PatchTST"),
+        ("itransformer",     "iTransformer"),
+        ("timesfm",          "TimesFM"),
     )
     for src_key, model_name in _SRC_KEY_MODEL:
         sig = pred.get(src_key) or {}

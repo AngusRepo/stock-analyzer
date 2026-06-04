@@ -466,7 +466,10 @@ void (async () => {
         headers: { Authorization: 'Bearer service-token' },
       }, env)
       const statusBody = await statusRes.json() as any
-      assert(statusBody.candidates.length >= 10, 'model upgrade status should include the full P7 track, not only shadow/benchmark candidates')
+      const candidateIds = new Set(statusBody.candidates.map((row: any) => row.candidate_id))
+      for (const id of ['ResidualMLP', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
+        assert(candidateIds.has(id), `model upgrade status should include full P7 track candidate ${id}`)
+      }
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'track_only' && row.requires_experiment_registry === false), 'non-experiment tracks should be visible as track_only')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'ready_for_review'), 'model upgrade status should surface review-ready evidence after batch run')
       const target = statusBody.candidates.find((row: any) => row.registry_status === 'ready_for_review' && row.requires_experiment_registry && row.latest_experiment_id)

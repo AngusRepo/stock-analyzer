@@ -38,6 +38,7 @@ import {
   buildMlVoteWatchPoint,
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
+import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow } from '../lib/scoreV2Taxonomy'
 import type { Bindings, Variables } from '../types'
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -133,26 +134,37 @@ async function enrichPendingBuyContext(
 
   const placeholders = symbols.map(() => '?').join(',')
   const { results } = await db.prepare(`
-    SELECT dr.symbol,
-           s.id AS stock_id,
-           p.forecast_data AS prediction_forecast_data
-      FROM daily_recommendations dr
-      LEFT JOIN stocks s ON s.symbol = dr.symbol
-      LEFT JOIN predictions p ON p.id = (
-        SELECT p2.id
-         FROM predictions p2
-         WHERE p2.stock_id = s.id
-           AND p2.model_name = 'ensemble'
-           AND (
-             p2.prediction_date = dr.date
-           )
-         ORDER BY
-           p2.generated_at DESC,
-           p2.id DESC
-         LIMIT 1
+    WITH ranked AS (
+      SELECT dr.symbol,
+             dr.date AS recommendation_date,
+             dr.score_components,
+             dr.market_segment,
+             dr.recommendation_lane,
+             s.id AS stock_id,
+             p.forecast_data AS prediction_forecast_data,
+             ROW_NUMBER() OVER (
+               PARTITION BY dr.symbol
+               ORDER BY dr.date DESC, dr.rank ASC
+             ) AS rn
+        FROM daily_recommendations dr
+        LEFT JOIN stocks s ON s.symbol = dr.symbol
+        LEFT JOIN predictions p ON p.id = (
+          SELECT p2.id
+           FROM predictions p2
+           WHERE p2.stock_id = s.id
+             AND p2.model_name = 'ensemble'
+             AND p2.prediction_date = dr.date
+           ORDER BY
+             p2.generated_at DESC,
+             p2.id DESC
+           LIMIT 1
+        )
+       WHERE dr.date <= ?
+         AND dr.symbol IN (${placeholders})
       )
-     WHERE dr.date = ?
-       AND dr.symbol IN (${placeholders})
+    SELECT *
+      FROM ranked
+     WHERE rn = 1
   `).bind(sourceRecoDate, ...symbols).all<any>().catch(() => ({ results: [] as any[] }))
 
   const stockIds = [...new Set((results ?? []).map((row: any) => Number(row.stock_id)).filter((id: number) => Number.isFinite(id)))]
@@ -172,7 +184,7 @@ async function enrichPendingBuyContext(
          WHERE stock_id IN (${stockPlaceholders})
            AND model_name != 'ensemble'
            AND model_name NOT LIKE '%::challenger'
-           AND prediction_date = ?
+           AND prediction_date <= ?
       )
       SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
         FROM ranked
@@ -193,9 +205,25 @@ async function enrichPendingBuyContext(
   const contextBySymbol = new Map<string, any>()
   for (const row of results ?? []) {
     const forecastData = parsePredictionForecastData(row.prediction_forecast_data)
-    if (!forecastData) continue
+    const scoreSnapshot = readScoreV2Snapshot(row as ScoreV2StorageRow)
+    const scoreV2 = scoreSnapshot ? serializeScoreV2Snapshot(scoreSnapshot) : null
+    if (!forecastData) {
+      contextBySymbol.set(row.symbol, {
+        score_v2: scoreV2,
+        stock_id: row.stock_id,
+        recommendation_date: row.recommendation_date,
+        market_segment: row.market_segment,
+        recommendation_lane: row.recommendation_lane,
+      })
+      continue
+    }
     const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(row.stock_id)) ?? [])
     contextBySymbol.set(row.symbol, {
+      score_v2: scoreV2,
+      stock_id: row.stock_id,
+      recommendation_date: row.recommendation_date,
+      market_segment: row.market_segment,
+      recommendation_lane: row.recommendation_lane,
       prediction_forecast_data: row.prediction_forecast_data,
       alpha_context: forecastData.alpha_context ?? null,
       alpha_allocation: forecastData.alpha_allocation ?? null,
@@ -207,12 +235,24 @@ async function enrichPendingBuyContext(
 
   return pendingBuys.map((item) => {
     const context = contextBySymbol.get(item.symbol)
-    if (!context) return item
+    const fallbackScoreV2 = item.score_v2
+      ?? null
+    if (!context) {
+      return {
+        ...item,
+        score_v2: fallbackScoreV2,
+      }
+    }
     let watchPoints = Array.isArray(item.watch_points) ? item.watch_points : []
     watchPoints = appendUniqueWatchPoint(watchPoints, context.market_watch_point)
     watchPoints = appendUniqueWatchPoint(watchPoints, context.ml_watch_point)
     return {
       ...item,
+      score_v2: context.score_v2 ?? fallbackScoreV2,
+      stock_id: item.stock_id ?? context.stock_id ?? null,
+      recommendation_date: item.recommendation_date ?? context.recommendation_date ?? null,
+      market_segment: item.market_segment ?? context.market_segment ?? null,
+      recommendation_lane: item.recommendation_lane ?? context.recommendation_lane ?? null,
       alpha_context: context.alpha_context,
       alpha_allocation: context.alpha_allocation,
       ml_vote_summary: context.ml_vote_summary,
@@ -220,6 +260,33 @@ async function enrichPendingBuyContext(
       watch_points: watchPoints,
     }
   })
+}
+
+function removeLegacyPendingBuyScoreFields(item: Record<string, any>): Record<string, any> {
+  const {
+    score: _score,
+    total_score: _totalScore,
+    chip_score: _chipScore,
+    tech_score: _techScore,
+    ml_score: _mlScore,
+    momentum_score: _momentumScore,
+    score_components: _scoreComponents,
+    ...rest
+  } = item
+  return rest
+}
+
+function stripLegacyPendingBuyRunHistory(runHistory: any): any {
+  if (!Array.isArray(runHistory?.runs)) return runHistory
+  return {
+    ...runHistory,
+    runs: runHistory.runs.map((run: any) => ({
+      ...run,
+      items: Array.isArray(run.items)
+        ? run.items.map((item: Record<string, any>) => removeLegacyPendingBuyScoreFields(item))
+        : [],
+    })),
+  }
 }
 
 // Auth middleware supporting both internal token and approved JWT sessions.
@@ -524,6 +591,7 @@ paper.get('/pending-buys', async (c) => {
     : snapshot.date
   const pendingBuys = await enrichPendingBuyContext(c.env.DB, snapshot.pendingBuys, sourceRecoDate)
   const runHistory = await loadPendingBuyRunHistory(c.env, twToday, { limit: 5 })
+  const pendingBuysForResponse = pendingBuys.map((item) => removeLegacyPendingBuyScoreFields(item))
   return c.json({
     requested_date: snapshot.requested_date,
     date: snapshot.date,
@@ -532,8 +600,8 @@ paper.get('/pending-buys', async (c) => {
     source: snapshot.source,
     meta: snapshot.meta ?? null,
     state,
-    pendingBuys,
-    runHistory,
+    pendingBuys: pendingBuysForResponse,
+    runHistory: stripLegacyPendingBuyRunHistory(runHistory),
   })
 })
 

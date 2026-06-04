@@ -1,8 +1,8 @@
 """State-space/time-series payload export helpers.
 
-The daily pipeline uses the same close-price series for Chronos, DLinear,
-PatchTST, KalmanFilter, and MarkovSwitching. Keep the extraction logic in one
-place so parity checks use the same payload shape as production inference.
+The daily pipeline uses the same close-price series for sequence predictors,
+KalmanFilter, and MarkovSwitching. Keep the extraction logic in one place so
+parity checks use the same payload shape as production inference.
 """
 
 from __future__ import annotations

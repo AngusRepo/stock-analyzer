@@ -64,7 +64,7 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
         "dry_run": True,
         "windows_count": len(run.windows),
         "planned_retrains": run.aggregate.get("planned_retrains"),
-        "estimated_gpu_wall_clock_hours": run.aggregate.get("estimated_gpu_wall_clock_hours"),
+        "estimated_tree_wall_clock_hours": run.aggregate.get("estimated_tree_wall_clock_hours"),
         "data_access": data_access,
         "windows": [
             {

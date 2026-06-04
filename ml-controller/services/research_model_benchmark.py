@@ -51,7 +51,7 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
         runtime_package="timesfm",
         adapter_module="app.research_benchmarks.timesfm_adapter",
         expected_evidence=("oos_ic", "forecast_validation", "cost_sensitivity", "data_slice_report"),
-        notes="Foundation time-series benchmark against Chronos; should not enter production without review.",
+        notes="Foundation time-series benchmark against the active sequence family; should not enter production without review.",
     ),
 }
 

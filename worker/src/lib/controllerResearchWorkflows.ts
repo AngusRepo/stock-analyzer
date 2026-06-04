@@ -321,14 +321,15 @@ export async function runWeeklyRetrain(env: Bindings) {
 }
 
 const MODEL_GROUP_BY_NAME: Record<string, string> = {
-  XGBoost: 'tree',
-  CatBoost: 'tree',
-  ExtraTrees: 'tree',
   LightGBM: 'tree',
-  'FT-Transformer': 'ftt',
-  Chronos: 'chronos',
+  XGBoost: 'tree',
+  ExtraTrees: 'tree',
+  TabM: 'tabular',
+  GNN: 'graph',
   DLinear: 'dlinear',
   PatchTST: 'patchtst',
+  iTransformer: 'itransformer',
+  TimesFM: 'timesfm',
 }
 
 function isWeeklyDriftTarget(model: Record<string, any>): boolean {

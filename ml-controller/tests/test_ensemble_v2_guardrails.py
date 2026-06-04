@@ -7,22 +7,22 @@ def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
     pred = {
         "rank_scores": {
             "XGBoost": 0.95,
-            "CatBoost": 0.92,
+            "ExtraTrees": 0.92,
         },
-        "chronos": {"forecast_pct": 0.04},
+        "dlinear": {"forecast_pct": 0.04},
     }
 
     attach_ensemble_v2(
         pred,
         model_status={
             "XGBoost": "active",
-            "CatBoost": "retired",
-            "Chronos": "active",
+            "ExtraTrees": "retired",
+            "DLinear": "active",
         },
         ic_weights={
             "XGBoost": -0.02,
-            "CatBoost": 0.30,
-            "Chronos": 0.0,
+            "ExtraTrees": 0.30,
+            "DLinear": 0.0,
         },
         degraded_dampening=0.5,
     )
@@ -38,20 +38,20 @@ def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
 def test_attach_ensemble_v2_can_use_alpha_alternate_models_when_feature_models_fail():
     pred = {
         "rank_scores": {},
-        "chronos": {"forecast_pct": 0.04},
+        "dlinear": {"forecast_pct": 0.04},
         "kalman_filter": {"forecast_pct": 0.03},
     }
 
     attach_ensemble_v2(
         pred,
-        model_status={"Chronos": "active", "KalmanFilter": "active"},
-        ic_weights={"Chronos": 0.03, "KalmanFilter": 0.02},
+        model_status={"DLinear": "active", "KalmanFilter": "active"},
+        ic_weights={"DLinear": 0.03, "KalmanFilter": 0.02},
         degraded_dampening=1.0,
     )
 
     ev2 = pred["ensemble_v2"]
     assert ev2["avg_rank"] > 0.5
-    assert ev2["contributing_models"] == ["Chronos"]
+    assert ev2["contributing_models"] == ["DLinear"]
     assert ev2["weight_total"] > 0
 
 
@@ -123,7 +123,7 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
     pool = {
         "models": {
             "XGBoost": {"status": "active", "rolling_ic": 0.037, "ic_4w_avg": 0.031, "weekly_ic": [0.02, 0.031]},
-            "CatBoost": {"status": "degraded", "weekly_ic": [0.012]},
+            "ExtraTrees": {"status": "degraded", "weekly_ic": [0.012]},
         }
     }
 
@@ -144,7 +144,7 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
             if path == "universal/model_pool.json":
                 return Blob(json.dumps(pool))
             if path == "universal/ic_tracking.json":
-                return Blob('{"models":{"XGBoost":{"oos_ic":0.0},"CatBoost":{"oos_ic":0.0}}}')
+                return Blob('{"models":{"XGBoost":{"oos_ic":0.0},"ExtraTrees":{"oos_ic":0.0}}}')
             return Blob(None)
 
     class Client:
@@ -158,9 +158,9 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
     status, ic_weights, degraded, cfg, used_pool, pool_snapshot = daily_pipeline_v2._load_pool_and_ic()
 
     assert used_pool is True
-    assert status == {"XGBoost": "active", "CatBoost": "degraded"}
+    assert status == {"XGBoost": "active", "ExtraTrees": "degraded"}
     assert ic_weights["XGBoost"] == 0.037
-    assert ic_weights["CatBoost"] == 0.012
+    assert ic_weights["ExtraTrees"] == 0.012
     assert degraded == 1.0
     assert cfg["buyThreshold"] == 0.7
     assert pool_snapshot["models"]["XGBoost"]["rolling_ic"] == 0.037
@@ -200,7 +200,7 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
 
     pool = {
         "models": {
-            "FT-Transformer": {
+            "TabM": {
                 "status": "active",
                 "rolling_ic": 0.12,
                 "last_ic_status": "insufficient_samples",
@@ -244,8 +244,8 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
 
     status, ic_weights, *_ = daily_pipeline_v2._load_pool_and_ic()
 
-    assert status["FT-Transformer"] == "active"
-    assert "FT-Transformer" not in ic_weights
+    assert status["TabM"] == "active"
+    assert "TabM" not in ic_weights
     assert "DLinear" not in ic_weights
     assert ic_weights["PatchTST"] == 0.07
 
@@ -342,19 +342,19 @@ def test_daily_pipeline_requires_regime_before_recommendation(monkeypatch):
     ) == "bull"
     import inspect
     source = inspect.getsource(daily_pipeline_v2.node_recommend)
-    assert "ml:regime missing before recommendation" in source
+    assert "market_regime_state missing before recommendation" in source
 
 
 def test_daily_pipeline_applies_adaptive_thresholds_to_ensemble(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
     pred = {
         "stock_meta": {"market_segment": "LISTED"},
-        "rank_scores": {"XGBoost": 0.69, "CatBoost": 0.69},
+        "rank_scores": {"XGBoost": 0.69, "ExtraTrees": 0.69},
     }
     pool = {
         "models": {
             "XGBoost": {"status": "active", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
-            "CatBoost": {"status": "active", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
+            "ExtraTrees": {"status": "active", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
         }
     }
     adaptive = {"confidence_delta": -0.03}
@@ -362,7 +362,7 @@ def test_daily_pipeline_applies_adaptive_thresholds_to_ensemble(monkeypatch):
 
     daily_pipeline_v2._attach_ensemble_v2(
         pred,
-        {"XGBoost": "active", "CatBoost": "active"},
+        {"XGBoost": "active", "ExtraTrees": "active"},
         daily_pipeline_v2._build_serving_ic_bundle(pool, "LISTED"),
         1.0,
         ev2_cfg,
@@ -384,7 +384,7 @@ def test_daily_pipeline_validation_fail_dampens_serving_weight(monkeypatch):
                 "last_ic_by_segment": {"LISTED": {"ic": 0.20, "n_samples": 30}},
                 "model_cpcv": {"decision": "FAIL", "pbo": 0.82},
             },
-            "CatBoost": {
+            "ExtraTrees": {
                 "status": "active",
                 "last_ic_by_segment": {"LISTED": {"ic": 0.10, "n_samples": 30}},
                 "model_cpcv": {"decision": "PASS", "pbo": 0.22},
@@ -395,8 +395,8 @@ def test_daily_pipeline_validation_fail_dampens_serving_weight(monkeypatch):
     bundle = daily_pipeline_v2._build_serving_ic_bundle(pool, "LISTED")
 
     assert bundle["weights"]["XGBoost"] == 0.0
-    assert 0.0 < bundle["weights"]["CatBoost"] < 0.10
-    assert bundle["diagnostics"]["CatBoost"]["ic_shrinkage"]["policy"] == "empirical_bayes_shrinkage"
+    assert 0.0 < bundle["weights"]["ExtraTrees"] < 0.10
+    assert bundle["diagnostics"]["ExtraTrees"]["ic_shrinkage"]["policy"] == "empirical_bayes_shrinkage"
     assert bundle["diagnostics"]["XGBoost"]["validation_status"] == "FAIL"
 
 

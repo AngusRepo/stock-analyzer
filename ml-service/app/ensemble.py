@@ -5,9 +5,8 @@ ensemble.py — 多模型加權投票引擎（v12 adaptive）
 三層 meta 架構：
   ① HMM Regime → ② Models + LinUCB → ③ Conformal Prediction → ARF
 
-NOTE: 5 feature models (XGBoost, CatBoost, ExtraTrees, LightGBM, FT-Transformer)
-  share same labels + correlated features. Consensus may be inflated.
-  Future: diversify via different label horizons or feature subsets.
+NOTE: L3 production alpha families are tree, TabM, sequence, and GNN.
+  Artifact-required targets must fail closed until serving evidence exists.
 
 改動（v12）：
   - Isolation Forest 從 hard gate 降級為 anomaly_score soft penalty
@@ -555,7 +554,7 @@ def merge_with_time_series(
     degraded_dampening: float = 1.0,
     forecast_to_rank_scale: float = 12.0,
 ) -> tuple[dict[str, float], dict[str, float]]:
-    """Combine 5 feature-model rank scores with 3 time-series forecasts.
+    """Combine tabular/graph rank scores with time-series forecasts.
 
     2026-04-19 R1+R3 hybrid (replaces hardcoded lifecycle multipliers 0/0.1/1.0):
       weight = max(0, ic) × status_filter × dampening_if_degraded
@@ -565,8 +564,8 @@ def merge_with_time_series(
         retired:    0  (excluded)
 
     Args:
-      feature_rank_scores: {name: rank 0~1} from XGBoost/CatBoost/.../FT-T
-      time_series_signals: {name: {forecast_pct, ...}} for Chronos/DLinear/PatchTST
+      feature_rank_scores: {name: rank 0~1} from tree/TabM/GNN models
+      time_series_signals: {name: {forecast_pct, ...}} for DLinear/PatchTST/iTransformer/TimesFM
         (key absent or value None → that model contributes nothing)
       ic_weights: {name: IC} (Grinold-Kahn). None → uniform 1.0 (no IC available).
       model_status: {name: "active"|"degraded"|"challenger"|"retired"} from

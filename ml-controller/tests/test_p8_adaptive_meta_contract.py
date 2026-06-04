@@ -37,14 +37,15 @@ def test_adaptive_params_expose_p8_governance_metadata():
 
     meta = params["meta_layer"]
     assert meta["alpha_vote_models"] == [
-        "XGBoost",
-        "CatBoost",
-        "ExtraTrees",
         "LightGBM",
-        "FT-Transformer",
-        "Chronos",
+        "XGBoost",
+        "ExtraTrees",
+        "TabM",
+        "GNN",
         "DLinear",
         "PatchTST",
+        "iTransformer",
+        "TimesFM",
     ]
     assert meta["state_space_overlays"] == ["KalmanFilter", "MarkovSwitching"]
     assert meta["meta_optimizers"] == ["GAOptimizer"]

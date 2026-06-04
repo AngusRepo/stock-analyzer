@@ -975,6 +975,17 @@ def apply_alpha_context(rec: dict, ml: dict | None, ctx: AlphaContext) -> dict:
     structure = ctx.risk_overlay.structure_detail
     if structure.get("poc_price") is not None and structure.get("structure_status") == "ok":
         points.append(
+            "entry_price_model_v2: "
+            "source=daily_proxy_fallback; "
+            f"entry={structure['fair_value_low']}~{structure['fair_value_high']}; "
+            f"preferred={structure['poc_price']}; "
+            f"chase_ceiling={structure.get('optimistic_value_high') or 'na'}; "
+            f"premium={structure.get('optimistic_value_low') or 'na'}~{structure.get('optimistic_value_high') or 'na'}; "
+            f"discount={structure['fair_value_low']}~{structure['fair_value_high']}; "
+            f"poc={structure['poc_price']}; "
+            "fallback=daily_ohlcv_proxy"
+        )
+        points.append(
             "Market structure: "
             f"POC={structure['poc_price']}, "
             f"fair_value={structure['fair_value_low']}~{structure['fair_value_high']}, "

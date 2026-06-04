@@ -1,25 +1,8 @@
-"""
-model_store.py — 模型持久化框架
-訓練好的 XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer 序列化存入 GCS
-下次 predict 直接載入，不用重新 fit
+"""GCS model artifact storage helpers for StockVision.
 
-結構：
-  GCS bucket: {GCS_BUCKET_NAME}/
-    └── {stock_id}/
-          ├── xgboost.joblib
-          ├── catboost.joblib
-          ├── extratrees.joblib
-          ├── lightgbm.joblib
-          ├── ft-transformer.joblib    # dict: {state_dict, scaler, n_features}
-          ├── metadata_{model}.json
-          └── weekly/
-                └── ...（週備份）
-
-環境變數：
-  GCS_BUCKET_NAME                     → GCS bucket 名稱（必填）
-  GOOGLE_APPLICATION_CREDENTIALS      → Service Account JSON 路徑
-  GOOGLE_APPLICATION_CREDENTIALS_JSON → JSON 內容字串（Modal Secret 注入方式）
-    modal_app.py 啟動時會自動把此變數寫到 /tmp/gcs-credentials.json
+Active alpha model artifacts are managed through ``model_pool.py`` and the
+universal GCS layout. CatBoost, FT-Transformer, and Chronos are retired from
+the production alpha path.
 """
 import os
 import io

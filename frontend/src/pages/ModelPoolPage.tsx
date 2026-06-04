@@ -19,13 +19,13 @@ import {
   type ResearchExperiment,
 } from '@/lib/api'
 import {
-  MODEL_POOL_NEAR_PRODUCTION_IDS,
+  MODEL_POOL_PRODUCTION_SLOT_IDS,
   MODEL_POOL_RETIRED_MODEL_IDS,
   MODEL_UPGRADE_CANDIDATES,
 } from '@/lib/modelUpgradeTrack'
 
 const RETIRED_MODEL_NAMES = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
-const NEAR_PRODUCTION_MODEL_NAMES = new Set<string>(MODEL_POOL_NEAR_PRODUCTION_IDS)
+const PRODUCTION_SLOT_MODEL_NAMES = new Set<string>(MODEL_POOL_PRODUCTION_SLOT_IDS)
 
 function fmt(value: unknown): string {
   if (value === null || value === undefined || value === '') return 'N/A'
@@ -44,8 +44,8 @@ function isRetiredModelName(name: string): boolean {
   return RETIRED_MODEL_NAMES.has(name)
 }
 
-function isNearProductionModelName(name: string): boolean {
-  return NEAR_PRODUCTION_MODEL_NAMES.has(name)
+function isProductionSlotModelName(name: string): boolean {
+  return PRODUCTION_SLOT_MODEL_NAMES.has(name)
 }
 
 function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel) {
@@ -214,12 +214,14 @@ function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromo
 }
 
 function UpgradeTrackPanelV2({ experiments = [], statusRows = [] }: { experiments?: ResearchExperiment[]; statusRows?: ModelUpgradeResearchStatusRow[] }) {
-  const candidates = MODEL_UPGRADE_CANDIDATES.filter((candidate) => isNearProductionModelName(candidate.id))
+  const candidates = MODEL_UPGRADE_CANDIDATES.filter((candidate) => isProductionSlotModelName(candidate.id))
 
   return (
-    <WorkstationPanel title="Near-production L3 Model Tracks / 近 production 模型軌道" kicker="TabM, GNN, iTransformer, TimesFM only">
+    <WorkstationPanel title="L3 Production Slots / artifact-backed gates" kicker="TabM, GNN, iTransformer, TimesFM">
       <div className="border-b border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
-        這裡只放新流程要補進 L3 family vote 的模型。已淘汰模型不在本頁呈現；GAOptimizer 屬於參數學習，Kalman/Markov 屬於 L4 overlay。
+        These four models are formal L3 family slots. They can vote only when artifact registry,
+        schema, lifecycle IC, and promotion evidence are ready; GAOptimizer remains proposal
+        evidence and Kalman/Markov stay in L4 overlay.
       </div>
       <div className="grid gap-3 p-3 lg:grid-cols-2">
         {candidates.map((candidate) => {
@@ -269,7 +271,8 @@ function UpgradeTrackPanelV2({ experiments = [], statusRows = [] }: { experiment
                 ))}
               </div>
               <p className="mt-3 rounded-lg border border-sky-400/20 bg-sky-400/[0.04] p-2 text-[11px] leading-5 text-sky-100">
-                下一步：Strategy Lab 補齊 evidence matrix；通過 OOS IC、CPCV/PBO、成本與 slice stability 後，才可進 L3 production weight gate。
+                Strategy Lab owns the evidence matrix: OOS IC, CPCV/PBO, slice stability, and
+                artifact preflight all need to pass before this slot receives positive L3 weight.
               </p>
             </div>
           )

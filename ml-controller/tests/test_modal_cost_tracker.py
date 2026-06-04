@@ -113,11 +113,11 @@ def test_build_modal_compute_profile_maps_training_samples_to_rows():
     )
     fallback_profile = build_modal_compute_profile(
         source="modal_followup",
-        function_name="train_ftt_model",
+        function_name="train_patchtst_universal",
         compute_sec=3310.0,
         est_usd=0.8,
         cpu=1,
-        memory_mb=4096,
+        memory_mb=8192,
         gpu="L4",
         meta={
             "wall_sec": 3310.0,
@@ -132,11 +132,11 @@ def test_build_modal_compute_profile_maps_training_samples_to_rows():
 def test_build_compute_profile_event_payload_targets_compute_profile_events():
     profile = build_modal_compute_profile(
         source="modal_function",
-        function_name="train_ftt_model",
+        function_name="train_patchtst_universal",
         compute_sec=3310.0,
         est_usd=0.807574,
         cpu=1,
-        memory_mb=4096,
+        memory_mb=8192,
         gpu="L4",
         meta={
             "wall_sec": 3310.0,
@@ -152,14 +152,14 @@ def test_build_compute_profile_event_payload_targets_compute_profile_events():
     assert "INSERT INTO compute_profile_events" in payload["sql"]
     assert payload["params"][0] == "2026-05-18"
     assert payload["params"][1] == "modal"
-    assert payload["params"][2] == "train_ftt_model"
+    assert payload["params"][2] == "train_patchtst_universal"
     assert payload["params"][5] == 3310.0
     assert payload["params"][8] == "L4"
     assert payload["params"][10] == 1_200_000
     assert payload["params"][11] == 106
     assert payload["params"][12] == 2200
     assert '"artifact_count": 1' in payload["params"][15]
-    assert '"job_name": "train_ftt_model"' in payload["params"][15]
+    assert '"job_name": "train_patchtst_universal"' in payload["params"][15]
 
 
 def test_compute_profile_event_json_round_trips_artifact_count_to_contract():

@@ -2,8 +2,9 @@
 Model adapters for StockVision inference.
 
 Alpha predictors:
-  - DLinear / PatchTST / Chronos
-  - XGBoost / CatBoost / ExtraTrees / LightGBM / FT-Transformer
+  - DLinear / PatchTST
+  - XGBoost / ExtraTrees / LightGBM
+  - Retired stubs: Chronos / CatBoost / FT-Transformer
 
 State-space overlays:
   - KalmanFilter / MarkovSwitching
@@ -14,9 +15,6 @@ from dataclasses import dataclass, field
 from typing import Literal
 import warnings
 warnings.filterwarnings("ignore")
-
-from .ft_transformer import build_ft_transformer, rebuild_ft_transformer_from_bundle
-
 
 @dataclass
 class ModelPrediction:
@@ -564,60 +562,17 @@ def run_patchtst(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> Mo
     )
 
 
-# ?????? Model 5: Chronos??mazon ????????ero-Shot?????????????????????????????????????????????????????????
+# Retired slot: Chronos.
 def run_chronos(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> ModelPrediction:
-    """Production Chronos slot backed by Chronos-2 universal runtime."""
-    if len(prices) < 10:
-        return _fallback_model("Chronos", prices, horizon, "insufficient data")
-
-    try:
-        from .chronos_universal import chronos_batch_predict
-
-        result = chronos_batch_predict(
-            [{"symbol": str(stock_id or "single"), "prices": [float(v) for v in prices]}],
-            horizon=horizon,
-        )[0]
-        if result.get("error"):
-            raise RuntimeError(result["error"])
-        forecast_price = float(result.get("forecast_price") or prices[-1])
-        pct = float(result.get("forecast_pct") or 0.0)
-        up_prob = float(result.get("up_prob") or (0.6 if pct > 0 else 0.4))
-        confidence = float(result.get("confidence") or 0.5)
-        dates = _add_trading_days(datetime.now(), horizon)
-        forecasts = [
-            {
-                "date": dates[i],
-                "forecast": round(forecast_price, 2),
-                "lower80": round(forecast_price * 0.98, 2),
-                "upper80": round(forecast_price * 1.02, 2),
-                "lower95": round(forecast_price * 0.96, 2),
-                "upper95": round(forecast_price * 1.04, 2),
-            }
-            for i in range(horizon)
-        ]
-        return ModelPrediction(
-            model_name="Chronos",
-            direction="up" if up_prob > 0.5 else "down",
-            confidence=round(min(0.85, max(0.35, confidence)), 3),
-            forecast_pct=round(pct, 4),
-            forecasts=forecasts,
-            direction_accuracy=round(max(up_prob, 1 - up_prob), 3),
-        )
-    except ImportError:
-        result = run_dlinear(prices, horizon)
-        return ModelPrediction(
-            model_name="Chronos",
-            direction=result.direction,
-            confidence=round(result.confidence * 0.9, 3),
-            forecast_pct=result.forecast_pct,
-            forecasts=result.forecasts,
-            direction_accuracy=result.direction_accuracy,
-        )
-    except Exception as e:
-        return _fallback_model("Chronos", prices, horizon, str(e))
+    """Retired production slot; TimesFM/iTransformer own sequence-family serving."""
+    return _fallback_model(
+        "Chronos",
+        prices,
+        horizon,
+        "Chronos retired from the production model pool; use TimesFM/iTransformer artifact gates",
+    )
 
 
-# ?????? Model 6: XGBoost (?????? + GCS ????? ????????????????????????????????????????????????????????????????
 def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
                 prices: np.ndarray, horizon: int = 14,
                 stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
@@ -681,69 +636,14 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         return _fallback_model("XGBoost", prices, horizon, str(e))
 
 
-# ?????? Model 7: CatBoost???????????????????????????????????????????????????????????????????????????????????????????
+# Retired slot: CatBoost.
 def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
                  prices: np.ndarray, horizon: int = 14,
                  stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
-    try:
-        from catboost import CatBoostClassifier
-        from .model_store import load_model, save_model, is_model_fresh, feature_names_match
-        if len(X) < 30:
-            raise ValueError("Not enough data")
-
-        feature_names = feature_names or []
-        split = int(len(X) * 0.8)
-        X_test, y_test = X[split:], y[split:]
-
-        model = None
-        for sid in [0, stock_id] if stock_id > 0 else [0]:
-            stored_model, meta = load_model(sid, "CatBoost")
-            if (stored_model is not None
-                    and is_model_fresh(meta)
-                    and feature_names_match(meta, feature_names)):
-                model = stored_model
-                print(f"[CatBoost] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} model")
-                break
-
-        if model is None:
-            model = CatBoostClassifier(
-                iterations=200, depth=5, learning_rate=0.05,
-                loss_function='Logloss', eval_metric='Accuracy',
-                random_seed=42, verbose=0,
-            )
-            model.fit(X[:split], y[:split])
-            if stock_id > 0:
-                save_model(stock_id, "CatBoost", model, feature_names, len(X))
-
-        dir_acc   = float(model.score(X_test, y_test)) if len(X_test) > 0 else 0.5
-        proba     = model.predict_proba(X_latest.reshape(1, -1))[0]
-        up_prob   = float(proba[1]) if len(proba) > 1 else 0.5
-        direction = "up" if up_prob > 0.5 else "down"
-        confidence = max(up_prob, 1 - up_prob)
-
-        pct           = (up_prob - 0.5) * 2 * 0.05
-        forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-        std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
-        last_date     = datetime.now()
-        dates         = _add_trading_days(last_date, horizon)
-        forecasts     = _make_forecast_points(forecast_vals, std, dates)
-
-        shap_top = _compute_shap_top5(model, X_latest, feature_names or [])
-
-        return ModelPrediction(
-            model_name="CatBoost",
-            direction=direction,
-            confidence=round(confidence, 3),
-            forecast_pct=round(pct, 4),
-            forecasts=forecasts,
-            direction_accuracy=round(dir_acc, 3),
-            shap_top5=shap_top,
-        )
-    except Exception as e:
-        return _fallback_model("CatBoost", prices, horizon, str(e))
+    """Retired production slot; tree family is LightGBM/XGBoost/ExtraTrees."""
+    return _fallback_model("CatBoost", prices, horizon, "CatBoost retired from the production model pool")
 
 
-# ?????? Model 8: Extra Trees????????????????????????????????????????????????????????????????????????????????????????
 def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
                     prices: np.ndarray, horizon: int = 14,
                     stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
@@ -885,306 +785,12 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         return _fallback_model("LightGBM", prices, horizon, str(e))
 
 
-# ?????? Model 10: FT-Transformer?????Tokenization + Transformer?????????????????????????????
+# Retired slot: FT-Transformer.
 def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
                        prices: np.ndarray, horizon: int = 14,
                        stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
-    """
-    FT-Transformer ??"Revisiting Deep Learning Models for Tabular Data" (Gorishniy et al., NeurIPS 2021)
-
-    ?????
-      FeatureTokenizer?????????????????? embedding ??shape (B, F, D)
-      TransformerEncoder?? ???4 head??_model=64
-      CLS token ??Linear ?????
-
-    ??MLP ??????MLP ?????????
-      MLP???????????????????????????
-      FT-T??ttention ???????????? RSI>70 AND ?????? AND GARCH ?????????????
-
-    Fallback??yTorch ???????????LightGBM ???
-    GCS ???????????? state_dict??redict ????????TCN ????????
-    """
-    if len(X) < 30:
-        return _fallback_model("FT-Transformer", prices, horizon, "insufficient data")
-
-    try:
-        import torch
-        import torch.nn as nn
-        from .model_store import load_model, save_model, is_model_fresh, feature_names_match
-    except ImportError:
-        # PyTorch ????????????LightGBM
-        result = run_lightgbm(X, y, X_latest, prices, horizon, stock_id, feature_names)
-        return ModelPrediction(
-            model_name="FT-Transformer",
-            direction=result.direction,
-            confidence=round(result.confidence * 0.9, 3),
-            forecast_pct=result.forecast_pct,
-            forecasts=result.forecasts,
-            direction_accuracy=result.direction_accuracy,
-        )
-
-    feature_names = feature_names or []
-    n_features    = X.shape[1]
-    D_MODEL       = 64
-    N_HEADS       = 4
-    N_LAYERS      = 2
-    EPOCHS        = 60
-    LR            = 1e-3
-
-    class FTTransformer(nn.Module):
-        def __init__(self, n_feat, d_model, n_heads, n_layers):
-            super().__init__()
-            self.feat_embed = nn.Linear(1, d_model, bias=True)
-            self.cls_token  = nn.Parameter(torch.zeros(1, 1, d_model))
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=n_heads,
-                dim_feedforward=d_model * 4,
-                dropout=0.1, batch_first=True,
-            )
-            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-            self.head     = nn.Linear(d_model, 2)
-
-        def forward(self, x):
-            # x: (B, F)
-            B = x.shape[0]
-            tokens = self.feat_embed(x.unsqueeze(-1))           # (B, F, D)
-            cls    = self.cls_token.expand(B, -1, -1)           # (B, 1, D)
-            tokens = torch.cat([cls, tokens], dim=1)            # (B, F+1, D)
-            out    = self.encoder(tokens)                        # (B, F+1, D)
-            return self.head(out[:, 0, :])                      # (B, 2)  ??CLS output
-
-    split          = int(len(X) * 0.8)
-    X_test, y_test = X[split:], y[split:]
-
-    # ???? ?????? GCS??niversal first, per-stock fallback?????????????????????????????????????????
-    model  = None
-    scaler = None
-    for sid in [0, stock_id] if stock_id > 0 else [0]:
-        stored, meta = load_model(sid, "FT-Transformer")
-        if (stored is not None
-                and is_model_fresh(meta)
-                and feature_names_match(meta, feature_names)):
-            if isinstance(stored, dict) and "state_dict" in stored:
-                try:
-                    from sklearn.preprocessing import StandardScaler as SS
-                    scaler = stored["scaler"]
-                    m      = FTTransformer(n_features, D_MODEL, N_HEADS, N_LAYERS)
-                    m.load_state_dict(stored["state_dict"])
-                    m.eval()
-                    model = m
-                    print(f"[FT-Transformer] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} model")
-                    break
-                except Exception:
-                    model = None
-
-    # ???? ??? ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
-    if model is None:
-        from sklearn.preprocessing import StandardScaler as SS
-        scaler  = SS()
-        X_train = scaler.fit_transform(X[:split]).astype(np.float32)
-        y_train = y[:split].astype(np.int64)
-
-        model   = FTTransformer(n_features, D_MODEL, N_HEADS, N_LAYERS)
-        opt     = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
-        crit    = nn.CrossEntropyLoss()
-
-        model.train()
-        for epoch in range(EPOCHS):
-            idx   = np.random.permutation(len(X_train))
-            for s in range(0, len(X_train), 32):
-                bi   = idx[s:s+32]
-                xb   = torch.tensor(X_train[bi])
-                yb   = torch.tensor(y_train[bi])
-                loss = crit(model(xb), yb)
-                opt.zero_grad(); loss.backward(); opt.step()
-        model.eval()
-
-        if stock_id > 0:
-            bundle = {
-                "state_dict": model.state_dict(),
-                "scaler":     scaler,
-                "n_features": n_features,
-            }
-            save_model(stock_id, "FT-Transformer", bundle, feature_names, len(X))
-
-    # ???? ??? ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
-    with torch.no_grad():
-        X_test_t  = torch.tensor(scaler.transform(X_test).astype(np.float32))
-        X_lat_t   = torch.tensor(scaler.transform(X_latest.reshape(1, -1)).astype(np.float32))
-        logits_t  = model(X_test_t)
-        proba_lat = torch.softmax(model(X_lat_t), dim=-1).numpy()[0]
-
-    if len(y_test) > 0:
-        preds_t = torch.argmax(logits_t, dim=-1).numpy()
-        dir_acc = float(np.mean(preds_t == y_test))
-    else:
-        dir_acc = 0.5
-
-    up_prob    = float(proba_lat[1]) if len(proba_lat) > 1 else 0.5
-    direction  = "up" if up_prob > 0.5 else "down"
-    confidence = max(up_prob, 1 - up_prob)
-
-    pct           = (up_prob - 0.5) * 2 * 0.05
-    forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-    std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
-    last_date     = datetime.now()
-    dates         = _add_trading_days(last_date, horizon)
-    forecasts     = _make_forecast_points(forecast_vals, std, dates)
-
-    return ModelPrediction(
-        model_name="FT-Transformer",
-        direction=direction,
-        confidence=round(confidence, 3),
-        forecast_pct=round(pct, 4),
-        forecasts=forecasts,
-        direction_accuracy=round(dir_acc, 3),
-    )
-
-
-# ?????? GARCH ?????????helper?????? ModelPrediction?????????????????????????????????????????????
-def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
-                       prices: np.ndarray, horizon: int = 14,
-                       stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
-    """
-    FT-Transformer serving contract cleanup.
-
-    If a saved bundle exists, always rebuild that exact bundle architecture.
-    Regression bundles must never silently fall back into legacy classifier retraining.
-    Legacy classifier training is only kept as a last-resort fallback for the old
-    /predict path until the controller fully converges to V2.
-    """
-    if len(X) < 30:
-        return _fallback_model("FT-Transformer", prices, horizon, "insufficient data")
-
-    try:
-        import torch
-        import torch.nn as nn
-        from .model_store import load_model, save_model, is_model_fresh, feature_names_match
-    except ImportError:
-        result = run_lightgbm(X, y, X_latest, prices, horizon, stock_id, feature_names)
-        return ModelPrediction(
-            model_name="FT-Transformer",
-            direction=result.direction,
-            confidence=round(result.confidence * 0.9, 3),
-            forecast_pct=result.forecast_pct,
-            forecasts=result.forecasts,
-            direction_accuracy=result.direction_accuracy,
-        )
-
-    feature_names = feature_names or []
-    n_features = X.shape[1]
-    split = int(len(X) * 0.8)
-    X_test, y_test = X[split:], y[split:]
-
-    model = None
-    scaler = None
-    model_type = "classification"
-
-    for sid in [0, stock_id] if stock_id > 0 else [0]:
-        stored, meta = load_model(sid, "FT-Transformer")
-        if not (
-            stored is not None
-            and is_model_fresh(meta)
-            and feature_names_match(meta, feature_names)
-            and isinstance(stored, dict)
-            and "state_dict" in stored
-        ):
-            continue
-        try:
-            scaler = stored.get("scaler")
-            if scaler is None:
-                raise ValueError("bundle missing scaler")
-            model, model_type, _arch = rebuild_ft_transformer_from_bundle(stored)
-            print(
-                f"[FT-Transformer] Loaded {'universal' if sid == 0 else f'per-stock {sid}'} "
-                f"{model_type} bundle"
-            )
-            break
-        except Exception as e:
-            print(f"[FT-Transformer] bundle load failed for sid={sid}: {e}")
-            model = None
-            scaler = None
-
-    if model is None:
-        from sklearn.preprocessing import StandardScaler as SS
-
-        scaler = SS()
-        X_train = scaler.fit_transform(X[:split]).astype(np.float32)
-        y_train = y[:split].astype(np.int64)
-
-        model, legacy_arch = build_ft_transformer(n_features, "classification")
-        opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
-        crit = nn.CrossEntropyLoss()
-
-        model.train()
-        for _epoch in range(60):
-            idx = np.random.permutation(len(X_train))
-            for s in range(0, len(X_train), 32):
-                bi = idx[s:s+32]
-                xb = torch.tensor(X_train[bi])
-                yb = torch.tensor(y_train[bi])
-                loss = crit(model(xb), yb)
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
-        model.eval()
-        model_type = "classification"
-
-        if stock_id > 0:
-            bundle = {
-                "state_dict": model.state_dict(),
-                "scaler": scaler,
-                "n_features": n_features,
-                "model_type": model_type,
-                "arch": legacy_arch,
-            }
-            save_model(stock_id, "FT-Transformer", bundle, feature_names, len(X))
-
-    with torch.no_grad():
-        X_test_scaled = scaler.transform(X_test).astype(np.float32) if len(X_test) > 0 else np.empty((0, n_features), dtype=np.float32)
-        X_latest_scaled = scaler.transform(X_latest.reshape(1, -1)).astype(np.float32)
-
-        if model_type == "regression":
-            from .ft_transformer import rank_from_ft_regression_output
-
-            logits_t = model(torch.tensor(X_test_scaled)) if len(X_test_scaled) > 0 else None
-            pred_latest = rank_from_ft_regression_output(model(torch.tensor(X_latest_scaled)).reshape(-1)[0].item())
-            up_prob = pred_latest
-            if logits_t is not None and len(y_test) > 0:
-                preds_t = np.array(
-                    [rank_from_ft_regression_output(v) for v in logits_t.detach().cpu().numpy().reshape(-1)],
-                    dtype=float,
-                )
-                dir_acc = float(np.mean((preds_t > 0.5) == y_test))
-            else:
-                dir_acc = 0.5
-        else:
-            logits_t = model(torch.tensor(X_test_scaled)) if len(X_test_scaled) > 0 else None
-            proba_lat = torch.softmax(model(torch.tensor(X_latest_scaled)), dim=-1).detach().cpu().numpy()[0]
-            up_prob = float(proba_lat[1]) if len(proba_lat) > 1 else 0.5
-            if logits_t is not None and len(y_test) > 0:
-                preds_t = torch.argmax(logits_t, dim=-1).detach().cpu().numpy()
-                dir_acc = float(np.mean(preds_t == y_test))
-            else:
-                dir_acc = 0.5
-
-    direction = "up" if up_prob > 0.5 else "down"
-    confidence = max(up_prob, 1 - up_prob)
-    pct = (up_prob - 0.5) * 2 * 0.05
-    forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-    std = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
-    last_date = datetime.now()
-    dates = _add_trading_days(last_date, horizon)
-    forecasts = _make_forecast_points(forecast_vals, std, dates)
-
-    return ModelPrediction(
-        model_name="FT-Transformer",
-        direction=direction,
-        confidence=round(confidence, 3),
-        forecast_pct=round(pct, 4),
-        forecasts=forecasts,
-        direction_accuracy=round(dir_acc, 3),
-    )
+    """Retired production slot; TabM owns the tabular neural family serving gate."""
+    return _fallback_model("FT-Transformer", prices, horizon, "FT-Transformer retired from the production model pool")
 
 
 def run_garch_volatility(prices: np.ndarray, horizon: int = 5) -> float:

@@ -63,16 +63,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     candidate_type: str | None = Field(default=None, description="Release-train candidate type, e.g. monthly_release or weekly_drift.")
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
-    train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "ftt", "dlinear", "patchtst"])
-    ftt_d_model: int = 128
-    ftt_n_heads: int = 8
-    ftt_n_layers: int = 3
-    ftt_dropout: float = 0.12
-    ftt_max_epochs: int = 120
-    ftt_lr: float = 2e-4
-    ftt_patience: int = 16
-    ftt_batch_size: int = 1024
-    ftt_margin: float = 0.0
+    train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "dlinear", "patchtst"])
 
 
 def _force_https(url: str) -> str:
@@ -621,17 +612,11 @@ async def trigger_universal_retrain(
             f"(day<={training_policy.monthly_day_cutoff}) -> selection will run in Modal orchestrator"
         )
 
-    # 2026-04-18 A1 fix: prep 一律寫全 106 features，不管月度/非月度。
-    # 原邏輯：非月度用 feature_pool.json.active (46) 過濾 → 嚴重 bug：
-    #   1. FT-T `skip_feature_pool=True` 救不回（資料源頭已砍）→ FT-T 只吃 46，違反 project_optimization_queue 設計
-    #   2. Walk-forward future leak：用「今天的 pool」套到 window 0 (2024) 訓練 = feature 選擇已看過未來
-    #   3. 每次 Kneedle rerun 改 active 數 → FT-T 訓練欄位飄來飄去
-    # 新邏輯：prep 寫 canonical 全集 (106)，train 端有 skip_feature_pool 開關
-    #   - Tree models (skip_feature_pool=False): train 時 reload pool 過濾到 46
-    #   - FT-T (skip_feature_pool=True): 真的吃全 106
-    # Cost: npz ~2.3x 大小 (~825MB → ~1.9GB total 5 batches) — GCS 儲存可接受
+    # Prep writes the full canonical tabular matrix. Train-side policy owns
+    # model-specific filtering: active tree models use feature_pool.tree_active;
+    # retired tabular-neural paths are not scheduled.
     active_features = None
-    logger.info("[retrain/universal] A1 fix: prep writes full 106 features, train-side pool filter decides per-model")
+    logger.info("[retrain/universal] prep writes full canonical features; train-side feature policy filters active models")
 
     # ── 3. Bulk load per-stock data (chunked — CF D1 REST API binding limit ~100) ──
     D1_CHUNK = 80
@@ -972,15 +957,6 @@ async def trigger_universal_retrain(
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),
                 "dataset_snapshot": dataset_snapshot_info,
-                "ftt_d_model": req.ftt_d_model,
-                "ftt_n_heads": req.ftt_n_heads,
-                "ftt_n_layers": req.ftt_n_layers,
-                "ftt_dropout": req.ftt_dropout,
-                "ftt_max_epochs": req.ftt_max_epochs,
-                "ftt_lr": req.ftt_lr,
-                "ftt_patience": req.ftt_patience,
-                "ftt_batch_size": req.ftt_batch_size,
-                "ftt_margin": req.ftt_margin,
                 "followup_webhook_url": followup_webhook_url,
                 "gcs_prefix": "universal",
                 "run_id": run_id,

@@ -269,6 +269,10 @@ def test_filter_and_score_recommendations_embeds_alpha_context(monkeypatch):
     assert final[0]["alpha_context"]["edge_bucket"] == "breakout_vol_expansion"
     assert prediction["alpha_context"]["edge_bucket"] == "breakout_vol_expansion"
     assert any("Alpha bucket:" in point for point in final[0]["watch_points"])
+    assert any(
+        point.startswith("entry_price_model_v2:") and "source=daily_proxy_fallback" in point
+        for point in final[0]["watch_points"]
+    )
 
 
 def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):

@@ -1,5 +1,6 @@
 export type ModelUpgradeStage =
   | 'production_slot_member'
+  | 'production_artifact_required'
   | 'shadow_challenger'
   | 'benchmark_only'
   | 'meta_optimizer'
@@ -26,7 +27,7 @@ export const MODEL_POOL_RETIRED_MODEL_IDS = [
   'ResidualMLP',
 ] as const
 
-export const MODEL_POOL_NEAR_PRODUCTION_IDS = [
+export const MODEL_POOL_PRODUCTION_SLOT_IDS = [
   'TabM',
   'GNN',
   'iTransformer',
@@ -36,47 +37,47 @@ export const MODEL_POOL_NEAR_PRODUCTION_IDS = [
 export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
   {
     id: 'TabM',
-    stage: 'shadow_challenger',
+    stage: 'production_slot_member',
     family: 'tabular_neural_family',
     layer: 'L3 core family',
-    titleZh: 'TabM 正式 L3 候選',
-    roleZh: 'Tabular neural branch，用來補 tree family 對非線性 tabular interaction 的盲點；通過 evidence gate 後才可拿到 ensemble_v2 正式權重。',
-    roleEn: 'Near-production tabular neural family candidate for L3 core ranking.',
-    requiredEvidence: ['OOS IC', 'CPCV/PBO', 'cost sensitivity', 'slice stability', 'serve feature parity'],
-    canVote: false,
+    titleZh: 'TabM L3 正式槽位',
+    roleZh: 'Tabular neural branch。用來補 Tree family 不容易捕捉的非線性 tabular interaction；有 artifact、schema parity、正 IC 時可參與 ensemble_v2 family vote。',
+    roleEn: 'L3 tabular neural production slot. It votes when artifact, schema parity, and positive lifecycle weight are present.',
+    requiredEvidence: ['production artifact', 'OOS IC', 'CPCV/PBO', 'cost sensitivity', 'slice stability', 'serve feature parity'],
+    canVote: true,
   },
   {
     id: 'GNN',
-    stage: 'shadow_challenger',
+    stage: 'production_slot_member',
     family: 'graph_relation_family',
     layer: 'L3 core family',
-    titleZh: 'GNN 正式 L3 候選',
-    roleZh: 'Cross-stock graph branch，負責族群、供應鏈、共同籌碼與關聯傳導訊號；需證明 graph spec 與 leakage control 才能進正式權重。',
-    roleEn: 'Near-production graph relation family candidate for L3 core ranking.',
-    requiredEvidence: ['graph spec', 'leakage control', 'OOS IC', 'CPCV/PBO', 'slice stability'],
-    canVote: false,
+    titleZh: 'GNN L3 正式槽位',
+    roleZh: 'Cross-stock graph branch。負責股與股、族群與資金流關係；有 graph spec、leakage control、artifact 與正 IC 時可參與 L3 family vote。',
+    roleEn: 'L3 graph relation production slot. It votes when graph evidence, artifact, and positive lifecycle weight are present.',
+    requiredEvidence: ['production artifact', 'graph spec', 'leakage control', 'OOS IC', 'CPCV/PBO', 'slice stability'],
+    canVote: true,
   },
   {
     id: 'iTransformer',
-    stage: 'shadow_challenger',
+    stage: 'production_slot_member',
     family: 'sequence_transformer_family',
     layer: 'L3 core family',
-    titleZh: 'iTransformer 正式 L3 候選',
-    roleZh: 'Learned sequence branch，用來比較 DLinear / PatchTST 後的時間序列排序增益；重點是 walk-forward IC 與延遲成本。',
-    roleEn: 'Near-production learned sequence transformer candidate.',
-    requiredEvidence: ['walk-forward IC', 'sequence slice report', 'CPCV/PBO', 'latency cost', 'serve feature parity'],
-    canVote: false,
+    titleZh: 'iTransformer L3 正式槽位',
+    roleZh: 'Learned sequence branch。與 DLinear/PatchTST 同屬時間序列 family；有 artifact-backed serving、walk-forward IC 與成本證據時可參與 L3 sequence vote。',
+    roleEn: 'L3 learned sequence production slot. It votes when artifact-backed serving and positive sequence evidence are present.',
+    requiredEvidence: ['production artifact', 'walk-forward IC', 'sequence slice report', 'CPCV/PBO', 'latency cost', 'serve feature parity'],
+    canVote: true,
   },
   {
     id: 'TimesFM',
-    stage: 'shadow_challenger',
+    stage: 'production_slot_member',
     family: 'foundation_sequence_family',
     layer: 'L3 core family',
-    titleZh: 'TimesFM 正式 L3 候選',
-    roleZh: 'Foundation time-series branch，用來補短期價格路徑與跨週期 forecast evidence；需證明比現有 sequence branch 有增量。',
-    roleEn: 'Near-production foundation sequence candidate for L3 core ranking.',
-    requiredEvidence: ['forecast OOS IC', 'walk-forward', 'cost report', 'slice stability', 'formal_layer3_slots'],
-    canVote: false,
+    titleZh: 'TimesFM L3 正式槽位',
+    roleZh: 'Foundation time-series branch。負責 foundation forecast evidence；有 forecast OOS IC、正式 L3 slot wiring 與成本證據時可參與 sequence family vote。',
+    roleEn: 'L3 foundation time-series production slot. It votes when forecast evidence, formal L3 wiring, and positive lifecycle weight are present.',
+    requiredEvidence: ['production artifact', 'forecast OOS IC', 'walk-forward', 'cost report', 'slice stability', 'formal_layer3_slots'],
+    canVote: true,
   },
   {
     id: 'GAOptimizer',
@@ -84,7 +85,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     family: 'genetic_meta_optimizer',
     layer: 'meta',
     titleZh: 'GA optimizer',
-    roleZh: '只學 ensemble、strategy、risk 參數 proposal；不產生股票 alpha 票，也不直接改 production config。',
+    roleZh: '學習 ensemble、strategy、risk 參數 proposal；不直接輸出個股 alpha vote，不直接改 production config。',
     roleEn: 'Learns parameter candidates without emitting stock alpha votes.',
     requiredEvidence: ['walk-forward', 'PBO', 'MC plateau', 'transaction cost sensitivity'],
     canVote: false,
@@ -95,7 +96,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     family: 'state_space',
     layer: 'overlay',
     titleZh: 'Kalman overlay',
-    roleZh: 'Noise smoothing / uncertainty overlay，只給 L4 風控與 sizing context。',
+    roleZh: 'Noise smoothing / uncertainty overlay，提供 L4 sizing context。',
     roleEn: 'Noise smoothing and uncertainty overlay for L4 risk context.',
     requiredEvidence: ['overlay diagnostics', 'regime context'],
     canVote: false,
@@ -106,7 +107,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     family: 'state_space',
     layer: 'overlay',
     titleZh: 'Markov switching overlay',
-    roleZh: 'Bull / bear / volatile regime overlay，只給 L4 風控與 market-state context。',
+    roleZh: 'Bull / bear / volatile regime overlay，提供 L4 market-state context。',
     roleEn: 'Regime-state overlay for L4 risk context.',
     requiredEvidence: ['overlay diagnostics', 'regime context'],
     canVote: false,
@@ -114,8 +115,9 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
 ]
 
 export const MODEL_UPGRADE_STAGE_LABELS: Record<ModelUpgradeStage, string> = {
-  production_slot_member: 'production member / 正式槽位成員',
-  shadow_challenger: 'near-production candidate / 近 production 候選',
+  production_slot_member: 'production L3 slot / 正式槽位',
+  production_artifact_required: 'production target blocked / 缺 artifact',
+  shadow_challenger: 'shadow research candidate / shadow evidence only',
   benchmark_only: 'research benchmark / 研究比較',
   meta_optimizer: 'meta optimizer / 參數學習',
   state_space_overlay: 'state-space overlay / 風控 overlay',

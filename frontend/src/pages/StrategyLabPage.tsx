@@ -281,7 +281,7 @@ function ModelUpgradeLaunchpad({
           <div aria-live="polite" className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-xs leading-5 text-cyan-100">
             {busy === 'model-upgrade-seed'
               ? '正在寫入 Strategy Lab experiment registry metadata；完成後會更新 missing / pending counters 與右側 Registry Inspector。'
-              : '正在執行 shadow/benchmark dry-run evaluation；完成後會更新 review-ready / needs-attention evidence。'}
+              : '正在執行 production-slot health / shadow / benchmark dry-run evaluation；完成後會更新 review-ready / needs-attention evidence。'}
           </div>
         )}
         {actionResult && (
@@ -378,7 +378,7 @@ function ModelUpgradeLaunchpad({
           ))}
         </div>
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-          這裡只建立 Strategy Lab experiment 與 evaluation packet。TabM/GNN/iTransformer/TimesFM 是 L3 near-production 候選；通過 evidence gate 後才可取得正式 ensemble_v2 權重。
+          這裡只建立 Strategy Lab experiment 與 evaluation packet。TabM/GNN/iTransformer/TimesFM 是 L3 production target；缺 production artifact、OOS IC 與 serving parity 前不可投票。
         </div>
       </CardContent>
     </Card>

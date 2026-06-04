@@ -36,6 +36,10 @@ export type Bindings = {
   LOCAL_TUNNEL_URL?: string
   // Shioaji 即時報價 Proxy（Cloud Run）
   SHIOAJI_PROXY_URL?: string
+  PROXY_SERVICE_TOKEN?: string
+  FINLAB_L5_MARKET_DATA_ENABLED?: string
+  FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN?: string
+  SHIOAJI_L5_PROXY_FALLBACK_ENABLED?: string
   // FRED API Key（HY OAS 信用利差）
   FRED_API_KEY?: string
   // Cloudflare Workers AI binding

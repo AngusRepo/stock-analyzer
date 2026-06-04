@@ -6,7 +6,7 @@ import os
 from collections import defaultdict
 from typing import Any
 
-from services.model_ic_tracker import ALPHA_PREDICTION_MODELS
+from services.model_ic_tracker import EXPERIMENTAL_SHADOW_MODELS
 
 
 def _as_float(value: Any) -> float | None:
@@ -129,8 +129,11 @@ def _env_float(name: str, default: float) -> float:
 def load_shadow_ab_by_model(lookback_days: int = 90) -> dict[str, dict[str, Any]]:
     from services.d1_client import query
 
-    alpha_csv = ",".join(f"'{m}'" for m in ALPHA_PREDICTION_MODELS)
-    challenger_csv = ",".join(f"'{m}::challenger'" for m in ALPHA_PREDICTION_MODELS)
+    shadow_models = tuple(EXPERIMENTAL_SHADOW_MODELS)
+    if not shadow_models:
+        return {}
+    alpha_csv = ",".join(f"'{m}'" for m in shadow_models)
+    challenger_csv = ",".join(f"'{m}::challenger'" for m in shadow_models)
     rows = query(
         f"""
         SELECT

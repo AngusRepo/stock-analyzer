@@ -143,7 +143,7 @@ def start_date_for_years(years: int) -> str:
     return today.replace(year=today.year - years).isoformat()
 
 
-def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+def d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
     token = os.environ["CF_API_TOKEN"]
     account = os.environ["CF_ACCOUNT_ID"]
     db = os.environ["CF_D1_DB_ID"]
@@ -165,11 +165,15 @@ def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     if not payload.get("success"):
         raise RuntimeError(str(payload.get("errors") or payload)[:500])
     result = payload.get("result") or []
-    return (result[0] or {}).get("results") or []
+    return result[0] or {}
 
 
-def d1_exec(sql: str, params: list[Any] | None = None) -> None:
-    d1_query(sql, params)
+def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    return d1_request(sql, params).get("results") or []
+
+
+def d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
+    return d1_request(sql, params)
 
 
 def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -633,7 +637,7 @@ def cleanup_finlab_trading_restrictions(*, retention_days: int = TRADING_RESTRIC
         """,
         [cutoff],
     )
-    return int(result.get("meta", {}).get("changes") or 0)
+    return int((result or {}).get("meta", {}).get("changes") or 0)
 
 
 def insert_finlab_cnyes_evidence(manifest: dict[str, Any], *, max_rows: int = 800) -> int:

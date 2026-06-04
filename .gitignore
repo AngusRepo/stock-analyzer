@@ -25,6 +25,7 @@ scripts/backfill_output*
 frontend/dev-dist/
 ml-service/.test_tmp/
 ml-controller/.tmp/
+ml-controller/data/tmp/
 _external/
 screen_*.png
 

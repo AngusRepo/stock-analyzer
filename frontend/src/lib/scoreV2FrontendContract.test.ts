@@ -25,6 +25,22 @@ for (const text of ['Score V2 分解', '基礎分數', 'Alpha 調整', '技術�
   assert(scoreBreakdown.includes(text), `Recommendation card Score V2 block should render: ${text}`)
 }
 
+for (const text of ['function ScoreRing', 'function MetricTile', 'function CompactScoreRail', 'function LayerTraceStrip', 'function StrategyFamilyPanel', '推薦摘要', '展開完整 Score V2 / ML / 市場結構']) {
+  assert(recommendationCard.includes(text), `Recommendation card should keep the rich single-stock layout: ${text}`)
+}
+
+for (const text of ['formatUnitScore', 'formatTotalUnitScore', 'L1', 'L2', 'L3', 'L4', 'Strategy Family / Variant']) {
+  assert(recommendationCard.includes(text), `Recommendation card should expose normalized new-flow trace: ${text}`)
+}
+
+for (const model of ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']) {
+  assert(recommendationCard.includes(`'${model}'`), `Recommendation card active model pool should include ${model}`)
+}
+
+for (const retiredModel of ['FT-Transformer', 'Chronos']) {
+  assert(!recommendationCard.includes(`'${retiredModel}'`), `Recommendation card should not expose retired model ${retiredModel}`)
+}
+
 assert(!scoreBreakdown.includes('chip_score'), 'Recommendation card Score V2 block should not render legacy chip_score')
 assert(!scoreBreakdown.includes('tech_score'), 'Recommendation card Score V2 block should not render legacy tech_score')
 assert(!scoreBreakdown.includes('ml_score'), 'Recommendation card Score V2 block should not render legacy ml_score')

@@ -51,6 +51,43 @@ function assert(condition: unknown, message: string): void {
 
 {
   const vm = buildScoreBreakdownViewModel({
+    score_components: {
+      version: 'score_v2',
+      scoreScale: 'normalized_0_1',
+      total: 0.64,
+      finalScore: 0.67,
+      alphaAdjustment: 0.03,
+      weights: {
+        mlEdge: 25,
+        chipFlow: 25,
+        technicalStructure: 25,
+        fundamentalQuality: 20,
+        newsTheme: 5,
+      },
+      components: {
+        mlEdge: 0.8,
+        chipFlow: 0.2,
+        technicalStructure: 0.6,
+        fundamentalQuality: 0.5,
+        newsTheme: 0,
+      },
+      technicalBreakdown: {
+        trendStructure: 0.7,
+        volatilityStructure: 0.4,
+        volumeConfirmation: 0.5,
+      },
+    },
+  })
+  assert(vm.source === 'score_v2', 'normalized Score V2 payload should be detected')
+  assert(vm.rows.some((row) => row.key === 'mlEdge' && row.value === 20 && row.max === 25), 'normalized ML component should scale to weighted Score V2 points')
+  assert(vm.rows.some((row) => row.key === 'chipFlow' && row.value === 5 && row.max === 25), 'normalized chip component should scale to weighted Score V2 points')
+  assert(vm.rows.some((row) => row.key === 'fundamentalQuality' && row.value === 10 && row.max === 20), 'normalized fundamental component should scale to weighted Score V2 points')
+  assert(vm.technicalRows.some((row) => row.key === 'trendStructure' && row.value === 4.9 && row.max === 7), 'normalized technical breakdown should scale to its own max')
+  assert(vm.baseScore === 64 && vm.finalScore === 67 && vm.alphaAdjustment === 3, 'normalized total/final/alpha should scale to 100-point backend semantics')
+}
+
+{
+  const vm = buildScoreBreakdownViewModel({
     score: 66,
     chip_score: 30,
     tech_score: 20,
@@ -62,6 +99,20 @@ function assert(condition: unknown, message: string): void {
   assert(vm.rows.some((row) => row.key === 'technicalStructure' && row.max === 25 && row.value === 10), 'technical storage projection should rescale to 25-point V2')
   assert(vm.rows.some((row) => row.key === 'mlEdge' && row.max === 25 && row.value === 12.5), 'ML storage projection should rescale to 25-point V2')
   assert(vm.baseScore === 41.3 && vm.finalScore === 41.3 && vm.residual === 0, 'storage projection should not reuse legacy total score')
+}
+
+{
+  const vm = buildScoreBreakdownViewModel({
+    score: 0.52,
+    chip_score: 0.75,
+    tech_score: 0.4,
+    ml_score: 0.6,
+  })
+  assert(vm.source === 'storage_projection', 'normalized storage columns should still be treated as storage projection')
+  assert(vm.rows.some((row) => row.key === 'chipFlow' && row.value === 18.8), 'normalized chip storage score should scale directly to 25-point V2')
+  assert(vm.rows.some((row) => row.key === 'technicalStructure' && row.value === 10), 'normalized technical storage score should scale directly to 25-point V2')
+  assert(vm.rows.some((row) => row.key === 'mlEdge' && row.value === 15), 'normalized ML storage score should scale directly to 25-point V2')
+  assert(vm.finalScore === 43.8, 'normalized storage projection should sum scaled V2 rows')
 }
 
 {

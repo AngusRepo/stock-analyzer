@@ -72,9 +72,53 @@ function clampScore(value: unknown, max: number): number {
   return round1(Math.max(0, Math.min(max, n)))
 }
 
+function finiteNumberOrNull(raw: unknown): number | null {
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : null
+}
+
+function normalizeScoreToMax(value: unknown, max: number): number {
+  const n = finiteNumberOrNull(value)
+  if (n == null) return 0
+  if (max > 1 && n >= 0 && n <= 1) return clampScore(n * max, max)
+  return clampScore(n, max)
+}
+
+function normalizeTotalScore(value: unknown, fallback: number): number {
+  const n = finiteNumberOrNull(value)
+  if (n == null) return clampScore(fallback, 100)
+  if (n >= 0 && n <= 1) return clampScore(n * 100, 100)
+  return clampScore(n, 100)
+}
+
+function scorePayloadLooksNormalized(payload: Record<string, any> | null): boolean {
+  if (!payload) return false
+  const explicitScale = String(payload.scoreScale ?? payload.scale ?? payload.valueScale ?? '').toLowerCase()
+  if (explicitScale.includes('normal') || explicitScale.includes('0_1') || explicitScale.includes('0-1')) return true
+  const totals = [payload.total, payload.finalScore, payload.rawScore]
+    .map(finiteNumberOrNull)
+    .filter((value): value is number => value != null)
+  if (totals.some((value) => value > 0 && value <= 1)) return true
+  const components = parseObject(payload.components) ?? {}
+  const componentValues = Object.values(components)
+    .map(finiteNumberOrNull)
+    .filter((value): value is number => value != null)
+  return componentValues.length > 0
+    && componentValues.every((value) => value >= 0 && value <= 1)
+    && componentValues.some((value) => value > 0)
+}
+
+function normalizeAlphaAdjustment(value: unknown, normalizedPayload: boolean): number {
+  const n = finiteNumberOrNull(value)
+  if (n == null) return 0
+  if (normalizedPayload && Math.abs(n) <= 1) return round1(n * 100)
+  return round1(n)
+}
+
 function rescale(value: unknown, oldMax: number, newMax: number): number {
   if (oldMax <= 0) return 0
   const n = finiteNumber(value)
+  if (newMax > 1 && n >= 0 && n <= 1) return clampScore(n * newMax, newMax)
   return clampScore((Math.max(0, Math.min(oldMax, n)) / oldMax) * newMax, newMax)
 }
 
@@ -89,7 +133,7 @@ function row(
   return {
     key,
     label,
-    value: clampScore(value, maxValue),
+    value: normalizeScoreToMax(value, maxValue),
     max: maxValue,
     color,
   }
@@ -151,9 +195,9 @@ function riskFlagsFromPayload(payload: Record<string, any> | null): string[] {
 
 export function buildScoreV2PayloadFromProjectedScores(rec: Record<string, any>): Record<string, any> {
   const components = {
-    mlEdge: clampScore(rec.ml_score, SCORE_V2_WEIGHTS.mlEdge),
-    chipFlow: clampScore(rec.chip_score, SCORE_V2_WEIGHTS.chipFlow),
-    technicalStructure: clampScore(rec.tech_score, SCORE_V2_WEIGHTS.technicalStructure),
+    mlEdge: normalizeScoreToMax(rec.ml_score, SCORE_V2_WEIGHTS.mlEdge),
+    chipFlow: normalizeScoreToMax(rec.chip_score, SCORE_V2_WEIGHTS.chipFlow),
+    technicalStructure: normalizeScoreToMax(rec.tech_score, SCORE_V2_WEIGHTS.technicalStructure),
     fundamentalQuality: 0,
     newsTheme: 0,
   }
@@ -162,7 +206,7 @@ export function buildScoreV2PayloadFromProjectedScores(rec: Record<string, any>)
     version: 'score_v2',
     weights: SCORE_V2_WEIGHTS,
     components,
-    total: clampScore(rec.score ?? componentTotal, 100),
+    total: normalizeTotalScore(rec.score, componentTotal),
     riskFlags: [],
     reasons: ['score_v2_projected_storage'],
   }
@@ -171,12 +215,13 @@ export function buildScoreV2PayloadFromProjectedScores(rec: Record<string, any>)
 export function buildScoreBreakdownViewModel(rec: Record<string, any>): ScoreBreakdownViewModel {
   const payload = parseObject(rec.score_components)
   const isScoreV2 = payload?.version === 'score_v2' && parseObject(payload.components) != null
-  const alphaAdjustment = round1(finiteNumber(payload?.alphaAdjustment ?? rec.alpha_context?.score_adjustment))
+  const normalizedPayload = scorePayloadLooksNormalized(payload)
+  const alphaAdjustment = normalizeAlphaAdjustment(payload?.alphaAdjustment ?? rec.alpha_context?.score_adjustment, normalizedPayload)
 
   if (isScoreV2) {
     const rows = scoreV2Rows(payload)
-    const baseScore = round1(finiteNumber(payload.total, sumRows(rows)))
-    const finalScore = round1(finiteNumber(payload.finalScore, baseScore + alphaAdjustment))
+    const baseScore = normalizeTotalScore(payload.total, sumRows(rows))
+    const finalScore = normalizeTotalScore(payload.finalScore, baseScore + alphaAdjustment)
     return {
       source: 'score_v2',
       hasBackendPayload: true,

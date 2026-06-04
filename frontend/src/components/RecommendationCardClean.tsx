@@ -9,7 +9,6 @@ import {
   ShieldCheck,
   TrendingDown,
   TrendingUp,
-  Users,
   Zap,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -90,20 +89,42 @@ type EvidenceLink = {
 }
 
 const ALPHA_PREDICTION_MODEL_NAMES = [
-  'XGBoost',
-  'CatBoost',
-  'ExtraTrees',
   'LightGBM',
-  'FT-Transformer',
-  'Chronos',
+  'XGBoost',
+  'ExtraTrees',
+  'TabM',
+  'GNN',
   'DLinear',
   'PatchTST',
+  'iTransformer',
+  'TimesFM',
 ] as const
 
 const ALPHA_PREDICTION_MODEL_SET = new Set<string>(ALPHA_PREDICTION_MODEL_NAMES)
 
+function normalizeModelName(raw: unknown): string {
+  const value = String(raw ?? '').trim()
+  const compact = value.toLowerCase().replace(/[\s_-]+/g, '')
+  const aliases: Record<string, string> = {
+    lightgbm: 'LightGBM',
+    lgbm: 'LightGBM',
+    xgboost: 'XGBoost',
+    xgb: 'XGBoost',
+    extratrees: 'ExtraTrees',
+    extratreesregressor: 'ExtraTrees',
+    tabm: 'TabM',
+    gnn: 'GNN',
+    graphnn: 'GNN',
+    dlinear: 'DLinear',
+    patchtst: 'PatchTST',
+    itransformer: 'iTransformer',
+    timesfm: 'TimesFM',
+  }
+  return aliases[compact] ?? value
+}
+
 function isAlphaPredictionModelName(raw: unknown): boolean {
-  return ALPHA_PREDICTION_MODEL_SET.has(String(raw ?? ''))
+  return ALPHA_PREDICTION_MODEL_SET.has(normalizeModelName(raw))
 }
 
 export const AI_TOP_PICK_EXPLANATION =
@@ -605,7 +626,7 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
       <span className="w-14 text-right font-mono text-muted-foreground">
-        {fmtNumber(safeValue, 1)}/{fmtNumber(safeMax, 0)}
+        {formatUnitScore(safeValue, safeMax)}
       </span>
     </div>
   )
@@ -823,6 +844,291 @@ function normalizeEvidenceLinks(raw: unknown): EvidenceLink[] {
   return links
 }
 
+function finiteRecNumber(rec: any, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = Number(rec?.[key])
+    if (Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function fmtSignedPct(value: number | string | null | undefined, decimals = 2): string {
+  if (value == null || value === '') return '-'
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '-'
+  const normalized = Math.abs(numeric) <= 1 ? numeric * 100 : numeric
+  return `${normalized >= 0 ? '+' : ''}${normalized.toFixed(decimals)}%`
+}
+
+function fmtVolume(raw: number | string | null | undefined): string {
+  if (raw == null || raw === '') return '-'
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return '-'
+  if (value >= 1_000_000) return `${Math.round(value / 1000).toLocaleString()} 張`
+  if (value >= 1000) return `${Math.round(value).toLocaleString()} 張`
+  return `${Math.round(value).toLocaleString()}`
+}
+
+function compactText(raw: unknown, maxLength = 150): string {
+  const text = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : ''
+  if (!text) return '後端尚未提供完整推薦理由，請展開查看分數、ML 與市場結構。'
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+function scoreRailColor(key: string): string {
+  const colors: Record<string, string> = {
+    mlEdge: 'bg-emerald-400',
+    chipFlow: 'bg-cyan-400',
+    technicalStructure: 'bg-violet-400',
+    fundamentalQuality: 'bg-amber-400',
+    newsTheme: 'bg-sky-400',
+  }
+  return colors[key] ?? 'bg-slate-400'
+}
+
+function unitScore(value: number, max: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) return 0
+  return Math.max(0, Math.min(1, value / max))
+}
+
+function formatUnitScore(value: number, max: number): string {
+  return unitScore(value, max).toFixed(2)
+}
+
+function formatTotalUnitScore(score: number): string {
+  if (!Number.isFinite(score)) return '0.00'
+  const ratio = score <= 1 ? score : score / 100
+  return Math.max(0, Math.min(1, ratio)).toFixed(2)
+}
+
+function ScoreRing({ score }: { score: number }) {
+  const safeScore = Number.isFinite(score) ? Math.max(0, Math.min(100, score <= 1 ? score * 100 : score)) : 0
+  const color = safeScore >= 70 ? '#34d399' : safeScore >= 50 ? '#22d3ee' : safeScore >= 35 ? '#fbbf24' : '#fb7185'
+  return (
+    <div className="relative grid h-16 w-16 shrink-0 place-items-center">
+      <div
+        className="absolute inset-0 rounded-full"
+        style={{
+          background: `conic-gradient(${color} ${safeScore}%, rgba(148,163,184,0.18) ${safeScore}%)`,
+        }}
+      />
+      <div className="absolute inset-1 rounded-full border border-white/5 bg-[#07101b]" />
+      <div className="relative text-center">
+        <div className="font-mono text-base font-bold leading-none text-cyan-200">{formatTotalUnitScore(safeScore)}</div>
+        <div className="mt-0.5 text-[9px] text-slate-400">score</div>
+      </div>
+    </div>
+  )
+}
+
+function CompactScoreRail({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0
+  return (
+    <div className="grid grid-cols-[4rem_minmax(0,1fr)_3.6rem] items-center gap-2 text-[11px]">
+      <span className="truncate font-medium text-slate-300">{label}</span>
+      <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+        <div className={cn('h-full rounded-full', color)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-right font-mono text-slate-400">
+        {formatUnitScore(value, max)}
+      </span>
+    </div>
+  )
+}
+
+function MetricTile({ label, value, tone = 'neutral' }: {
+  label: string
+  value: string
+  tone?: 'positive' | 'negative' | 'neutral' | 'warning'
+}) {
+  const toneClass = {
+    positive: 'text-emerald-300',
+    negative: 'text-rose-300',
+    neutral: 'text-slate-100',
+    warning: 'text-amber-300',
+  }[tone]
+  return (
+    <div className="rounded-lg border border-slate-800 bg-[#08111d]/85 px-2.5 py-2">
+      <div className="text-[10px] text-slate-500">{label}</div>
+      <div className={cn('mt-0.5 truncate font-mono text-xs font-semibold', toneClass)}>{value}</div>
+    </div>
+  )
+}
+
+function factorLine(label: string, value: string, tone: 'positive' | 'negative' | 'neutral' | 'warning' = 'neutral') {
+  return { label, value, tone }
+}
+
+type LayerTraceItem = {
+  layer: 'L1' | 'L2' | 'L3' | 'L4'
+  label: string
+  value: string
+  tone: 'positive' | 'negative' | 'neutral' | 'warning'
+}
+
+function parseArrayText(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((item) => String(item ?? '').trim()).filter(Boolean)
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item ?? '').trim()).filter(Boolean)
+    } catch {
+      return raw.split(/[,\s|]+/).map((item) => item.trim()).filter(Boolean)
+    }
+  }
+  return []
+}
+
+function screenerEvidenceFromRec(rec: any): Record<string, any> {
+  return parseObject(rec.screener_funnel_evidence) ?? {}
+}
+
+function screenerTimelineFromRec(rec: any): Array<Record<string, any>> {
+  const raw = rec.screener_funnel_timeline
+  if (Array.isArray(raw)) return raw.filter((item): item is Record<string, any> => item && typeof item === 'object')
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((item): item is Record<string, any> => item && typeof item === 'object') : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function latestTimelineStage(timeline: Array<Record<string, any>>, patterns: RegExp[]): Record<string, any> | null {
+  for (let index = timeline.length - 1; index >= 0; index--) {
+    const stage = String(timeline[index].stage ?? '')
+    if (patterns.some((pattern) => pattern.test(stage))) return timeline[index]
+  }
+  return null
+}
+
+const STRATEGY_FAMILY_LABELS: Array<[RegExp, string]> = [
+  [/(volatility|breakout|squeeze|vcp|bb)/i, '波動收斂突破'],
+  [/(trend|reclaim|continuation|macd|adx|ma)/i, '趨勢回收延續'],
+  [/(smart|money|chip|broker|accumulation|foreign|trust)/i, '主力籌碼累積'],
+  [/(smc|liquidity|sweep|bos|choch|displacement)/i, 'SMC 結構回收'],
+  [/(revenue|quality|fundamental|eps|roe|margin)/i, '營收品質動能'],
+  [/(sector|rotation|theme|industry|group)/i, '族群輪動核心'],
+]
+
+function strategyFamilyLabel(id: string): string {
+  const hit = STRATEGY_FAMILY_LABELS.find(([pattern]) => pattern.test(id))
+  return hit?.[1] ?? '策略命中'
+}
+
+function strategyIdsFromRec(rec: any, evidence: Record<string, any>): string[] {
+  const direct = [
+    ...parseArrayText(evidence.strategy_ids),
+    ...parseArrayText(evidence.strategy_pool_ids),
+    ...parseArrayText(rec.strategy_pool_ids),
+  ]
+  const pools = Array.isArray(evidence.strategy_pool) ? evidence.strategy_pool : []
+  for (const pool of pools) {
+    if (pool && typeof pool === 'object') direct.push(...parseArrayText((pool as any).strategy_ids))
+  }
+  return [...new Set(direct.map((item) => item.trim()).filter(Boolean))]
+}
+
+function allocationFromRec(rec: any): Record<string, any> | null {
+  return parseObject(rec.alpha_allocation)
+}
+
+function formatAllocationWeight(raw: unknown): string {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return '-'
+  const pct = Math.abs(value) <= 1 ? value * 100 : value
+  return `${pct.toFixed(1)}%`
+}
+
+function buildLayerTrace(rec: any, evidence: Record<string, any>, timeline: Array<Record<string, any>>, mlDiagnostics: MlDiagnosticsSummary | null): LayerTraceItem[] {
+  const strategyIds = strategyIdsFromRec(rec, evidence)
+  const l2 = latestTimelineStage(timeline, [/l2/i, /coarse/i, /ml_queue/i])
+  const l3Active = Number(mlDiagnostics?.activeWeightCount ?? 0)
+  const l3Total = Number(mlDiagnostics?.totalAlphaModels ?? ALPHA_PREDICTION_MODEL_NAMES.length)
+  const allocation = allocationFromRec(rec)
+  const selected = allocation?.selected === true || rec.alpha_selected === true
+  const weight = allocation?.target_weight ?? allocation?.weight ?? allocation?.final_weight ?? rec.target_weight
+  return [
+    {
+      layer: 'L1',
+      label: 'Strategy',
+      value: strategyIds.length ? `${strategyIds.length} 策略` : '未標策略',
+      tone: strategyIds.length ? 'positive' : 'warning',
+    },
+    {
+      layer: 'L2',
+      label: 'Coarse',
+      value: l2 ? String(l2.reason_code ?? l2.decision ?? 'pass') : String(rec.screener_funnel_reason ?? 'funnel'),
+      tone: String(l2?.decision ?? '').includes('drop') ? 'negative' : 'neutral',
+    },
+    {
+      layer: 'L3',
+      label: 'Family ML',
+      value: `${Number.isFinite(l3Active) ? l3Active : 0}/${Number.isFinite(l3Total) ? l3Total : ALPHA_PREDICTION_MODEL_NAMES.length} active`,
+      tone: l3Active > 0 ? 'positive' : 'warning',
+    },
+    {
+      layer: 'L4',
+      label: 'Allocation',
+      value: selected ? `selected ${formatAllocationWeight(weight)}` : 'not selected',
+      tone: selected ? 'positive' : 'warning',
+    },
+  ]
+}
+
+function LayerTraceStrip({ items }: { items: LayerTraceItem[] }) {
+  return (
+    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+      {items.map((item) => (
+        <div key={item.layer} className="rounded-lg border border-slate-800 bg-[#08111d]/85 px-2 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className={cn(
+              'font-mono text-[10px] font-bold',
+              item.tone === 'positive' && 'text-emerald-300',
+              item.tone === 'negative' && 'text-rose-300',
+              item.tone === 'warning' && 'text-amber-300',
+              item.tone === 'neutral' && 'text-slate-300',
+            )}>{item.layer}</span>
+            <span className="truncate text-[9px] text-slate-500">{item.label}</span>
+          </div>
+          <div className="mt-1 truncate font-mono text-[10px] text-slate-300">{item.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function StrategyFamilyPanel({ strategyIds }: { strategyIds: string[] }) {
+  if (!strategyIds.length) {
+    return (
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-2.5 text-[11px] leading-5 text-amber-200">
+        L1 尚未提供 strategy id，這檔目前只能靠 funnel reason 與 Score V2 判讀。
+      </div>
+    )
+  }
+  const grouped = new Map<string, string[]>()
+  for (const id of strategyIds) {
+    const family = strategyFamilyLabel(id)
+    grouped.set(family, [...(grouped.get(family) ?? []), id])
+  }
+  return (
+    <div className="rounded-lg border border-cyan-400/15 bg-cyan-400/[0.045] p-2.5">
+      <div className="mb-2 text-[11px] font-semibold text-cyan-200">L1 Strategy Family / Variant</div>
+      <div className="space-y-1.5">
+        {[...grouped.entries()].map(([family, ids]) => (
+          <div key={family} className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-2 text-[11px] leading-5">
+            <span className="text-slate-400">{family}</span>
+            <span className="truncate font-mono text-cyan-100">{ids.slice(0, 4).join(' / ')}{ids.length > 4 ? ` +${ids.length - 4}` : ''}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
   const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG.HOLD
@@ -833,6 +1139,9 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
   const mlDiagnostics = mlDiagnosticsFromRec(rec)
+  const screenerEvidence = screenerEvidenceFromRec(rec)
+  const screenerTimeline = screenerTimelineFromRec(rec)
+  const strategyIds = strategyIdsFromRec(rec, screenerEvidence)
   const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const chip5dRaw = rec.chip_cash_total_5d ?? (
@@ -846,79 +1155,152 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
   const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
+  const finalScore = Number.isFinite(scoreViewModel.finalScore) ? scoreViewModel.finalScore : Number(rec.score ?? 0)
+  const currentPrice = finiteRecNumber(rec, ['current_price', 'latest_price', 'close', 'close_price', 'last_price'])
+    ?? (Number.isFinite(Number(alphaContext?.latestClose)) ? Number(alphaContext?.latestClose) : null)
+  const changePct = finiteRecNumber(rec, ['change_pct', 'price_change_pct', 'return_1d', 'daily_return_pct'])
+  const volume = finiteRecNumber(rec, ['volume', 'trading_volume', '成交量', 'volume_shares'])
+  const mlScore = scoreComponentValue(rec, 'mlEdge')
+  const chipScore = scoreComponentValue(rec, 'chipFlow')
+  const technicalScore = scoreComponentValue(rec, 'technicalStructure')
+  const fundamentalScore = scoreComponentValue(rec, 'fundamentalQuality')
+  const fairValue = alphaContext?.fairValueLow || alphaContext?.fairValueHigh
+    ? `${fmtNumber(alphaContext?.fairValueLow, 2)}~${fmtNumber(alphaContext?.fairValueHigh, 2)}`
+    : '-'
+  const chaseCeiling = alphaContext?.optimisticValueHigh != null
+    ? fmtNumber(alphaContext.optimisticValueHigh, 2)
+    : '-'
+  const positionLabel = alphaContext?.location
+    ? shortLabelFor(alphaContext.location, LOCATION_TEXT)
+    : '價格位置待同步'
+  const layerTrace = buildLayerTrace(rec, screenerEvidence, screenerTimeline, mlDiagnostics)
+  const factorLines = [
+    factorLine('ML', `${formatUnitScore(mlScore, 25)}${mlSummary ? ` · ${compactText(mlSummary, 68)}` : ''}`, unitScore(mlScore, 25) >= 0.5 ? 'positive' : 'warning'),
+    factorLine(chipBadgeLabel, `${formatUnitScore(chipScore, 25)} · 5日 ${fmtChipAmount(chip5dRaw)}`, chipPositive ? 'positive' : 'neutral'),
+    factorLine('技術', `${formatUnitScore(technicalScore, 25)}${rec.rsi14 != null ? ` · RSI ${fmtNumber(rec.rsi14, 1)}` : ''}`, unitScore(technicalScore, 25) >= 0.5 ? 'positive' : 'warning'),
+    factorLine('基本', `${formatUnitScore(fundamentalScore, 20)}`, unitScore(fundamentalScore, 20) >= 0.5 ? 'positive' : 'neutral'),
+    factorLine('位置', `value ${fairValue} · chase ${chaseCeiling}`, alphaContext?.location === 'above_fair_value' ? 'warning' : 'neutral'),
+  ]
 
   return (
     <div className={cn(
-      'rounded-xl border transition-all',
+      'overflow-hidden rounded-xl border bg-[#07101b] text-slate-100 shadow-[0_18px_55px_rgba(0,0,0,0.22)] transition-all',
       rank === 1
-        ? 'border-amber-500/40 bg-amber-500/[0.06] shadow-sm'
-        : 'border-border/50 bg-card hover:border-border',
+        ? 'border-amber-400/55'
+        : 'border-slate-800 hover:border-slate-700',
     )}>
       <div
-        className="flex cursor-pointer select-none items-center gap-3 p-3 sm:p-4"
+        className="cursor-pointer select-none p-3 sm:p-4"
         onClick={() => setExpanded((value) => !value)}
       >
-        <div className={cn(
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold',
-          rank === 1 ? 'bg-amber-400 text-white' :
-          rank === 2 ? 'bg-gray-400 text-white' :
-          rank === 3 ? 'bg-orange-400 text-white' :
-          'bg-muted text-muted-foreground',
-        )}>
-          {rank}
+        <div className="flex items-start gap-3">
+          <div className={cn(
+            'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold',
+            rank === 1 ? 'bg-amber-400 text-[#08111d]' :
+            rank === 2 ? 'bg-slate-400 text-[#08111d]' :
+            rank === 3 ? 'bg-orange-400 text-[#08111d]' :
+            'bg-slate-800 text-slate-300',
+          )}>
+            {rank}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-base font-bold text-cyan-200">{rec.symbol}</span>
+              <span className="truncate text-sm font-medium text-slate-200">{rec.name}</span>
+              {isEmerging && (
+                <Badge variant="outline" className="border-amber-400/35 bg-amber-400/10 px-1.5 py-0 text-[10px] text-amber-200">
+                  興櫃研究
+                </Badge>
+              )}
+              {rec.sector && (
+                <Badge variant="outline" className="shrink-0 border-slate-700 bg-slate-900/70 px-1.5 py-0 text-[10px] text-slate-300">{rec.sector}</Badge>
+              )}
+              <Badge className={cn('px-1.5 py-0 text-[10px]', sig.color)}>
+                <SigIcon className="mr-1 h-2.5 w-2.5" />
+                {sig.label}
+              </Badge>
+            </div>
+
+            <div className="mt-2 grid gap-1.5">
+              {scoreViewModel.rows.map((item) => (
+                <CompactScoreRail
+                  key={item.key}
+                  label={item.label}
+                  value={item.value}
+                  max={item.max}
+                  color={scoreRailColor(item.key)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <ScoreRing score={finalScore} />
         </div>
 
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold">{rec.symbol}</span>
-            <span className="truncate text-sm text-muted-foreground">{rec.name}</span>
-            {rec.sector && (
-              <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">{rec.sector}</Badge>
-            )}
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-3">
-            <Badge className={cn('px-1.5 py-0 text-[10px]', sig.color)}>
-              <SigIcon className="mr-1 h-2.5 w-2.5" />
-              {sig.label}
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <MetricTile label="收盤 / 現價" value={currentPrice == null ? '-' : fmtNumber(currentPrice, 2)} />
+          <MetricTile
+            label="漲跌"
+            value={changePct == null ? '-' : fmtSignedPct(changePct)}
+            tone={changePct == null ? 'neutral' : changePct >= 0 ? 'negative' : 'positive'}
+          />
+          <MetricTile label="成交量" value={fmtVolume(volume)} />
+          <MetricTile label={chipBadgeLabel} value={fmtChipAmount(chip5dRaw)} tone={chipPositive ? 'negative' : 'positive'} />
+        </div>
+
+        <div className="mt-3">
+          <LayerTraceStrip items={layerTrace} />
+        </div>
+
+        <div className="mt-3 rounded-lg border border-slate-800 bg-[#0a1422]/90 p-2.5">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="border-cyan-400/25 bg-cyan-400/10 px-1.5 py-0 text-[10px] text-cyan-200">
+              {positionLabel}
             </Badge>
-            <span className={cn('flex items-center gap-1 text-xs', chipPositive ? 'text-red-500' : 'text-emerald-500')}>
-              <Users className="h-3 w-3" />
-              {chipBadgeLabel} {fmtChipAmount(chip5dRaw)}
-            </span>
-            {rec.rsi14 != null && (
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <BarChart3 className="h-3 w-3" />
-                RSI {fmtNumber(rec.rsi14, 1)}
-              </span>
-            )}
-            {(mlSummary || mlMetadataGap) && (
-              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-emerald-700 dark:text-emerald-300">
-                ML {mlSummary ?? `分數 ${fmtNumber(scoreComponentValue(rec, 'mlEdge'), 1)}，投票明細待同步`}
-              </Badge>
-            )}
             {alphaContext?.bucket && (
-              <Badge variant="outline" className="gap-1 border-sky-500/40 bg-sky-500/10 px-1.5 py-0 text-[10px] text-sky-700 dark:text-sky-300">
+              <Badge variant="outline" className="gap-1 border-sky-400/25 bg-sky-400/10 px-1.5 py-0 text-[10px] text-sky-200">
                 <ShieldCheck className="h-2.5 w-2.5" />
                 {labelFor(alphaContext.bucket)}
               </Badge>
             )}
           </div>
+          <div className="grid gap-1.5">
+            {factorLines.map((item) => (
+              <div key={item.label} className="grid grid-cols-[3rem_minmax(0,1fr)] gap-2 text-[11px] leading-5">
+                <span className="font-semibold text-slate-400">{item.label}</span>
+                <span className={cn(
+                  'truncate font-mono',
+                  item.tone === 'positive' && 'text-emerald-300',
+                  item.tone === 'negative' && 'text-rose-300',
+                  item.tone === 'warning' && 'text-amber-300',
+                  item.tone === 'neutral' && 'text-slate-300',
+                )}>
+                  {item.value}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
 
-        <div className="shrink-0 text-right">
-          <div className="text-lg font-bold text-primary">{Math.round(scoreViewModel.finalScore)}</div>
-          <div className="text-[10px] text-muted-foreground">最終分</div>
+        <div className="mt-3 rounded-lg border border-slate-800 bg-[#090f1a]/80 p-2.5">
+          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-slate-300">
+            <BarChart3 className="h-3 w-3 text-cyan-300" />
+            推薦摘要
+          </div>
+          <p className="text-xs leading-5 text-slate-400">
+            {compactText(displayReason)}
+          </p>
         </div>
 
-        {expanded ? (
-          <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        )}
+        <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
+          <span>{expanded ? '收合診斷' : '展開完整 Score V2 / ML / 市場結構'}</span>
+          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </div>
       </div>
 
       {evidenceLinks.length > 0 && (
-        <div className="flex flex-wrap gap-2 border-t border-border/30 px-4 py-2">
+        <div className="flex flex-wrap gap-2 border-t border-slate-800 px-4 py-2">
           {evidenceLinks.map((link) => (
             <a
               key={`${link.source}:${link.url}`}
@@ -926,7 +1308,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               target="_blank"
               rel="noreferrer"
               onClick={(event) => event.stopPropagation()}
-              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-700 hover:border-sky-500/45 dark:text-sky-300"
+              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-300 hover:border-sky-500/45"
             >
               <ExternalLink className="h-3 w-3 shrink-0" />
               <span className="shrink-0 font-mono uppercase">{link.source}</span>
@@ -937,9 +1319,9 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
       )}
 
       {expanded && (
-        <div className="space-y-4 border-t border-border/40 px-4 pb-4 pt-3">
+        <div className="space-y-4 border-t border-slate-800 px-4 pb-4 pt-3">
           <div className="space-y-1.5">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">基礎分數</p>
+            <p className="mb-2 text-xs font-medium text-slate-400">基礎分數</p>
             {scoreViewModel.rows.map((item) => (
               <ScoreBar key={item.key} label={item.label} value={item.value} max={item.max} color={item.color} />
             ))}
@@ -947,9 +1329,11 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
           <ScoreBreakdownV2 rec={rec} />
 
+          <StrategyFamilyPanel strategyIds={strategyIds} />
+
           <div>
-            <p className="mb-1.5 text-xs font-medium text-muted-foreground">推薦理由</p>
-            <p className="whitespace-pre-line text-sm leading-relaxed text-foreground/90">{displayReason}</p>
+            <p className="mb-1.5 text-xs font-medium text-slate-400">推薦理由</p>
+            <p className="whitespace-pre-line text-sm leading-relaxed text-slate-200">{displayReason}</p>
           </div>
 
           {(mlSummary || mlMetadataGap || mlDiagnostics) && (
@@ -964,13 +1348,13 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
           {noticePoints.length > 0 && (
             <div>
-              <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-slate-400">
                 <AlertCircle className="h-3 w-3" />
                 注意事項
               </p>
               <ul className="space-y-1">
                 {noticePoints.map((point, index) => (
-                  <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+                  <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-slate-400">
                     <span className="mt-0.5 shrink-0 text-amber-500">!</span>
                     {normalizeWatchPoint(point)}
                   </li>
@@ -980,7 +1364,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           )}
 
           {rec.confidence != null && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-[11px] text-slate-500">
               ML 信心度 {(Number(rec.confidence) * 100).toFixed(0)}%
               {rec.current_price != null && (
                 <span className="ml-3">{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>

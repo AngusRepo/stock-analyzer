@@ -66,21 +66,43 @@ export interface MlVoteThresholdPolicy {
 }
 
 export const ALPHA_PREDICTION_MODEL_NAMES = [
-  'XGBoost',
-  'CatBoost',
-  'ExtraTrees',
   'LightGBM',
-  'FT-Transformer',
-  'Chronos',
+  'XGBoost',
+  'ExtraTrees',
+  'TabM',
+  'GNN',
   'DLinear',
   'PatchTST',
+  'iTransformer',
+  'TimesFM',
 ] as const
 
 const TRACKED_MODEL_NAMES = [...ALPHA_PREDICTION_MODEL_NAMES]
 const TRACKED_MODEL_NAME_SET = new Set<string>(TRACKED_MODEL_NAMES)
 
+function normalizeModelName(raw: unknown): string {
+  const value = String(raw ?? '').trim()
+  const compact = value.toLowerCase().replace(/[\s_-]+/g, '')
+  const aliases: Record<string, string> = {
+    lightgbm: 'LightGBM',
+    lgbm: 'LightGBM',
+    xgboost: 'XGBoost',
+    xgb: 'XGBoost',
+    extratrees: 'ExtraTrees',
+    extratreesregressor: 'ExtraTrees',
+    tabm: 'TabM',
+    gnn: 'GNN',
+    graphnn: 'GNN',
+    dlinear: 'DLinear',
+    patchtst: 'PatchTST',
+    itransformer: 'iTransformer',
+    timesfm: 'TimesFM',
+  }
+  return aliases[compact] ?? value
+}
+
 function isTrackedAlphaModelName(raw: unknown): boolean {
-  return TRACKED_MODEL_NAME_SET.has(String(raw ?? ''))
+  return TRACKED_MODEL_NAME_SET.has(normalizeModelName(raw))
 }
 
 const DEFAULT_VOTE_POLICY: Required<MlVoteThresholdPolicy> = {

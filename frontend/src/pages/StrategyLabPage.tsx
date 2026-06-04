@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Activity, BrainCircuit, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
 import StrategyExperimentTimeline from '@/components/charts/StrategyExperimentTimeline'
+import StrategyFamilyWorkbench from '@/components/strategy-lab/StrategyFamilyWorkbench'
 
 type MetaLearningTrack = NonNullable<ResearchExperimentsResponse['meta_learning_tracks']>[number]
 type MetaLearningEvidenceRow = NonNullable<ResearchExperimentsResponse['meta_learning_evidence_matrix']>[number]
@@ -57,7 +58,7 @@ const EMPTY_ARTIFACT_INTENT_DRAFT: ArtifactIntentDraft = {
 }
 
 const ARTIFACT_INTENT_FIELDS: Array<{ key: keyof ArtifactIntentDraft; label: string; placeholder: string; required?: boolean }> = [
-  { key: 'model_name', label: 'model name', placeholder: 'ResidualMLP / GNN' },
+  { key: 'model_name', label: 'model name', placeholder: 'TabM / GNN / iTransformer / TimesFM' },
   { key: 'artifact_version', label: 'artifact version', placeholder: 'v20260519-shadow-a' },
   { key: 'artifact_path', label: 'artifact path', placeholder: 'gs://stockvision-models/...' , required: true },
   { key: 'training_manifest_path', label: 'training manifest', placeholder: 'gs://.../training_manifest.json', required: true },
@@ -377,7 +378,7 @@ function ModelUpgradeLaunchpad({
           ))}
         </div>
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-          這裡只建立 Strategy Lab experiment 與 evaluation packet。ResidualMLP/GNN 是 shadow challenger，TabM/iTransformer/TimesFM 是 benchmark-only；兩者都不會進 production vote，通過 review 後才可能進下一層 promotion gate。
+          這裡只建立 Strategy Lab experiment 與 evaluation packet。TabM/GNN/iTransformer/TimesFM 是 L3 near-production 候選；通過 evidence gate 後才可取得正式 ensemble_v2 權重。
         </div>
       </CardContent>
     </Card>
@@ -1402,13 +1403,13 @@ export default function StrategyLabPage() {
       const today = new Date().toISOString().slice(0, 10)
       const res = await strategyLabApi.createExperiment({
         id: `model-family-benchmark-${today.replace(/-/g, '')}`,
-        hypothesis: 'model_benchmark：評估 TabM、iTransformer、TimesFM 是否值得從 benchmark-only 升級成 shadow challenger，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
+        hypothesis: 'model_family_upgrade：評估 TabM、GNN、iTransformer、TimesFM 是否值得取得 L3 family vote 權重，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
         strategySpecIds: ['model_family_benchmark_v1'],
         metrics: ['oos_ic', 'cpcv_pbo', 'cost_sensitivity', 'data_slice_report', 'latency_cost'],
-        followUp: ['run model_benchmark dry-run', 'inspect benchmark report', 'decide promote to shadow challenger or reject'],
+        followUp: ['run model family dry-run', 'inspect upgrade report', 'decide promote to L3 production weight gate or reject'],
         sourceRefs: ['strategy-lab-ui', 'model-upgrade-track'],
         dataSlice: {
-          benchmark_candidates: ['TabM', 'iTransformer', 'TimesFM'],
+          benchmark_candidates: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
           start_date: '2026-04-01',
           end_date: today,
           market_lanes: ['listed', 'otc', 'emerging'],
@@ -1711,6 +1712,13 @@ export default function StrategyLabPage() {
             </Button>
           </div>
         </div>
+
+        <StrategyFamilyWorkbench
+          specs={specs?.specs ?? []}
+          dryRun={dryRun}
+          learning={strategyLearning}
+          experiments={experiments?.experiments ?? []}
+        />
 
         <StrategyExperimentTimeline
           specs={specs?.specs ?? []}

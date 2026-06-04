@@ -19,6 +19,7 @@ import logging
 import math
 import operator
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
 
@@ -330,20 +331,22 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
 
-    def _formal_layer3_chunk_size() -> int:
-        raw = os.environ.get("FORMAL_LAYER3_BATCH_CHUNK_SIZE")
+    def _formal_layer3_chunk_size(model_name: str) -> int:
+        model_key = re.sub(r"[^A-Z0-9]+", "_", str(model_name or "").upper()).strip("_")
+        model_raw = os.environ.get(f"FORMAL_LAYER3_{model_key}_CHUNK_SIZE") if model_key else None
+        raw = model_raw if model_raw is not None else os.environ.get("FORMAL_LAYER3_BATCH_CHUNK_SIZE")
         try:
-            value = int(float(raw)) if raw is not None else 16
+            value = int(float(raw)) if raw is not None else 8
         except (TypeError, ValueError):
-            value = 16
+            value = 8
         return max(1, min(64, value))
 
     def _formal_layer3_chunk_timeout_sec() -> float:
         raw = os.environ.get("FORMAL_LAYER3_CHUNK_TIMEOUT_SEC")
         try:
-            value = float(raw) if raw is not None else 180.0
+            value = float(raw) if raw is not None else 300.0
         except (TypeError, ValueError):
-            value = 180.0
+            value = 300.0
         return max(15.0, min(420.0, value))
 
     def _chunk_series(series: list[dict], chunk_size: int) -> list[list[dict]]:
@@ -359,12 +362,15 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if not series:
             return {"overlays": {model_name: [] for model_name in models}, "blockers": {}}
 
-        chunk_size = _formal_layer3_chunk_size()
         chunk_timeout_sec = _formal_layer3_chunk_timeout_sec()
-        chunks = _chunk_series(series, chunk_size)
+        chunks_by_model = {
+            model_name: _chunk_series(series, _formal_layer3_chunk_size(model_name))
+            for model_name in models
+        }
         logger.info(
             "[Pipeline V2] Layer3 formal adapters chunked dispatch: "
-            f"models={models} chunks={len(chunks)} chunk_size={chunk_size} "
+            f"models={models} chunks_by_model="
+            f"{ {model_name: len(chunks) for model_name, chunks in chunks_by_model.items()} } "
             f"chunk_timeout_sec={chunk_timeout_sec:.1f}"
         )
 
@@ -379,14 +385,14 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             )
 
         async def _run_one(model_name: str) -> tuple[str, dict]:
-            calls = [
-                _run_one_chunk(model_name, chunk, chunk_index)
-                for chunk_index, chunk in enumerate(chunks)
-            ]
-            chunk_results = await asyncio.gather(*calls, return_exceptions=True)
             overlays: list[dict] = []
             blockers: dict[str, str] = {}
-            for chunk_index, result in enumerate(chunk_results):
+            chunks = chunks_by_model.get(model_name) or []
+            for chunk_index, chunk in enumerate(chunks):
+                try:
+                    result = await _run_one_chunk(model_name, chunk, chunk_index)
+                except BaseException as exc:  # noqa: BLE001 - keep other chunks/models alive.
+                    result = exc
                 if isinstance(result, BaseException):
                     exc_type = type(result).__name__
                     blockers[model_name] = f"chunk_{chunk_index}_{exc_type}:{result}"

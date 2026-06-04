@@ -40,19 +40,27 @@ function metadataText(value: unknown): string {
   return Array.isArray(value) ? value.map((item) => String(item)).join(',') : String(value ?? '')
 }
 
-function finLabDailyPriceModeCallback(metadata: any): boolean {
-  const mode = String(metadata?.mode ?? '').trim().toLowerCase()
+function callbackMetadataText(body: any, metadata: any, key: string): string {
+  return metadataText(metadata?.[key] ?? body?.[key])
+}
+
+function finLabDailyPriceModeCallback(metadata: any, body: any = {}): boolean {
+  const mode = String(metadata?.mode ?? body?.mode ?? '').trim().toLowerCase()
   if (mode === 'daily_price_primary') return true
 
-  const lanes = metadataText(metadata?.lanes).toLowerCase().split(',').map((item) => item.trim())
-  const canonicalDatasets = metadataText(metadata?.canonical_datasets).toLowerCase().split(',').map((item) => item.trim())
-  return lanes.includes('daily_price') && canonicalDatasets.includes('canonical_market_daily')
+  const lanes = callbackMetadataText(body, metadata, 'lanes').toLowerCase().split(',').map((item) => item.trim())
+  const canonicalDatasets = callbackMetadataText(body, metadata, 'canonical_datasets').toLowerCase().split(',').map((item) => item.trim())
+  const summary = callbackMetadataText(body, metadata, 'summary').toLowerCase()
+  return (lanes.includes('daily_price') && canonicalDatasets.includes('canonical_market_daily'))
+    || (summary.includes('daily_price_primary') && summary.includes('canonical_market_daily'))
 }
 
 function shouldContinueEveningChainAfterFinLabCallback(body: any, metadata: any): boolean {
   if (String(body?.task) !== 'finlab-v4-backfill') return false
   if (body?.status !== 'success') return false
-  return truthyFlag(metadata?.continue_evening_chain) || finLabDailyPriceModeCallback(metadata)
+  return truthyFlag(metadata?.continue_evening_chain)
+    || truthyFlag(body?.continue_evening_chain)
+    || finLabDailyPriceModeCallback(metadata, body)
 }
 
 const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])

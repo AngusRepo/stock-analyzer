@@ -55,6 +55,17 @@ type AlphaContext = {
   latestClose?: string | number | null
 }
 
+type EntryPriceModelV2Ui = {
+  anchorSource: string
+  entry: string | null
+  preferred: string | null
+  chaseCeiling: string | null
+  premium: string | null
+  discount: string | null
+  poc: string | null
+  fallback: string | null
+}
+
 type MlVoteSummary = {
   bullish?: number
   bearish?: number
@@ -286,6 +297,28 @@ function extractTokenValue(text: string, key: string): string | null {
   return match?.[1]?.trim() ?? null
 }
 
+function cleanEntryModelToken(value: string | null): string | null {
+  if (!value) return null
+  const clean = value.trim()
+  return clean && clean.toLowerCase() !== 'na' ? clean : null
+}
+
+function entryModelV2FromWatchPoints(points: string[]): EntryPriceModelV2Ui | null {
+  const point = points.find((item) => item.startsWith('entry_price_model_v2:'))
+  if (!point) return null
+  const anchorSource = cleanEntryModelToken(extractTokenValue(point, 'source')) ?? 'unknown'
+  return {
+    anchorSource,
+    entry: cleanEntryModelToken(extractTokenValue(point, 'entry')),
+    preferred: cleanEntryModelToken(extractTokenValue(point, 'preferred')),
+    chaseCeiling: cleanEntryModelToken(extractTokenValue(point, 'chase_ceiling')),
+    premium: cleanEntryModelToken(extractTokenValue(point, 'premium')),
+    discount: cleanEntryModelToken(extractTokenValue(point, 'discount')),
+    poc: cleanEntryModelToken(extractTokenValue(point, 'poc')),
+    fallback: cleanEntryModelToken(extractTokenValue(point, 'fallback')),
+  }
+}
+
 function extractSizing(text: string): number | null {
   const match = text.match(/sizing\s*x\s*([0-9.]+)/i)
   const value = Number(match?.[1] ?? NaN)
@@ -359,6 +392,7 @@ function parseObject(raw: unknown): any | null {
 
 type TradePlanContext = {
   source: 'ohlcv' | 'alpha_fallback'
+  entryModelV2?: EntryPriceModelV2Ui | null
   latest: number | null
   resistance: number | null
   confirmation: number | null
@@ -841,10 +875,12 @@ function planPrice(value: unknown): string | null {
 }
 
 function buildOhlcvTradePlanContext(rec: any, context: AlphaContext | null, priceRows: any[]): TradePlanContext {
+  const entryModelV2 = entryModelV2FromWatchPoints(normalizeWatchPoints(rec.watch_points))
   const levels = buildTradingPlanLevels(normalizeOhlcvRows(priceRows))
   if (levels) {
     return {
       source: 'ohlcv',
+      entryModelV2,
       latest: levels.latestClose,
       resistance: levels.resistance,
       confirmation: levels.confirmation,
@@ -868,6 +904,7 @@ function buildOhlcvTradePlanContext(rec: any, context: AlphaContext | null, pric
   const optimisticHigh = numericPrice(context?.optimisticValueHigh ?? rec.target_price ?? rec.targetPrice)
   return {
     source: 'alpha_fallback',
+    entryModelV2,
     latest,
     resistance: optimisticHigh ?? fairHigh,
     confirmation: fairHigh ?? optimisticHigh,
@@ -1404,18 +1441,29 @@ function alphaStructureValue(context: AlphaContext | null): string {
 function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan: TradePlanContext): TradePlanReadRow[] {
   const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
   const modelEntry = planPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.entryPrice)
-  const sourceText = zones.source === 'ohlcv' ? 'OHLCV 動態線位' : 'Alpha fallback'
+  const entryModel = plan.entryModelV2
+  const sourceText = entryModel
+    ? `Entry Model V2 / ${entryModel.anchorSource}`
+    : zones.source === 'ohlcv'
+      ? 'OHLCV daily fallback'
+      : 'Alpha daily proxy fallback'
+  const entryZone = entryModel?.entry ?? zones.buyReferenceZone
+  const preferredEntry = entryModel?.preferred ?? modelEntry ?? '-'
+  const chaseCeiling = entryModel?.chaseCeiling ?? zones.chaseCeilingZone
+  const pocSource = entryModel
+    ? `${entryModel.poc ?? '-'} / ${entryModel.anchorSource}`
+    : `${zones.volumeNode ?? '-'} / ${zones.source === 'ohlcv' ? 'OHLCV volume proxy' : 'Alpha proxy'}`
   return [
     { label: '現價', value: zones.latest ?? '-', note: '', tone: 'neutral' },
-    { label: '模型限價', value: modelEntry ?? '-', note: '', tone: 'neutral' },
-    { label: '買入參考區', value: zones.buyReferenceZone, note: '', tone: 'good' },
-    { label: '可追價上限區', value: zones.chaseCeilingZone, note: '', tone: 'warn' },
+    { label: '偏好買入價', value: preferredEntry, note: '', tone: 'neutral' },
+    { label: '建議買入區間', value: entryZone, note: '', tone: 'good' },
+    { label: '可追價上限', value: chaseCeiling, note: '', tone: 'warn' },
     { label: '前高壓力', value: zones.resistance ?? '-', note: '', tone: 'warn' },
     { label: '轉強確認', value: zones.confirmation ?? '-', note: '', tone: 'good' },
     { label: '關鍵支撐', value: zones.support ?? '-', note: '', tone: 'good' },
     { label: 'ATR 防守', value: zones.atrDefense ?? '-', note: '', tone: 'warn' },
-    { label: '量能節點', value: zones.volumeNode ?? '-', note: '', tone: 'neutral' },
-    { label: '線位來源', value: sourceText, note: '', tone: zones.source === 'ohlcv' ? 'good' : 'warn' },
+    { label: 'POC / 量能節點來源', value: pocSource, note: '', tone: entryModel?.anchorSource === 'intraday_volume_profile' ? 'good' : 'neutral' },
+    { label: '線位來源', value: sourceText, note: entryModel?.fallback ?? '', tone: entryModel?.fallback ? 'warn' : zones.source === 'ohlcv' ? 'good' : 'warn' },
     { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
     { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
   ]
@@ -1629,6 +1677,7 @@ function isContextWatchPoint(point: string): boolean {
     || normalized.startsWith('Alpha overlay:')
     || normalized.startsWith('Market structure:')
     || normalized.startsWith('ohlcv_trade_plan:')
+    || normalized.startsWith('entry_price_model_v2:')
     || normalized.startsWith('Alpha 結構:')
     || normalized.startsWith('ML ensemble:')
     || normalized.startsWith('screener_funnel:')

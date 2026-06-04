@@ -103,8 +103,11 @@ assert(
     adminControlRoutes.includes('shouldContinueEveningChainAfterFinLabCallback') &&
     adminControlRoutes.includes('finLabDailyPriceModeCallback') &&
     adminControlRoutes.includes('continue_evening_chain') &&
+    adminControlRoutes.includes('body?.continue_evening_chain') &&
+    adminControlRoutes.includes('callbackMetadataText') &&
+    adminControlRoutes.includes("summary.includes('daily_price_primary')") &&
     adminControlRoutes.includes('finlab_continuation_queued') &&
     adminControlRoutes.includes("'finlab-primary-continuation'") &&
     schedulerRunLogger.includes("'finlab-primary-continuation': 'FinLab Primary Continuation'"),
-  'FinLab callback must continue the evening chain for explicit daily-price callbacks and expose whether continuation was queued',
+  'FinLab callback must continue the evening chain for explicit daily-price callbacks, tolerate payload shape drift, and expose whether continuation was queued',
 )

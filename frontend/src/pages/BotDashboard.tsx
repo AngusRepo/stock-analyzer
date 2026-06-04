@@ -623,7 +623,9 @@ function PreDebateStagingPool({
   const payload = data?.payload
   const tradable = data?.tradable ?? []
   const emerging = data?.emerging ?? []
-  const rows = tradable.slice(0, 16)
+  const tradableRows = tradable.slice(0, 16)
+  const emergingRows = emerging.slice(0, 24)
+  const hasRows = tradableRows.length > 0 || emergingRows.length > 0
 
   return (
     <div className="pre-debate-staging-pool space-y-3">
@@ -660,17 +662,49 @@ function PreDebateStagingPool({
         <div className="grid gap-3 xl:grid-cols-2">
           {[1, 2, 3, 4].map((idx) => <div key={idx} className="h-36 animate-pulse rounded-xl bg-muted/30" />)}
         </div>
-      ) : rows.length ? (
-        <div className="grid gap-3 xl:grid-cols-2">
-          {rows.map((rec: any, idx: number) => (
-            <PreDebateStagingCard
-              key={rec.stock_id ?? rec.symbol ?? idx}
-              rec={rec}
-              rank={idx + 1}
-              selected={selectedSymbol === rec.symbol}
-              onSelectSymbol={onSelectSymbol}
-            />
-          ))}
+      ) : hasRows ? (
+        <div className="space-y-4">
+          {tradableRows.length > 0 && (
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="sv-title-text text-xs font-semibold">上市櫃交易候選</p>
+                <span className="sv-muted-text font-mono text-[10px]">{fmt(tradableRows.length)}/{fmt(tradable.length)}</span>
+              </div>
+              <div className="grid gap-3 xl:grid-cols-2">
+                {tradableRows.map((rec: any, idx: number) => (
+                  <PreDebateStagingCard
+                    key={`tradable-${rec.stock_id ?? rec.symbol ?? idx}`}
+                    rec={rec}
+                    rank={idx + 1}
+                    selected={selectedSymbol === rec.symbol}
+                    onSelectSymbol={onSelectSymbol}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+          {emergingRows.length > 0 && (
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="sv-title-text text-xs font-semibold">興櫃研究觀察</p>
+                  <WorkstationPill tone="warn">not executable</WorkstationPill>
+                </div>
+                <span className="sv-muted-text font-mono text-[10px]">{fmt(emergingRows.length)}/{fmt(emerging.length)}</span>
+              </div>
+              <div className="grid gap-3 xl:grid-cols-2">
+                {emergingRows.map((rec: any, idx: number) => (
+                  <PreDebateStagingCard
+                    key={`emerging-${rec.stock_id ?? rec.symbol ?? idx}`}
+                    rec={rec}
+                    rank={idx + 1}
+                    selected={selectedSymbol === rec.symbol}
+                    onSelectSymbol={onSelectSymbol}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       ) : (
         <div className="sv-content-card sv-muted-text rounded-xl p-4 text-xs">

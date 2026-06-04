@@ -84,9 +84,14 @@ def test_daily_pipeline_runs_coarse_feature_gate_before_heavy_sequence_models():
     assert 'models=["GNN", "TimesFM"]' not in source
     assert "FORMAL_LAYER3_BATCH_CHUNK_SIZE" in source
     assert "FORMAL_LAYER3_CHUNK_TIMEOUT_SEC" in source
+    assert "else 300.0" in source
     assert "asyncio.wait_for(" in source
     assert "models=[model_name]" in source
     assert "_run_formal_layer3_chunked(" in source
+    assert "FORMAL_LAYER3_{model_key}_CHUNK_SIZE" in source
+    assert "chunks_by_model" in source
+    assert "for chunk_index, chunk in enumerate(chunks):" in source
+    assert "chunk_results = await asyncio.gather" not in source
     assert "resolve_controller_screener_sizing(" in source
     assert "_resolve_coarse_ml_gate_target(" in source
     assert "coarseMlKeepRatio" in source

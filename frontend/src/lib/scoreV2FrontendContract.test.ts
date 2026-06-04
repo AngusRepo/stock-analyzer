@@ -83,8 +83,14 @@ for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '風控
 }
 assert(!scoreBreakdown.includes('方案 A | 突破追價'), 'Recommendation card should not render plan A copy')
 assert(!scoreBreakdown.includes('方案 B | 拉回低吸'), 'Recommendation card should not render plan B copy')
-for (const text of ['前高壓力', '轉強確認', '關鍵支撐', 'ATR 防守', '量能節點']) {
+for (const text of ['偏好買入價', '建議買入區間', '可追價上限', '前高壓力', '轉強確認', '關鍵支撐', 'ATR 防守', 'POC / 量能節點來源']) {
   assert(scoreBreakdown.includes(text), `Recommendation card should use user-facing trading-plan label: ${text}`)
+}
+for (const text of ['Entry Model V2 /', 'OHLCV daily fallback', 'Alpha daily proxy fallback']) {
+  assert(scoreBreakdown.includes(text), `Recommendation card should prefer Entry Model V2 evidence or explicitly label fallback: ${text}`)
+}
+for (const text of ['entryModelV2FromWatchPoints', 'entry_price_model_v2:']) {
+  assert(recommendationCard.includes(text), `Recommendation card should parse Entry Model V2 evidence: ${text}`)
 }
 assert(
   scoreBreakdown.includes('reasonVariants?.breeze2'),

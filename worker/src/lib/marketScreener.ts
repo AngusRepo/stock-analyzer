@@ -678,23 +678,32 @@ async function loadStrategyRawFundamentalSignals(
 
   for (const chunk of chunkArray(uniqueSymbols, D1_IN_CHUNK_SIZE)) {
     const placeholders = chunk.map(() => '?').join(',')
+    const requestedSymbolRows = chunk
+      .map((_, index) => `${index === 0 ? 'SELECT' : 'UNION ALL SELECT'} ? AS stock_id`)
+      .join(' ')
+    const latestNonNullFundamentalColumn = (column: string) => `
+      (SELECT f2.${column}
+         FROM canonical_fundamental_features f2
+        WHERE f2.stock_id = s.stock_id
+          AND f2.available_date <= ?
+          AND f2.source = 'finlab.fundamental_factor_diversity'
+          AND f2.${column} IS NOT NULL
+        ORDER BY f2.available_date DESC, f2.period DESC
+        LIMIT 1) AS ${column}`
     try {
       const { results } = await env.DB.prepare(`
-        SELECT f.stock_id AS symbol,
-               f.revenue_growth_yoy, f.gross_margin, f.operating_margin, f.roe,
-               f.eps, f.pe, f.pb, f.dividend_yield
-          FROM canonical_fundamental_features f
-         WHERE f.stock_id IN (${placeholders})
-           AND f.available_date <= ?
-           AND f.source = 'finlab.fundamental_factor_diversity'
-           AND f.available_date = (
-             SELECT MAX(f2.available_date)
-               FROM canonical_fundamental_features f2
-              WHERE f2.stock_id = f.stock_id
-                AND f2.available_date <= ?
-                AND f2.source = 'finlab.fundamental_factor_diversity'
-           )
-      `).bind(...chunk, endDate, endDate).all<{
+        WITH requested_symbols AS (${requestedSymbolRows})
+        SELECT s.stock_id AS symbol,
+               ${latestNonNullFundamentalColumn('revenue_growth_yoy')},
+               ${latestNonNullFundamentalColumn('gross_margin')},
+               ${latestNonNullFundamentalColumn('operating_margin')},
+               ${latestNonNullFundamentalColumn('roe')},
+               ${latestNonNullFundamentalColumn('eps')},
+               ${latestNonNullFundamentalColumn('pe')},
+               ${latestNonNullFundamentalColumn('pb')},
+               ${latestNonNullFundamentalColumn('dividend_yield')}
+          FROM requested_symbols s
+      `).bind(...chunk, endDate, endDate, endDate, endDate, endDate, endDate, endDate, endDate).all<{
         symbol: string
         revenue_growth_yoy: number | null
         gross_margin: number | null

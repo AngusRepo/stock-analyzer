@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import sys
@@ -64,6 +65,77 @@ def test_l2_l3_targets_are_proportional_to_upstream_counts():
 
     assert l2_target == 53
     assert l3_target == 40
+
+
+def test_l2_core_gate_selects_by_tree_rank_only():
+    from graphs.daily_pipeline_v2 import _attach_l2_core_ml_gate  # noqa: E402
+
+    predictions = {
+        "2330": {"rank_scores": {"LightGBM": 0.80, "XGBoost": 0.70, "ExtraTrees": 0.90, "TabM": 0.10}},
+        "2317": {"rank_scores": {"LightGBM": 0.40, "XGBoost": 0.50, "ExtraTrees": 0.45, "TabM": 0.99}},
+        "2454": {"rank_scores": {"TabM": 1.00}},
+    }
+
+    gated, selected, summary = _attach_l2_core_ml_gate(
+        predictions,
+        target_size=1,
+        upstream_count=3,
+    )
+
+    assert selected == ["2330"]
+    assert gated["2330"]["core_ml_gate"]["selected"] is True
+    assert gated["2317"]["core_ml_gate"]["selected"] is False
+    assert gated["2454"]["core_ml_gate"]["selected"] is False
+    assert gated["2330"]["core_ml_gate"]["models"] == ["LightGBM", "XGBoost", "ExtraTrees"]
+    assert summary["scored_count"] == 2
+
+
+def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypatch):
+    from graphs import daily_pipeline_v2  # noqa: E402
+
+    observed_payload_symbols = []
+
+    async def fake_node_ml_predict(state):
+        observed_payload_symbols.append([payload["symbol"] for payload in state["payloads"]])
+        return {
+            "predictions": {
+                "2330": {
+                    "symbol": "2330",
+                    "rank_scores": {"TabM": 0.81, "GNN": 0.76},
+                    "ensemble_v2": {"signal": "BUY", "weights": {"TabM": 1.0, "GNN": 1.0}},
+                },
+            },
+            "modal_wait_telemetry": {"stage": "fake_l3"},
+        }
+
+    monkeypatch.setattr(daily_pipeline_v2, "node_ml_predict", fake_node_ml_predict)
+
+    state = {
+        "payloads": [{"symbol": "2330"}, {"symbol": "2317"}],
+        "l3_payloads": [{"symbol": "2330"}],
+        "l2_predictions": {
+            "2330": {
+                "symbol": "2330",
+                "rank_scores": {"LightGBM": 0.8, "XGBoost": 0.7, "ExtraTrees": 0.9},
+                "core_ml_gate": {"selected": True, "rank": 1, "target_size": 1},
+                "prediction_stage": "L2",
+            },
+            "2317": {
+                "symbol": "2317",
+                "rank_scores": {"LightGBM": 0.4, "XGBoost": 0.5, "ExtraTrees": 0.45},
+                "core_ml_gate": {"selected": False, "rank": 2, "target_size": 1},
+                "prediction_stage": "L2",
+            },
+        },
+    }
+
+    result = asyncio.run(daily_pipeline_v2.node_l3_formal_predict(state))
+
+    assert observed_payload_symbols == [["2330"]]
+    assert result["predictions"]["2330"]["prediction_stage"] == "L3"
+    assert result["predictions"]["2330"]["core_ml_gate"] == {"selected": True, "rank": 1, "target_size": 1}
+    assert result["predictions"]["2317"]["prediction_stage"] == "L2"
+    assert result["l3_predictions"]["2330"]["rank_scores"] == {"TabM": 0.81, "GNN": 0.76}
 
 
 def test_daily_pipeline_graph_splits_l2_gate_before_l3_formal_predict():

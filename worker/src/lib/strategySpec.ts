@@ -980,11 +980,16 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
       },
       dsl: {
         any: [
+          { signal: 'technicalIndicators.smcBullishScore', op: '>=', value: 0.12 },
+          { signal: 'technicalIndicators.smcNetScore', op: '>=', value: 0.08 },
           { signal: 'technicalIndicators.liquiditySweepBullish', op: '>=', value: 1 },
           { signal: 'technicalIndicators.bosBullish', op: '>=', value: 1 },
           { signal: 'technicalIndicators.chochBullish', op: '>=', value: 1 },
           { signal: 'technicalIndicators.bestFvgStrength', op: '>=', value: 0.1 },
           { signal: 'technicalIndicators.bestOrderBlockStrength', op: '>=', value: 0.1 },
+        ],
+        not: [
+          { signal: 'technicalIndicators.smcBiasBearish', op: '==', value: 1 },
         ],
       },
     },

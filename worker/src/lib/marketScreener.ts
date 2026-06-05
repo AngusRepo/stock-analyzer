@@ -877,19 +877,14 @@ function deriveStrategyRawSignals(
     close: row.close,
     volume: row.volume,
   }))
-  const latestOhlcv = ohlcvRows[ohlcvRows.length - 1]
-  const priorSwingWindow = ohlcvRows.slice(Math.max(0, ohlcvRows.length - 21), Math.max(0, ohlcvRows.length - 1))
-  const priorSwingHigh = priorSwingWindow.length ? Math.max(...priorSwingWindow.map((row) => row.high)) : null
-  const priorSwingLow = priorSwingWindow.length ? Math.min(...priorSwingWindow.map((row) => row.low)) : null
-  const displacementPct = latestOhlcv && latestOhlcv.close > latestOhlcv.open
-    ? (latestOhlcv.close - latestOhlcv.open) / Math.max(0.01, latestOhlcv.close)
-    : 0
-  const bosBullish = latestOhlcv && priorSwingHigh != null && latestOhlcv.close > priorSwingHigh ? 1 : 0
-  const liquiditySweepBullish = latestOhlcv && priorSwingLow != null && latestOhlcv.low < priorSwingLow && latestOhlcv.close > priorSwingLow ? 1 : 0
-  const chochBullish = liquiditySweepBullish && (closeAboveMa20Pct == null || closeAboveMa20Pct >= -0.04) && displacementPct >= 0.004 ? 1 : 0
   const priceAction = ohlcvRows.length >= 5 ? buildPriceActionStructure(ohlcvRows, { latestPrice: close }) : null
   const bestFvg = priceAction?.bestFvg ?? null
   const bestOrderBlock = priceAction?.bestOrderBlock ?? null
+  const smc = priceAction?.smc ?? null
+  const displacementPct = smc?.bullishDisplacement?.displacementPct ?? 0
+  const bosBullish = smc?.bullishBos ? 1 : 0
+  const liquiditySweepBullish = smc?.bullishLiquiditySweep ? 1 : 0
+  const chochBullish = smc?.bullishChoch ? 1 : 0
   const chipRows = [...(chipDates?.entries() ?? [])]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .slice(-5)
@@ -959,6 +954,14 @@ function deriveStrategyRawSignals(
       bosBullish,
       liquiditySweepBullish,
       chochBullish,
+      smcBullishScore: smc?.bullishScore ?? null,
+      smcBearishScore: smc?.bearishScore ?? null,
+      smcNetScore: smc?.score ?? null,
+      smcBiasBullish: smc?.bias === 'bullish' ? 1 : 0,
+      smcBiasBearish: smc?.bias === 'bearish' ? 1 : 0,
+      bearishBos: smc?.bearishBos ? 1 : 0,
+      bearishChoch: smc?.bearishChoch ? 1 : 0,
+      bearishLiquiditySweep: smc?.bearishLiquiditySweep ? 1 : 0,
       bestFvgStrength: bestFvg?.strength ?? null,
       bestFvgRetested: bestFvg?.status === 'retested' ? 1 : 0,
       bestOrderBlockStrength: bestOrderBlock?.strength ?? null,
@@ -1999,11 +2002,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         symbol: candidate.symbol,
         name: candidate.name,
         stage: 'layer2_coarse_ml_gate',
-        decision: 'pass',
+        decision: 'observe',
         reasonCode: 'coarse_ml_queue_seed_from_layer1_breadth',
         scoreAfter: candidate.score,
         rank: index + 1,
         evidence: {
+          worker_seed_only: true,
+          layer_contract: 'ml-controller owns the actual LightGBM/XGBoost/ExtraTrees coarse ML pass decision',
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
           strategy_family_ids: (candidate as any).strategy_family_ids ?? [],
           strategy_variant_ids: (candidate as any).strategy_variant_ids ?? [],
@@ -3029,7 +3034,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       symbol: c.symbol,
       name: c.name,
       stage: 'final_selection',
-      decision: 'selected',
+      decision: 'observe',
       reasonCode: 'selected_for_l1_breadth_seed',
       scoreAfter: Number(sc.score ?? 0),
       rank: index + 1,

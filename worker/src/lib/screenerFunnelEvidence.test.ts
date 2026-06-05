@@ -116,3 +116,21 @@ function assert(condition: unknown, message: string): void {
   assert(summary?.evidence.semantic_stage === 'l1_candidate_seed_after_overlay', 'summary evidence must expose semantic L1 seed stage')
   assert(Array.isArray(summary?.evidence.strategy_ids), 'semantic L1 seed strategy ids must be exposed')
 }
+
+{
+  const summaries = summarizeScreenerFunnelRows([
+    {
+      symbol: '2330',
+      stage: 'layer2_coarse_ml_gate',
+      decision: 'observe',
+      reason_code: 'coarse_ml_queue_seed_from_layer1_breadth',
+      rank: 3,
+      score_after: 70,
+      evidence: JSON.stringify({ worker_seed_only: true, layer_contract: 'ml-controller owns the actual pass' }),
+    },
+  ])
+
+  const summary = summaries.get('2330')
+  assert(!summary?.evidence.layer2_coarse_ml, 'worker seed must not be summarized as formal L2 coarse ML pass')
+  assert((summary?.evidence.layer2_queue_seed as any)?.worker_seed_only === true, 'worker seed should stay visible as queue seed evidence')
+}

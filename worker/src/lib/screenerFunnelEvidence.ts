@@ -58,6 +58,17 @@ function pickAllByStage(steps: ScreenerFunnelStep[], stage: string): ScreenerFun
   return steps.filter((step) => step.stage === stage)
 }
 
+function pickLastFormalLayer2Step(steps: ScreenerFunnelStep[]): ScreenerFunnelStep | null {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i]
+    if (step.stage !== 'layer2_coarse_ml_gate') continue
+    if (step.decision !== 'pass') continue
+    if (step.evidence?.worker_seed_only === true) continue
+    return step
+  }
+  return null
+}
+
 function pickCandidateSeedStep(steps: ScreenerFunnelStep[]): ScreenerFunnelStep | null {
   return pickLastByStage(steps, 'l1_candidate_seed_after_overlay') ?? pickLastByStage(steps, 'final_selection')
 }
@@ -66,7 +77,8 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   const finalSelection = pickLastByStage(steps, 'final_selection')
   const candidateSeed = pickCandidateSeedStep(steps)
   const layer1 = pickLastByStage(steps, 'layer1_strategy_breadth_gate')
-  const layer2 = pickLastByStage(steps, 'layer2_coarse_ml_gate')
+  const layer2 = pickLastFormalLayer2Step(steps)
+  const layer2Seed = pickLastByStage(steps, 'layer2_coarse_ml_gate')
   const rrg = pickLastByStage(steps, 'rrg_overlay')
   const buzz = pickLastByStage(steps, 'buzz_evidence')
   const strategyPool = [
@@ -92,6 +104,7 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   if (scoring) evidence.base_scoring = scoring.evidence
   if (layer1) evidence.layer1_breadth = { reason_code: layer1.reason_code, rank: layer1.rank, score_after: layer1.score_after, ...layer1.evidence }
   if (layer2) evidence.layer2_coarse_ml = { reason_code: layer2.reason_code, rank: layer2.rank, score_after: layer2.score_after, ...layer2.evidence }
+  if (!layer2 && layer2Seed) evidence.layer2_queue_seed = { reason_code: layer2Seed.reason_code, rank: layer2Seed.rank, score_after: layer2Seed.score_after, ...layer2Seed.evidence }
   if (rrg) evidence.rrg_overlay = { reason_code: rrg.reason_code, ...rrg.evidence }
   if (buzz) evidence.buzz_evidence = { reason_code: buzz.reason_code, ...buzz.evidence }
   if (strategyPool.length) {

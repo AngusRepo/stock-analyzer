@@ -488,6 +488,14 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
     itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_series)
     timesfm_map = _drain_ts_result(timesfm_raw, "TimesFM", sequence_series)
+    gnn_map: dict[str, dict] = {}
+    if model_status.get("GNN", "retired") in ("active", "degraded"):
+        gnn_map = _build_gnn_graph_adapter_scores(sequence_series)
+        logger.info(
+            "[Pipeline V2] GNN graph adapter: %s/%s scored",
+            len(gnn_map),
+            len(sequence_series),
+        )
 
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
@@ -503,6 +511,13 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             row["itransformer"] = itransformer_map[sym]
         if sym in timesfm_map:
             row["timesfm"] = timesfm_map[sym]
+        if sym in gnn_map:
+            row["gnn"] = gnn_map[sym]
+            rank_scores = row.get("rank_scores")
+            if not isinstance(rank_scores, dict):
+                rank_scores = {}
+                row["rank_scores"] = rank_scores
+            rank_scores["GNN"] = float(gnn_map[sym]["rank_score"])
         if sym in kalman_map:
             row["kalman_filter"] = kalman_map[sym]
         if sym in markov_map:
@@ -624,6 +639,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}, "
         f"itransformer={sum(1 for v in pred_map.values() if 'itransformer' in v)}, "
         f"timesfm={sum(1 for v in pred_map.values() if 'timesfm' in v)}, "
+        f"gnn={sum(1 for v in pred_map.values() if 'gnn' in v)}, "
         f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
         f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
         f"alt_fallback={alt_fallback_count}, "
@@ -809,6 +825,144 @@ def _resolve_coarse_ml_gate_target(
     keep_ratio = max(0.25, min(1.0, keep_ratio))
     ratio_target = max(1, math.ceil(input_count * keep_ratio))
     return min(input_count, ratio_target)
+
+
+def _resolve_core_family_rank_target(
+    input_count: int,
+    screener_sizing: dict[str, Any],
+    trading_config: dict[str, Any] | None = None,
+) -> int:
+    """Resolve Layer 3 keep count from the post-L2 candidate count."""
+    if input_count <= 0:
+        return 0
+    config = trading_config if isinstance(trading_config, dict) else {}
+    raw = config.get("screener") if isinstance(config.get("screener"), dict) else {}
+    try:
+        keep_ratio = float(
+            raw.get("coreFamilyKeepRatio", raw.get("core_family_keep_ratio", 0.75)) or 0.75
+        )
+    except (TypeError, ValueError):
+        keep_ratio = 0.75
+    keep_ratio = max(0.25, min(1.0, keep_ratio))
+    ratio_target = max(1, math.ceil(input_count * keep_ratio))
+    configured_target = int(screener_sizing.get("core_family_rank_size") or ratio_target)
+    return min(input_count, ratio_target, max(1, configured_target))
+
+
+def _returns_from_prices(prices: list[Any], *, lookback: int = 60) -> list[float]:
+    values: list[float] = []
+    for price in prices or []:
+        try:
+            value = float(price)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            values.append(value)
+    if len(values) < 2:
+        return []
+    returns: list[float] = []
+    for idx in range(1, len(values)):
+        prev = values[idx - 1]
+        cur = values[idx]
+        if prev > 0:
+            ret = cur / prev - 1.0
+            if math.isfinite(ret):
+                returns.append(ret)
+    return returns[-max(2, int(lookback)):]
+
+
+def _pearson_corr(left: list[float], right: list[float]) -> float | None:
+    n = min(len(left), len(right))
+    if n < 20:
+        return None
+    xs = left[-n:]
+    ys = right[-n:]
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    vx = sum((x - mx) ** 2 for x in xs)
+    vy = sum((y - my) ** 2 for y in ys)
+    denom = math.sqrt(vx * vy)
+    if denom <= 0:
+        return None
+    corr = cov / denom
+    return corr if math.isfinite(corr) else None
+
+
+def _window_return(returns: list[float], *, window: int = 5) -> float:
+    if not returns:
+        return 0.0
+    compounded = 1.0
+    for ret in returns[-max(1, int(window)):]:
+        compounded *= 1.0 + ret
+    value = compounded - 1.0
+    return value if math.isfinite(value) else 0.0
+
+
+def _sigmoid_rank(value: float, *, scale: float = 16.0) -> float:
+    x = max(-50.0, min(50.0, float(value) * scale))
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def _build_gnn_graph_adapter_scores(
+    sequence_series: list[dict[str, Any]],
+    *,
+    lookback: int = 60,
+    corr_threshold: float = 0.35,
+    max_neighbors: int = 8,
+    min_neighbors: int = 2,
+) -> dict[str, dict[str, Any]]:
+    """Production graph adapter: rank each stock by correlated-neighbor momentum.
+
+    This is a controller-owned graph scorer for the formal GNN slot. It does
+    not pretend to be a trained neural artifact; trained GNN artifacts still
+    require model registry promotion.
+    """
+    vectors: dict[str, list[float]] = {}
+    for row in sequence_series or []:
+        symbol = str(row.get("symbol") or "")
+        returns = _returns_from_prices(row.get("prices") or [], lookback=lookback)
+        if symbol and len(returns) >= 20:
+            vectors[symbol] = returns
+    if len(vectors) < 3:
+        return {}
+
+    own_signal = {symbol: _window_return(returns, window=5) for symbol, returns in vectors.items()}
+    out: dict[str, dict[str, Any]] = {}
+    for symbol, returns in vectors.items():
+        neighbors: list[tuple[float, str]] = []
+        for other_symbol, other_returns in vectors.items():
+            if other_symbol == symbol:
+                continue
+            corr = _pearson_corr(returns, other_returns)
+            if corr is not None and corr >= corr_threshold:
+                neighbors.append((corr, other_symbol))
+        neighbors.sort(reverse=True)
+        selected_neighbors = neighbors[:max(1, int(max_neighbors))]
+        if len(selected_neighbors) < min_neighbors:
+            continue
+        weight_sum = sum(max(0.0, corr) for corr, _ in selected_neighbors)
+        if weight_sum <= 0:
+            continue
+        neighbor_signal = sum(
+            max(0.0, corr) * own_signal.get(other_symbol, 0.0)
+            for corr, other_symbol in selected_neighbors
+        ) / weight_sum
+        combined_signal = 0.55 * own_signal.get(symbol, 0.0) + 0.45 * neighbor_signal
+        rank_score = _sigmoid_rank(combined_signal)
+        confidence = min(0.85, 0.45 + 0.04 * len(selected_neighbors) + min(0.20, abs(combined_signal) * 4.0))
+        out[symbol] = {
+            "model": "GNN",
+            "adapter": "correlation_graph_rank_v1",
+            "rank_score": round(rank_score, 6),
+            "forecast_pct": round(combined_signal, 6),
+            "confidence": round(confidence, 4),
+            "neighbor_count": len(selected_neighbors),
+            "corr_threshold": corr_threshold,
+            "max_neighbors": max_neighbors,
+            "source": "daily_pipeline_v2.sequence_series.correlation_graph",
+        }
+    return out
 
 
 def _coerce_ic_value(value: Any) -> float | None:
@@ -1028,6 +1182,49 @@ def _build_serving_ic_bundle(
             "validation_multiplier": multiplier,
             "validation_status": validation_status,
             "validation_reason": validation_reason,
+            "last_ic_status": entry.get("last_ic_status"),
+            "last_ic_root_cause": entry.get("last_ic_root_cause"),
+            "last_ic_sample_count": entry.get("last_ic_sample_count"),
+        }
+    for name, entry in ((pool or {}).get("formal_layer3_slots") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        slot_status = str(entry.get("status") or "").strip()
+        try:
+            vote_weight = float(entry.get("vote_weight") or 0.0)
+        except (TypeError, ValueError):
+            vote_weight = 0.0
+        direct_prediction = bool(entry.get("direct_prediction")) or vote_weight > 0.0
+        if not direct_prediction or slot_status not in {"production_adapter_active", "active"}:
+            diagnostics[str(name)] = {
+                "scope": scope,
+                "ic_value": None,
+                "ic_source": "formal_slot_inactive",
+                "ic_sample_count": 0,
+                "ic_shrinkage": {"reason": slot_status or "inactive"},
+                "validation_multiplier": 0.0,
+                "validation_status": "INACTIVE",
+                "validation_reason": "formal_slot_not_production_active",
+            }
+            continue
+        ic_value, source = _entry_serving_ic(entry, None if scope == "GLOBAL" else scope)
+        multiplier, validation_status, validation_reason = _validation_multiplier(entry)
+        sample_count = _entry_ic_sample_count(entry, source)
+        effective_weight, shrinkage = _shrink_ic_weight(ic_value, sample_count, multiplier, ev2_cfg)
+        if effective_weight is not None:
+            weights[str(name)] = float(effective_weight)
+        diagnostics[str(name)] = {
+            "scope": scope,
+            "ic_value": ic_value,
+            "ic_source": source,
+            "ic_sample_count": sample_count,
+            "ic_shrinkage": shrinkage,
+            "validation_multiplier": multiplier,
+            "validation_status": validation_status,
+            "validation_reason": validation_reason,
+            "formal_slot_status": slot_status,
+            "direct_prediction": direct_prediction,
+            "vote_weight": vote_weight,
             "last_ic_status": entry.get("last_ic_status"),
             "last_ic_root_cause": entry.get("last_ic_root_cause"),
             "last_ic_sample_count": entry.get("last_ic_sample_count"),
@@ -1547,7 +1744,18 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         state["predictions"],
         fallback_size=core_ml_target_size,
     )
-    core_family_target_size = screener_sizing["core_family_rank_size"]
+    layer2_count = len(final)
+    logger.info(
+        "[Pipeline V2] Layer2 core_ml_gate kept %s/%s candidates (target=%s)",
+        layer2_count,
+        len(screener_recs),
+        core_ml_target_size,
+    )
+    core_family_target_size = _resolve_core_family_rank_target(
+        layer2_count,
+        screener_sizing,
+        trading_cfg,
+    )
     final = apply_core_family_rank(
         final,
         state["predictions"],

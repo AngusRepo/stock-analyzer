@@ -218,10 +218,49 @@ def _model_pool_status(pool: dict | None) -> dict[str, str]:
     from .prediction_runtime import _MODEL_NAMES_V2
 
     pool_models = (pool or {}).get("models", {}) if pool else {}
-    return {
-        name: (pool_models.get(name) or {}).get("status", "active")
-        for name in _MODEL_NAMES_V2
-    }
+    formal_slots = (pool or {}).get("formal_layer3_slots", {}) if pool else {}
+
+    def resolve(name: str) -> str:
+        if isinstance(pool_models.get(name), dict):
+            return str((pool_models.get(name) or {}).get("status") or "active")
+        slot = formal_slots.get(name) if isinstance(formal_slots, dict) else None
+        if isinstance(slot, dict):
+            slot_status = str(slot.get("status") or "").strip()
+            try:
+                vote_weight = float(slot.get("vote_weight") or 0.0)
+            except (TypeError, ValueError):
+                vote_weight = 0.0
+            direct_prediction = bool(slot.get("direct_prediction")) or vote_weight > 0.0
+            if direct_prediction and slot_status in {"production_adapter_active", "active"}:
+                return "active"
+            return "retired"
+        return "active"
+
+    return {name: resolve(name) for name in _MODEL_NAMES_V2}
+
+
+def _controller_owned_direct_feature_models(pool: dict | None) -> set[str]:
+    pool_models = (pool or {}).get("models", {}) if pool else {}
+    formal_slots = (pool or {}).get("formal_layer3_slots", {}) if pool else {}
+    controller_owned: set[str] = set()
+    if not isinstance(formal_slots, dict):
+        return controller_owned
+    for name, slot in formal_slots.items():
+        if not isinstance(slot, dict):
+            continue
+        slot_status = str(slot.get("status") or "").strip()
+        try:
+            vote_weight = float(slot.get("vote_weight") or 0.0)
+        except (TypeError, ValueError):
+            vote_weight = 0.0
+        direct_prediction = bool(slot.get("direct_prediction")) or vote_weight > 0.0
+        model_entry = pool_models.get(name) if isinstance(pool_models, dict) else None
+        has_artifact_path = isinstance(model_entry, dict) and bool(
+            model_entry.get("gcs_path") or model_entry.get("artifact_path") or model_entry.get("active_path")
+        )
+        if direct_prediction and slot_status in {"production_adapter_active", "active"} and not has_artifact_path:
+            controller_owned.add(str(name))
+    return controller_owned
 
 
 def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[dict]:
@@ -236,12 +275,20 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
     contexts = [_build_feature_batch_context(req) for req in requests]
     pool = _load_model_pool()
     model_status = _model_pool_status(pool)
+    controller_owned = _controller_owned_direct_feature_models(pool)
 
     for model_name in _FEATURE_MODEL_NAMES_V2:
         status = model_status.get(model_name, "active")
         if status in ("retired", "challenger"):
             for ctx in contexts:
                 _record_feature_error(ctx, f"{model_name}: skipped by model_pool status={status}")
+            continue
+        if model_name in controller_owned:
+            for ctx in contexts:
+                _record_feature_error(
+                    ctx,
+                    f"{model_name}: controller-owned direct adapter; scored by daily_pipeline_v2",
+                )
             continue
         try:
             model_obj, meta = _load_feature_artifact(model_name)
@@ -337,7 +384,14 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
 
     from .prediction_runtime import _FEATURE_MODEL_NAMES_V2
 
-    active_models = list(_FEATURE_MODEL_NAMES_V2)
+    pool = None
+    try:
+        from .model_pool import load_pool
+        pool = load_pool()
+    except Exception:
+        pool = None
+    controller_owned = _controller_owned_direct_feature_models(pool)
+    active_models = [name for name in _FEATURE_MODEL_NAMES_V2 if name not in controller_owned]
     errors: list[str] = []
     active_loaded = 0
     challenger_loaded = 0
@@ -345,7 +399,6 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
 
     try:
         from .model_store import load_model
-        from .model_pool import load_pool
     except Exception as exc:  # noqa: BLE001 - telemetry must not block prediction.
         return {
             "active_attempted": len(active_models),
@@ -362,12 +415,6 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
                 active_loaded += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{model_name}: {type(exc).__name__}: {exc}")
-
-    try:
-        pool = load_pool() or {}
-    except Exception as exc:  # noqa: BLE001
-        pool = {}
-        errors.append(f"model_pool: {type(exc).__name__}: {exc}")
 
     return {
         "active_attempted": len(active_models),

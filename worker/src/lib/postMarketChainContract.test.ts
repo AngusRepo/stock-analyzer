@@ -10,13 +10,17 @@ const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const pipelineCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("if (body.task === 'pipeline'"),
-  callbackRoutes.indexOf("if (body.task === 'verify-v2'"),
+  callbackRoutes.indexOf("const verifyCanContinue"),
 )
 
 assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback must be explicitly handled')
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
 assert(callbackRoutes.includes('runPostPipelineCallbackChain'), 'pipeline success callback must launch post-pipeline chain')
-assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify success callback must launch post-verify chain')
+assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify terminal callback must launch post-verify chain')
+assert(
+  callbackRoutes.includes("['success', 'skipped'].includes(String(body.status))"),
+  'verify-v2 skipped callback must continue post-verify chain for replay dates with no matured prediction window',
+)
 assert(
   !pipelineCallbackBlock.includes('executionCtx.waitUntil'),
   'pipeline terminal callback must await post-pipeline chain before returning; waitUntil can silently drop verify trigger evidence',
@@ -34,6 +38,12 @@ assert(
   updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
     updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') < updateOrchestrator.indexOf('deps.runMLAndRiskV2(env, triggerTime)'),
   'regime-compute must run with the chain business date before pipeline/recommendation so market_regime_state is not null or future-dated',
+)
+assert(
+  updateOrchestrator.includes("type: 'post_screener_pipeline'") &&
+    updateOrchestrator.includes("if (msg.type === 'post_screener_pipeline')") &&
+    updateOrchestrator.includes('continuePostScreenerPipeline(env, deps, triggerTime, runId)'),
+  'indicator-queue finalization must enqueue and consume post-screener continuation instead of requiring manual pipeline trigger',
 )
 assert(
   !postMarketChain.includes("runRegimeCompute(env)"),

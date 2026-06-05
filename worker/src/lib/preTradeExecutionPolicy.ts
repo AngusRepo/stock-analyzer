@@ -116,6 +116,18 @@ function metricDetail(items: Array<[string, number | null | undefined]>): string
     .join(';')
 }
 
+function smcDetail(model: EntryPriceModelV2): string {
+  return [
+    `smc_bias=${model.smcBias}`,
+    `smc_score=${roundMetric(model.smcScore)}`,
+    `bullish=${roundMetric(model.smcBullishScore)}`,
+    `bearish=${roundMetric(model.smcBearishScore)}`,
+    model.liquiditySweepLow != null ? `bull_sweep=${roundPrice(model.liquiditySweepLow)}` : null,
+    model.structureBreakHigh != null ? `bull_bos=${roundPrice(model.structureBreakHigh)}` : null,
+    model.chochLevel != null ? `bull_choch=${roundPrice(model.chochLevel)}` : null,
+  ].filter(Boolean).join(';')
+}
+
 function openingFastPathIsActive(input: PreTradeExecutionInput): boolean {
   const ctx = input.openingFastPath
   if (!ctx?.enabled) return false
@@ -236,6 +248,16 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
 
   const entryModelV2 = input.entryModelV2?.modelVersion === 'entry_price_model_v2' ? input.entryModelV2 : null
   const tradePlan = input.tradePlan?.source === 'ohlcv' ? input.tradePlan : null
+  if (
+    entryModelV2?.smcBias === 'bearish' &&
+    entryModelV2.smcBearishScore >= Math.max(0.12, entryModelV2.smcBullishScore + 0.05)
+  ) {
+    return {
+      action: 'DEFER',
+      reason: 'smc_bearish_structure',
+      detail: smcDetail(entryModelV2),
+    }
+  }
   if (tradePlan) {
     const support = finitePositive(tradePlan.support)
     const atrDefense = finitePositive(tradePlan.atrDefense)

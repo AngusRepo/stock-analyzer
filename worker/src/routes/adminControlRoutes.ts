@@ -181,7 +181,11 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
-  if (body.task === 'verify-v2' && body.status === 'success' && c.env.ML_CONTROLLER_URL) {
+  const verifyCanContinue =
+    body.task === 'verify-v2' &&
+    ['success', 'skipped'].includes(String(body.status)) &&
+    c.env.ML_CONTROLLER_URL
+  if (verifyCanContinue) {
     c.executionCtx.waitUntil((async () => {
       try {
         const { runPostVerifyCallbackChain } = await import('../lib/postMarketChain')

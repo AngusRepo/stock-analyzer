@@ -604,6 +604,22 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         name: _resolve_model_pool_status(name)
         for name in _MODEL_NAMES_V2
     }
+    controller_owned_direct_feature_models: set[str] = set()
+    for name, slot in (formal_slots or {}).items():
+        if not isinstance(slot, dict):
+            continue
+        slot_status = str(slot.get("status") or "").strip()
+        try:
+            vote_weight = float(slot.get("vote_weight") or 0.0)
+        except (TypeError, ValueError):
+            vote_weight = 0.0
+        direct_prediction = bool(slot.get("direct_prediction")) or vote_weight > 0.0
+        model_entry = pool_models.get(name) if isinstance(pool_models, dict) else None
+        has_artifact_path = isinstance(model_entry, dict) and bool(
+            model_entry.get("gcs_path") or model_entry.get("artifact_path") or model_entry.get("active_path")
+        )
+        if direct_prediction and slot_status in {"production_adapter_active", "active"} and not has_artifact_path:
+            controller_owned_direct_feature_models.add(str(name))
     degraded_dampening = 1.0
     try:
         ml_pool_cfg = (req.trading_config or {}).get("mlPool") or {}
@@ -667,6 +683,9 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 status = model_pool_status.get(model_name, "active")
                 if status in ("retired", "challenger"):
                     model_errors.append(f"{model_name}: skipped by model_pool status={status}")
+                    continue
+                if model_name in controller_owned_direct_feature_models:
+                    model_errors.append(f"{model_name}: controller-owned direct adapter; scored by daily_pipeline_v2")
                     continue
 
                 model_obj, meta = load_model(0, model_name)

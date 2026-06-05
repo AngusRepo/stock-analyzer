@@ -1165,7 +1165,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             entryModelV2 = buildEntryPriceModelV2FromOhlcvPlan(ohlcvTradePlan, {
               anchorSource: 'intraday_volume_profile',
               profile: intradayProfile,
-              priceActionStructure: buildPriceActionStructure(intradayRows, { latestPrice: price }),
+              priceActionStructure: buildPriceActionStructure(intradayRows, {
+                latestPrice: price,
+                breakLookback: 5,
+                structureLookback: 5,
+              }),
             })
             recordExecutionNote(
               pending.symbol,
@@ -1208,7 +1212,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           reason: 'intraday_dynamic_decision',
           detail: {
             ...intradayTechnicalSnapshot,
-            guard_enabled: truthyFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED),
+            guard_enabled: enabledFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED, true),
             previous_close: previousCloseForSnapshot,
             previous_obv_temperature_60: technicalBaseline?.obvTemperature60 ?? null,
             previous_adaptive_rsi_upper_50: technicalBaseline?.adaptiveRsiUpper50 ?? null,
@@ -1225,7 +1229,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         )
       }
     }
-    const technicalGuardEnabled = truthyFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+    const technicalGuardEnabled = enabledFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED, true)
     const effectiveOhlcvTradePlan = ohlcvTradePlan && intradayTechnicalSnapshot && technicalGuardEnabled
       ? {
         ...ohlcvTradePlan,
@@ -1765,6 +1769,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             market_price: price,
             pre_trade_action: preTrade.action,
             pre_trade_reason: preTrade.reason,
+            market_risk_level: marketRisk.risk_level,
+            market_risk_change_rate: marketRisk.change_rate ?? null,
+            market_risk_reasons: marketRisk.risk_reasons ?? [],
             quote_source: currentOhlc?.source ?? 'none',
             order_intent: orderIntent,
             intraday_technical_decision: intradayTechnicalDecision,

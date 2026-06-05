@@ -1,5 +1,5 @@
 import type { OhlcvEntryPlan, OhlcvRow } from './ohlcvTradePlanLevels'
-import type { PriceActionStructure, PriceActionZoneStatus } from './priceActionStructure'
+import type { PriceActionStructure, PriceActionZoneStatus, SmcStructureBias } from './priceActionStructure'
 
 export type EntryPriceModelV2AnchorSource =
   | 'tick_volume_profile'
@@ -30,6 +30,14 @@ export interface EntryPriceModelV2 {
   orderBlockHigh: number | null
   fvgLow: number | null
   fvgHigh: number | null
+  smcBias: SmcStructureBias
+  smcScore: number
+  smcBullishScore: number
+  smcBearishScore: number
+  liquiditySweepLow: number | null
+  structureBreakHigh: number | null
+  chochLevel: number | null
+  displacementPct: number | null
   retestStatus: EntryPriceRetestStatus
   entryLow: number
   entryHigh: number
@@ -148,6 +156,7 @@ export function buildEntryPriceModelV2FromOhlcvPlan(
   const priceAction = options.priceActionStructure ?? null
   const orderBlock = priceAction?.bestOrderBlock ?? null
   const fvg = priceAction?.bestFvg ?? null
+  const smc = priceAction?.smc ?? null
   const anchorSource = options.anchorSource ?? 'daily_proxy_fallback'
   const swingLow = Math.min(plan.support, plan.buyReferenceLow, plan.stopLoss)
   const swingHigh = Math.max(plan.resistance, plan.confirmation, plan.optimisticHigh)
@@ -160,22 +169,44 @@ export function buildEntryPriceModelV2FromOhlcvPlan(
   const profileVal = finitePositive(profile?.val)
   const profileVah = finitePositive(profile?.vah)
   const profilePoc = finitePositive(profile?.poc)
+  const bullishStructureEntryHigh = Math.max(
+    orderBlock?.high ?? 0,
+    fvg?.high ?? 0,
+    smc?.bullishLiquiditySweep?.sweptLevel ?? 0,
+  )
+  const hasBullishSmcConfirmation =
+    smc?.bias === 'bullish' ||
+    smc?.bullishChoch != null ||
+    smc?.bullishBos != null ||
+    smc?.bullishLiquiditySweep != null
+  const bearishSmcPressure =
+    smc?.bias === 'bearish' &&
+    (smc.bearishScore ?? 0) > Math.max(0.12, (smc.bullishScore ?? 0) + 0.08)
   const entryLow = round2(Math.max(
     swingLow,
     Math.min(plan.buyReferenceLow, profileVal ?? plan.buyReferenceLow),
   ))
-  const entryHighBase = plan.mode === 'pullback'
+  const rawEntryHighBase = plan.mode === 'pullback'
     ? Math.min(plan.confirmation, Math.max(plan.buyReferenceHigh, profilePoc ?? plan.buyReferenceHigh))
     : Math.max(plan.confirmation, profileVah ?? plan.confirmation)
+  const smcEntryHighBase = plan.mode === 'pullback' && hasBullishSmcConfirmation
+    ? Math.min(plan.confirmation, Math.max(rawEntryHighBase, bullishStructureEntryHigh))
+    : rawEntryHighBase
+  const entryHighBase = bearishSmcPressure
+    ? Math.min(smcEntryHighBase, Math.max(plan.buyReferenceHigh, profilePoc ?? plan.buyReferenceHigh))
+    : smcEntryHighBase
   const entryHigh = round2(Math.max(entryLow, entryHighBase))
   const preferredEntry = round2(plan.mode === 'pullback'
     ? Math.min(entryHigh, Math.max(entryLow, profilePoc ?? plan.entryPrice))
     : Math.max(plan.entryPrice, plan.confirmation))
-  const chaseCeiling = round2(Math.max(
+  const rawChaseCeiling = Math.max(
     plan.optimisticHigh,
     profileVah ?? 0,
     plan.confirmation,
-  ))
+  )
+  const chaseCeiling = round2(bearishSmcPressure
+    ? Math.min(rawChaseCeiling, Math.max(entryHigh, plan.confirmation))
+    : rawChaseCeiling)
   const retestStatus = entryRetestStatusFromPriceAction([
     orderBlock?.status ?? null,
     fvg?.status ?? null,
@@ -185,9 +216,10 @@ export function buildEntryPriceModelV2FromOhlcvPlan(
     : retestStatus === 'waiting'
       ? 0.03
       : retestStatus === 'failed'
-        ? -0.08
-        : 0
+      ? -0.08
+      : 0
   const baseConfidence = anchorSource === 'daily_proxy_fallback' ? 0.45 : 0.72
+  const smcConfidenceBoost = bounded((smc?.score ?? 0) * 0.08, -0.08, 0.08)
 
   return {
     modelVersion: 'entry_price_model_v2',
@@ -204,6 +236,14 @@ export function buildEntryPriceModelV2FromOhlcvPlan(
     orderBlockHigh: orderBlock?.high ?? null,
     fvgLow: fvg?.low ?? null,
     fvgHigh: fvg?.high ?? null,
+    smcBias: smc?.bias ?? 'neutral',
+    smcScore: smc?.score ?? 0,
+    smcBullishScore: smc?.bullishScore ?? 0,
+    smcBearishScore: smc?.bearishScore ?? 0,
+    liquiditySweepLow: smc?.bullishLiquiditySweep?.sweptLevel ?? null,
+    structureBreakHigh: smc?.bullishBos?.brokenLevel ?? null,
+    chochLevel: smc?.bullishChoch?.brokenLevel ?? null,
+    displacementPct: smc?.bullishDisplacement?.displacementPct ?? null,
     retestStatus,
     entryLow,
     entryHigh,
@@ -214,7 +254,7 @@ export function buildEntryPriceModelV2FromOhlcvPlan(
       ...emptyL5Support(),
       ...(options.l5Support ?? {}),
     },
-    confidence: bounded(round2(baseConfidence + structureConfidenceBoost), 0, 1),
+    confidence: bounded(round2(baseConfidence + structureConfidenceBoost + smcConfidenceBoost), 0, 1),
     fallbackReason: options.fallbackReason ?? (anchorSource === 'daily_proxy_fallback' ? 'ohlcv_trade_plan_proxy' : undefined),
   }
 }
@@ -231,6 +271,10 @@ export function formatEntryPriceModelV2WatchPoint(model: EntryPriceModelV2): str
     `poc=${model.poc ?? 'na'}`,
     `order_block=${model.orderBlockLow ?? 'na'}~${model.orderBlockHigh ?? 'na'}`,
     `fvg=${model.fvgLow ?? 'na'}~${model.fvgHigh ?? 'na'}`,
+    `smc=${model.smcBias}:${model.smcScore}`,
+    `sweep=${model.liquiditySweepLow ?? 'na'}`,
+    `bos=${model.structureBreakHigh ?? 'na'}`,
+    `choch=${model.chochLevel ?? 'na'}`,
     `retest=${model.retestStatus}`,
     model.fallbackReason ? `fallback=${model.fallbackReason}` : null,
   ].filter(Boolean).join(' ')

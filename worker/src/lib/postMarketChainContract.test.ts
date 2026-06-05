@@ -103,6 +103,19 @@ assert(
   postMarketChain.includes('recordWorkerTaskComputeProfile'),
   'post-market callback tasks must emit compute profile events from the shared task logger',
 )
+assert(
+  postMarketChain.includes("task === 'post-verify-chain'") &&
+    postMarketChain.includes("'evening-chain'") &&
+    postMarketChain.includes('root chain closed after post-verify'),
+  'post-verify closure must write final evening-chain status so OBS does not treat pipeline trigger as full-chain success',
+)
+assert(
+  callbackRoutes.includes('root chain stopped at pipeline callback') &&
+    callbackRoutes.includes('root chain stopped at verify-v2 callback') &&
+    callbackRoutes.includes('root chain stopped in post-pipeline callback chain') &&
+    callbackRoutes.includes('root chain stopped in post-verify callback chain'),
+  'terminal pipeline/verify callback failures must close evening-chain as error instead of leaving it triggered',
+)
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')

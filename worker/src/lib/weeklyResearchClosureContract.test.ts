@@ -110,6 +110,14 @@ assert(
     workflows.includes('drift_target_families'),
   'weekly drift retrain must be a dedicated weekly_drift candidate path with explicit drift targets, not full monthly retrain',
 )
+assert(
+  workflows.includes('FORMAL_ARTIFACT_LIFECYCLE_BY_NAME') &&
+    workflows.includes('artifact_lifecycle_targets') &&
+    workflows.includes('foundation_forecast_validation_config_refresh') &&
+    workflows.includes('sequence_artifact_retrain_registration') &&
+    workflows.includes('weekly_drift skipped: no supported retrain groups'),
+  'weekly drift retrain must route formal L3 artifact slots through artifact lifecycle targets instead of falling back to tree retrain',
+)
 
 assert(
   adminGcp.includes("'weekly-drift-retrain'") &&

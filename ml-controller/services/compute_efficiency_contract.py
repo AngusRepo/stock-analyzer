@@ -34,6 +34,10 @@ REQUIRED_MONTHLY_RETRAIN_STAGES = [
     "shap_audit",
 ]
 
+MONTHLY_STAGE_ALIASES = {
+    "l3_artifact_registry": ("artifact_lifecycle",),
+}
+
 REQUIRED_QUALITY_EVIDENCE_FIELDS = [
     "ic_delta",
     "precision_at_k_delta",
@@ -696,9 +700,18 @@ def build_compute_profile_pair(
 
 def _stage_seconds(raw: dict[str, Any], stage: str) -> float:
     value = raw.get(stage)
+    if value is None:
+        for alias in MONTHLY_STAGE_ALIASES.get(stage, ()):
+            value = raw.get(alias)
+            if value is not None:
+                break
     if isinstance(value, dict):
-        return _num(value.get("sec") or value.get("seconds") or value.get("duration_sec"))
+        return _num(value.get("sec") or value.get("seconds") or value.get("duration_sec") or value.get("elapsed_s"))
     return _num(value)
+
+
+def _has_stage(raw: dict[str, Any], stage: str) -> bool:
+    return stage in raw or any(alias in raw for alias in MONTHLY_STAGE_ALIASES.get(stage, ()))
 
 
 def build_monthly_retrain_stage_timing_report(
@@ -724,7 +737,7 @@ def build_monthly_retrain_stage_timing_report(
 
     for stage in REQUIRED_MONTHLY_RETRAIN_STAGES:
         seconds = _stage_seconds(stages, stage)
-        if stage not in stages:
+        if not _has_stage(stages, stage):
             missing.append(stage)
         total_sec += seconds
         baseline_sec = _stage_seconds(baseline_stages, stage)

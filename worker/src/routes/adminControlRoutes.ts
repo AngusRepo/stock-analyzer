@@ -303,11 +303,28 @@ async function handleSchedulerCallback(c: any) {
           runDate: callbackRunDate,
           upstreamRunId: callbackRunId,
         })
+      } else {
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: body.status === 'skipped' ? 'skipped' : 'error',
+          summary: `root chain stopped at pipeline callback: ${String(body.summary ?? body.status)}`,
+          duration_ms: 0,
+          error: body.error != null ? String(body.error) : undefined,
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
       }
     } catch (e: any) {
       await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
         status: 'error',
         summary: e?.message ?? 'post-pipeline callback chain failed',
+        duration_ms: 0,
+        error: String(e),
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+      await logSchedulerResult(c.env.KV, 'evening-chain', {
+        status: 'error',
+        summary: e?.message ?? 'root chain stopped in post-pipeline callback chain',
         duration_ms: 0,
         error: String(e),
         run_id: callbackRunId,
@@ -337,8 +354,35 @@ async function handleSchedulerCallback(c: any) {
           run_id: callbackRunId,
           run_date: callbackRunDate,
         }, c.env as any)
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: 'error',
+          summary: e?.message ?? 'root chain stopped in post-verify callback chain',
+          duration_ms: 0,
+          error: String(e),
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
       }
     })())
+  }
+
+  if (body.task === 'verify-v2' && String(body.status) === 'error') {
+    await logSchedulerResult(c.env.KV, 'post-verify-chain', {
+      status: 'error',
+      summary: `post-verify chain blocked by verify-v2 error: ${String(body.summary ?? '')}`,
+      duration_ms: 0,
+      error: body.error != null ? String(body.error) : undefined,
+      run_id: callbackRunId,
+      run_date: callbackRunDate,
+    }, c.env as any)
+    await logSchedulerResult(c.env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `root chain stopped at verify-v2 callback: ${String(body.summary ?? '')}`,
+      duration_ms: 0,
+      error: body.error != null ? String(body.error) : undefined,
+      run_id: callbackRunId,
+      run_date: callbackRunDate,
+    }, c.env as any)
   }
 
   console.log(

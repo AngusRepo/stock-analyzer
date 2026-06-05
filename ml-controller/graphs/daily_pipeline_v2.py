@@ -49,6 +49,7 @@ from services.recommendation_service import (
     apply_sparse_tangent_allocation,
     load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
+    write_layer3_formal_gate_audit,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
     delete_filtered_recommendations,
@@ -358,6 +359,7 @@ class PipelineStateV2(TypedDict, total=False):
     # Loaded inputs
     active_stocks: list[dict]              # from latest screener funnel candidate seed
     screener_recs: list[dict]              # screener-owned seed rows, enriched with optional daily_recommendations state
+    screener_run_id: str                    # latest screener_funnel_runs.run_id used as candidate source
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params
     barrier_params: dict                    # from KV trading:config.barrier
@@ -373,6 +375,8 @@ class PipelineStateV2(TypedDict, total=False):
     l3_payloads: list[dict]                  # reduced payloads sent to L3 formal ML
     l3_predictions: dict                     # symbol -> formal L3 merged result
     final_recommendations: list[dict]       # after filter + scoring + ranking
+    layer2_recommendation_symbols: list[str] # symbols entering formal L3 family rank
+    layer3_formal_gate_target_size: int      # L3 target size used for audit persistence
     sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
@@ -461,6 +465,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
         )
         SELECT
             dr.id AS id,
+            sfi.run_id AS screener_run_id,
             ? AS date,
             COALESCE(dr.stock_id, st.id) AS stock_id,
             sfi.symbol AS symbol,
@@ -555,6 +560,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     return {
         "active_stocks": active_stocks,
         "screener_recs": screener_recs,
+        "screener_run_id": str(screener_recs[0].get("screener_run_id") or ""),
     }
 
 
@@ -1358,7 +1364,7 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
         if not blob.exists():
             return {}, active_defaults, {}, False
 
-        pool = _json.loads(blob.download_as_text())
+        pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
         status: dict[str, str] = {}
         active_versions = dict(active_defaults)
         challenger_versions: dict[str, str] = {}
@@ -1803,7 +1809,7 @@ def _load_pool_and_ic():
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
             return {}, {}, 1.0, {}, False, {}
-        pool = _json.loads(pool_blob.download_as_text())
+        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}
         for name, entry in pool.get("models", {}).items():
@@ -2222,6 +2228,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         state["predictions"],
         fallback_size=core_ml_target_size,
     )
+    layer2_symbols = [str(row.get("symbol") or "") for row in final if row.get("symbol")]
     layer2_count = len(final)
     logger.info(
         "[Pipeline V2] Layer2 core_ml_gate kept %s/%s candidates (target=%s)",
@@ -2282,6 +2289,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     )
     return {
         "final_recommendations": final,
+        "layer2_recommendation_symbols": layer2_symbols,
+        "layer3_formal_gate_target_size": core_family_target_size,
         "sell_filtered_symbols": filtered_syms,
     }
 
@@ -2335,6 +2344,14 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
     stale_predictions_deleted = prune_predictions_outside_universe(list(stock_id_map.values()), run_date)
     predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map, run_date)
+    layer3_audit_rows = write_layer3_formal_gate_audit(
+        predictions=state["predictions"],
+        recommendations=state.get("final_recommendations") or [],
+        layer2_symbols=state.get("layer2_recommendation_symbols") or [],
+        run_date=run_date,
+        screener_run_id=state.get("screener_run_id"),
+        target_size=state.get("layer3_formal_gate_target_size"),
+    )
 
     # 2. Merge LLM reasons into recommendations (overwrite template)
     final = state["final_recommendations"]
@@ -2366,6 +2383,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     metrics = {
         "predictions_written": predictions_written,
+        "layer3_formal_gate_audit_rows": layer3_audit_rows,
         "prediction_symbols": len(stock_id_map),
         "prediction_output_models": round(predictions_written / len(stock_id_map)) if stock_id_map else 0,
         "stale_predictions_deleted": stale_predictions_deleted,

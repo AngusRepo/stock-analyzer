@@ -35,7 +35,7 @@ def read_model_pool_health_rows() -> list[dict[str, Any]]:
     if not blob.exists():
         return []
 
-    pool = json.loads(blob.download_as_text())
+    pool = json.loads(blob.download_as_text().lstrip("\ufeff"))
     rows: list[dict[str, Any]] = []
     for model_name, raw in sorted((pool.get("models") or {}).items()):
         if not isinstance(raw, dict):

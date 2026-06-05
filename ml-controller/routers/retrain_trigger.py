@@ -64,6 +64,9 @@ class UniversalRetrainTriggerRequest(BaseModel):
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
     train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "dlinear", "patchtst"])
+    artifact_lifecycle_targets: list[str] = Field(default_factory=list)
+    artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)
+    artifact_lifecycle_only: bool = False
 
 
 def _force_https(url: str) -> str:
@@ -497,6 +500,7 @@ def _volume_bucket(prices: list[dict]) -> int:
     return 0
 
 
+@router.post("/universal/run")
 @router.post("/universal")
 async def trigger_universal_retrain(
     req: UniversalRetrainTriggerRequest = Body(default=UniversalRetrainTriggerRequest()),
@@ -954,6 +958,9 @@ async def trigger_universal_retrain(
                 "drift_target_models": req.drift_target_models,
                 "drift_target_families": req.drift_target_families,
                 "train_model_groups": req.train_model_groups,
+                "artifact_lifecycle_targets": req.artifact_lifecycle_targets,
+                "artifact_lifecycle_contracts": req.artifact_lifecycle_contracts,
+                "artifact_lifecycle_only": req.artifact_lifecycle_only,
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),
                 "dataset_snapshot": dataset_snapshot_info,

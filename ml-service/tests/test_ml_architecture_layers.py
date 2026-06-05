@@ -39,6 +39,21 @@ def test_default_pool_bootstraps_only_active_alpha_models():
     assert pool["models"]["GNN"]["gcs_path"] == "universal/gnn/v1.pt"
 
 
+def test_active_path_uses_model_pool_gcs_path_as_source_of_truth():
+    pool = model_pool.init_default_pool()
+    pool["models"]["XGBoost"]["version"] = "v-custom"
+    pool["models"]["XGBoost"]["gcs_path"] = "universal/xgboost/live-reviewed.joblib"
+
+    assert model_pool.get_active_path("XGBoost", pool=pool) == "universal/xgboost/live-reviewed.joblib"
+
+
+def test_model_pool_bucket_name_reads_runtime_env(monkeypatch):
+    monkeypatch.setattr(model_pool, "GCS_BUCKET", "")
+    monkeypatch.setenv("GCS_BUCKET_NAME", "runtime-stockvision-models")
+
+    assert model_pool._get_configured_gcs_bucket() == "runtime-stockvision-models"
+
+
 def test_shadow_challenger_registration_excludes_ga_optimizer():
     pool = model_pool.init_default_pool()
     entry = model_pool.register_shadow_challenger("ResidualMLP", "v2", pool=pool, save=False)

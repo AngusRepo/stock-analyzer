@@ -215,6 +215,12 @@ def test_universal_training_policy_keeps_current_defaults():
     }
 
 
+def test_universal_training_policy_supports_artifact_lifecycle_only():
+    policy = UniversalTrainingPolicy()
+
+    assert policy.requested_groups({"artifact_lifecycle_only": True, "train_model_groups": []}) == []
+
+
 def test_universal_training_policy_reads_env_and_payload_overrides(monkeypatch):
     monkeypatch.setenv("UNIVERSAL_TRAIN_MODEL_GROUPS", "tree,retired_ft")
     monkeypatch.setenv("UNIVERSAL_SEQUENCE_MIN_LEN", "88")

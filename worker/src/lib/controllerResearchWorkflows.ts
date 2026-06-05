@@ -684,14 +684,25 @@ async function triggerUniversalRetrainModal(
   return `${taskId} triggered via Modal prep run_id=${runId} function_call_id=${functionCallId} callback expected`
 }
 
-const MODEL_GROUP_BY_NAME: Record<string, string> = {
+const MODEL_GROUP_BY_NAME: Record<string, string | null> = {
   XGBoost: 'tree',
   CatBoost: 'tree',
   ExtraTrees: 'tree',
   LightGBM: 'tree',
   Chronos: 'chronos',
+  TabM: null,
+  GNN: null,
   DLinear: 'dlinear',
   PatchTST: 'patchtst',
+  iTransformer: null,
+  TimesFM: null,
+}
+
+const FORMAL_ARTIFACT_LIFECYCLE_BY_NAME: Record<string, string> = {
+  TabM: 'tabular_neural_artifact_retrain_registration',
+  GNN: 'graphsage_full_universe_artifact_retrain_registration',
+  iTransformer: 'sequence_artifact_retrain_registration',
+  TimesFM: 'foundation_forecast_validation_config_refresh',
 }
 
 function isWeeklyDriftTarget(model: Record<string, any>): boolean {
@@ -716,29 +727,44 @@ export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
   const models = pool?.models && typeof pool.models === 'object' ? pool.models as Record<string, Record<string, any>> : {}
   const targets = Object.entries(models)
     .filter(([, model]) => isWeeklyDriftTarget(model))
-    .map(([name, model]) => ({
-      name,
-      family: String(model.balance_family ?? model.model_type ?? 'unknown'),
-      group: MODEL_GROUP_BY_NAME[name] ?? 'tree',
-      status: String(model.status ?? 'unknown'),
-      ic4w: model.ic_4w_avg ?? null,
-      consecutiveNegativeWeeks: Number(model.consecutive_negative_weeks ?? 0),
-      lastIcStatus: model.last_ic_status ?? null,
-    }))
+    .map(([name, model]) => {
+      const hasMappedGroup = Object.prototype.hasOwnProperty.call(MODEL_GROUP_BY_NAME, name)
+      return {
+        name,
+        family: String(model.balance_family ?? model.model_type ?? 'unknown'),
+        group: hasMappedGroup ? MODEL_GROUP_BY_NAME[name] : 'tree',
+        artifactLifecycle: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME[name] ?? null,
+        status: String(model.status ?? 'unknown'),
+        ic4w: model.ic_4w_avg ?? null,
+        consecutiveNegativeWeeks: Number(model.consecutive_negative_weeks ?? 0),
+        lastIcStatus: model.last_ic_status ?? null,
+      }
+    })
 
   if (targets.length === 0) {
     return 'weekly_drift skipped: no degraded/weak model family; monthly release remains owner'
   }
 
-  const trainModelGroups = [...new Set(targets.map((target) => target.group))]
+  const retrainTargets = targets.filter((target) => target.group)
+  const artifactLifecycleTargets = targets.filter((target) => !target.group && target.artifactLifecycle)
+  const trainModelGroups = [
+    ...new Set(retrainTargets.map((target) => target.group).filter((group): group is string => Boolean(group))),
+  ]
+  if (trainModelGroups.length === 0) {
+    return `weekly_drift skipped: no supported retrain groups; artifact lifecycle targets=${artifactLifecycleTargets.map((target) => `${target.name}:${target.artifactLifecycle}`).join(',') || 'none'}`
+  }
   const body = {
     limit: 2500,
     force_monthly: false,
     candidate_type: 'weekly_drift',
     run_date: runDate,
     train_model_groups: trainModelGroups,
-    drift_target_models: targets.map((target) => target.name),
-    drift_target_families: [...new Set(targets.map((target) => target.family))],
+    drift_target_models: retrainTargets.map((target) => target.name),
+    drift_target_families: [...new Set(retrainTargets.map((target) => target.family))],
+    artifact_lifecycle_targets: artifactLifecycleTargets.map((target) => target.name),
+    artifact_lifecycle_contracts: Object.fromEntries(
+      artifactLifecycleTargets.map((target) => [target.name, target.artifactLifecycle]),
+    ),
     trigger_source: 'worker_weekly_drift',
   }
   if (universalRetrainModalTriggerEnabled(env)) {
@@ -760,6 +786,14 @@ export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskI
   const body = {
     limit: 2500,
     force_monthly: forceMonthly,
+    train_model_groups: ['tree', 'dlinear', 'patchtst'],
+    artifact_lifecycle_targets: ['GNN', 'TabM', 'iTransformer', 'TimesFM'],
+    artifact_lifecycle_contracts: {
+      GNN: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.GNN,
+      TabM: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.TabM,
+      iTransformer: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.iTransformer,
+      TimesFM: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.TimesFM,
+    },
     trigger_source: forceMonthly ? 'worker_monthly_retrain' : 'worker_retrain',
   }
   if (universalRetrainModalTriggerEnabled(env)) {

@@ -8,7 +8,7 @@
  * 4. 側邊欄加入漲跌顏色，看一眼知道持倉狀態
  * 5. 空白頁加入常用股票快速選擇
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { stocksApi, marketApi, systemApi, watchlistApi, dashboardV4Api } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
@@ -462,6 +462,23 @@ export default function Dashboard() {
     queryFn: () => stocksApi.get(activeStock!.id),
     enabled: !!activeStock?.id,
   })
+
+  const { data: systemStatus } = useQuery({
+    queryKey: ['system', 'status'],
+    queryFn: systemApi.status,
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 3 * 60 * 1000,
+  })
+
+  useEffect(() => {
+    const stockId = activeStock?.id
+    const systemChipDate = systemStatus?.data?.chips?.lastDate
+    const detailChipDate = (detail as any)?.latestChipDate
+    if (!stockId || !systemChipDate || !detailChipDate) return
+    if (String(detailChipDate).slice(0, 10) < String(systemChipDate).slice(0, 10)) {
+      qc.invalidateQueries({ queryKey: ['stocks', stockId] })
+    }
+  }, [activeStock?.id, detail, qc, systemStatus?.data?.chips?.lastDate])
 
   const {
     data: dashboardV4Chart,

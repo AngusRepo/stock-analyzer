@@ -14,6 +14,12 @@ _TRAIN_GROUP_TO_FUNCTION = {
     "patchtst": "train_patchtst_universal",
 }
 
+_ARTIFACT_TARGET_TO_FUNCTION = {
+    "GNN": "train_gnn_graphsage_universal",
+    "TabM": "train_tabm_universal",
+    "iTransformer": "train_itransformer_universal",
+}
+
 
 def _positive_float(value: Any) -> float | None:
     try:
@@ -146,6 +152,30 @@ def build_retrain_orchestrator_telemetry(
                 function_name,
                 group_elapsed,
                 meta=meta,
+            )
+        )
+
+    artifact_stage = stages.get("artifact_lifecycle") or {}
+    artifact_results = artifact_stage.get("results") if isinstance(artifact_stage.get("results"), dict) else {}
+    for model_name, function_name in _ARTIFACT_TARGET_TO_FUNCTION.items():
+        model_result = artifact_results.get(model_name) if isinstance(artifact_results, dict) else None
+        if not isinstance(model_result, dict):
+            continue
+        elapsed = _positive_float(model_result.get("elapsed_s"))
+        if elapsed is None:
+            continue
+        telemetry.append(
+            _event(
+                function_name,
+                elapsed,
+                meta={
+                    "run_id": run_id,
+                    "stage": "artifact_lifecycle",
+                    "model": model_name,
+                    "status": model_result.get("status"),
+                    "version": model_result.get("version"),
+                    "artifact_path": model_result.get("artifact_path"),
+                },
             )
         )
 

@@ -30,6 +30,8 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "predict_batch_v2": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "predict_l2_tree_batch": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "gnn_graphsage_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
+    "train_gnn_graphsage_universal": {"cpu": 4.0, "memory_mb": 16384, "gpu": "L4"},
+    "train_tabm_universal": {"cpu": 4.0, "memory_mb": 16384, "gpu": "L4"},
     "retrain_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "prep_universal_batch": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "retrain_orchestrator": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
@@ -45,6 +47,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "train_patchtst_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "patchtst_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "itransformer_universal_predict": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "train_itransformer_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "timesfm_universal_predict": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "research_model_benchmark": {"cpu": 2.0, "memory_mb": 8192, "gpu": "L4"},
     "breeze2_research_context": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
@@ -771,6 +774,18 @@ async def _modal_train_dlinear_universal(payload: dict) -> dict:
     return await _modal_remote_call("train_dlinear_universal", payload)
 
 
+async def _modal_train_gnn_graphsage_universal(payload: dict) -> dict:
+    return await _modal_remote_call("train_gnn_graphsage_universal", payload)
+
+
+async def _modal_train_tabm_universal(payload: dict) -> dict:
+    return await _modal_remote_call("train_tabm_universal", payload)
+
+
+async def _modal_train_itransformer_universal(payload: dict) -> dict:
+    return await _modal_remote_call("train_itransformer_universal", payload)
+
+
 async def train_dlinear_universal(series_close: list[list[float]], **hyperparams) -> dict:
     """One-shot universal DLinear training.
 
@@ -780,6 +795,18 @@ async def train_dlinear_universal(series_close: list[list[float]], **hyperparams
     """
     payload = {"series_close": series_close, **hyperparams}
     return await _modal_train_dlinear_universal(payload)
+
+
+async def train_gnn_graphsage_universal(**payload) -> dict:
+    return await _modal_train_gnn_graphsage_universal(dict(payload))
+
+
+async def train_tabm_universal(**payload) -> dict:
+    return await _modal_train_tabm_universal(dict(payload))
+
+
+async def train_itransformer_universal(**payload) -> dict:
+    return await _modal_train_itransformer_universal(dict(payload))
 
 
 # 2026-04-19 ML_POOL Stage 0.3: PatchTST universal helpers

@@ -580,6 +580,27 @@ def test_monthly_stage_timing_flags_8103_second_regression_and_preserves_require
     assert report["quality_principle"].startswith("timing optimization cannot reduce feature count")
 
 
+def test_monthly_stage_timing_accepts_artifact_lifecycle_alias_for_l3_registry():
+    report = build_monthly_retrain_stage_timing_report(
+        run_id="monthly-artifact-lifecycle",
+        stages={
+            "feature_selection": 100.0,
+            "optuna_k_sweep": 20.0,
+            "target_permutation": 20.0,
+            "signal_sanity_gate": 20.0,
+            "tree_models": 50.0,
+            "dlinear": 10.0,
+            "patchtst": 10.0,
+            "artifact_lifecycle": {"elapsed_s": 33.3},
+            "shap_audit": 5.0,
+        },
+    )
+
+    l3_row = next(row for row in report["stages"] if row["stage"] == "l3_artifact_registry")
+    assert report["missing_required_stages"] == []
+    assert l3_row["seconds"] == 33.3
+
+
 def test_monthly_stage_timing_fails_when_required_stage_is_missing():
     report = build_monthly_retrain_stage_timing_report(
         run_id="monthly-missing-stage",

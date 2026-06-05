@@ -580,7 +580,7 @@ async def register_challenger(req: RegisterChallengerRequest):
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         raise HTTPException(status_code=400, detail="model_pool.json not initialized; run /init first")
-    pool = _json.loads(pool_blob.download_as_text())
+    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
     entry = pool.get("models", {}).get(req.model_name)
     if not entry:
         raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
@@ -642,7 +642,7 @@ async def discard_challenger(req: DiscardChallengerRequest):
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         raise HTTPException(status_code=400, detail="model_pool.json not initialized")
-    pool = _json.loads(pool_blob.download_as_text())
+    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
     entry = pool.get("models", {}).get(req.model_name)
     if not entry:
         raise HTTPException(status_code=400, detail=f"{req.model_name} not in pool")
@@ -746,7 +746,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             bucket = storage.Client().bucket(_bucket_name())
             pool_blob = bucket.blob("universal/model_pool.json")
             if pool_blob.exists():
-                pool = _json.loads(pool_blob.download_as_text())
+                pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
                 pool_changes, changed = apply_weekly_ic_to_pool(
                     pool,
                     per_model_ic,
@@ -816,7 +816,7 @@ def _emit_decay_alerts(pool_changes: dict) -> None:
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         return
-    pool = _json.loads(pool_blob.download_as_text())
+    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
     for tracked_name, change in pool_changes.items():
         is_challenger = tracked_name.endswith("::challenger")
         base_name = tracked_name.replace("::challenger", "")
@@ -952,7 +952,7 @@ async def get_state_space_hyperparams(model_name: str, version: str = "v1"):
                 "hyperparams": _DEFAULT_STATE_SPACE[model_name],
                 "note": "no GCS file; serving in-code defaults"}
     return {"status": "loaded", "model": model_name, "version": version,
-            "hyperparams": _json.loads(blob.download_as_text())}
+            "hyperparams": _json.loads(blob.download_as_text().lstrip("\ufeff"))}
 
 
 # ---------------------------------------------------------------------------
@@ -1009,7 +1009,7 @@ async def promote_check(req: PromoteCheckRequest):
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         raise HTTPException(status_code=400, detail="model_pool.json not initialized")
-    pool = _json.loads(pool_blob.download_as_text())
+    pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
     today = datetime.now(timezone.utc).date()
     today_iso = today.isoformat()
 
@@ -1471,7 +1471,7 @@ async def status():
         blob = bucket.blob("universal/model_pool.json")
         if not blob.exists():
             return {"status": "not_initialized", "note": "Run POST /model_pool/init first"}
-        pool = _json.loads(blob.download_as_text())
+        pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
         pool.setdefault("research_benchmarks", build_research_benchmark_manifest(
             datetime.now(timezone.utc).date().isoformat(),
         ))
@@ -1540,7 +1540,7 @@ async def artifact_registry_promotion_queue(model_name: str | None = None, limit
         bucket = storage.Client().bucket(_bucket_name())
         pool_blob = bucket.blob("universal/model_pool.json")
         if pool_blob.exists():
-            pool = _json.loads(pool_blob.download_as_text())
+            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
             for name, entry in (pool.get("models") or {}).items():
                 version = entry.get("version")
                 if version:
@@ -1567,7 +1567,7 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
         bucket = storage.Client().bucket(_bucket_name())
         pool_blob = bucket.blob("universal/model_pool.json")
         if pool_blob.exists():
-            pool = _json.loads(pool_blob.download_as_text())
+            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
             for name, entry in (pool.get("models") or {}).items():
                 version = entry.get("version")
                 if version:
@@ -1592,7 +1592,7 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
             artifact = next((row for row in rows if str(row.get("artifact_id")) == str(req.artifact_id)), None)
             if artifact is None:
                 raise HTTPException(status_code=500, detail="promoted artifact disappeared from registry readback")
-            pool = _json.loads(pool_blob.download_as_text())
+            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
             serving_update = apply_promoted_artifact_to_model_pool(
                 pool,
                 artifact,
@@ -1633,7 +1633,7 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
         bucket = storage.Client().bucket(_bucket_name())
         pool_blob = bucket.blob("universal/model_pool.json")
         if pool_blob.exists():
-            pool = _json.loads(pool_blob.download_as_text())
+            pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
             for name, entry in (pool.get("models") or {}).items():
                 version = entry.get("version")
                 if version:
@@ -1669,7 +1669,7 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
             raise HTTPException(status_code=404, detail="model_pool.json not found")
-        pool = _json.loads(pool_blob.download_as_text())
+        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         for name, entry in (pool.get("models") or {}).items():
             version = entry.get("version")
             if version:
@@ -1704,7 +1704,7 @@ async def lineage():
         if not pool_blob.exists():
             return {"status": "not_initialized", "models": {}, "events": []}
 
-        pool = _json.loads(pool_blob.download_as_text())
+        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         out: dict[str, dict] = {}
         for name, entry in (pool.get("models") or {}).items():
             version = entry.get("version")
@@ -1717,7 +1717,7 @@ async def lineage():
                 metadata_exists = metadata_blob.exists()
                 if metadata_exists:
                     try:
-                        metadata = _metadata_summary(_json.loads(metadata_blob.download_as_text()))
+                        metadata = _metadata_summary(_json.loads(metadata_blob.download_as_text().lstrip("\ufeff")))
                     except Exception as e:
                         metadata = {"read_error": str(e)}
 
@@ -1733,7 +1733,7 @@ async def lineage():
                     ch_metadata_exists = ch_metadata_blob.exists()
                     if ch_metadata_exists:
                         try:
-                            ch_metadata = _metadata_summary(_json.loads(ch_metadata_blob.download_as_text()))
+                            ch_metadata = _metadata_summary(_json.loads(ch_metadata_blob.download_as_text().lstrip("\ufeff")))
                         except Exception as e:
                             ch_metadata = {"read_error": str(e)}
                 challenger_out = {
@@ -1845,7 +1845,7 @@ async def init_pool(req: InitPoolRequest):
     bucket = storage.Client().bucket(_bucket_name())
     pool_blob = bucket.blob("universal/model_pool.json")
     if pool_blob.exists() and not req.overwrite:
-        existing = _json.loads(pool_blob.download_as_text())
+        existing = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         return {
             "status": "exists",
             "note": "model_pool.json already initialized; pass overwrite=true to replace",

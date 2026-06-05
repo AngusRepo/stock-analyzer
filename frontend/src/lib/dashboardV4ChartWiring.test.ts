@@ -23,6 +23,12 @@ assert(component.includes('buildDashboardV4ChartViewModel'), 'DashboardV4Lightwe
 const dashboard = fs.readFileSync(dashboardPath, 'utf8')
 assert(dashboard.includes('DashboardV4LightweightChart'), 'Dashboard should render DashboardV4LightweightChart')
 assert(dashboard.includes('dashboardV4Api.stockChart'), 'Dashboard should fetch the Dashboard V4 chart packet')
+assert(
+  dashboard.includes("queryKey: ['system', 'status']") &&
+    dashboard.includes('systemStatus?.data?.chips?.lastDate') &&
+    dashboard.includes("qc.invalidateQueries({ queryKey: ['stocks', stockId] })"),
+  'Dashboard should invalidate active stock detail when system chip date advances so StockHero cannot stay on stale chip dates',
+)
 
 const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
 assert(viteConfig.includes("'vendor-charts': ['recharts', 'lightweight-charts']"), 'Vite chart vendor chunk should include lightweight-charts')

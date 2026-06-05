@@ -49,7 +49,7 @@ def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, floa
         if not blob.exists():
             return {}
 
-        pool = _json.loads(blob.download_as_text())
+        pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
         degraded_dampening = (
             trading_cfg.get("mlPool", {}).get("degradedDampening")
             if isinstance(trading_cfg.get("mlPool"), dict)

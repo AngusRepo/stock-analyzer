@@ -172,12 +172,43 @@ def _reduce_tabm_output(output: Any) -> np.ndarray:
     return arr.reshape(-1)
 
 
+def _standardize_features(features: np.ndarray, metadata: dict | None) -> np.ndarray:
+    """Apply training-time robust scaling when the TabM artifact declares it."""
+
+    meta = metadata or {}
+    std = meta.get("feature_standardization") if isinstance(meta.get("feature_standardization"), dict) else {}
+    medians = std.get("medians") if isinstance(std.get("medians"), list) else None
+    scales = std.get("scales") if isinstance(std.get("scales"), list) else None
+    x = np.asarray(features, dtype=np.float32)
+    if medians is None or scales is None:
+        return x
+
+    center = np.asarray(medians, dtype=np.float32).reshape(1, -1)
+    scale = np.asarray(scales, dtype=np.float32).reshape(1, -1)
+    if center.shape[1] != x.shape[1] or scale.shape[1] != x.shape[1]:
+        raise RuntimeError(
+            "TabM standardization width mismatch: "
+            f"features={x.shape[1]} medians={center.shape[1]} scales={scale.shape[1]}"
+        )
+    scale = np.where(np.isfinite(scale) & (np.abs(scale) > 1e-9), scale, 1.0)
+    out = np.nan_to_num((x - center) / scale, nan=0.0, posinf=0.0, neginf=0.0)
+    clip_value = std.get("clip_value")
+    if clip_value is not None:
+        try:
+            clip = float(clip_value)
+            if clip > 0:
+                out = np.clip(out, -clip, clip)
+        except (TypeError, ValueError):
+            pass
+    return out.astype(np.float32)
+
+
 def predict_tabm_scores(artifact: TabMArtifact, *, features: np.ndarray) -> np.ndarray:
     """Run TabM batch inference and return one rank score per row."""
 
     import torch
 
-    x = torch.tensor(np.asarray(features, dtype=np.float32), dtype=torch.float32)
+    x = torch.tensor(_standardize_features(features, artifact.metadata), dtype=torch.float32)
     with torch.no_grad():
         raw_scores = _reduce_tabm_output(_tabm_forward(artifact.model, x))
 

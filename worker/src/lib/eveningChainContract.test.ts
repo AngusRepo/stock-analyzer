@@ -60,6 +60,16 @@ assert(
     updateOrchestrator.includes("status: 'triggered'"),
   'evening chain must not overwrite a successful in-flight pipeline trigger with success/LOCKED telemetry',
 )
+assert(
+  updateOrchestrator.includes("logSchedulerResult(env.KV, 'update'") &&
+    updateOrchestrator.includes('market data update ready for'),
+  'runDailyUpdate must write canonical update success logs so OBS can reconcile market-data readiness separately from downstream callbacks',
+)
+assert(
+  updateOrchestrator.includes('event-driven chain reached pipeline trigger') &&
+    updateOrchestrator.includes("status: 'triggered'"),
+  'pipeline trigger must keep evening-chain in triggered state until callback closure writes final root-chain success',
+)
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
 assert(

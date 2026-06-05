@@ -2233,6 +2233,116 @@ def write_predictions_to_d1(
     return inserted_rows
 
 
+def write_layer3_formal_gate_audit(
+    *,
+    predictions: dict[str, dict],
+    recommendations: list[dict],
+    layer2_symbols: list[str],
+    run_date: str,
+    screener_run_id: str | None,
+    target_size: int | None = None,
+) -> int:
+    """Persist formal L3 pass/drop evidence into screener_funnel_items."""
+    run_id = str(screener_run_id or "").strip()
+    if not run_id:
+        logger.warning("[recommendation_service] L3 audit skipped: screener_run_id missing")
+        return 0
+
+    symbols = _dedupe_preserve_order([str(symbol or "").strip() for symbol in layer2_symbols])
+    symbols = [symbol for symbol in symbols if symbol]
+    if not symbols:
+        logger.info("[recommendation_service] L3 audit skipped: no layer2 symbols")
+        return 0
+
+    final_by_symbol = {
+        str(row.get("symbol") or ""): row
+        for row in recommendations
+        if row.get("symbol")
+    }
+    statements: list[tuple[str, list[Any]]] = [
+        (
+            "DELETE FROM screener_funnel_items WHERE run_id = ? AND date = ? AND stage = ?",
+            [run_id, run_date, "layer3_formal_ml_gate"],
+        )
+    ]
+
+    for idx, symbol in enumerate(symbols, start=1):
+        pred = predictions.get(symbol) if isinstance(predictions, dict) else None
+        final_row = final_by_symbol.get(symbol)
+        vote = {}
+        ev2 = {}
+        if isinstance(pred, dict):
+            vote = pred.get("core_family_vote") if isinstance(pred.get("core_family_vote"), dict) else {}
+            ev2 = pred.get("ensemble_v2") if isinstance(pred.get("ensemble_v2"), dict) else {}
+        decision = "pass" if final_row else "drop"
+        active_family_count = int((vote or {}).get("active_family_count") or 0)
+        if decision == "pass":
+            reason_code = "formal_family_rank_pass"
+        elif not isinstance(pred, dict):
+            reason_code = "formal_family_prediction_missing"
+        elif not ev2:
+            reason_code = "formal_family_ensemble_v2_missing"
+        elif active_family_count < 2:
+            reason_code = "formal_family_insufficient_active_families"
+        else:
+            reason_code = "formal_family_rank_not_selected"
+
+        evidence = {
+            "schema_version": "layer3_formal_ml_gate_audit_v1",
+            "source": "daily_pipeline_v2.apply_core_family_rank",
+            "target_size": target_size,
+            "layer2_count": len(symbols),
+            "active_family_count": active_family_count,
+            "active_families": (vote or {}).get("active_families") or [],
+            "inactive_formal_models": (vote or {}).get("inactive_formal_models") or [],
+            "inactive_lifecycle_models": (vote or {}).get("inactive_lifecycle_models") or [],
+            "lifecycle_weight_source": (vote or {}).get("lifecycle_weight_source"),
+            "contributing_models": ev2.get("contributing_models") if isinstance(ev2, dict) else [],
+            "weights": ev2.get("weights") if isinstance(ev2, dict) else {},
+        }
+        try:
+            score_after = float((vote or {}).get("family_score"))
+        except (TypeError, ValueError):
+            score_after = None
+        source_row = final_row or {"symbol": symbol}
+        try:
+            score_before = float(source_row.get("score")) if source_row.get("score") is not None else None
+        except (TypeError, ValueError):
+            score_before = None
+
+        statements.append((
+            """
+            INSERT INTO screener_funnel_items
+              (run_id, date, symbol, name, stage, decision, reason_code,
+               score_before, score_after, rank, evidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.strip(),
+            [
+                run_id,
+                run_date,
+                symbol,
+                source_row.get("name"),
+                "layer3_formal_ml_gate",
+                decision,
+                reason_code,
+                score_before,
+                score_after,
+                int(final_row.get("rank") or idx) if final_row else idx,
+                json.dumps(evidence, ensure_ascii=False),
+            ],
+        ))
+
+    d1_client.batch_execute(statements)
+    inserted = len(statements) - 1
+    logger.info(
+        "[recommendation_service] Wrote %s L3 formal gate audit rows run_id=%s date=%s",
+        inserted,
+        run_id,
+        run_date,
+    )
+    return inserted
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2026-04-19 ML_POOL Stage 2 helpers (per-model row writers)
 # ─────────────────────────────────────────────────────────────────────────────

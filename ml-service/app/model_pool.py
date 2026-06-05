@@ -201,7 +201,7 @@ def load_pool() -> Optional[dict]:
         blob = bucket.blob(GCS_POOL_KEY)
         if not blob.exists():
             return None
-        _POOL_CACHE = json.loads(blob.download_as_text())
+        _POOL_CACHE = json.loads(blob.download_as_text().lstrip("\ufeff"))
         _POOL_CACHE_LOADED_AT = time.time()
         return json.loads(json.dumps(_POOL_CACHE))
     except Exception as e:
@@ -311,10 +311,17 @@ def get_active_version(model_name: str, pool: Optional[dict] = None) -> Optional
 
 def get_active_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
     """Return GCS path for currently-active version, or None."""
-    version = get_active_version(model_name, pool=pool)
-    if version is None:
+    pool = pool or load_pool()
+    if not pool:
         return None
-    return gcs_path_for(model_name, version)
+    entry = pool.get("models", {}).get(model_name)
+    if not entry or entry.get("status") not in ("active", "degraded"):
+        return None
+    path = entry.get("gcs_path")
+    if path:
+        return str(path)
+    version = entry.get("version")
+    return gcs_path_for(model_name, str(version)) if version else None
 
 
 def get_status_filter(status: str) -> float:
@@ -560,7 +567,7 @@ def load_state_space_hyperparams(model_name: str, version: str = "v1") -> dict:
         path = state_space_hyperparams_path(model_name, version)
         blob = bucket.blob(path)
         if blob.exists():
-            return json.loads(blob.download_as_text())
+            return json.loads(blob.download_as_text().lstrip("\ufeff"))
     except Exception as e:
         logger.warning(f"[ModelPool] state-space hyperparams load failed for {model_name}/{version}: {e}")
     return dict(DEFAULT_STATE_SPACE_HYPERPARAMS[model_name])
@@ -614,8 +621,13 @@ def migrate_legacy_to_versioned(dry_run: bool = True) -> dict:
     raise RuntimeError("legacy artifact migration is disabled; model_pool.json is canonical")
 
 
+def _get_configured_gcs_bucket() -> str:
+    return os.environ.get("GCS_BUCKET_NAME", "").strip() or GCS_BUCKET
+
+
 def _get_bucket():
-    if not GCS_BUCKET:
+    bucket_name = _get_configured_gcs_bucket()
+    if not bucket_name:
         raise RuntimeError("GCS_BUCKET_NAME not configured")
     from google.cloud import storage
-    return storage.Client().bucket(GCS_BUCKET)
+    return storage.Client().bucket(bucket_name)

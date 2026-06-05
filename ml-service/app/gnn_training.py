@@ -258,7 +258,7 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
         raise RuntimeError("universal/model_pool.json not found")
-    pool = json.loads(pool_blob.download_as_text())
+    pool = json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
     entry = (pool.setdefault("models", {})).setdefault(MODEL_NAME, {})
     old_version = entry.get("version")
     promoted_at = datetime.now(timezone.utc).isoformat()
@@ -298,6 +298,18 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
     entry.pop("challenger", None)
     entry.pop("degraded_since", None)
     entry.pop("retired_at", None)
+    slot = (pool.setdefault("formal_layer3_slots", {})).setdefault(MODEL_NAME, {})
+    slot.update({
+        "status": "artifact_backed_model_pool_active",
+        "version": version,
+        "gcs_path": artifact_path,
+        "model_type": "cross_stock_graphsage",
+        "family": "graph",
+        "direct_prediction": False,
+        "vote_weight": 0.0,
+        "last_updated": promoted_at,
+        "note": "Production serving is owned by model_pool.models.GNN; formal slot kept as governance alias.",
+    })
     pool["last_updated"] = promoted_at
     pool_blob.upload_from_string(
         json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),

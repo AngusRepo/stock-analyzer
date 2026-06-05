@@ -489,6 +489,8 @@ class UniversalTrainingPolicy:
 
     def requested_groups(self, payload: dict[str, Any] | None = None) -> list[str]:
         payload = payload or {}
+        if payload.get("artifact_lifecycle_only") is True:
+            return []
         active_groups = set(TRAINING_GROUP_FEATURE_POLICIES)
         return [
             group

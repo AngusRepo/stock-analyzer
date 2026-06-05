@@ -144,6 +144,15 @@ async function logChainSummary(
     run_id: ctx.upstreamRunId,
     run_date: ctx.runDate,
   }, env)
+  if (task === 'post-verify-chain') {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: hasError ? 'error' : 'success',
+      summary: `root chain closed after post-verify: ${summary || 'success'}`,
+      duration_ms: Date.now() - startedAt,
+      run_id: ctx.upstreamRunId,
+      run_date: ctx.runDate,
+    }, env)
+  }
 }
 
 export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainContext): Promise<void> {

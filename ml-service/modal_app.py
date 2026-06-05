@@ -274,6 +274,7 @@ def retrain_orchestrator(payload: dict) -> dict:
     run_id = payload.get("run_id")
     lock_key = payload.get("lock_key")
     run_date = payload.get("run_date")
+    artifact_lifecycle_only = bool(payload.get("artifact_lifecycle_only"))
     from app.training_policy import (
         FeatureSelectionPolicy,
         PREDICT_ONLY_MODEL_NOTES,
@@ -311,9 +312,25 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     result = {"stages": {}}
     partial_results: dict[str, dict] = {}
+    artifact_lifecycle_targets = [
+        str(target)
+        for target in (payload.get("artifact_lifecycle_targets") or [])
+        if str(target or "").strip()
+    ]
+    artifact_lifecycle_contracts = payload.get("artifact_lifecycle_contracts") or {}
+    if artifact_lifecycle_targets:
+        result["stages"]["artifact_lifecycle"] = {
+            "status": "planned",
+            "targets": artifact_lifecycle_targets,
+            "contracts": artifact_lifecycle_contracts,
+            "note": (
+                "Formal artifact targets are tracked separately from train_model_groups; "
+                "the retrain orchestrator runs artifact-specific trainers instead of routing them into tree retrain."
+            ),
+        }
 
     # Stage 1: Feature Selection (monthly only).
-    if is_monthly:
+    if is_monthly and not artifact_lifecycle_only:
         print(f"[Orchestrator] Monthly -> running feature selection (max {selection_params['max_rounds']} rounds)")
         try:
             fs_result = feature_selection_pipeline.remote(selection_params)
@@ -336,8 +353,9 @@ def retrain_orchestrator(payload: dict) -> dict:
             print(f"[Orchestrator] Feature selection failed: {e}")
             result["stages"]["feature_selection"] = {"status": "error", "error": str(e)}
     else:
-        print("[Orchestrator] Non-monthly -> skip feature selection")
-        result["stages"]["feature_selection"] = {"status": "skipped"}
+        skip_reason = "artifact_lifecycle_only" if artifact_lifecycle_only else "non_monthly"
+        print(f"[Orchestrator] Skip feature selection ({skip_reason})")
+        result["stages"]["feature_selection"] = {"status": "skipped", "reason": skip_reason}
 
     # Stage 2: Train production groups; retired FT endpoints remain fail-closed.
     from app.training_finalizer import (
@@ -352,10 +370,14 @@ def retrain_orchestrator(payload: dict) -> dict:
     requested_train_groups = training_policy.requested_groups(payload)
     print(f"[Orchestrator] Training from {batch_count} GCS batches (groups={requested_train_groups})...")
     sequence_records = list(payload.get("sequence_records") or [])
-    if not sequence_records and any(g in requested_train_groups for g in ("dlinear", "patchtst")):
+    sequence_required = (
+        any(g in requested_train_groups for g in ("dlinear", "patchtst"))
+        or "iTransformer" in set(artifact_lifecycle_targets)
+    )
+    if not sequence_records and sequence_required:
         try:
             sequence_records = _load_sequence_records_from_gcs(gcs_prefix, batch_count)
-            print(f"[Orchestrator] Loaded {len(sequence_records)} sequence records from GCS for DLinear/PatchTST")
+            print(f"[Orchestrator] Loaded {len(sequence_records)} sequence records from GCS for sequence artifacts")
         except Exception as e:
             print(f"[Orchestrator] sequence records load failed: {e}")
             sequence_records = []
@@ -534,6 +556,112 @@ def retrain_orchestrator(payload: dict) -> dict:
                 for k, v in aux_train.items()
             },
         }
+        if artifact_lifecycle_only and not requested_train_groups:
+            result["stages"]["train"]["status"] = "ok"
+            result["stages"]["train"]["reason"] = "artifact_lifecycle_only_no_train_groups"
+
+        if artifact_lifecycle_targets:
+            lifecycle_results: dict[str, dict] = {}
+            lifecycle_errors: dict[str, str] = {}
+            lifecycle_t0 = time.time()
+
+            def _base_artifact_payload(model_name: str) -> dict:
+                return {
+                    "gcs_prefix": gcs_prefix,
+                    "batch_count": batch_count,
+                    "output_model_version": candidate_version,
+                    "promote_to_active": True,
+                    "promotion_reason": (
+                        f"formal artifact lifecycle target={model_name} "
+                        f"run_id={run_id or candidate_version}"
+                    ),
+                }
+
+            def _validate_timesfm_config() -> dict:
+                from app.model_pool import load_pool
+                from google.cloud import storage as _gcs
+
+                pool = load_pool() or {}
+                entry = (pool.get("models") or {}).get("TimesFM") or {}
+                version = str(entry.get("version") or "").strip()
+                gcs_path = str(entry.get("gcs_path") or "").strip()
+                if not version or not gcs_path:
+                    raise RuntimeError("TimesFM model_pool entry missing version or gcs_path")
+                bucket_name = _get_gcs_bucket_name()
+                if not bucket_name:
+                    raise RuntimeError("GCS bucket not configured")
+                exists = _gcs.Client().bucket(bucket_name).blob(gcs_path).exists()
+                if not exists:
+                    raise RuntimeError(f"TimesFM config artifact missing in GCS: {gcs_path}")
+                return {
+                    "status": "ok",
+                    "model": "TimesFM",
+                    "version": version,
+                    "artifact_path": gcs_path,
+                    "artifact_type": "foundation_forecast_config",
+                    "note": "TimesFM is config-backed foundation runtime; no local retrain is run.",
+                }
+
+            for target in artifact_lifecycle_targets:
+                target = str(target).strip()
+                if not target:
+                    continue
+                target_t0 = time.time()
+                try:
+                    if target == "GNN":
+                        train_payload = _base_artifact_payload(target)
+                        lifecycle_results[target] = train_gnn_graphsage_universal.remote(train_payload)
+                    elif target == "TabM":
+                        train_payload = _base_artifact_payload(target)
+                        lifecycle_results[target] = train_tabm_universal.remote(train_payload)
+                    elif target == "iTransformer":
+                        if not sequence_records:
+                            raise RuntimeError("missing_sequence_records_artifact")
+                        train_payload = {
+                            **_base_artifact_payload(target),
+                            "sequence_records": sequence_records,
+                            "device": payload.get("sequence_device") or "cuda",
+                        }
+                        lifecycle_results[target] = train_itransformer_universal.remote(train_payload)
+                    elif target == "TimesFM":
+                        lifecycle_results[target] = _validate_timesfm_config()
+                    else:
+                        lifecycle_results[target] = {
+                            "status": "skipped",
+                            "model": target,
+                            "reason": "unsupported_artifact_lifecycle_target",
+                        }
+                    if isinstance(lifecycle_results.get(target), dict) and lifecycle_results[target].get("error"):
+                        raise RuntimeError(str(lifecycle_results[target].get("error")))
+                    lifecycle_results[target]["elapsed_s"] = round(time.time() - target_t0, 3)
+                    print(f"[Orchestrator] Artifact lifecycle ok target={target}")
+                except Exception as e:
+                    lifecycle_errors[target] = str(e)
+                    lifecycle_results[target] = {
+                        "status": "error",
+                        "model": target,
+                        "error": str(e),
+                        "elapsed_s": round(time.time() - target_t0, 3),
+                    }
+                    print(f"[Orchestrator] Artifact lifecycle failed target={target}: {e}")
+
+            result["stages"]["artifact_lifecycle"] = {
+                "status": "error" if lifecycle_errors else "ok",
+                "targets": artifact_lifecycle_targets,
+                "contracts": artifact_lifecycle_contracts,
+                "results": lifecycle_results,
+                "errors": lifecycle_errors,
+                "elapsed_s": round(time.time() - lifecycle_t0, 3),
+                "model_pool_write_mode": "sequential",
+            }
+            partial_results["artifact_lifecycle"] = {
+                "elapsed_s": result["stages"]["artifact_lifecycle"]["elapsed_s"],
+                "results": lifecycle_results,
+            }
+            if lifecycle_errors:
+                result["stages"]["train"]["status"] = "error"
+                result["stages"]["train"]["error"] = "artifact_lifecycle_failed"
+
         try:
             from app.stacking import save_meta_learner, train_rank_stacker_oof
 
@@ -608,7 +736,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             print(f"[Orchestrator] Rank stacker finalizer failed: {e}")
 
         stacker_status = (result["stages"].get("rank_stacker") or {}).get("status")
-        if stacker_status != "ok" and result["stages"]["train"].get("status") == "ok":
+        if stacker_status != "ok" and result["stages"]["train"].get("status") == "ok" and not artifact_lifecycle_only:
             result["stages"]["train"]["status"] = "degraded"
             result["stages"]["train"]["degraded_reason"] = f"rank_stacker_{stacker_status or 'missing'}"
 
@@ -652,9 +780,18 @@ def retrain_orchestrator(payload: dict) -> dict:
                 payload.get("shap_audit_mode")
                 or os.environ.get("UNIVERSAL_SHAP_AUDIT_MODE", "deferred")
             ).strip().lower()
+            if artifact_lifecycle_only and not payload.get("shap_audit_mode"):
+                shap_mode = "skip"
             print(f"[Orchestrator] Auto-triggering SHAP audit mode={shap_mode}...")
             shap_t0 = time.time()
-            if shap_mode == "inline":
+            if shap_mode == "skip":
+                result["stages"]["shap"] = {
+                    "status": "skipped",
+                    "mode": "skip",
+                    "reason": "artifact_lifecycle_only",
+                    "elapsed_s": round(time.time() - shap_t0, 1),
+                }
+            elif shap_mode == "inline":
                 shap_result = shap_feature_audit.remote({"shap_samples": 10000})
                 result["stages"]["shap"] = {
                     "status": "ok",
@@ -888,6 +1025,26 @@ def train_gnn_graphsage_universal(payload: dict) -> dict:
     from app.gnn_training import train_graphsage_universal
 
     return train_graphsage_universal(payload or {})
+
+
+@app.function(
+    cpu=4,
+    memory=16384,
+    gpu="L4",
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_tabm_universal(payload: dict) -> dict:
+    """Formal TabM torch artifact training and model_pool registration."""
+    _setup_env()
+    from app.tabm_training import train_tabm_universal as _train_tabm_universal
+
+    try:
+        return _train_tabm_universal(payload or {})
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_tabm_universal"}
 
 
 @app.function(
@@ -1675,6 +1832,25 @@ def itransformer_universal_predict(payload: dict) -> dict:
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "itransformer_universal_predict"}
+
+
+@app.function(
+    gpu="L4",
+    memory=8192,
+    timeout=3600,
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_itransformer_universal(payload: dict) -> dict:
+    """Formal iTransformer artifact training and model_pool registration."""
+    _setup_env()
+    from app.itransformer_training import train_itransformer_universal as _train_itransformer_universal
+
+    try:
+        return _train_itransformer_universal(payload or {})
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_itransformer_universal"}
 
 
 # L3 sequence family: TimesFM config-backed batch predict.

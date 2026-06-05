@@ -45,6 +45,23 @@ def test_model_pool_load_pool_uses_container_cache(monkeypatch):
     assert calls["download_as_text"] == 1
 
 
+def test_model_pool_load_pool_tolerates_utf8_bom(monkeypatch):
+    calls: dict[str, int] = {}
+    monkeypatch.setattr(model_pool, "_POOL_CACHE", None)
+    monkeypatch.setattr(model_pool, "_POOL_CACHE_LOADED_AT", 0.0)
+    monkeypatch.setenv("MODEL_POOL_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setattr(
+        model_pool,
+        "_get_bucket",
+        lambda: _FakeBucket(
+            {"universal/model_pool.json": '\ufeff{"models":{"XGBoost":{"weekly_ic":[0.1]}}}'},
+            calls,
+        ),
+    )
+
+    assert model_pool.load_pool()["models"]["XGBoost"]["weekly_ic"] == [0.1]
+
+
 def test_ic_weights_reuse_model_pool_cache(monkeypatch):
     calls: dict[str, int] = {}
     monkeypatch.setattr(ensemble, "_IC_WEIGHTS_CACHE", None)

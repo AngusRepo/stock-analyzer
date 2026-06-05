@@ -439,7 +439,7 @@ async function continuePostScreenerPipeline(
       run_date: triggerTime,
     })
     await logSchedulerResult(env.KV, 'evening-chain', {
-      status: 'success',
+      status: 'triggered',
       summary: `event-driven chain reached pipeline trigger for ${triggerTime}; ${summary}`,
       duration_ms: 0,
       run_date: triggerTime,
@@ -512,6 +512,12 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     await scheduleSourceReadinessRetry(env, twDate, 1, message)
     return `source waiting; queued same-day market data retry for ${twDate}; ${message}`
   }
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'success',
+    summary: `market data update ready for ${twDate}; ${bulkSummary}`,
+    duration_ms: 0,
+    run_date: twDate,
+  })
   await runQueueUpdate(env, twDate, force)
   return `triggered evening-chain: ${bulkSummary}; indicator queue accepted`
 }

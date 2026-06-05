@@ -255,6 +255,56 @@ def _apply_gnn_batch_context_predictions(
             _record_feature_error(ctx, f"GNN: {exc}")
 
 
+def _apply_tabm_torch_batch_predictions(
+    contexts: list[_FeatureBatchContext],
+    pool: dict | None,
+    model_status: dict[str, str],
+) -> None:
+    status = model_status.get("TabM", "active")
+    if status in ("retired", "challenger"):
+        for ctx in contexts:
+            _record_feature_error(ctx, f"TabM: skipped by model_pool status={status}")
+        return
+    try:
+        from .tabm_batch_runtime import load_tabm_artifact, predict_tabm_scores
+
+        artifact = load_tabm_artifact(pool=pool)
+        rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
+        for ctx in contexts:
+            try:
+                rows.append((ctx, _align_latest_features(ctx, artifact.metadata)))
+            except Exception as exc:  # noqa: BLE001
+                _record_feature_error(ctx, f"TabM: {exc}")
+        if not rows:
+            return
+
+        x_batch = np.vstack([row for _ctx, row in rows])
+        scores = predict_tabm_scores(artifact, features=x_batch)
+        for (ctx, _row), score in zip(rows, scores):
+            _record_feature_score(ctx, "TabM", score)
+    except Exception as exc:  # noqa: BLE001
+        for ctx in contexts:
+            _record_feature_error(ctx, f"TabM: {exc}")
+
+
+def _summarize_result_errors(results: list[dict | None], *, limit: int = 5) -> dict:
+    counts: dict[str, int] = {}
+    for item in results or []:
+        if not isinstance(item, dict) or not item.get("error"):
+            continue
+        message = str(item.get("error") or "").strip() or "unknown error"
+        counts[message] = counts.get(message, 0) + 1
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    return {
+        "error_count": sum(counts.values()),
+        "unique_error_count": len(counts),
+        "top_errors": [
+            {"error": message, "count": count}
+            for message, count in ranked[: max(1, int(limit))]
+        ],
+    }
+
+
 def _model_pool_status(pool: dict | None) -> dict[str, str]:
     from .prediction_runtime import _MODEL_NAMES_V2
 
@@ -295,6 +345,9 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
 
     for model_name in _FEATURE_MODEL_NAMES_V2:
         if model_name == "GNN":
+            continue
+        if model_name == "TabM":
+            _apply_tabm_torch_batch_predictions(contexts, pool, model_status)
             continue
         status = model_status.get(model_name, "active")
         if status in ("retired", "challenger"):
@@ -398,14 +451,17 @@ def predict_gnn_graphsage_batch(payloads: list[dict]) -> dict:
             }
 
     output = [item for item in results if item is not None]
+    error_summary = _summarize_result_errors(output)
     return {
         "results": output,
         "n_input": len(payloads or []),
         "n_success": sum(1 for item in output if not item.get("error")),
         "n_error": sum(1 for item in output if item.get("error")),
+        "error_summary": error_summary,
         "metrics": {
             "runtime": "graphsage_full_universe",
             "contract": "gnn_graphsage_universal_predict_v1",
+            "error_summary": error_summary,
         },
     }
 
@@ -461,11 +517,12 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
         pool = load_pool()
     except Exception:
         pool = None
-    active_models = [name for name in _FEATURE_MODEL_NAMES_V2 if name != "GNN"]
+    active_models = [name for name in _FEATURE_MODEL_NAMES_V2 if name not in {"GNN", "TabM"}]
     errors: list[str] = []
     active_loaded = 0
     challenger_loaded = 0
     challenger_attempted = 0
+    tabm_attempted = 0
 
     try:
         from .model_store import load_model
@@ -486,8 +543,19 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{model_name}: {type(exc).__name__}: {exc}")
 
+    try:
+        model_status = _model_pool_status(pool)
+        if model_status.get("TabM", "active") not in {"retired", "challenger"}:
+            tabm_attempted = 1
+            from .tabm_batch_runtime import load_tabm_artifact
+
+            load_tabm_artifact(pool=pool)
+            active_loaded += 1
+    except Exception as exc:  # noqa: BLE001 - preload telemetry only.
+        errors.append(f"TabM: {type(exc).__name__}: {exc}")
+
     return {
-        "active_attempted": len(active_models),
+        "active_attempted": len(active_models) + tabm_attempted,
         "active_loaded": active_loaded,
         "challenger_attempted": challenger_attempted,
         "challenger_loaded": challenger_loaded,

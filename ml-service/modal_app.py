@@ -1671,6 +1671,52 @@ def timesfm_universal_predict(payload: dict) -> dict:
 
 
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict (KalmanFilter + MarkovSwitching)
+def _post_state_space_shadow_callback(input_payload: dict, result: dict, elapsed_s: float) -> dict | None:
+    callback_url = str(input_payload.get("callback_url") or "").strip()
+    if not callback_url:
+        return None
+    try:
+        import httpx
+
+        headers = {"Content-Type": "application/json"}
+        token = str(input_payload.get("callback_token") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        payload_out = {
+            "schema_version": "state-space-shadow-callback-v1",
+            "run_date": input_payload.get("run_date"),
+            "run_id": input_payload.get("run_id"),
+            "source": "modal_state_space_shadow",
+            "function_name": "state_space_universal_predict",
+            "function_call_id": input_payload.get("function_call_id"),
+            "horizon": input_payload.get("horizon", 5),
+            "version_by_model": input_payload.get("version_by_model") or {},
+            "elapsed_s": elapsed_s,
+            "series_meta": [
+                {
+                    "symbol": row.get("symbol"),
+                    "stock_id": row.get("stock_id"),
+                }
+                for row in (input_payload.get("series_list") or [])
+                if isinstance(row, dict)
+            ],
+            "result": result,
+        }
+        resp = httpx.post(
+            callback_url,
+            json=payload_out,
+            headers=headers,
+            timeout=20,
+            follow_redirects=True,
+        )
+        if resp.status_code < 200 or resp.status_code >= 300:
+            raise RuntimeError(f"shadow callback returned HTTP {resp.status_code}: {resp.text[:300]}")
+        return {"ok": True, "status_code": resp.status_code, "url": str(resp.url)}
+    except Exception as exc:  # noqa: BLE001 - shadow callback must never hide compute output.
+        print(f"[StateSpaceUniversal] shadow callback failed: {exc}")
+        return {"ok": False, "error": str(exc), "url": callback_url}
+
+
 @app.function(
     cpu=2,
     memory=2048,
@@ -1690,27 +1736,36 @@ def state_space_universal_predict(payload: dict) -> dict:
     Returns: {"results": [...], "n_input": int, "n_success": int}
     """
     _setup_env()
+    import time
     from app.state_space_universal import state_space_batch_predict, state_space_overlays_batch_predict
+    t0 = time.time()
     try:
         model_names = payload.get("model_names")
         if isinstance(model_names, list) and model_names:
-            return state_space_overlays_batch_predict(
+            result = state_space_overlays_batch_predict(
                 model_names=[str(name) for name in model_names],
                 series_list=payload.get("series_list") or [],
                 horizon=payload.get("horizon", 5),
                 version_by_model=payload.get("version_by_model") or {},
             )
-        results = state_space_batch_predict(
-            model_name=payload.get("model_name", "KalmanFilter"),
-            series_list=payload.get("series_list") or [],
-            horizon=payload.get("horizon", 5),
-            version=payload.get("version", "v1"),
-        )
-        return {"results": results, "n_input": len(payload.get("series_list") or []),
-                "n_success": sum(1 for r in results if not r.get("error"))}
+        else:
+            results = state_space_batch_predict(
+                model_name=payload.get("model_name", "KalmanFilter"),
+                series_list=payload.get("series_list") or [],
+                horizon=payload.get("horizon", 5),
+                version=payload.get("version", "v1"),
+            )
+            result = {"results": results, "n_input": len(payload.get("series_list") or []),
+                      "n_success": sum(1 for r in results if not r.get("error"))}
     except Exception as e:
         import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "state_space_universal_predict"}
+        result = {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "state_space_universal_predict"}
+    elapsed_s = round(time.time() - t0, 3)
+    result["elapsed_s"] = elapsed_s
+    callback_status = _post_state_space_shadow_callback(payload, result, elapsed_s)
+    if callback_status is not None:
+        result["shadow_callback"] = callback_status
+    return result
 
 
 # Retired Chronos universal batch predictor.

@@ -224,6 +224,89 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
     assert result["results"][0]["graph_context"]["runtime"] == "graphsage_batch_context"
 
 
+def test_gnn_graphsage_batch_predict_reports_error_summary(monkeypatch):
+    from app import gnn_batch_runtime
+
+    pool = {
+        "models": {
+            "LightGBM": {"status": "retired"},
+            "XGBoost": {"status": "retired"},
+            "ExtraTrees": {"status": "retired"},
+            "TabM": {"status": "retired"},
+            "GNN": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/gnn/v1.pt",
+            },
+        }
+    }
+
+    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
+    monkeypatch.setattr(gnn_batch_runtime, "load_graphsage_artifact", lambda pool=None: (_ for _ in ()).throw(RuntimeError("bad artifact")))
+
+    result = batch_prediction.predict_gnn_graphsage_batch([
+        _predict_payload("2330", 2330, 100.0),
+        _predict_payload("2317", 2317, 80.0),
+    ])
+
+    assert result["n_error"] == 2
+    assert result["error_summary"]["error_count"] == 2
+    assert result["error_summary"]["top_errors"][0]["count"] == 2
+    assert "GNN: bad artifact" in result["error_summary"]["top_errors"][0]["error"]
+
+
+def test_tabm_batch_overrides_use_torch_artifact_runtime(monkeypatch):
+    from app import tabm_batch_runtime
+    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
+    from app.schemas import PredictRequest
+
+    pool = {
+        "models": {
+            "LightGBM": {"status": "retired"},
+            "XGBoost": {"status": "retired"},
+            "ExtraTrees": {"status": "retired"},
+            "TabM": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/tabm/v1.pt",
+            },
+            "GNN": {"status": "retired"},
+        }
+    }
+    artifact = tabm_batch_runtime.TabMArtifact(
+        model=object(),
+        metadata={"feature_names": [], "feature_medians": {}},
+        source_path="universal/tabm/v1.pt",
+        version="v1",
+    )
+    observed = {}
+
+    def fail_generic_loader(model_name, explicit_path=None):
+        raise AssertionError(f"{model_name} should not use generic joblib loader")
+
+    def fake_tabm_scores(artifact_arg, *, features):
+        observed["artifact"] = artifact_arg
+        observed["shape"] = features.shape
+        return np.array([0.33, 0.66], dtype=np.float32)
+
+    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
+    monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fail_generic_loader)
+    monkeypatch.setattr(tabm_batch_runtime, "load_tabm_artifact", lambda pool=None: artifact)
+    monkeypatch.setattr(tabm_batch_runtime, "predict_tabm_scores", fake_tabm_scores)
+
+    requests = [
+        PredictRequest(**_predict_payload("2330", 2330, 100.0)),
+        PredictRequest(**_predict_payload("2317", 2317, 80.0)),
+    ]
+
+    overrides = batch_prediction._build_feature_model_batch_runtime_overrides(requests)
+
+    assert observed["artifact"] is artifact
+    assert observed["shape"][0] == 2
+    assert overrides[0][_BATCH_FEATURE_RANK_SCORES_KEY]["TabM"] == pytest.approx(0.33)
+    assert overrides[1][_BATCH_FEATURE_RANK_SCORES_KEY]["TabM"] == pytest.approx(0.66)
+
+
 def test_formal_slot_without_model_artifact_is_not_active():
     pool = {
         "models": {},

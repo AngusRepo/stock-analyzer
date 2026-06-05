@@ -80,6 +80,141 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
   })
 })
 
+function nullableText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed ? trimmed : null
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function nullableInteger(value: unknown): number | null {
+  const parsed = nullableNumber(value)
+  return parsed === null ? null : Math.trunc(parsed)
+}
+
+function stateSpaceSeriesMetaBySymbol(body: any): Map<string, any> {
+  const out = new Map<string, any>()
+  const rows = Array.isArray(body?.series_meta) ? body.series_meta : []
+  for (const row of rows) {
+    const symbol = nullableText(row?.symbol)
+    if (symbol) out.set(symbol, row)
+  }
+  return out
+}
+
+adminControlRoutes.post('/api/internal/state-space-shadow/callback', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json().catch(() => null) as any
+  const runDate = nullableText(body?.run_date)
+  if (!body || !runDate) {
+    return c.json({ error: 'run_date is required' }, 400)
+  }
+
+  const result = body?.result && typeof body.result === 'object' ? body.result : {}
+  const overlays = result?.overlays && typeof result.overlays === 'object' ? result.overlays : {}
+  const seriesMeta = stateSpaceSeriesMetaBySymbol(body)
+  const runId = nullableText(body?.run_id) ?? ''
+  const horizon = nullableInteger(body?.horizon)
+  const functionCallId = nullableText(body?.function_call_id)
+  const elapsedS = nullableNumber(body?.elapsed_s ?? result?.elapsed_s)
+  const callbackJson = JSON.stringify({
+    schema_version: body?.schema_version ?? null,
+    source: body?.source ?? null,
+    version_by_model: body?.version_by_model ?? null,
+    result_metrics: result?.metrics ?? null,
+  })
+
+  const statements = []
+  const sql = `
+    INSERT INTO state_space_shadow_results (
+      run_date, run_id, source, model_name, symbol, stock_id, horizon,
+      forecast_pct, up_prob, confidence, direction, model_version, n_used,
+      degraded, fallback_reason, error, diagnostics_json, overlay_json,
+      callback_json, function_call_id, elapsed_s, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(run_date, run_id, model_name, symbol) DO UPDATE SET
+      source=excluded.source,
+      stock_id=excluded.stock_id,
+      horizon=excluded.horizon,
+      forecast_pct=excluded.forecast_pct,
+      up_prob=excluded.up_prob,
+      confidence=excluded.confidence,
+      direction=excluded.direction,
+      model_version=excluded.model_version,
+      n_used=excluded.n_used,
+      degraded=excluded.degraded,
+      fallback_reason=excluded.fallback_reason,
+      error=excluded.error,
+      diagnostics_json=excluded.diagnostics_json,
+      overlay_json=excluded.overlay_json,
+      callback_json=excluded.callback_json,
+      function_call_id=excluded.function_call_id,
+      elapsed_s=excluded.elapsed_s,
+      updated_at=datetime('now')
+  `
+
+  for (const [modelName, overlay] of Object.entries(overlays) as Array<[string, any]>) {
+    const rows = Array.isArray(overlay?.results) ? overlay.results : []
+    for (const row of rows) {
+      const symbol = nullableText(row?.symbol)
+      if (!symbol) continue
+      const meta = seriesMeta.get(symbol) ?? {}
+      statements.push(c.env.DB.prepare(sql).bind(
+        runDate,
+        runId,
+        nullableText(body?.source) ?? 'modal_state_space_shadow',
+        modelName,
+        symbol,
+        nullableInteger(row?.stock_id ?? meta?.stock_id),
+        horizon,
+        nullableNumber(row?.forecast_pct),
+        nullableNumber(row?.up_prob),
+        nullableNumber(row?.confidence),
+        nullableText(row?.direction),
+        nullableText(row?.model_version ?? overlay?.version),
+        nullableInteger(row?.n_used),
+        row?.degraded ? 1 : 0,
+        nullableText(row?.fallback_reason),
+        nullableText(row?.error),
+        JSON.stringify(row?.diagnostics ?? null),
+        JSON.stringify(row),
+        callbackJson,
+        functionCallId,
+        elapsedS,
+      ))
+    }
+  }
+
+  if (!statements.length) {
+    return c.json({ ok: true, total: 0, success_count: 0, mode: 'state_space_shadow_callback' })
+  }
+
+  const t0 = Date.now()
+  const results = await c.env.DB.batch(statements)
+  const changesTotal = results.reduce((sum: number, item: any) => {
+    const meta = item?.meta ?? {}
+    return sum + Number(meta.changes ?? meta.rows_written ?? 0)
+  }, 0)
+  return c.json({
+    ok: true,
+    total: statements.length,
+    success_count: results.length,
+    changes_total: changesTotal,
+    duration_ms: Date.now() - t0,
+    mode: 'state_space_shadow_callback',
+  })
+})
+
 adminControlRoutes.get('/api/admin/adaptive-params', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

@@ -138,6 +138,55 @@ def _state_space_overlay_soft_deadline_seconds() -> float | None:
     return value if value > 0 else None
 
 
+def _state_space_shadow_callback_config() -> tuple[str | None, str | None]:
+    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip().rstrip("/")
+    token = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+    if not worker_url or not token:
+        return None, None
+    return f"{worker_url}/api/internal/state-space-shadow/callback", token
+
+
+def _modal_batch_result_summary(raw: Any) -> dict:
+    if isinstance(raw, BaseException):
+        return {
+            "status": "exception",
+            "n_input": None,
+            "n_success": 0,
+            "n_error": None,
+            "error_summary": {
+                "top_errors": [{"error": f"{type(raw).__name__}: {raw}", "count": 1}],
+            },
+        }
+    if not isinstance(raw, dict):
+        return {"status": "invalid_payload", "n_input": None, "n_success": 0, "n_error": None}
+    summary = {
+        "status": "ok" if not raw.get("error") else "error",
+        "n_input": raw.get("n_input"),
+        "n_success": raw.get("n_success"),
+        "n_error": raw.get("n_error"),
+        "error": raw.get("error"),
+    }
+    if isinstance(raw.get("error_summary"), dict):
+        summary["error_summary"] = raw["error_summary"]
+        return summary
+    counts: dict[str, int] = {}
+    for row in raw.get("results") or []:
+        if isinstance(row, dict) and row.get("error"):
+            message = str(row.get("error") or "unknown error")
+            counts[message] = counts.get(message, 0) + 1
+    if counts:
+        ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        summary["error_summary"] = {
+            "error_count": sum(counts.values()),
+            "unique_error_count": len(counts),
+            "top_errors": [
+                {"error": message, "count": count}
+                for message, count in ranked[:5]
+            ],
+        }
+    return summary
+
+
 def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str, Any]:
     total = len(series or [])
     usable = 0
@@ -464,11 +513,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             return {"error": "state-space overlays disabled by overlay mode", "results": []}
         if state_space_mode == "shadow":
             try:
+                callback_url, callback_token = _state_space_shadow_callback_config()
                 spawn_info = await asyncio.to_thread(
                     modal_client.spawn_state_space_overlays_batch_predict,
                     sequence_series,
                     horizon=5,
                     version_by_model=state_space_models,
+                    run_date=state.get("run_date"),
+                    run_id=state.get("producer_run_id") or state.get("run_id"),
+                    callback_url=callback_url,
+                    callback_token=callback_token,
                 )
                 logger.info(f"[Pipeline V2] State-space overlays shadow spawned: {spawn_info}")
                 return {"error": "state-space overlays shadow spawned; not blocking prediction", "results": [], "shadow": spawn_info}
@@ -523,6 +577,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         return_exceptions=True,
     )
 
+    gnn_result_summary = _modal_batch_result_summary(gnn_raw)
     modal_waiter = max((stage.get("wall_sec", 0.0) for stage in stage_timings.values()), default=0.0)
     critical_modal_waiter = max(
         (
@@ -541,6 +596,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         "state_space_overlay_mode": state_space_mode,
         "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
         "timesfm_gate": timesfm_gate,
+        "gnn_result_summary": gnn_result_summary,
         "n_input": n,
     }
     logger.info("[Pipeline V2] Modal wait telemetry: %s", wait_telemetry)
@@ -576,7 +632,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if gnn_map:
             logger.info("[Pipeline V2] GNN GraphSAGE full-universe: %s/%s succeeded", len(gnn_map), len(payloads))
         else:
-            logger.info("[Pipeline V2] GNN GraphSAGE full-universe: 0 succeeded")
+            logger.warning("[Pipeline V2] GNN GraphSAGE full-universe: 0 succeeded summary=%s", gnn_result_summary)
     elif isinstance(gnn_raw, dict) and gnn_raw.get("results") == []:
         logger.debug(f"[Pipeline V2] GNN skipped: {gnn_raw.get('error')}")
     else:

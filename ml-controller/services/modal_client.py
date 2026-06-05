@@ -887,15 +887,28 @@ def spawn_state_space_overlays_batch_predict(
     *,
     horizon: int = 5,
     version_by_model: dict[str, str] | None = None,
+    run_date: str | None = None,
+    run_id: str | None = None,
+    callback_url: str | None = None,
+    callback_token: str | None = None,
 ) -> dict:
     """Spawn Kalman + Markov overlays without blocking the daily graph."""
     fn = _lookup("state_space_universal_predict")
-    call = fn.spawn({
+    spawn_payload = {
         "model_names": ["KalmanFilter", "MarkovSwitching"],
         "series_list": series_list,
         "horizon": horizon,
         "version_by_model": version_by_model or {},
-    })
+    }
+    if run_date:
+        spawn_payload["run_date"] = run_date
+    if run_id:
+        spawn_payload["run_id"] = run_id
+    if callback_url:
+        spawn_payload["callback_url"] = callback_url
+    if callback_token:
+        spawn_payload["callback_token"] = callback_token
+    call = fn.spawn(spawn_payload)
     call_id = (
         getattr(call, "object_id", None)
         or getattr(call, "function_call_id", None)
@@ -907,6 +920,9 @@ def spawn_state_space_overlays_batch_predict(
         "function_call_id": call_id,
         "n_input": len(series_list),
         "version_by_model": version_by_model or {},
+        "run_date": run_date,
+        "run_id": run_id,
+        "callback_configured": bool(callback_url and callback_token),
     }
 
 

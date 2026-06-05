@@ -35,6 +35,8 @@ def test_default_pool_bootstraps_only_active_alpha_models():
     assert set(pool["meta_optimizers"]) == {"GAOptimizer"}
     assert all(entry["status"] == "active" for entry in pool["models"].values())
     assert all(entry["status"] == "challenger" for entry in pool["shadow_models"].values())
+    assert pool["models"]["TabM"]["gcs_path"] == "universal/tabm/v1.pt"
+    assert pool["models"]["GNN"]["gcs_path"] == "universal/gnn/v1.pt"
 
 
 def test_shadow_challenger_registration_excludes_ga_optimizer():

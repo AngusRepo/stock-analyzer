@@ -56,6 +56,37 @@ def test_modal_resource_spec_knows_gnn_graphsage_full_universe():
     assert spec["gpu"] is None
 
 
+def test_state_space_shadow_spawn_passes_callback_context(monkeypatch):
+    observed = {}
+
+    class FakeCall:
+        function_call_id = "fc-state-space"
+
+    class FakeFn:
+        def spawn(self, payload):
+            observed["payload"] = payload
+            return FakeCall()
+
+    monkeypatch.setattr(modal_client, "_lookup", lambda name: FakeFn())
+
+    result = modal_client.spawn_state_space_overlays_batch_predict(
+        [{"symbol": "2330", "prices": [1, 2, 3], "stock_id": 2330}],
+        horizon=5,
+        version_by_model={"MarkovSwitching": "v2"},
+        run_date="2026-06-04",
+        run_id="pipeline-v2:2026-06-04",
+        callback_url="https://worker.example/api/internal/state-space-shadow/callback",
+        callback_token="service-token",
+    )
+
+    assert observed["payload"]["run_date"] == "2026-06-04"
+    assert observed["payload"]["run_id"] == "pipeline-v2:2026-06-04"
+    assert observed["payload"]["callback_url"].endswith("/api/internal/state-space-shadow/callback")
+    assert observed["payload"]["callback_token"] == "service-token"
+    assert result["callback_configured"] is True
+    assert result["function_call_id"] == "fc-state-space"
+
+
 def test_modal_predict_batch_chunks_payloads():
     payloads = [{"symbol": str(i)} for i in range(25)]
 

@@ -664,6 +664,9 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     else:
         for model_name in _FEATURE_MODEL_NAMES_V2:
             try:
+                if model_name == "TabM":
+                    model_errors.append("TabM: production predictor requires TabM torch batch serving")
+                    continue
                 if model_name == "GNN":
                     model_errors.append("GNN: production predictor requires GraphSAGE batch-context serving")
                     continue

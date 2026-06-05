@@ -128,13 +128,28 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None, state_
 
 def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch):
     monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "shadow")
+    monkeypatch.setenv("STOCKVISION_WORKER_URL", "https://worker.example.test")
+    monkeypatch.setenv("STOCKVISION_AUTH_TOKEN", "service-token")
     spawn_calls = []
 
-    def fake_spawn(series_list, *, horizon=5, version_by_model=None):
+    def fake_spawn(
+        series_list,
+        *,
+        horizon=5,
+        version_by_model=None,
+        run_date=None,
+        run_id=None,
+        callback_url=None,
+        callback_token=None,
+    ):
         spawn_calls.append({
             "n": len(series_list),
             "horizon": horizon,
             "version_by_model": version_by_model,
+            "run_date": run_date,
+            "run_id": run_id,
+            "callback_url": callback_url,
+            "callback_token": callback_token,
         })
         return {"spawned": True, "function_call_id": "fc-123", "n_input": len(series_list)}
 
@@ -151,6 +166,10 @@ def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch)
         "n": 1,
         "horizon": 5,
         "version_by_model": {"KalmanFilter": "v1", "MarkovSwitching": "v1"},
+        "run_date": None,
+        "run_id": None,
+        "callback_url": "https://worker.example.test/api/internal/state-space-shadow/callback",
+        "callback_token": "service-token",
     }]
 
 

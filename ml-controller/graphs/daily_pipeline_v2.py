@@ -356,8 +356,8 @@ class PipelineStateV2(TypedDict, total=False):
     producer_run_id: str
 
     # Loaded inputs
-    active_stocks: list[dict]              # from daily_recommendations V2 screener universe
-    screener_recs: list[dict]              # from D1 daily_recommendations (existing chip+tech)
+    active_stocks: list[dict]              # from latest screener funnel candidate seed
+    screener_recs: list[dict]              # screener-owned seed rows, enriched with optional daily_recommendations state
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params
     barrier_params: dict                    # from KV trading:config.barrier
@@ -426,16 +426,118 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
                     (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
                  OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
                )
+        ),
+        scoring_seed AS (
+            SELECT *
+              FROM (
+                SELECT
+                    sfi.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY sfi.symbol
+                        ORDER BY COALESCE(sfi.rank, 999999), sfi.created_at DESC
+                    ) AS scoring_rank
+                  FROM screener_funnel_items sfi
+                 WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
+                   AND sfi.stage = 'scoring'
+                   AND sfi.decision = 'pass'
+              )
+             WHERE scoring_rank = 1
+        ),
+        l1_seed AS (
+            SELECT *
+              FROM (
+                SELECT
+                    sfi.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY sfi.symbol
+                        ORDER BY COALESCE(sfi.rank, 999999), sfi.created_at DESC
+                    ) AS l1_rank
+                  FROM screener_funnel_items sfi
+                 WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
+                   AND sfi.stage = 'l1_candidate_seed_after_overlay'
+                   AND sfi.decision = 'selected'
+              )
+             WHERE l1_rank = 1
         )
-        SELECT {_daily_recommendation_select("dr")}
-          FROM daily_recommendations dr
-          JOIN candidate_seed sfi
-            ON sfi.symbol = dr.symbol
-           AND sfi.stage_preference_rank = 1
-         WHERE dr.date = ?
-         ORDER BY COALESCE(sfi.rank, dr.rank), dr.rank
+        SELECT
+            dr.id AS id,
+            ? AS date,
+            COALESCE(dr.stock_id, st.id) AS stock_id,
+            sfi.symbol AS symbol,
+            COALESCE(dr.name, sfi.name, st.name, sfi.symbol) AS name,
+            COALESCE(dr.sector, st.sector) AS sector,
+            COALESCE(
+                dr.industry,
+                CASE WHEN json_valid(scoring.evidence) THEN json_extract(scoring.evidence, '$.taxonomy.industry') END,
+                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.industry') END,
+                st.sector
+            ) AS industry,
+            COALESCE(sfi.rank, dr.rank, 999999) AS rank,
+            COALESCE(sfi.score_after, dr.score, scoring.score_after, 0) AS score,
+            dr.signal AS signal,
+            dr.confidence AS confidence,
+            COALESCE(
+                dr.reason,
+                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.strategy_pool_reason') END,
+                sfi.reason_code,
+                'screener candidate seed'
+            ) AS reason,
+            COALESCE(
+                dr.watch_points,
+                json_array('screener_seed:' || sfi.stage, 'screener_run:' || sfi.run_id)
+            ) AS watch_points,
+            COALESCE(dr.has_buy_signal, 0) AS has_buy_signal,
+            dr.current_price AS current_price,
+            dr.foreign_net_5d AS foreign_net_5d,
+            dr.trust_net_5d AS trust_net_5d,
+            dr.rsi14 AS rsi14,
+            dr.macd_hist AS macd_hist,
+            dr.sector_rank AS sector_rank,
+            COALESCE(
+                dr.market_segment,
+                CASE WHEN json_valid(sfi.evidence) THEN json_extract(sfi.evidence, '$.market_segment') END,
+                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.market_segment') END,
+                st.market,
+                'LISTED'
+            ) AS market_segment,
+            COALESCE(
+                dr.recommendation_lane,
+                CASE
+                    WHEN upper(COALESCE(st.market, '')) IN ('TWSE', 'TSE', 'LISTED', 'OTC', 'TPEX') THEN 'tradable'
+                    WHEN upper(COALESCE(st.market, '')) IN ('EMERGING', 'ESB', 'ROTC') THEN 'emerging_watchlist'
+                    ELSE 'research_only'
+                END
+            ) AS recommendation_lane,
+            COALESCE(dr.eligible_for_ml, 1) AS eligible_for_ml,
+            COALESCE(
+                dr.eligible_for_pending_buy,
+                CASE
+                    WHEN upper(COALESCE(st.market, '')) IN ('TWSE', 'TSE', 'LISTED', 'OTC', 'TPEX') THEN 1
+                    ELSE 0
+                END
+            ) AS eligible_for_pending_buy,
+            dr.alpha_context AS alpha_context,
+            dr.alpha_allocation AS alpha_allocation,
+            dr.ml_vote_summary AS ml_vote_summary,
+            COALESCE(
+                CASE WHEN json_valid(scoring.evidence) THEN json_extract(scoring.evidence, '$.score_components') END,
+                dr.score_components
+            ) AS score_components
+          FROM candidate_seed sfi
+          LEFT JOIN daily_recommendations dr
+            ON dr.date = ?
+           AND dr.symbol = sfi.symbol
+          LEFT JOIN stocks st
+            ON st.symbol = sfi.symbol
+          LEFT JOIN scoring_seed scoring
+            ON scoring.symbol = sfi.symbol
+          LEFT JOIN l1_seed l1
+            ON l1.symbol = sfi.symbol
+         WHERE sfi.stage_preference_rank = 1
+           AND COALESCE(dr.stock_id, st.id) IS NOT NULL
+         ORDER BY COALESCE(sfi.rank, dr.rank, 999999), COALESCE(sfi.score_after, dr.score, scoring.score_after, 0) DESC
         """,
-        [run_date, run_date],
+        [run_date, run_date, run_date],
     )
     if not screener_recs:
         raise RuntimeError(
@@ -447,7 +549,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
 
     logger.info(
         f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
-        f"(source=latest_screener_layer2_coarse_ml_gate), "
+        f"(source=latest_screener_candidate_seed), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {

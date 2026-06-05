@@ -18,6 +18,15 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     assert "build_ml_universe([], screener_recs)" in source
 
 
+def test_daily_pipeline_loads_latest_screener_seed_without_recommendation_inner_join():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    assert "FROM candidate_seed sfi" in source
+    assert "LEFT JOIN daily_recommendations dr" in source
+    assert "JOIN candidate_seed sfi" not in source
+    assert "source=latest_screener_candidate_seed" in source
+
+
 def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 

@@ -30,6 +30,14 @@ DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_MAX_TRAIN_DATES_PER_EPOCH = 120
 DEFAULT_EDGE_TOP_K = 8
 DEFAULT_EDGE_THRESHOLD = 0.25
+STALE_PROMOTION_FIELDS = (
+    "artifact_backfill",
+    "ic_4w_avg",
+    "last_ic_by_segment",
+    "model_cpcv",
+    "rolling_ic",
+    "weekly_ic",
+)
 
 
 def _version() -> str:
@@ -277,6 +285,8 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
             "artifact_path": artifact_path,
         },
     })
+    for field in STALE_PROMOTION_FIELDS:
+        entry.pop(field, None)
     entry.pop("challenger", None)
     entry.pop("degraded_since", None)
     entry.pop("retired_at", None)

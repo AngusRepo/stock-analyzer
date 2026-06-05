@@ -641,24 +641,58 @@ export async function listStrategyLearningCandidates(
 ): Promise<StrategyCandidateInput[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
   const { results } = await db.prepare(`
-    SELECT symbol, name, sector, industry, score_components,
-           current_price
-      FROM daily_recommendations
-     WHERE date = ?
-     ORDER BY rank ASC,
+    WITH latest_run AS (
+      SELECT run_id
+        FROM screener_funnel_runs
+       WHERE date = ?
+       ORDER BY created_at DESC
+       LIMIT 1
+    ),
+    layer2 AS (
+      SELECT symbol, evidence
+        FROM screener_funnel_items
+       WHERE run_id = (SELECT run_id FROM latest_run)
+         AND stage = 'layer2_coarse_ml_gate'
+         AND decision = 'pass'
+    ),
+    layer1 AS (
+      SELECT symbol, evidence
+        FROM screener_funnel_items
+       WHERE run_id = (SELECT run_id FROM latest_run)
+         AND stage = 'layer1_strategy_breadth_gate'
+         AND decision IN ('pass', 'observe')
+    )
+    SELECT dr.symbol, dr.name, dr.sector, dr.industry, dr.score_components,
+           dr.current_price,
+           COALESCE(layer2.evidence, layer1.evidence) AS funnel_evidence
+      FROM daily_recommendations dr
+      LEFT JOIN layer2 ON layer2.symbol = dr.symbol
+      LEFT JOIN layer1 ON layer1.symbol = dr.symbol
+     WHERE dr.date = ?
+     ORDER BY dr.rank ASC,
        CASE WHEN json_valid(score_components) THEN
          COALESCE(
            CAST(json_extract(score_components, '$.finalScore') AS REAL),
            CAST(json_extract(score_components, '$.total') AS REAL),
            0
          ) ELSE 0 END DESC,
-       symbol ASC
+       dr.symbol ASC
      LIMIT ?
-  `).bind(date, safeLimit).all<StrategyCandidateInput & { score_components?: unknown }>()
-  return (results ?? []).map(({ score_components, ...row }) => ({
-    ...row,
-    score_v2: row.score_v2 ?? score_components,
-  }))
+  `).bind(date, date, safeLimit).all<StrategyCandidateInput & {
+    score_components?: unknown
+    funnel_evidence?: string | null
+  }>()
+  return (results ?? []).map(({ score_components, funnel_evidence, ...row }) => {
+    const evidence = parseJson<Record<string, any>>(funnel_evidence, {})
+    const rawSignals = evidence && typeof evidence.raw_signals === 'object'
+      ? evidence.raw_signals
+      : row.raw_signals
+    return {
+      ...row,
+      raw_signals: rawSignals ?? null,
+      score_v2: row.score_v2 ?? score_components,
+    }
+  })
 }
 
 export async function persistStrategyDecisionRows(db: D1Database, rows: StrategyDecisionLogRow[]): Promise<number> {

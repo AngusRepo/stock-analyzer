@@ -23,6 +23,13 @@ function assert(condition: unknown, message: string): void {
   assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE'), 'strategy learning replay writes must be chunked for D1 production latency')
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
   assert(
+    source.includes('screener_funnel_items') &&
+      source.includes("stage = 'layer2_coarse_ml_gate'") &&
+      source.includes('raw_signals') &&
+      source.includes('COALESCE(layer2.evidence, layer1.evidence)'),
+    'strategy learning candidates must restore raw strategy evidence from the latest screener funnel, not Score V2-only recommendations',
+  )
+  assert(
     source.includes('demoteStaleActiveDiscoveryStrategySpecs') &&
       source.includes("SET status='research'") &&
       source.includes("strategy_id NOT IN (${placeholders})") &&

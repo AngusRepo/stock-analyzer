@@ -188,7 +188,7 @@ def model_artifact_path(model_name: str, version: str) -> str:
         "XGBoost": "joblib",
         "ExtraTrees": "joblib",
         "TabM": "joblib",
-        "GNN": "joblib",
+        "GNN": "pt",
         "DLinear": "pt",
         "PatchTST": "pt",
         "iTransformer": "pt",

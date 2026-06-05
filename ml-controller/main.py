@@ -14,6 +14,7 @@ Architecture:
 Auth: X-Controller-Token header (set ML_CONTROLLER_SECRET env var)
 """
 import os
+import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
@@ -134,3 +135,48 @@ def health():
         "optunaJobConfigured": all([optuna_job_name, gcp_project_id, gcp_region]),
         "batchPredictContract": batch_predict_contract(),
     }
+
+
+def _warmup_payload(symbol: str, stock_id: int) -> dict:
+    prices = [
+        {"date": f"2026-01-{(idx % 28) + 1:02d}", "close": 100.0 + idx * 0.1, "adj_close": 100.0 + idx * 0.1}
+        for idx in range(60)
+    ]
+    return {
+        "stock_id": stock_id,
+        "symbol": symbol,
+        "prices": prices,
+        "indicators": [],
+        "stock_meta": {"market_segment": "LISTED"},
+        "runtime_options": {"owner": "ml_controller_warmup"},
+    }
+
+
+@app.post("/warmup", dependencies=[Depends(verify_token)])
+async def warmup():
+    """Prewarm Modal hot-path inference functions before the daily pipeline."""
+    from services import modal_client
+    from services.state_space_series import build_state_space_series_from_payloads
+
+    payloads = [_warmup_payload("2330", 2330), _warmup_payload("2317", 2317)]
+    series = build_state_space_series_from_payloads(payloads)
+    targets = {
+        "predict_batch_v2": modal_client.batch_predict(payloads),
+        "gnn_graphsage_universal_predict": modal_client.gnn_graphsage_batch_predict(payloads),
+        "timesfm_universal_predict": modal_client.timesfm_batch_predict(series),
+    }
+    results = {}
+    for name, awaitable in targets.items():
+        try:
+            started = asyncio.get_running_loop().time()
+            result = await asyncio.wait_for(awaitable, timeout=90.0)
+            results[name] = {
+                "status": "ok" if not (isinstance(result, dict) and result.get("error")) else "degraded",
+                "elapsed_sec": round(asyncio.get_running_loop().time() - started, 3),
+                "n_input": result.get("n_input") if isinstance(result, dict) else None,
+                "n_success": result.get("n_success") if isinstance(result, dict) else None,
+                "error": result.get("error") if isinstance(result, dict) else None,
+            }
+        except Exception as exc:  # noqa: BLE001 - warmup must never be a production gate.
+            results[name] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    return {"status": "warmup_complete", "targets": results}

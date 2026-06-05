@@ -27,20 +27,6 @@ def _get_bucket():
     return bucket
 
 
-def _default_config(version: str = "v1") -> dict:
-    return {
-        "version": version,
-        "model_id": DEFAULT_MODEL_ID,
-        "seq_len": DEFAULT_SEQ_LEN,
-        "pred_len": DEFAULT_PRED_LEN,
-        "max_context": DEFAULT_SEQ_LEN,
-        "max_horizon": DEFAULT_PRED_LEN,
-        "backend": "gpu",
-        "per_core_batch_size": 32,
-        "source": "timesfm_default_zero_shot_config",
-    }
-
-
 def load_config_from_gcs(version: str = "v1") -> dict | None:
     if version in _CONFIG_CACHE:
         return _CONFIG_CACHE[version]
@@ -53,16 +39,17 @@ def load_config_from_gcs(version: str = "v1") -> dict | None:
         elif meta_blob.exists():
             config = json.loads(meta_blob.download_as_text())
         else:
-            config = _default_config(version)
+            _CONFIG_CACHE[version] = None
+            return None
         if not isinstance(config, dict):
-            config = _default_config(version)
+            _CONFIG_CACHE[version] = None
+            return None
         _CONFIG_CACHE[version] = config
         return config
     except Exception as exc:  # noqa: BLE001
         logger.warning("[TimesFMUniversal] config load failed: %s", exc)
-        config = _default_config(version)
-        _CONFIG_CACHE[version] = config
-        return config
+        _CONFIG_CACHE[version] = None
+        return None
 
 
 def _load_timesfm_model(config: dict):

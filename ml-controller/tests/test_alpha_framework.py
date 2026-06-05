@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -342,6 +343,60 @@ def test_write_predictions_to_d1_persists_alpha_context(monkeypatch):
     )
     assert '"alpha_context"' in forecast_data
     assert '"edge_bucket": "breakout_vol_expansion"' in forecast_data
+
+
+def test_write_predictions_to_d1_persists_state_space_overlay_context(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+
+    write_predictions_to_d1(
+        {
+            "2330": {
+                "signal": "BUY",
+                "confidence": 0.74,
+                "entry_price": 106.0,
+                "stop_loss": 100.0,
+                "target1": 114.0,
+                "target2": 120.0,
+                "feature_version": "v2",
+                "ensemble_v2": {"signal": "BUY", "signal_source": "ensemble_v2"},
+                "kalman_filter": {"forecast_pct": 0.012, "confidence": 0.61},
+                "markov_switching": {
+                    "forecast_pct": -0.018,
+                    "confidence": 0.67,
+                    "direction": "down",
+                    "fallback_reason": "svd_not_converged",
+                },
+            }
+        },
+        {"2330": 1},
+        run_date="2026-06-05",
+    )
+
+    forecast_data = next(
+        param
+        for _sql, params in captured["statements"]
+        for param in params
+        if isinstance(param, str) and '"state_space_overlays"' in param
+    )
+    payload = json.loads(forecast_data)
+    overlays = payload["state_space_overlays"]
+    assert overlays["schema_version"] == "state-space-overlays-v1"
+    assert overlays["kalman_filter"]["forecast_pct"] == 0.012
+    assert overlays["markov_switching"]["direction"] == "down"
+    assert overlays["markov_switching"]["fallback_reason"] == "svd_not_converged"
+    assert "MarkovSwitching" not in [
+        param
+        for _sql, params in captured["statements"]
+        for param in params
+        if isinstance(param, str)
+    ]
 
 
 def test_merge_llm_reasons_preserves_domain_watch_points():

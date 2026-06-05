@@ -8,6 +8,7 @@ REPO = ROOT.parent
 def test_daily_pipeline_calls_all_l3_sequence_predictors():
     source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
+    assert "modal_client.gnn_graphsage_batch_predict" in source
     assert "modal_client.dlinear_batch_predict" in source
     assert "modal_client.patchtst_batch_predict" in source
     assert "modal_client.itransformer_batch_predict" in source
@@ -35,7 +36,19 @@ def test_modal_client_exposes_l3_sequence_predictors_and_resources():
 def test_modal_app_has_artifact_backed_l3_sequence_endpoints():
     source = (REPO / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
 
+    assert "def gnn_graphsage_universal_predict" in source
+    assert "from app.batch_prediction import predict_gnn_graphsage_batch" in source
     assert "def itransformer_universal_predict" in source
     assert "from app.itransformer_universal import itransformer_batch_predict" in source
     assert "def timesfm_universal_predict" in source
     assert "from app.timesfm_universal import timesfm_batch_predict" in source
+
+
+def test_retired_layer3_formal_predictor_is_not_in_hot_path():
+    sources = "\n".join([
+        (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8"),
+        (ROOT / "services" / "modal_client.py").read_text(encoding="utf-8"),
+        (REPO / "ml-service" / "modal_app.py").read_text(encoding="utf-8"),
+    ])
+
+    assert "layer3_formal_universal_predict" not in sources

@@ -843,6 +843,22 @@ def predict_batch_v2(payload: dict) -> dict:
 
 
 @app.function(
+    cpu=2,
+    memory=8192,
+    timeout=900,
+    min_containers=0,
+    scaledown_window=900,
+    max_containers=1,
+)
+def gnn_graphsage_universal_predict(payload: dict) -> dict:
+    """Full-universe GraphSAGE prediction for the GNN alpha family."""
+    _setup_env()
+    from app.batch_prediction import predict_gnn_graphsage_batch
+
+    return predict_gnn_graphsage_batch(payload.get("payloads") or [])
+
+
+@app.function(
     cpu=1,
     memory=2048,
     timeout=300,

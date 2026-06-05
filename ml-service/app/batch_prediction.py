@@ -214,6 +214,47 @@ def _apply_artifact_batch_predictions(
                 )
 
 
+def _apply_gnn_batch_context_predictions(
+    contexts: list[_FeatureBatchContext],
+    pool: dict | None,
+    model_status: dict[str, str],
+) -> None:
+    status = model_status.get("GNN", "active")
+    if status in ("retired", "challenger"):
+        for ctx in contexts:
+            _record_feature_error(ctx, f"GNN: skipped by model_pool status={status}")
+        return
+    try:
+        from .gnn_batch_runtime import load_graphsage_artifact, predict_graphsage_scores
+
+        artifact = load_graphsage_artifact(pool=pool)
+        rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
+        for ctx in contexts:
+            try:
+                rows.append((ctx, _align_latest_features(ctx, artifact.metadata)))
+            except Exception as exc:  # noqa: BLE001
+                _record_feature_error(ctx, f"GNN: {exc}")
+        if not rows:
+            return
+
+        node_features = np.vstack([row for _ctx, row in rows])
+        price_series = [getattr(ctx.req, "prices", []) or [] for ctx, _row in rows]
+        scores, graph_report = predict_graphsage_scores(
+            artifact,
+            node_features=node_features,
+            price_series=price_series,
+        )
+        for (ctx, _row), score in zip(rows, scores):
+            _record_feature_score(ctx, "GNN", score)
+        for ctx in contexts:
+            runtime_options = dict(getattr(ctx.req, "runtime_options", {}) or {})
+            runtime_options["gnn_batch_context"] = graph_report
+            ctx.req.runtime_options = runtime_options
+    except Exception as exc:  # noqa: BLE001
+        for ctx in contexts:
+            _record_feature_error(ctx, f"GNN: {exc}")
+
+
 def _model_pool_status(pool: dict | None) -> dict[str, str]:
     from .prediction_runtime import _MODEL_NAMES_V2
 
@@ -232,35 +273,11 @@ def _model_pool_status(pool: dict | None) -> dict[str, str]:
                 vote_weight = 0.0
             direct_prediction = bool(slot.get("direct_prediction")) or vote_weight > 0.0
             if direct_prediction and slot_status in {"production_adapter_active", "active"}:
-                return "active"
+                return "retired"
             return "retired"
         return "active"
 
     return {name: resolve(name) for name in _MODEL_NAMES_V2}
-
-
-def _controller_owned_direct_feature_models(pool: dict | None) -> set[str]:
-    pool_models = (pool or {}).get("models", {}) if pool else {}
-    formal_slots = (pool or {}).get("formal_layer3_slots", {}) if pool else {}
-    controller_owned: set[str] = set()
-    if not isinstance(formal_slots, dict):
-        return controller_owned
-    for name, slot in formal_slots.items():
-        if not isinstance(slot, dict):
-            continue
-        slot_status = str(slot.get("status") or "").strip()
-        try:
-            vote_weight = float(slot.get("vote_weight") or 0.0)
-        except (TypeError, ValueError):
-            vote_weight = 0.0
-        direct_prediction = bool(slot.get("direct_prediction")) or vote_weight > 0.0
-        model_entry = pool_models.get(name) if isinstance(pool_models, dict) else None
-        has_artifact_path = isinstance(model_entry, dict) and bool(
-            model_entry.get("gcs_path") or model_entry.get("artifact_path") or model_entry.get("active_path")
-        )
-        if direct_prediction and slot_status in {"production_adapter_active", "active"} and not has_artifact_path:
-            controller_owned.add(str(name))
-    return controller_owned
 
 
 def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[dict]:
@@ -275,20 +292,14 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
     contexts = [_build_feature_batch_context(req) for req in requests]
     pool = _load_model_pool()
     model_status = _model_pool_status(pool)
-    controller_owned = _controller_owned_direct_feature_models(pool)
 
     for model_name in _FEATURE_MODEL_NAMES_V2:
+        if model_name == "GNN":
+            continue
         status = model_status.get(model_name, "active")
         if status in ("retired", "challenger"):
             for ctx in contexts:
                 _record_feature_error(ctx, f"{model_name}: skipped by model_pool status={status}")
-            continue
-        if model_name in controller_owned:
-            for ctx in contexts:
-                _record_feature_error(
-                    ctx,
-                    f"{model_name}: controller-owned direct adapter; scored by daily_pipeline_v2",
-                )
             continue
         try:
             model_obj, meta = _load_feature_artifact(model_name)
@@ -337,6 +348,66 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
         }
         for ctx in contexts
     ]
+
+
+def predict_gnn_graphsage_batch(payloads: list[dict]) -> dict:
+    """Run GNN GraphSAGE over the complete candidate universe.
+
+    This endpoint intentionally lives outside predict_batch_v2 chunking because
+    GraphSAGE needs cross-stock batch context to build graph edges.
+    """
+    request_cls, _predict_fn = _runtime()
+    contexts: list[_FeatureBatchContext] = []
+    results: list[dict | None] = [None] * len(payloads or [])
+    for idx, payload in enumerate(payloads or []):
+        try:
+            req = request_cls(**payload)
+            contexts.append(_build_feature_batch_context(req))
+        except Exception as exc:  # noqa: BLE001
+            results[idx] = _error_result(payload, exc)
+
+    if contexts:
+        pool = _load_model_pool()
+        model_status = _model_pool_status(pool)
+        _apply_gnn_batch_context_predictions(contexts, pool, model_status)
+
+        context_idx = 0
+        for idx, current in enumerate(results):
+            if current is not None:
+                continue
+            ctx = contexts[context_idx]
+            context_idx += 1
+            score = ctx.rank_scores.get("GNN")
+            if score is None:
+                results[idx] = {
+                    "stock_id": getattr(ctx.req, "stock_id", 0),
+                    "symbol": getattr(ctx.req, "symbol", "?"),
+                    "error": "; ".join(ctx.model_errors or ["GNN: no score emitted"]),
+                }
+                continue
+            graph_report = (getattr(ctx.req, "runtime_options", {}) or {}).get("gnn_batch_context") or {}
+            results[idx] = {
+                "stock_id": getattr(ctx.req, "stock_id", 0),
+                "symbol": getattr(ctx.req, "symbol", "?"),
+                "rank_score": _clip_rank(score),
+                "confidence": 0.5,
+                "model": "GNN",
+                "runtime": "graphsage_full_universe",
+                "graph_context": graph_report,
+                "source": "gnn_graphsage_universal_predict",
+            }
+
+    output = [item for item in results if item is not None]
+    return {
+        "results": output,
+        "n_input": len(payloads or []),
+        "n_success": sum(1 for item in output if not item.get("error")),
+        "n_error": sum(1 for item in output if item.get("error")),
+        "metrics": {
+            "runtime": "graphsage_full_universe",
+            "contract": "gnn_graphsage_universal_predict_v1",
+        },
+    }
 
 
 def _copy_request_with_runtime_overrides(req: Any, overrides: dict) -> Any:
@@ -390,8 +461,7 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
         pool = load_pool()
     except Exception:
         pool = None
-    controller_owned = _controller_owned_direct_feature_models(pool)
-    active_models = [name for name in _FEATURE_MODEL_NAMES_V2 if name not in controller_owned]
+    active_models = [name for name in _FEATURE_MODEL_NAMES_V2 if name != "GNN"]
     errors: list[str] = []
     active_loaded = 0
     challenger_loaded = 0

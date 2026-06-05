@@ -166,6 +166,79 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     assert overrides[1][_BATCH_FEATURE_RANK_SCORES_KEY]["XGBoost"] == pytest.approx(0.75)
 
 
+def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
+    from app import gnn_batch_runtime
+
+    pool = {
+        "models": {
+            "LightGBM": {"status": "retired"},
+            "XGBoost": {"status": "retired"},
+            "ExtraTrees": {"status": "retired"},
+            "TabM": {"status": "retired"},
+            "GNN": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/gnn/v1.pt",
+            },
+        }
+    }
+    artifact = gnn_batch_runtime.GraphSAGEArtifact(
+        model=object(),
+        metadata={"feature_names": [], "graph_context": {"correlation_lookback": 60}},
+        source_path="universal/gnn/v1.pt",
+        version="v1",
+    )
+    observed = {}
+
+    def fail_if_generic_gnn(model_name, explicit_path=None):
+        assert model_name != "GNN"
+        return None, {}
+
+    def fake_graphsage_scores(artifact_arg, *, node_features, price_series):
+        observed["artifact"] = artifact_arg
+        observed["node_shape"] = node_features.shape
+        observed["series_count"] = len(price_series)
+        return np.array([0.22, 0.78], dtype=np.float32), {
+            "runtime": "graphsage_batch_context",
+            "n_nodes": 2,
+            "n_edges": 2,
+        }
+
+    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
+    monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fail_if_generic_gnn)
+    monkeypatch.setattr(gnn_batch_runtime, "load_graphsage_artifact", lambda pool=None: artifact)
+    monkeypatch.setattr(gnn_batch_runtime, "predict_graphsage_scores", fake_graphsage_scores)
+
+    result = batch_prediction.predict_gnn_graphsage_batch([
+        _predict_payload("2330", 2330, 100.0),
+        _predict_payload("2317", 2317, 80.0),
+    ])
+
+    assert observed["artifact"] is artifact
+    assert observed["node_shape"][0] == 2
+    assert observed["series_count"] == 2
+    assert result["n_input"] == 2
+    assert result["n_success"] == 2
+    assert result["results"][0]["rank_score"] == pytest.approx(0.22)
+    assert result["results"][1]["rank_score"] == pytest.approx(0.78)
+    assert result["results"][0]["graph_context"]["runtime"] == "graphsage_batch_context"
+
+
+def test_formal_slot_without_model_artifact_is_not_active():
+    pool = {
+        "models": {},
+        "formal_layer3_slots": {
+            "GNN": {
+                "status": "production_adapter_active",
+                "direct_prediction": True,
+                "vote_weight": 0.1,
+            }
+        },
+    }
+
+    assert batch_prediction._model_pool_status(pool)["GNN"] == "retired"
+
+
 def test_shadow_challenger_batch_overrides_vectorize_residual_mlp(monkeypatch):
     from app.prediction_runtime import _BATCH_CHALLENGER_RANK_SCORES_KEY
     from app.schemas import PredictRequest

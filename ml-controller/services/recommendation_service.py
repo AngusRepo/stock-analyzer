@@ -164,6 +164,24 @@ def _enrich_stock_meta_with_segment_policy(stock_meta: dict | None) -> dict:
     return meta
 
 
+def _state_space_overlay_payload(data: dict) -> dict[str, Any] | None:
+    """Persist state-space overlays for shadow attribution, not alpha voting."""
+    overlays: dict[str, Any] = {}
+    for source_key, output_key in (
+        ("kalman_filter", "kalman_filter"),
+        ("markov_switching", "markov_switching"),
+    ):
+        value = data.get(source_key)
+        if isinstance(value, dict):
+            overlays[output_key] = value
+    if not overlays:
+        return None
+    return {
+        "schema_version": "state-space-overlays-v1",
+        **overlays,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ML score calculation (port from dailyRecommendation.ts:558-568)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2104,6 +2122,7 @@ def write_predictions_to_d1(
             "core_family_vote": data.get("core_family_vote"),
             "gnn": data.get("gnn"),
             "timesfm": data.get("timesfm"),
+            "state_space_overlays": _state_space_overlay_payload(data),
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),

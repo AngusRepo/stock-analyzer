@@ -21,14 +21,27 @@ async function runMlControllerWarmup(env: any): Promise<string> {
   if (!env.ML_CONTROLLER_URL) return 'SKIP: ML_CONTROLLER_URL not set'
   const headers: Record<string, string> = {}
   if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
+  const warmup = await fetch(`${env.ML_CONTROLLER_URL}/warmup`, {
+    method: 'POST',
+    headers,
+    signal: AbortSignal.timeout(120_000),
+  }).catch(() => null)
+  if (warmup?.ok) {
+    const body = await warmup.json().catch(() => ({})) as any
+    const targets = body?.targets && typeof body.targets === 'object'
+      ? Object.entries(body.targets).map(([name, value]: [string, any]) => `${name}=${value?.status ?? 'unknown'}`).join(' ')
+      : 'targets=unknown'
+    return `ML Controller warmup ok ${targets}`
+  }
+
   const res = await fetch(`${env.ML_CONTROLLER_URL}/health`, {
     headers,
     signal: AbortSignal.timeout(30_000),
   }).catch(() => null)
-  if (!res?.ok) return `ML Controller health failed${res ? ` (${res.status})` : ''}`
+  if (!res?.ok) return `ML Controller warmup failed${warmup ? ` (${warmup.status})` : ''}; health failed${res ? ` (${res.status})` : ''}`
   const health = await res.json().catch(() => ({})) as any
   return [
-    'ML Controller ok',
+    `ML Controller warmup degraded${warmup ? ` (${warmup.status})` : ''}; health ok`,
     `pipelineJob=${health.pipelineJobConfigured ? 'ok' : 'missing'}`,
     `verifyJob=${health.verifyJobConfigured ? 'ok' : 'missing'}`,
     `callback=${health.callbackConfigured ? 'ok' : 'missing'}`,

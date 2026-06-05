@@ -19,6 +19,7 @@ import logging
 import math
 import operator
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
 
@@ -121,6 +122,76 @@ def _state_space_overlay_mode() -> str:
     )
     mode = str(raw).strip().lower()
     return mode if mode in {"blocking", "shadow", "disabled"} else "blocking"
+
+
+def _state_space_overlay_soft_deadline_seconds() -> float | None:
+    raw = (
+        os.environ.get("PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS")
+        or os.environ.get("STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS")
+    )
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str, Any]:
+    total = len(series or [])
+    usable = 0
+    for row in series or []:
+        prices = row.get("prices") if isinstance(row, dict) else None
+        if isinstance(prices, list) and len(prices) >= max(1, int(min_points)):
+            usable += 1
+    ratio = usable / total if total else 0.0
+    return {"total": total, "usable": usable, "ratio": round(ratio, 6), "min_points": min_points}
+
+
+def _timesfm_sync_gate(
+    *,
+    model_status: dict[str, str],
+    pool: dict | None,
+    ev2_cfg: dict | None,
+    sequence_series: list[dict],
+) -> tuple[bool, dict[str, Any]]:
+    status = model_status.get("TimesFM", "retired")
+    if status not in {"active", "degraded"}:
+        return False, {"allowed": False, "reason": "timesfm_retired_by_model_pool", "status": status}
+
+    min_points = int(os.environ.get("TIMESFM_MIN_SEQUENCE_POINTS", "50") or "50")
+    min_coverage = float(os.environ.get("TIMESFM_MIN_SEQUENCE_COVERAGE", "0.80") or "0.80")
+    coverage = _sequence_coverage(sequence_series, min_points=min_points)
+    if coverage["ratio"] < min_coverage:
+        return False, {
+            "allowed": False,
+            "reason": "sequence_coverage_below_gate",
+            "status": status,
+            "coverage": coverage,
+            "min_coverage": min_coverage,
+        }
+
+    serving_ic = _build_serving_ic_bundle(pool, "GLOBAL", ev2_cfg or {})
+    weight = float((serving_ic.get("weights") or {}).get("TimesFM") or 0.0)
+    diagnostic = (serving_ic.get("diagnostics") or {}).get("TimesFM") or {}
+    if weight <= 0.0:
+        return False, {
+            "allowed": False,
+            "reason": "timesfm_non_positive_effective_ic",
+            "status": status,
+            "coverage": coverage,
+            "effective_weight": weight,
+            "diagnostic": diagnostic,
+        }
+    return True, {
+        "allowed": True,
+        "reason": "timesfm_gate_passed",
+        "status": status,
+        "coverage": coverage,
+        "effective_weight": weight,
+        "diagnostic": diagnostic,
+    }
 
 
 def _breeze2_reason_shadow_enabled() -> bool:
@@ -309,11 +380,49 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # Parallel: alpha predictors + state overlays.
     # Kalman/Markov are state overlays only; they do not enter alpha challenger.
     model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+    (
+        serving_model_status,
+        serving_ic_universe,
+        serving_degraded_dampening,
+        serving_ev2_cfg,
+        serving_used_pool,
+        serving_pool,
+    ) = await asyncio.to_thread(_load_pool_and_ic)
+    if serving_model_status:
+        model_status = {**model_status, **serving_model_status}
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
 
+    stage_timings: dict[str, dict[str, Any]] = {}
+
+    async def _timed_stage(name: str, awaitable, *, required_alpha: bool) -> Any:
+        started = time.time()
+        status = "ok"
+        error = None
+        try:
+            result = await awaitable
+            if isinstance(result, dict) and result.get("error") and result.get("results") == []:
+                status = "skipped"
+            return result
+        except BaseException as exc:  # noqa: BLE001
+            status = "exception"
+            error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            stage_timings[name] = {
+                "wall_sec": round(time.time() - started, 3),
+                "required_alpha": required_alpha,
+                "status": status,
+                "error": error,
+            }
+
     feat_task = batch_predict(payloads)
+    gnn_task = (
+        modal_client.gnn_graphsage_batch_predict(payloads, version=active_versions.get("GNN", "v1"))
+        if model_status.get("GNN") in ("active", "degraded")
+        else _skip_batch("GNN retired by model_pool")
+    )
     dlinear_task = (
         modal_client.dlinear_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
         if model_status.get("DLinear", "active") in ("active", "degraded")
@@ -329,11 +438,18 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if model_status.get("iTransformer", "active") in ("active", "degraded")
         else _skip_batch("iTransformer retired by model_pool")
     )
+    timesfm_allowed, timesfm_gate = _timesfm_sync_gate(
+        model_status=model_status,
+        pool=serving_pool,
+        ev2_cfg=serving_ev2_cfg,
+        sequence_series=sequence_series,
+    )
     timesfm_task = (
         modal_client.timesfm_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("TimesFM", "v1"))
-        if model_status.get("TimesFM", "active") in ("active", "degraded")
-        else _skip_batch("TimesFM retired by model_pool")
+        if timesfm_allowed
+        else _skip_batch(f"TimesFM skipped by serving gate: {timesfm_gate.get('reason')}")
     )
+    logger.info("[Pipeline V2] TimesFM serving gate: %s", timesfm_gate)
     state_space_mode = _state_space_overlay_mode()
     state_space_models = {
         model_name: active_versions.get(model_name, "v1")
@@ -359,30 +475,112 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             except Exception as exc:  # noqa: BLE001 - shadow overlay must not block prediction.
                 logger.warning(f"[Pipeline V2] State-space overlays shadow spawn failed: {exc}")
                 return {"error": f"state-space overlays shadow spawn failed: {exc}", "results": []}
-        return await modal_client.state_space_overlays_batch_predict(
+        overlay_call = modal_client.state_space_overlays_batch_predict(
             sequence_series,
             horizon=5,
             version_by_model=state_space_models,
         )
+        soft_deadline = _state_space_overlay_soft_deadline_seconds()
+        if soft_deadline:
+            try:
+                return await asyncio.wait_for(overlay_call, timeout=soft_deadline)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Pipeline V2] State-space overlays soft deadline exceeded "
+                    "deadline=%.1fs n_input=%s mode=%s",
+                    soft_deadline,
+                    len(sequence_series),
+                    state_space_mode,
+                )
+                return {
+                    "error": "state-space overlays soft deadline exceeded; continuing without overlays",
+                    "results": [],
+                    "soft_timeout": {
+                        "deadline_seconds": soft_deadline,
+                        "n_input": len(sequence_series),
+                        "mode": state_space_mode,
+                    },
+                }
+        return await overlay_call
 
     state_space_task = _shadow_state_space_overlays()
     (
         results,
+        gnn_raw,
         dlinear_raw,
         patchtst_raw,
         state_space_raw,
         itransformer_raw,
         timesfm_raw,
     ) = await asyncio.gather(
-        feat_task,
-        dlinear_task,
-        patchtst_task,
-        state_space_task,
-        itransformer_task,
-        timesfm_task,
+        _timed_stage("predict_batch_v2", feat_task, required_alpha=True),
+        _timed_stage("gnn_graphsage_universal_predict", gnn_task, required_alpha=True),
+        _timed_stage("dlinear_universal_predict", dlinear_task, required_alpha=True),
+        _timed_stage("patchtst_universal_predict", patchtst_task, required_alpha=True),
+        _timed_stage("state_space_universal_predict", state_space_task, required_alpha=False),
+        _timed_stage("itransformer_universal_predict", itransformer_task, required_alpha=True),
+        _timed_stage("timesfm_universal_predict", timesfm_task, required_alpha=timesfm_allowed),
         return_exceptions=True,
     )
 
+    modal_waiter = max((stage.get("wall_sec", 0.0) for stage in stage_timings.values()), default=0.0)
+    critical_modal_waiter = max(
+        (
+            stage.get("wall_sec", 0.0)
+            for stage in stage_timings.values()
+            if stage.get("required_alpha")
+        ),
+        default=0.0,
+    )
+    slowest_stage = max(stage_timings.items(), key=lambda item: item[1].get("wall_sec", 0.0))[0] if stage_timings else None
+    wait_telemetry = {
+        "modal_waiter_sec": round(float(modal_waiter), 3),
+        "critical_modal_waiter_sec": round(float(critical_modal_waiter), 3),
+        "slowest_stage": slowest_stage,
+        "stage_timings": stage_timings,
+        "state_space_overlay_mode": state_space_mode,
+        "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
+        "timesfm_gate": timesfm_gate,
+        "n_input": n,
+    }
+    logger.info("[Pipeline V2] Modal wait telemetry: %s", wait_telemetry)
+    try:
+        from services.cost_tracker import record_compute_profile_event
+
+        await record_compute_profile_event({
+            "provider": "gcp_cloud_run",
+            "job_name": "daily_pipeline_v2.ml_predict_wait",
+            "source": "daily_pipeline_v2.node_ml_predict",
+            "run_id": state.get("producer_run_id") or state.get("run_id"),
+            "wall_sec": wait_telemetry["modal_waiter_sec"],
+            "compute_sec": wait_telemetry["critical_modal_waiter_sec"],
+            "cpu": 0,
+            "memory_mb": 0,
+            "gpu": None,
+            "est_usd": 0.0,
+            "symbols": n,
+            "meta": wait_telemetry,
+        })
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break serving.
+        logger.debug("[Pipeline V2] Modal wait telemetry write skipped: %s", exc)
+
+
+    gnn_map: dict[str, dict] = {}
+    if isinstance(gnn_raw, BaseException):
+        logger.warning(f"[Pipeline V2] GNN GraphSAGE batch failed entirely: {gnn_raw} - skipping GNN layer")
+    elif isinstance(gnn_raw, dict) and not gnn_raw.get("error"):
+        for gr in gnn_raw.get("results") or []:
+            sym = gr.get("symbol")
+            if sym and not gr.get("error") and gr.get("rank_score") is not None:
+                gnn_map[sym] = gr
+        if gnn_map:
+            logger.info("[Pipeline V2] GNN GraphSAGE full-universe: %s/%s succeeded", len(gnn_map), len(payloads))
+        else:
+            logger.info("[Pipeline V2] GNN GraphSAGE full-universe: 0 succeeded")
+    elif isinstance(gnn_raw, dict) and gnn_raw.get("results") == []:
+        logger.debug(f"[Pipeline V2] GNN skipped: {gnn_raw.get('error')}")
+    else:
+        logger.warning(f"[Pipeline V2] GNN batch returned error: {gnn_raw}")
 
     # Guard against DLinear total failure (Stage 0.2 ??may have no trained weights yet)
     dlinear_map: dict[str, dict] = {}
@@ -476,6 +674,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         logger.info(f"[Pipeline V2] State-space overlays metrics: {state_space_raw.get('metrics')}")
     elif isinstance(state_space_raw, dict) and state_space_raw.get("shadow"):
         logger.info(f"[Pipeline V2] State-space overlays shadow mode: {state_space_raw.get('shadow')}")
+    elif isinstance(state_space_raw, dict) and state_space_raw.get("soft_timeout"):
+        logger.warning(f"[Pipeline V2] State-space overlays soft timeout: {state_space_raw.get('soft_timeout')}")
     elif isinstance(state_space_raw, dict) and state_space_raw.get("results") == []:
         logger.debug(f"[Pipeline V2] State-space overlays skipped: {state_space_raw.get('error')}")
     elif isinstance(state_space_raw, BaseException):
@@ -488,15 +688,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
     itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_series)
     timesfm_map = _drain_ts_result(timesfm_raw, "TimesFM", sequence_series)
-    gnn_map: dict[str, dict] = {}
-    if model_status.get("GNN", "retired") in ("active", "degraded"):
-        gnn_map = _build_gnn_graph_adapter_scores(sequence_series)
-        logger.info(
-            "[Pipeline V2] GNN graph adapter: %s/%s scored",
-            len(gnn_map),
-            len(sequence_series),
-        )
-
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -651,7 +842,12 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # 2026-05-06: IC is lane-aware and empirical-Bayes shrunk before serving.
     # Short-sample negative IC no longer hard-zeros a model; confirmed negative
     # IC plus failed validation still fail-closed.
-    model_status, ic_universe, degraded_dampening, ev2_cfg, used_pool, pool = await asyncio.to_thread(_load_pool_and_ic)
+    model_status = serving_model_status
+    ic_universe = serving_ic_universe
+    degraded_dampening = serving_degraded_dampening
+    ev2_cfg = serving_ev2_cfg
+    used_pool = serving_used_pool
+    pool = serving_pool
     if used_pool:
         for sym, r in pred_map.items():
             try:
@@ -726,7 +922,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"merge_compression={dispersion.get('avg_merge_compression')} "
         f"flags={dispersion.get('flags')}"
     )
-    return {"predictions": pred_map, "prediction_dispersion": dispersion}
+    return {
+        "predictions": pred_map,
+        "prediction_dispersion": dispersion,
+        "modal_wait_telemetry": wait_telemetry,
+    }
 
 
 # ?????????????????????????????????????????????????????????????????????????????
@@ -776,9 +976,13 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
             slot_status = str(entry.get("status") or "").strip()
             direct_prediction = bool(entry.get("direct_prediction")) or float(entry.get("vote_weight") or 0.0) > 0.0
             if direct_prediction and slot_status in {"production_adapter_active", "active"}:
-                status[name] = "active"
-                if entry.get("version"):
-                    active_versions[name] = entry["version"]
+                if name not in status:
+                    status[name] = "retired"
+                logger.warning(
+                    "[Pipeline V2] Formal L3 slot %s ignored for activation: "
+                    "production inference requires model_pool.models artifact path",
+                    name,
+                )
             elif name not in status:
                 status[name] = "retired"
         for name, entry in (pool.get("state_overlays") or {}).items():
@@ -847,122 +1051,6 @@ def _resolve_core_family_rank_target(
     ratio_target = max(1, math.ceil(input_count * keep_ratio))
     configured_target = int(screener_sizing.get("core_family_rank_size") or ratio_target)
     return min(input_count, ratio_target, max(1, configured_target))
-
-
-def _returns_from_prices(prices: list[Any], *, lookback: int = 60) -> list[float]:
-    values: list[float] = []
-    for price in prices or []:
-        try:
-            value = float(price)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(value) and value > 0:
-            values.append(value)
-    if len(values) < 2:
-        return []
-    returns: list[float] = []
-    for idx in range(1, len(values)):
-        prev = values[idx - 1]
-        cur = values[idx]
-        if prev > 0:
-            ret = cur / prev - 1.0
-            if math.isfinite(ret):
-                returns.append(ret)
-    return returns[-max(2, int(lookback)):]
-
-
-def _pearson_corr(left: list[float], right: list[float]) -> float | None:
-    n = min(len(left), len(right))
-    if n < 20:
-        return None
-    xs = left[-n:]
-    ys = right[-n:]
-    mx = sum(xs) / n
-    my = sum(ys) / n
-    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    vx = sum((x - mx) ** 2 for x in xs)
-    vy = sum((y - my) ** 2 for y in ys)
-    denom = math.sqrt(vx * vy)
-    if denom <= 0:
-        return None
-    corr = cov / denom
-    return corr if math.isfinite(corr) else None
-
-
-def _window_return(returns: list[float], *, window: int = 5) -> float:
-    if not returns:
-        return 0.0
-    compounded = 1.0
-    for ret in returns[-max(1, int(window)):]:
-        compounded *= 1.0 + ret
-    value = compounded - 1.0
-    return value if math.isfinite(value) else 0.0
-
-
-def _sigmoid_rank(value: float, *, scale: float = 16.0) -> float:
-    x = max(-50.0, min(50.0, float(value) * scale))
-    return 1.0 / (1.0 + math.exp(-x))
-
-
-def _build_gnn_graph_adapter_scores(
-    sequence_series: list[dict[str, Any]],
-    *,
-    lookback: int = 60,
-    corr_threshold: float = 0.35,
-    max_neighbors: int = 8,
-    min_neighbors: int = 2,
-) -> dict[str, dict[str, Any]]:
-    """Production graph adapter: rank each stock by correlated-neighbor momentum.
-
-    This is a controller-owned graph scorer for the formal GNN slot. It does
-    not pretend to be a trained neural artifact; trained GNN artifacts still
-    require model registry promotion.
-    """
-    vectors: dict[str, list[float]] = {}
-    for row in sequence_series or []:
-        symbol = str(row.get("symbol") or "")
-        returns = _returns_from_prices(row.get("prices") or [], lookback=lookback)
-        if symbol and len(returns) >= 20:
-            vectors[symbol] = returns
-    if len(vectors) < 3:
-        return {}
-
-    own_signal = {symbol: _window_return(returns, window=5) for symbol, returns in vectors.items()}
-    out: dict[str, dict[str, Any]] = {}
-    for symbol, returns in vectors.items():
-        neighbors: list[tuple[float, str]] = []
-        for other_symbol, other_returns in vectors.items():
-            if other_symbol == symbol:
-                continue
-            corr = _pearson_corr(returns, other_returns)
-            if corr is not None and corr >= corr_threshold:
-                neighbors.append((corr, other_symbol))
-        neighbors.sort(reverse=True)
-        selected_neighbors = neighbors[:max(1, int(max_neighbors))]
-        if len(selected_neighbors) < min_neighbors:
-            continue
-        weight_sum = sum(max(0.0, corr) for corr, _ in selected_neighbors)
-        if weight_sum <= 0:
-            continue
-        neighbor_signal = sum(
-            max(0.0, corr) * own_signal.get(other_symbol, 0.0)
-            for corr, other_symbol in selected_neighbors
-        ) / weight_sum
-        combined_signal = 0.55 * own_signal.get(symbol, 0.0) + 0.45 * neighbor_signal
-        rank_score = _sigmoid_rank(combined_signal)
-        confidence = min(0.85, 0.45 + 0.04 * len(selected_neighbors) + min(0.20, abs(combined_signal) * 4.0))
-        out[symbol] = {
-            "model": "GNN",
-            "adapter": "correlation_graph_rank_v1",
-            "rank_score": round(rank_score, 6),
-            "forecast_pct": round(combined_signal, 6),
-            "confidence": round(confidence, 4),
-            "neighbor_count": len(selected_neighbors),
-            "corr_threshold": corr_threshold,
-            "max_neighbors": max_neighbors,
-            "source": "daily_pipeline_v2.sequence_series.correlation_graph",
-        }
-    return out
 
 
 def _coerce_ic_value(value: Any) -> float | None:
@@ -1187,7 +1275,7 @@ def _build_serving_ic_bundle(
             "last_ic_sample_count": entry.get("last_ic_sample_count"),
         }
     for name, entry in ((pool or {}).get("formal_layer3_slots") or {}).items():
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or str(name) in ((pool or {}).get("models") or {}):
             continue
         slot_status = str(entry.get("status") or "").strip()
         try:
@@ -1195,33 +1283,21 @@ def _build_serving_ic_bundle(
         except (TypeError, ValueError):
             vote_weight = 0.0
         direct_prediction = bool(entry.get("direct_prediction")) or vote_weight > 0.0
-        if not direct_prediction or slot_status not in {"production_adapter_active", "active"}:
-            diagnostics[str(name)] = {
-                "scope": scope,
-                "ic_value": None,
-                "ic_source": "formal_slot_inactive",
-                "ic_sample_count": 0,
-                "ic_shrinkage": {"reason": slot_status or "inactive"},
-                "validation_multiplier": 0.0,
-                "validation_status": "INACTIVE",
-                "validation_reason": "formal_slot_not_production_active",
-            }
-            continue
-        ic_value, source = _entry_serving_ic(entry, None if scope == "GLOBAL" else scope)
-        multiplier, validation_status, validation_reason = _validation_multiplier(entry)
-        sample_count = _entry_ic_sample_count(entry, source)
-        effective_weight, shrinkage = _shrink_ic_weight(ic_value, sample_count, multiplier, ev2_cfg)
-        if effective_weight is not None:
-            weights[str(name)] = float(effective_weight)
         diagnostics[str(name)] = {
             "scope": scope,
-            "ic_value": ic_value,
-            "ic_source": source,
-            "ic_sample_count": sample_count,
-            "ic_shrinkage": shrinkage,
-            "validation_multiplier": multiplier,
-            "validation_status": validation_status,
-            "validation_reason": validation_reason,
+            "ic_value": None,
+            "ic_source": "formal_slot_metadata_only",
+            "ic_sample_count": 0,
+            "ic_shrinkage": {
+                "reason": (
+                    "formal_slot_missing_model_artifact"
+                    if direct_prediction and slot_status in {"production_adapter_active", "active"}
+                    else slot_status or "inactive"
+                )
+            },
+            "validation_multiplier": 0.0,
+            "validation_status": "INACTIVE",
+            "validation_reason": "production_vote_requires_model_pool_artifact",
             "formal_slot_status": slot_status,
             "direct_prediction": direct_prediction,
             "vote_weight": vote_weight,
@@ -1357,11 +1433,16 @@ def _load_pool_and_ic():
             slot_status = str(entry.get("status") or "").strip()
             direct_prediction = bool(entry.get("direct_prediction")) or float(entry.get("vote_weight") or 0.0) > 0.0
             if direct_prediction and slot_status in {"production_adapter_active", "active"}:
-                model_status[name] = "active"
+                if name not in model_status:
+                    model_status[name] = "retired"
                 ic_value = entry.get("rolling_ic") or entry.get("ic_4w_avg")
                 try:
                     if ic_value is not None:
-                        ic_weights[name] = float(ic_value)
+                        logger.warning(
+                            "[Pipeline V2] Formal L3 IC for %s ignored: "
+                            "production ensemble weight requires model_pool.models artifact path",
+                            name,
+                        )
                 except (TypeError, ValueError):
                     logger.debug(f"[Pipeline V2] invalid formal L3 IC for {name}: {ic_value}")
             elif name not in model_status:

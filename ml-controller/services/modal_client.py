@@ -28,6 +28,7 @@ _DEFAULT_MODAL_RESOURCE = {"cpu": 1.0, "memory_mb": 1024, "gpu": None}
 _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "predict_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "predict_batch_v2": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
+    "gnn_graphsage_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "retrain_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "prep_universal_batch": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "retrain_orchestrator": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
@@ -75,19 +76,20 @@ def _modal_predict_batch_v2_enabled() -> bool:
 
 def _parse_chunk_candidates(raw: str | None) -> list[int]:
     values: list[int] = []
-    for part in (raw or "20,40,80").split(","):
+    normalized = (raw or "80,120,160").replace("|", ",").replace(";", ",")
+    for part in normalized.split(","):
         try:
             value = int(part.strip())
         except ValueError:
             continue
         if value > 0 and value not in values:
             values.append(value)
-    return values or [20, 40, 80]
+    return values or [80, 120, 160]
 
 
 def _stable_chunk_size(candidates: list[int], ab_key: str | None) -> int:
     if not candidates:
-        return 40
+        return 120
     if not ab_key:
         # Health/readiness calls do not have a production universe. Keep the
         # midpoint stable, while real runs pass a universe/run key below.
@@ -114,6 +116,115 @@ def _parse_chunk_observations(raw: str | None) -> list[dict]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     return []
+
+
+_CHUNK_OBSERVATION_CACHE: dict[str, dict] = {}
+
+
+def _chunk_observation_from_profile_row(row: dict) -> dict | None:
+    profile_json = row.get("profile_json") if isinstance(row, dict) else None
+    try:
+        profile = json.loads(profile_json) if isinstance(profile_json, str) else {}
+    except Exception:
+        profile = {}
+    if not isinstance(profile, dict):
+        profile = {}
+    meta = profile.get("meta") if isinstance(profile.get("meta"), dict) else {}
+    batch_contract = meta.get("batch_contract") if isinstance(meta.get("batch_contract"), dict) else {}
+    chunk_size = _int(meta.get("chunk_size") or batch_contract.get("chunk_size") or profile.get("chunk_size"))
+    if chunk_size <= 0:
+        return None
+    wall_sec = _num(
+        row.get("wall_sec")
+        or profile.get("wall_sec")
+        or meta.get("wall_sec")
+        or meta.get("duration_sec")
+        or meta.get("elapsed_sec")
+    )
+    if wall_sec <= 0:
+        return None
+    input_count = _int(
+        row.get("symbols")
+        or profile.get("symbols")
+        or meta.get("input_count")
+        or meta.get("n_input")
+        or meta.get("symbols")
+        or meta.get("result_count")
+    )
+    chunk_count = _int(meta.get("chunk_count"), 1)
+    if input_count <= 0:
+        input_count = max(1, chunk_size * max(1, chunk_count))
+    return {
+        "chunk_size": chunk_size,
+        "wall_sec": wall_sec,
+        "input_count": input_count,
+        "chunk_count": chunk_count,
+        "n_error": _int(
+            meta.get("result_error_count")
+            or meta.get("n_error")
+            or meta.get("batch_error_count")
+            or meta.get("error_count")
+            or meta.get("errors")
+        ),
+        "runs": 1,
+        "source": "compute_profile_events",
+    }
+
+
+def _fetch_chunk_observations_from_d1(function_name: str) -> list[dict]:
+    source = str(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE") or "auto").strip().lower()
+    if source not in {"auto", "d1", "compute_profile_events"}:
+        return []
+
+    ttl_sec = max(0, _int(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATION_TTL_SEC"), 300))
+    now = time.time()
+    cache_key = function_name
+    cached = _CHUNK_OBSERVATION_CACHE.get(cache_key)
+    if cached and ttl_sec and now < float(cached.get("expires_at", 0)):
+        return list(cached.get("observations") or [])
+
+    days = max(1, _int(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATION_DAYS"), 14))
+    limit = max(1, min(_int(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATION_LIMIT"), 80), 500))
+    try:
+        from services import d1_client
+
+        rows = d1_client.query(
+            """
+            SELECT wall_sec, symbols, profile_json
+            FROM compute_profile_events
+            WHERE provider = 'modal'
+              AND job_name = ?
+              AND event_date >= date('now', ?)
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            params=[function_name, f"-{days} days", limit],
+            timeout=10.0,
+        )
+    except Exception as exc:  # noqa: BLE001 - adaptive profiling must not block serving.
+        logger.debug("[modal_client] D1 chunk observations unavailable: %s", exc)
+        rows = []
+
+    observations = []
+    for row in rows or []:
+        observation = _chunk_observation_from_profile_row(row)
+        if observation:
+            observations.append(observation)
+    _CHUNK_OBSERVATION_CACHE[cache_key] = {
+        "expires_at": now + ttl_sec,
+        "observations": observations,
+    }
+    return observations
+
+
+def _load_chunk_observations(function_name: str) -> tuple[list[dict], str]:
+    env_observations = _parse_chunk_observations(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATIONS"))
+    if env_observations:
+        return env_observations, "env"
+    d1_observations = _fetch_chunk_observations_from_d1(function_name)
+    if d1_observations:
+        return d1_observations, "compute_profile_events"
+    return [], "none"
 
 
 def _num(value, default: float = 0.0) -> float:
@@ -229,23 +340,27 @@ def _batch_ab_key(payloads: list[dict]) -> str:
 def batch_predict_contract(*, ab_key: str | None = None) -> dict:
     # Larger chunks amortize universal model GCS loads across more symbols while
     # staying below the 900s Modal predict_batch_v2 timeout. When no explicit
-    # size is configured, production runs rotate over 20/40/80 using a stable
-    # key so we can compare real compute/runtime without random jitter.
+    # size is configured, production runs rotate over 80/120/160 using a stable
+    # key. Once compute_profile_events has enough clean samples, the controller
+    # selects the lowest wall_sec_per_symbol candidate under an error-rate gate.
     candidates = _parse_chunk_candidates(os.environ.get("MODAL_PREDICT_BATCH_SIZE_CANDIDATES"))
     raw_chunk_size = os.environ.get("MODAL_PREDICT_BATCH_SIZE")
     chunk_size_source = "ab"
     chunk_policy = None
+    observation_source = "none"
     try:
         if raw_chunk_size:
             chunk_size = max(1, int(raw_chunk_size))
         else:
-            observations = _parse_chunk_observations(os.environ.get("MODAL_PREDICT_BATCH_SIZE_OBSERVATIONS"))
+            observations, observation_source = _load_chunk_observations("predict_batch_v2")
             observed_chunk_size, chunk_policy = _select_chunk_size_from_observations(
                 candidates,
                 observations,
                 min_runs=_int(os.environ.get("MODAL_PREDICT_BATCH_SIZE_MIN_RUNS"), 1),
                 max_error_rate=_num(os.environ.get("MODAL_PREDICT_BATCH_SIZE_MAX_ERROR_RATE"), 0.02),
             )
+            if chunk_policy is not None:
+                chunk_policy["observation_source"] = observation_source
             if observed_chunk_size:
                 chunk_size = observed_chunk_size
                 chunk_size_source = "observed_wall_time"
@@ -262,6 +377,7 @@ def batch_predict_contract(*, ab_key: str | None = None) -> dict:
         "chunk_candidates": candidates,
         "ab_key": ab_key,
         "chunk_policy": chunk_policy,
+        "chunk_observation_source": observation_source,
     }
 
 
@@ -629,6 +745,18 @@ async def timesfm_batch_predict(series_list: list[dict], horizon_used: int = 5, 
     return await _modal_timesfm_universal_predict({
         "series_list": series_list,
         "horizon_used": horizon_used,
+        "version": version,
+    })
+
+
+async def _modal_gnn_graphsage_universal_predict(payload: dict) -> dict:
+    return await _modal_remote_call("gnn_graphsage_universal_predict", payload)
+
+
+async def gnn_graphsage_batch_predict(payloads: list[dict], version: str = "v1") -> dict:
+    """Full-universe GraphSAGE batch-context prediction."""
+    return await _modal_gnn_graphsage_universal_predict({
+        "payloads": payloads,
         "version": version,
     })
 

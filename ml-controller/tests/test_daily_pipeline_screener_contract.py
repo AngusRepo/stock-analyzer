@@ -6,13 +6,6 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.payload_builder import build_ml_universe  # noqa: E402
-from graphs.daily_pipeline_v2 import (  # noqa: E402
-    _build_gnn_graph_adapter_scores,
-    _resolve_coarse_ml_gate_target,
-    _resolve_core_family_rank_target,
-)
-
 
 def test_daily_pipeline_refuses_watchlist_screener_fallback():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
@@ -37,6 +30,8 @@ def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():
 
 
 def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():
+    from services.payload_builder import build_ml_universe  # noqa: E402
+
     universe = build_ml_universe([], [{
         "stock_id": 1,
         "symbol": "2330",
@@ -56,6 +51,11 @@ def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():
 
 
 def test_l2_l3_targets_are_proportional_to_upstream_counts():
+    from graphs.daily_pipeline_v2 import (  # noqa: E402
+        _resolve_coarse_ml_gate_target,
+        _resolve_core_family_rank_target,
+    )
+
     trading_config = {"screener": {"coarseMlKeepRatio": 0.75, "coreFamilyKeepRatio": 0.75}}
     sizing = {"core_family_rank_size": 80}
 
@@ -66,16 +66,8 @@ def test_l2_l3_targets_are_proportional_to_upstream_counts():
     assert l3_target == 40
 
 
-def test_gnn_graph_adapter_scores_correlated_neighbor_momentum():
-    base = [100 + idx for idx in range(80)]
-    series = [
-        {"symbol": "A", "prices": base},
-        {"symbol": "B", "prices": [value * 1.01 for value in base]},
-        {"symbol": "C", "prices": [value * 0.99 for value in base]},
-    ]
+def test_daily_pipeline_does_not_inject_gnn_controller_adapter():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
-    scores = _build_gnn_graph_adapter_scores(series, corr_threshold=0.2, min_neighbors=1)
-
-    assert set(scores) == {"A", "B", "C"}
-    assert all(0.0 <= row["rank_score"] <= 1.0 for row in scores.values())
-    assert all(row["adapter"] == "correlation_graph_rank_v1" for row in scores.values())
+    assert "correlation_graph_rank_v1" not in source
+    assert "_build_gnn_graph_adapter_scores" not in source

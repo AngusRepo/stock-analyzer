@@ -307,6 +307,11 @@ async def _record_compute_profile_event(profile: dict[str, Any]) -> None:
         logger.warning(f"[cost_tracker] compute profile exception (non-fatal): {e}")
 
 
+async def record_compute_profile_event(profile: dict[str, Any]) -> None:
+    """Record one normalized compute profile event without cost_events coupling."""
+    await _record_compute_profile_event(profile)
+
+
 async def record_llm_call(
     source: str,
     provider: str,

@@ -126,7 +126,7 @@ MANAGED_MODELS = {
     "XGBoost":          ("tree_feature",               "tree",        "joblib"),
     "ExtraTrees":       ("tree_feature",               "tree",        "joblib"),
     "TabM":             ("tabular_neural",             "tabular",     "joblib"),
-    "GNN":              ("cross_stock_graph",          "graph",       "joblib"),
+    "GNN":              ("cross_stock_graphsage",      "graph",       "pt"),
     "DLinear":          ("time_series_learnable",      "time_series", "pt"),
     "PatchTST":         ("time_series_learnable",      "time_series", "pt"),
     "iTransformer":     ("time_series_transformer",    "time_series", "pt"),

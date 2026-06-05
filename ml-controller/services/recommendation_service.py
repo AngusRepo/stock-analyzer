@@ -2267,6 +2267,14 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
             except (TypeError, ValueError):
                 pass
     # Time-series alpha predictors: forecast_pct → sigmoid rank.
+    if "GNN" not in out:
+        gnn_payload = pred.get("gnn") if isinstance(pred.get("gnn"), dict) else {}
+        v = gnn_payload.get("rank_score")
+        if v is not None:
+            try:
+                out["GNN"] = float(v)
+            except (TypeError, ValueError):
+                pass
     _SRC_KEY_MODEL = (
         ("dlinear",          "DLinear"),
         ("patchtst",         "PatchTST"),

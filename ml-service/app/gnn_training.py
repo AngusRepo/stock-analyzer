@@ -30,6 +30,7 @@ DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_MAX_TRAIN_DATES_PER_EPOCH = 120
 DEFAULT_EDGE_TOP_K = 8
 DEFAULT_EDGE_THRESHOLD = 0.25
+DEFAULT_STANDARDIZATION_CLIP = 8.0
 STALE_PROMOTION_FIELDS = (
     "artifact_backfill",
     "ic_4w_avg",
@@ -96,7 +97,12 @@ def _load_feature_names(bucket, *, gcs_prefix: str, n_features: int) -> list[str
     return [str(name) for name in names]
 
 
-def _robust_standardize(x_train: np.ndarray, x_all: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _robust_standardize(
+    x_train: np.ndarray,
+    x_all: np.ndarray,
+    *,
+    clip_value: float | None = DEFAULT_STANDARDIZATION_CLIP,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     medians = np.nanmedian(x_train, axis=0).astype(np.float32)
     q75 = np.nanpercentile(x_train, 75, axis=0).astype(np.float32)
     q25 = np.nanpercentile(x_train, 25, axis=0).astype(np.float32)
@@ -104,6 +110,8 @@ def _robust_standardize(x_train: np.ndarray, x_all: np.ndarray) -> tuple[np.ndar
     scales = np.where(np.isfinite(scales) & (np.abs(scales) > 1e-9), scales, 1.0).astype(np.float32)
     medians = np.nan_to_num(medians, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
     x_scaled = np.nan_to_num((x_all - medians.reshape(1, -1)) / scales.reshape(1, -1), nan=0.0, posinf=0.0, neginf=0.0)
+    if clip_value is not None and float(clip_value) > 0:
+        x_scaled = np.clip(x_scaled, -float(clip_value), float(clip_value))
     return x_scaled.astype(np.float32), medians, scales
 
 
@@ -316,6 +324,11 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     max_train_dates_per_epoch = int(payload.get("max_train_dates_per_epoch") or DEFAULT_MAX_TRAIN_DATES_PER_EPOCH)
     edge_top_k = int(payload.get("edge_top_k") or DEFAULT_EDGE_TOP_K)
     edge_threshold = float(payload.get("edge_threshold") if payload.get("edge_threshold") is not None else DEFAULT_EDGE_THRESHOLD)
+    standardization_clip = float(
+        payload.get("standardization_clip")
+        if payload.get("standardization_clip") is not None
+        else DEFAULT_STANDARDIZATION_CLIP
+    )
     promote_to_active = bool(payload.get("promote_to_active", True))
 
     x_raw, y, dates, sectors, io_report = _load_npz_batches(bucket, gcs_prefix=gcs_prefix, batch_count=batch_count)
@@ -331,7 +344,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         test_ratio=float(payload.get("test_ratio") or 0.2),
         embargo_dates=int(payload.get("embargo_dates") or 10),
     )
-    x, medians, scales = _robust_standardize(x_raw[train_idx], x_raw)
+    x, medians, scales = _robust_standardize(x_raw[train_idx], x_raw, clip_value=standardization_clip)
     train_groups = _group_by_date(train_idx, dates)
     test_groups = _group_by_date(test_idx, dates)
     if not train_groups or not test_groups:
@@ -409,6 +422,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "method": "robust_median_iqr",
             "medians": [float(v) for v in medians.tolist()],
             "scales": [float(v) for v in scales.tolist()],
+            "clip_value": standardization_clip,
         },
         "architecture": architecture,
         "graph_context": {
@@ -453,6 +467,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "lr": lr,
             "weight_decay": weight_decay,
             "max_train_dates_per_epoch": max_train_dates_per_epoch,
+            "standardization_clip": standardization_clip,
             "device": str(device),
         },
     }

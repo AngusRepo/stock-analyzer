@@ -94,3 +94,20 @@ def test_graphsage_standardization_rejects_width_mismatch():
                 }
             },
         )
+
+
+def test_graphsage_standardization_applies_artifact_clip_value():
+    node_features = np.asarray([[101.0, -99.0]], dtype=np.float32)
+
+    out = gnn_batch_runtime._standardize_node_features(
+        node_features,
+        {
+            "feature_standardization": {
+                "medians": [1.0, 1.0],
+                "scales": [1.0, 1.0],
+                "clip_value": 8.0,
+            }
+        },
+    )
+
+    np.testing.assert_allclose(out, np.asarray([[8.0, -8.0]], dtype=np.float32))

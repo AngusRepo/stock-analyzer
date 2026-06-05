@@ -264,7 +264,16 @@ def _standardize_node_features(node_features: np.ndarray, metadata: dict | None)
             f"features={x.shape[1]} medians={center.shape[1]} scales={scale.shape[1]}"
         )
     scale = np.where(np.isfinite(scale) & (np.abs(scale) > 1e-9), scale, 1.0)
-    return np.nan_to_num((x - center) / scale, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    out = np.nan_to_num((x - center) / scale, nan=0.0, posinf=0.0, neginf=0.0)
+    clip_value = std.get("clip_value")
+    if clip_value is not None:
+        try:
+            clip = float(clip_value)
+            if clip > 0:
+                out = np.clip(out, -clip, clip)
+        except (TypeError, ValueError):
+            pass
+    return out.astype(np.float32)
 
 
 def predict_graphsage_scores(

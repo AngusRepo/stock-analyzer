@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
+
 from app import gnn_training
 
 
@@ -69,3 +71,16 @@ def test_update_model_pool_active_clears_stale_live_ic_fields():
     for field in gnn_training.STALE_PROMOTION_FIELDS:
         assert field not in entry
     assert entry["retired_versions"][0]["ic_4w_avg_at_retire"] == 0.15
+
+
+def test_robust_standardize_applies_train_serve_clip():
+    train = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]
+    all_rows = [[100.0, -100.0]]
+
+    scaled, _medians, _scales = gnn_training._robust_standardize(
+        np.asarray(train, dtype=np.float32),
+        np.asarray(all_rows, dtype=np.float32),
+        clip_value=8.0,
+    )
+
+    assert scaled.tolist() == [[8.0, -8.0]]

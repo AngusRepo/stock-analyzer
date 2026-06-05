@@ -381,6 +381,78 @@ def evaluate_alpha_policy_evidence_gate(
     return result
 
 
+def evaluate_parameter_candidate_evidence_gate(
+    candidate: dict[str, Any],
+    evidence: dict[str, Any],
+    *,
+    policy: PromotionPolicy | None = None,
+) -> dict[str, Any]:
+    policy = policy or PromotionPolicy.from_env()
+    candidate_id = _candidate_id(candidate)
+    evidence_candidate_id = evidence.get("candidate_id")
+    failed: list[str] = []
+    if candidate_id and evidence_candidate_id and candidate_id != evidence_candidate_id:
+        failed.append("parameter_evidence_candidate_mismatch")
+    if not evidence_candidate_id:
+        failed.append("parameter_evidence_candidate_missing")
+
+    backtest = evidence.get("backtest") if isinstance(evidence.get("backtest"), dict) else {}
+    monte_carlo = evidence.get("monte_carlo") if isinstance(evidence.get("monte_carlo"), dict) else {}
+    pbo = evidence.get("pbo") if isinstance(evidence.get("pbo"), dict) else {}
+    data_snooping = evidence.get("data_snooping") if isinstance(evidence.get("data_snooping"), dict) else {}
+    walk_forward = evidence.get("walk_forward") if isinstance(evidence.get("walk_forward"), dict) else {}
+    for key, value in (("backtest", backtest), ("monte_carlo", monte_carlo), ("pbo", pbo)):
+        if not value:
+            failed.append(f"missing_parameter_evidence_{key}")
+
+    result = evaluate_promotion_candidate(
+        backtest,
+        monte_carlo,
+        pbo,
+        policy=policy,
+    )
+    validation_packet = build_validation_packet(
+        source="parameter_candidate_evidence_gate",
+        backtest=backtest,
+        monte_carlo=monte_carlo or None,
+        pbo=pbo or None,
+        data_snooping=data_snooping or None,
+        walk_forward=walk_forward or None,
+        policy=policy,
+    )
+    merged_failed = [*failed, *(result.get("failed_gates") or [])]
+    if str(validation_packet.get("decision") or "").upper() != "PASS":
+        merged_failed.extend(
+            f"validation_packet:{name}"
+            for name in (validation_packet.get("failed_gates") or ["unavailable"])
+        )
+    decision = "PASS" if not merged_failed else "FAIL"
+    result.update({
+        "decision": decision,
+        "passed": decision == "PASS",
+        "failed_gates": merged_failed,
+        "validation_packet": validation_packet,
+        "inputs": {
+            "source": "parameter_candidate_evidence_bundle",
+            "candidate_id": candidate_id,
+            "evidence_candidate_id": evidence_candidate_id,
+            "backtest": backtest,
+            "monte_carlo": monte_carlo,
+            "pbo": pbo,
+            "data_snooping": data_snooping,
+            "walk_forward": walk_forward,
+            "raw_rows_present": {
+                "backtest_results": bool(backtest),
+                "monte_carlo_results": bool(monte_carlo),
+                "pbo_results": bool(pbo),
+                "data_snooping": bool(data_snooping),
+                "walk_forward": bool(walk_forward),
+            },
+        },
+    })
+    return result
+
+
 def build_alpha_policy_evidence_bundle(
     *,
     candidate_id: str,
@@ -402,6 +474,36 @@ def build_alpha_policy_evidence_bundle(
         "walk_forward": walk_forward or {},
         "validation_packet": build_validation_packet(
             source="alpha_policy_evidence_bundle",
+            backtest=normalized_backtest,
+            monte_carlo=normalized_monte_carlo,
+            pbo=normalized_pbo,
+            data_snooping=data_snooping,
+            walk_forward=walk_forward,
+        ),
+    }
+
+
+def build_parameter_candidate_evidence_bundle(
+    *,
+    candidate_id: str,
+    backtest: dict[str, Any],
+    monte_carlo: dict[str, Any],
+    pbo: dict[str, Any],
+    data_snooping: dict[str, Any] | None = None,
+    walk_forward: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_backtest = normalize_latest_backtest_row(backtest)
+    normalized_monte_carlo = normalize_latest_monte_carlo_row(monte_carlo)
+    normalized_pbo = normalize_latest_pbo_row(pbo)
+    return {
+        "candidate_id": candidate_id,
+        "backtest": normalized_backtest,
+        "monte_carlo": normalized_monte_carlo,
+        "pbo": normalized_pbo,
+        "data_snooping": data_snooping or {},
+        "walk_forward": walk_forward or {},
+        "validation_packet": build_validation_packet(
+            source="parameter_candidate_evidence_gate",
             backtest=normalized_backtest,
             monte_carlo=normalized_monte_carlo,
             pbo=normalized_pbo,

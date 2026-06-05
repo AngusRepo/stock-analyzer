@@ -8,9 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.promotion_service import (  # noqa: E402
     build_alpha_policy_evidence_bundle,
+    build_parameter_candidate_evidence_bundle,
     evaluate_alpha_policy_evidence_gate,
     evaluate_latest_alpha_policy_gate,
     evaluate_latest_promotion_gate,
+    evaluate_parameter_candidate_evidence_gate,
     normalize_latest_backtest_row,
     normalize_latest_monte_carlo_row,
     normalize_latest_pbo_row,
@@ -481,3 +483,47 @@ def test_build_alpha_policy_evidence_bundle_normalizes_artifact_shapes():
     assert bundle["pbo"]["method"] == "cscv_rank_logit"
     assert bundle["walk_forward"]["windows"] == 6
     assert bundle["validation_packet"]["decision"] == "PASS"
+
+
+def test_parameter_candidate_evidence_bundle_and_gate_are_available():
+    candidate = {"id": "parameter-candidate-1", "config": {"l2_keep_ratio": 0.75}}
+    bundle = build_parameter_candidate_evidence_bundle(
+        candidate_id="parameter-candidate-1",
+        backtest={
+            "raw_results": json.dumps({
+                "mode": "B",
+                "summary": {"total_trades": 120, "sharpe": 1.2, "profit_factor": 1.5, "max_drawdown": 0.1},
+                "per_regime": {
+                    "bull": {"trades": 40, "return": 0.08},
+                    "sideways": {"trades": 30, "return": 0.03},
+                },
+                "parity_audit": {"worker_parity": {"decision": "PASS"}},
+                "sanity_flags": [],
+                "absolute_confidence": "moderate",
+            })
+        },
+        monte_carlo={
+            "source": "backtest",
+            "n_trades": 120,
+            "mdd_95th": 0.16,
+            "go_live_verdict": "PASS",
+            "raw_distribution": json.dumps({"simulation_method": "block_bootstrap"}),
+        },
+        pbo={
+            "source": "backtest",
+            "n_trades": 120,
+            "pbo": 0.31,
+            "oos_mean_return": 0.03,
+            "go_live_verdict": "PASS",
+            "raw_details": json.dumps({"method": "cscv_rank_logit"}),
+        },
+        walk_forward={"passed": True, "windows": 6},
+    )
+
+    gate = evaluate_parameter_candidate_evidence_gate(candidate, bundle)
+
+    assert bundle["candidate_id"] == "parameter-candidate-1"
+    assert bundle["backtest"]["mode"] == "B"
+    assert gate["decision"] == "PASS"
+    assert gate["inputs"]["source"] == "parameter_candidate_evidence_bundle"
+    assert gate["validation_packet"]["decision"] == "PASS"

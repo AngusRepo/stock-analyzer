@@ -256,6 +256,33 @@ def test_filter_and_score_recommendations_embeds_alpha_context(monkeypatch):
         "industry": "IC",
         "chip_score": 18.0,
         "tech_score": 18.0,
+        "score_components": {
+            "version": "score_v2",
+            "seedComponents": {
+                "chipFlowSeed40": 18.0,
+                "technicalSeed30": 18.0,
+                "screenerMomentumSeed20": 0.0,
+                "mlEdgeSeed30": 0.0,
+                "personaAlphaSeed": 0.0,
+            },
+            "weights": {
+                "mlEdge": 25,
+                "chipFlow": 25,
+                "technicalStructure": 25,
+                "fundamentalQuality": 20,
+                "newsTheme": 5,
+            },
+            "components": {
+                "mlEdge": 0.0,
+                "chipFlow": 11.3,
+                "technicalStructure": 9.0,
+                "fundamentalQuality": 0.0,
+                "newsTheme": 0.0,
+            },
+            "total": 20.3,
+            "alphaAdjustment": 0.0,
+            "finalScore": 20.3,
+        },
     }
 
     final, sell_count = filter_and_score_recommendations(
@@ -389,6 +416,30 @@ def test_regime_aware_allocate_keeps_score_order_when_no_alpha_context():
 
     assert [row["symbol"] for row in allocated] == ["A", "B", "C"]
     assert all("alpha_allocation" not in row for row in allocated)
+
+
+def test_normalize_alpha_policy_preserves_sparse_allocator_defaults():
+    policy = normalize_alpha_policy()
+
+    assert policy["allocation"]["engine"] == "sparse_tangent_inverse_risk"
+    assert policy["allocation"]["controller"] == "OnlinePortfolioBandit"
+    assert policy["allocation"]["buy_signal_count"] == 3
+
+
+def test_normalize_alpha_policy_preserves_worker_allocator_contract():
+    policy = normalize_alpha_policy({
+        "allocation": {
+            "engine": "sparse_tangent_inverse_risk",
+            "controller": "OnlinePortfolioBandit",
+            "buySignalCount": 5,
+            "slateSize": 12,
+        }
+    })
+
+    assert policy["allocation"]["engine"] == "sparse_tangent_inverse_risk"
+    assert policy["allocation"]["controller"] == "OnlinePortfolioBandit"
+    assert policy["allocation"]["buy_signal_count"] == 5
+    assert policy["allocation"]["slate_size"] == 12
 
 
 def test_regime_aware_allocate_uses_policy_weights_and_slate_size():

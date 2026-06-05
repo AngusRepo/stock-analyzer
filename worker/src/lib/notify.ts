@@ -321,12 +321,7 @@ export interface ActionableSignal {
   symbol: string
   name: string
   signal: string             // e.g. 'BUY', 'STRONG_BUY'
-  score: number | null       // composite score
-  score_components?: unknown
-  ml_score?: number | null
-  chip_score?: number | null
-  tech_score?: number | null
-  momentum_score?: number | null
+  score_v2?: unknown
   confidence: number | null  // model confidence [0, 1]
   reason: string
 }
@@ -369,23 +364,13 @@ function pad(s: string, width: number): string {
 }
 
 export function actionableSignalDisplayScore(signal: ActionableSignal): number | null {
-  const rawSignal = signal as unknown as Record<string, unknown>
-  const hasScoreEvidence = Boolean(signal.score_components)
-    || ['score', 'ml_score', 'chip_score', 'tech_score', 'momentum_score']
-      .some((key) => Number.isFinite(Number(rawSignal[key])))
-  if (!hasScoreEvidence) return null
-  return readScoreV2Snapshot(signal as unknown as ScoreV2StorageRow).finalScore
+  return readScoreV2Snapshot({ score_components: signal.score_v2 } as ScoreV2StorageRow)?.finalScore ?? null
 }
 
 export function actionableSignalScoreSummary(signal: ActionableSignal): string {
-  const rawSignal = signal as unknown as Record<string, unknown>
-  const hasScoreEvidence = Boolean(signal.score_components)
-    || ['score', 'ml_score', 'chip_score', 'tech_score', 'momentum_score']
-      .some((key) => Number.isFinite(Number(rawSignal[key])))
-  if (!hasScoreEvidence) return ''
-  const snapshot = readScoreV2Snapshot(signal as unknown as ScoreV2StorageRow)
-  const source = snapshot.source === 'score_v2' ? 'Score V2' : 'Score V2 projection'
-  return `${source} ${Math.round(snapshot.finalScore)} ` +
+  const snapshot = readScoreV2Snapshot({ score_components: signal.score_v2 } as ScoreV2StorageRow)
+  if (!snapshot) return ''
+  return `Score V2 ${Math.round(snapshot.finalScore)} ` +
     `(ML ${Math.round(snapshot.components.mlEdge)}, 籌 ${Math.round(snapshot.components.chipFlow)}, 技 ${Math.round(snapshot.components.technicalStructure)})`
 }
 

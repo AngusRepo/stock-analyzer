@@ -16,6 +16,7 @@ export interface AdaptiveParamProvenance {
 
 export interface AdaptiveScreenerDelta {
   candidate_pool_delta?: number
+  coarse_ml_queue_delta?: number
   ml_shortlist_delta?: number
   emerging_research_delta?: number
 }
@@ -39,6 +40,7 @@ export interface AdaptiveRegimeOverride {
 
 export interface AdaptiveMetaLayerGovernance {
   alpha_vote_models: string[]
+  formal_layer3_slots: string[]
   state_space_overlays: string[]
   meta_optimizers: string[]
   adaptive_components: Record<string, string>
@@ -47,9 +49,10 @@ export interface AdaptiveMetaLayerGovernance {
 
 export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
   alpha_vote_models: [
-    'LightGBM',
     'XGBoost',
+    'CatBoost',
     'ExtraTrees',
+    'LightGBM',
     'TabM',
     'GNN',
     'DLinear',
@@ -57,6 +60,7 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     'iTransformer',
     'TimesFM',
   ],
+  formal_layer3_slots: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
   state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
   meta_optimizers: ['GAOptimizer'],
   adaptive_components: {
@@ -65,9 +69,9 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     Conformal: 'prediction uncertainty calibration and coverage guard',
     Stacking: 'meta learner for ensemble blending after base-model predictions',
     GAOptimizer: 'meta optimizer for ensemble weights, strategy params, and risk params',
-    NeuralUCB: 'shadow meta-router for nonlinear model-weight and threshold policy comparison',
-    NeuralTS: 'shadow Thompson sampler to audit NeuralUCB optimism before production consideration',
-    OnlinePortfolioBandit: 'research-layer allocation policy; waits for execution/slippage parity',
+    NeuralUCB: 'counterfactual meta-router for nonlinear model-weight and threshold policy comparison',
+    NeuralTS: 'counterfactual Thompson sampler to audit NeuralUCB optimism before production consideration',
+    OnlinePortfolioBandit: 'production allocator controller for sparse_tangent_inverse_risk knobs; production-capable without replacing the final weight engine',
     NeuCB: 'research-only neural contextual bandit benchmark until experiment registry evidence exists',
   },
   immutable_risk_boundaries: [
@@ -79,17 +83,17 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
 }
 
 export interface AdaptiveParams {
-  /** @deprecated Use confidence_delta. Absolute thresholds double-count trading:config baselines. */
+  /** Compatibility readback; prefer confidence_delta for new logic. */
   confidence_threshold?: number
-  /** @deprecated Use trading:config.sltp plus sltp_add. */
+  /** Compatibility readback; prefer trading:config.sltp plus sltp_add. */
   sl_mult_base?: number
-  /** @deprecated Use trading:config.sltp plus sltp_add. */
+  /** Compatibility readback; prefer trading:config.sltp plus sltp_add. */
   tp_mult_base?: number
-  /** @deprecated Use trading:config.signal. */
+  /** Compatibility readback; prefer trading:config.signal. */
   strong_signal_score?: number
-  /** @deprecated Use trading:config.signal.buySignalScore plus confidence_delta. */
+  /** Compatibility readback; prefer trading:config.signal.buySignalScore plus confidence_delta. */
   buy_signal_score?: number
-  /** @deprecated Use trading:config.signal.holdSignalScore. */
+  /** Compatibility readback; prefer trading:config.signal.holdSignalScore. */
   hold_signal_score?: number
 
   confidence_delta: number
@@ -113,7 +117,7 @@ export interface AdaptiveParams {
   meta_layer: AdaptiveMetaLayerGovernance
   version: number
 
-  /** @deprecated Use sltp_add. */
+  /** Compatibility readback; prefer sltp_add. */
   sl_tp_override?: { sl_add: number; tp_add: number } | null
 }
 
@@ -191,7 +195,7 @@ function normalizeScreenerDelta(value: unknown): AdaptiveScreenerDelta {
   if (!value || typeof value !== 'object') return {}
   const raw = value as Record<string, unknown>
   const out: AdaptiveScreenerDelta = {}
-  for (const key of ['candidate_pool_delta', 'ml_shortlist_delta', 'emerging_research_delta'] as const) {
+  for (const key of ['candidate_pool_delta', 'coarse_ml_queue_delta', 'ml_shortlist_delta', 'emerging_research_delta'] as const) {
     const n = optionalNumber(raw[key])
     if (n != null) out[key] = n
   }

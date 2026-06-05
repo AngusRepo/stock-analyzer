@@ -58,8 +58,15 @@ function pickAllByStage(steps: ScreenerFunnelStep[], stage: string): ScreenerFun
   return steps.filter((step) => step.stage === stage)
 }
 
+function pickCandidateSeedStep(steps: ScreenerFunnelStep[]): ScreenerFunnelStep | null {
+  return pickLastByStage(steps, 'l1_candidate_seed_after_overlay') ?? pickLastByStage(steps, 'final_selection')
+}
+
 function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown> {
   const finalSelection = pickLastByStage(steps, 'final_selection')
+  const candidateSeed = pickCandidateSeedStep(steps)
+  const layer1 = pickLastByStage(steps, 'layer1_strategy_breadth_gate')
+  const layer2 = pickLastByStage(steps, 'layer2_coarse_ml_gate')
   const rrg = pickLastByStage(steps, 'rrg_overlay')
   const buzz = pickLastByStage(steps, 'buzz_evidence')
   const strategyPool = [
@@ -70,7 +77,7 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   const scoring = pickLastByStage(steps, 'scoring')
 
   const evidence: Record<string, unknown> = {
-    ...(finalSelection?.evidence ?? {}),
+    ...(candidateSeed?.evidence ?? {}),
     source_of_truth: 'screener_funnel_items',
     decision_path: steps.map((step) => ({
       stage: step.stage,
@@ -83,6 +90,8 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   }
 
   if (scoring) evidence.base_scoring = scoring.evidence
+  if (layer1) evidence.layer1_breadth = { reason_code: layer1.reason_code, rank: layer1.rank, score_after: layer1.score_after, ...layer1.evidence }
+  if (layer2) evidence.layer2_coarse_ml = { reason_code: layer2.reason_code, rank: layer2.rank, score_after: layer2.score_after, ...layer2.evidence }
   if (rrg) evidence.rrg_overlay = { reason_code: rrg.reason_code, ...rrg.evidence }
   if (buzz) evidence.buzz_evidence = { reason_code: buzz.reason_code, ...buzz.evidence }
   if (strategyPool.length) {
@@ -101,7 +110,7 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
       })),
     ]
   } else {
-    const finalStrategyIds = finalSelection?.evidence?.strategy_pool_ids
+    const finalStrategyIds = candidateSeed?.evidence?.strategy_pool_ids ?? finalSelection?.evidence?.strategy_pool_ids
     if (Array.isArray(finalStrategyIds) && finalStrategyIds.length) {
       evidence.strategy_ids = [...new Set(finalStrategyIds.map(String).filter(Boolean))]
     }
@@ -139,10 +148,10 @@ export function summarizeScreenerFunnelRows(rows: ScreenerFunnelRow[]): Map<stri
 
   const summaries = new Map<string, ScreenerFunnelSummary>()
   for (const [symbol, steps] of grouped) {
-    const finalSelection = pickLastByStage(steps, 'final_selection')
+    const candidateSeed = pickCandidateSeedStep(steps)
     summaries.set(symbol, {
-      rank: finalSelection?.rank ?? null,
-      reason_code: finalSelection?.reason_code ?? null,
+      rank: candidateSeed?.rank ?? null,
+      reason_code: candidateSeed?.reason_code ?? null,
       evidence: summarizeEvidence(steps),
       timeline: steps,
     })

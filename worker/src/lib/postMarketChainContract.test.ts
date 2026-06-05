@@ -68,6 +68,10 @@ assert(
   'Strategy learning reward closure should run after model/meta-learning evidence is available',
 )
 assert(
+  !postMarketChain.includes("logSkippedHistoricalTask(env, ctx, 'strategy-learning')"),
+  'Strategy learning must run for historical reruns so strategy_decision_log can materialize replay-date family evidence',
+)
+assert(
   postMarketChain.includes('runPaperActivePostmarketPromotion'),
   'post-verify chain must include paper-active postmarket promotion closure',
 )

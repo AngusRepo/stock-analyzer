@@ -1,10 +1,15 @@
 import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
-  deriveStrategyThresholdScores,
+  deriveStrategyRawSignals,
+  normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
+  type StrategyFamilyId,
+  type StrategyOwnerType,
+  type StrategyPromotionStatus,
   type StrategySpec,
+  type StrategySpecCandidatePolicy,
   type StrategySpecStatus,
 } from './strategySpec'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
@@ -18,14 +23,23 @@ export interface StrategySpecRegistryRow {
   status: StrategySpecStatus
   owner: 'strategy'
   alpha_bucket: string
+  family_id: StrategyFamilyId
+  variant_id: string
+  owner_type: StrategyOwnerType
+  promotion_status: StrategyPromotionStatus
   supported_regimes_json: string
   thesis: string
   thresholds_json: string
   risk_notes_json: string
   source_refs_json: string
-  created_by: 'p5_strategy_governance'
+  created_by: string
   created_at?: string
   updated_at?: string
+}
+
+export interface StrategySpecRegistryRowOptions {
+  sourceRefs?: string[]
+  createdBy?: string
 }
 
 export interface StrategyDecisionLogRow {
@@ -79,7 +93,7 @@ export interface StrategyRewardLedgerRow {
   updated_at: string
 }
 
-export type StrategyPromotionDecision = 'not_ready' | 'candidate_ready' | 'active_monitor'
+export type StrategyPromotionDecision = 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
 export type StrategyLearningStage =
   | 'L0_hypothesis'
   | 'L1_shadow'
@@ -116,9 +130,10 @@ export interface StrategyAdaptivePolicyState {
   status: 'shadow' | 'candidate' | 'active' | 'retired'
   strategy_weights: Record<string, number>
   threshold_deltas: Record<string, {
-    minSeedScore?: number
-    minChipScore?: number
-    minTechScore?: number
+    minCloseAboveMa20Pct?: number
+    minVolumeExpansion20?: number
+    minBrokerCount?: number
+    minRevenueGrowthYoY?: number
   }>
   evidence: {
     version: string
@@ -153,6 +168,7 @@ export interface StrategyLearningSummary {
 }
 
 export const STRATEGY_POLICY_ID = 'strategy-adaptive-shadow-v1'
+const LEGACY_RETIRED_STRATEGY_SPEC_IDS = ['finlab_ai_skill_shadow_v1']
 
 const PROMOTION_MIN_DECISIONS = 30
 const PROMOTION_MIN_MATCH_RATE = 0.02
@@ -160,6 +176,9 @@ const PROMOTION_MIN_SAMPLES = 30
 const PROMOTION_MIN_HIT_RATE = 0.52
 const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
+const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
+const ACTIVE_COOLDOWN_HIT_RATE = 0.48
+const STRATEGY_LEARNING_D1_BATCH_SIZE = 50
 
 function stageForStrategyStatus(status: StrategySpecStatus): StrategyLearningStage {
   if (status === 'active') return 'L3_production_allocation'
@@ -176,6 +195,10 @@ const SCHEMA_DDL = [
     status TEXT NOT NULL CHECK(status IN ('research','shadow','candidate','active','retired')),
     owner TEXT NOT NULL DEFAULT 'strategy',
     alpha_bucket TEXT NOT NULL,
+    family_id TEXT NOT NULL DEFAULT 'TREND_RECLAIM_CONTINUATION',
+    variant_id TEXT NOT NULL DEFAULT '',
+    owner_type TEXT NOT NULL DEFAULT 'strategy',
+    promotion_status TEXT NOT NULL DEFAULT 'production',
     supported_regimes_json TEXT NOT NULL DEFAULT '[]',
     thesis TEXT NOT NULL,
     thresholds_json TEXT NOT NULL DEFAULT '{}',
@@ -190,6 +213,8 @@ const SCHEMA_DDL = [
     ON strategy_spec_registry(status, updated_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_bucket
     ON strategy_spec_registry(alpha_bucket, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_family
+    ON strategy_spec_registry(family_id, status)`,
   `CREATE TABLE IF NOT EXISTS strategy_decision_log (
     decision_id TEXT PRIMARY KEY,
     date TEXT NOT NULL,
@@ -284,49 +309,131 @@ export async function ensureStrategyLearningTables(db: D1Database): Promise<void
   for (const sql of SCHEMA_DDL) {
     await db.prepare(sql).run()
   }
+  await ensureStrategyRegistryGovernanceColumns(db)
 }
 
-export function strategySpecToRegistryRow(spec: StrategySpec, nowIso = new Date().toISOString()): StrategySpecRegistryRow {
+async function ensureStrategyRegistryGovernanceColumns(db: D1Database): Promise<void> {
+  const ddl = [
+    `ALTER TABLE strategy_spec_registry ADD COLUMN family_id TEXT NOT NULL DEFAULT 'TREND_RECLAIM_CONTINUATION'`,
+    `ALTER TABLE strategy_spec_registry ADD COLUMN variant_id TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE strategy_spec_registry ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'strategy'`,
+    `ALTER TABLE strategy_spec_registry ADD COLUMN promotion_status TEXT NOT NULL DEFAULT 'production'`,
+    `CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_family
+      ON strategy_spec_registry(family_id, status)`,
+  ]
+  for (const sql of ddl) {
+    try {
+      await db.prepare(sql).run()
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error).toLowerCase()
+      if (!message.includes('duplicate column') && !message.includes('already exists')) {
+        throw error
+      }
+    }
+  }
+}
+
+export function strategySpecToRegistryRow(
+  spec: StrategySpec,
+  nowIso = new Date().toISOString(),
+  options: StrategySpecRegistryRowOptions = {},
+): StrategySpecRegistryRow {
+  const normalized = normalizeStrategySpecGovernance(spec)
   return {
-    strategy_id: spec.id,
-    version: spec.version,
-    name: spec.name,
-    status: spec.status,
+    strategy_id: normalized.id,
+    version: normalized.version,
+    name: normalized.name,
+    status: normalized.status,
     owner: 'strategy',
-    alpha_bucket: spec.alphaBucket,
-    supported_regimes_json: safeJson(spec.supportedRegimes),
-    thesis: spec.thesis,
-    thresholds_json: safeJson(spec.thresholds),
-    risk_notes_json: safeJson(spec.riskNotes),
-    source_refs_json: safeJson(['default_strategy_specs', spec.createdBy]),
-    created_by: 'p5_strategy_governance',
+    alpha_bucket: normalized.alphaBucket,
+    family_id: normalized.familyId!,
+    variant_id: normalized.variantId!,
+    owner_type: normalized.ownerType!,
+    promotion_status: normalized.promotionStatus!,
+    supported_regimes_json: safeJson(normalized.supportedRegimes),
+    thesis: normalized.thesis,
+    thresholds_json: safeJson(normalized.thresholds),
+    risk_notes_json: safeJson(normalized.riskNotes),
+    source_refs_json: safeJson(options.sourceRefs ?? ['default_strategy_specs', normalized.createdBy]),
+    created_by: options.createdBy ?? 'p5_strategy_governance',
     created_at: nowIso,
     updated_at: nowIso,
   }
 }
 
+function candidatePolicyForRegistryRow(row: StrategySpecRegistryRow, defaultSpec?: StrategySpec): StrategySpecCandidatePolicy | undefined {
+  if (defaultSpec?.candidatePolicy) return defaultSpec.candidatePolicy
+  const sourceRefs = parseJson(row.source_refs_json, []) as string[]
+  const isFinLabAiSkillSpec = row.strategy_id.startsWith('finlab_ai_skill_')
+    || row.created_by === 'finlab_ai_skill_discovery_v1'
+    || sourceRefs.includes('finlab_ai_skill_discovery_v1')
+  if (row.status === 'research') {
+    return {
+      poolQuota: 8,
+      costBudget: 10,
+      evidenceRequirements: ['strategy_hypothesis', 'research_reward'],
+      maxMlShare: 0,
+    }
+  }
+  if (isFinLabAiSkillSpec) {
+    return {
+      poolQuota: 8,
+      costBudget: 10,
+      evidenceRequirements: [
+        'finlab_ai_skill',
+        'finlab_taxonomy',
+        'raw_factor_mining',
+        'raw_technical_indicator_mining',
+        'strategy_hypothesis',
+        'research_reward',
+      ],
+    }
+  }
+  return undefined
+}
+
+function hasLegacyScoreThresholds(thresholds: StrategySpec['thresholds']): boolean {
+  return thresholds.minSeedScore != null
+    || thresholds.minChipScore != null
+    || thresholds.minTechScore != null
+    || thresholds.minMomentumScore != null
+}
+
+function shouldPreferDefaultSpecOverRegistry(row: StrategySpecRegistryRow, defaultSpec: StrategySpec | undefined): boolean {
+  if (!defaultSpec) return false
+  const registryThresholds = parseJson(row.thresholds_json, {}) as StrategySpec['thresholds']
+  if (!hasLegacyScoreThresholds(registryThresholds)) return false
+  if (hasLegacyScoreThresholds(defaultSpec.thresholds)) return false
+  return defaultSpec.status === 'active'
+}
+
 export function registryRowToStrategySpec(row: StrategySpecRegistryRow): StrategySpec {
   const defaultSpec = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === row.strategy_id)
-  return {
+  if (shouldPreferDefaultSpecOverRegistry(row, defaultSpec)) return { ...defaultSpec!, thresholds: { ...defaultSpec!.thresholds } }
+  return normalizeStrategySpecGovernance({
     id: row.strategy_id,
     version: row.version,
     name: row.name,
     status: row.status,
     owner: 'strategy',
     alphaBucket: row.alpha_bucket as StrategySpec['alphaBucket'],
+    familyId: row.family_id ?? defaultSpec?.familyId,
+    variantId: row.variant_id || defaultSpec?.variantId || row.strategy_id,
+    ownerType: row.owner_type ?? defaultSpec?.ownerType,
+    promotionStatus: row.promotion_status ?? defaultSpec?.promotionStatus,
     supportedRegimes: parseJson(row.supported_regimes_json, []) as StrategySpec['supportedRegimes'],
     thesis: row.thesis,
     thresholds: parseJson(row.thresholds_json, {}),
-    candidatePolicy: defaultSpec?.candidatePolicy,
+    candidatePolicy: candidatePolicyForRegistryRow(row, defaultSpec),
     riskNotes: parseJson(row.risk_notes_json, []),
     createdBy: 'p5_strategy_governance',
-  }
+  })
 }
 
 export async function seedDefaultStrategySpecRegistry(
   db: D1Database,
   options: { nowIso?: string } = {},
-): Promise<{ seeded: number; skipped_invalid: string[] }> {
+): Promise<{ seeded: number; skipped_invalid: string[]; demoted_stale_active: number }> {
   assertOwnerCanOwn('strategy', 'strategy_spec')
   await ensureStrategyLearningTables(db)
   const nowIso = options.nowIso ?? new Date().toISOString()
@@ -342,14 +449,19 @@ export async function seedDefaultStrategySpecRegistry(
     await db.prepare(`
       INSERT INTO strategy_spec_registry (
         strategy_id, version, name, status, owner, alpha_bucket,
+        family_id, variant_id, owner_type, promotion_status,
         supported_regimes_json, thesis, thresholds_json, risk_notes_json,
         source_refs_json, created_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(strategy_id, version) DO UPDATE SET
         name=excluded.name,
         status=excluded.status,
         alpha_bucket=excluded.alpha_bucket,
+        family_id=excluded.family_id,
+        variant_id=excluded.variant_id,
+        owner_type=excluded.owner_type,
+        promotion_status=excluded.promotion_status,
         supported_regimes_json=excluded.supported_regimes_json,
         thesis=excluded.thesis,
         thresholds_json=excluded.thresholds_json,
@@ -363,6 +475,10 @@ export async function seedDefaultStrategySpecRegistry(
       row.status,
       row.owner,
       row.alpha_bucket,
+      row.family_id,
+      row.variant_id,
+      row.owner_type,
+      row.promotion_status,
       row.supported_regimes_json,
       row.thesis,
       row.thresholds_json,
@@ -374,7 +490,43 @@ export async function seedDefaultStrategySpecRegistry(
     ).run()
     seeded += 1
   }
-  return { seeded, skipped_invalid: skippedInvalid }
+  for (const legacyId of LEGACY_RETIRED_STRATEGY_SPEC_IDS) {
+    await db.prepare(`
+      UPDATE strategy_spec_registry
+         SET status='retired',
+             updated_at=?
+       WHERE strategy_id=?
+         AND status != 'retired'
+    `).bind(nowIso, legacyId).run()
+  }
+  const demotedStaleActive = await demoteStaleActiveDiscoveryStrategySpecs(db, nowIso)
+  return { seeded, skipped_invalid: skippedInvalid, demoted_stale_active: demotedStaleActive }
+}
+
+export async function demoteStaleActiveDiscoveryStrategySpecs(
+  db: D1Database,
+  nowIso = new Date().toISOString(),
+): Promise<number> {
+  const approvedActiveIds = DEFAULT_STRATEGY_SPECS
+    .filter((spec) => spec.status === 'active')
+    .map((spec) => spec.id)
+  if (!approvedActiveIds.length) return 0
+
+  const placeholders = approvedActiveIds.map(() => '?').join(', ')
+  const result = await db.prepare(`
+    UPDATE strategy_spec_registry
+       SET status='research',
+           updated_at=?
+     WHERE status='active'
+       AND strategy_id LIKE 'finlab_ai_skill_%'
+       AND strategy_id NOT IN (${placeholders})
+       AND (
+         created_by='finlab_ai_skill_discovery_v1'
+         OR source_refs_json LIKE '%finlab_ai_skill_discovery_v1%'
+         OR source_refs_json LIKE '%finlab_ai_skill%'
+       )
+  `).bind(nowIso, ...approvedActiveIds).run()
+  return Number((result as { meta?: { changes?: number } })?.meta?.changes ?? 0)
 }
 
 export async function listStrategySpecsForLearning(
@@ -382,12 +534,14 @@ export async function listStrategySpecsForLearning(
 ): Promise<{ specs: StrategySpec[]; source: 'registry' | 'default_fallback' }> {
   assertOwnerCanOwn('strategy', 'strategy_spec')
   try {
+    await ensureStrategyLearningTables(db)
     const { results } = await db.prepare(`
       SELECT strategy_id, version, name, status, owner, alpha_bucket,
+             family_id, variant_id, owner_type, promotion_status,
              supported_regimes_json, thesis, thresholds_json, risk_notes_json,
              source_refs_json, created_by, created_at, updated_at
         FROM strategy_spec_registry
-       WHERE status IN ('research','shadow','candidate','active')
+       WHERE status IN ('research','shadow','candidate','active','retired')
        ORDER BY CASE status
           WHEN 'active' THEN 0
           WHEN 'candidate' THEN 1
@@ -397,7 +551,14 @@ export async function listStrategySpecsForLearning(
         END, strategy_id ASC
     `).all<StrategySpecRegistryRow>()
     const specs = (results ?? []).map(registryRowToStrategySpec)
-    if (specs.length > 0) return { specs, source: 'registry' }
+    if (specs.length > 0) {
+      const registryKeys = new Set(specs.map((spec) => `${spec.id}:${spec.version}`))
+      const merged = [
+        ...specs,
+        ...DEFAULT_STRATEGY_SPECS.filter((spec) => !registryKeys.has(`${spec.id}:${spec.version}`)),
+      ].filter((spec) => spec.status !== 'retired')
+      return { specs: merged, source: 'registry' }
+    }
   } catch {
     return { specs: DEFAULT_STRATEGY_SPECS, source: 'default_fallback' }
   }
@@ -406,12 +567,13 @@ export async function listStrategySpecsForLearning(
 
 function matchScore(candidate: StrategyCandidateInput, matched: boolean): number | null {
   if (!matched) return null
-  const scores = deriveStrategyThresholdScores(candidate)
-  const score = scores.seedScore
-  const chip = scores.chipFlow
-  const tech = scores.technicalStructure
-  const momentum = scores.momentumProxy
-  return round6(Math.max(0, Math.min(1, (score * 0.45 + chip * 0.25 + tech * 0.2 + momentum * 0.1) / 100)))
+  const raw = deriveStrategyRawSignals(candidate)
+  const trend = Math.max(-0.2, Math.min(0.2, finiteNumber(raw.closeAboveMa20Pct) ?? 0)) * 2
+  const volume = Math.max(0, Math.min(2, finiteNumber(raw.volumeExpansion20) ?? 0)) / 2
+  const flow = Math.max(-1, Math.min(1, Math.sign(finiteNumber(raw.foreignTrustNet5d) ?? 0)))
+  const broker = Math.max(0, Math.min(1, (finiteNumber(raw.brokerCount) ?? 0) / 10))
+  const quality = Math.max(-1, Math.min(1, ((finiteNumber(raw.revenueGrowthYoY) ?? 0) + (finiteNumber(raw.roe) ?? 0)) / 30))
+  return round6(Math.max(0, Math.min(1, 0.35 + trend * 0.2 + volume * 0.2 + flow * 0.08 + broker * 0.08 + quality * 0.09)))
 }
 
 export function buildStrategyDecisionRows(
@@ -442,16 +604,10 @@ export function buildStrategyDecisionRows(
         tags: assessment.tags,
         watch_points: assessment.watchPoints,
       }
-      const thresholdScores = deriveStrategyThresholdScores(candidate)
+      const rawSignals = deriveStrategyRawSignals(candidate)
       const context = {
         candidate: {
-          score_v2: {
-            finalScore: thresholdScores.seedScore,
-            chipFlow: thresholdScores.chipFlow,
-            technicalStructure: thresholdScores.technicalStructure,
-            momentumProxy: thresholdScores.momentumProxy,
-            source: thresholdScores.source,
-          },
+          raw_signals: rawSignals,
           current_price: finiteNumber(candidate.current_price),
           industry: candidate.industry ?? candidate.sector ?? null,
         },
@@ -485,56 +641,57 @@ export async function listStrategyLearningCandidates(
 ): Promise<StrategyCandidateInput[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
   const { results } = await db.prepare(`
-    SELECT symbol, name, sector, industry, score, chip_score, tech_score,
-           ml_score, score_components,
-           COALESCE(momentum_score, 0) AS momentum_score,
+    SELECT symbol, name, sector, industry, score_components,
            current_price
       FROM daily_recommendations
      WHERE date = ?
-     ORDER BY rank ASC, score DESC
+     ORDER BY rank ASC,
+       CASE WHEN json_valid(score_components) THEN
+         COALESCE(
+           CAST(json_extract(score_components, '$.finalScore') AS REAL),
+           CAST(json_extract(score_components, '$.total') AS REAL),
+           0
+         ) ELSE 0 END DESC,
+       symbol ASC
      LIMIT ?
-  `).bind(date, safeLimit).all<StrategyCandidateInput>()
-  return results ?? []
+  `).bind(date, safeLimit).all<StrategyCandidateInput & { score_components?: unknown }>()
+  return (results ?? []).map(({ score_components, ...row }) => ({
+    ...row,
+    score_v2: row.score_v2 ?? score_components,
+  }))
 }
 
 export async function persistStrategyDecisionRows(db: D1Database, rows: StrategyDecisionLogRow[]): Promise<number> {
   await ensureStrategyLearningTables(db)
+  if (rows.length === 0) return 0
+  const statements = rows.map((row) => db.prepare(`
+    INSERT OR REPLACE INTO strategy_decision_log (
+      decision_id, date, symbol, name, strategy_id, strategy_version,
+      strategy_status, alpha_bucket, matched, match_score, reason_code,
+      context_json, evidence_json, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    row.decision_id,
+    row.date,
+    row.symbol,
+    row.name,
+    row.strategy_id,
+    row.strategy_version,
+    row.strategy_status,
+    row.alpha_bucket,
+    row.matched,
+    row.match_score,
+    row.reason_code,
+    row.context_json,
+    row.evidence_json,
+    row.created_at,
+  ))
   let persisted = 0
-  for (const row of rows) {
-    await db.prepare(`
-      INSERT INTO strategy_decision_log (
-        decision_id, date, symbol, name, strategy_id, strategy_version,
-        strategy_status, alpha_bucket, matched, match_score, reason_code,
-        context_json, evidence_json, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET
-        name=excluded.name,
-        strategy_status=excluded.strategy_status,
-        alpha_bucket=excluded.alpha_bucket,
-        matched=excluded.matched,
-        match_score=excluded.match_score,
-        reason_code=excluded.reason_code,
-        context_json=excluded.context_json,
-        evidence_json=excluded.evidence_json,
-        created_at=excluded.created_at
-    `).bind(
-      row.decision_id,
-      row.date,
-      row.symbol,
-      row.name,
-      row.strategy_id,
-      row.strategy_version,
-      row.strategy_status,
-      row.alpha_bucket,
-      row.matched,
-      row.match_score,
-      row.reason_code,
-      row.context_json,
-      row.evidence_json,
-      row.created_at,
-    ).run()
-    persisted += 1
+  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    const chunk = statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE)
+    await db.batch(chunk)
+    persisted += chunk.length
   }
   return persisted
 }
@@ -695,50 +852,53 @@ export async function listStrategyRewardSourceRows(
 
 export async function persistStrategyRewardLedgerRows(db: D1Database, rows: StrategyRewardLedgerRow[]): Promise<number> {
   await ensureStrategyLearningTables(db)
+  if (rows.length === 0) return 0
+  const statements = rows.map((row) => db.prepare(`
+    INSERT INTO strategy_reward_ledger (
+      reward_id, strategy_id, strategy_version, strategy_status, alpha_bucket,
+      date_start, date_end, horizon_days, samples, hit_rate, avg_return_pct,
+      reward_sum, max_drawdown_pct, coverage, market_segment, regime,
+      evidence_json, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(strategy_id, strategy_version, horizon_days, market_segment, regime) DO UPDATE SET
+      strategy_status=excluded.strategy_status,
+      alpha_bucket=excluded.alpha_bucket,
+      date_start=excluded.date_start,
+      date_end=excluded.date_end,
+      samples=excluded.samples,
+      hit_rate=excluded.hit_rate,
+      avg_return_pct=excluded.avg_return_pct,
+      reward_sum=excluded.reward_sum,
+      max_drawdown_pct=excluded.max_drawdown_pct,
+      coverage=excluded.coverage,
+      evidence_json=excluded.evidence_json,
+      updated_at=excluded.updated_at
+  `).bind(
+    row.reward_id,
+    row.strategy_id,
+    row.strategy_version,
+    row.strategy_status,
+    row.alpha_bucket,
+    row.date_start,
+    row.date_end,
+    row.horizon_days,
+    row.samples,
+    row.hit_rate,
+    row.avg_return_pct,
+    row.reward_sum,
+    row.max_drawdown_pct,
+    row.coverage,
+    row.market_segment,
+    row.regime,
+    row.evidence_json,
+    row.updated_at,
+  ))
   let persisted = 0
-  for (const row of rows) {
-    await db.prepare(`
-      INSERT INTO strategy_reward_ledger (
-        reward_id, strategy_id, strategy_version, strategy_status, alpha_bucket,
-        date_start, date_end, horizon_days, samples, hit_rate, avg_return_pct,
-        reward_sum, max_drawdown_pct, coverage, market_segment, regime,
-        evidence_json, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(strategy_id, strategy_version, horizon_days, market_segment, regime) DO UPDATE SET
-        strategy_status=excluded.strategy_status,
-        alpha_bucket=excluded.alpha_bucket,
-        date_start=excluded.date_start,
-        date_end=excluded.date_end,
-        samples=excluded.samples,
-        hit_rate=excluded.hit_rate,
-        avg_return_pct=excluded.avg_return_pct,
-        reward_sum=excluded.reward_sum,
-        max_drawdown_pct=excluded.max_drawdown_pct,
-        coverage=excluded.coverage,
-        evidence_json=excluded.evidence_json,
-        updated_at=excluded.updated_at
-    `).bind(
-      row.reward_id,
-      row.strategy_id,
-      row.strategy_version,
-      row.strategy_status,
-      row.alpha_bucket,
-      row.date_start,
-      row.date_end,
-      row.horizon_days,
-      row.samples,
-      row.hit_rate,
-      row.avg_return_pct,
-      row.reward_sum,
-      row.max_drawdown_pct,
-      row.coverage,
-      row.market_segment,
-      row.regime,
-      row.evidence_json,
-      row.updated_at,
-    ).run()
-    persisted += 1
+  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    const chunk = statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE)
+    await db.batch(chunk)
+    persisted += chunk.length
   }
   return persisted
 }
@@ -794,10 +954,20 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
     }
 
     const activeMonitor = spec.status === 'active'
+    const activeCooldownReasons = activeMonitor && evidence.samples >= ACTIVE_COOLDOWN_MIN_SAMPLES
+      ? [
+        evidence.hit_rate != null && evidence.hit_rate < ACTIVE_COOLDOWN_HIT_RATE ? `active_hit_rate_lt_${ACTIVE_COOLDOWN_HIT_RATE}` : null,
+        evidence.avg_return_pct != null && evidence.avg_return_pct <= 0 ? 'active_avg_return_not_positive' : null,
+        evidence.max_drawdown_pct != null && evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN ? `active_max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}` : null,
+      ].filter((reason): reason is string => reason != null)
+      : []
+    const activeCooldown = activeMonitor && activeCooldownReasons.length > 0
     const ready = !activeMonitor && missing.length === 0
     const currentStage = stageForStrategyStatus(spec.status)
-    const recommendedNextStatus = activeMonitor
-      ? 'active'
+    const recommendedNextStatus = activeCooldown
+      ? 'candidate'
+      : activeMonitor
+        ? 'active'
       : ready && spec.status === 'candidate'
         ? 'active'
         : ready
@@ -807,8 +977,10 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
           : spec.status === 'candidate'
             ? 'candidate'
             : 'shadow'
-    const recommendedStage = activeMonitor
-      ? 'L3_production_allocation'
+    const recommendedStage = activeCooldown
+      ? 'L2_paper_active'
+      : activeMonitor
+        ? 'L3_production_allocation'
       : ready && spec.status === 'candidate'
         ? 'L3_production_allocation'
         : ready
@@ -824,18 +996,19 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       alpha_bucket: spec.alphaBucket,
       current_stage: currentStage,
       recommended_stage: recommendedStage,
-      decision: activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
+      decision: activeCooldown ? 'active_cooldown' : activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
       recommended_next_status: recommendedNextStatus,
-      requires_wei_approval: !activeMonitor,
+      requires_wei_approval: !activeMonitor || activeCooldown,
       l3_requires_wei_approval: recommendedStage === 'L3_production_allocation' && !activeMonitor,
       production_effect: false,
-      missing_evidence: activeMonitor ? [] : missing,
+      missing_evidence: activeCooldown ? activeCooldownReasons : activeMonitor ? [] : missing,
       evidence,
     }
   })
 }
 
 function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gate: StrategyPromotionGateRow): number {
+  if (gate.decision === 'active_cooldown') return 0
   const samples = Math.max(0, spec.learning.samples)
   if (samples <= 0 || spec.learning.hit_rate == null || spec.learning.avg_return_pct == null) return 0
   const sampleConfidence = Math.min(samples / 100, 1) * 0.2
@@ -873,10 +1046,22 @@ export function buildStrategyAdaptivePolicyState(
       && row.spec.learning.hit_rate >= 0.58
     const drawdownWeak = row.spec.learning.max_drawdown_pct != null && row.spec.learning.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN
     thresholdDeltas[row.spec.id] = rewardHealthy
-      ? { minSeedScore: -1, minChipScore: row.spec.learning.hit_rate != null && row.spec.learning.hit_rate >= 0.6 ? -1 : 0 }
+      ? {
+        minVolumeExpansion20: -0.05,
+        minCloseAboveMa20Pct: -0.005,
+        minBrokerCount: row.spec.learning.hit_rate != null && row.spec.learning.hit_rate >= 0.6 ? -1 : 0,
+      }
       : drawdownWeak || row.spec.learning.avg_return_pct == null || row.spec.learning.avg_return_pct <= 0
-        ? { minSeedScore: 2, minTechScore: 1 }
-        : { minSeedScore: 0 }
+        ? { minVolumeExpansion20: 0.08, minCloseAboveMa20Pct: 0.01, minRevenueGrowthYoY: 1 }
+        : { minVolumeExpansion20: 0 }
+  }
+  for (const gate of gates.filter((row) => row.decision === 'active_cooldown')) {
+    strategyWeights[gate.strategy_id] = 0.2
+    thresholdDeltas[gate.strategy_id] = {
+      minVolumeExpansion20: 0.12,
+      minCloseAboveMa20Pct: 0.015,
+      minRevenueGrowthYoY: 1,
+    }
   }
 
   return {

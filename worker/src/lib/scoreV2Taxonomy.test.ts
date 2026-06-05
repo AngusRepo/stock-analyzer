@@ -3,12 +3,12 @@ import {
   SCORE_V2_WEIGHTS,
   buildPartialScreenerScoreV2,
   buildScoreV2Components,
-  projectScoreV2ToLegacy,
   readScoreV2Snapshot,
   scoreV2ComponentPercentages,
+  serializeScoreV2Snapshot,
 } from './scoreV2Taxonomy'
 
-function assert(condition: unknown, message: string): void {
+function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
 }
 
@@ -49,13 +49,7 @@ function assert(condition: unknown, message: string): void {
   assert(score.technicalBreakdown?.executionRisk === 2, 'execution risk should clamp to 2-point bucket')
   assert(score.riskFlags.includes('major_negative_news'), 'risk flags should be carried outside additive news score')
 
-  const legacy = projectScoreV2ToLegacy(score)
-  assert(legacy.score === 94.6, 'legacy score projection should use V2 total')
-  assert(legacy.ml_score === 25, 'legacy ml_score should project from mlEdge')
-  assert(legacy.chip_score === 24, 'legacy chip_score should project from chipFlow')
-  assert(legacy.tech_score === 22.4, 'legacy tech_score should project from technicalStructure')
-  assert(legacy.momentum_score === 6, 'legacy momentum_score should be compatibility-only volume confirmation')
-  assert(JSON.parse(legacy.score_components).version === SCORE_V2_VERSION, 'legacy score_components should serialize Score V2 payload')
+  assert(score.finalScore == null, 'base Score V2 payload should not invent alpha-adjusted finalScore')
 }
 
 {
@@ -65,13 +59,10 @@ function assert(condition: unknown, message: string): void {
     momentumScore20: 20,
     reasons: ['legacy screener inputs'],
   })
-  const legacy = projectScoreV2ToLegacy(screener)
-
-  assert(screener.components.chipFlow === 25, 'legacy 40-point chip score should rescale to 25-point chip flow')
-  assert(screener.components.technicalStructure === 25, 'legacy technical plus momentum should rescale to 25-point technical structure')
+  assert(screener.components.chipFlow === 25, 'screener chip seed should rescale to 25-point chip flow')
+  assert(screener.components.technicalStructure === 25, 'screener technical plus volume seed should rescale to 25-point technical structure')
   assert(screener.total === 50, 'partial screener score should not invent ML/fundamental/news points')
-  assert(screener.technicalBreakdown?.volumeConfirmation === 6, 'legacy 20-point momentum should project to technical volume confirmation')
-  assert(legacy.score === 50, 'legacy score projection should follow partial Score V2 total')
+  assert(screener.technicalBreakdown?.volumeConfirmation === 6, 'screener volume seed should map to technical volume confirmation')
 }
 
 {
@@ -84,17 +75,12 @@ function assert(condition: unknown, message: string): void {
   })
   const snapshot = readScoreV2Snapshot({
     score_components: JSON.stringify(canonical),
-    chip_score: 40,
-    tech_score: 30,
-    momentum_score: 20,
-    ml_score: 30,
-    score: 100,
   })
 
   assert(snapshot.source === 'score_v2', 'downstream readers should prefer canonical Score V2 payload')
-  assert(snapshot.components.mlEdge === 20, 'Score V2 mlEdge should not be overwritten by legacy ml_score')
-  assert(snapshot.components.chipFlow === 16, 'Score V2 chipFlow should not be overwritten by legacy chip_score')
-  assert(snapshot.components.technicalStructure === 12, 'Score V2 technicalStructure should not be overwritten by legacy tech_score')
+  assert(snapshot.components.mlEdge === 20, 'Score V2 mlEdge should come from canonical payload')
+  assert(snapshot.components.chipFlow === 16, 'Score V2 chipFlow should come from canonical payload')
+  assert(snapshot.components.technicalStructure === 12, 'Score V2 technicalStructure should come from canonical payload')
   assert(snapshot.total === 59, 'Score V2 total should come from canonical components')
   assert(snapshot.finalScore === 59, 'Score V2 finalScore should default to canonical total when no alpha adjustment exists')
 
@@ -115,34 +101,35 @@ function assert(condition: unknown, message: string): void {
     }),
     alphaAdjustment: 2.5,
     finalScore: 61.5,
+    technicalSignals: { adx14: 28.4, volumeMomentumDivergence132710: 120.5 },
+    alphaReason: { bucket: 'breakout_vol_expansion' },
+    chipEvidence: { source: 'canonical_chip_daily' },
+    reasonVariants: {
+      breeze2: {
+        source: 'breeze2_generation_shadow',
+        decision_effect: 'advisory_only',
+        reason: 'Breeze2：量能需確認。',
+      },
+    },
   }
   const snapshot = readScoreV2Snapshot({
     score_components: JSON.stringify(canonical),
-    score: 10,
   })
-  const legacy = projectScoreV2ToLegacy(snapshot.payload)
-
   assert(snapshot.source === 'score_v2', 'final score reader should prefer canonical Score V2 payload')
   assert(snapshot.total === 59, 'base total should remain the additive component sum')
   assert(snapshot.finalScore === 61.5, 'final score should preserve canonical alpha-adjusted score')
   assert(snapshot.alphaAdjustment === 2.5, 'alpha adjustment should be exposed to downstream readers')
-  assert(legacy.score === 61.5, 'legacy projection should use canonical finalScore when present')
+  assert(snapshot.payload.technicalSignals?.adx14 === 28.4, 'technical signals should survive Score V2 serialization')
+  assert(snapshot.payload.reasonVariants?.breeze2?.reason === 'Breeze2：量能需確認。', 'Breeze2 reason variant should survive Score V2 serialization')
+  const summary = serializeScoreV2Snapshot(snapshot)
+  assert(summary.technicalSignals?.adx14 === 28.4, 'API Score V2 summary should include technical signals for frontend explanations')
+  assert(summary.reasonVariants?.breeze2?.reason === 'Breeze2：量能需確認。', 'API Score V2 summary should include Breeze2 reason variants')
 }
 
 {
   const snapshot = readScoreV2Snapshot({
     score_components: null,
-    chip_score: 40,
-    tech_score: 30,
-    momentum_score: 20,
-    ml_score: 30,
-    score: 100,
   })
 
-  assert(snapshot.source === 'storage_projection', 'missing Score V2 payload should fall back to storage projection only')
-  assert(snapshot.components.mlEdge === 25, 'legacy 30-point ML storage projection should rescale to 25')
-  assert(snapshot.components.chipFlow === 25, 'legacy 40-point chip storage projection should rescale to 25')
-  assert(snapshot.components.technicalStructure === 25, 'legacy tech plus momentum storage projection should rescale to 25')
-  assert(snapshot.total === 75, 'storage projection should not invent fundamental/news points')
-  assert(snapshot.finalScore === 100, 'storage projection should preserve scalar score only as missing-payload final score')
+  assert(snapshot === null, 'missing Score V2 payload must not be projected')
 }

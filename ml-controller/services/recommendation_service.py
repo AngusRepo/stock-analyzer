@@ -40,9 +40,31 @@ from services.alpha_framework import (
     normalize_alpha_policy,
     regime_aware_allocate,
 )
+from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
+from services.portfolio_allocation import allocate_sparse_tangent
 
 logger = logging.getLogger(__name__)
+
+D1_IN_CLAUSE_CHUNK_SIZE = 80
+
+
+def _dedupe_preserve_order(values: list[Any]) -> list[Any]:
+    seen: set[Any] = set()
+    out: list[Any] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _chunked(values: list[Any], size: int = D1_IN_CLAUSE_CHUNK_SIZE) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    unique_values = _dedupe_preserve_order(values)
+    return [unique_values[i:i + size] for i in range(0, len(unique_values), size)]
 
 
 def _prediction_delete_date_expr(run_date: str | None) -> tuple[str, list[Any]]:
@@ -54,21 +76,35 @@ def _prediction_delete_date_expr(run_date: str | None) -> tuple[str, list[Any]]:
 
 def prune_predictions_outside_universe(stock_ids: list[int], run_date: str) -> int:
     """Remove same-date prediction rows that no longer belong to the current V2 universe."""
-    safe_ids = [int(stock_id) for stock_id in stock_ids if stock_id]
-    if safe_ids:
-        placeholders = ",".join("?" for _ in safe_ids)
-        result = d1_client.execute(
-            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? AND {COL_STOCK_ID} NOT IN ({placeholders})",
-            [run_date, *safe_ids],
-            timeout=60,
-        )
-    else:
+    safe_ids = {int(stock_id) for stock_id in stock_ids if stock_id}
+    if not safe_ids:
         result = d1_client.execute(
             f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
             [run_date],
             timeout=60,
         )
-    return int(((result or {}).get("meta") or {}).get("changes") or 0)
+        return int(((result or {}).get("meta") or {}).get("changes") or 0)
+
+    existing_rows = d1_client.query(
+        f"SELECT DISTINCT {COL_STOCK_ID} AS stock_id FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
+        [run_date],
+        timeout=60,
+    )
+    stale_ids = sorted({
+        int(row["stock_id"])
+        for row in existing_rows or []
+        if row.get("stock_id") is not None and int(row["stock_id"]) not in safe_ids
+    })
+    deleted = 0
+    for chunk in _chunked(stale_ids):
+        placeholders = ",".join("?" for _ in chunk)
+        result = d1_client.execute(
+            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? AND {COL_STOCK_ID} IN ({placeholders})",
+            [run_date, *chunk],
+            timeout=60,
+        )
+        deleted += int(((result or {}).get("meta") or {}).get("changes") or 0)
+    return deleted
 
 
 def _sanitize_non_finite(value: Any) -> tuple[Any, int]:
@@ -149,8 +185,6 @@ def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> 
         ev2_reason = str(ev2.get("reason") or "")
         if weight_total <= 0 or ev2_reason == "no_positive_lifecycle_weight":
             return 0.0
-        if source in {"ensemble_v2_topk_policy", "ranking_promotion"} and not contributors:
-            return 0.0
     sig = (prediction.get("signal") or "").upper()
     score = 0.0
     if "STRONG_BUY" in sig:
@@ -166,7 +200,7 @@ def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> 
     elif fc > 0.01:
         score += 2
     score = max(0.0, min(30.0, score))
-    return round(score * 10) / 10
+    return _round1(score)
 
 
 def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) -> dict:
@@ -262,12 +296,6 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     )
     ev2 = (ml or {}).get("ensemble_v2") or {}
 
-    if source in {"ranking_promotion", "ensemble_v2_topk_policy"} or (ml or {}).get("topk_forced"):
-        raw = eff_ml.get("signal_raw") or ev2.get("signal_raw") or "HOLD"
-        avg_rank = ev2.get("avg_rank")
-        avg_rank_text = f"{float(avg_rank):.3f}" if isinstance(avg_rank, Real) else "n/a"
-        return f"排名補位候選（原始訊號 {raw}，V2 rank={avg_rank_text}，校準預期 {forecast_text}），需等 T2/debate 與盤前價格確認"
-
     contributors = ev2.get("contributing_models") or []
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
         return "V2 模型池暫無正 IC 權重，先以觀望處理，等待 verify/IC 樣本補齊"
@@ -305,12 +333,15 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     """Structured ML vote evidence for UI/OBS; text reasons are derived elsewhere."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
     tracked = [
-        "LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN",
+        "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
+        "TabM", "GNN",
         "DLinear", "PatchTST", "iTransformer", "TimesFM",
     ]
     weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
     active_weight_count = 0
-    for value in weights.values():
+    for name, value in weights.items():
+        if name not in tracked:
+            continue
         numeric = _sanitize_non_finite(value)[0]
         if isinstance(numeric, Real) and float(numeric) > 0:
             active_weight_count += 1
@@ -322,13 +353,15 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     diagnostics = ev2.get("ic_weight_diagnostics") if isinstance(ev2.get("ic_weight_diagnostics"), dict) else {}
     validation_blocked_models = [
         name for name, detail in diagnostics.items()
-        if isinstance(detail, dict) and str(detail.get("validation_status") or "").upper() == "FAIL"
+        if name in tracked
+        and isinstance(detail, dict)
+        and str(detail.get("validation_status") or "").upper() == "FAIL"
     ]
 
     model_scores: dict[str, float] = {}
     rank_scores = (ml or {}).get("rank_scores") or {}
     if isinstance(rank_scores, dict):
-        for name in tracked[:5]:
+        for name in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"]:
             try:
                 if rank_scores.get(name) is not None:
                     model_scores[name] = float(rank_scores[name])
@@ -374,7 +407,11 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
             "validationBlockedModels": validation_blocked_models,
             "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
             "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
-            "contributingModels": ev2.get("contributing_models") or [],
+            "contributingModels": [
+                name for name in (ev2.get("contributing_models") or [])
+                if name in tracked
+            ],
+            "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
         }
 
     models = (ml or {}).get("models") or []
@@ -429,6 +466,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
         "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
         "contributingModels": ev2.get("contributing_models") or [],
+        "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
     }
 
 
@@ -490,8 +528,24 @@ def _score_number(value: Any, fallback: float = 0.0) -> float:
     return number if math.isfinite(number) else fallback
 
 
+def _parse_score_components_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        payload = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        payload = parsed if isinstance(parsed, dict) else None
+    else:
+        payload = None
+    if not (isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION):
+        return None
+    return payload
+
+
 def _round1(value: float) -> float:
-    return round(float(value) * 10) / 10
+    return math.floor(float(value) * 10 + 0.5) / 10
 
 
 def _clamp_score(value: Any, maximum: float) -> float:
@@ -512,28 +566,189 @@ def _first_float(*values: Any) -> float | None:
     return None
 
 
+def _score_v2_seed_inputs(row: dict) -> dict[str, float]:
+    seeds = row.get("score_seed_inputs")
+    if not isinstance(seeds, dict):
+        seeds = row.get("seedComponents")
+    if isinstance(seeds, dict):
+        return {
+            "chipFlowSeed40": _score_number(seeds.get("chipFlowSeed40")),
+            "technicalSeed30": _score_number(seeds.get("technicalSeed30")),
+            "screenerMomentumSeed20": _score_number(seeds.get("screenerMomentumSeed20")),
+            "mlEdgeSeed30": _score_number(seeds.get("mlEdgeSeed30")),
+            "personaAlphaSeed": _score_number(seeds.get("personaAlphaSeed")),
+        }
+    raise ValueError("Score V2 seed inputs required: missing score_seed_inputs")
+
+
+def _score_v2_seed_inputs_from_payload(payload: dict[str, Any] | None, *, ml_score: float) -> dict[str, float] | None:
+    if not payload:
+        return None
+    seeds = payload.get("seedComponents")
+    if isinstance(seeds, dict):
+        return {
+            "chipFlowSeed40": _score_number(seeds.get("chipFlowSeed40")),
+            "technicalSeed30": _score_number(seeds.get("technicalSeed30")),
+            "screenerMomentumSeed20": _score_number(seeds.get("screenerMomentumSeed20")),
+            "mlEdgeSeed30": ml_score,
+            "personaAlphaSeed": 0.0,
+        }
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        return None
+    chip_seed = _rescale_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"], 40)
+    combined_technical_seed = _rescale_score(
+        components.get("technicalStructure"),
+        SCORE_V2_WEIGHTS["technicalStructure"],
+        50,
+    )
+    technical_breakdown = payload.get("technicalBreakdown")
+    volume_confirmation = (
+        _score_number(technical_breakdown.get("volumeConfirmation"))
+        if isinstance(technical_breakdown, dict)
+        else 0.0
+    )
+    momentum_seed = _rescale_score(volume_confirmation, 6, 20) if volume_confirmation > 0 else 0.0
+    momentum_seed = _round1(min(momentum_seed, combined_technical_seed, 20.0))
+    technical_seed = _round1(min(max(combined_technical_seed - momentum_seed, 0.0), 30.0))
+    if technical_seed + momentum_seed < combined_technical_seed:
+        momentum_seed = _round1(min(20.0, momentum_seed + (combined_technical_seed - technical_seed - momentum_seed)))
+    return {
+        "chipFlowSeed40": chip_seed,
+        "technicalSeed30": technical_seed,
+        "screenerMomentumSeed20": momentum_seed,
+        "mlEdgeSeed30": ml_score,
+        "personaAlphaSeed": 0.0,
+    }
+
+
+def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date: str) -> dict[str, dict[str, Any]]:
+    """Read D1 fundamental inputs and return Score V2 fundamental-quality payloads.
+
+    This is read-only and fail-soft. Missing FinLab canonical rows should not
+    block the daily pipeline; they leave fundamentalQuality at 0 until FinLab
+    structured materialization is available.
+    """
+
+    if not screener_recs:
+        return {}
+    symbols = sorted({str(row.get("symbol") or "").strip() for row in screener_recs if row.get("symbol")})
+    revenue_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+    canonical_financial_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+
+    if symbols:
+        try:
+            for chunk in _chunked(symbols):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = d1_client.query(
+                    f"""
+                    SELECT stock_id, revenue_month, market_segment, revenue, mom, yoy, source, as_of_date
+                    FROM canonical_revenue_monthly
+                    WHERE stock_id IN ({placeholders})
+                    ORDER BY stock_id, revenue_month
+                    """,
+                    chunk,
+                    timeout=60,
+                )
+                for row in rows or []:
+                    symbol = str(row.get("stock_id") or "").strip()
+                    if symbol in revenue_by_symbol:
+                        revenue_by_symbol[symbol].append(dict(row))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[reco] canonical_revenue_monthly unavailable for fundamental quality: %s", exc)
+
+        try:
+            for chunk in _chunked(symbols):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = d1_client.query(
+                    f"""
+                    SELECT stock_id, period, market_segment, report_date, available_date,
+                           revenue_growth_yoy, gross_margin, operating_margin, roe, eps,
+                           pe, pb, dividend_yield, debt_ratio, current_ratio,
+                           operating_cash_flow, industry_quality_percentile,
+                           source, as_of_date
+                    FROM canonical_fundamental_features
+                    WHERE stock_id IN ({placeholders})
+                      AND available_date <= ?
+                      AND source = 'finlab.fundamental_factor_diversity'
+                    ORDER BY stock_id, available_date, period
+                    """,
+                    [*chunk, decision_date],
+                    timeout=60,
+                )
+                for row in rows or []:
+                    symbol = str(row.get("stock_id") or "").strip()
+                    if symbol in canonical_financial_by_symbol:
+                        canonical_financial_by_symbol[symbol].append(dict(row))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[reco] canonical_fundamental_features unavailable for fundamental quality: %s", exc)
+
+    out: dict[str, dict[str, Any]] = {}
+    for rec in screener_recs:
+        symbol = str(rec.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        out[symbol] = score_fundamental_quality(
+            decision_date=decision_date,
+            revenue_rows=revenue_by_symbol.get(symbol, []),
+            financial_rows=canonical_financial_by_symbol.get(symbol, []),
+        )
+    return out
+
+
 def _score_v2_components_from_row(row: dict) -> dict[str, float]:
-    payload = row.get("score_components")
+    payload = _parse_score_components_payload(row.get("score_components"))
     if isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION and isinstance(payload.get("components"), dict):
         components = payload["components"]
+        ml_edge = _clamp_score(components.get("mlEdge"), SCORE_V2_WEIGHTS["mlEdge"])
+        fundamental_quality = row.get("fundamental_quality_score")
+        if fundamental_quality is None and isinstance(row.get("fundamental_quality"), dict):
+            fundamental_quality = row["fundamental_quality"].get("score")
+        if "score_seed_inputs" in row:
+            ml_edge = _rescale_score(_score_v2_seed_inputs(row)["mlEdgeSeed30"], 30, SCORE_V2_WEIGHTS["mlEdge"])
         return {
-            "mlEdge": _clamp_score(components.get("mlEdge"), SCORE_V2_WEIGHTS["mlEdge"]),
+            "mlEdge": ml_edge,
             "chipFlow": _clamp_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"]),
             "technicalStructure": _clamp_score(components.get("technicalStructure"), SCORE_V2_WEIGHTS["technicalStructure"]),
-            "fundamentalQuality": _clamp_score(components.get("fundamentalQuality"), SCORE_V2_WEIGHTS["fundamentalQuality"]),
+            "fundamentalQuality": _clamp_score(
+                components.get("fundamentalQuality") if fundamental_quality is None else fundamental_quality,
+                SCORE_V2_WEIGHTS["fundamentalQuality"],
+            ),
             "newsTheme": _clamp_score(components.get("newsTheme"), SCORE_V2_WEIGHTS["newsTheme"]),
         }
+    seeds = _score_v2_seed_inputs(row)
     return {
-        "mlEdge": _rescale_score(row.get("ml_score"), 30, SCORE_V2_WEIGHTS["mlEdge"]),
-        "chipFlow": _rescale_score(row.get("chip_score"), 40, SCORE_V2_WEIGHTS["chipFlow"]),
+        "mlEdge": _rescale_score(seeds["mlEdgeSeed30"], 30, SCORE_V2_WEIGHTS["mlEdge"]),
+        "chipFlow": _rescale_score(seeds["chipFlowSeed40"], 40, SCORE_V2_WEIGHTS["chipFlow"]),
         "technicalStructure": _rescale_score(
-            _score_number(row.get("tech_score")) + _score_number(row.get("momentum_score")),
+            seeds["technicalSeed30"] + seeds["screenerMomentumSeed20"],
             50,
             SCORE_V2_WEIGHTS["technicalStructure"],
         ),
         "fundamentalQuality": 0.0,
         "newsTheme": 0.0,
     }
+
+
+def _require_canonical_score_v2_components(row: dict) -> dict[str, float]:
+    payload = _parse_score_components_payload(row.get("score_components"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("components"), dict):
+        symbol = row.get("symbol") or row.get("stock_id") or "unknown"
+        raise ValueError(f"Score V2 score_components required for ranking promotion: {symbol}")
+    return _score_v2_components_from_row({"score_components": payload})
+
+
+def _score_v2_final_score_for_ranking(row: dict) -> float:
+    payload = _parse_score_components_payload(row.get("score_components"))
+    if not isinstance(payload, dict) or payload.get("version") != SCORE_V2_VERSION:
+        symbol = row.get("symbol") or row.get("stock_id") or "unknown"
+        raise ValueError(f"Score V2 score_components required for ranking promotion: {symbol}")
+    final = payload.get("finalScore")
+    if final is None:
+        final = payload.get("total")
+    if final is None:
+        final = sum(_score_v2_components_from_row({"score_components": payload}).values())
+    return _clamp_score(final, 100)
 
 
 def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
@@ -545,6 +760,7 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
         "executionRisk": 2.0,
     }
     target = _clamp_score(target, SCORE_V2_WEIGHTS["technicalStructure"])
+    seeds = _score_v2_seed_inputs(row)
 
     current_price = _first_float(row.get("current_price"))
     ma20 = _first_float(row.get("ma20"))
@@ -558,14 +774,41 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
     rsi = _first_float(row.get("rsi14"))
     vw_rsi = _first_float(row.get("volume_weighted_rsi14"), row.get("volumeWeightedRsi14"))
     vmd = _first_float(row.get("volume_momentum_divergence_13_27_10"), row.get("volumeMomentumDivergence132710"))
+    squeeze_on = _first_float(row.get("squeeze_on"), row.get("squeezeOn"))
+    squeeze_release = _first_float(row.get("squeeze_release"), row.get("squeezeRelease"))
+    squeeze_momentum = _first_float(row.get("squeeze_momentum"), row.get("squeezeMomentum"))
+    obv_temperature = _first_float(row.get("obv_temperature_60"), row.get("obvTemperature60"))
+    adaptive_rsi_midline = _first_float(row.get("adaptive_rsi_midline_50"), row.get("adaptiveRsiMidline50"))
+    adaptive_rsi_upper = _first_float(row.get("adaptive_rsi_upper_50"), row.get("adaptiveRsiUpper50"))
+    adaptive_rsi_lower = _first_float(row.get("adaptive_rsi_lower_50"), row.get("adaptiveRsiLower50"))
+    adaptive_rsi_overbought = _first_float(row.get("adaptive_rsi_overbought"), row.get("adaptiveRsiOverbought"))
+    adaptive_rsi_oversold = _first_float(row.get("adaptive_rsi_oversold"), row.get("adaptiveRsiOversold"))
 
-    detailed_values = [plus_di, minus_di, adx, atr, sar, cci, vw_rsi, vmd]
+    detailed_values = [
+        plus_di,
+        minus_di,
+        adx,
+        atr,
+        sar,
+        cci,
+        vw_rsi,
+        vmd,
+        squeeze_on,
+        squeeze_release,
+        squeeze_momentum,
+        obv_temperature,
+        adaptive_rsi_midline,
+        adaptive_rsi_upper,
+        adaptive_rsi_lower,
+        adaptive_rsi_overbought,
+        adaptive_rsi_oversold,
+    ]
     if not any(value is not None for value in detailed_values):
         return {
-            "trendStructure": _rescale_score(row.get("tech_score"), 30, maxima["trendStructure"]),
+            "trendStructure": _rescale_score(seeds["technicalSeed30"], 30, maxima["trendStructure"]),
             "volatilityStructure": 0.0,
             "reversalExtreme": 0.0,
-            "volumeConfirmation": _rescale_score(row.get("momentum_score"), 20, maxima["volumeConfirmation"]),
+            "volumeConfirmation": _rescale_score(seeds["screenerMomentumSeed20"], 20, maxima["volumeConfirmation"]),
             "executionRisk": 0.0,
         }
 
@@ -585,6 +828,8 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
         raw["trendStructure"] += 1.5
     if adx is not None:
         raw["trendStructure"] += 2.0 if adx >= 25 else 1.0 if adx >= 18 else 0.0
+    if squeeze_momentum is not None:
+        raw["trendStructure"] += 1.0 if squeeze_momentum > 0 else 0.0
 
     if natr is not None:
         if 1.0 <= natr <= 4.0:
@@ -593,22 +838,46 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
             raw["volatilityStructure"] += 3.0
         elif natr > 0:
             raw["volatilityStructure"] += 1.0
+    if squeeze_release is not None and squeeze_release > 0:
+        raw["volatilityStructure"] += 3.0
+    elif squeeze_on is not None and squeeze_on > 0:
+        raw["volatilityStructure"] += 1.5
 
     if sar is not None and current_price is not None and current_price > sar:
         raw["reversalExtreme"] += 2.0
     if cci is not None:
         raw["reversalExtreme"] += 2.0 if -100 <= cci <= 150 else 1.0
-    if rsi is not None and 35 <= rsi <= 75:
-        raw["reversalExtreme"] += 1.0
+    if rsi is not None:
+        has_adaptive_rsi = adaptive_rsi_upper is not None and adaptive_rsi_lower is not None
+        if has_adaptive_rsi:
+            if adaptive_rsi_oversold is not None and adaptive_rsi_oversold > 0:
+                raw["reversalExtreme"] += 1.5
+            elif adaptive_rsi_overbought is not None and adaptive_rsi_overbought > 0:
+                raw["reversalExtreme"] += 0.0
+            elif adaptive_rsi_lower <= rsi <= adaptive_rsi_upper:
+                raw["reversalExtreme"] += 1.2
+        elif 35 <= rsi <= 75:
+            raw["reversalExtreme"] += 1.0
 
+    if obv_temperature is not None:
+        if 60 <= obv_temperature <= 85:
+            raw["volumeConfirmation"] += 3.0
+        elif 45 <= obv_temperature < 60 or 85 < obv_temperature <= 95:
+            raw["volumeConfirmation"] += 1.5
     if vmd is not None and vmd > 0:
-        raw["volumeConfirmation"] += 3.0
+        raw["volumeConfirmation"] += 1.0 if obv_temperature is not None else 2.0
     if vw_rsi is not None:
         raw["volumeConfirmation"] += 2.0 if 55 <= vw_rsi <= 80 else 1.0 if vw_rsi > 80 else 0.0
-    raw["volumeConfirmation"] += _rescale_score(row.get("momentum_score"), 20, 1.0)
+    raw["volumeConfirmation"] += _rescale_score(seeds["screenerMomentumSeed20"], 20, 1.0)
 
-    if rsi is not None and 35 <= rsi <= 75:
-        raw["executionRisk"] += 1.0
+    if rsi is not None:
+        if adaptive_rsi_upper is not None and adaptive_rsi_lower is not None:
+            if adaptive_rsi_lower <= rsi <= adaptive_rsi_upper:
+                raw["executionRisk"] += 1.0
+        elif 35 <= rsi <= 75:
+            raw["executionRisk"] += 1.0
+    if obv_temperature is not None and 20 <= obv_temperature <= 90:
+        raw["executionRisk"] += 0.5
     if natr is None or natr <= 6.0:
         raw["executionRisk"] += 1.0
 
@@ -621,14 +890,10 @@ def _score_v2_technical_breakdown(row: dict, target: float) -> dict[str, float]:
 
 
 def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | None = None) -> dict[str, Any]:
-    """Persist canonical Score V2 payload; old scalar fields are storage inputs only."""
+    """Persist canonical Score V2 payload from normalized seed inputs."""
     alpha_context = row.get("alpha_context") or {}
     alpha_adjustment = alpha_context.get("score_adjustment") if isinstance(alpha_context, dict) else 0
-    chip_score = _score_number(row.get("chip_score"))
-    tech_score = _score_number(row.get("tech_score"))
-    momentum_score = _score_number(row.get("momentum_score"))
-    ml_score = _score_number(row.get("ml_score"))
-    persona_score = _score_number(row.get("persona_score"))
+    seeds = _score_v2_seed_inputs(row)
     risk_flags = ((alpha_context.get("risk_overlay") or {}).get("flags") if isinstance(alpha_context, dict) else []) or []
     alpha_reason = {
         "bucket": alpha_context.get("edge_bucket") if isinstance(alpha_context, dict) else None,
@@ -656,15 +921,20 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
             "cci20": _first_float(row.get("cci20")),
             "volumeWeightedRsi14": _first_float(row.get("volume_weighted_rsi14"), row.get("volumeWeightedRsi14")),
             "volumeMomentumDivergence132710": _first_float(row.get("volume_momentum_divergence_13_27_10"), row.get("volumeMomentumDivergence132710")),
+            "squeezeOn": _first_float(row.get("squeeze_on"), row.get("squeezeOn")),
+            "squeezeRelease": _first_float(row.get("squeeze_release"), row.get("squeezeRelease")),
+            "squeezeMomentum": _first_float(row.get("squeeze_momentum"), row.get("squeezeMomentum")),
+            "obvTemperature60": _first_float(row.get("obv_temperature_60"), row.get("obvTemperature60")),
+            "adaptiveRsiMidline50": _first_float(row.get("adaptive_rsi_midline_50"), row.get("adaptiveRsiMidline50")),
+            "adaptiveRsiUpper50": _first_float(row.get("adaptive_rsi_upper_50"), row.get("adaptiveRsiUpper50")),
+            "adaptiveRsiLower50": _first_float(row.get("adaptive_rsi_lower_50"), row.get("adaptiveRsiLower50")),
+            "adaptiveRsiOverbought": _first_float(row.get("adaptive_rsi_overbought"), row.get("adaptiveRsiOverbought")),
+            "adaptiveRsiOversold": _first_float(row.get("adaptive_rsi_oversold"), row.get("adaptiveRsiOversold")),
         },
         "riskFlags": list(dict.fromkeys(str(flag) for flag in risk_flags if flag)),
         "reasons": [],
-        "legacyComponents": {
-            "chip": chip_score,
-            "tech": tech_score,
-            "screenerMomentum": momentum_score,
-            "ml": ml_score,
-            "persona": persona_score,
+        "seedComponents": {
+            **seeds,
         },
         "rawScore": raw_score,
         "alphaAdjustment": alpha_adjustment or 0,
@@ -672,6 +942,8 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
         "formula": "score_v2_total + alphaAdjustment",
         "alphaReason": alpha_reason,
     }
+    if isinstance(row.get("fundamental_quality"), dict):
+        payload["fundamentalQuality"] = row["fundamental_quality"]
     if isinstance(row.get("chip_evidence"), dict):
         payload["chipEvidence"] = row["chip_evidence"]
     return payload
@@ -790,6 +1062,15 @@ def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | No
         latest_ind.get("volumeMomentumDivergence132710"),
         latest_ind.get("volume_momentum_divergence_13_27_10"),
     )
+    squeeze_on = _first_float(latest_ind.get("squeezeOn"), latest_ind.get("squeeze_on"))
+    squeeze_release = _first_float(latest_ind.get("squeezeRelease"), latest_ind.get("squeeze_release"))
+    squeeze_momentum = _first_float(latest_ind.get("squeezeMomentum"), latest_ind.get("squeeze_momentum"))
+    obv_temperature_60 = _first_float(latest_ind.get("obvTemperature60"), latest_ind.get("obv_temperature_60"))
+    adaptive_rsi_midline_50 = _first_float(latest_ind.get("adaptiveRsiMidline50"), latest_ind.get("adaptive_rsi_midline_50"))
+    adaptive_rsi_upper_50 = _first_float(latest_ind.get("adaptiveRsiUpper50"), latest_ind.get("adaptive_rsi_upper_50"))
+    adaptive_rsi_lower_50 = _first_float(latest_ind.get("adaptiveRsiLower50"), latest_ind.get("adaptive_rsi_lower_50"))
+    adaptive_rsi_overbought = _first_float(latest_ind.get("adaptiveRsiOverbought"), latest_ind.get("adaptive_rsi_overbought"))
+    adaptive_rsi_oversold = _first_float(latest_ind.get("adaptiveRsiOversold"), latest_ind.get("adaptive_rsi_oversold"))
 
     if ma20 is None and len(closes) >= 20:
         ma20 = sum(closes[-20:]) / 20.0
@@ -827,6 +1108,15 @@ def _derive_technical_snapshot(payload: dict, rec: dict) -> dict[str, float | No
         "cci20": cci20,
         "volume_weighted_rsi14": volume_weighted_rsi14,
         "volume_momentum_divergence_13_27_10": volume_momentum_divergence,
+        "squeeze_on": squeeze_on,
+        "squeeze_release": squeeze_release,
+        "squeeze_momentum": squeeze_momentum,
+        "obv_temperature_60": obv_temperature_60,
+        "adaptive_rsi_midline_50": adaptive_rsi_midline_50,
+        "adaptive_rsi_upper_50": adaptive_rsi_upper_50,
+        "adaptive_rsi_lower_50": adaptive_rsi_lower_50,
+        "adaptive_rsi_overbought": adaptive_rsi_overbought,
+        "adaptive_rsi_oversold": adaptive_rsi_oversold,
     }
 
 
@@ -839,7 +1129,7 @@ def build_reason(s: dict) -> str:
         except (json.JSONDecodeError, TypeError):
             payload = None
     if not (isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION):
-        payload = build_score_components(s, raw_score=_score_number(s.get("score")))
+        return "Score V2 missing: canonical score_components unavailable"
     components = _score_v2_components_from_row({"score_components": payload})
     final_score = _clamp_score(payload.get("finalScore", payload.get("total")), 100)
     total = _clamp_score(payload.get("total"), 100)
@@ -854,7 +1144,7 @@ def build_reason(s: dict) -> str:
             f", broker_count={s.get('broker_count_latest', 'N/A')}"
         )
     elif market_segment == "EMERGING":
-        chip_context = "emerging broker chip proxy unavailable"
+        chip_context = "emerging broker flow evidence unavailable"
     else:
         net_amount = _score_number(s.get("foreign_net_5d")) + _score_number(s.get("trust_net_5d")) + _score_number(s.get("dealer_net_5d"))
         chip_context = f"法人5日淨額 {net_amount:.1f} 億"
@@ -913,7 +1203,7 @@ def build_watch_points(s: dict) -> list[str]:
     market_segment = str(s.get("market_segment") or "").upper()
     broker_rows = int(s.get("broker_rows") or 0)
     if market_segment == "EMERGING" and broker_rows > 0:
-        points.append("興櫃籌碼採 FinLab 券商分點 proxy；不可與上市櫃三大法人直接同比")
+        points.append("興櫃籌碼採 FinLab 券商分點流；不可與上市櫃三大法人直接同比")
     elif market_segment == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
         points.append("興櫃券商分點資料不足；暫不以三大法人語意判讀")
     if "BUY" in sig and forecast_pct < 0:
@@ -936,6 +1226,7 @@ def filter_and_score_recommendations(
     regime_label: str | None = None,
     regime_surface: dict | None = None,
     alpha_policy: dict | None = None,
+    fundamental_quality_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict], int]:
     """
     Returns (final_recs, sell_filtered_count).
@@ -959,8 +1250,8 @@ def filter_and_score_recommendations(
     sell_count = 0
 
     # ML_POOL Plan A migration (2026-04-19): toggle which signal drives the
-    # BUY/SELL gate. Default True = use ensemble_v2 (8 alpha models
-    # with R1+R3 lifecycle weights). KV override:
+    # BUY/SELL gate. Default True = use ensemble_v2 formal alpha slots
+    # with lifecycle weights). KV override:
     # trading:config.mlPool.useEnsembleV2=false → fall back to legacy feature-model signal.
     use_ev2 = _is_use_ensemble_v2()
 
@@ -991,9 +1282,10 @@ def filter_and_score_recommendations(
         # ML score reflects model evidence only; ranking/top-K promotion is
         # tracked in signal_source/reason but should not inflate ML votes.
         ml_score = calculate_ml_score(eff_ml, ml) if ml else 0.0
-        chip_score = rec.get("chip_score") or 0
-        tech_score = rec.get("tech_score") or 0
-        momentum_score = rec.get("momentum_score") or 0
+        existing_score_components = _parse_score_components_payload(rec.get("score_components"))
+        score_seed_inputs = _score_v2_seed_inputs_from_payload(existing_score_components, ml_score=ml_score)
+        if score_seed_inputs is None:
+            raise ValueError(f"Score V2 screener score_components required for {symbol}")
 
         # Persona score (Batch B: 投信/散戶 augmentation)
         persona_score = 0.0
@@ -1007,6 +1299,7 @@ def filter_and_score_recommendations(
                     retail = RetailOp(**op.get("retail", {})) if op.get("retail") else None
                     if trust and retail:
                         persona_score = compute_score(trust, retail) * persona_weight
+                        score_seed_inputs["personaAlphaSeed"] = persona_score
                         persona_applied = {
                             "trust_signal": trust.signal, "trust_strength": trust.strength,
                             "retail_signal": retail.signal, "retail_strength": retail.strength,
@@ -1014,7 +1307,12 @@ def filter_and_score_recommendations(
                 except Exception as e:
                     logger.debug(f"[reco] persona_score failed for {symbol}: {e}")
 
-        total_score = round((chip_score + tech_score + ml_score + persona_score) * 10) / 10
+        total_score = round((
+            score_seed_inputs["chipFlowSeed40"]
+            + score_seed_inputs["technicalSeed30"]
+            + score_seed_inputs["mlEdgeSeed30"]
+            + score_seed_inputs["personaAlphaSeed"]
+        ) * 10) / 10
 
         payload = payload_by_sym.get(symbol, {})
         raw_stock_meta = payload.get("stock_meta", {}) if payload else {}
@@ -1108,6 +1406,15 @@ def filter_and_score_recommendations(
             "cci20": technical.get("cci20"),
             "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
             "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
+            "squeeze_on": technical.get("squeeze_on"),
+            "squeeze_release": technical.get("squeeze_release"),
+            "squeeze_momentum": technical.get("squeeze_momentum"),
+            "obv_temperature_60": technical.get("obv_temperature_60"),
+            "adaptive_rsi_midline_50": technical.get("adaptive_rsi_midline_50"),
+            "adaptive_rsi_upper_50": technical.get("adaptive_rsi_upper_50"),
+            "adaptive_rsi_lower_50": technical.get("adaptive_rsi_lower_50"),
+            "adaptive_rsi_overbought": technical.get("adaptive_rsi_overbought"),
+            "adaptive_rsi_oversold": technical.get("adaptive_rsi_oversold"),
             "current_price": current_price,
             "ma20": technical.get("ma20"),
             "_signal": eff_ml.get("signal"),
@@ -1136,11 +1443,12 @@ def filter_and_score_recommendations(
             "rec_id": rec.get("id"),
             "name": rec.get("name"),
             "sector": rec.get("sector"),
-            "industry": rec.get("industry"),
-            "chip_score": chip_score,
-            "tech_score": tech_score,
-            "momentum_score": momentum_score,
-            "ml_score": ml_score,
+            "industry": rec.get("industry") or rec.get("sector"),
+            "score_seed_inputs": score_seed_inputs,
+            "chip_score": score_seed_inputs["chipFlowSeed40"],
+            "tech_score": score_seed_inputs["technicalSeed30"],
+            "momentum_score": score_seed_inputs["screenerMomentumSeed20"],
+            "ml_score": score_seed_inputs["mlEdgeSeed30"],
             "persona_score": persona_score,
             "persona_applied": persona_applied,  # None if no persona data
             "score": total_score,
@@ -1172,7 +1480,21 @@ def filter_and_score_recommendations(
             "cci20": technical.get("cci20"),
             "volume_weighted_rsi14": technical.get("volume_weighted_rsi14"),
             "volume_momentum_divergence_13_27_10": technical.get("volume_momentum_divergence_13_27_10"),
+            "squeeze_on": technical.get("squeeze_on"),
+            "squeeze_release": technical.get("squeeze_release"),
+            "squeeze_momentum": technical.get("squeeze_momentum"),
+            "obv_temperature_60": technical.get("obv_temperature_60"),
+            "adaptive_rsi_midline_50": technical.get("adaptive_rsi_midline_50"),
+            "adaptive_rsi_upper_50": technical.get("adaptive_rsi_upper_50"),
+            "adaptive_rsi_lower_50": technical.get("adaptive_rsi_lower_50"),
+            "adaptive_rsi_overbought": technical.get("adaptive_rsi_overbought"),
+            "adaptive_rsi_oversold": technical.get("adaptive_rsi_oversold"),
         }
+        fundamental_quality = (fundamental_quality_by_symbol or {}).get(symbol)
+        if isinstance(fundamental_quality, dict):
+            row["fundamental_quality"] = fundamental_quality
+        if existing_score_components:
+            row["score_components"] = existing_score_components
         if regime_label:
             alpha_context = build_alpha_context(row, eff_ml, payload, regime_label, regime_surface=regime_surface, policy=alpha_policy)
             apply_alpha_context(row, ml, alpha_context)
@@ -1219,94 +1541,513 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     return True
 
 
-def hybrid_ranking_promotion(
+def build_return_history_from_payloads(payloads: list[dict], *, lookback: int = 60) -> dict[str, list[float]]:
+    """Build close-to-close return history for allocator risk estimates."""
+    history: dict[str, list[float]] = {}
+    safe_lookback = max(2, min(int(lookback or 60), 252))
+    for payload in payloads or []:
+        symbol = str(payload.get("symbol") or payload.get("stock_id") or "").strip()
+        if not symbol:
+            continue
+        prices = _sorted_payload_rows(payload, "prices")[-(safe_lookback + 1):]
+        closes: list[float] = []
+        for row in prices:
+            close = _float_or_none(row.get("close"))
+            if close is None:
+                close = _float_or_none(row.get("adj_close"))
+            if close is not None and close > 0:
+                closes.append(close)
+        returns: list[float] = []
+        for idx in range(1, len(closes)):
+            prev = closes[idx - 1]
+            cur = closes[idx]
+            if prev > 0:
+                value = cur / prev - 1.0
+                if math.isfinite(value):
+                    returns.append(round(value, 8))
+        if returns:
+            history[symbol] = returns
+    return history
+
+
+def apply_core_ml_gate(
+    recommendations: list[dict],
+    predictions: dict[str, dict],
+    *,
+    fallback_size: int | None = None,
+) -> list[dict]:
+    """Keep only rows selected by the Layer 2 coarse ML gate."""
+    selected_ranks: dict[str, int] = {}
+    for symbol, pred in (predictions or {}).items():
+        gate = pred.get("core_ml_gate") if isinstance(pred, dict) else None
+        if not isinstance(gate, dict) or not gate.get("selected"):
+            continue
+        try:
+            rank = int(gate.get("rank") or 999_999)
+        except (TypeError, ValueError):
+            rank = 999_999
+        selected_ranks[str(symbol)] = rank
+    if not selected_ranks:
+        if fallback_size is None:
+            return recommendations
+        safe_size = max(1, min(80, int(fallback_size)))
+        return sorted(recommendations, key=lambda row: float(row.get("score") or 0.0), reverse=True)[:safe_size]
+
+    gated = [
+        row for row in recommendations
+        if str(row.get("symbol") or "") in selected_ranks
+    ]
+    for row in gated:
+        gate = (predictions.get(str(row.get("symbol") or "")) or {}).get("core_ml_gate") or {}
+        row["core_ml_gate"] = gate
+        row["watch_points"] = [
+            *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
+            f"core_ml_gate:{gate.get('rank')}/{gate.get('target_size')}",
+        ]
+    return sorted(gated, key=lambda row: selected_ranks.get(str(row.get("symbol") or ""), 999_999))
+
+
+_CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
+    "tree": ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM"),
+    "tabular_neural": ("TabM",),
+    "graph": ("GNN",),
+    "learned_sequence": ("DLinear", "PatchTST", "iTransformer"),
+    "foundation_sequence": ("TimesFM",),
+}
+
+_SEQUENCE_MODEL_SOURCE_KEYS: dict[str, str] = {
+    "DLinear": "dlinear",
+    "PatchTST": "patchtst",
+    "iTransformer": "itransformer",
+    "TimesFM": "timesfm",
+}
+
+
+def _finite_rank_score(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return max(0.0, min(1.0, numeric))
+
+
+def _forecast_pct_to_rank_score(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    try:
+        return 1.0 / (1.0 + math.exp(-numeric * 12.0))
+    except OverflowError:
+        return 1.0 if numeric > 0 else 0.0
+
+
+def _model_rank_score(prediction: dict, model_name: str) -> float | None:
+    if model_name in _SEQUENCE_MODEL_SOURCE_KEYS:
+        signal = prediction.get(_SEQUENCE_MODEL_SOURCE_KEYS[model_name])
+        if not isinstance(signal, dict):
+            return None
+        return _forecast_pct_to_rank_score(signal.get("forecast_pct"))
+    rank_scores = prediction.get("rank_scores")
+    if not isinstance(rank_scores, dict):
+        return None
+    return _finite_rank_score(rank_scores.get(model_name))
+
+
+def _positive_lifecycle_weights(prediction: dict) -> dict[str, float] | None:
+    ev2 = prediction.get("ensemble_v2")
+    if not isinstance(ev2, dict):
+        return None
+    weights = ev2.get("weights")
+    if isinstance(weights, dict):
+        out: dict[str, float] = {}
+        for name, raw in weights.items():
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value > 0:
+                out[str(name)] = value
+        return out
+    contributors = ev2.get("contributing_models")
+    if isinstance(contributors, list):
+        return {str(name): 1.0 for name in contributors if str(name)}
+    return None
+
+
+def build_core_family_vote(
+    prediction: dict | None,
+    *,
+    require_lifecycle_weights: bool = False,
+) -> dict[str, Any]:
+    """Layer 3 formal family vote from lifecycle-positive production outputs."""
+    pred = prediction if isinstance(prediction, dict) else {}
+    lifecycle_weights = _positive_lifecycle_weights(pred)
+    families: dict[str, dict[str, Any]] = {}
+    active_families: list[str] = []
+    family_scores: list[float] = []
+    inactive_models: list[str] = []
+    inactive_lifecycle_models: list[str] = []
+
+    for family_name, model_names in _CORE_FAMILY_MODEL_GROUPS.items():
+        model_scores: dict[str, float] = {}
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        for model_name in model_names:
+            lifecycle_weight = lifecycle_weights.get(model_name) if lifecycle_weights is not None else None
+            if require_lifecycle_weights and lifecycle_weights is None:
+                inactive_lifecycle_models.append(model_name)
+                continue
+            if lifecycle_weights is not None and lifecycle_weight is None:
+                inactive_lifecycle_models.append(model_name)
+                continue
+            score = _model_rank_score(pred, model_name)
+            if score is not None:
+                model_scores[model_name] = round(score, 6)
+                weight = float(lifecycle_weight if lifecycle_weight is not None else 1.0)
+                weighted_sum += score * weight
+                weight_sum += weight
+            else:
+                inactive_models.append(model_name)
+        if model_scores:
+            family_score = weighted_sum / weight_sum if weight_sum > 0 else sum(model_scores.values()) / len(model_scores)
+            active_families.append(family_name)
+            family_scores.append(family_score)
+            families[family_name] = {
+                "status": "active",
+                "score": round(family_score, 6),
+                "models": model_scores,
+                "model_count": len(model_scores),
+                "lifecycle_weighted": lifecycle_weights is not None,
+            }
+        else:
+            families[family_name] = {
+                "status": (
+                    "inactive_lifecycle_weight"
+                    if lifecycle_weights is not None or require_lifecycle_weights
+                    else "inactive_missing_artifact"
+                ),
+                "score": None,
+                "models": {},
+                "expected_models": list(model_names),
+            }
+
+    family_score = sum(family_scores) / len(family_scores) if family_scores else 0.0
+    return {
+        "schema_version": "core_family_vote_v1",
+        "rank_source": "formal_core_family_vote",
+        "family_score": round(family_score, 6),
+        "active_family_count": len(active_families),
+        "active_families": active_families,
+        "families": families,
+        "inactive_formal_models": sorted(set(inactive_models)),
+        "inactive_lifecycle_models": sorted(set(inactive_lifecycle_models)),
+        "lifecycle_weight_source": (
+            "ensemble_v2.weights"
+            if lifecycle_weights is not None
+            else "ensemble_v2_required_missing" if require_lifecycle_weights else "model_output_fallback"
+        ),
+    }
+
+
+def _merge_core_family_vote_evidence(row: dict, vote: dict[str, Any], rank: int, target_size: int) -> None:
+    row["core_family_vote"] = vote
+    row["watch_points"] = [
+        *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
+        f"core_family_rank:{rank}/{target_size}:score={vote.get('family_score')}",
+    ]
+
+    summary = row.get("ml_vote_summary")
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except json.JSONDecodeError:
+            summary = {"text": row.get("ml_vote_summary")}
+    if not isinstance(summary, dict):
+        summary = {}
+    summary["coreFamilyVote"] = {
+        "schema_version": vote.get("schema_version"),
+        "family_score": vote.get("family_score"),
+        "active_family_count": vote.get("active_family_count"),
+        "active_families": vote.get("active_families"),
+        "inactive_formal_models": vote.get("inactive_formal_models"),
+    }
+    row["ml_vote_summary"] = summary
+
+    components = row.get("score_components")
+    if isinstance(components, str):
+        components = _parse_score_components_payload(components) or {"raw": row.get("score_components")}
+    if isinstance(components, dict):
+        components["coreFamilyVote"] = vote
+        row["score_components"] = components
+
+
+def apply_core_family_rank(
+    recommendations: list[dict],
+    predictions: dict[str, dict],
+    *,
+    target_size: int | None = None,
+    min_active_families: int = 2,
+    strict: bool = True,
+    require_lifecycle_weights: bool = False,
+) -> list[dict]:
+    """Rank Layer 2 shortlist with formal family votes and persist evidence."""
+    if not recommendations:
+        return []
+    safe_target = target_size or len(recommendations)
+    safe_target = max(1, min(80, int(safe_target)))
+
+    ranked_rows: list[tuple[float, float, dict]] = []
+    insufficient: list[str] = []
+    for row in recommendations:
+        symbol = str(row.get("symbol") or "")
+        pred = predictions.get(symbol) if isinstance(predictions, dict) else None
+        vote = build_core_family_vote(pred, require_lifecycle_weights=require_lifecycle_weights)
+        if isinstance(pred, dict):
+            pred["core_family_vote"] = vote
+        if int(vote.get("active_family_count") or 0) < min_active_families:
+            insufficient.append(symbol)
+            continue
+        ranked_rows.append((
+            float(vote.get("family_score") or 0.0),
+            float(row.get("score") or 0.0),
+            {**row, "core_family_vote": vote},
+        ))
+
+    if strict and insufficient and len(insufficient) == len(recommendations):
+        raise ValueError(
+            "core_family_rank_requires_2_active_families: "
+            f"{len(insufficient)}/{len(recommendations)} rows lack production family breadth"
+        )
+    if not ranked_rows:
+        return sorted(recommendations, key=lambda row: float(row.get("score") or 0.0), reverse=True)[:safe_target]
+
+    ranked_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = [row for _, _, row in ranked_rows[:safe_target]]
+    for idx, row in enumerate(selected, start=1):
+        row["rank"] = idx
+        _merge_core_family_vote_evidence(row, row["core_family_vote"], idx, safe_target)
+    return selected
+
+
+def _allocation_method(policy: dict) -> str:
+    allocation = policy.get("allocation") if isinstance(policy, dict) else {}
+    value = (allocation or {}).get("engine") or (allocation or {}).get("method") or ""
+    return str(value or "").strip()
+
+
+def _row_expected_return(row: dict) -> float:
+    for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
+        try:
+            value = float(row.get(key) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if math.isfinite(value) and value != 0.0:
+            return value
+    return max(0.0, (float(row.get("score") or 0.0) - 50.0) / 5000.0)
+
+
+def _apply_sparse_tangent_buy_selection(
+    scored: list[dict],
+    ranking_config: dict,
+    policy: dict,
+    *,
+    confidence_floor: float,
+    return_history: dict[str, list[float]] | None = None,
+) -> list[dict]:
+    allocation = policy.get("allocation") or {}
+    buy_signal_count = int(allocation.get("buy_signal_count") or 3)
+    buy_signal_count = max(1, min(30, buy_signal_count))
+    risk_history = return_history or {}
+
+    eligible_rows = [
+        row for row in scored
+        if _can_promote_ranking_candidate(row, ranking_config)
+    ]
+    controller = str(allocation.get("controller") or "OnlinePortfolioBandit").strip()
+    for row in scored:
+        had_buy_signal = str(row.get("signal") or "").upper() == "BUY" or int(row.get("has_buy_signal") or 0) == 1
+        row["has_buy_signal"] = 0
+        if had_buy_signal:
+            if "signal_raw" not in row:
+                row["signal_raw"] = row.get("signal")
+            if "signal_source_raw" not in row:
+                row["signal_source_raw"] = row.get("signal_source")
+            row["signal"] = "HOLD"
+            row["signal_source"] = "sparse_tangent_inverse_risk"
+            row["ranking_promoted"] = False
+            row["sparse_tangent_selected"] = False
+            alpha_allocation = row.get("alpha_allocation") if isinstance(row.get("alpha_allocation"), dict) else {}
+            row["alpha_allocation"] = {
+                **alpha_allocation,
+                "selected": False,
+                "engine": "sparse_tangent_inverse_risk",
+                "controller": controller,
+            }
+
+    allocation_candidates = [
+        {
+            "symbol": row.get("symbol"),
+            "score": row.get("score"),
+            "expected_return": _row_expected_return(row),
+        }
+        for row in eligible_rows
+    ]
+    opb_packet: dict[str, Any] | None = None
+    if controller == "OnlinePortfolioBandit":
+        try:
+            from services.online_portfolio_bandit import build_online_portfolio_bandit_l2_packet
+
+            opb_packet = build_online_portfolio_bandit_l2_packet(
+                candidates=allocation_candidates,
+                return_history=risk_history,
+                stage="L3_production_allocation_controller",
+                candidate_cap_limit=(
+                    None if allocation.get("allow_controller_candidate_cap") else buy_signal_count
+                ),
+            )
+            weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
+        except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
+            logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
+            weights = {}
+    else:
+        weights = {}
+
+    if not weights:
+        weights = allocate_sparse_tangent(
+            allocation_candidates,
+            risk_history,
+            top_k=buy_signal_count,
+            max_weight=float(allocation.get("max_weight") or allocation.get("maxWeight") or 0.55),
+        )
+    selected_symbols = set(weights)
+    selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
+    history_coverage = sum(1 for symbol in selected_symbols if risk_history.get(symbol))
+
+    for symbol, weight in weights.items():
+        row = selected_by_symbol.get(symbol)
+        if not row:
+            continue
+        if "signal_raw" not in row:
+            row["signal_raw"] = row.get("signal")
+        row["signal"] = "BUY"
+        if "signal_source_raw" not in row:
+            row["signal_source_raw"] = row.get("signal_source")
+        row["signal_source"] = "sparse_tangent_inverse_risk"
+        row["has_buy_signal"] = 1
+        row["confidence"] = max(float(row.get("confidence") or 0.0), confidence_floor)
+        row["allocation_weight"] = round(float(weight), 8)
+        row["ranking_promoted"] = False
+        row["sparse_tangent_selected"] = True
+        alpha_allocation = row.get("alpha_allocation") if isinstance(row.get("alpha_allocation"), dict) else {}
+        row["alpha_allocation"] = {
+            **alpha_allocation,
+            "selected": True,
+            "engine": "sparse_tangent_inverse_risk",
+            "controller": controller,
+            "allocation_weight": round(float(weight), 8),
+            "buy_signal_count": buy_signal_count,
+            "return_history_coverage": history_coverage,
+            "return_history_symbols": sorted(symbol for symbol in selected_symbols if risk_history.get(symbol)),
+            "opb_controller": {
+                "enabled": opb_packet is not None,
+                "stage": opb_packet.get("stage") if opb_packet else None,
+                "allocation_role": opb_packet.get("allocation_role") if opb_packet else None,
+                "selection_policy": opb_packet.get("selection_policy") if opb_packet else None,
+                "selected_arm": opb_packet.get("selected_arm") if opb_packet else None,
+            },
+        }
+        watch_points = row.get("watch_points")
+        if not isinstance(watch_points, list):
+            watch_points = []
+        watch_points.append(f"allocation:sparse_tangent_inverse_risk:{round(float(weight), 6)}")
+        row["watch_points"] = watch_points
+
+    for row in scored:
+        if row.get("symbol") in selected_symbols:
+            continue
+        alpha_allocation = row.get("alpha_allocation")
+        if isinstance(alpha_allocation, dict):
+            row["alpha_allocation"] = {
+                **alpha_allocation,
+                "selected": False,
+                "engine": "sparse_tangent_inverse_risk",
+            }
+
+    logger.info(
+        "[Ranking] sparse_tangent_inverse_risk selected "
+        f"{len(selected_symbols)}/{buy_signal_count} BUY rows: {sorted(selected_symbols)}"
+    )
+    return scored
+
+
+def apply_sparse_tangent_allocation(
     recommendations: list[dict],
     ranking_config: dict,
     ensemble_v2_cfg: dict | None = None,
     regime_label: str | None = None,
     regime_surface: dict | None = None,
     alpha_policy: dict | None = None,
+    return_history: dict[str, list[float]] | None = None,
 ) -> list[dict]:
-    """
-    Sprint 3 P0-4: combined_score = α*screener_norm + β*ml_conf + γ*signal_tier
-    若 has_buy_signal < topK，從 has_buy_signal=0 pool 挑 top promote。
+    """Run the production allocation owner after Score V2 + ML ranking.
 
-    #B Option 1 (2026-04-21): promoted rows now also get signal="BUY" and a
-    higher conf floor (ensemble_v2.topKConfidenceOverride, default 0.72). Prior
-    code only flipped has_buy_signal=1 and nudged conf to 0.60 while leaving
-    signal="HOLD" — downstream batch debate saw HOLD+0.60 edge candidates and
-    mostly REJECTed, producing 0 pending buys for 4 consecutive trading days.
+    Legacy top-K promotion is retired. BUY rows are now owned by
+    sparse_tangent_inverse_risk, optionally controlled by OnlinePortfolioBandit.
     """
     if not ranking_config or not ranking_config.get("enabled", True):
         return recommendations
 
-    alpha = ranking_config.get("alpha", 0.40)
-    beta = ranking_config.get("beta", 0.40)
-    gamma = ranking_config.get("gamma", 0.20)
-    top_k = ranking_config.get("topK", 3)
     policy = normalize_alpha_policy(alpha_policy)
     promote_min_conf = ranking_config.get("promoteMinConf", 0.60)
-    boost_conf = float((ensemble_v2_cfg or {}).get("topKConfidenceOverride", 0.72))
-    # Always use the higher of KV-driven ranking.promoteMinConf and ensemble_v2
-    # boost — pick max so neither config can silently regress the other.
-    effective_boost = max(float(promote_min_conf), boost_conf)
+    effective_boost = float(promote_min_conf)
 
-    # Compute combined_score for each
+    promotion_weights = ranking_config.get("scoreV2PromotionWeights") or {}
+    score_v2_weight = float(promotion_weights.get("scoreV2", 0.80))
+    ml_conf_weight = float(promotion_weights.get("mlConfidence", 0.15))
+    signal_tier_weight = float(promotion_weights.get("signalTier", 0.05))
+    weight_total = max(1e-9, score_v2_weight + ml_conf_weight + signal_tier_weight)
+
+    # Compute combined_score for each.
     scored = []
     for r in recommendations:
-        score_v2 = _score_v2_components_from_row(r)
-        screener_norm = min(
-            1.0,
-            (score_v2["chipFlow"] + score_v2["technicalStructure"])
-            / (SCORE_V2_WEIGHTS["chipFlow"] + SCORE_V2_WEIGHTS["technicalStructure"]),
-        )
+        _require_canonical_score_v2_components(r)
+        score_v2_norm = min(1.0, _score_v2_final_score_for_ranking(r) / 100.0)
         ml_conf = max(0.0, min(1.0, r.get("confidence") or 0))
         tier = _signal_tier(r.get("signal"))
-        combined = alpha * screener_norm + beta * ml_conf + gamma * tier
+        combined = (
+            (score_v2_weight * score_v2_norm)
+            + (ml_conf_weight * ml_conf)
+            + (signal_tier_weight * tier)
+        ) / weight_total
         r["_combined_score"] = combined
+        r["_combined_score_source"] = "score_v2_final_score_plus_ml_tiebreak"
         scored.append(r)
 
-    current_buy = sum(1 for r in scored if r.get("has_buy_signal") == 1)
-    controller_policy_syms = [
-        r.get("symbol")
-        for r in scored
-        if r.get("signal_source") == "ensemble_v2_topk_policy" or r.get("topk_forced")
-    ]
-    if controller_policy_syms:
-        logger.info(
-            f"[Ranking] controller top-K policy already promoted {len(controller_policy_syms)} rows; "
-            f"skip recommendation-layer promotion: {controller_policy_syms}"
+    if _allocation_method(policy) != "sparse_tangent_inverse_risk":
+        raise ValueError(
+            "legacy_topk_allocation_retired: "
+            "production recommendations require sparse_tangent_inverse_risk"
         )
-        return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
-    if current_buy >= top_k:
-        logger.info(f"[Ranking] has_buy_signal={current_buy} >= topK={top_k}, no promotion")
-        return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
 
-    need_promote = top_k - current_buy
-    pool = sorted(
-        [r for r in scored if r.get("has_buy_signal") == 0 and _can_promote_ranking_candidate(r, ranking_config)],
-        key=lambda x: x.get("_combined_score", 0),
-        reverse=True,
-    )[:need_promote]
-
-    promoted_syms = []
-    for r in pool:
-        r["signal_raw"] = r.get("signal")  # preserve pre-promotion for audit
-        r["signal"] = "BUY"                 # make downstream "BUY" checks pass
-        r["signal_source_raw"] = r.get("signal_source")
-        r["signal_source"] = "ranking_promotion"
-        r["has_buy_signal"] = 1
-        r["confidence"] = max(r.get("confidence") or 0, effective_boost)
-        r["ranking_promoted"] = True
-        promoted_syms.append(r["symbol"])
-
-    if promoted_syms:
-        logger.info(
-            f"[Ranking] Promoted {len(promoted_syms)} to signal=BUY "
-            f"has_buy_signal=1 conf>={effective_boost} "
-            f"(current={current_buy} < topK={top_k}): {promoted_syms}"
-        )
-    return regime_aware_allocate(scored, regime_label, slate_size=max(top_k, policy["allocation"]["slate_size"]), policy=policy, regime_surface=regime_surface)
+    allocated = regime_aware_allocate(
+        scored,
+        regime_label,
+        slate_size=max(int(policy["allocation"].get("buy_signal_count") or 3), policy["allocation"]["slate_size"]),
+        policy=policy,
+        regime_surface=regime_surface,
+    )
+    return _apply_sparse_tangent_buy_selection(
+        allocated,
+        ranking_config,
+        policy,
+        confidence_floor=effective_boost,
+        return_history=return_history,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1359,6 +2100,11 @@ def write_predictions_to_d1(
             "signal_source": ev2_signal_source if (use_ev2 and ev2_signal) else "legacy",
             "alpha_context": data.get("alpha_context"),
             "alpha_allocation": data.get("alpha_allocation"),
+            "core_ml_gate": data.get("core_ml_gate"),
+            "core_family_vote": data.get("core_family_vote"),
+            "gnn": data.get("gnn"),
+            "timesfm": data.get("timesfm"),
+            "formal_layer3_blockers": data.get("formal_layer3_blockers"),
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),
@@ -1410,19 +2156,9 @@ def write_predictions_to_d1(
         inserted_rows += 1
 
         # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
-        # Stages 2+3: active rows model_name='{name}'; challenger rows
-        # model_name='{name}::challenger' (Stage 3 shadow IC tracking).
+        # Screener refactor: production writes only formal active/family slots;
+        # legacy challenger side-channel scores are intentionally ignored.
         per_model_scores = _extract_per_model_scores_for_d1(data)
-        # ResidualMLP is the only shadow challenger allowed to write challenger
-        # rows. Active L3 models must not re-enter D1 as ::challenger.
-        challenger_scores = data.get("challenger_rank_scores") or {}
-        for ch_name, ch_score in (challenger_scores or {}).items():
-            if str(ch_name) != "ResidualMLP":
-                continue
-            try:
-                per_model_scores[f"{ch_name}::challenger"] = float(ch_score)
-            except (TypeError, ValueError):
-                pass
         for model_name, model_score in per_model_scores.items():
             safe_model_score, replaced = _sanitize_non_finite(model_score)
             sanitized_count += replaced
@@ -1485,7 +2221,8 @@ def write_predictions_to_d1(
 # Models whose rank scores we want stored for alpha IC tracking.
 # State-space overlays explain regime/risk context rather than vote as alpha.
 _PER_MODEL_TRACKED = (
-    "LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN",
+    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
+    "TabM", "GNN",
     "DLinear", "PatchTST", "iTransformer", "TimesFM",
 )
 
@@ -1493,17 +2230,17 @@ _PER_MODEL_TRACKED = (
 def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     """Pull out per-model rank scores from one stock's prediction dict.
 
-    For tree/tabular/graph models: read pred["rank_scores"][model_name] (raw 0~1
+    For 5 feature models: read pred["rank_scores"][model_name] (raw 0~1
       from predict_stock_v2).
-    For time-series alpha predictors: sigmoid-map .forecast_pct → 0~1
+    For 3 time-series alpha predictors: sigmoid-map .forecast_pct → 0~1
       (mirror of pipeline_v2._ts_to_rank with scale=12).
 
-    Returns subset of _PER_MODEL_TRACKED that have a usable score in the dict.
+    Returns formal active/family slots that have a usable score in the dict.
     """
     import math
     out: dict[str, float] = {}
     rank_scores = pred.get("rank_scores") or {}
-    for name in ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"):
+    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"):
         v = rank_scores.get(name)
         if v is not None:
             try:
@@ -1530,7 +2267,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
 
 
 def _build_per_model_insert_sql() -> str:
-    """Like INSERT_PREDICTIONS_SQL but accepts model_name as parameter."""
+    """Same contract as INSERT_PREDICTIONS_SQL but accepts model_name as parameter."""
     return f"""
 INSERT INTO predictions (
     {COL_STOCK_ID}, {COL_MODEL_NAME}, {COL_GENERATED_AT}, {COL_PREDICTION_DATE}, {COL_HORIZON}, {COL_DIRECTION_ACCURACY},
@@ -1550,8 +2287,28 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
         chunk = stock_ids[i:i + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
         rows = d1_client.query(
-            f"SELECT stock_id FROM daily_recommendations WHERE date=? AND stock_id IN ({placeholders})",
-            [run_date, *chunk],
+            f"""
+            WITH latest_screener_run AS (
+                SELECT run_id
+                  FROM screener_funnel_runs
+                 WHERE date = ?
+                   AND status = 'success'
+                 ORDER BY created_at DESC
+                 LIMIT 1
+            )
+            SELECT dr.stock_id
+              FROM daily_recommendations dr
+              JOIN screener_funnel_items sfi
+                ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
+               AND sfi.symbol = dr.symbol
+               AND (
+                    (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
+                 OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+               )
+             WHERE dr.date = ?
+               AND dr.stock_id IN ({placeholders})
+            """,
+            [run_date, run_date, *chunk],
         )
         existing.update(int(row["stock_id"]) for row in rows if row.get("stock_id") is not None)
     return existing
@@ -1594,20 +2351,74 @@ def _filter_to_existing_recommendation_seed_rows(recommendations: list[dict], ru
 
 
 def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str) -> int:
-    """Keep the run-date recommendation set owned by the current pipeline output."""
-    stock_ids = sorted({int(r["stock_id"]) for r in recommendations if r.get("stock_id")})
-    if not stock_ids:
+    """Keep only rows owned by the latest screener candidate seed for run_date."""
+    if not recommendations:
         return 0
-    placeholders = ",".join("?" for _ in stock_ids)
-    result = d1_client.execute(
-        f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id NOT IN ({placeholders})",
-        [run_date, *stock_ids],
+    rows = d1_client.query(
+        """
+        WITH latest_screener_run AS (
+            SELECT run_id
+              FROM screener_funnel_runs
+             WHERE date = ?
+               AND status = 'success'
+             ORDER BY created_at DESC
+             LIMIT 1
+        )
+        SELECT dr.stock_id
+          FROM daily_recommendations dr
+         WHERE dr.date = ?
+           AND COALESCE(dr.recommendation_lane, 'tradable') = 'tradable'
+           AND COALESCE(dr.eligible_for_ml, 1) = 1
+           AND NOT EXISTS (
+             SELECT 1
+               FROM screener_funnel_items sfi
+             WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
+                AND sfi.symbol = dr.symbol
+                AND (
+                     (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
+                  OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+                )
+           )
+        """,
+        [run_date, run_date],
         timeout=60,
     )
-    changes = int(((result or {}).get("meta") or {}).get("changes") or 0)
+    if not rows:
+        run = d1_client.query(
+            """
+            SELECT run_id
+              FROM screener_funnel_runs
+             WHERE date = ?
+               AND status = 'success'
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            [run_date],
+            timeout=60,
+        )
+        if not run:
+            logger.warning(
+                "[recommendation_service] No latest screener candidate-seed run for run_date=%s; skip stale cleanup",
+                run_date,
+            )
+        return 0
+    stale_ids = sorted({
+        int(row["stock_id"])
+        for row in rows or []
+        if row.get("stock_id") is not None
+    })
+    changes = 0
+    for chunk in _chunked(stale_ids):
+        placeholders = ",".join("?" for _ in chunk)
+        result = d1_client.execute(
+            f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id IN ({placeholders})",
+            [run_date, *chunk],
+            timeout=60,
+        )
+        changes += int(((result or {}).get("meta") or {}).get("changes") or 0)
     if changes:
         logger.warning(
-            "[recommendation_service] Deleted %s stale daily_recommendations rows for run_date=%s",
+            "[recommendation_service] Deleted %s daily_recommendations rows outside latest screener candidate seed for run_date=%s",
             changes,
             run_date,
         )
@@ -1635,7 +2446,11 @@ def update_recommendations_in_d1(
 
     statements: list[tuple[str, list[Any]]] = []
     for idx, r in enumerate(recommendations, start=1):
-        ml_score, replaced_ml = _sanitize_non_finite(r.get("ml_score") or 0)
+        score_seed_inputs = _score_v2_seed_inputs(r)
+        chip_flow_seed, replaced_chip_seed = _sanitize_non_finite(score_seed_inputs["chipFlowSeed40"])
+        technical_seed, replaced_technical_seed = _sanitize_non_finite(score_seed_inputs["technicalSeed30"])
+        screener_momentum_seed, replaced_momentum_seed = _sanitize_non_finite(score_seed_inputs["screenerMomentumSeed20"])
+        ml_score, replaced_ml = _sanitize_non_finite(score_seed_inputs["mlEdgeSeed30"])
         score, replaced_score = _sanitize_non_finite(r.get("score") or 0)
         confidence, replaced_conf = _sanitize_non_finite(r.get("confidence"))
         current_price, replaced_price = _sanitize_non_finite(r.get("current_price"))
@@ -1654,7 +2469,10 @@ def update_recommendations_in_d1(
                 score,
             )
         sanitized_count = (
-            replaced_ml
+            replaced_chip_seed
+            + replaced_technical_seed
+            + replaced_momentum_seed
+            + replaced_ml
             + replaced_score
             + replaced_conf
             + replaced_price
@@ -1727,9 +2545,9 @@ def update_recommendations_in_d1(
                 trust_net_5d,
                 rsi14,
                 macd_hist,
-                r.get("chip_score") or 0,
-                r.get("tech_score") or 0,
-                r.get("momentum_score") or 0,
+                chip_flow_seed,
+                technical_seed,
+                screener_momentum_seed,
                 ml_score,
                 r.get("industry"),
                 r.get("market_segment") or "UNKNOWN",
@@ -1779,7 +2597,10 @@ def re_rank_recommendations(run_date: str) -> None:
     ordering so slate diversification does not need to inflate predictive score.
     """
     rows = d1_client.query(
-        "SELECT symbol FROM daily_recommendations WHERE date = ? ORDER BY rank ASC, score DESC",
+        "SELECT symbol FROM daily_recommendations WHERE date = ? "
+        "ORDER BY rank ASC, CASE WHEN json_valid(score_components) THEN "
+        "COALESCE(CAST(json_extract(score_components, '$.finalScore') AS REAL), "
+        "CAST(json_extract(score_components, '$.total') AS REAL), 0) ELSE 0 END DESC",
         [run_date],
     )
     statements = [
@@ -1819,3 +2640,45 @@ def merge_llm_reasons_into_recommendations(
                     )
                 ]
                 r["watch_points"] = llm_points + domain_points
+
+
+def merge_breeze2_reason_shadow_into_score_components(
+    recommendations: list[dict],
+    breeze2_shadow: dict[str, dict],
+) -> None:
+    """Persist Breeze2 as a side-by-side Score V2 reason variant.
+
+    This keeps Gemini/primary reasons authoritative for the card headline while
+    exposing Breeze2's advisory-only text for UI comparison.
+    """
+    if not breeze2_shadow:
+        return
+    for row in recommendations:
+        symbol = str(row.get("symbol") or "").strip()
+        entry = breeze2_shadow.get(symbol)
+        if not isinstance(entry, dict):
+            continue
+        reason = str(entry.get("reason") or "").strip()
+        if not reason:
+            continue
+        payload = _parse_score_components_payload(row.get("score_components"))
+        if not payload:
+            continue
+        variants = payload.get("reasonVariants")
+        if not isinstance(variants, dict):
+            variants = {}
+        watch_points = [
+            str(point).strip()
+            for point in (entry.get("watchPoints") or [])
+            if isinstance(point, str) and point.strip()
+        ][:5]
+        variants["breeze2"] = {
+            "source": str(entry.get("source") or "breeze2_shadow"),
+            "decision_effect": "advisory_only",
+            "reason": reason[:700],
+            "watchPoints": watch_points,
+            "breeze2_context": str(entry.get("breeze2_context") or "unknown"),
+            "riskFlags": [str(flag) for flag in (entry.get("riskFlags") or []) if flag][:8],
+        }
+        payload["reasonVariants"] = variants
+        row["score_components"] = payload

@@ -1,6 +1,6 @@
 import type { L5QuoteQuality } from './finlabL5MarketData'
 
-export type AdaptiveStrategyMode = 'breakout' | 'pullback' | 'trend' | 'mean_reversion' | string
+export type AdaptiveStrategyMode = 'breakout' | 'breakout_continuation' | 'pullback' | 'trend' | 'mean_reversion' | string
 
 export interface AdaptiveExecutionBaseThresholds {
   minVolumeRatio: number
@@ -40,8 +40,9 @@ function round(value: number, decimals = 4): number {
   return Math.round(value * factor) / factor
 }
 
-function modeBucket(value: AdaptiveStrategyMode | null | undefined): 'breakout' | 'pullback' | 'trend' | 'mean_reversion' {
+function modeBucket(value: AdaptiveStrategyMode | null | undefined): 'breakout' | 'breakout_continuation' | 'pullback' | 'trend' | 'mean_reversion' {
   const text = String(value ?? '').toLowerCase()
+  if (text.includes('breakout_continuation') || text.includes('continuation')) return 'breakout_continuation'
   if (text.includes('breakout')) return 'breakout'
   if (text.includes('pullback')) return 'pullback'
   if (text.includes('mean') || text.includes('reversion')) return 'mean_reversion'
@@ -70,6 +71,14 @@ export function resolveAdaptiveExecutionPolicy(input: AdaptiveExecutionPolicyInp
     strongBreakoutVolumeRatio = Math.max(strongBreakoutVolumeRatio, 1.5)
     strongBreakoutRangePosition = Math.max(strongBreakoutRangePosition, 0.7)
     notes.push('breakout_strict_confirmation')
+  } else if (bucket === 'breakout_continuation') {
+    minVolumeRatio = Math.max(minVolumeRatio, 1.0)
+    minRangePosition = Math.max(minRangePosition, 0.35)
+    maxEntryChasePct = Math.max(maxEntryChasePct, 0.01)
+    strongBreakoutMaxEntryChasePct = Math.max(strongBreakoutMaxEntryChasePct, 0.02)
+    strongBreakoutVolumeRatio = Math.max(strongBreakoutVolumeRatio, 1.3)
+    strongBreakoutRangePosition = Math.max(strongBreakoutRangePosition, 0.6)
+    notes.push('breakout_continuation_live_entry')
   } else if (bucket === 'trend') {
     minVolumeRatio = Math.min(minVolumeRatio, 0.75)
     maxEntryChasePct = Math.min(maxEntryChasePct, 0.0045)
@@ -79,7 +88,7 @@ export function resolveAdaptiveExecutionPolicy(input: AdaptiveExecutionPolicyInp
 
   const marketRisk = String(input.marketRiskLevel ?? 'unknown').toLowerCase()
   if (WEAK_MARKET_LEVELS.has(marketRisk)) {
-    minVolumeRatio *= bucket === 'breakout' ? 1.25 : 1.1
+    minVolumeRatio *= (bucket === 'breakout' || bucket === 'breakout_continuation') ? 1.25 : 1.1
     minRangePosition = Math.min(0.85, minRangePosition + (bucket === 'pullback' ? 0.03 : 0.1))
     maxEntryChasePct *= 0.5
     strongBreakoutMaxEntryChasePct *= 0.5

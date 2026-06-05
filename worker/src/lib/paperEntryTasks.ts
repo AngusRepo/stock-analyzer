@@ -15,6 +15,7 @@ import {
   loadPendingBuySnapshot,
   markPendingBuyExecutionEvents,
   persistPendingBuyActiveState,
+  recordPendingBuyAuditOnly,
   type PendingBuy,
 } from './pendingBuyStore'
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
@@ -24,8 +25,11 @@ import { evaluatePreTradeExecution, type PreTradeMomentumContext } from './preTr
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
 import {
   buildFinLabL5MarketDataDetail,
-  fetchFinLabL5MarketDataQuotes,
+  evaluateL5OrderBookPersistence,
+  fetchFinLabL5MarketDataSnapshot,
+  normalizeFinLabL5Quote,
   quoteQualityFromL5,
+  type FinLabL5Quote,
 } from './finlabL5MarketData'
 import { fetchFinLabExecutionPreview } from './finlabExecutionPreviewClient'
 import { buildStockVisionOrderIntent } from './stockvisionOrderIntent'
@@ -46,7 +50,7 @@ import {
 import { evaluatePartialFillRemainingPolicy } from './partialFillRemainingPolicy'
 import { formatExecutionStatusEvent } from './executionEvent'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
-import { shouldFailClosedPendingDebate } from './pendingDebateSla'
+import { shouldMarkPendingDebateSlaReached } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
@@ -65,7 +69,10 @@ import {
   batchLoadOhlcvTradePlanLevelsBySymbol,
   formatOhlcvTradePlanWatchPoint,
   resolveOhlcvEntryPlan,
+  type OhlcvRow,
 } from './ohlcvTradePlanLevels'
+import { buildEntryPriceModelV2FromOhlcvPlan, buildVolumeProfileV2 } from './entryPriceModelV2'
+import { buildPriceActionStructure } from './priceActionStructure'
 import type { Bindings } from '../types'
 
 const ACCOUNT_ID = 1
@@ -76,9 +83,21 @@ function truthyFlag(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
+function enabledFlag(value: unknown, fallback = false): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) return fallback
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  return fallback
+}
+
 function optionalPositiveNumber(value: unknown, fallback: number): number {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+function minutesSinceTwMarketOpen(hour: number, minute: number): number {
+  return hour * 60 + minute - 9 * 60
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -217,6 +236,62 @@ interface IntradaySnapshotSample {
   totalVolume: number
 }
 
+function parseFinLabL5EventQuote(symbol: string, row: { created_at?: string | null; detail_json?: string | null }): FinLabL5Quote | null {
+  try {
+    const detail = row.detail_json ? JSON.parse(row.detail_json) : null
+    if (!detail || typeof detail !== 'object') return null
+    return normalizeFinLabL5Quote(symbol, {
+      provider: detail.provider,
+      price: detail.last_price,
+      best_bid: detail.best_bid,
+      best_ask: detail.best_ask,
+      bid_prices: detail.bid_prices,
+      ask_prices: detail.ask_prices,
+      bid_volumes: detail.bid_volumes,
+      ask_volumes: detail.ask_volumes,
+      source_time: detail.source_time,
+      received_at: detail.received_at ?? row.created_at,
+      status: detail.status,
+    }, row.created_at ? new Date(row.created_at) : new Date())
+  } catch {
+    return null
+  }
+}
+
+async function loadRecentFinLabL5QuoteHistory(
+  env: Pick<Bindings, 'DB'>,
+  tradeDate: string,
+  symbol: string,
+  currentQuote: FinLabL5Quote | null,
+  limit = 5,
+): Promise<FinLabL5Quote[]> {
+  const cleanSymbol = String(symbol ?? '').trim()
+  if (!cleanSymbol) return currentQuote ? [currentQuote] : []
+  try {
+    const previousLimit = Math.max(0, Math.min(20, Math.floor(limit)) - (currentQuote ? 1 : 0))
+    const previousQuotes: FinLabL5Quote[] = []
+    if (previousLimit > 0) {
+      const { results } = await env.DB.prepare(`
+        SELECT detail_json, created_at
+          FROM paper_execution_events
+         WHERE trade_date = ?
+           AND symbol = ?
+           AND side = 'buy'
+           AND event_type = 'finlab_l5_market_data'
+         ORDER BY created_at DESC
+         LIMIT ?
+      `).bind(tradeDate, cleanSymbol, previousLimit).all<{ detail_json?: string | null; created_at?: string | null }>()
+      for (const row of [...(results ?? [])].reverse()) {
+        const quote = parseFinLabL5EventQuote(cleanSymbol, row)
+        if (quote) previousQuotes.push(quote)
+      }
+    }
+    return currentQuote ? [...previousQuotes, currentQuote] : previousQuotes
+  } catch {
+    return currentQuote ? [currentQuote] : []
+  }
+}
+
 function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
   const startMs = parseEventTimeMs(row.created_at)
   if (startMs == null) return null
@@ -273,6 +348,31 @@ function samplesToRollingBars(samples: IntradaySnapshotSample[], intervalMs: num
     previousTotalVolume = Math.max(previousTotalVolume ?? 0, bucket.lastTotalVolume)
   }
   return bars
+}
+
+function formatIntradayBarTime(startMs: number): string {
+  const d = new Date(startMs + 8 * 3600_000)
+  return `${String(d.getUTCHours()).padStart(2, '0')}${String(d.getUTCMinutes()).padStart(2, '0')}${String(d.getUTCSeconds()).padStart(2, '0')}`
+}
+
+function rollingBarsToOhlcvRows(tradeDate: string, bars: IntradayRollingBar[]): OhlcvRow[] {
+  return bars
+    .filter((bar) => (
+      Number.isFinite(bar.open) &&
+      Number.isFinite(bar.high) &&
+      Number.isFinite(bar.low) &&
+      Number.isFinite(bar.close) &&
+      bar.high >= bar.low
+    ))
+    .map((bar) => ({
+      date: tradeDate,
+      time: formatIntradayBarTime(bar.startMs),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: Math.max(0, Number(bar.volume ?? 0)),
+    }))
 }
 
 async function loadIntradayTechnicalRollingBars(
@@ -396,9 +496,19 @@ function quoteAgeMs(quoteTime?: string): number | null {
   return Math.max(0, Date.now() - ts)
 }
 
+function pendingRunIdFromMeta(meta: Record<string, unknown> | undefined): number | null {
+  const runId = Number(meta?.run_id)
+  return Number.isFinite(runId) ? runId : null
+}
+
+function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionStatus): boolean {
+  return status === 'requoted' || status === 'partially_filled' || status === 'quote_unavailable'
+}
+
 export async function runIntradayCheck(env: Bindings): Promise<void> {
   const cfg = await getTradingConfig(env.KV)
   const { hour: twHour, minute: twMin } = getTwClockParts()
+  const minutesSinceOpen = minutesSinceTwMarketOpen(twHour, twMin)
   const isMarketOpen = isTwIntradayTradingMinute()
 
   if (!isMarketOpen) return
@@ -412,14 +522,24 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending',
   )
   const pendingDebateSlaMinutes = Number((cfg.position as any).pendingDebateSlaMinutes ?? 10)
-  if (staleDebateItems.length > 0 && shouldFailClosedPendingDebate(new Date(), pendingDebateSlaMinutes)) {
-    await markPendingBuyExecutionEvents(
-      env,
-      today,
+  if (staleDebateItems.length > 0 && shouldMarkPendingDebateSlaReached(new Date(), pendingDebateSlaMinutes)) {
+    const transition = applyPendingBuyExecutionStatusUpdates(
       debateSnapshot.pendingBuys,
-      staleDebateItems.map((item) => ({ symbol: item.symbol, status: 'skipped', reason: 'debate_sla_expired' })),
-      { stage: 'debate_sla', reason: 'debate_sla_expired', sla_minutes: pendingDebateSlaMinutes },
+      staleDebateItems.map((item) => ({
+        symbol: item.symbol,
+        status: 'pending',
+        reason: 'debate_sla_waiting',
+        detail: `sla_minutes=${pendingDebateSlaMinutes}`,
+      })),
     )
+    if (transition.changed) {
+      await persistPendingBuyActiveState(
+        env,
+        today,
+        transition.activeItems as PendingBuy[],
+        { stage: 'debate_sla', reason: 'debate_sla_waiting', sla_minutes: pendingDebateSlaMinutes },
+      )
+    }
   }
 
   await pollIntradayStopLoss(env)
@@ -456,6 +576,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   const pendingSnapshot = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
   let pendingBuys: PendingBuy[] = pendingSnapshot.pendingBuys
   if (pendingBuys.length === 0) return
+  const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
 
   const pendingSymbols = pendingBuys.map((b) => b.symbol)
   const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
@@ -465,7 +586,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   })
   const priceMap = new Map<string, number>()
   for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
-  const finLabL5MarketDataMap = await fetchFinLabL5MarketDataQuotes(env as any, pendingSymbols)
+  const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, pendingSymbols)
+  const finLabL5MarketDataMap = finLabL5MarketDataSnapshot.quotes
 
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
   if (zeroPriceSymbols.length > 0) {
@@ -926,38 +1048,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     reason: string,
     detail?: string | null,
   ) => {
+    recordExecutionNote(symbol, status, reason, detail)
+    if (!shouldPersistActiveExecutionStatus(status)) return
     const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, [{ symbol, status, reason, detail }])
     pendingBuys = transition.allItems as PendingBuy[]
-    recordExecutionNote(symbol, status, reason, detail)
     if (transition.changed) stateChanged = true
   }
   const recordAllocatorDecision = (symbol: string, decision: FiveSlotDecision) => {
-    const watchPoint = formatFiveSlotDecisionWatchPoint(decision)
-    const idx = pendingBuys.findIndex((item) => item.symbol === symbol)
-    if (idx >= 0) {
-      const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
-      const nextPoints = [
-        ...points.filter((point) => {
-          const text = String(point)
-          return !text.startsWith('allocator:') && !text.startsWith('execution:pending:allocator_')
-        }),
-        watchPoint,
-      ]
-      const changed = nextPoints.length !== points.length || nextPoints.some((point, i) => point !== points[i])
-      if (changed || !pendingBuys[idx].execution_status) {
-        pendingBuys[idx] = {
-          ...pendingBuys[idx],
-          execution_status: pendingBuys[idx].execution_status ?? 'pending',
-          watch_points: nextPoints,
-        }
-        stateChanged = true
-      }
-    }
     recordExecutionNote(
       symbol,
       `allocator_${decision.action}`,
       decision.reason,
-      `target=${Math.round(decision.targetPositionValue)};current=${Math.round(decision.currentPositionValue)};budget=${Math.round(decision.budgetCap)};replace=${decision.replaceSymbol ?? 'none'}`,
+      `${formatFiveSlotDecisionWatchPoint(decision)};target=${Math.round(decision.targetPositionValue)};current=${Math.round(decision.currentPositionValue)};budget=${Math.round(decision.budgetCap)};replace=${decision.replaceSymbol ?? 'none'}`,
     )
   }
   for (const pending of [...pendingBuys]) {
@@ -981,6 +1083,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           decision.reason,
           partial ? `remaining=${partial.remaining}` : null,
         )
+        continue
       } else {
         recordExecutionEvent(
           pending.symbol,
@@ -988,8 +1091,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           decision.reason,
           partial ? `remaining=${partial.remaining}` : null,
         )
+        stateChanged = true
       }
-      stateChanged = true
       continue
     }
 
@@ -1024,35 +1127,20 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue
     }
     const ohlcvTradePlan = resolveOhlcvEntryPlan(ohlcvLevelsBySymbol.get(pending.symbol), { latestPrice: price })
+    let entryModelV2 = ohlcvTradePlan
+      ? buildEntryPriceModelV2FromOhlcvPlan(ohlcvTradePlan)
+      : null
     let executionEntryPrice = pending.ml_entry_price
     let executionStopLoss = pending.ml_stop_loss
     if (ohlcvTradePlan) {
       executionEntryPrice = ohlcvTradePlan.entryPrice
       executionStopLoss = ohlcvTradePlan.stopLoss
-      const idx = pendingBuys.findIndex((item) => item.symbol === pending.symbol)
-      if (idx >= 0) {
-        const watchPoint = formatOhlcvTradePlanWatchPoint(ohlcvTradePlan)
-        const points = Array.isArray(pendingBuys[idx].watch_points) ? pendingBuys[idx].watch_points : []
-        const nextPoints = points.some((point) => String(point).startsWith('ohlcv_trade_plan:'))
-          ? points.map((point) => String(point).startsWith('ohlcv_trade_plan:') ? watchPoint : point)
-          : [...points, watchPoint]
-        if (
-          pendingBuys[idx].ml_entry_price !== executionEntryPrice
-          || pendingBuys[idx].ml_stop_loss !== executionStopLoss
-          || nextPoints.some((point, pointIdx) => point !== points[pointIdx])
-        ) {
-          pendingBuys[idx] = {
-            ...pendingBuys[idx],
-            ml_entry_price: executionEntryPrice,
-            ml_stop_loss: executionStopLoss,
-            ml_target1: ohlcvTradePlan.target1,
-            ml_target2: ohlcvTradePlan.target2,
-            original_entry: ohlcvTradePlan.entryPrice,
-            watch_points: nextPoints,
-          }
-          stateChanged = true
-        }
-      }
+      recordExecutionNote(
+        pending.symbol,
+        'ohlcv_trade_plan',
+        'intraday_execution_plan',
+        formatOhlcvTradePlanWatchPoint(ohlcvTradePlan),
+      )
     }
     let intradayTechnicalSnapshot: ReturnType<typeof buildIntradayTechnicalSnapshot> | null = null
     const previousCloseForSnapshot = prevCloseMap.get(pending.symbol) ?? null
@@ -1067,6 +1155,39 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           price,
           currentTotalVolume,
         )
+        if (ohlcvTradePlan) {
+          const intradayRows = rollingBarsToOhlcvRows(today, rollingBars)
+          const intradayProfile = buildVolumeProfileV2(intradayRows, {
+            binCount: Math.max(12, Math.min(48, intradayRows.length * 4)),
+            valueAreaPct: 0.7,
+          })
+          if (intradayProfile.poc != null && intradayProfile.vah != null && intradayProfile.val != null) {
+            entryModelV2 = buildEntryPriceModelV2FromOhlcvPlan(ohlcvTradePlan, {
+              anchorSource: 'intraday_volume_profile',
+              profile: intradayProfile,
+              priceActionStructure: buildPriceActionStructure(intradayRows, { latestPrice: price }),
+            })
+            recordExecutionNote(
+              pending.symbol,
+              'entry_model_v2_intraday_profile',
+              'intraday_volume_profile_active',
+              [
+                `poc=${intradayProfile.poc}`,
+                `vah=${intradayProfile.vah}`,
+                `val=${intradayProfile.val}`,
+                `value_area=${intradayProfile.valueAreaVolumePct}`,
+                `bars=${intradayRows.length}`,
+              ].join(';'),
+            )
+          } else {
+            recordExecutionNote(
+              pending.symbol,
+              'entry_model_v2_daily_proxy_fallback',
+              'intraday_volume_profile_unavailable',
+              `bars=${intradayRows.length}`,
+            )
+          }
+        }
         intradayTechnicalSnapshot = buildIntradayTechnicalSnapshot({
           symbol: pending.symbol,
           previousClose: previousCloseForSnapshot,
@@ -1087,12 +1208,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           reason: 'intraday_dynamic_decision',
           detail: {
             ...intradayTechnicalSnapshot,
-            guard_enabled: truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED),
+            guard_enabled: truthyFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED),
             previous_close: previousCloseForSnapshot,
             previous_obv_temperature_60: technicalBaseline?.obvTemperature60 ?? null,
             previous_adaptive_rsi_upper_50: technicalBaseline?.adaptiveRsiUpper50 ?? null,
           },
-          pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+          pendingRunId,
           source: 'intraday_dynamic_technical_decision',
         })
       } catch (error) {
@@ -1104,7 +1225,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         )
       }
     }
-    const effectiveOhlcvTradePlan = ohlcvTradePlan && intradayTechnicalSnapshot && truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+    const technicalGuardEnabled = truthyFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+    const effectiveOhlcvTradePlan = ohlcvTradePlan && intradayTechnicalSnapshot && technicalGuardEnabled
       ? {
         ...ohlcvTradePlan,
         atrDefense: Math.max(ohlcvTradePlan.atrDefense ?? 0, intradayTechnicalSnapshot.atrDefense),
@@ -1113,16 +1235,21 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
     const finLabL5Quality = finLabL5Quote
       ? quoteQualityFromL5(finLabL5Quote, {
-        maxQuoteAgeMs: optionalPositiveNumber((env as any).FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
-        maxSpreadPct: optionalPositiveNumber((env as any).FINLAB_L5_MAX_SPREAD_PCT, 0.006),
-        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber((env as any).FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
-        minTopAskVolume: optionalPositiveNumber((env as any).FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
-        minOrderBookImbalance: Number.isFinite(Number((env as any).FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
-          ? Number((env as any).FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
+        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
+        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
+        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
+        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
+        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
+          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
           : -0.7,
       })
       : null
-    const finLabL5MarketDataEnabled = truthyFlag((env as any).FINLAB_L5_MARKET_DATA_ENABLED)
+    const finLabL5MarketDataEnabled = truthyFlag(env.FINLAB_L5_MARKET_DATA_ENABLED)
+    const finLabL5Persistence = finLabL5MarketDataEnabled
+      ? evaluateL5OrderBookPersistence(
+        await loadRecentFinLabL5QuoteHistory(env, today, pending.symbol, finLabL5Quote, 5),
+      )
+      : null
     if (finLabL5MarketDataEnabled) {
       await recordPaperExecutionEvent(env, {
         tradeDate: today,
@@ -1133,13 +1260,27 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         reason: finLabL5Quality?.reasons.join(',') || (finLabL5Quote ? 'l5_market_data_pass' : 'l5_market_data_missing'),
         detail: {
           ...buildFinLabL5MarketDataDetail(finLabL5Quote),
+          controller_status: finLabL5MarketDataSnapshot.status,
+          controller_blocked_reasons: finLabL5MarketDataSnapshot.blockedReasons,
+          controller_env_missing: finLabL5MarketDataSnapshot.envMissing,
+          controller_live_submit_enabled: finLabL5MarketDataSnapshot.liveSubmitEnabled,
+          controller_can_submit_real_order: finLabL5MarketDataSnapshot.canSubmitRealOrder,
           quality: finLabL5Quality,
-          production_like_market_data: finLabL5MarketDataEnabled,
+          persistence: finLabL5Persistence,
+          production_grade_market_data: finLabL5MarketDataEnabled,
           live_submit_enabled: false,
         },
-        pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+        pendingRunId,
         source: 'finlab_sinopac_l5_market_data',
       })
+      if (finLabL5Persistence) {
+        recordExecutionNote(
+          pending.symbol,
+          `l5_persistence_${finLabL5Persistence.status}`,
+          finLabL5Persistence.reasons.join(',') || 'l5_persistence_neutral',
+          JSON.stringify(finLabL5Persistence.metrics),
+        )
+      }
     }
     const baseMomentum = await loadPreTradeMomentum(env, cfg, pending.symbol, price)
     const adaptivePolicy = resolveAdaptiveExecutionPolicy({
@@ -1168,12 +1309,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         adaptivePolicy.notes.join('|'),
       ].filter(Boolean).join(';'),
     )
-    const intradayTechnicalDecision = intradayTechnicalSnapshot && truthyFlag((env as any).INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED)
+    const closeWindowVolumeFloor = optionalPositiveNumber(env.EXECUTION_CLOSE_WINDOW_MIN_VOLUME_RATIO, 0.9)
+    const closeWindowVolumeBridge =
+      twHour === 13 &&
+      Number(baseMomentum.volumeRatio ?? 0) >= closeWindowVolumeFloor &&
+      adaptivePolicy.momentum.minVolumeRatio > closeWindowVolumeFloor
+    const intradayTechnicalDecision = intradayTechnicalSnapshot && technicalGuardEnabled
       ? resolveIntradayTechnicalDecision({
         snapshot: intradayTechnicalSnapshot,
         strategyMode: effectiveOhlcvTradePlan?.mode ?? null,
         marketRiskLevel: marketRisk.risk_level,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
+        minDistributionSkipBarCount: optionalPositiveNumber(env.INTRADAY_TECHNICAL_DISTRIBUTION_SKIP_MIN_BARS, 60),
       })
       : null
     if (intradayTechnicalDecision) {
@@ -1184,7 +1331,21 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         intradayTechnicalDecision.detail,
       )
     }
-    if (adaptivePolicy.envelopeBlockReason && truthyFlag((env as any).FINLAB_L5_ENVELOPE_GUARD_ENABLED)) {
+    const closeWindowTechnicalPass = !technicalGuardEnabled || intradayTechnicalDecision?.action === 'pass'
+    const effectiveMomentumMinVolumeRatio =
+      closeWindowVolumeBridge &&
+      closeWindowTechnicalPass
+        ? closeWindowVolumeFloor
+        : adaptivePolicy.momentum.minVolumeRatio
+    if (effectiveMomentumMinVolumeRatio !== adaptivePolicy.momentum.minVolumeRatio) {
+      recordExecutionNote(
+        pending.symbol,
+        'closing_window_volume_bridge',
+        'volume_near_miss_after_technical_pass',
+        `volume_ratio=${baseMomentum.volumeRatio ?? 'na'};min=${adaptivePolicy.momentum.minVolumeRatio}->${effectiveMomentumMinVolumeRatio}`,
+      )
+    }
+    if (adaptivePolicy.envelopeBlockReason && truthyFlag(env.FINLAB_L5_ENVELOPE_GUARD_ENABLED)) {
       recordActiveExecutionStatus(
         pending.symbol,
         'pending',
@@ -1192,6 +1353,27 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         'finlab_l5_envelope_guard',
       )
       continue
+    }
+    const openingFastPath = {
+      enabled: enabledFlag(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_ENABLED, true),
+      minutesSinceOpen,
+      maxMinutes: optionalPositiveNumber(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_MAX_MINUTES, 10),
+      allowTrendUnavailable: enabledFlag(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_ALLOW_TREND_UNAVAILABLE, true),
+      maxPremiumPct: optionalPositiveNumber(env.ENTRY_MODEL_V2_OPENING_FAST_PATH_MAX_PREMIUM_PCT, 0.012),
+      l5Status: finLabL5Quality?.status ?? null,
+    }
+    if (openingFastPath.enabled && minutesSinceOpen >= 0 && minutesSinceOpen <= openingFastPath.maxMinutes) {
+      recordExecutionNote(
+        pending.symbol,
+        'opening_fast_path_context',
+        'entry_model_v2_opening_fast_path',
+        [
+          `minutes_since_open=${minutesSinceOpen}`,
+          `max_minutes=${openingFastPath.maxMinutes}`,
+          `max_premium=${openingFastPath.maxPremiumPct}`,
+          `l5=${openingFastPath.l5Status ?? 'na'}`,
+        ].join(';'),
+      )
     }
     const preTrade = evaluatePreTradeExecution({
       symbol: pending.symbol,
@@ -1207,11 +1389,13 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       marketRiskLevel: marketRisk.risk_level,
       momentum: {
         ...baseMomentum,
-        minVolumeRatio: adaptivePolicy.momentum.minVolumeRatio,
+        minVolumeRatio: effectiveMomentumMinVolumeRatio,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
         strongBreakoutVolumeRatio: adaptivePolicy.momentum.strongBreakoutVolumeRatio,
         strongBreakoutRangePosition: adaptivePolicy.momentum.strongBreakoutRangePosition,
       },
+      entryModelV2,
+      openingFastPath,
       tradePlan: effectiveOhlcvTradePlan
         ? {
           source: effectiveOhlcvTradePlan.source,
@@ -1413,7 +1597,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           raw_status: finLabExecutionPreview.raw?.status ?? null,
           live_submit_enabled: false,
         },
-        pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+        pendingRunId,
         source: 'finlab_execution_preview',
       })
       if (
@@ -1470,7 +1654,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         mismatches: brokerReconciliation.mismatches,
         live_submit_enabled: false,
       },
-      pendingRunId: Number.isFinite(Number(pendingSnapshot.meta?.run_id)) ? Number(pendingSnapshot.meta?.run_id) : null,
+      pendingRunId,
       source: 'paper_broker_reconciliation',
     })
 
@@ -1699,5 +1883,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     await markPendingBuyExecutionEvents(env, today, pendingBuys, executionEvents, { stage: 'intraday_check', execution_events: executionAuditEvents })
   } else if (stateChanged) {
     await persistPendingBuyActiveState(env, today, pendingBuys, { stage: 'intraday_check', execution_events: executionAuditEvents })
+  } else if (executionAuditEvents.length > 0) {
+    await recordPendingBuyAuditOnly(env, today, pendingRunId, 'intraday_check', executionAuditEvents)
   }
 }

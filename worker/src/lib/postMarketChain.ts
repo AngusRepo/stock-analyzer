@@ -171,7 +171,6 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
-    results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
@@ -179,8 +178,12 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'strategy-learning'))
   }
+
+  // Strategy learning is evidence materialization, not a live trading mutation.
+  // Historical reruns need it so strategy_decision_log can explain family/variant
+  // ownership for the replayed business date.
+  results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
 }

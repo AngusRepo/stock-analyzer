@@ -58,25 +58,11 @@ export interface ScoreV2Payload {
   reasonVariants?: Record<string, any>
 }
 
-export interface LegacyScoreProjection {
-  score: number
-  ml_score: number
-  chip_score: number
-  tech_score: number
-  momentum_score: number
-  score_components: string
-}
-
 export interface ScoreV2StorageRow {
   score_components?: unknown
-  chip_score?: unknown
-  tech_score?: unknown
-  momentum_score?: unknown
-  ml_score?: unknown
-  score?: unknown
 }
 
-export type ScoreV2SnapshotSource = 'score_v2' | 'storage_projection'
+export type ScoreV2SnapshotSource = 'score_v2'
 
 export interface ScoreV2Snapshot {
   source: ScoreV2SnapshotSource
@@ -201,21 +187,6 @@ function parseScoreV2Payload(value: unknown): ScoreV2Payload | null {
   }
 }
 
-function buildStorageProjection(row: ScoreV2StorageRow): ScoreV2Payload {
-  const legacyTech = finiteNumber(row.tech_score) ?? 0
-  const legacyMomentum = finiteNumber(row.momentum_score) ?? 0
-  return buildScoreV2Components({
-    mlEdge: rescale(row.ml_score, 30, SCORE_V2_WEIGHTS.mlEdge),
-    chipFlow: rescale(row.chip_score, 40, SCORE_V2_WEIGHTS.chipFlow),
-    technicalStructure: rescale(legacyTech + legacyMomentum, 50, SCORE_V2_WEIGHTS.technicalStructure),
-    technicalBreakdown: {
-      trendStructure: rescale(legacyTech, 30, 7),
-      volumeConfirmation: rescale(legacyMomentum, 20, 6),
-    },
-    reasons: ['score_v2_storage_projection'],
-  })
-}
-
 function pct(value: number, total: number): number {
   if (!Number.isFinite(total) || total <= 0) return 0
   return Math.round((value / total) * 100) / 100
@@ -242,19 +213,14 @@ export function buildScoreV2Components(input: ScoreV2Input): ScoreV2Payload {
   }
 }
 
-export function readScoreV2Snapshot(row: any): ScoreV2Snapshot | null {
-  if (!row || typeof row !== 'object') return null
+export function readScoreV2Snapshot(row: ScoreV2StorageRow): ScoreV2Snapshot | null {
   const canonical = parseScoreV2Payload(row.score_components)
-  const payload = canonical ?? buildStorageProjection(row)
-  const storageScore = finiteNumber(row.score)
-  const finalScore = canonical
-    ? payload.finalScore ?? payload.total
-    : storageScore ?? payload.total
-  const alphaAdjustment = canonical
-    ? payload.alphaAdjustment ?? round1(finalScore - payload.total)
-    : round1(finalScore - payload.total)
+  if (!canonical) return null
+  const payload = canonical
+  const finalScore = payload.finalScore ?? payload.total
+  const alphaAdjustment = payload.alphaAdjustment ?? round1(finalScore - payload.total)
   return {
-    source: canonical ? 'score_v2' : 'storage_projection',
+    source: 'score_v2',
     payload,
     components: payload.components,
     total: payload.total,
@@ -267,18 +233,6 @@ export function readScoreV2Snapshot(row: any): ScoreV2Snapshot | null {
     ...(payload.alphaReason ? { alphaReason: payload.alphaReason } : {}),
     ...(payload.chipEvidence ? { chipEvidence: payload.chipEvidence } : {}),
     ...(payload.reasonVariants ? { reasonVariants: payload.reasonVariants } : {}),
-  }
-}
-
-export function projectScoreV2ToLegacy(payload: ScoreV2Payload): LegacyScoreProjection {
-  const volumeConfirmation = payload.technicalBreakdown?.volumeConfirmation ?? 0
-  return {
-    score: payload.finalScore ?? payload.total,
-    ml_score: payload.components.mlEdge,
-    chip_score: payload.components.chipFlow,
-    tech_score: payload.components.technicalStructure,
-    momentum_score: clampScore(volumeConfirmation, 20),
-    score_components: JSON.stringify(payload),
   }
 }
 

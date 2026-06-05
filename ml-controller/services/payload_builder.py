@@ -21,6 +21,14 @@ from services.market_segment_policy import policy_for_segment
 
 logger = logging.getLogger(__name__)
 
+DAILY_RECOMMENDATION_PIPELINE_COLUMNS = (
+    "id, date, stock_id, symbol, name, sector, industry, rank, score, signal, confidence, "
+    "reason, watch_points, has_buy_signal, current_price, foreign_net_5d, trust_net_5d, "
+    "rsi14, macd_hist, sector_rank, "
+    "market_segment, recommendation_lane, eligible_for_ml, eligible_for_pending_buy, "
+    "alpha_context, alpha_allocation, ml_vote_summary, score_components"
+)
+
 
 def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, float]:
     """Build legacy PredictRequest lifecycle_weights from model_pool.json.

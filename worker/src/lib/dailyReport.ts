@@ -3,7 +3,12 @@ import { sendReportToChannels, type DiscordEmbed } from './notify'
 import { formatPendingBuyBriefing } from './pendingBuyBriefingSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
-import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
+import {
+  readScoreV2Snapshot,
+  serializeScoreV2Snapshot,
+  type ScoreV2SnapshotSummary,
+  type ScoreV2StorageRow,
+} from './scoreV2Taxonomy'
 
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -31,13 +36,16 @@ function safeParseJSON(value: string | null | undefined): any {
 
 function hasScoreEvidence(row: Record<string, unknown>): boolean {
   return Boolean(row.score_components)
-    || ['score', 'ml_score', 'chip_score', 'tech_score', 'momentum_score']
-      .some((key) => Number.isFinite(Number(row[key])))
+}
+
+export function recommendationReportScoreV2(row: ScoreV2StorageRow): ScoreV2SnapshotSummary | null {
+  if (!hasScoreEvidence(row as Record<string, unknown>)) return null
+  const snapshot = readScoreV2Snapshot(row)
+  return snapshot ? serializeScoreV2Snapshot(snapshot) : null
 }
 
 export function recommendationReportScore(row: ScoreV2StorageRow): number | null {
-  if (!hasScoreEvidence(row as Record<string, unknown>)) return null
-  return readScoreV2Snapshot(row).finalScore
+  return recommendationReportScoreV2(row)?.finalScore ?? null
 }
 
 function riskColor(level: string): number {
@@ -108,7 +116,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   embeds.push({
     title: 'ML 訊號總覽',
     color: 0x3498db,
-    description: `${totalStocks} 檔完成 ensemble 判斷，採 8 alpha models + state-space overlays 治理。`,
+    description: `${totalStocks} 檔完成 ensemble 判斷，採 10 formal alpha slots + state-space overlays 治理。`,
     fields: [
       { name: 'BUY', value: `${buyCount?.cnt ?? 0} 檔 | 平均信心 ${fmtPct(buyCount?.avg_conf)}`, inline: true },
       { name: 'HOLD', value: `${holdCount?.cnt ?? 0} 檔`, inline: true },
@@ -175,19 +183,24 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   }
 
   const { results: recs } = await env.DB.prepare(`
-    SELECT symbol, name, sector, score, signal, confidence, reason,
-           score_components, ml_score, chip_score, tech_score,
-           COALESCE(momentum_score, 0) AS momentum_score
+    SELECT symbol, name, sector, signal, confidence, reason,
+           score_components
       FROM daily_recommendations
      WHERE date=? AND has_buy_signal=1
-     ORDER BY score DESC
+     ORDER BY CASE WHEN json_valid(score_components) THEN
+       COALESCE(
+         CAST(json_extract(score_components, '$.finalScore') AS REAL),
+         CAST(json_extract(score_components, '$.total') AS REAL),
+         0
+       ) ELSE 0 END DESC
   `).bind(reportDate).all<any>()
 
   if (recs?.length) {
     const recText = recs.slice(0, 15).map((row: any, index: number) => {
       const reason = String(row.reason ?? '').slice(0, 120) || '尚無理由'
-      const score = recommendationReportScore(row)
-      return `${index + 1}. ${row.symbol} ${row.name} (${row.sector ?? '未分類'}) | 分數 ${fmtNumber(score)} | 信心 ${fmtPct(row.confidence)}\n${reason}`
+      const scoreV2 = recommendationReportScoreV2(row)
+      const scoreSource = scoreV2 ? 'Score V2' : 'Score V2 missing'
+      return `${index + 1}. ${row.symbol} ${row.name} (${row.sector ?? '未分類'}) | ${scoreSource} ${fmtNumber(scoreV2?.finalScore)} | 信心 ${fmtPct(row.confidence)}\n${reason}`
     }).join('\n\n')
     embeds.push({ title: '每日推薦摘要', color: 0xf39c12, description: recText })
   }
@@ -253,7 +266,7 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
   `).bind(reportDate).all<any>().catch(() => ({ results: [] as any[] }))
 
   embeds.push({
-    description: '_StockVision ML Pipeline | 8 alpha models | state-space overlays | governed feature set_',
+    description: '_StockVision ML Pipeline | 10 formal alpha slots | state-space overlays | governed feature set_',
     color: 0x95a5a6,
     footer: { text: `StockVision v12 | ${totalStocks} stocks | ${reportDate}` },
   })
@@ -307,15 +320,18 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
           total_models: Array.isArray(models) ? models.length : 0,
         }
       })),
-      JSON.stringify((recs ?? []).map((row: any) => ({
-        symbol: row.symbol,
-        name: row.name,
-        sector: row.sector,
-        score: recommendationReportScore(row),
-        score_components: safeParseJSON(row.score_components) ?? row.score_components ?? null,
-        confidence: row.confidence,
-        reason: row.reason,
-      }))),
+      JSON.stringify((recs ?? []).map((row: any) => {
+        const scoreV2 = recommendationReportScoreV2(row)
+        return {
+          symbol: row.symbol,
+          name: row.name,
+          sector: row.sector,
+          score: scoreV2?.finalScore ?? null,
+          score_v2: scoreV2,
+          confidence: row.confidence,
+          reason: row.reason,
+        }
+      })),
       snapshot ? JSON.stringify({
         total_value: snapshot.total_value,
         cumulative_return: snapshot.cumulative_return,

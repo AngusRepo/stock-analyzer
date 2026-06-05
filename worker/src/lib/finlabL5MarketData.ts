@@ -36,6 +36,44 @@ export interface L5QuoteQuality {
   }
 }
 
+export interface L5OrderBookPersistenceOptions {
+  minSamples?: number
+  minPositiveImbalanceRatio?: number
+  minAverageImbalance?: number
+  minPositiveImbalance?: number
+  maxAverageSpreadPct?: number
+  minSpreadCompressionPct?: number
+  minTopAskVolumeDropRatio?: number
+  minBidDepthGrowthRatio?: number
+  maxAskDepthGrowthRatio?: number
+}
+
+export interface L5OrderBookPersistence {
+  status: 'boost' | 'neutral' | 'degraded' | 'blocked'
+  reasons: string[]
+  metrics: {
+    samples: number
+    positiveImbalanceRatio: number | null
+    averageImbalance: number | null
+    averageSpreadPct: number | null
+    spreadCompressionPct: number | null
+    topAskVolumeDropRatio: number | null
+    bidDepthGrowthRatio: number | null
+    askDepthGrowthRatio: number | null
+    bestAskConsumedCount: number
+  }
+}
+
+export interface FinLabL5MarketDataSnapshot {
+  status: string | null
+  blockedReasons: string[]
+  envMissing: string[]
+  liveSubmitEnabled: boolean
+  canSubmitRealOrder: boolean
+  quotes: Map<string, FinLabL5Quote>
+  raw?: Record<string, unknown> | null
+}
+
 function finitePositive(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : null
@@ -110,6 +148,21 @@ function parseTimeMs(value: unknown): number | null {
 
 function sum(values: number[]): number {
   return values.reduce((acc, value) => acc + value, 0)
+}
+
+function finiteMetric(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function average(values: number[]): number | null {
+  if (!values.length) return null
+  return roundMetric(values.reduce((acc, value) => acc + value, 0) / values.length)
+}
+
+function depthRatio(first: number, last: number): number | null {
+  if (!Number.isFinite(first) || first <= 0 || !Number.isFinite(last)) return null
+  return roundMetric((last - first) / first)
 }
 
 export function normalizeFinLabL5Quote(
@@ -190,6 +243,135 @@ export function quoteQualityFromL5(
   }
 }
 
+export function evaluateL5OrderBookPersistence(
+  quotes: Array<FinLabL5Quote | null | undefined>,
+  options: L5OrderBookPersistenceOptions = {},
+): L5OrderBookPersistence {
+  const thresholds = {
+    minSamples: Math.max(2, Math.floor(options.minSamples ?? 3)),
+    minPositiveImbalanceRatio: options.minPositiveImbalanceRatio ?? 0.6,
+    minAverageImbalance: options.minAverageImbalance ?? 0.05,
+    minPositiveImbalance: options.minPositiveImbalance ?? 0.03,
+    maxAverageSpreadPct: options.maxAverageSpreadPct ?? 0.006,
+    minSpreadCompressionPct: options.minSpreadCompressionPct ?? 0,
+    minTopAskVolumeDropRatio: options.minTopAskVolumeDropRatio ?? 0.2,
+    minBidDepthGrowthRatio: options.minBidDepthGrowthRatio ?? 0,
+    maxAskDepthGrowthRatio: options.maxAskDepthGrowthRatio ?? 0.15,
+  }
+  const clean = quotes
+    .filter((quote): quote is FinLabL5Quote => !!quote)
+    .filter((quote) => quote.bestBid != null && quote.bestAsk != null)
+  const emptyMetrics: L5OrderBookPersistence['metrics'] = {
+    samples: clean.length,
+    positiveImbalanceRatio: null,
+    averageImbalance: null,
+    averageSpreadPct: null,
+    spreadCompressionPct: null,
+    topAskVolumeDropRatio: null,
+    bidDepthGrowthRatio: null,
+    askDepthGrowthRatio: null,
+    bestAskConsumedCount: 0,
+  }
+  if (clean.length < thresholds.minSamples) {
+    return {
+      status: 'neutral',
+      reasons: ['insufficient_l5_persistence_samples'],
+      metrics: emptyMetrics,
+    }
+  }
+
+  const imbalances = clean
+    .map((quote) => finiteMetric(quote.orderBookImbalance))
+    .filter((value): value is number => value != null)
+  const spreads = clean
+    .map((quote) => finiteMetric(quote.spreadPct))
+    .filter((value): value is number => value != null && value >= 0)
+  const first = clean[0]
+  const last = clean[clean.length - 1]
+  const firstSpread = finiteMetric(first.spreadPct)
+  const lastSpread = finiteMetric(last.spreadPct)
+  const firstTopAsk = finiteMetric(first.askVolumes[0]) ?? 0
+  const lastTopAsk = finiteMetric(last.askVolumes[0]) ?? 0
+  const firstBidDepth = sum(first.bidVolumes)
+  const lastBidDepth = sum(last.bidVolumes)
+  const firstAskDepth = sum(first.askVolumes)
+  const lastAskDepth = sum(last.askVolumes)
+  const positiveImbalanceRatio = imbalances.length
+    ? roundMetric(imbalances.filter((value) => value >= thresholds.minPositiveImbalance).length / imbalances.length)
+    : null
+  const averageImbalance = average(imbalances)
+  const averageSpreadPct = average(spreads)
+  const spreadCompressionPct = firstSpread != null && firstSpread > 0 && lastSpread != null
+    ? roundMetric((firstSpread - lastSpread) / firstSpread)
+    : null
+  const topAskVolumeDropRatio = firstTopAsk > 0
+    ? roundMetric((firstTopAsk - lastTopAsk) / firstTopAsk)
+    : null
+  const bidDepthGrowthRatio = depthRatio(firstBidDepth, lastBidDepth)
+  const askDepthGrowthRatio = depthRatio(firstAskDepth, lastAskDepth)
+  let bestAskConsumedCount = 0
+  for (let i = 1; i < clean.length; i += 1) {
+    const prev = clean[i - 1]
+    const curr = clean[i]
+    const prevAsk = finitePositive(prev.bestAsk)
+    const currAsk = finitePositive(curr.bestAsk)
+    const prevTop = finiteMetric(prev.askVolumes[0]) ?? 0
+    const currTop = finiteMetric(curr.askVolumes[0]) ?? 0
+    if (prevAsk != null && currAsk != null && currAsk >= prevAsk && prevTop > 0 && currTop < prevTop) {
+      bestAskConsumedCount += 1
+    }
+  }
+
+  const metrics: L5OrderBookPersistence['metrics'] = {
+    samples: clean.length,
+    positiveImbalanceRatio,
+    averageImbalance,
+    averageSpreadPct,
+    spreadCompressionPct,
+    topAskVolumeDropRatio,
+    bidDepthGrowthRatio,
+    askDepthGrowthRatio,
+    bestAskConsumedCount,
+  }
+  const failed: string[] = []
+  if (positiveImbalanceRatio != null && positiveImbalanceRatio < thresholds.minPositiveImbalanceRatio) {
+    failed.push('l5_imbalance_not_persistent')
+  }
+  if (averageImbalance != null && averageImbalance < thresholds.minAverageImbalance) {
+    failed.push('l5_average_imbalance_weak')
+  }
+  if (averageSpreadPct != null && averageSpreadPct > thresholds.maxAverageSpreadPct) {
+    failed.push('l5_average_spread_wide')
+  }
+  if (spreadCompressionPct != null && spreadCompressionPct < thresholds.minSpreadCompressionPct) {
+    failed.push('l5_spread_not_compressing')
+  }
+  if (askDepthGrowthRatio != null && askDepthGrowthRatio > thresholds.maxAskDepthGrowthRatio) {
+    failed.push('l5_ask_wall_growing')
+  }
+
+  const supportive = [
+    positiveImbalanceRatio != null && positiveImbalanceRatio >= thresholds.minPositiveImbalanceRatio,
+    averageImbalance != null && averageImbalance >= thresholds.minAverageImbalance,
+    spreadCompressionPct != null && spreadCompressionPct >= thresholds.minSpreadCompressionPct,
+    topAskVolumeDropRatio != null && topAskVolumeDropRatio >= thresholds.minTopAskVolumeDropRatio,
+    bidDepthGrowthRatio != null && bidDepthGrowthRatio >= thresholds.minBidDepthGrowthRatio,
+    bestAskConsumedCount > 0,
+  ].filter(Boolean).length
+
+  if (failed.includes('l5_average_spread_wide') || failed.includes('l5_average_imbalance_weak')) {
+    return { status: 'degraded', reasons: failed, metrics }
+  }
+  if (failed.length > 0) {
+    return { status: 'neutral', reasons: failed, metrics }
+  }
+  return {
+    status: supportive >= 4 ? 'boost' : 'neutral',
+    reasons: supportive >= 4 ? ['l5_persistent_bid_support'] : ['l5_persistence_neutral'],
+    metrics,
+  }
+}
+
 export function buildFinLabL5MarketDataDetail(quote: FinLabL5Quote | null): Record<string, unknown> {
   return {
     provider: quote?.provider ?? 'finlab_sinopac',
@@ -216,30 +398,38 @@ function truthyFlag(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
-export async function fetchFinLabL5MarketDataQuotes(
+function textArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean)
+}
+
+function emptyL5MarketDataSnapshot(status: string | null = null): FinLabL5MarketDataSnapshot {
+  return {
+    status,
+    blockedReasons: [],
+    envMissing: [],
+    liveSubmitEnabled: false,
+    canSubmitRealOrder: false,
+    quotes: new Map(),
+    raw: null,
+  }
+}
+
+export async function fetchFinLabL5MarketDataSnapshot(
   env: {
     ML_CONTROLLER_URL?: string
     ML_CONTROLLER_SECRET?: string
     FINLAB_L5_MARKET_DATA_ENABLED?: string
     FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN?: string
-    SHIOAJI_PROXY_URL?: string
-    PROXY_SERVICE_TOKEN?: string
-    SHIOAJI_L5_PROXY_FALLBACK_ENABLED?: string
   },
   symbols: string[],
-): Promise<Map<string, FinLabL5Quote>> {
-  const map = new Map<string, FinLabL5Quote>()
+): Promise<FinLabL5MarketDataSnapshot> {
+  const snapshot = emptyL5MarketDataSnapshot()
   const controllerUrl = env.ML_CONTROLLER_URL?.trim()
-  const proxyUrl = env.SHIOAJI_PROXY_URL?.trim()
   const marketDataEnabled = truthyFlag(env.FINLAB_L5_MARKET_DATA_ENABLED)
-  if (!marketDataEnabled || symbols.length === 0) return map
-
-  if (proxyUrl && truthyFlag(env.SHIOAJI_L5_PROXY_FALLBACK_ENABLED ?? 'true')) {
-    await fetchShioajiProxyOrderbookQuotes(env, symbols, map)
-    if (map.size === symbols.length) return map
-  }
-
-  if (!controllerUrl) return map
+  if (!marketDataEnabled) return emptyL5MarketDataSnapshot('disabled')
+  if (!controllerUrl) return emptyL5MarketDataSnapshot('missing_controller_url')
+  if (symbols.length === 0) return emptyL5MarketDataSnapshot('empty_symbols')
 
   try {
     const route = '/finlab/execution/l5-market-data'
@@ -255,50 +445,44 @@ export async function fetchFinLabL5MarketDataQuotes(
       }),
       signal: AbortSignal.timeout(5000),
     })
-    if (!res.ok) return map
+    if (!res.ok) return emptyL5MarketDataSnapshot(`http_${res.status}`)
     const payload = await res.json() as any
-    if (payload?.can_submit_real_order === true || payload?.live_submit_enabled === true) return map
+    snapshot.status = payload?.status != null ? String(payload.status) : null
+    snapshot.blockedReasons = textArray(payload?.blocked_reasons)
+    snapshot.envMissing = textArray(payload?.env_status?.missing)
+    snapshot.liveSubmitEnabled = payload?.live_submit_enabled === true
+    snapshot.canSubmitRealOrder = payload?.can_submit_real_order === true
+    snapshot.raw = payload && typeof payload === 'object'
+      ? {
+        schema_version: payload.schema_version,
+        allowed_use: payload.allowed_use,
+        status: payload.status,
+        blocked_reasons: payload.blocked_reasons,
+        env_status: payload.env_status,
+      }
+      : null
+    if (snapshot.canSubmitRealOrder || snapshot.liveSubmitEnabled) return snapshot
     const quotes = payload?.quotes && typeof payload.quotes === 'object' ? payload.quotes : {}
     for (const [symbol, quotePayload] of Object.entries(quotes)) {
       const quote = normalizeFinLabL5Quote(symbol, quotePayload as Record<string, unknown>)
-      if (quote) map.set(symbol, quote)
+      if (quote) snapshot.quotes.set(symbol, quote)
     }
   } catch (error) {
     console.warn(`[FinLabL5MarketData] fetch failed: ${error instanceof Error ? error.message : String(error)}`)
+    return emptyL5MarketDataSnapshot('fetch_failed')
   }
-  return map
+  return snapshot
 }
 
-async function fetchShioajiProxyOrderbookQuotes(
+export async function fetchFinLabL5MarketDataQuotes(
   env: {
-    SHIOAJI_PROXY_URL?: string
-    PROXY_SERVICE_TOKEN?: string
+    ML_CONTROLLER_URL?: string
+    ML_CONTROLLER_SECRET?: string
+    FINLAB_L5_MARKET_DATA_ENABLED?: string
+    FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN?: string
   },
   symbols: string[],
-  out: Map<string, FinLabL5Quote>,
-): Promise<void> {
-  const proxyUrl = env.SHIOAJI_PROXY_URL?.trim()
-  if (!proxyUrl) return
-  const base = proxyUrl.replace(/\/$/, '')
-  await Promise.all(symbols.map(async (symbol) => {
-    if (out.has(symbol)) return
-    try {
-      const res = await fetch(`${base}/orderbook/${encodeURIComponent(symbol)}`, {
-        headers: env.PROXY_SERVICE_TOKEN ? { Authorization: `Bearer ${env.PROXY_SERVICE_TOKEN}` } : {},
-        signal: AbortSignal.timeout(2500),
-      })
-      if (!res.ok) return
-      const payload = await res.json() as Record<string, unknown>
-      if (payload?.status === 'no_depth') return
-      const quote = normalizeFinLabL5Quote(symbol, {
-        ...payload,
-        provider: 'shioaji_proxy_orderbook',
-        status: payload.status ?? 'ok',
-        source_time: payload.updated_at,
-      })
-      if (quote) out.set(symbol, quote)
-    } catch (error) {
-      console.warn(`[FinLabL5MarketData] shioaji-proxy orderbook failed ${symbol}: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }))
+): Promise<Map<string, FinLabL5Quote>> {
+  const snapshot = await fetchFinLabL5MarketDataSnapshot(env, symbols)
+  return snapshot.quotes
 }

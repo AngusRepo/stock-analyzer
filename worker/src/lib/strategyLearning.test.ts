@@ -1,4 +1,5 @@
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
+import * as fs from 'node:fs'
 import {
   buildStrategyAdaptivePolicyState,
   buildStrategyDecisionRows,
@@ -14,7 +15,25 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS[0]
+  const source = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
+  assert(
+    source.includes('INSERT OR REPLACE INTO strategy_decision_log'),
+    'strategy decision materialization must be idempotent across historical replay runs',
+  )
+  assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE'), 'strategy learning replay writes must be chunked for D1 production latency')
+  assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
+  assert(
+    source.includes('demoteStaleActiveDiscoveryStrategySpecs') &&
+      source.includes("SET status='research'") &&
+      source.includes("strategy_id NOT IN (${placeholders})") &&
+      source.includes("source_refs_json LIKE '%finlab_ai_skill%'") &&
+      source.includes('demoted_stale_active'),
+    'strategy registry seeding must demote stale FinLab AI discovery active rows that are not source-approved production specs',
+  )
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const row = strategySpecToRegistryRow(spec, '2026-05-19T00:00:00.000Z')
   const restored = registryRowToStrategySpec(row)
   assert(restored.id === spec.id, 'registry conversion should preserve strategy id')
@@ -24,17 +43,50 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'finlab_ai_skill_rsi_volume_reclaim_v1')
+  assert(spec != null, 'RSI volume reclaim default spec should exist')
+  const registryRow = strategySpecToRegistryRow(spec!, '2026-06-03T00:00:00.000Z')
+  const restored = registryRowToStrategySpec(registryRow)
+  assert(
+    restored.familyId === 'TREND_RECLAIM_CONTINUATION',
+    'registry conversion must preserve default family governance instead of re-inferring volume reclaim as volatility',
+  )
+  assert(restored.ownerType === 'strategy', 'registry conversion must preserve production ownerType for default active specs')
+  assert(restored.variantId === spec!.variantId, 'registry conversion must preserve variantId for default active specs')
+}
+
+{
+  const staleLegacyRow = strategySpecToRegistryRow({
+    ...DEFAULT_STRATEGY_SPECS[0],
+    status: 'shadow' as const,
+    thresholds: { minSeedScore: 58, minTechScore: 18, minMomentumScore: 6, minPrice: 10 },
+  }, '2026-05-21T00:00:00.000Z', {
+    sourceRefs: ['codex_seed_2026_05_22'],
+  })
+  const restored = registryRowToStrategySpec(staleLegacyRow)
+  assert(restored.status === 'active', 'stale legacy default registry row must not override newer active default spec')
+  assert(restored.thresholds.minSeedScore == null, 'stale legacy default registry row must not keep Score V2 seed threshold')
+  assert(restored.thresholds.minCloseAboveMa20Pct === 0, 'stale legacy default registry row should restore raw active threshold')
+}
+
+{
   const rows = buildStrategyDecisionRows(
     '2026-05-19',
     [
       {
         symbol: '2330',
         name: 'TSMC',
-        score: 70,
-        chip_score: 25,
-        tech_score: 24,
-        momentum_score: 12,
         current_price: 900,
+        raw_signals: {
+          closeAboveMa20Pct: 0.03,
+          closeAboveMa60Pct: 0.02,
+          volumeExpansion20: 1.25,
+          return20d: 0.06,
+          foreignTrustNet5d: 1000,
+          brokerCount: 8,
+          revenueGrowthYoY: 8,
+          roe: 12,
+        },
       },
     ],
     DEFAULT_STRATEGY_SPECS,
@@ -52,44 +104,28 @@ function assert(condition: unknown, message: string): void {
       {
         symbol: '2330',
         name: 'TSMC',
-        score: 10,
-        chip_score: 1,
-        tech_score: 1,
-        momentum_score: 1,
         current_price: 900,
-        score_components: JSON.stringify({
-          version: 'score_v2',
-          finalScore: 70,
-          components: {
-            mlEdge: 12,
-            chipFlow: 24,
-            technicalStructure: 22,
-            fundamentalQuality: 10,
-            newsTheme: 2,
-          },
-          technicalBreakdown: {
-            trendStructure: 6,
-            volatilityStructure: 4,
-            reversalExtreme: 4,
-            volumeConfirmation: 3,
-            executionRisk: 1,
-          },
-          legacyComponents: {
-            screenerMomentum: 10,
-          },
-        }),
+        raw_signals: {
+          closeAboveMa20Pct: 0.03,
+          closeAboveMa60Pct: 0.02,
+          volumeExpansion20: 1.25,
+          return20d: 0.06,
+          foreignTrustNet5d: 1000,
+          brokerCount: 8,
+          revenueGrowthYoY: 8,
+          roe: 12,
+        },
       },
     ],
     DEFAULT_STRATEGY_SPECS,
     { nowIso: '2026-05-19T00:00:00.000Z' },
   )
   const matched = rows.find((row) => row.matched === 1)
-  assert(matched != null, 'strategy learning should match by canonical Score V2 when legacy fields are stale')
+  assert(matched != null, 'strategy learning should match by raw strategy signals')
   const context = JSON.parse(matched.context_json)
-  assert(context.candidate.score_v2.source === 'score_v2', 'decision context should record Score V2 as the strategy score source')
-  assert(context.candidate.score_v2.finalScore === 70, 'decision context should persist canonical strategy seed score')
-  assert(context.candidate.score_v2.chipFlow === 24, 'decision context should persist Score V2 chipFlow')
-  assert(context.candidate.score_v2.technicalStructure === 22, 'decision context should persist Score V2 technicalStructure')
+  assert(context.candidate.raw_signals.volumeExpansion20 === 1.25, 'decision context should persist raw volume evidence')
+  assert(context.candidate.raw_signals.closeAboveMa20Pct === 0.03, 'decision context should persist raw price structure evidence')
+  assert(!('score_v2' in context.candidate), 'decision context must not use Score V2 as L1 strategy evidence')
   assert(!('chip_score' in context.candidate), 'decision context must not persist legacy chip_score')
   assert(!('tech_score' in context.candidate), 'decision context must not persist legacy tech_score')
   assert(!('momentum_score' in context.candidate), 'decision context must not persist legacy momentum_score')
@@ -125,7 +161,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS[0]
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
     version: 'strategy-learning-v1',
     date: '2026-05-19',
@@ -162,7 +198,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS[0]
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
     version: 'strategy-learning-v1',
     date: '2026-05-19',
@@ -216,4 +252,37 @@ function assert(condition: unknown, message: string): void {
   assert(gate[0].recommended_stage === 'L3_production_allocation', 'ready candidate strategy should request L3')
   assert(gate[0].l3_requires_wei_approval === true, 'L3 production allocation must require Wei approval')
   assert(gate[0].production_effect === false, 'L3 gate is still metadata until approved')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'active' as const }
+  const summary = {
+    version: 'strategy-learning-v1',
+    date: '2026-05-19',
+    spec_source: 'registry',
+    specs: [{
+      ...spec,
+      learning: {
+        decisions: 90,
+        matched: 20,
+        match_rate: 0.222222,
+        samples: 45,
+        hit_rate: 0.44,
+        avg_return_pct: -0.006,
+        max_drawdown_pct: -0.11,
+        status: 'learning',
+      },
+    }],
+    promotion_gate: [],
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].decision === 'active_cooldown', 'weak active strategy evidence should trigger cooldown')
+  assert(gate[0].recommended_next_status === 'candidate', 'active cooldown should recommend demotion to candidate')
+  assert(gate[0].recommended_stage === 'L2_paper_active', 'cooldown should move weak active strategies back to paper-active review')
+  assert(gate[0].missing_evidence.includes('active_avg_return_not_positive'), 'cooldown should expose weak return evidence')
+
+  const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
+  assert(policy.strategy_weights[spec.id] === 0.2, 'cooldown strategies should be explicitly down-weighted instead of falling back to default weight')
+  assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.12, 'cooldown should tighten raw-signal thresholds')
 }

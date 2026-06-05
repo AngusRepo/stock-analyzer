@@ -243,6 +243,19 @@ adminReadRoutes.get('/api/admin/strategy/policy-state', async (c) => {
   })
 })
 
+adminReadRoutes.get('/api/admin/entry-model-v2/replay/latest', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { getLatestEntryModelReplayReport } = await import('../lib/entryModelReplay')
+  const latest = await getLatestEntryModelReplayReport(c.env.DB)
+  return c.json({
+    success: true,
+    mode: 'read_only',
+    latest,
+  })
+})
+
 adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

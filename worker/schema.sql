@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS technical_indicators (
   cci20        REAL,
   volume_weighted_rsi14 REAL,
   volume_momentum_divergence_13_27_10 REAL,
+  squeeze_on REAL,
+  squeeze_release REAL,
+  squeeze_momentum REAL,
+  obv_temperature_60 REAL,
+  adaptive_rsi_midline_50 REAL,
+  adaptive_rsi_upper_50 REAL,
+  adaptive_rsi_lower_50 REAL,
+  adaptive_rsi_overbought REAL,
+  adaptive_rsi_oversold REAL,
   bb_upper     REAL, bb_mid REAL, bb_lower REAL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(stock_id, date)
@@ -425,6 +434,9 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   foreign_net     REAL,     -- 外資淨買賣（億）
   trust_net       REAL,     -- 投信淨買賣（億）
   total_net       REAL,     -- 合計法人買賣（億）
+  turnover_value  REAL,
+  turnover_share  REAL,
+  turnover_share_delta REAL,
   avg_rsi         REAL,     -- 族群平均 RSI
   avg_momentum_5d REAL,     -- 族群平均5日動能
   stock_count     INTEGER,  -- 族群股票數
@@ -566,6 +578,10 @@ CREATE TABLE IF NOT EXISTS strategy_spec_registry (
   status                   TEXT NOT NULL CHECK(status IN ('research','shadow','candidate','active','retired')),
   owner                    TEXT NOT NULL DEFAULT 'strategy',
   alpha_bucket             TEXT NOT NULL,
+  family_id                TEXT NOT NULL DEFAULT 'TREND_RECLAIM_CONTINUATION',
+  variant_id               TEXT NOT NULL DEFAULT '',
+  owner_type               TEXT NOT NULL DEFAULT 'strategy',
+  promotion_status         TEXT NOT NULL DEFAULT 'production',
   supported_regimes_json   TEXT NOT NULL DEFAULT '[]',
   thesis                   TEXT NOT NULL,
   thresholds_json          TEXT NOT NULL DEFAULT '{}',
@@ -580,6 +596,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_status
   ON strategy_spec_registry(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_bucket
   ON strategy_spec_registry(alpha_bucket, status);
+CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_family
+  ON strategy_spec_registry(family_id, status);
 
 CREATE TABLE IF NOT EXISTS strategy_decision_log (
   decision_id              TEXT PRIMARY KEY,
@@ -651,6 +669,76 @@ CREATE TABLE IF NOT EXISTS scheduler_locks (
 );
 CREATE INDEX IF NOT EXISTS idx_scheduler_locks_owner_date
   ON scheduler_locks(owner, run_date, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS parameter_candidate_registry (
+  candidate_id          TEXT PRIMARY KEY,
+  source                TEXT NOT NULL,
+  config_hash           TEXT,
+  sandbox_id            TEXT,
+  cadence               TEXT,
+  run_id                TEXT,
+  status                TEXT NOT NULL CHECK(status IN (
+    'NO_CANDIDATE',
+    'SHADOW_COLLECTING',
+    'VALIDATION_BLOCKED',
+    'EVIDENCE_INSUFFICIENT',
+    'NOT_PROMOTION_READY',
+    'INFRA_BLOCKED',
+    'PROMOTION_READY',
+    'APPROVAL_REQUIRED',
+    'PROD_ACTIVE'
+  )),
+  metadata_json         TEXT,
+  latest_evidence_json  TEXT,
+  promotion_packet_id   TEXT,
+  created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_registry_status
+  ON parameter_candidate_registry(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_registry_packet
+  ON parameter_candidate_registry(promotion_packet_id);
+
+CREATE TABLE IF NOT EXISTS parameter_candidate_evidence (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id          TEXT NOT NULL,
+  evidence_type         TEXT NOT NULL,
+  decision              TEXT NOT NULL CHECK(decision IN ('PASS','FAIL')),
+  evidence_json         TEXT,
+  promotion_packet_id   TEXT,
+  created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_evidence_candidate
+  ON parameter_candidate_evidence(candidate_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS parameter_candidate_events (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id          TEXT,
+  event_type            TEXT NOT NULL,
+  detail_json           TEXT,
+  created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_parameter_candidate_events_candidate
+  ON parameter_candidate_events(candidate_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS entry_model_replay_reports (
+  report_id                TEXT PRIMARY KEY,
+  version                  TEXT NOT NULL,
+  start_date               TEXT NOT NULL,
+  end_date                 TEXT NOT NULL,
+  loaded_cases             INTEGER NOT NULL DEFAULT 0,
+  decision                 TEXT NOT NULL,
+  passed                   INTEGER NOT NULL DEFAULT 0,
+  failed_gates_json        TEXT NOT NULL DEFAULT '[]',
+  summary_json             TEXT NOT NULL DEFAULT '{}',
+  promotion_gate_json      TEXT NOT NULL DEFAULT '{}',
+  report_json              TEXT NOT NULL DEFAULT '{}',
+  created_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_entry_model_replay_reports_date
+  ON entry_model_replay_reports(start_date DESC, end_date DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_entry_model_replay_reports_gate
+  ON entry_model_replay_reports(passed, decision, created_at DESC);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 注意：增量 Schema 變更請使用獨立 migration 檔案執行，不要放在這裡

@@ -582,3 +582,51 @@ adminWriteRoutes.post('/api/admin/strategy/policy-state/refresh', async (c) => {
       : 'Strategy adaptive policy shadow state persisted; production strategy remains unchanged until explicit Wei approval and promotion wiring.',
   })
 })
+
+adminWriteRoutes.post('/api/admin/entry-model-v2/replay', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = {
+    start_date?: string
+    end_date?: string
+    limit?: number
+    symbols?: string[]
+    min_rank?: number
+    max_rank?: number
+    dry_run?: boolean
+  }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const startDate = body.start_date ?? c.req.query('start_date') ?? c.req.query('date') ?? twToday()
+  const endDate = body.end_date ?? c.req.query('end_date') ?? c.req.query('date') ?? startDate
+  const dryRun = body.dry_run !== false
+  if (!dryRun && c.req.header('X-Confirm-Entry-Model-Replay') !== 'true') {
+    return c.json({
+      error: 'Entry Model V2 replay persistence requires header X-Confirm-Entry-Model-Replay: true',
+      hint: 'Run dry_run first. This stores replay evidence only; it never promotes entry gates, deploys, retrains, or trades.',
+    }, 400)
+  }
+
+  const {
+    buildEntryModelReplayReportFromD1,
+    persistEntryModelReplayReport,
+  } = await import('../lib/entryModelReplay')
+  const report = await buildEntryModelReplayReportFromD1(c.env.DB, {
+    startDate,
+    endDate,
+    limit: body.limit,
+    symbols: Array.isArray(body.symbols) ? body.symbols : undefined,
+    minRank: body.min_rank,
+    maxRank: body.max_rank,
+  })
+  const persisted = dryRun ? null : await persistEntryModelReplayReport(c.env.DB, report)
+  return c.json({
+    success: true,
+    mode: dryRun ? 'dry_run' : 'persisted',
+    persisted,
+    report,
+    note: dryRun
+      ? 'dry_run only; POST dry_run=false with X-Confirm-Entry-Model-Replay:true to persist replay evidence'
+      : 'Entry Model V2 replay report persisted; promotion gate remains evidence-only until explicit production approval.',
+  })
+})

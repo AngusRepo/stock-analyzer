@@ -21,6 +21,8 @@ import {
   runWeeklyBacktest as runWeeklyBacktestWorkflow,
   runWeeklyMonteCarlo as runWeeklyMonteCarloWorkflow,
   runWeeklyPBO as runWeeklyPboWorkflow,
+  runWeeklyModelArtifactCandidateValidation as runWeeklyModelArtifactCandidateValidationWorkflow,
+  runWeeklyModelArtifactValidation as runWeeklyModelArtifactValidationWorkflow,
   runWeeklyAlphaQuality as runWeeklyAlphaQualityWorkflow,
   runMonthlyOptunaResearch as runMonthlyOptunaResearchWorkflow,
   runOptunaQueueProcessor as runOptunaQueueProcessorWorkflow,
@@ -37,6 +39,7 @@ import { adminConfigCoreRoutes } from './routes/adminConfigCoreRoutes'
 import { adminConfigWorkflowRoutes } from './routes/adminConfigWorkflowRoutes'
 import { adminConfigLifecycleRoutes } from './routes/adminConfigLifecycleRoutes'
 import { adminOptunaRoutes } from './routes/adminOptunaRoutes'
+import { finlabExecutionLoopRoutes } from './routes/finlabExecutionLoopRoutes'
 import { buildAdminTriggerTaskMap } from './lib/adminTriggerTaskMap'
 import { createAdminTriggerRoutes } from './routes/adminTriggerRoutes'
 import { buildWorkerHealthPayload } from './lib/runtimeVersion'
@@ -63,6 +66,8 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runWeeklyBacktest: () => runWeeklyBacktestWorkflow(c.env),
     runWeeklyMonteCarlo: () => runWeeklyMonteCarloWorkflow(c.env),
     runWeeklyPBO: () => runWeeklyPboWorkflow(c.env),
+    runWeeklyModelArtifactCandidateValidation: () => runWeeklyModelArtifactCandidateValidationWorkflow(c.env),
+    runWeeklyModelArtifactValidation: () => runWeeklyModelArtifactValidationWorkflow(c.env),
     runWeeklyAlphaQuality: () => runWeeklyAlphaQualityWorkflow(c.env),
     runWeeklyLifecycleCheck: () => runWeeklyLifecycleCheckWorkflow(c.env),
     runWeeklyOptunaResearch: (runDate?: string) => runWeeklyOptunaResearchWorkflow(c.env, runDate),
@@ -138,6 +143,7 @@ app.route('/',                    adminConfigCoreRoutes)
 app.route('/',                    adminConfigWorkflowRoutes)
 app.route('/',                    adminConfigLifecycleRoutes)
 app.route('/',                    adminOptunaRoutes)
+app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)
 app.get('/api/health', (c) => c.json(buildWorkerHealthPayload()))
 export default {

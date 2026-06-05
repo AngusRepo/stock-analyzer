@@ -24,8 +24,7 @@ import {
 import type { Bindings } from '../types'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import {
-  applyPendingBuyDebateFailure,
-  isPendingBuyTerminal,
+  applyPendingBuyExecutionStatusUpdates,
 } from './pendingBuyExecutionState'
 import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring'
 import { checkP1Mdd } from './riskChecks/p1Mdd'
@@ -36,7 +35,12 @@ import { checkP4Breadth } from './riskChecks/p4Breadth'
 import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
 import { checkP7Streak } from './riskChecks/p7Streak'
-import { readScoreV2Snapshot } from './scoreV2Taxonomy'
+import { readScoreV2Snapshot, serializeScoreV2Snapshot } from './scoreV2Taxonomy'
+import {
+  batchLoadOhlcvTradePlanLevels,
+  formatOhlcvTradePlanWatchPoint,
+  resolveOhlcvEntryPlan,
+} from './ohlcvTradePlanLevels'
 
 type CircuitBreakerState = _CBState
 
@@ -44,13 +48,13 @@ interface BuyRecommendationRow {
   stock_id: number | null
   symbol: string
   name: string | null
-  signal: string
+  signal: string | null
   confidence: number
+  has_buy_signal?: number | null
+  eligible_for_ml?: number | null
+  eligible_for_pending_buy?: number | null
   reason: string | null
-  chip_score: number | null
-  tech_score: number | null
-  ml_score: number | null
-  score: number | null
+  score_components: unknown
   ml_entry_price: number | null
   ml_stop_loss: number | null
   ml_target1: number | null
@@ -60,11 +64,14 @@ interface BuyRecommendationRow {
   latest_avg_price: number | null
   market: string | null
   forecast_data?: string | null
+  signal_source?: string | null
+  alpha_allocation?: string | null
   watch_points?: unknown
 }
 
 interface QuadrantInfo {
   theme: string
+  classification: string
   quadrant: string
   rs_ratio: number
   rs_momentum: number
@@ -74,6 +81,7 @@ interface QuadrantFilterLogEntry {
   symbol: string
   name: string
   theme: string
+  classification?: string
   quadrant: string
   action: string
   momentum_dir?: string
@@ -99,10 +107,16 @@ async function persistPendingDebateFailure(
   pendingItems: PendingBuy[],
   reason: string,
 ): Promise<string> {
-  const transition = applyPendingBuyDebateFailure(pendingItems, reason)
-  const failedBySymbol = new Map(transition.allItems.map((item) => [item.symbol, item as PendingBuy]))
-  const nextPendingBuys = snapshot.pendingBuys.map((item) => failedBySymbol.get(item.symbol) ?? item)
-  const activeItems = nextPendingBuys.filter((item) => !isPendingBuyTerminal(item.execution_status))
+  const transition = applyPendingBuyExecutionStatusUpdates(
+    snapshot.pendingBuys,
+    pendingItems.map((item) => ({
+      symbol: item.symbol,
+      status: 'pending',
+      reason: `debate_retry:${reason}`,
+    })),
+  )
+  const nextPendingBuys = transition.allItems as PendingBuy[]
+  const activeItems = transition.activeItems as PendingBuy[]
   const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
     ? String(snapshot.meta.source_reco_date)
     : tradeDate
@@ -111,19 +125,19 @@ async function persistPendingDebateFailure(
     tradeDate,
     sourceRecoDate,
     status: 'ready',
-    debateStatus: 'failed',
+    debateStatus: 'pending',
     errorMessage: reason,
     pendingBuys: nextPendingBuys,
     kvPendingBuys: activeItems,
     meta: {
       stage: 'debate_async',
-      failure_reason: reason,
-      execution_summary: transition.summary,
-      failed_symbols: pendingItems.map((item) => item.symbol),
+      retry_reason: reason,
+      active_summary: transition.activeSummary,
+      retry_symbols: pendingItems.map((item) => item.symbol),
     },
   })
 
-  return `debate_failed_closed=${pendingItems.length} reason=${reason} active=${activeItems.length}`
+  return `debate_retry_pending=${pendingItems.length} reason=${reason} active=${activeItems.length}`
 }
 
 function getTwDate(offsetDays = 0): string {
@@ -149,6 +163,12 @@ function parseWatchPoints(raw: unknown): string[] {
 function clampNumber(value: unknown, lo: number, hi: number, fallback: number): number {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : fallback
   return Math.max(lo, Math.min(hi, numeric))
+}
+
+function optionalNumber(value: unknown, fallback: number, lo: number, hi: number): number {
+  const numeric = Number(value)
+  const resolved = Number.isFinite(numeric) ? numeric : fallback
+  return Math.max(lo, Math.min(hi, resolved))
 }
 
 function parseAlphaContext(rawForecastData: unknown): AlphaForecastContext | null {
@@ -351,40 +371,79 @@ async function loadRestrictedSet(db: D1Database, kv: KVNamespace, tradeDate: str
   return restricted
 }
 
+const RRG_TAXONOMY_CHUNK_SIZE = 40
+
+function rrgClassificationForTagType(tagType: string | null | undefined): string {
+  const normalized = String(tagType || '').trim()
+  return normalized === 'concept' ? 'theme' : normalized
+}
+
+async function loadRrgTaxonomyTags(
+  db: D1Database,
+  symbols: string[],
+): Promise<Array<{ symbol: string; tag: string; tag_type: string; classification: string }>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
+  const rows: Array<{ symbol: string; tag: string; tag_type: string; classification: string }> = []
+  for (let i = 0; i < uniqueSymbols.length; i += RRG_TAXONOMY_CHUNK_SIZE) {
+    const chunk = uniqueSymbols.slice(i, i + RRG_TAXONOMY_CHUNK_SIZE)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT symbol, tag, tag_type
+         FROM (
+           SELECT symbol, tag, tag_type, weight, 1 AS priority
+             FROM finlab_taxonomy_tags
+            WHERE tag_type IN ('industry_theme', 'subindustry', 'industry')
+              AND symbol IN (${placeholders})
+           UNION ALL
+           SELECT symbol, tag, tag_type, weight, 2 AS priority
+             FROM stock_tags
+            WHERE tag_type='concept'
+              AND symbol IN (${placeholders})
+         )
+        ORDER BY symbol, priority ASC, weight DESC`,
+    ).bind(...chunk, ...chunk).all<{ symbol: string; tag: string; tag_type?: string | null }>()
+    for (const row of results ?? []) {
+      const symbol = String(row.symbol || '').trim()
+      const tag = String(row.tag || '').trim()
+      const tagType = String(row.tag_type || 'concept').trim()
+      const classification = rrgClassificationForTagType(tagType)
+      if (!symbol || !tag || !classification) continue
+      rows.push({ symbol, tag, tag_type: tagType, classification })
+    }
+  }
+  return rows
+}
+
 async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<string, QuadrantInfo>> {
   const symbolQuadrantMap = new Map<string, QuadrantInfo>()
   if (!symbols.length) return symbolQuadrantMap
   try {
-    const placeholders = symbols.map(() => '?').join(',')
-    const { results: tagRows } = await db.prepare(
-      `SELECT symbol, tag
-         FROM stock_tags
-        WHERE tag_type = 'concept'
-          AND symbol IN (${placeholders})
-        ORDER BY symbol, weight DESC`,
-    ).bind(...symbols).all<any>()
-    const tagsBySymbol = new Map<string, string[]>()
+    const tagRows = await loadRrgTaxonomyTags(db, symbols)
+    const tagsBySymbol = new Map<string, Array<{ tag: string; classification: string }>>()
     for (const row of tagRows ?? []) {
       const tags = tagsBySymbol.get(row.symbol) ?? []
-      tags.push(row.tag)
+      tags.push({ tag: row.tag, classification: row.classification })
       tagsBySymbol.set(row.symbol, tags)
     }
 
     const { results: quadrantRows } = await db.prepare(
-      `SELECT sector, rs_ratio, rs_momentum, quadrant
+      `SELECT sector, classification, rs_ratio, rs_momentum, quadrant
          FROM sector_flow
-        WHERE classification = 'theme'
+        WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
           AND quadrant IS NOT NULL
           AND date = (
             SELECT MAX(date)
               FROM sector_flow
-             WHERE classification = 'theme'
+             WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
                AND quadrant IS NOT NULL
           )`,
     ).all<any>()
     const themeQuadrants = new Map<string, { quadrant: string; rs_ratio: number; rs_momentum: number }>()
     for (const row of quadrantRows ?? []) {
-      themeQuadrants.set(row.sector, {
+      const classification = String(row.classification || '').trim()
+      const sector = String(row.sector || '').trim()
+      if (!classification || !sector) continue
+      themeQuadrants.set(`${classification}:${sector}`, {
         quadrant: row.quadrant,
         rs_ratio: Number(row.rs_ratio),
         rs_momentum: Number(row.rs_momentum),
@@ -394,20 +453,22 @@ async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<s
 
     for (const symbol of symbols) {
       const tags = tagsBySymbol.get(symbol) ?? []
-      const theme = tags.find((tag) => themeUniverse.has(tag)) ?? tags[0]
-      if (!theme) continue
-      if (!themeUniverse.has(theme)) {
+      const matched = tags.find((candidate) => themeUniverse.has(`${candidate.classification}:${candidate.tag}`)) ?? tags[0]
+      if (!matched) continue
+      const key = `${matched.classification}:${matched.tag}`
+      if (!themeUniverse.has(key)) {
         symbolQuadrantMap.set(symbol, {
-          theme,
+          theme: matched.tag,
+          classification: matched.classification,
           quadrant: 'Unmapped',
           rs_ratio: 100,
           rs_momentum: 0,
         })
         continue
       }
-      const info = themeQuadrants.get(theme)
+      const info = themeQuadrants.get(key)
       if (!info) continue
-      symbolQuadrantMap.set(symbol, { theme, ...info })
+      symbolQuadrantMap.set(symbol, { theme: matched.tag, classification: matched.classification, ...info })
     }
   } catch (error) {
     console.warn('[PendingBuyOrchestrator] quadrant query failed:', error)
@@ -437,16 +498,17 @@ function applyRecommendationProvenance(buyRecs: BuyRecommendationRow[]): void {
       const avgRank = typeof ensemble.avg_rank === 'number' ? ensemble.avg_rank : null
       const avgRankText = avgRank != null ? avgRank.toFixed(3) : '?'
       const ensembleSignal = ensemble.signal ?? 'unknown'
+      const signalSource = String(rec.signal_source ?? '').trim()
 
       let provenance: string | null = null
-      if (ensemble.topk_forced === true) {
+      if (signalSource === 'sparse_tangent_inverse_risk') {
         provenance =
-          `Signal Provenance (ensemble Top-K): BUY forced at ensemble layer (signal_raw=${ensemble.signal_raw ?? 'HOLD'}, avg_rank=${avgRankText}). ` +
-          'Judge on business merit and industry context, not raw signal strength.'
+          `Signal Provenance (sparse tangent): BUY selected by sparse_tangent_inverse_risk allocation after ML family rank (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
+          'Judge on allocation evidence, risk budget and execution feasibility.'
       } else if (/BUY/i.test(rec.signal ?? '') && ensembleSignal !== 'unknown' && !/BUY/i.test(ensembleSignal)) {
         provenance =
-          `Signal Provenance (ranking promoted): BUY flipped at recommendation layer (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
-          'Treat as ranking promotion, not a naturally strong BUY.'
+          `Signal Provenance (allocator selected): BUY selected after final allocation layer (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
+          'Treat as allocation-selected, not a standalone ensemble BUY.'
       }
 
       if (provenance) rec.reason = `${provenance}\n\n${rec.reason ?? ''}`
@@ -611,11 +673,24 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
     const sourceRecoDate = prevDay
-    const pendingBuyLimit = Math.max(1, Math.floor(cfg.ranking?.topK ?? 3))
-    const candidateLimit = Math.max(12, pendingBuyLimit * 4)
+    const pendingBuyLimit = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
+    const executionPoolLimit = Math.max(
+      pendingBuyLimit,
+      Math.floor(optionalNumber(
+        env.EXECUTION_WATCH_POOL_SIZE,
+        cfg.alphaFramework?.allocation?.slateSize ?? Math.max(10, pendingBuyLimit),
+        pendingBuyLimit,
+        30,
+      )),
+    )
+    const minWatchMlEdge = optionalNumber(env.EXECUTION_WATCH_MIN_ML_EDGE, 12, 0, 25)
+    const minWatchFinalScore = optionalNumber(env.EXECUTION_WATCH_MIN_FINAL_SCORE, 55, 0, 100)
+    const watchRiskMultiplier = optionalNumber(env.EXECUTION_WATCH_RISK_MULTIPLIER, 0.55, 0.1, 1)
+    const candidateLimit = Math.max(12, executionPoolLimit * 3)
     const { results } = await env.DB.prepare(`
-      SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.reason,
-             dr.watch_points, dr.chip_score, dr.tech_score, dr.ml_score, dr.score,
+      SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
+             dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
+             dr.watch_points, dr.score_components, dr.alpha_allocation,
              s.market AS market,
              p.entry_price AS ml_entry_price,
              p.stop_loss AS ml_stop_loss,
@@ -645,7 +720,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
                 ORDER BY sp.date DESC
                 LIMIT 1
              ) AS latest_avg_price,
-             p.forecast_data AS forecast_data
+             p.forecast_data AS forecast_data,
+             CASE WHEN json_valid(dr.alpha_allocation) THEN
+               COALESCE(
+                 json_extract(dr.alpha_allocation, '$.engine'),
+                 json_extract(dr.alpha_allocation, '$.controller')
+               )
+             ELSE NULL END AS signal_source
         FROM daily_recommendations dr
         LEFT JOIN stocks s ON s.symbol = dr.symbol
         LEFT JOIN predictions p ON p.id = (
@@ -656,10 +737,23 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
              AND p2.prediction_date IN (dr.date, ?)
            ORDER BY p2.generated_at DESC, p2.id DESC
            LIMIT 1
-        )
+       )
        WHERE dr.date = ?
-         AND dr.has_buy_signal = 1
          AND dr.confidence >= ?
+         AND COALESCE(dr.eligible_for_pending_buy, 1) = 1
+         AND (
+           dr.has_buy_signal = 1
+           OR (
+             COALESCE(dr.eligible_for_ml, 1) = 1
+             AND json_valid(dr.score_components)
+             AND COALESCE(CAST(json_extract(dr.score_components, '$.components.mlEdge') AS REAL), 0) >= ?
+             AND COALESCE(
+               CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
+               CAST(json_extract(dr.score_components, '$.total') AS REAL),
+               0
+             ) >= ?
+           )
+         )
          AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
          AND (
            SELECT sp_exec.open
@@ -669,9 +763,24 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             ORDER BY sp_exec.date DESC
             LIMIT 1
          ) IS NOT NULL
-        ORDER BY dr.score DESC, dr.confidence DESC
+        ORDER BY CASE WHEN dr.has_buy_signal = 1 THEN 0 ELSE 1 END ASC,
+           CASE WHEN json_valid(dr.alpha_allocation)
+             AND json_extract(dr.alpha_allocation, '$.selected') = 1 THEN 0 ELSE 1 END ASC,
+           CASE WHEN json_valid(dr.score_components) THEN
+           COALESCE(
+             CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
+             CAST(json_extract(dr.score_components, '$.total') AS REAL),
+             0
+           ) ELSE 0 END DESC,
+           dr.confidence DESC
         LIMIT ?
-    `).bind(sourceRecoDate, sourceRecoDate, cb.buyConfThreshold, candidateLimit).all<BuyRecommendationRow>()
+    `).bind(sourceRecoDate,
+      sourceRecoDate,
+      cb.buyConfThreshold,
+      minWatchMlEdge,
+      minWatchFinalScore,
+      candidateLimit,
+    ).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
     applyRecommendationProvenance(buyRecs)
@@ -685,6 +794,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     }
 
     const stockIds = [...new Set(buyRecs.map((rec) => Number(rec.stock_id)).filter((id) => Number.isFinite(id)))]
+    const ohlcvLevelsByStock = await batchLoadOhlcvTradePlanLevels(env.DB, stockIds, sourceRecoDate).catch((error) => {
+      console.warn('[MorningSetup] OHLCV trade plan levels unavailable:', error)
+      return new Map()
+    })
     const perModelByStock = new Map<number, PerModelPredictionRow[]>()
     if (stockIds.length > 0) {
       const placeholders = stockIds.map(() => '?').join(',')
@@ -693,7 +806,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           FROM predictions
          WHERE stock_id IN (${placeholders})
            AND model_name != 'ensemble'
-           AND model_name NOT LIKE '%::challenger'
+          AND instr(model_name, '::') = 0
            AND prediction_date IN (?, ?)
          ORDER BY stock_id, model_name, generated_at DESC
       `).bind(
@@ -769,6 +882,23 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const forecastData = parsePredictionForecastData(rec.forecast_data)
       const alphaContext = parseAlphaContext(forecastData)
       const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(rec.stock_id)) ?? [])
+      const scoreV2 = readScoreV2Snapshot(rec)
+      if (!scoreV2) {
+        quadrantFilterLog.push({
+          symbol: rec.symbol,
+          name: rec.name ?? rec.symbol,
+          theme: 'score_v2',
+          quadrant: 'missing',
+          action: 'SCORE_V2_MISSING',
+        })
+        continue
+      }
+      const executionRole = Number(rec.has_buy_signal ?? 0) === 1
+        ? 'final_buy'
+        : 'ml_qualified_watch'
+      const pendingSignal = executionRole === 'final_buy'
+        ? (rec.signal ?? 'BUY')
+        : 'WATCH_BUY'
       if (alphaContext?.risk_overlay?.skip === true) {
         quadrantFilterLog.push({
           symbol: rec.symbol,
@@ -786,6 +916,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'REJECT',
         })
@@ -795,13 +926,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'RRG_UNMAPPED_NEUTRAL',
         })
       }
 
       let debateVerdict = 'PENDING'
-      let riskPct = calcRiskPct(rec.signal, rec.confidence, undefined, cfg)
+      let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
+      if (executionRole === 'ml_qualified_watch') riskPct *= watchRiskMultiplier
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
       riskPct *= alphaSizing
       if (quadrant?.quadrant === 'Weakening') {
@@ -811,6 +944,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'DOWNGRADE',
         })
@@ -819,6 +953,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
+          classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'PASS',
           momentum_dir: quadrant.rs_momentum >= 0 ? 'up' : 'down',
@@ -830,52 +965,68 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       let adjustedTarget1 = rec.ml_target1
       let adjustedTarget2 = rec.ml_target2
       const entryWatchPoints: string[] = []
-      const originalEntry = rec.ml_entry_price
+      let originalEntry = rec.ml_entry_price
+      const ohlcvEntryPlan = resolveOhlcvEntryPlan(
+        ohlcvLevelsByStock.get(Number(rec.stock_id)),
+        { latestPrice: rec.latest_close },
+      )
+      if (ohlcvEntryPlan) {
+        adjustedEntry = ohlcvEntryPlan.entryPrice
+        adjustedStop = ohlcvEntryPlan.stopLoss
+        adjustedTarget1 = ohlcvEntryPlan.target1
+        adjustedTarget2 = ohlcvEntryPlan.target2
+        originalEntry = ohlcvEntryPlan.entryPrice
+        entryWatchPoints.push(formatOhlcvTradePlanWatchPoint(ohlcvEntryPlan))
+      }
       const nightDropPct = taifex?.changePct ?? 0
       const l2 = cfg.L2_formula
-      if (nightDropPct < l2.night_drop_severe_pct && debateVerdict === 'DOWNGRADE') {
-        adjustedEntry = Math.round(rec.ml_entry_price * l2.night_drop_severe_adjust * 100) / 100
-        adjustedStop = adjustedStop != null
-          ? Math.round(adjustedStop * l2.night_drop_severe_adjust * 100) / 100
-          : adjustedStop
-      } else if (nightDropPct < l2.night_drop_mild_pct && debateVerdict !== 'APPROVE') {
-        adjustedEntry = Math.round(rec.ml_entry_price * l2.night_drop_mild_adjust * 100) / 100
-        adjustedStop = adjustedStop != null
-          ? Math.round(adjustedStop * l2.night_drop_mild_adjust * 100) / 100
-          : adjustedStop
-      }
+      if (!ohlcvEntryPlan) {
+        if (nightDropPct < l2.night_drop_severe_pct && debateVerdict === 'DOWNGRADE') {
+          adjustedEntry = Math.round(adjustedEntry * l2.night_drop_severe_adjust * 100) / 100
+          adjustedStop = adjustedStop != null
+            ? Math.round(adjustedStop * l2.night_drop_severe_adjust * 100) / 100
+            : adjustedStop
+        } else if (nightDropPct < l2.night_drop_mild_pct && debateVerdict !== 'APPROVE') {
+          adjustedEntry = Math.round(adjustedEntry * l2.night_drop_mild_adjust * 100) / 100
+          adjustedStop = adjustedStop != null
+            ? Math.round(adjustedStop * l2.night_drop_mild_adjust * 100) / 100
+            : adjustedStop
+        }
 
-      const prevDayTs = new Date(`${prevDay}T00:00:00Z`).getTime()
-      const todayTs = new Date(`${pendingDate}T00:00:00Z`).getTime()
-      const holidayGapDays = Math.max(1, Math.round((todayTs - prevDayTs) / 86400000))
-      if (holidayGapDays >= 3 && nightDropPct > 1.0) {
-        const impliedGap = nightDropPct / 100
-        const gapThreshold = cfg.circuit.preMarketGapThreshold ?? 0.05
-        if (impliedGap > gapThreshold) continue
-        const chasePct = Math.min(impliedGap, gapThreshold)
-        const gapBuffer = cfg.position.gapChaseBuffer ?? 0.995
-        const newEntry = Math.round(rec.ml_entry_price * (1 + chasePct) * gapBuffer * 100) / 100
-        if (newEntry > adjustedEntry) {
-          adjustedEntry = newEntry
-          if (adjustedStop != null) adjustedStop = Math.round(adjustedStop * (1 + chasePct) * 100) / 100
+        const prevDayTs = new Date(`${prevDay}T00:00:00Z`).getTime()
+        const todayTs = new Date(`${pendingDate}T00:00:00Z`).getTime()
+        const holidayGapDays = Math.max(1, Math.round((todayTs - prevDayTs) / 86400000))
+        if (holidayGapDays >= 3 && nightDropPct > 1.0) {
+          const impliedGap = nightDropPct / 100
+          const gapThreshold = cfg.circuit.preMarketGapThreshold ?? 0.05
+          if (impliedGap > gapThreshold) continue
+          const chasePct = Math.min(impliedGap, gapThreshold)
+          const gapBuffer = cfg.position.gapChaseBuffer ?? 0.995
+          const newEntry = Math.round(adjustedEntry * (1 + chasePct) * gapBuffer * 100) / 100
+          if (newEntry > adjustedEntry) {
+            adjustedEntry = newEntry
+            if (adjustedStop != null) adjustedStop = Math.round(adjustedStop * (1 + chasePct) * 100) / 100
+          }
         }
       }
 
       const maxPremium = cfg.position.maxEntryPremiumPct ?? 0.01
-      const cappedEntry = capEntryToLatestClose({
-        entryPrice: adjustedEntry,
-        stopLoss: adjustedStop,
-        target1: adjustedTarget1,
-        target2: adjustedTarget2,
-        latestClose: rec.latest_close,
-        maxPremiumPct: maxPremium,
-      })
-      adjustedEntry = cappedEntry.entryPrice
-      adjustedStop = cappedEntry.stopLoss
-      adjustedTarget1 = cappedEntry.target1
-      adjustedTarget2 = cappedEntry.target2
-      if (cappedEntry.watchPoint) {
-        entryWatchPoints.push(cappedEntry.watchPoint)
+      if (!ohlcvEntryPlan) {
+        const cappedEntry = capEntryToLatestClose({
+          entryPrice: adjustedEntry,
+          stopLoss: adjustedStop,
+          target1: adjustedTarget1,
+          target2: adjustedTarget2,
+          latestClose: rec.latest_close,
+          maxPremiumPct: maxPremium,
+        })
+        adjustedEntry = cappedEntry.entryPrice
+        adjustedStop = cappedEntry.stopLoss
+        adjustedTarget1 = cappedEntry.target1
+        adjustedTarget2 = cappedEntry.target2
+        if (cappedEntry.watchPoint) {
+          entryWatchPoints.push(cappedEntry.watchPoint)
+        }
       }
 
       const kellyResult = calcKellyPct(
@@ -889,11 +1040,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         console.log(`[MorningSetup] ${rec.symbol} ${kellyResult.info}`)
       }
 
-      const scoreV2 = readScoreV2Snapshot(rec)
+      entryWatchPoints.push(
+        `execution_pool:${executionRole}:mlEdge=${scoreV2.components.mlEdge};finalScore=${scoreV2.finalScore}`,
+      )
       pendingBuys.push({
         symbol: rec.symbol,
         name: rec.name ?? rec.symbol,
-        signal: rec.signal,
+        signal: pendingSignal,
         confidence: rec.confidence,
         ml_entry_price: adjustedEntry,
         ml_stop_loss: adjustedStop,
@@ -913,20 +1066,21 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         debate_status: debateVerdict === 'PENDING' ? 'pending' : 'completed',
         risk_pct: riskPct,
         kelly_pct: kellyResult?.pct ?? null,
-        chip_score: scoreV2.components.chipFlow,
-        tech_score: scoreV2.components.technicalStructure,
-        ml_score: scoreV2.components.mlEdge,
-        score: scoreV2.finalScore,
-        source: 'morning_setup',
+        score_v2: serializeScoreV2Snapshot(scoreV2),
+        source: executionRole === 'final_buy' ? 'morning_setup' : 'morning_setup_ml_watch',
         original_entry: originalEntry,
       })
-      if (pendingBuys.length >= pendingBuyLimit) break
+      if (pendingBuys.length >= executionPoolLimit) break
     }
 
     await persistPendingBuys(env, pendingDate, pendingBuys, {
       status: 'ready',
       count: pendingBuys.length,
       prev_day: prevDay,
+      final_buy_limit: pendingBuyLimit,
+      execution_pool_limit: executionPoolLimit,
+      execution_watch_min_ml_edge: minWatchMlEdge,
+      execution_watch_min_final_score: minWatchFinalScore,
     })
 
     if (quadrantFilterLog.length > 0) {
@@ -981,7 +1135,7 @@ export async function reconcilePendingBuyDebates(
     pendingItems.map((item, index) => ({
       symbol: item.symbol,
       name: item.name ?? item.symbol,
-      score: item.score ?? item.ml_score ?? item.confidence * 100,
+      score_v2: item.score_v2 ?? null,
       reason: item.reason ?? 'ML ensemble signal',
       watch_points: item.watch_points,
       rank: index + 1,
@@ -1038,7 +1192,11 @@ export async function reconcilePendingBuyDebates(
     }
     if (!debate) {
       failedCount += 1
-      const transition = applyPendingBuyDebateFailure([item], 'debate_missing')
+      const transition = applyPendingBuyExecutionStatusUpdates([item], [{
+        symbol: item.symbol,
+        status: 'pending',
+        reason: 'debate_retry:debate_missing',
+      }])
       nextPendingBuys.push(transition.allItems[0] as PendingBuy)
       continue
     }
@@ -1061,7 +1219,7 @@ export async function reconcilePendingBuyDebates(
     tradeDate,
     sourceRecoDate,
     status: 'ready',
-    debateStatus: failedCount > 0 ? 'failed' : 'completed',
+    debateStatus: failedCount > 0 ? 'pending' : 'completed',
     pendingBuys: nextPendingBuys,
     meta: {
       stage: 'debate_async',

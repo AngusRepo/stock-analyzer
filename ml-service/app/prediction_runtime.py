@@ -582,8 +582,26 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         pool_snapshot = None
 
     pool_models = (pool_snapshot or {}).get("models", {}) if pool_snapshot else {}
+    formal_slots = (pool_snapshot or {}).get("formal_layer3_slots", {}) if pool_snapshot else {}
+
+    def _resolve_model_pool_status(name: str) -> str:
+        if isinstance(pool_models.get(name), dict):
+            return str((pool_models.get(name) or {}).get("status") or "active")
+        slot = formal_slots.get(name) if isinstance(formal_slots, dict) else None
+        if isinstance(slot, dict):
+            slot_status = str(slot.get("status") or "").strip()
+            try:
+                vote_weight = float(slot.get("vote_weight") or 0.0)
+            except (TypeError, ValueError):
+                vote_weight = 0.0
+            direct_prediction = bool(slot.get("direct_prediction")) or vote_weight > 0.0
+            if direct_prediction and slot_status in {"production_adapter_active", "active"}:
+                return "active"
+            return "retired"
+        return "active"
+
     model_pool_status = {
-        name: (pool_models.get(name) or {}).get("status", "active")
+        name: _resolve_model_pool_status(name)
         for name in _MODEL_NAMES_V2
     }
     degraded_dampening = 1.0

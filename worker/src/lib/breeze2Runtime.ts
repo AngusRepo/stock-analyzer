@@ -4,16 +4,11 @@ import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 export type Breeze2Trigger = 'morning_debate' | 'screener_enrichment'
 
-export interface Breeze2CandidateLike {
+export interface Breeze2CandidateShape {
   symbol?: unknown
   name?: unknown
   stock_name?: unknown
-  score?: unknown
-  score_components?: unknown
-  ml_score?: unknown
-  chip_score?: unknown
-  tech_score?: unknown
-  momentum_score?: unknown
+  score_v2?: unknown
   rank?: unknown
   reason?: unknown
   watch_points?: unknown
@@ -51,26 +46,26 @@ function normalizeScore(score: unknown): number {
   return value > 1 ? Math.min(1, value / 100) : Math.max(0, Math.min(1, value))
 }
 
-function scoreSnapshot(candidate: Breeze2CandidateLike) {
-  return readScoreV2Snapshot(candidate as ScoreV2StorageRow)
+function scoreSnapshot(candidate: Breeze2CandidateShape) {
+  return readScoreV2Snapshot({ score_components: candidate.score_v2 } as ScoreV2StorageRow)
 }
 
-function candidateScore(candidate: Breeze2CandidateLike): number {
-  return scoreSnapshot(candidate).finalScore
+function candidateScore(candidate: Breeze2CandidateShape): number {
+  return scoreSnapshot(candidate)?.finalScore ?? 0
 }
 
-function normalizeCandidateScore(candidate: Breeze2CandidateLike): number {
+function normalizeCandidateScore(candidate: Breeze2CandidateShape): number {
   return normalizeScore(candidateScore(candidate))
 }
 
-function collectWatchPoints(candidate: Breeze2CandidateLike): string[] {
+function collectWatchPoints(candidate: Breeze2CandidateShape): string[] {
   return [
     ...(Array.isArray(candidate.watch_points) ? candidate.watch_points : []),
     ...(Array.isArray(candidate.strategy_watch_points) ? candidate.strategy_watch_points : []),
   ].map(String).filter(Boolean)
 }
 
-function inferTheme(candidate: Breeze2CandidateLike): Record<string, unknown> {
+function inferTheme(candidate: Breeze2CandidateShape): Record<string, unknown> {
   const explicit = candidate.theme && typeof candidate.theme === 'object' ? candidate.theme : {}
   const score = normalizeCandidateScore(candidate)
   const points = collectWatchPoints(candidate)
@@ -84,7 +79,7 @@ function inferTheme(candidate: Breeze2CandidateLike): Record<string, unknown> {
   }
 }
 
-function priority(candidate: Breeze2CandidateLike): number {
+function priority(candidate: Breeze2CandidateShape): number {
   const theme = inferTheme(candidate)
   const score = normalizeCandidateScore(candidate)
   const themeScore = asNumber(theme.theme_score, 0)
@@ -93,7 +88,7 @@ function priority(candidate: Breeze2CandidateLike): number {
   return (0.30 * score) + (0.30 * themeScore) + (0.25 * Math.max(0, 1 - factSupport)) + (0.15 * hypeRisk)
 }
 
-export function shouldRequestBreeze2(candidate: Breeze2CandidateLike): boolean {
+export function shouldRequestBreeze2(candidate: Breeze2CandidateShape): boolean {
   const score = normalizeCandidateScore(candidate)
   const theme = inferTheme(candidate)
   const themeScore = asNumber(theme.theme_score, 0)
@@ -106,7 +101,7 @@ export function shouldRequestBreeze2(candidate: Breeze2CandidateLike): boolean {
   )
 }
 
-export function selectBreeze2ScreenerCandidates<T extends Breeze2CandidateLike>(
+export function selectBreeze2ScreenerCandidates<T extends Breeze2CandidateShape>(
   candidates: T[],
   maxCandidates = 5,
 ): T[] {
@@ -119,7 +114,7 @@ export function selectBreeze2ScreenerCandidates<T extends Breeze2CandidateLike>(
 }
 
 export function buildBreeze2FactCheckRequest(
-  candidate: Breeze2CandidateLike,
+  candidate: Breeze2CandidateShape,
   trigger: Breeze2Trigger,
   options: { executeModal?: boolean; runDate?: string; rank?: number } = {},
 ): Breeze2FactCheckRequest {
@@ -140,8 +135,8 @@ export function buildBreeze2FactCheckRequest(
     metadata: {
       run_date: options.runDate,
       rank: options.rank ?? candidate.rank,
-      screener_score: score.finalScore,
-      score_source: score.source,
+      screener_score: score?.finalScore ?? 0,
+      score_source: score?.source ?? 'missing_score_v2',
       recommendation_lane: candidate.recommendation_lane,
       source: 'stockvision_worker',
     },
@@ -192,7 +187,7 @@ export async function requestBreeze2FactCheck(
   }
 }
 
-export async function enrichScreenerCandidatesWithBreeze2<T extends Breeze2CandidateLike>(
+export async function enrichScreenerCandidatesWithBreeze2<T extends Breeze2CandidateShape>(
   env: Bindings,
   candidates: T[],
   options: { runDate?: string; maxCandidates?: number; executeModal?: boolean } = {},
@@ -210,7 +205,7 @@ export async function enrichScreenerCandidatesWithBreeze2<T extends Breeze2Candi
   return new Map(pairs.filter((pair): pair is readonly [string, Breeze2Report] => Boolean(pair[0] && pair[1])))
 }
 
-export async function enrichMorningDebateCandidatesWithBreeze2<T extends Breeze2CandidateLike>(
+export async function enrichMorningDebateCandidatesWithBreeze2<T extends Breeze2CandidateShape>(
   env: Bindings,
   candidates: T[],
   options: { runDate?: string; executeModal?: boolean } = {},

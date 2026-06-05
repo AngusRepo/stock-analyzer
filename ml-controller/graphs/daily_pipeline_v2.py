@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import operator
 import os
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,7 @@ from langgraph.types import RetryPolicy
 from services import d1_client, kv_client
 from services.ensemble_v2 import attach_ensemble_v2
 from services.payload_builder import (
+    DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
     PredictPayload,
     load_market_env,
     build_payloads,
@@ -36,15 +38,21 @@ from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
 from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
+from services.screener_sizing_policy import resolve_controller_screener_sizing
 from services.state_space_series import build_state_space_series_from_payloads
 from services.recommendation_service import (
+    apply_core_family_rank,
+    apply_core_ml_gate,
+    build_return_history_from_payloads,
     filter_and_score_recommendations,
-    hybrid_ranking_promotion,
+    apply_sparse_tangent_allocation,
+    load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
     delete_filtered_recommendations,
     re_rank_recommendations,
+    merge_breeze2_reason_shadow_into_score_components,
     merge_llm_reasons_into_recommendations,
 )
 from services.llm_reason import generate_recommendation_reasons
@@ -72,6 +80,13 @@ D1_RETRYABLE_MARKERS = (
     "Requests queued for too long",
     "Too Many Requests",
 )
+
+
+def _daily_recommendation_select(alias: str = "dr") -> str:
+    return ", ".join(
+        f"{alias}.{column.strip()}"
+        for column in DAILY_RECOMMENDATION_PIPELINE_COLUMNS.split(",")
+    )
 
 
 def _is_retryable_d1_overload(error: Exception) -> bool:
@@ -167,19 +182,57 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     run_date = state["run_date"]
 
     screener_recs = d1_client.query(
-        "SELECT * FROM daily_recommendations WHERE date = ? ORDER BY rank",
-        [run_date],
+        f"""
+        WITH latest_screener_run AS (
+            SELECT run_id
+              FROM screener_funnel_runs
+             WHERE date = ?
+               AND status = 'success'
+             ORDER BY created_at DESC
+             LIMIT 1
+        ),
+        candidate_seed AS (
+            SELECT
+                sfi.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY sfi.symbol
+                    ORDER BY
+                        CASE sfi.stage
+                            WHEN 'layer2_coarse_ml_gate' THEN 0
+                            WHEN 'strategy_pool_ml_queue' THEN 1
+                            WHEN 'l1_candidate_seed_after_overlay' THEN 2
+                            ELSE 3
+                        END,
+                        COALESCE(sfi.rank, 999999)
+                ) AS stage_preference_rank
+              FROM screener_funnel_items sfi
+             WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
+               AND (
+                    (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
+                 OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+               )
+        )
+        SELECT {_daily_recommendation_select("dr")}
+          FROM daily_recommendations dr
+          JOIN candidate_seed sfi
+            ON sfi.symbol = dr.symbol
+           AND sfi.stage_preference_rank = 1
+         WHERE dr.date = ?
+         ORDER BY COALESCE(sfi.rank, dr.rank), dr.rank
+        """,
+        [run_date, run_date],
     )
     if not screener_recs:
         raise RuntimeError(
-            "screener_recs_missing: daily pipeline requires full-market screener "
-            "seeds before ML/recommendation; refusing watchlist fallback"
+            "screener_recs_missing: daily pipeline requires latest screener "
+            "layer2_coarse_ml_gate/strategy_pool_ml_queue ownership before ML/recommendation; "
+            "refusing watchlist fallback"
         )
     active_stocks = build_ml_universe([], screener_recs)
 
     logger.info(
         f"[Pipeline V2] Loaded {len(active_stocks)} ML universe stocks "
-        f"(source=daily_recommendations), "
+        f"(source=latest_screener_layer2_coarse_ml_gate), "
         f"{len(screener_recs)} existing screener_recs"
     )
     return {
@@ -614,7 +667,10 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         # avg_rank desc, force BUY regardless of absolute threshold. Confidence
         # override gives downstream (paper.ts morning-setup SQL + debate prompt)
         # the margin they need to distinguish promoted signals from edge HOLDs.
-        top_k_enabled = bool(ev2_cfg.get("topKOverrideEnabled", True))
+        top_k_enabled = bool(
+            ev2_cfg.get("allowLegacyTopKOverride", False)
+            and ev2_cfg.get("topKOverrideEnabled", False)
+        )
         top_k_count = int(ev2_cfg.get("topKCount", 3))
         top_k_conf = float(ev2_cfg.get("topKConfidenceOverride", 0.72))
         if top_k_enabled and top_k_count > 0:
@@ -700,6 +756,15 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
             challenger = entry.get("challenger") or {}
             if challenger.get("version"):
                 challenger_versions[name] = challenger["version"]
+        for name, entry in (pool.get("formal_layer3_slots") or {}).items():
+            slot_status = str(entry.get("status") or "").strip()
+            direct_prediction = bool(entry.get("direct_prediction")) or float(entry.get("vote_weight") or 0.0) > 0.0
+            if direct_prediction and slot_status in {"production_adapter_active", "active"}:
+                status[name] = "active"
+                if entry.get("version"):
+                    active_versions[name] = entry["version"]
+            elif name not in status:
+                status[name] = "retired"
         for name, entry in (pool.get("state_overlays") or {}).items():
             status[name] = entry.get("status", "active")
             if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
@@ -724,6 +789,26 @@ def _normalize_market_segment(segment: Any) -> str | None:
 def _prediction_market_segment(pred: dict) -> str | None:
     meta = pred.get("stock_meta") if isinstance(pred.get("stock_meta"), dict) else {}
     return _normalize_market_segment(meta.get("market_segment") or meta.get("market"))
+
+
+def _resolve_coarse_ml_gate_target(
+    input_count: int,
+    screener_sizing: dict[str, Any],
+    trading_config: dict[str, Any] | None = None,
+) -> int:
+    """Resolve Layer 2 keep count from a ratio, not the legacy queue-size cap."""
+    _ = screener_sizing
+    if input_count <= 0:
+        return 0
+    config = trading_config if isinstance(trading_config, dict) else {}
+    raw = config.get("screener") if isinstance(config.get("screener"), dict) else {}
+    try:
+        keep_ratio = float(raw.get("coarseMlKeepRatio", raw.get("coarse_ml_keep_ratio", 0.75)) or 0.75)
+    except (TypeError, ValueError):
+        keep_ratio = 0.75
+    keep_ratio = max(0.25, min(1.0, keep_ratio))
+    ratio_target = max(1, math.ceil(input_count * keep_ratio))
+    return min(input_count, ratio_target)
 
 
 def _coerce_ic_value(value: Any) -> float | None:
@@ -1071,6 +1156,20 @@ def _load_pool_and_ic():
             except (TypeError, ValueError):
                 logger.debug(f"[Pipeline V2] invalid model_pool IC for {name}: {ic_value}")
 
+        for name, entry in (pool.get("formal_layer3_slots") or {}).items():
+            slot_status = str(entry.get("status") or "").strip()
+            direct_prediction = bool(entry.get("direct_prediction")) or float(entry.get("vote_weight") or 0.0) > 0.0
+            if direct_prediction and slot_status in {"production_adapter_active", "active"}:
+                model_status[name] = "active"
+                ic_value = entry.get("rolling_ic") or entry.get("ic_4w_avg")
+                try:
+                    if ic_value is not None:
+                        ic_weights[name] = float(ic_value)
+                except (TypeError, ValueError):
+                    logger.debug(f"[Pipeline V2] invalid formal L3 IC for {name}: {ic_value}")
+            elif name not in model_status:
+                model_status[name] = "retired"
+
         # IC weights have exactly one owner: model_pool.json. Missing IC stays
         # missing so lifecycle diagnostics can explain the root cause.
         # KV-driven degraded dampening + ensemble_v2 thresholds / Top-K cfg
@@ -1387,7 +1486,7 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
 
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
-    Filter SELL, compute ml_score + persona_score, hybrid ranking promotion.
+    Filter SELL, compute canonical Score V2 finalScore, then run L2/L3 ranking and sparse allocation.
     """
     logger.info("[Pipeline V2] node_recommend")
 
@@ -1421,6 +1520,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             "seeds before ML/recommendation; refusing watchlist fallback"
         )
 
+    fundamental_quality_by_symbol = load_fundamental_quality_by_symbol(screener_recs, state["run_date"])
+
     final, sell_count = filter_and_score_recommendations(
         screener_recs,
         state["predictions"],
@@ -1430,20 +1531,55 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         regime_label=regime_label,
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
+        fundamental_quality_by_symbol=fundamental_quality_by_symbol,
     )
+    screener_sizing = resolve_controller_screener_sizing(
+        trading_cfg,
+        state.get("adaptive_params"),
+    )
+    core_ml_target_size = _resolve_coarse_ml_gate_target(
+        len(screener_recs),
+        screener_sizing,
+        trading_cfg,
+    )
+    final = apply_core_ml_gate(
+        final,
+        state["predictions"],
+        fallback_size=core_ml_target_size,
+    )
+    core_family_target_size = screener_sizing["core_family_rank_size"]
+    final = apply_core_family_rank(
+        final,
+        state["predictions"],
+        target_size=core_family_target_size,
+        require_lifecycle_weights=True,
+    )
+    active_family_counts = [
+        int(((row.get("core_family_vote") or {}).get("active_family_count") or 0))
+        for row in final
+    ]
+    logger.info(
+        "[Pipeline V2] Layer3 core_family_vote ranked %s/%s candidates "
+        "(target=%s, active_family_counts=%s)",
+        len(final),
+        len(state["predictions"]),
+        core_family_target_size,
+        sorted(set(active_family_counts)),
+    )
+    return_history = build_return_history_from_payloads(state["payloads"])
 
-    # Hybrid ranking from KV trading:config.ranking
-    ranking_cfg = trading_cfg.get("ranking", {"enabled": True, "topK": 3,
+    ranking_cfg = trading_cfg.get("ranking", {"enabled": True,
                                               "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
                                               "screenerDenominator": 60.0, "promoteMinConf": 0.60})
     ev2_cfg = trading_cfg.get("ensemble_v2", {}) or {}
-    final = hybrid_ranking_promotion(
+    final = apply_sparse_tangent_allocation(
         final,
         ranking_cfg,
         ev2_cfg,
         regime_label=regime_label,
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
+        return_history=return_history,
     )
     for row in final:
         allocation = row.get("alpha_allocation")
@@ -1517,6 +1653,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     # 2. Merge LLM reasons into recommendations (overwrite template)
     final = state["final_recommendations"]
     merge_llm_reasons_into_recommendations(final, state.get("llm_reasons") or {})
+    merge_breeze2_reason_shadow_into_score_components(final, state.get("breeze2_reason_shadow") or {})
 
     # 3. Update daily_recommendations
     rec_updated = update_recommendations_in_d1(final, run_date)

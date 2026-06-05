@@ -1,8 +1,11 @@
 import type { AdaptiveParams } from './adaptiveConfig'
+import { buildPartialScreenerScoreV2 } from './scoreV2Taxonomy'
 import type { TradingConfig } from './tradingConfig'
 
 export interface ScreenerSizingPolicy {
   candidatePoolSize: number
+  coarseMlQueueSize: number
+  coarseMlKeepRatio: number
   mlShortlistSize: number
   emergingResearchSize: number
 }
@@ -25,6 +28,7 @@ export interface ScreenerScoreCandidate {
   chip_score: number
   tech_score: number
   momentum_score?: number
+  score_components?: string
   market_segment?: string
   reason?: string
 }
@@ -52,19 +56,25 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   const raw = config.screener as Record<string, unknown>
   const adaptiveScreener = adaptive?.screener ?? {}
 
-  const candidatePoolBase = positiveInt(raw.candidatePoolSize, 120, 60, 240)
-  const mlShortlistBase = positiveInt(raw.mlShortlistSize ?? raw.maxCandidates, 40, 15, 80)
+  const candidatePoolBase = positiveInt(raw.candidatePoolSize, 200, 180, 240)
+  const coarseMlQueueBase = positiveInt(raw.coarseMlQueueSize, 80, 30, 160)
+  const coarseMlKeepRatio = clamp(finiteNumber(raw.coarseMlKeepRatio) ?? 0.75, 0.25, 1)
+  const mlShortlistBase = positiveInt(raw.mlShortlistSize ?? raw.maxCandidates, 35, 15, 80)
   const emergingResearchBase = positiveInt(raw.emergingResearchSize ?? raw.emergingMaxCandidates, 24, 0, 80)
 
   const candidatePoolSize = applyAdaptiveDelta(
     candidatePoolBase,
     adaptiveScreener.candidate_pool_delta,
-    60,
+    180,
     240,
+  )
+  const coarseMlQueueSize = Math.min(
+    applyAdaptiveDelta(coarseMlQueueBase, adaptiveScreener.coarse_ml_queue_delta, 30, 160),
+    candidatePoolSize,
   )
   const mlShortlistSize = Math.min(
     applyAdaptiveDelta(mlShortlistBase, adaptiveScreener.ml_shortlist_delta, 15, 80),
-    candidatePoolSize,
+    coarseMlQueueSize,
   )
   const emergingResearchSize = applyAdaptiveDelta(
     emergingResearchBase,
@@ -76,6 +86,8 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   return {
     sizing: {
       candidatePoolSize,
+      coarseMlQueueSize,
+      coarseMlKeepRatio,
       mlShortlistSize,
       emergingResearchSize,
     },
@@ -122,6 +134,17 @@ function calibrateComponent(
   return Math.round(Math.min(raw, normalized * maxScore) * 10) / 10
 }
 
+function syncScoreV2Payload(candidate: ScreenerScoreCandidate): number {
+  const payload = buildPartialScreenerScoreV2({
+    chipScore40: candidate.chip_score,
+    techScore30: candidate.tech_score,
+    momentumScore20: candidate.momentum_score ?? 0,
+    reasons: candidate.reason ? [candidate.reason] : [],
+  })
+  candidate.score_components = JSON.stringify(payload)
+  return payload.finalScore ?? payload.total
+}
+
 export function applyScreenerScoreCalibration<T extends ScreenerScoreCandidate>(
   candidates: T[],
   policy: ScreenerScoreCalibrationPolicy,
@@ -160,11 +183,12 @@ function calibrateCandidates<T extends ScreenerScoreCandidate>(
     const chip = calibrateComponent(rawChip, chipValues, 40, policy)
     const tech = calibrateComponent(rawTech, techValues, 30, policy)
     const momentum = calibrateComponent(rawMomentum, momentumValues, 20, policy)
-    const delta = (chip - rawChip) + (tech - rawTech) + (momentum - rawMomentum)
     c.chip_score = chip
     c.tech_score = tech
     c.momentum_score = momentum
-    c.score = Math.round((c.score + delta) * 10) / 10
+    const scoreV2Total = syncScoreV2Payload(c)
+    const delta = Math.round((scoreV2Total - c.score) * 10) / 10
+    c.score = scoreV2Total
     if (delta < -0.5 && c.reason) {
       c.reason = `${c.reason} | cross-section calibration ${delta.toFixed(1)}`
     }

@@ -664,7 +664,7 @@ export async function listStrategyLearningCandidates(
        WHERE run_id = (SELECT run_id FROM latest_run)
          AND (
            (stage = 'layer2_coarse_ml_gate' AND decision = 'pass')
-           OR (stage = 'layer1_strategy_breadth_gate' AND decision IN ('pass', 'observe'))
+           OR (stage = 'layer1_strategy_breadth_gate' AND decision = 'pass')
          )
     )
     SELECT fc.symbol,

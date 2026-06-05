@@ -25,6 +25,7 @@ function assert(condition: unknown, message: string): void {
   assert(
     source.includes('screener_funnel_items') &&
       source.includes("stage = 'layer2_coarse_ml_gate'") &&
+      source.includes("stage = 'layer1_strategy_breadth_gate' AND decision = 'pass'") &&
       source.includes('raw_signals') &&
       source.includes('funnel_candidates') &&
       source.includes('fc.evidence AS funnel_evidence'),

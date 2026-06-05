@@ -253,6 +253,96 @@ def _breeze2_reason_shadow_provider() -> str:
     return provider if provider in {"context", "modal_generation"} else "context"
 
 
+def _l2_l3_split_enabled() -> bool:
+    raw = os.environ.get("PIPELINE_L2_L3_SPLIT_ENABLED", "1")
+    return str(raw).strip().lower() not in {"0", "false", "off", "disabled", "no"}
+
+
+_L2_TREE_MODEL_NAMES = ("LightGBM", "XGBoost", "ExtraTrees")
+
+
+def _l2_tree_gate_score(prediction: dict | None) -> tuple[float | None, list[str]]:
+    if not isinstance(prediction, dict):
+        return None, []
+    rank_scores = prediction.get("rank_scores")
+    if not isinstance(rank_scores, dict):
+        return None, []
+    scores: list[float] = []
+    models: list[str] = []
+    for name in _L2_TREE_MODEL_NAMES:
+        value = rank_scores.get(name)
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score):
+            continue
+        scores.append(max(0.0, min(1.0, score)))
+        models.append(name)
+    if not scores:
+        return None, []
+    return sum(scores) / len(scores), models
+
+
+def _payloads_for_symbols(payloads: list[dict], symbols: list[str]) -> list[dict]:
+    wanted = {str(symbol) for symbol in symbols}
+    return [
+        payload
+        for payload in payloads or []
+        if str(payload.get("symbol") or "") in wanted
+    ]
+
+
+def _attach_l2_core_ml_gate(
+    predictions: dict[str, dict],
+    *,
+    target_size: int,
+    upstream_count: int,
+) -> tuple[dict[str, dict], list[str], dict]:
+    scored: list[tuple[str, float, list[str]]] = []
+    for symbol, prediction in (predictions or {}).items():
+        score, models = _l2_tree_gate_score(prediction)
+        if score is None:
+            continue
+        scored.append((symbol, score, models))
+
+    ranked = sorted(scored, key=lambda item: item[1], reverse=True)
+    selected_symbols = [symbol for symbol, _score, _models in ranked[:max(0, target_size)]]
+    selected_set = set(selected_symbols)
+    rank_by_symbol = {symbol: idx + 1 for idx, (symbol, _score, _models) in enumerate(ranked)}
+    score_by_symbol = {symbol: score for symbol, score, _models in ranked}
+    models_by_symbol = {symbol: models for symbol, _score, models in ranked}
+
+    gated: dict[str, dict] = {}
+    for symbol, prediction in (predictions or {}).items():
+        row = dict(prediction or {})
+        rank = rank_by_symbol.get(symbol)
+        score = score_by_symbol.get(symbol)
+        row["core_ml_gate"] = {
+            "schema_version": "core_ml_gate_v2",
+            "source": "l2_tree_rank",
+            "stage": "L2",
+            "selected": symbol in selected_set,
+            "rank": rank,
+            "target_size": target_size,
+            "upstream_count": upstream_count,
+            "score": round(float(score), 6) if score is not None else None,
+            "models": models_by_symbol.get(symbol, []),
+        }
+        gated[symbol] = row
+
+    summary = {
+        "schema_version": "l2_core_ml_gate_v1",
+        "source": "l2_tree_rank",
+        "target_size": target_size,
+        "upstream_count": upstream_count,
+        "scored_count": len(scored),
+        "selected_count": len(selected_symbols),
+        "selected_symbols": selected_symbols,
+    }
+    return gated, selected_symbols, summary
+
+
 # ?????????????????????????????????????????????????????????????????????????????
 # State schema ??typed, contains domain data (not just step_status)
 # ?????????????????????????????????????????????????????????????????????????????
@@ -277,6 +367,11 @@ class PipelineStateV2(TypedDict, total=False):
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
     predictions: dict                       # symbol ??ml result
+    l2_predictions: dict                     # symbol -> cheap tree-only L2 result
+    l2_selected_symbols: list[str]           # symbols admitted by L2 core_ml_gate
+    l2_core_ml_gate_summary: dict            # L2 coarse gate audit summary
+    l3_payloads: list[dict]                  # reduced payloads sent to L3 formal ML
+    l3_predictions: dict                     # symbol -> formal L3 merged result
     final_recommendations: list[dict]       # after filter + scoring + ranking
     sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
@@ -982,6 +1077,150 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         "predictions": pred_map,
         "prediction_dispersion": dispersion,
         "modal_wait_telemetry": wait_telemetry,
+    }
+
+
+async def node_l2_cheap_ml_predict(state: PipelineStateV2) -> dict:
+    """Run cheap tree-only ML before any formal L3 model family."""
+    from services import modal_client
+
+    payloads = state["payloads"]
+    n = len(payloads)
+    logger.info("[Pipeline V2] node_l2_cheap_ml_predict: %s stocks (tree-only coarse gate)", n)
+    if not payloads:
+        return {"l2_predictions": {}, "predictions": {}, "l3_payloads": []}
+
+    started = time.time()
+    results = await modal_client.l2_tree_batch_predict(payloads)
+    wait_telemetry = {
+        "modal_waiter_sec": round(time.time() - started, 3),
+        "stage": "l2_tree_predict",
+        "n_input": n,
+        "n_result": len(results or []),
+    }
+
+    payload_by_symbol = {
+        str(payload.get("symbol") or ""): payload
+        for payload in payloads
+        if isinstance(payload, dict) and payload.get("symbol")
+    }
+    pred_map: dict[str, dict] = {}
+    row_errors: dict[str, str] = {}
+    for row in results or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "")
+        if not symbol:
+            continue
+        if row.get("error"):
+            row_errors[symbol] = str(row.get("error"))
+            continue
+        payload = payload_by_symbol.get(symbol) or {}
+        row = dict(row)
+        row["stock_meta"] = payload.get("stock_meta") or {}
+        pred_map[symbol] = row
+
+    degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
+    if degenerate_scores:
+        logger.warning("[Pipeline V2] L2 dropped degenerate tree rank_scores: %s", degenerate_scores)
+    if row_errors:
+        logger.warning(
+            "[Pipeline V2] L2 tree batch returned %s row errors; sample=%s",
+            len(row_errors),
+            [f"{sym}: {err}" for sym, err in list(row_errors.items())[:5]],
+        )
+    logger.info("[Pipeline V2] L2 tree predict done: %s/%s succeeded", len(pred_map), n)
+    return {
+        "l2_predictions": pred_map,
+        "predictions": pred_map,
+        "l2_modal_wait_telemetry": wait_telemetry,
+    }
+
+
+async def node_l2_core_gate(state: PipelineStateV2) -> dict:
+    """Attach core_ml_gate and reduce the payload set before L3 formal ML."""
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+
+    cfg_result = load_merged_trading_config_with_contract()
+    trading_cfg = cfg_result.config
+    if cfg_result.contract.degraded:
+        logger.warning("[Pipeline V2] trading:config degraded in l2_core_gate: %s", cfg_result.contract.to_dict())
+
+    screener_sizing = resolve_controller_screener_sizing(
+        trading_cfg,
+        state.get("adaptive_params"),
+    )
+    target_size = _resolve_coarse_ml_gate_target(
+        len(state.get("screener_recs") or []),
+        screener_sizing,
+        trading_cfg,
+    )
+    l2_predictions = dict(state.get("l2_predictions") or state.get("predictions") or {})
+    gated_predictions, selected_symbols, summary = _attach_l2_core_ml_gate(
+        l2_predictions,
+        target_size=target_size,
+        upstream_count=len(state.get("screener_recs") or []),
+    )
+    l3_payloads = _payloads_for_symbols(state.get("payloads") or [], selected_symbols)
+    summary["l3_payload_count"] = len(l3_payloads)
+    logger.info(
+        "[Pipeline V2] L2 core_ml_gate selected %s/%s candidates (target=%s)",
+        len(selected_symbols),
+        len(state.get("screener_recs") or []),
+        target_size,
+    )
+    return {
+        "l2_predictions": gated_predictions,
+        "predictions": gated_predictions,
+        "l2_selected_symbols": selected_symbols,
+        "l2_core_ml_gate_summary": summary,
+        "l3_payloads": l3_payloads,
+    }
+
+
+async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
+    """Run formal L3 families only on the L2 shortlist, then merge evidence."""
+    l3_payloads = state.get("l3_payloads") or []
+    l2_predictions = dict(state.get("l2_predictions") or state.get("predictions") or {})
+    if not l3_payloads:
+        logger.warning("[Pipeline V2] node_l3_formal_predict skipped: no L2-selected payloads")
+        return {
+            "predictions": l2_predictions,
+            "l3_predictions": {},
+            "prediction_dispersion": build_prediction_dispersion_report(l2_predictions),
+        }
+
+    logger.info(
+        "[Pipeline V2] node_l3_formal_predict: %s L2-selected stocks (formal family ML)",
+        len(l3_payloads),
+    )
+    l3_state = dict(state)
+    l3_state["payloads"] = l3_payloads
+    l3_result = await node_ml_predict(l3_state)
+    l3_predictions = dict(l3_result.get("predictions") or {})
+    merged_predictions = dict(l2_predictions)
+    for symbol, row in l3_predictions.items():
+        base = dict(l2_predictions.get(symbol) or {})
+        core_ml_gate = base.get("core_ml_gate")
+        merged = {**base, **row}
+        if core_ml_gate is not None:
+            merged["core_ml_gate"] = core_ml_gate
+        merged["prediction_stage"] = "L3"
+        merged_predictions[symbol] = merged
+
+    dispersion = build_prediction_dispersion_report(merged_predictions)
+    logger.info(
+        "[Pipeline V2] L3 formal predict merged: %s/%s L2 candidates, total predictions=%s",
+        len(l3_predictions),
+        len(l3_payloads),
+        len(merged_predictions),
+    )
+    return {
+        "predictions": merged_predictions,
+        "l3_predictions": l3_predictions,
+        "prediction_dispersion": dispersion,
+        "modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
+        "l3_modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
     }
 
 
@@ -2174,6 +2413,9 @@ def build_graph():
     g.add_node("compute_sector_flow", node_compute_sector_flow)
     g.add_node("build_payloads",    node_build_payloads)
     g.add_node("ml_predict",        node_ml_predict, retry=ml_retry)
+    g.add_node("l2_cheap_ml_predict", node_l2_cheap_ml_predict, retry=ml_retry)
+    g.add_node("l2_core_gate",      node_l2_core_gate)
+    g.add_node("l3_formal_predict", node_l3_formal_predict, retry=ml_retry)
     g.add_node("compute_personas", node_compute_personas)
     g.add_node("recommend",         node_recommend)
     g.add_node("gen_llm_reasons",   node_llm_reasons)
@@ -2186,8 +2428,14 @@ def build_graph():
     g.set_entry_point("load_inputs")
     g.add_edge("load_inputs",         "load_market_env")
     g.add_edge("load_market_env",     "build_payloads")
-    g.add_edge("build_payloads",      "ml_predict")
-    g.add_edge("ml_predict",          "compute_personas")
+    if _l2_l3_split_enabled():
+        g.add_edge("build_payloads",      "l2_cheap_ml_predict")
+        g.add_edge("l2_cheap_ml_predict", "l2_core_gate")
+        g.add_edge("l2_core_gate",        "l3_formal_predict")
+        g.add_edge("l3_formal_predict",   "compute_personas")
+    else:
+        g.add_edge("build_payloads",      "ml_predict")
+        g.add_edge("ml_predict",          "compute_personas")
     g.add_edge("compute_personas",    "recommend")
     g.add_edge("recommend",           "gen_llm_reasons")
     g.add_edge("gen_llm_reasons",     "write_d1")

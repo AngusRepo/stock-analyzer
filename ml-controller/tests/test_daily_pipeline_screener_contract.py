@@ -66,6 +66,24 @@ def test_l2_l3_targets_are_proportional_to_upstream_counts():
     assert l3_target == 40
 
 
+def test_daily_pipeline_graph_splits_l2_gate_before_l3_formal_predict():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    assert "def _l2_l3_split_enabled" in source
+    assert "PIPELINE_L2_L3_SPLIT_ENABLED" in source
+    assert source.index('g.add_edge("build_payloads",      "l2_cheap_ml_predict")') < source.index(
+        'g.add_edge("l2_cheap_ml_predict", "l2_core_gate")'
+    )
+    assert source.index('g.add_edge("l2_cheap_ml_predict", "l2_core_gate")') < source.index(
+        'g.add_edge("l2_core_gate",        "l3_formal_predict")'
+    )
+    assert source.index('g.add_edge("l2_core_gate",        "l3_formal_predict")') < source.index(
+        'g.add_edge("l3_formal_predict",   "compute_personas")'
+    )
+    assert 'g.add_edge("build_payloads",      "ml_predict")' in source
+    assert 'g.add_edge("ml_predict",          "compute_personas")' in source
+
+
 def test_daily_pipeline_does_not_inject_gnn_controller_adapter():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 

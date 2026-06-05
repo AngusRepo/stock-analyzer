@@ -844,6 +844,22 @@ def predict_batch_v2(payload: dict) -> dict:
 
 @app.function(
     cpu=2,
+    memory=4096,
+    timeout=300,
+    min_containers=0,
+    scaledown_window=900,
+    max_containers=4,
+)
+def predict_l2_tree_batch(payload: dict) -> dict:
+    """Cheap L2 coarse gate: LightGBM/XGBoost/ExtraTrees only."""
+    _setup_env()
+    from app.batch_prediction import predict_l2_tree_batch as _predict_l2_tree_batch
+
+    return _predict_l2_tree_batch(payload.get("payloads") or [])
+
+
+@app.function(
+    cpu=2,
     memory=8192,
     timeout=900,
     min_containers=0,

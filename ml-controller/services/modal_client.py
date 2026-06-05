@@ -28,6 +28,7 @@ _DEFAULT_MODAL_RESOURCE = {"cpu": 1.0, "memory_mb": 1024, "gpu": None}
 _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "predict_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "predict_batch_v2": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
+    "predict_l2_tree_batch": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "gnn_graphsage_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "retrain_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "prep_universal_batch": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
@@ -586,6 +587,78 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
         )
 
 
+async def _modal_l2_tree_batch_predict(payloads: list[dict]) -> list[dict]:
+    function_name = "predict_l2_tree_batch"
+    chunk_size = max(1, _int(os.environ.get("L2_TREE_PREDICT_CHUNK_SIZE"), 160))
+    chunks = _chunk_payloads(payloads, chunk_size)
+    batch_responses: list[dict] = []
+    results: list[dict] = []
+    t0 = time.time()
+    try:
+        fn = _lookup(function_name)
+        idx = 0
+        async for r in fn.map.aio(
+            [{"payloads": chunk} for chunk in chunks],
+            order_outputs=True,
+            return_exceptions=True,
+        ):
+            chunk = chunks[idx] if idx < len(chunks) else []
+            idx += 1
+            if isinstance(r, BaseException):
+                results.extend({
+                    "stock_id": p.get("stock_id", 0),
+                    "symbol": p.get("symbol", "?"),
+                    "error": f"predict_l2_tree_batch chunk error: {type(r).__name__}: {r}",
+                    "signal": "NO_SIGNAL",
+                    "direction": "neutral",
+                    "confidence": 0.0,
+                    "source": "l2_tree_predict",
+                    "prediction_stage": "L2",
+                } for p in chunk)
+                continue
+            chunk_results = r.get("results", r) if isinstance(r, dict) else r
+            if not isinstance(chunk_results, list):
+                results.extend({
+                    "stock_id": p.get("stock_id", 0),
+                    "symbol": p.get("symbol", "?"),
+                    "error": "predict_l2_tree_batch returned invalid payload",
+                    "signal": "NO_SIGNAL",
+                    "direction": "neutral",
+                    "confidence": 0.0,
+                    "source": "l2_tree_predict",
+                    "prediction_stage": "L2",
+                } for p in chunk)
+                continue
+            if isinstance(r, dict):
+                batch_responses.append(r)
+            results.extend(chunk_results)
+        return results
+    finally:
+        wall_sec = time.time() - t0
+        result_count = len(results)
+        result_error_count = sum(
+            1 for item in results if isinstance(item, dict) and item.get("error")
+        )
+        batch_metrics = _aggregate_predict_batch_metrics(batch_responses)
+        await _record_modal_observation(
+            function_name,
+            wall_sec=wall_sec,
+            compute_sec=_aggregate_map_compute_sec(wall_sec=wall_sec, item_count=len(chunks)),
+            meta={
+                "call_type": "map_batch",
+                "input_count": len(payloads),
+                "chunk_count": len(chunks),
+                "chunk_size": chunk_size,
+                "chunk_sizes": [len(chunk) for chunk in chunks],
+                "result_count": result_count,
+                "result_error_count": result_error_count,
+                "result_error_rate": round(result_error_count / result_count, 6) if result_count else None,
+                "batch_error_rate": batch_metrics.get("batch_error_rate"),
+                "batch_metrics": batch_metrics,
+            },
+        )
+
+
 async def _modal_batch_retrain(payloads: list[dict]) -> list[dict]:
     function_name = "retrain_single_stock"
     t0 = time.time()
@@ -1007,6 +1080,17 @@ async def _http_batch(
 # ══════════════════════════════════════════════════════════════════════════════
 # Public API（自動選擇 Modal / HTTP）
 # ══════════════════════════════════════════════════════════════════════════════
+
+async def l2_tree_batch_predict(payloads: list[dict]) -> list[dict]:
+    """Batch-predict the cheap L2 coarse gate models only."""
+    if _USE_MODAL:
+        logger.info(f"[ml_client] Modal.map predict_l2_tree_batch ? {len(payloads)}")
+        return await _modal_l2_tree_batch_predict(payloads)
+    if _ML_SERVICE_URL:
+        logger.info(f"[ml_client] HTTP parallel predict/l2-tree ? {len(payloads)} ??{_ML_SERVICE_URL}")
+        return await _http_batch("/predict/l2-tree", payloads, concurrency=20)
+    raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
 
 async def batch_predict(payloads: list[dict]) -> list[dict]:
     """並行推論 N 支股票。"""

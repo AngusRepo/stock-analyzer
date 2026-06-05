@@ -648,47 +648,63 @@ export async function listStrategyLearningCandidates(
        ORDER BY created_at DESC
        LIMIT 1
     ),
-    layer2 AS (
-      SELECT symbol, evidence
+    funnel_candidates AS (
+      SELECT symbol, name, stage, evidence, score_after, rank,
+             ROW_NUMBER() OVER (
+               PARTITION BY symbol
+               ORDER BY
+                 CASE stage
+                   WHEN 'layer2_coarse_ml_gate' THEN 1
+                   WHEN 'layer1_strategy_breadth_gate' THEN 2
+                   ELSE 3
+                 END,
+                 COALESCE(rank, 999999) ASC
+             ) AS row_rank
         FROM screener_funnel_items
        WHERE run_id = (SELECT run_id FROM latest_run)
-         AND stage = 'layer2_coarse_ml_gate'
-         AND decision = 'pass'
-    ),
-    layer1 AS (
-      SELECT symbol, evidence
-        FROM screener_funnel_items
-       WHERE run_id = (SELECT run_id FROM latest_run)
-         AND stage = 'layer1_strategy_breadth_gate'
-         AND decision IN ('pass', 'observe')
+         AND (
+           (stage = 'layer2_coarse_ml_gate' AND decision = 'pass')
+           OR (stage = 'layer1_strategy_breadth_gate' AND decision IN ('pass', 'observe'))
+         )
     )
-    SELECT dr.symbol, dr.name, dr.sector, dr.industry, dr.score_components,
+    SELECT fc.symbol,
+           COALESCE(dr.name, fc.name) AS name,
+           dr.sector,
+           dr.industry,
+           dr.score_components,
            dr.current_price,
-           COALESCE(layer2.evidence, layer1.evidence) AS funnel_evidence
-      FROM daily_recommendations dr
-      LEFT JOIN layer2 ON layer2.symbol = dr.symbol
-      LEFT JOIN layer1 ON layer1.symbol = dr.symbol
-     WHERE dr.date = ?
-     ORDER BY dr.rank ASC,
+           fc.evidence AS funnel_evidence,
+           fc.score_after AS funnel_score,
+           fc.rank AS funnel_rank
+      FROM funnel_candidates fc
+      LEFT JOIN daily_recommendations dr
+        ON dr.date = ?
+       AND dr.symbol = fc.symbol
+     WHERE fc.row_rank = 1
+     ORDER BY COALESCE(fc.rank, 999999) ASC,
        CASE WHEN json_valid(score_components) THEN
          COALESCE(
            CAST(json_extract(score_components, '$.finalScore') AS REAL),
            CAST(json_extract(score_components, '$.total') AS REAL),
            0
          ) ELSE 0 END DESC,
-       dr.symbol ASC
+       fc.symbol ASC
      LIMIT ?
   `).bind(date, date, safeLimit).all<StrategyCandidateInput & {
     score_components?: unknown
     funnel_evidence?: string | null
+    funnel_score?: number | null
+    funnel_rank?: number | null
   }>()
-  return (results ?? []).map(({ score_components, funnel_evidence, ...row }) => {
+  return (results ?? []).map(({ score_components, funnel_evidence, funnel_score: _funnelScore, funnel_rank: _funnelRank, ...row }) => {
     const evidence = parseJson<Record<string, any>>(funnel_evidence, {})
     const rawSignals = evidence && typeof evidence.raw_signals === 'object'
       ? evidence.raw_signals
       : row.raw_signals
+    const currentPrice = row.current_price ?? finiteNumber((rawSignals as any)?.close)
     return {
       ...row,
+      current_price: currentPrice,
       raw_signals: rawSignals ?? null,
       score_v2: row.score_v2 ?? score_components,
     }

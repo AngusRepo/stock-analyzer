@@ -26,7 +26,8 @@ function assert(condition: unknown, message: string): void {
     source.includes('screener_funnel_items') &&
       source.includes("stage = 'layer2_coarse_ml_gate'") &&
       source.includes('raw_signals') &&
-      source.includes('COALESCE(layer2.evidence, layer1.evidence)'),
+      source.includes('funnel_candidates') &&
+      source.includes('fc.evidence AS funnel_evidence'),
     'strategy learning candidates must restore raw strategy evidence from the latest screener funnel, not Score V2-only recommendations',
   )
   assert(

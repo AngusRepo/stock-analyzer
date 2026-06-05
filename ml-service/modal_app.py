@@ -875,6 +875,22 @@ def gnn_graphsage_universal_predict(payload: dict) -> dict:
 
 
 @app.function(
+    cpu=4,
+    memory=16384,
+    gpu="L4",
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def train_gnn_graphsage_universal(payload: dict) -> dict:
+    """Formal GraphSAGE artifact training and model_pool registration."""
+    _setup_env()
+    from app.gnn_training import train_graphsage_universal
+
+    return train_graphsage_universal(payload or {})
+
+
+@app.function(
     cpu=1,
     memory=2048,
     timeout=300,

@@ -47,3 +47,50 @@ def test_graphsage_artifact_requires_pt_batch_context_path(monkeypatch):
 
     with pytest.raises(RuntimeError, match="GraphSAGE .* batch-context artifact"):
         gnn_batch_runtime.load_graphsage_artifact()
+
+
+def test_graphsage_standardizes_features_from_artifact_metadata():
+    node_features = np.asarray(
+        [
+            [3.0, 10.0],
+            [5.0, 14.0],
+        ],
+        dtype=np.float32,
+    )
+
+    out = gnn_batch_runtime._standardize_node_features(
+        node_features,
+        {
+            "feature_standardization": {
+                "method": "robust_median_iqr",
+                "medians": [1.0, 2.0],
+                "scales": [2.0, 4.0],
+            }
+        },
+    )
+
+    np.testing.assert_allclose(
+        out,
+        np.asarray(
+            [
+                [1.0, 2.0],
+                [2.0, 3.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_graphsage_standardization_rejects_width_mismatch():
+    node_features = np.asarray([[3.0, 10.0]], dtype=np.float32)
+
+    with pytest.raises(RuntimeError, match="standardization width mismatch"):
+        gnn_batch_runtime._standardize_node_features(
+            node_features,
+            {
+                "feature_standardization": {
+                    "medians": [1.0],
+                    "scales": [2.0],
+                }
+            },
+        )

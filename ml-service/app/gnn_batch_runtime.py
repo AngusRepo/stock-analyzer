@@ -245,6 +245,28 @@ def build_correlation_edge_index(
     }
 
 
+def _standardize_node_features(node_features: np.ndarray, metadata: dict | None) -> np.ndarray:
+    """Apply training-time robust scaling when the GraphSAGE artifact declares it."""
+
+    meta = metadata or {}
+    std = meta.get("feature_standardization") if isinstance(meta.get("feature_standardization"), dict) else {}
+    medians = std.get("medians") if isinstance(std.get("medians"), list) else None
+    scales = std.get("scales") if isinstance(std.get("scales"), list) else None
+    if medians is None or scales is None:
+        return np.asarray(node_features, dtype=np.float32)
+
+    x = np.asarray(node_features, dtype=np.float32)
+    center = np.asarray(medians, dtype=np.float32).reshape(1, -1)
+    scale = np.asarray(scales, dtype=np.float32).reshape(1, -1)
+    if center.shape[1] != x.shape[1] or scale.shape[1] != x.shape[1]:
+        raise RuntimeError(
+            "GNN GraphSAGE standardization width mismatch: "
+            f"features={x.shape[1]} medians={center.shape[1]} scales={scale.shape[1]}"
+        )
+    scale = np.where(np.isfinite(scale) & (np.abs(scale) > 1e-9), scale, 1.0)
+    return np.nan_to_num((x - center) / scale, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
 def predict_graphsage_scores(
     artifact: GraphSAGEArtifact,
     *,
@@ -269,7 +291,8 @@ def predict_graphsage_scores(
 
     import torch
 
-    x = torch.tensor(np.asarray(node_features, dtype=np.float32), dtype=torch.float32)
+    standardized = _standardize_node_features(node_features, metadata)
+    x = torch.tensor(standardized, dtype=torch.float32)
     edge_index = torch.tensor(edge_index_np, dtype=torch.long)
     with torch.no_grad():
         scores = artifact.model(x, edge_index).detach().cpu().numpy().reshape(-1)

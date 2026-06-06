@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -916,6 +917,12 @@ def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versi
     assert params[1] == "vServing"
     assert params[2] == "XGBoost:vServing:monthly_release"
     assert params[3] == "test_backfill"
+    evidence = json.loads(str(params[4]))
+    assert evidence["registry_artifact_found"] is True
+    assert evidence["production_artifact_available"] is True
+    assert evidence["production_artifact_created"] is True
+    assert evidence["created_this_backfill"] is False
+    assert evidence["artifact_id"] == "XGBoost:vServing:monthly_release"
 
 
 def test_backfill_champion_pointers_can_register_current_production_artifact(monkeypatch):
@@ -945,3 +952,9 @@ def test_backfill_champion_pointers_can_register_current_production_artifact(mon
     assert pointer_params[0] == "LightGBM"
     assert pointer_params[1] == "v1"
     assert pointer_params[2] == "LightGBM:v1:production_backfill"
+    evidence = json.loads(str(pointer_params[4]))
+    assert evidence["registry_artifact_found"] is True
+    assert evidence["production_artifact_available"] is True
+    assert evidence["production_artifact_created"] is True
+    assert evidence["created_this_backfill"] is True
+    assert evidence["artifact_id"] == "LightGBM:v1:production_backfill"

@@ -12,6 +12,10 @@ const pipelineCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("if (body.task === 'pipeline'"),
   callbackRoutes.indexOf("const verifyCanContinue"),
 )
+const verifyCallbackBlock = callbackRoutes.slice(
+  callbackRoutes.indexOf("const verifyCanContinue"),
+  callbackRoutes.indexOf("if (body.task === 'verify-v2' && String(body.status) === 'error')"),
+)
 
 assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback must be explicitly handled')
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
@@ -24,6 +28,10 @@ assert(
 assert(
   !pipelineCallbackBlock.includes('executionCtx.waitUntil'),
   'pipeline terminal callback must await post-pipeline chain before returning; waitUntil can silently drop verify trigger evidence',
+)
+assert(
+  !verifyCallbackBlock.includes('executionCtx.waitUntil'),
+  'verify terminal callback must await post-verify chain before returning; waitUntil can silently drop final closure evidence',
 )
 
 assert(

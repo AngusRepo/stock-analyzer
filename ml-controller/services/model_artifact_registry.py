@@ -705,13 +705,19 @@ def backfill_champion_pointers_from_model_pool(
             except Exception as exc:  # noqa: BLE001 - keep pointer migration partial and visible.
                 errors.append(f"{model_name}:{champion_version}:artifact_backfill:{exc}")
                 artifact = None
+        artifact_available = bool(artifact)
         evidence = {
             "schema_version": "champion-pointer-backfill-v1",
             "reason": reason,
             "source": "model_pool.json",
             "backfilled_at": now,
-            "registry_artifact_found": bool(artifact),
-            "production_artifact_created": created_this_artifact,
+            "registry_artifact_found": artifact_available,
+            "production_artifact_available": artifact_available,
+            "production_artifact_created": artifact_available,
+            "created_this_backfill": created_this_artifact,
+            "artifact_id": artifact.get("artifact_id") if artifact else None,
+            "artifact_path": artifact.get("artifact_path") if artifact else None,
+            "metadata_path": artifact.get("metadata_path") if artifact else None,
         }
         try:
             d1_client.execute(

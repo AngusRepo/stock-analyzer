@@ -117,6 +117,9 @@ CORE_SPECS = [
 ]
 
 TRADING_RESTRICTION_RETENTION_DAYS = int(os.environ.get("FINLAB_TRADING_RESTRICTION_RETENTION_DAYS", "31"))
+TRADING_RESTRICTION_CLEANUP_ENABLED = str(
+    os.environ.get("FINLAB_TRADING_RESTRICTION_CLEANUP_ENABLED", "0")
+).strip().lower() in {"1", "true", "yes", "on"}
 DEFAULT_CANONICAL_DATASETS = [
     "canonical_market_daily",
     "canonical_chip_daily",
@@ -287,6 +290,20 @@ def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
 
 def d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
     return d1_request(sql, params)
+
+
+def d1_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    *,
+    timeout: float = 120.0,
+    chunk_size: int = 250,
+) -> dict[str, Any]:
+    proxied = controller_d1_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
+    if proxied is not None:
+        return proxied
+    from services.d1_client import batch_execute
+
+    return batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
 
 
 def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -700,6 +717,44 @@ def insert_finlab_trading_restrictions(
         prepared.append((source_date, row))
     prepared.sort(key=lambda item: item[0], reverse=True)
 
+    batch_sql = """
+        INSERT INTO canonical_trading_restrictions (
+          symbol, restriction_type, market_segment, start_date, end_date, source,
+          source_date, title, source_url, lineage_json, active, updated_at
+        )
+        VALUES (?, ?, NULL, ?, ?, 'finlab.trading_attention', ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        ON CONFLICT(symbol, restriction_type, source, source_date) DO UPDATE SET
+          title=excluded.title,
+          end_date=excluded.end_date,
+          source_url=excluded.source_url,
+          lineage_json=excluded.lineage_json,
+          active=excluded.active,
+          updated_at=CURRENT_TIMESTAMP
+    """.strip()
+    batch_statements: list[tuple[str, list[Any]]] = []
+    for source_date, row in prepared[:max_rows]:
+        symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "code"]), row)
+        if not symbol:
+            continue
+        raw_type = str(_row_value(row, ["type", "restriction_type"]) or "attention")
+        restriction_type = "disposition" if any(word in raw_type.lower() for word in ["punish", "disposition"]) else "attention"
+        title = str(_row_value(row, ["title", "name", "reason"]) or f"{restriction_type}:{symbol}")[:240]
+        url = _source_url(_row_value(row, ["url", "source_url", "link"]), "https://www.finlab.tw/")
+        end_date = _add_days(source_date, lookback_days)
+        batch_statements.append((batch_sql, [
+            symbol,
+            restriction_type,
+            source_date,
+            end_date,
+            source_date,
+            title,
+            url,
+            json.dumps({"schema_version": "finlab-trading-attention-v1", "run_id": manifest["run_id"], "raw": row}, ensure_ascii=False, default=str),
+        ]))
+    if batch_statements:
+        d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
+    return len(batch_statements)
+
     inserted = 0
     for source_date, row in prepared[:max_rows]:
         symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "證券代號", "股票代號", "code"]), row)
@@ -741,6 +796,8 @@ def insert_finlab_trading_restrictions(
 
 
 def cleanup_finlab_trading_restrictions(*, retention_days: int = TRADING_RESTRICTION_RETENTION_DAYS) -> int:
+    if not TRADING_RESTRICTION_CLEANUP_ENABLED:
+        return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date().isoformat()
     result = d1_exec(
         """
@@ -766,6 +823,43 @@ def insert_finlab_cnyes_evidence(manifest: dict[str, Any], *, max_rows: int = 80
         key=lambda row: str(_row_value(row, ["published_at", "date", "日期", "time", "datetime"]) or ""),
         reverse=True,
     )
+    batch_sql = """
+        INSERT INTO external_evidence_items (
+          source_id, source_kind, title, published_at, source_url, symbols_json, themes_json,
+          allowed_use, decision_effect, source_quality_score, entity_linking_confidence,
+          spam_filter_status, accepted, packet_checksum, raw_json
+        )
+        SELECT 'anue', 'finlab_tw_news_cnyes', ?, ?, ?, ?, '[]',
+               'theme_context', 'theme_context', 0.86, ?, 'clean', 1, ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM external_evidence_items
+           WHERE source_id='anue' AND source_url=? AND published_at=?
+        )
+    """.strip()
+    batch_statements: list[tuple[str, list[Any]]] = []
+    for row in records[:max_rows]:
+        symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "code"]), row)
+        title = str(_row_value(row, ["title", "headline", "name"]) or "").strip()
+        url = _source_url(_row_value(row, ["url", "source_url", "link"]), "")
+        published_at = _clean_date(_row_value(row, ["published_at", "date", "time", "datetime"]), generated_date)
+        if not title or not url:
+            continue
+        symbols_json = json.dumps([symbol], ensure_ascii=False) if symbol else json.dumps([], ensure_ascii=False)
+        batch_statements.append((batch_sql, [
+            title[:240],
+            published_at,
+            url,
+            symbols_json,
+            0.9 if symbol else 0.35,
+            f"finlab_tw_news_cnyes:{manifest['run_id']}:{url}:{published_at}",
+            json.dumps({"schema_version": "finlab-cnyes-news-v1", "run_id": manifest["run_id"], "raw": row}, ensure_ascii=False, default=str),
+            url,
+            published_at,
+        ]))
+    if batch_statements:
+        d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
+    return len(batch_statements)
+
     inserted = 0
     for row in records[:max_rows]:
         symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "股票代號", "code"]), row)
@@ -953,12 +1047,15 @@ def main() -> int:
 
     if args.write_d1:
         insert_d1_summary(manifest)
+        print("[finlab-backfill] runtime_table_writeback start", file=sys.stderr, flush=True)
         manifest["runtime_table_writeback"] = insert_finlab_runtime_tables(manifest)
+        print("[finlab-backfill] runtime_table_writeback done", file=sys.stderr, flush=True)
         if args.apply_canonical_d1:
             default_start, default_end = default_canonical_window(
                 generated_at=generated_at,
                 window_days=args.canonical_window_days,
             )
+            print("[finlab-backfill] canonical_d1_apply start", file=sys.stderr, flush=True)
             manifest["canonical_d1_apply"] = materialize_canonical_to_d1(
                 manifest,
                 start_date=args.canonical_start_date or default_start,
@@ -968,6 +1065,7 @@ def main() -> int:
                 chunk_size=args.canonical_d1_chunk_size,
                 dry_run=args.canonical_dry_run,
             )
+            print("[finlab-backfill] canonical_d1_apply done", file=sys.stderr, flush=True)
         write_json(run_dir / "manifest.json", manifest)
 
     print(json.dumps({

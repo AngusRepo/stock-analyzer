@@ -21,6 +21,7 @@ class FinLabCanonicalOutputs:
     artifact_root: str
     canonical_market_daily: list[dict[str, Any]]
     canonical_chip_daily: list[dict[str, Any]]
+    canonical_institutional_amount_daily: list[dict[str, Any]]
     canonical_revenue_monthly: list[dict[str, Any]]
     canonical_broker_flow_daily: list[dict[str, Any]]
     finlab_taxonomy_tags: list[dict[str, Any]]
@@ -104,6 +105,41 @@ def _join_wide_fields(
         if frame.is_empty():
             continue
         joined = frame if joined is None else joined.join(frame, on=["date", "stock_id"], how="full", coalesce=True)
+    return joined if joined is not None else pl.DataFrame()
+
+
+def _wide_market_field_to_long(path: Path, field: str, *, start_date: str | None, end_date: str | None) -> pl.DataFrame:
+    df = _read_parquet(path)
+    if df.is_empty() or "date" not in df.columns:
+        return pl.DataFrame({"date": [], "category": [], field: []})
+    df = _filter_dates(df, start_date=start_date, end_date=end_date)
+    value_columns = [col for col in df.columns if col != "date"]
+    if not value_columns:
+        return pl.DataFrame({"date": [], "category": [], field: []})
+    return (
+        df.unpivot(index="date", on=value_columns, variable_name="category", value_name=field)
+        .filter(pl.col(field).is_not_null())
+        .with_columns(
+            _date_expr("date").alias("date"),
+            pl.col("category").cast(pl.Utf8),
+            pl.col(field).cast(pl.Float64, strict=False),
+        )
+    )
+
+
+def _join_market_fields(
+    lane_dir: Path,
+    fields: Iterable[str],
+    *,
+    start_date: str | None,
+    end_date: str | None,
+) -> pl.DataFrame:
+    joined: pl.DataFrame | None = None
+    for field in fields:
+        frame = _wide_market_field_to_long(lane_dir / f"{field}.parquet", field, start_date=start_date, end_date=end_date)
+        if frame.is_empty():
+            continue
+        joined = frame if joined is None else joined.join(frame, on=["date", "category"], how="full", coalesce=True)
     return joined if joined is not None else pl.DataFrame()
 
 
@@ -194,6 +230,81 @@ def build_chip_rows(
         "dealer_net",
         "margin_balance",
         "short_balance",
+        "source",
+        "lineage_json",
+        "as_of_date",
+    ])
+    return _rows(df, limit)
+
+
+def _institutional_market_segment(category: Any) -> str:
+    text = str(category or "")
+    if "上櫃" in text:
+        return "OTC"
+    if "上市" in text:
+        return "LISTED"
+    return "LISTED_OTC"
+
+
+def _institutional_investor(category: Any) -> str:
+    text = str(category or "")
+    if "外資及陸資合計" in text or "外陸資合計" in text:
+        return "foreign_total"
+    if "不含外資自營商" in text or "不含自營商" in text:
+        return "foreign"
+    if "外資自營商" in text:
+        return "foreign_dealer"
+    if "外資" in text or "外陸資" in text:
+        return "foreign"
+    if "投信" in text:
+        return "trust"
+    if "自營商合計" in text:
+        return "dealer_total"
+    if "自行買賣" in text:
+        return "dealer_self"
+    if "避險" in text:
+        return "dealer_hedge"
+    if "合計" in text or "三大法人" in text:
+        return "total"
+    return normalize_symbol(text).lower() or "unknown"
+
+
+def build_institutional_amount_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    fields = ["buy_amount", "sell_amount", "net_amount"]
+    df = _join_market_fields(artifact_root / "raw" / "institutional_amount_summary", fields, start_date=start_date, end_date=end_date)
+    if df.is_empty():
+        return []
+    lineage = _lineage(run_id, "institutional_amount_summary", fields, artifact_root)
+    df = df.with_columns(
+        pl.col("category").map_elements(_institutional_market_segment, return_dtype=pl.Utf8).alias("market_segment"),
+        pl.col("category").map_elements(_institutional_investor, return_dtype=pl.Utf8).alias("investor"),
+        pl.col("buy_amount").cast(pl.Float64, strict=False),
+        pl.col("sell_amount").cast(pl.Float64, strict=False),
+        pl.col("net_amount").cast(pl.Float64, strict=False),
+    ).with_columns(
+        pl.when(pl.col("net_amount").is_null())
+        .then(pl.col("buy_amount").fill_null(0) - pl.col("sell_amount").fill_null(0))
+        .otherwise(pl.col("net_amount"))
+        .alias("net_amount"),
+        pl.lit("finlab.institutional_investors_trading_all_market_summary").alias("source"),
+        pl.lit(lineage).alias("lineage_json"),
+        pl.lit(generated_at[:10]).alias("as_of_date"),
+    ).select([
+        "date",
+        "market_segment",
+        "investor",
+        "category",
+        "buy_amount",
+        "sell_amount",
+        "net_amount",
         "source",
         "lineage_json",
         "as_of_date",
@@ -523,6 +634,14 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_chip_daily") else []
+    institutional_amount = build_institutional_amount_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_institutional_amount_daily") else []
     if wants("canonical_chip_daily") or wants("canonical_broker_flow_daily"):
         emerging_chip, broker_flow = build_emerging_broker_rows(
             root,
@@ -567,6 +686,8 @@ def materialize_finlab_canonical_outputs(
         output_rows["canonical_market_daily"] = listed_market + emerging_market
     if wants("canonical_chip_daily"):
         output_rows["canonical_chip_daily"] = listed_chip + emerging_chip
+    if wants("canonical_institutional_amount_daily"):
+        output_rows["canonical_institutional_amount_daily"] = institutional_amount
     if wants("canonical_revenue_monthly"):
         output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
     if wants("canonical_broker_flow_daily"):
@@ -596,6 +717,7 @@ def materialize_finlab_canonical_outputs(
         artifact_root=str(root),
         canonical_market_daily=output_rows.get("canonical_market_daily", []),
         canonical_chip_daily=output_rows.get("canonical_chip_daily", []),
+        canonical_institutional_amount_daily=output_rows.get("canonical_institutional_amount_daily", []),
         canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
         canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
         finlab_taxonomy_tags=output_rows.get("finlab_taxonomy_tags", []),
@@ -653,6 +775,13 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["stock_id", "date", "market_segment", "foreign_net", "trust_net", "dealer_net", "margin_balance", "short_balance", "source", "lineage_json", "as_of_date"],
         ["stock_id", "date", "source"],
         ["market_segment", "foreign_net", "trust_net", "dealer_net", "margin_balance", "short_balance", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_institutional_amount_daily",
+        outputs.canonical_institutional_amount_daily,
+        ["date", "market_segment", "investor", "category", "buy_amount", "sell_amount", "net_amount", "source", "lineage_json", "as_of_date"],
+        ["date", "market_segment", "investor", "source"],
+        ["category", "buy_amount", "sell_amount", "net_amount", "lineage_json", "as_of_date"],
     ))
     statements.extend(_row_statements(
         "canonical_revenue_monthly",

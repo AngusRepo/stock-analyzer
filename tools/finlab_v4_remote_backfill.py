@@ -54,6 +54,15 @@ CORE_SPECS = [
         },
     ),
     DatasetSpec(
+        lane="institutional_amount_summary",
+        kind="wide_fields",
+        keys={
+            "buy_amount": "institutional_investors_trading_all_market_summary:買進金額",
+            "sell_amount": "institutional_investors_trading_all_market_summary:賣出金額",
+            "net_amount": "institutional_investors_trading_all_market_summary:買賣超",
+        },
+    ),
+    DatasetSpec(
         lane="revenue",
         kind="wide_fields",
         keys={
@@ -123,6 +132,7 @@ TRADING_RESTRICTION_CLEANUP_ENABLED = str(
 DEFAULT_CANONICAL_DATASETS = [
     "canonical_market_daily",
     "canonical_chip_daily",
+    "canonical_institutional_amount_daily",
     "canonical_revenue_monthly",
     "canonical_broker_flow_daily",
     "finlab_taxonomy_tags",
@@ -370,6 +380,7 @@ def d1_counts(start: str) -> dict[str, int]:
         "revenue": "SELECT COUNT(*) AS n FROM monthly_revenue WHERE date >= ?",
         "canonical_market_daily": "SELECT COUNT(*) AS n FROM canonical_market_daily WHERE date >= ?",
         "canonical_chip_daily": "SELECT COUNT(*) AS n FROM canonical_chip_daily WHERE date >= ?",
+        "canonical_institutional_amount_daily": "SELECT COUNT(*) AS n FROM canonical_institutional_amount_daily WHERE date >= ?",
         "canonical_revenue_monthly": "SELECT COUNT(*) AS n FROM canonical_revenue_monthly WHERE revenue_month >= ?",
     }
     counts: dict[str, int] = {}
@@ -384,6 +395,8 @@ def stockvision_count_for_lane(counts: dict[str, int], lane: str) -> int:
         return counts.get("daily_price", 0)
     if lane in {"chip_diversity", "emerging_chip_diversity"}:
         return counts.get("chip_diversity", 0)
+    if lane == "institutional_amount_summary":
+        return counts.get("canonical_institutional_amount_daily", 0)
     if lane in {"revenue", "emerging_revenue_diversity"}:
         return counts.get("revenue", 0)
     return 0

@@ -38,6 +38,7 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     assert (start, end) == ("2026-05-13", "2026-05-20")
     datasets = parse_canonical_datasets("")
     assert "canonical_market_daily" in datasets
+    assert "canonical_institutional_amount_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets
     assert parse_canonical_datasets("canonical_chip_daily, finlab_taxonomy_tags") == [
         "canonical_chip_daily",
@@ -150,6 +151,41 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     assert statements
     assert any("INSERT INTO canonical_market_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO finlab_materialization_manifest" in sql for sql, _ in statements)
+
+
+def test_materialize_outputs_include_institutional_amount_summary() -> None:
+    root = _root("institutional_amount")
+    categories = ["上市外資及陸資(不含外資自營商)", "上櫃投信"]
+    _write(
+        root / "raw" / "institutional_amount_summary" / "buy_amount.parquet",
+        pl.DataFrame({"date": ["2026-06-05"], categories[0]: [100.0], categories[1]: [30.0]}),
+    )
+    _write(
+        root / "raw" / "institutional_amount_summary" / "sell_amount.parquet",
+        pl.DataFrame({"date": ["2026-06-05"], categories[0]: [70.0], categories[1]: [50.0]}),
+    )
+    _write(
+        root / "raw" / "institutional_amount_summary" / "net_amount.parquet",
+        pl.DataFrame({"date": ["2026-06-05"], categories[0]: [30.0], categories[1]: [-20.0]}),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-06T00:00:00+00:00",
+        start_date="2026-06-05",
+        end_date="2026-06-05",
+        datasets=["canonical_institutional_amount_daily"],
+    )
+
+    assert outputs.manifest["row_counts"]["canonical_institutional_amount_daily"] == 2
+    listed_foreign = next(row for row in outputs.canonical_institutional_amount_daily if row["market_segment"] == "LISTED")
+    otc_trust = next(row for row in outputs.canonical_institutional_amount_daily if row["market_segment"] == "OTC")
+    assert listed_foreign["investor"] == "foreign"
+    assert listed_foreign["net_amount"] == 30.0
+    assert otc_trust["investor"] == "trust"
+    assert otc_trust["net_amount"] == -20.0
+    statements = build_d1_upsert_statements(outputs)
+    assert any("INSERT INTO canonical_institutional_amount_daily" in sql for sql, _ in statements)
 
 
 def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:

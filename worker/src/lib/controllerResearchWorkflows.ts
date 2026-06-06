@@ -371,7 +371,7 @@ export async function runFinLabV4Backfill(
   options: { continueEveningChain?: boolean } = {},
 ) {
   if (!finLabBackfillModalTriggerEnabled(env)) {
-    return 'skipped: FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED not enabled; Cloud Run Job remains owner'
+    throw new Error('FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED not enabled; FinLab primary canonical refresh is blocked')
   }
   requireController(env)
 

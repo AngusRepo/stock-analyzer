@@ -47,6 +47,12 @@ assert(
   'evening-chain must defer/retry same-day source readiness instead of fail-closing immediately at the scheduled root time',
 )
 assert(
+  updateOrchestrator.includes('runFinLabV4Backfill(env, twDate, force, { continueEveningChain: true })') &&
+    updateOrchestrator.includes("'finlab_backfill_complete'") &&
+    updateOrchestrator.includes('assertFinLabCanonicalDailyReady'),
+  'evening-chain must refresh FinLab canonical data first, then continue through queue callback only after canonical readiness is verified',
+)
+assert(
   updateOrchestrator.includes('runQueueUpdate(env, twDate, force)'),
   'force rerun must bypass the queue-update lock, not only the bulk-fetch lock',
 )

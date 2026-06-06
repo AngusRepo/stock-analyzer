@@ -5,6 +5,7 @@ import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
+import { runFinLabV4Backfill } from './controllerResearchWorkflows'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { fetchPunishedStocks } from './twseApi'
 
@@ -16,6 +17,11 @@ const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
+const FINLAB_CANONICAL_DAILY_CHECKS = [
+  { table: 'canonical_market_daily', minRows: 1000 },
+  { table: 'canonical_chip_daily', minRows: 1000 },
+  { table: 'canonical_institutional_amount_daily', minRows: 1 },
+] as const
 
 const UPDATE_UNIVERSE_WHERE = `
   COALESCE(UPPER(market), '') NOT IN ('US', 'NYSE', 'NASDAQ')
@@ -35,6 +41,42 @@ function resolveUpdateDate(runDate?: string | null): string {
 function isBulkPriceSourceNotReady(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /Bulk price source incomplete|TWSE source failed|TPEX source failed|price rows=\d+\//i.test(message)
+}
+
+function isFinLabCanonicalReadinessError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /FinLab canonical daily not ready/i.test(message)
+}
+
+async function finLabCanonicalTableStats(
+  db: D1Database,
+  table: string,
+): Promise<{ table: string; latestDate: string | null; rowsOnLatest: number }> {
+  const latest = await db.prepare(`SELECT MAX(date) AS latest_date FROM ${table}`).first<{ latest_date: string | null }>()
+  const latestDate = latest?.latest_date ?? null
+  if (!latestDate) return { table, latestDate: null, rowsOnLatest: 0 }
+  const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE date = ?`).bind(latestDate).first<{ count: number }>()
+  return { table, latestDate, rowsOnLatest: Number(row?.count ?? 0) }
+}
+
+async function assertFinLabCanonicalDailyReady(db: D1Database, targetDate: string): Promise<string> {
+  const stats = await Promise.all(
+    FINLAB_CANONICAL_DAILY_CHECKS.map((check) => finLabCanonicalTableStats(db, check.table)),
+  )
+  const errors: string[] = []
+  for (const stat of stats) {
+    const check = FINLAB_CANONICAL_DAILY_CHECKS.find((item) => item.table === stat.table)!
+    if (stat.latestDate !== targetDate) {
+      errors.push(`${stat.table} latest=${stat.latestDate ?? 'none'} expected=${targetDate}`)
+    }
+    if (stat.rowsOnLatest < check.minRows) {
+      errors.push(`${stat.table} rows=${stat.rowsOnLatest}/${check.minRows}`)
+    }
+  }
+  if (errors.length) {
+    throw new Error(`FinLab canonical daily not ready: ${errors.join('; ')}`)
+  }
+  return `FinLab canonical ready for ${targetDate}: ${stats.map((row) => `${row.table}=${row.rowsOnLatest}`).join(' ')}`
 }
 
 async function scheduleSourceReadinessRetry(
@@ -501,8 +543,13 @@ async function markShardComplete(
   await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount)
 }
 
-export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
-  const twDate = resolveUpdateDate(runDate)
+async function continueAfterFinLabBackfill(
+  env: Bindings,
+  twDate: string,
+  force = false,
+  runId?: string,
+): Promise<string> {
+  const canonicalSummary = await assertFinLabCanonicalDailyReady(env.DB, twDate)
   let bulkSummary: string
   try {
     bulkSummary = await runBulkFetch(env, force, twDate)
@@ -514,12 +561,46 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   }
   await logSchedulerResult(env.KV, 'update', {
     status: 'success',
-    summary: `market data update ready for ${twDate}; ${bulkSummary}`,
+    summary: `market data update ready for ${twDate}; FinLab primary canonical ready; ${canonicalSummary}; ${bulkSummary}`,
     duration_ms: 0,
+    run_id: runId,
     run_date: twDate,
   })
   await runQueueUpdate(env, twDate, force)
-  return `triggered evening-chain: ${bulkSummary}; indicator queue accepted`
+  return `${canonicalSummary}; ${bulkSummary}; indicator queue accepted`
+}
+
+export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
+  const twDate = resolveUpdateDate(runDate)
+  const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, { continueEveningChain: true }))
+  const finlabStatus = classifySchedulerSummary(finlabSummary)
+  await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+    status: finlabStatus,
+    summary: finlabSummary,
+    duration_ms: 0,
+    run_date: twDate,
+  })
+  if (finlabStatus !== 'triggered' && finlabStatus !== 'success') {
+    throw new Error(`FinLab primary backfill did not start: ${finlabSummary}`)
+  }
+  if (finlabStatus === 'success') {
+    const continuation = await continueAfterFinLabBackfill(env, twDate, force)
+    return `triggered evening-chain: ${continuation}`
+  }
+  const summary = `FinLab canonical refresh triggered for ${twDate}; waiting for finlab-v4-backfill callback before legacy fallback + indicator queue`
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'triggered',
+    summary,
+    duration_ms: 0,
+    run_date: twDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'triggered',
+    summary,
+    duration_ms: 0,
+    run_date: twDate,
+  })
+  return `triggered evening-chain: ${finlabSummary}; awaiting FinLab canonical callback`
 }
 
 export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
@@ -742,6 +823,54 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'finlab_backfill_complete') {
+    const triggerTime = msg.triggerTime
+    const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid FinLab backfill continuation date ${triggerTime}, skipping.`)
+      return
+    }
+
+    try {
+      const summary = await continueAfterFinLabBackfill(env, triggerTime, Boolean(msg.force), msg.runId)
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'running',
+        summary: `FinLab canonical callback accepted for ${triggerTime}; ${summary}`,
+        duration_ms: 0,
+        run_id: msg.runId,
+        run_date: triggerTime,
+      })
+    } catch (e) {
+      if (isBulkPriceSourceNotReady(e)) {
+        const message = e instanceof Error ? e.message : String(e)
+        await scheduleSourceReadinessRetry(env, triggerTime, attempt, message)
+        return
+      }
+      if (isFinLabCanonicalReadinessError(e)) {
+        const message = e instanceof Error ? e.message : String(e)
+        await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+          status: 'error',
+          summary: message,
+          duration_ms: 0,
+          error: message,
+          run_id: msg.runId,
+          run_date: triggerTime,
+        })
+        await logSchedulerResult(env.KV, 'evening-chain', {
+          status: 'error',
+          summary: `event-driven chain stopped: ${message}`,
+          duration_ms: 0,
+          error: message,
+          run_id: msg.runId,
+          run_date: triggerTime,
+        }, env as any)
+        return
+      }
+      throw e
+    }
+    return
+  }
+
   if (msg.type === 'source_readiness_retry') {
     const triggerTime = msg.triggerTime
     const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1

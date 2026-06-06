@@ -6,6 +6,7 @@ export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Vari
 
 const REPORT_ARTIFACT_TASKS = new Set([
   'pipeline',
+  'finlab-v4-backfill',
   'backtest',
   'weekly-optuna',
   'optuna-queue',
@@ -290,6 +291,47 @@ async function handleSchedulerCallback(c: any) {
         console.warn('[scheduler-callback] R2 scheduler report artifact failed:', e)
       }
     })())
+  }
+
+  if (body.task === 'finlab-v4-backfill' && ['success', 'error', 'skipped'].includes(String(body.status))) {
+    const continueEveningChain = Boolean(
+      body.continue_evening_chain ||
+      body.result?.continue_evening_chain ||
+      body.metadata?.continue_evening_chain,
+    )
+    if (body.status === 'success' && continueEveningChain && callbackRunDate) {
+      await logSchedulerResult(c.env.KV, 'evening-chain', {
+        status: 'running',
+        summary: `FinLab canonical backfill completed for ${callbackRunDate}; queueing market data continuation`,
+        duration_ms: 0,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      })
+      await c.env.UPDATE_QUEUE.send({
+        type: 'finlab_backfill_complete',
+        cursor: 0,
+        triggerTime: callbackRunDate,
+        runId: callbackRunId,
+        attempt: 1,
+      })
+    } else if (body.status !== 'success' && continueEveningChain) {
+      await logSchedulerResult(c.env.KV, 'update', {
+        status: body.status === 'skipped' ? 'skipped' : 'error',
+        summary: `FinLab canonical backfill blocked market data continuation: ${String(body.summary ?? body.status)}`,
+        duration_ms: 0,
+        error: body.error != null ? String(body.error) : undefined,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+      await logSchedulerResult(c.env.KV, 'evening-chain', {
+        status: body.status === 'skipped' ? 'skipped' : 'error',
+        summary: `root chain stopped at FinLab canonical callback: ${String(body.summary ?? body.status)}`,
+        duration_ms: 0,
+        error: body.error != null ? String(body.error) : undefined,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+    }
   }
 
   if (body.task === 'pipeline' && ['success', 'error', 'skipped'].includes(String(body.status))) {

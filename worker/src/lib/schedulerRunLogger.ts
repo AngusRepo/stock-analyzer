@@ -56,6 +56,7 @@ const TASK_NAMES: Record<string, string> = {
   'eod-exit': 'EOD Exit',
   'weekly-audit': 'Weekly Audit',
   'model-ic-tracker': 'Model IC Tracker',
+  'finlab-v4-backfill': 'FinLab V4 Backfill',
   'weekly-cleanup': 'Weekly Cleanup',
   'weekly-backtest': 'Weekly Backtest/MC',
   'alpha-quality': 'Alpha Quality',

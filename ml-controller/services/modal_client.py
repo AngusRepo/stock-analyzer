@@ -53,6 +53,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "breeze2_research_context": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
     "breeze2_reason_generation": {"cpu": 2.0, "memory_mb": 16384, "gpu": "L4"},
     "state_space_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
+    "finlab_v4_backfill": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "feature_selection_per_window": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
     "update_arf_reward": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
 }
@@ -936,6 +937,26 @@ async def breeze2_reason_generation(payload: dict) -> dict:
             resp = await client.post(url, json=payload, headers=_ml_headers())
             return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}", "text": resp.text[:500]}
     raise RuntimeError("breeze2_reason_generation requires Modal or ML_SERVICE_URL")
+
+
+async def spawn_finlab_v4_backfill(payload: dict) -> dict:
+    """Spawn the Modal FinLab canonical backfill and return immediately."""
+    fn = _lookup("finlab_v4_backfill")
+    call = fn.spawn(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    return {
+        "status": "triggered",
+        "function_name": "finlab_v4_backfill",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+        "run_date": payload.get("run_date"),
+        "continue_evening_chain": bool(payload.get("continue_evening_chain")),
+        "callback_configured": bool(payload.get("callback_url") and payload.get("callback_token")),
+    }
 
 
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict helpers

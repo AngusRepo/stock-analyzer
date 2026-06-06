@@ -233,6 +233,44 @@ def _macro_liquidity(market_env: dict[str, Any], rows: list[dict[str, Any]]) -> 
     }, "macro_liquidity_mixed")
 
 
+def _tw_business_indicators(market_env: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    signal = _latest_value(market_env, rows, "tw_business_signal")
+    leading = _latest_value(market_env, rows, "tw_business_leading_index")
+    coincident = _latest_value(market_env, rows, "tw_business_coincident_index")
+    date = market_env.get("tw_business_signal_date")
+    if not date:
+        for row in reversed(rows):
+            if row.get("tw_business_signal_date"):
+                date = row.get("tw_business_signal_date")
+                break
+
+    if signal is None and leading is None and coincident is None:
+        return _dimension("missing", "neutral", {}, "tw_business_indicators_missing")
+    if signal is not None and signal <= 22:
+        stance = "bearish"
+        reason = "business_cycle_contraction"
+    elif signal is not None and signal >= 32:
+        stance = "bullish"
+        reason = "business_cycle_expansion"
+    else:
+        stance = "neutral"
+        reason = "business_cycle_mid"
+
+    item = _dimension("available", stance, {
+        "signal": signal,
+        "leading_index": leading,
+        "coincident_index": coincident,
+    }, reason)
+    item.update({
+        "signal": signal,
+        "leading_index": leading,
+        "coincident_index": coincident,
+        "date": str(date)[:10] if date else None,
+        "source": "finlab.tw_business_indicators",
+    })
+    return item
+
+
 def _global_risk(market_env: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
     vix = _latest_value(market_env, rows, "us_vix")
     gspc = _latest_value(market_env, rows, "us_gspc_return")
@@ -298,6 +336,7 @@ def build_regime_evidence_pack(market_env: dict[str, Any], raw_label: str) -> di
         "leverage": _leverage(market_env, rows),
         "valuation": _valuation(market_env, rows),
         "macro_liquidity": _macro_liquidity(market_env, rows),
+        "tw_business_indicators": _tw_business_indicators(market_env, rows),
         "global_risk": _global_risk(market_env, rows),
     }
     bearish = sum(1 for item in evidence.values() if item["stance"] == "bearish")

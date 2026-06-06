@@ -82,6 +82,12 @@ def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[s
     }
     payload["executor"] = "modal"
     payload["source"] = "finlab_v4_backfill"
+    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip().rstrip("/")
+    worker_token = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+    if worker_url:
+        payload["callback_url"] = f"{worker_url}/api/admin/scheduler-callback"
+    if worker_token:
+        payload["callback_token"] = worker_token
     return payload
 
 
@@ -104,6 +110,11 @@ async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
             "executor": executor or "not_configured",
             "payload": payload,
         }
+    if req.continue_evening_chain and not (payload.get("callback_url") and payload.get("callback_token")):
+        raise HTTPException(
+            status_code=409,
+            detail="STOCKVISION_WORKER_URL and STOCKVISION_AUTH_TOKEN are required for FinLab evening-chain callback",
+        )
     if executor != "modal":
         raise HTTPException(
             status_code=409,

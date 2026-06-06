@@ -248,12 +248,18 @@ function monitorScore(monitors: Record<string, any>, key: string): number | null
   return finiteNumber(item?.score ?? item?.risk_score ?? item?.value ?? item)
 }
 
-function evidenceStanceScore(regimeState: any, key: string): number | null {
-  const item =
+function regimeEvidenceItem(regimeState: any, key: string): any {
+  return (
+    regimeState?.regime_evidence?.evidence?.[key] ??
     regimeState?.regime_evidence?.[key] ??
     regimeState?.regime_surface?.evidence?.[key] ??
     regimeState?.evidence?.[key] ??
     regimeState?.regime_surface?.[key]
+  )
+}
+
+function evidenceStanceScore(regimeState: any, key: string): number | null {
+  const item = regimeEvidenceItem(regimeState, key)
   if (typeof item === 'number' && Number.isFinite(item)) return clamp(item * 100, 0, 100)
   const stance = String(item?.stance ?? '').toLowerCase()
   if (stance === 'bearish') return 75
@@ -269,11 +275,7 @@ function evidenceRawContext(regimeState: any, key: string): {
   detail: string
   missing: boolean
 } {
-  const item =
-    regimeState?.regime_evidence?.[key] ??
-    regimeState?.regime_surface?.evidence?.[key] ??
-    regimeState?.evidence?.[key] ??
-    regimeState?.regime_surface?.[key]
+  const item = regimeEvidenceItem(regimeState, key)
 
   if (item == null || item === '') {
     return {
@@ -373,6 +375,7 @@ function businessCycleContext(regimeState: any): { value: string; raw: number | 
   const raw = firstPresent(
     regimeState?.macro?.business_cycle_signal,
     regimeState?.macro?.tw_business_cycle_signal,
+    regimeState?.regime_evidence?.evidence?.tw_business_indicators?.signal,
     regimeState?.regime_evidence?.tw_business_indicators?.signal,
     regimeState?.regime_surface?.evidence?.tw_business_indicators?.signal,
     regimeState?.evidence?.tw_business_indicators?.signal,
@@ -381,16 +384,19 @@ function businessCycleContext(regimeState: any): { value: string; raw: number | 
   const light = businessCycleLight(score)
   const leading = firstPresent(
     regimeState?.macro?.leading_index,
+    regimeState?.regime_evidence?.evidence?.tw_business_indicators?.leading_index,
     regimeState?.regime_evidence?.tw_business_indicators?.leading_index,
     regimeState?.evidence?.tw_business_indicators?.leading_index,
   )
   const coincident = firstPresent(
     regimeState?.macro?.coincident_index,
+    regimeState?.regime_evidence?.evidence?.tw_business_indicators?.coincident_index,
     regimeState?.regime_evidence?.tw_business_indicators?.coincident_index,
     regimeState?.evidence?.tw_business_indicators?.coincident_index,
   )
   const date = String(firstPresent(
     regimeState?.macro?.source_date,
+    regimeState?.regime_evidence?.evidence?.tw_business_indicators?.date,
     regimeState?.regime_evidence?.tw_business_indicators?.date,
     regimeState?.evidence?.tw_business_indicators?.date,
     regimeState?.run_date,

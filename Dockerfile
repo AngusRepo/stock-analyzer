@@ -39,6 +39,7 @@ RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json
 RUN mkdir -p /app/tools
 COPY tools/finlab_v4_remote_backfill.py /app/tools/finlab_v4_remote_backfill.py
+COPY tools/finlab_macro_context_snapshot.py /app/tools/finlab_macro_context_snapshot.py
 
 ENV PORT=8080
 EXPOSE 8080

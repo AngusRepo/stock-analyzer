@@ -65,3 +65,25 @@ def test_bear_label_is_confirmed_when_breadth_volatility_and_global_evidence_agr
     assert pack["evidence"]["atr_vturn"]["stance"] == "bearish"
     assert pack["monitors"]["hawkes_contagion"]["decision_effect"] == "context_only"
     assert pack["monitors"]["lppls_weekly_bubble"]["decision_effect"] == "context_only"
+
+
+def test_tw_business_indicators_are_structured_in_evidence_pack():
+    pack = build_regime_evidence_pack(
+        {
+            "tw_business_signal": 17,
+            "tw_business_signal_date": "2026-04-30",
+            "tw_business_leading_index": 101.2,
+            "tw_business_coincident_index": 99.8,
+            "history": {},
+        },
+        raw_label="sideways",
+    )
+
+    item = pack["evidence"]["tw_business_indicators"]
+    assert item["status"] == "available"
+    assert item["stance"] == "bearish"
+    assert item["signal"] == 17
+    assert item["leading_index"] == 101.2
+    assert item["coincident_index"] == 99.8
+    assert item["date"] == "2026-04-30"
+    assert item["source"] == "finlab.tw_business_indicators"

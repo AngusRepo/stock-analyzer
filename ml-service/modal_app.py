@@ -18,6 +18,14 @@ from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
 _LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # optuna routes import scripts/optuna_*.py
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
+_LOCAL_SOURCE_ROOT = Path(__file__).resolve().parent
+_LOCAL_REPO_ROOT   = _LOCAL_SOURCE_ROOT if (_LOCAL_SOURCE_ROOT / "tools").exists() else _LOCAL_SOURCE_ROOT.parent
+_LOCAL_TOOLS_DIR   = _LOCAL_REPO_ROOT / "tools"
+_LOCAL_CONTROLLER_SERVICES_DIR = (
+    _LOCAL_REPO_ROOT / "services"
+    if (_LOCAL_REPO_ROOT / "services").exists()
+    else _LOCAL_REPO_ROOT / "ml-controller" / "services"
+)
 
 
 def _controller_callback_token() -> str:
@@ -35,6 +43,8 @@ image = (
     .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
     .pip_install_from_requirements(str(_LOCAL_REQ))
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
+    .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
+    .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 
@@ -46,6 +56,7 @@ gcs_secret = modal.Secret.from_name("gcs-credentials")
 #     CF_API_TOKEN=<cloudflare-api-token> \
 #     CF_ACCOUNT_ID=<cloudflare-account-id> \
 #     CF_D1_DB_ID=<cloudflare-d1-db-id> \
+#     FINLAB_API_KEY=<finlab-api-key> \
 #     STOCKVISION_AUTH_TOKEN=<stockvision-auth-token> \
 #     STOCKVISION_WORKER_URL=<stockvision-worker-url>
 # If the secret is missing, keep deploy importable but Optuna routes will fail.
@@ -59,6 +70,7 @@ runtime_env_secret = modal.Secret.from_dict({
     key: value
     for key, value in {
         "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "stockvision-models").strip(),
+        "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
     }.items()
     if value
 })
@@ -2092,6 +2104,215 @@ def update_arf_reward(payload: dict) -> dict:
         return update_arf(req)
     except Exception as e:
         return {"error": str(e)}
+
+
+def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, summary: str, duration_ms: int, error: str | None = None) -> dict:
+    import json
+    import os
+    import time
+    import urllib.error
+    import urllib.request
+
+    callback_url = str(payload.get("callback_url") or "").strip()
+    if not callback_url:
+        worker_url = str(os.environ.get("STOCKVISION_WORKER_URL") or "").strip().rstrip("/")
+        if worker_url:
+            callback_url = f"{worker_url}/api/admin/scheduler-callback"
+    callback_token = str(payload.get("callback_token") or os.environ.get("STOCKVISION_AUTH_TOKEN") or "").strip()
+    if not callback_url or not callback_token:
+        return {"status": "skipped", "reason": "callback_url_or_token_missing"}
+
+    body = {
+        "task": str(payload.get("callback_task") or "finlab-v4-backfill"),
+        "status": status,
+        "summary": summary,
+        "duration_ms": duration_ms,
+        "run_id": str(payload.get("run_id") or result.get("run_id") or ""),
+        "run_date": payload.get("run_date"),
+        "continue_evening_chain": bool(payload.get("continue_evening_chain")),
+        "result": {
+            "run_id": result.get("run_id"),
+            "summary": result.get("summary"),
+            "canonical_d1_apply": result.get("canonical_d1_apply"),
+            "continue_evening_chain": bool(payload.get("continue_evening_chain")),
+        },
+    }
+    if error:
+        body["error"] = error
+    req = urllib.request.Request(
+        callback_url,
+        data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {callback_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    last_error: dict | None = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+                return {"status": "ok", "code": resp.status, "attempt": attempt, "text": text[:500]}
+        except urllib.error.HTTPError as exc:
+            last_error = {"status": "error", "code": exc.code, "attempt": attempt, "text": exc.read().decode("utf-8", errors="replace")[:500]}
+        except Exception as exc:
+            last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
+        time.sleep(min(attempt * 2, 5))
+    return last_error or {"status": "error", "error": "unknown_callback_failure"}
+
+
+def _write_finlab_macro_context_to_d1() -> dict:
+    import json
+    import sys
+
+    for path in ("/root", "/root/tools"):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    from services import d1_client
+    from tools import finlab_macro_context_snapshot
+
+    finlab_macro_context_snapshot.login_finlab()
+    rows = finlab_macro_context_snapshot.collect_snapshot()
+    statements = []
+    sql = """
+      INSERT INTO source_quality_metrics (
+        source, dataset, as_of_date, freshness_status, missing_rate,
+        duplicate_rate, schema_drift_status, entity_link_confidence,
+        latest_materialization, metrics_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(source, dataset, as_of_date) DO UPDATE SET
+        freshness_status=excluded.freshness_status,
+        missing_rate=excluded.missing_rate,
+        duplicate_rate=excluded.duplicate_rate,
+        schema_drift_status=excluded.schema_drift_status,
+        entity_link_confidence=excluded.entity_link_confidence,
+        latest_materialization=excluded.latest_materialization,
+        metrics_json=excluded.metrics_json,
+        created_at=datetime('now')
+    """.strip()
+    for row in rows:
+        statements.append((sql, [
+            row["source"],
+            row["dataset"],
+            row["as_of_date"],
+            row["freshness_status"],
+            row["missing_rate"],
+            row["duplicate_rate"],
+            row["schema_drift_status"],
+            row.get("entity_link_confidence"),
+            row.get("latest_materialization"),
+            json.dumps(row["metrics_json"], ensure_ascii=False, default=str),
+        ]))
+    result = d1_client.batch_execute(statements, timeout=60.0, chunk_size=50)
+    return {"rows": len(rows), "writeback": result}
+
+
+@app.function(
+    cpu=2,
+    memory=4096,
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
+def finlab_v4_backfill(payload: dict) -> dict:
+    """Run FinLab canonical backfill on Modal and callback Worker on completion."""
+    _setup_env()
+    import contextlib
+    import io
+    import json
+    import sys
+    import time
+    import traceback
+
+    for path in ("/root", "/root/tools"):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    started = time.time()
+    run_id = str(payload.get("run_id") or "auto")
+    argv = [
+        "finlab_v4_remote_backfill.py",
+        "--years", str(int(payload.get("years") or 3)),
+        "--run-id", run_id,
+        "--output-dir", str(payload.get("output_dir") or "/tmp/finlab_remote_backfill"),
+        "--gcs-prefix", str(payload.get("gcs_prefix") or "finlab/v4/backfill"),
+        "--canonical-window-days", str(int(payload.get("canonical_window_days") or 7)),
+        "--canonical-d1-chunk-size", str(int(payload.get("canonical_d1_chunk_size") or 250)),
+    ]
+    if payload.get("write_d1", True):
+        argv.append("--write-d1")
+    if payload.get("gcs_bucket"):
+        argv.extend(["--gcs-bucket", str(payload["gcs_bucket"])])
+    elif payload.get("GCS_BUCKET_NAME"):
+        argv.extend(["--gcs-bucket", str(payload["GCS_BUCKET_NAME"])])
+    if payload.get("apply_canonical_d1", True):
+        argv.append("--apply-canonical-d1")
+    if payload.get("canonical_start_date"):
+        argv.extend(["--canonical-start-date", str(payload["canonical_start_date"])])
+    if payload.get("canonical_end_date"):
+        argv.extend(["--canonical-end-date", str(payload["canonical_end_date"])])
+    if payload.get("canonical_datasets"):
+        argv.extend(["--canonical-datasets", str(payload["canonical_datasets"])])
+    if payload.get("canonical_limit_per_dataset"):
+        argv.extend(["--canonical-limit-per-dataset", str(int(payload["canonical_limit_per_dataset"]))])
+    if payload.get("canonical_dry_run"):
+        argv.append("--canonical-dry-run")
+
+    old_argv = sys.argv
+    stdout = io.StringIO()
+    try:
+        from tools import finlab_v4_remote_backfill
+
+        sys.argv = argv
+        with contextlib.redirect_stdout(stdout):
+            exit_code = finlab_v4_remote_backfill.main()
+        output = stdout.getvalue()
+        result = {"exit_code": exit_code, "stdout_tail": output[-4000:]}
+        for line in reversed([line.strip() for line in output.splitlines() if line.strip()]):
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                result.update(parsed)
+                break
+        try:
+            result["macro_context_writeback"] = _write_finlab_macro_context_to_d1()
+        except Exception as exc:
+            result["macro_context_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        result["continue_evening_chain"] = bool(payload.get("continue_evening_chain"))
+        duration_ms = int((time.time() - started) * 1000)
+        macro_error = isinstance(result.get("macro_context_writeback"), dict) and result["macro_context_writeback"].get("status") == "error"
+        status = "success" if int(exit_code or 0) == 0 and not macro_error else "error"
+        summary = (
+            f"FinLab V4 backfill run_id={result.get('run_id', run_id)} "
+            f"canonical={result.get('canonical_d1_apply') is not None} "
+            f"rows={result.get('summary', {}).get('finlab_rows', 'n/a')} "
+            f"macro_context={result.get('macro_context_writeback', {}).get('status', 'ok')}"
+        )
+        callback = _post_worker_scheduler_callback(payload, result, status, summary, duration_ms)
+        result["callback"] = callback
+        result["status"] = status
+        result["duration_ms"] = duration_ms
+        return result
+    except Exception as exc:
+        duration_ms = int((time.time() - started) * 1000)
+        error = f"{type(exc).__name__}: {exc}"
+        result = {
+            "status": "error",
+            "run_id": run_id,
+            "error": error,
+            "trace": traceback.format_exc()[-4000:],
+            "stdout_tail": stdout.getvalue()[-4000:],
+            "continue_evening_chain": bool(payload.get("continue_evening_chain")),
+            "duration_ms": duration_ms,
+        }
+        result["callback"] = _post_worker_scheduler_callback(payload, result, "error", error, duration_ms, error=error)
+        return result
+    finally:
+        sys.argv = old_argv
 
 
 # ASGI web endpoint for warmup, health, IC audit, and Optuna routes.

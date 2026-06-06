@@ -27,8 +27,9 @@ def test_modal_deploy_packages_finlab_tool_and_controller_services() -> None:
     requirements = (ROOT / "ml-service" / "requirements.txt").read_text(encoding="utf-8")
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert '"tools": repo_root / "tools"' in admin_router
-    assert '"services": repo_root / "ml-controller" / "services"' in admin_router
+    assert 'repo_root / "tools"' in admin_router
+    assert 'repo_root / "services"' in admin_router
+    assert 'repo_root / "ml-controller" / "services"' in admin_router
     assert 'remote_path="/root/tools"' in modal_app
     assert 'remote_path="/root/services"' in modal_app
     assert "finlab==2.0.7" in requirements

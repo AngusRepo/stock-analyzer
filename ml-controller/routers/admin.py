@@ -68,11 +68,15 @@ def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
 
     repo_root = src_dir.parent
     extra_dirs = {
-        "tools": repo_root / "tools",
-        "services": repo_root / "ml-controller" / "services",
+        "tools": [repo_root / "tools"],
+        "services": [
+            repo_root / "services",
+            repo_root / "ml-controller" / "services",
+        ],
     }
-    for rel_dir, src_rel in extra_dirs.items():
-        if src_rel.exists():
+    for rel_dir, candidates in extra_dirs.items():
+        src_rel = next((candidate for candidate in candidates if candidate.exists()), None)
+        if src_rel is not None:
             shutil.copytree(src_rel, stable_dir / rel_dir, dirs_exist_ok=True)
 
     req_file = src_dir / "requirements.txt"

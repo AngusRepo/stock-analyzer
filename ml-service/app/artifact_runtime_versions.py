@@ -51,16 +51,27 @@ def sklearn_version_report(metadata: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def load_joblib_with_version_warnings(buffer: Any, *, artifact_name: str):
+def load_joblib_with_artifact_health(buffer: Any, *, artifact_name: str) -> tuple[Any, dict[str, Any]]:
     import joblib
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         model = joblib.load(buffer)
 
+    health = {
+        "status": "ok",
+        "artifact_name": artifact_name,
+        "warnings": [],
+        "runtime_versions": runtime_library_versions(),
+    }
     for item in caught:
         category_name = getattr(item.category, "__name__", str(item.category))
         if category_name == "InconsistentVersionWarning":
+            health["status"] = "failed"
+            health["warnings"].append({
+                "category": category_name,
+                "message": str(item.message),
+            })
             logger.warning(
                 "[ArtifactVersion] sklearn InconsistentVersionWarning while loading %s: %s",
                 artifact_name,
@@ -68,4 +79,9 @@ def load_joblib_with_version_warnings(buffer: Any, *, artifact_name: str):
             )
         else:
             warnings.warn(item.message, item.category, stacklevel=2)
+    return model, health
+
+
+def load_joblib_with_version_warnings(buffer: Any, *, artifact_name: str):
+    model, _health = load_joblib_with_artifact_health(buffer, artifact_name=artifact_name)
     return model

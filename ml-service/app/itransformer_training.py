@@ -23,6 +23,11 @@ from .itransformer_universal import (
     _normalize,
 )
 from .model_store import _get_bucket
+from .prep_lineage import (
+    attach_prep_lineage_aliases,
+    collect_prep_lineage,
+    validate_prep_lineage_for_registration,
+)
 from .research_benchmarks.common import direction_accuracy, load_sequence_dataset, rank_ic
 from .sequence_training import build_sequence_window_dataset, sequence_oos_ic_from_forecast
 
@@ -104,6 +109,7 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
             "direction_accuracy": metadata.get("direction_accuracy"),
             "validation_range": metadata.get("validation_range"),
             "oos_samples": (metadata.get("metrics") or {}).get("oos_samples"),
+            "prep_lineage": metadata.get("prep_lineage"),
         },
         "promotion_controller": {
             "source": "itransformer_formal_retrain",
@@ -168,6 +174,28 @@ def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
     )
     if not window_dataset.report.get("lifecycle_ready"):
         raise ValueError(f"iTransformer sequence dataset not lifecycle ready: {window_dataset.report}")
+    gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
+    lineage_dates = [row.get("target_date") for row in window_dataset.meta if row.get("target_date")]
+    prep_lineage = collect_prep_lineage(
+        bucket,
+        gcs_prefix=gcs_prefix,
+        batch_count=int(payload.get("batch_count") or DEFAULT_BATCH_COUNT),
+        feature_names=["close"],
+        rows=int(window_dataset.report.get("windows") or len(window_dataset.meta)),
+        dates=lineage_dates,
+    )
+    prep_freshness = (
+        validate_prep_lineage_for_registration(
+            prep_lineage,
+            as_of_date=payload.get("as_of_date") or payload.get("run_date"),
+            max_stale_days=payload.get("max_prep_stale_days"),
+        )
+        if promote_to_active
+        and dataset_source.source.startswith("gs://")
+        and gcs_prefix == "universal"
+        and payload.get("disable_stale_prep_guard") is not True
+        else {"status": "skipped"}
+    )
 
     x_train, y_train, sampled_train_idx = _subsample_rows(
         window_dataset.X_train,
@@ -236,7 +264,7 @@ def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
 
     target_dates = [window_dataset.meta[int(idx)]["target_date"] for idx in window_dataset.oos_index]
     trained_at = datetime.now(timezone.utc).isoformat()
-    metadata = {
+    metadata = attach_prep_lineage_aliases({
         "schema_version": "itransformer_formal_artifact_v1",
         "artifact_schema": "torch_itransformer_universal_v1",
         "version": version,
@@ -244,6 +272,8 @@ def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_type": "time_series_transformer",
         "family": "time_series",
         "trained_at": trained_at,
+        "feature_names": ["close"],
+        "feature_count": 1,
         "seq_len": seq_len,
         "pred_len": pred_len,
         "d_model": d_model,
@@ -265,6 +295,8 @@ def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
             "batch_count": int(payload.get("batch_count") or DEFAULT_BATCH_COUNT),
             "sequence_report": window_dataset.report,
             "max_windows": max_windows,
+            "prep_lineage": prep_lineage,
+            "prep_freshness": prep_freshness,
         },
         "feature_policy": {
             "model": MODEL_NAME,
@@ -280,7 +312,7 @@ def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
             "weight_decay": weight_decay,
             "device": str(device),
         },
-    }
+    }, prep_lineage)
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
     pool_update = (
         _update_model_pool_active(

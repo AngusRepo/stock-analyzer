@@ -18,7 +18,7 @@ from .artifact_contract import (
     build_model_artifact_metadata,
     validate_model_artifact_metadata,
 )
-from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
+from .artifact_runtime_versions import load_joblib_with_artifact_health, sklearn_version_report
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +260,7 @@ def load_model(
         blob.download_to_file(buf)
         _MODEL_CACHE_STATS["gcs_downloads"] += 1
         buf.seek(0)
-        model = load_joblib_with_version_warnings(buf, artifact_name=blob_path)
+        model, artifact_health = load_joblib_with_artifact_health(buf, artifact_name=blob_path)
 
         # 載入 metadata
         metadata = {}
@@ -285,6 +285,7 @@ def load_model(
                         "reason": "metadata missing model-artifact-v2 schema",
                     }
                 metadata["runtime_version_report"] = sklearn_version_report(metadata)
+                metadata["artifact_health_report"] = artifact_health
                 if metadata["runtime_version_report"]["status"] == "mismatch":
                     logger.warning(
                         "[ModelStore] Artifact sklearn version mismatch for %s: artifact=%s runtime=%s",
@@ -292,6 +293,30 @@ def load_model(
                         metadata["runtime_version_report"].get("artifact_sklearn"),
                         metadata["runtime_version_report"].get("runtime_sklearn"),
                     )
+
+        if used_pool:
+            if not metadata:
+                logger.warning(
+                    "[ModelStore] production artifact metadata missing for %s at %s; failing closed",
+                    model_name,
+                    blob_path,
+                )
+                return None, None
+            if metadata.get("schema_version") != ARTIFACT_SCHEMA_VERSION:
+                logger.warning(
+                    "[ModelStore] production artifact metadata schema invalid for %s at %s; failing closed",
+                    model_name,
+                    meta_path,
+                )
+                return None, None
+            if artifact_health.get("status") != "ok":
+                logger.warning(
+                    "[ModelStore] production artifact health failed for %s at %s: %s",
+                    model_name,
+                    blob_path,
+                    artifact_health,
+                )
+                return None, None
 
         logger.info(f"[ModelStore] Loaded {model_name} from {blob_path} ({'pool' if used_pool else 'legacy/wf'})")
         if cacheable:

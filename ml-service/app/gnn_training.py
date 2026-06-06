@@ -19,6 +19,11 @@ from typing import Any
 import numpy as np
 
 from .model_store import _get_bucket
+from .prep_lineage import (
+    attach_prep_lineage_aliases,
+    collect_prep_lineage,
+    validate_prep_lineage_for_registration,
+)
 
 MODEL_NAME = "GNN"
 DEFAULT_BATCH_COUNT = 5
@@ -285,6 +290,7 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
             "oos_ic": metadata.get("oos_ic"),
             "daily_ic_count": metadata.get("daily_ic_count"),
             "validation_range": metadata.get("validation_range"),
+            "prep_lineage": metadata.get("prep_lineage"),
         },
         "promotion_controller": {
             "source": "graphsage_formal_retrain",
@@ -350,6 +356,23 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     y = np.clip(y[finite_mask], 0.0, 1.0).astype(np.float32)
     dates = dates[finite_mask]
     sectors = sectors[finite_mask]
+    prep_lineage = collect_prep_lineage(
+        bucket,
+        gcs_prefix=gcs_prefix,
+        batch_count=batch_count,
+        feature_names=feature_names,
+        rows=len(y),
+        dates=dates,
+    )
+    prep_freshness = (
+        validate_prep_lineage_for_registration(
+            prep_lineage,
+            as_of_date=payload.get("as_of_date") or payload.get("run_date"),
+            max_stale_days=payload.get("max_prep_stale_days"),
+        )
+        if promote_to_active and gcs_prefix == "universal" and payload.get("disable_stale_prep_guard") is not True
+        else {"status": "skipped"}
+    )
 
     train_idx, test_idx, split_meta = _date_split(
         dates,
@@ -419,7 +442,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "hidden_dim": hidden_dim,
         "dropout": dropout,
     }
-    metadata = {
+    metadata = attach_prep_lineage_aliases({
         "schema_version": "graphsage_formal_artifact_v1",
         "artifact_schema": "torch_graphsage_ranker_v1",
         "version": version,
@@ -464,6 +487,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "gcs_prefix": gcs_prefix,
             "prep_objects": io_report["prep_objects"],
             "prep_bytes": io_report["prep_bytes"],
+            "prep_lineage": prep_lineage,
+            "prep_freshness": prep_freshness,
         },
         "feature_policy": {
             "model": MODEL_NAME,
@@ -482,7 +507,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "standardization_clip": standardization_clip,
             "device": str(device),
         },
-    }
+    }, prep_lineage)
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
     pool_update = (
         _update_model_pool_active(

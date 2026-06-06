@@ -24,8 +24,13 @@ from .artifact_contract import (
     now_utc_iso,
     validate_model_artifact_metadata,
 )
-from .artifact_runtime_versions import load_joblib_with_version_warnings, sklearn_version_report
+from .artifact_runtime_versions import load_joblib_with_artifact_health, sklearn_version_report
 from .model_store import _get_bucket, save_model
+from .prep_lineage import (
+    attach_prep_lineage_aliases,
+    collect_prep_lineage,
+    validate_prep_lineage_for_registration,
+)
 from .training_policy import (
     TREE_MODEL_NAMES,
     ValidationGovernancePolicy,
@@ -76,6 +81,9 @@ class UniversalTrainRequest(BaseModel):
     enable_model_cpcv: bool = True
     model_cpcv_policy: dict | None = None
     training_run_suffix: str | None = None
+    as_of_date: str | None = None
+    max_prep_stale_days: int | None = None
+    disable_stale_prep_guard: bool = False
 
 
 def _ic_summary_value(metrics: dict) -> float | None:
@@ -343,7 +351,7 @@ def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dic
     buf = io.BytesIO()
     blob.download_to_file(buf)
     buf.seek(0)
-    artifact = load_joblib_with_version_warnings(buf, artifact_name=path)
+    artifact, artifact_health = load_joblib_with_artifact_health(buf, artifact_name=path)
 
     metadata: dict = {}
     version = get_active_version(model_name, pool=pool)
@@ -352,6 +360,13 @@ def _load_active_model_pool_joblib(bucket, model_name: str) -> tuple[object, dic
         if meta_blob.exists():
             metadata = json.loads(meta_blob.download_as_text())
             metadata["runtime_version_report"] = sklearn_version_report(metadata)
+            metadata["artifact_health_report"] = artifact_health
+    if not metadata:
+        raise RuntimeError(f"{model_name} production artifact metadata missing: {path}")
+    if metadata.get("schema_version") != "model-artifact-v2":
+        raise RuntimeError(f"{model_name} production artifact metadata schema invalid: {path}")
+    if artifact_health.get("status") != "ok":
+        raise RuntimeError(f"{model_name} production artifact health failed: {artifact_health}")
     return artifact, metadata
 
 
@@ -1149,6 +1164,25 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     manifest_path = f"{gcs_prefix}/manifests/{training_run_id}.json"
     req_params = req.model_dump() if hasattr(req, "model_dump") else req.dict()
     date_min, date_max = _date_min_max_for_manifest(dates_arr)
+    prep_lineage = collect_prep_lineage(
+        bucket,
+        gcs_prefix=gcs_prefix,
+        batch_count=req.batch_count,
+        feature_names=feature_names,
+        rows=len(X),
+        dates=dates_arr,
+    )
+    prep_freshness = (
+        validate_prep_lineage_for_registration(
+            prep_lineage,
+            as_of_date=req.as_of_date,
+            max_stale_days=req.max_prep_stale_days,
+        )
+        if not walk_forward_mode
+        and gcs_prefix == "universal"
+        and not req.disable_stale_prep_guard
+        else {"status": "skipped"}
+    )
     manifest = build_training_run_manifest(
         run_id=training_run_id,
         model_names=list(trained_models.keys()),
@@ -1162,6 +1196,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             "date_max": date_max,
             "walk_forward": bool(walk_forward_mode),
             "validation_split": validation_split_metadata,
+            "prep_lineage": prep_lineage,
+            "prep_freshness": prep_freshness,
         },
         params=req_params,
         code_version=os.environ.get("GIT_SHA") or os.environ.get("SOURCE_VERSION") or "unknown",
@@ -1171,12 +1207,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         content_type="application/json",
     )
 
-    extra_meta = {
+    extra_meta = attach_prep_lineage_aliases({
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
-            "validation_split": validation_split_metadata,
-            "model_cpcv_enabled": bool(req.enable_model_cpcv),
-        }
+        "validation_split": validation_split_metadata,
+        "model_cpcv_enabled": bool(req.enable_model_cpcv),
+        "prep_freshness": prep_freshness,
+    }, prep_lineage)
     if walk_forward_mode:
         extra_meta.update({
             "window_id": req.window_id,

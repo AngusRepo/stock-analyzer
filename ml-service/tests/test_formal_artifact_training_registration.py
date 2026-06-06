@@ -59,6 +59,7 @@ def test_tabm_model_pool_registration_updates_formal_slot_alias():
             "direction_accuracy": 0.54,
             "validation_range": ["2026-02-01", "2026-05-01"],
             "metrics": {"pred_std": 0.11},
+            "prep_lineage": {"date_max": "2026-06-04", "feature_hash": "sha256:tabm"},
         },
         reason="test",
     )
@@ -71,6 +72,7 @@ def test_tabm_model_pool_registration_updates_formal_slot_alias():
     assert entry["last_ic_status"] == "awaiting_live_ic"
     assert "rolling_ic" not in entry
     assert "weekly_ic" not in entry
+    assert entry["last_artifact_evidence"]["prep_lineage"]["date_max"] == "2026-06-04"
     assert slot["status"] == "artifact_backed_model_pool_active"
     assert slot["direct_prediction"] is False
     assert slot["vote_weight"] == 0.0
@@ -103,6 +105,7 @@ def test_gnn_model_pool_registration_updates_formal_slot_alias():
             "oos_ic": 0.07,
             "daily_ic_count": 12,
             "validation_range": ["2026-02-01", "2026-05-01"],
+            "prep_lineage": {"date_max": "2026-06-04", "feature_hash": "sha256:gnn"},
         },
         reason="test",
     )
@@ -115,6 +118,7 @@ def test_gnn_model_pool_registration_updates_formal_slot_alias():
     assert entry["last_ic_root_cause"] == "new_graphsage_artifact_awaiting_verified_predictions"
     assert "rolling_ic" not in entry
     assert "weekly_ic" not in entry
+    assert entry["last_artifact_evidence"]["prep_lineage"]["feature_hash"] == "sha256:gnn"
     assert slot["status"] == "artifact_backed_model_pool_active"
     assert slot["direct_prediction"] is False
     assert slot["vote_weight"] == 0.0
@@ -141,6 +145,7 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
             "direction_accuracy": 0.56,
             "validation_range": ["2026-02-01", "2026-05-01"],
             "metrics": {"oos_samples": 500},
+            "prep_lineage": {"date_max": "2026-06-04", "feature_hash": "sha256:itransformer"},
         },
         reason="test",
     )
@@ -153,4 +158,5 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
     assert entry["last_ic_root_cause"] == "new_itransformer_artifact_awaiting_verified_predictions"
     assert "ic_4w_avg" not in entry
     assert "weekly_ic" not in entry
+    assert entry["last_artifact_evidence"]["prep_lineage"]["date_max"] == "2026-06-04"
     assert slot["status"] == "artifact_backed_model_pool_active"

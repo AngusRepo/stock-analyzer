@@ -13,6 +13,11 @@ from typing import Any
 import numpy as np
 
 from .model_store import _get_bucket
+from .prep_lineage import (
+    attach_prep_lineage_aliases,
+    collect_prep_lineage,
+    validate_prep_lineage_for_registration,
+)
 from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
 
 MODEL_NAME = "TabM"
@@ -192,6 +197,7 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
             "direction_accuracy": metadata.get("direction_accuracy"),
             "validation_range": metadata.get("validation_range"),
             "pred_std": (metadata.get("metrics") or {}).get("pred_std"),
+            "prep_lineage": metadata.get("prep_lineage"),
         },
         "promotion_controller": {
             "source": "tabm_formal_retrain",
@@ -255,6 +261,27 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
     sectors = np.asarray(dataset.sectors[finite_mask]).astype(str)
     if len(y) < 1000:
         raise ValueError(f"TabM training requires at least 1000 finite rows, got {len(y)}")
+    gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
+    prep_lineage = collect_prep_lineage(
+        bucket,
+        gcs_prefix=gcs_prefix,
+        batch_count=int(payload.get("batch_count") or DEFAULT_BATCH_COUNT),
+        feature_names=dataset.feature_names,
+        rows=len(y),
+        dates=dates,
+    )
+    prep_freshness = (
+        validate_prep_lineage_for_registration(
+            prep_lineage,
+            as_of_date=payload.get("as_of_date") or payload.get("run_date"),
+            max_stale_days=payload.get("max_prep_stale_days"),
+        )
+        if promote_to_active
+        and dataset.source.startswith("gs://")
+        and gcs_prefix == "universal"
+        and payload.get("disable_stale_prep_guard") is not True
+        else {"status": "skipped"}
+    )
 
     train_idx, test_idx, split_meta = _date_split(
         dates,
@@ -309,7 +336,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "type": "tabm",
         "n_features": int(x.shape[1]),
     }
-    metadata = {
+    metadata = attach_prep_lineage_aliases({
         "schema_version": "tabm_formal_artifact_v1",
         "artifact_schema": "torch_tabm_ranker_v1",
         "version": version,
@@ -340,6 +367,8 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
             "source": dataset.source,
             "batch_count": int(payload.get("batch_count") or DEFAULT_BATCH_COUNT),
             "max_rows": max_rows,
+            "prep_lineage": prep_lineage,
+            "prep_freshness": prep_freshness,
         },
         "feature_policy": {
             "model": MODEL_NAME,
@@ -357,7 +386,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
             "device": str(device),
         },
         "market_lanes": sorted({str(value) for value in sectors.tolist()})[:20],
-    }
+    }, prep_lineage)
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
     pool_update = (
         _update_model_pool_active(

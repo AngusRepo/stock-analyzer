@@ -97,6 +97,11 @@ assert(
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 assert(
+  callbackRoutes.includes('const forceContinuation = Boolean') &&
+    callbackRoutes.includes('force: forceContinuation'),
+  'FinLab callback must preserve manual force rerun through the async queue continuation',
+)
+assert(
   callbackRoutes.includes('runPostPipelineCallbackChain'),
   'pipeline callback must advance post-market dependent tasks instead of fixed-time Scheduler jobs',
 )

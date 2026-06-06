@@ -299,6 +299,11 @@ async function handleSchedulerCallback(c: any) {
       body.result?.continue_evening_chain ||
       body.metadata?.continue_evening_chain,
     )
+    const forceContinuation = Boolean(
+      body.force ||
+      body.result?.force ||
+      body.metadata?.force,
+    )
     if (body.status === 'success' && continueEveningChain && callbackRunDate) {
       await logSchedulerResult(c.env.KV, 'evening-chain', {
         status: 'running',
@@ -312,6 +317,7 @@ async function handleSchedulerCallback(c: any) {
         cursor: 0,
         triggerTime: callbackRunDate,
         runId: callbackRunId,
+        force: forceContinuation,
         attempt: 1,
       })
     } else if (body.status !== 'success' && continueEveningChain) {

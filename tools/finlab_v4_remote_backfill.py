@@ -144,6 +144,10 @@ def start_date_for_years(years: int) -> str:
 
 
 def d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
+    proxied = controller_d1_request(sql, params)
+    if proxied is not None:
+        return proxied
+
     token = os.environ["CF_API_TOKEN"]
     account = os.environ["CF_ACCOUNT_ID"]
     db = os.environ["CF_D1_DB_ID"]
@@ -166,6 +170,115 @@ def d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
         raise RuntimeError(str(payload.get("errors") or payload)[:500])
     result = payload.get("result") or []
     return result[0] or {}
+
+
+def controller_proxy_token() -> str:
+    return (
+        os.environ.get("FINLAB_CONTROLLER_TOKEN", "").strip()
+        or os.environ.get("ML_CONTROLLER_TOKEN", "").strip()
+        or os.environ.get("ML_CONTROLLER_SECRET", "").strip()
+    )
+
+
+def controller_d1_query_url() -> str:
+    return (
+        os.environ.get("FINLAB_CONTROLLER_D1_QUERY_URL", "").strip()
+        or os.environ.get("ML_CONTROLLER_D1_QUERY_URL", "").strip()
+    )
+
+
+def controller_d1_batch_url() -> str:
+    return (
+        os.environ.get("FINLAB_CONTROLLER_D1_BATCH_URL", "").strip()
+        or os.environ.get("ML_CONTROLLER_D1_BATCH_URL", "").strip()
+    )
+
+
+def controller_d1_proxy_configured() -> bool:
+    return bool(controller_proxy_token() and controller_d1_query_url())
+
+
+def controller_d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
+    url = controller_d1_query_url()
+    token = controller_proxy_token()
+    if not url or not token:
+        return None
+    body = {"sql": sql, "params": params or []}
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "X-Controller-Token": token,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
+    if not payload.get("success"):
+        raise RuntimeError(str(payload.get("errors") or payload)[:800])
+    result = payload.get("result") or []
+    return result[0] or {}
+
+
+def controller_d1_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    *,
+    timeout: float = 120.0,
+    chunk_size: int = 250,
+) -> dict[str, Any] | None:
+    url = controller_d1_batch_url()
+    token = controller_proxy_token()
+    if not url or not token:
+        return None
+    chunk = max(1, min(int(chunk_size or 250), 500))
+    total = 0
+    success_count = 0
+    error_count = 0
+    changes_total = 0
+    first_error: str | None = None
+    for i in range(0, len(statements), chunk):
+        part = statements[i:i + chunk]
+        body = {
+            "statements": [{"sql": sql, "params": params or []} for sql, params in part],
+            "chunk_size": chunk,
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "X-Controller-Token": token,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
+        if not payload.get("ok"):
+            raise RuntimeError(str(payload)[:800])
+        total += int(payload.get("total") or len(part))
+        success_count += int(payload.get("success_count") or len(part))
+        error_count += int(payload.get("error_count") or 0)
+        changes_total += int(payload.get("changes_total") or 0)
+        if payload.get("first_error") and first_error is None:
+            first_error = str(payload["first_error"])
+    return {
+        "total": total,
+        "success_count": success_count,
+        "error_count": error_count,
+        "changes_total": changes_total,
+        "first_error": first_error,
+        "partial_failure": error_count > 0 and success_count > 0,
+        "mode": "controller_d1_batch_proxy",
+        "chunk_size": chunk,
+        "chunk_count": (len(statements) + chunk - 1) // chunk,
+    }
 
 
 def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
@@ -723,7 +836,6 @@ def materialize_canonical_to_d1(
     chunk_size: int = 250,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    from services.d1_client import batch_execute
     from services.finlab_canonical_materializer import build_d1_upsert_statements, materialize_finlab_canonical_outputs
 
     outputs = materialize_finlab_canonical_outputs(
@@ -738,7 +850,11 @@ def materialize_canonical_to_d1(
     statements = build_d1_upsert_statements(outputs)
     apply_result = {"total": len(statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
     if not dry_run and statements:
-        apply_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+        apply_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+        if apply_result is None:
+            from services.d1_client import batch_execute
+
+            apply_result = batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
     return {
         "schema_version": "finlab-canonical-d1-apply-v1",
         "run_id": manifest["run_id"],
@@ -789,7 +905,10 @@ def main() -> int:
     parser.add_argument("--canonical-dry-run", action="store_true")
     args = parser.parse_args()
 
-    missing = [key for key in ["FINLAB_API_KEY", "CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"] if not os.environ.get(key)]
+    required_env = ["FINLAB_API_KEY"]
+    if not controller_d1_proxy_configured():
+        required_env.extend(["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"])
+    missing = [key for key in required_env if not os.environ.get(key)]
     if missing:
         raise SystemExit(f"missing env vars: {','.join(missing)}")
 

@@ -2113,14 +2113,18 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
     import urllib.error
     import urllib.request
 
-    callback_url = str(payload.get("callback_url") or "").strip()
+    controller_callback_url = str(payload.get("controller_callback_url") or "").strip()
+    controller_token = str(payload.get("controller_token") or os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("ML_CONTROLLER_SECRET") or "").strip()
+    callback_url = controller_callback_url or str(payload.get("callback_url") or "").strip()
+    use_controller_callback = bool(controller_callback_url and controller_token)
     if not callback_url:
         worker_url = str(os.environ.get("STOCKVISION_WORKER_URL") or "").strip().rstrip("/")
         if worker_url:
             callback_url = f"{worker_url}/api/admin/scheduler-callback"
     callback_token = str(payload.get("callback_token") or os.environ.get("STOCKVISION_AUTH_TOKEN") or "").strip()
     if not callback_url or not callback_token:
-        return {"status": "skipped", "reason": "callback_url_or_token_missing"}
+        if not use_controller_callback:
+            return {"status": "skipped", "reason": "callback_url_or_token_missing"}
 
     body = {
         "task": str(payload.get("callback_task") or "finlab-v4-backfill"),
@@ -2142,10 +2146,17 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
     req = urllib.request.Request(
         callback_url,
         data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {callback_token}",
-            "Content-Type": "application/json",
-        },
+        headers=(
+            {
+                "X-Controller-Token": controller_token,
+                "Content-Type": "application/json",
+            }
+            if use_controller_callback
+            else {
+                "Authorization": f"Bearer {callback_token}",
+                "Content-Type": "application/json",
+            }
+        ),
         method="POST",
     )
     last_error: dict | None = None
@@ -2232,6 +2243,21 @@ def finlab_v4_backfill(payload: dict) -> dict:
 
     started = time.time()
     run_id = str(payload.get("run_id") or "auto")
+    controller_env = {
+        "FINLAB_CONTROLLER_D1_QUERY_URL": payload.get("controller_d1_query_url"),
+        "FINLAB_CONTROLLER_D1_BATCH_URL": payload.get("controller_d1_batch_url"),
+        "FINLAB_CONTROLLER_TOKEN": payload.get("controller_token"),
+        "ML_CONTROLLER_TOKEN": payload.get("controller_token"),
+    }
+    for key, value in controller_env.items():
+        if value:
+            os.environ[key] = str(value)
+    print(
+        f"[finlab_v4_backfill] start run_id={run_id} "
+        f"controller_proxy={bool(payload.get('controller_d1_query_url') and payload.get('controller_token'))} "
+        f"controller_callback={bool(payload.get('controller_callback_url') and payload.get('controller_token'))}",
+        flush=True,
+    )
     argv = [
         "finlab_v4_remote_backfill.py",
         "--years", str(int(payload.get("years") or 3)),

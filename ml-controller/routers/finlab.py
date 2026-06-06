@@ -16,6 +16,10 @@ from services.finlab_sinopac_l5_market_data import run_finlab_l5_market_data
 
 router = APIRouter(prefix="/finlab", tags=["finlab"])
 
+DEFAULT_CONTROLLER_PUBLIC_URL = "https://ml-controller-530028717113.asia-east1.run.app"
+D1_PROXY_ALLOWED_READ = {"SELECT", "PRAGMA"}
+D1_PROXY_ALLOWED_DML = {"INSERT", "UPDATE", "DELETE", "REPLACE"}
+
 
 class FinLabBackfillRunRequest(BaseModel):
     years: int = Field(3, description="FinLab archive lookback years. Production supports 3 or 5.")
@@ -40,6 +44,33 @@ class FinLabBackfillRunRequest(BaseModel):
     lanes: str | None = None
     skip_diff_counts: bool = False
     dry_run: bool = False
+
+
+class FinLabD1QueryRequest(BaseModel):
+    sql: str
+    params: list[Any] = Field(default_factory=list)
+
+
+class FinLabD1BatchStatement(BaseModel):
+    sql: str
+    params: list[Any] = Field(default_factory=list)
+
+
+class FinLabD1BatchRequest(BaseModel):
+    statements: list[FinLabD1BatchStatement]
+    chunk_size: int = Field(250, ge=1, le=500)
+
+
+class FinLabBackfillCallbackRequest(BaseModel):
+    task: str = "finlab-v4-backfill"
+    status: str
+    summary: str = ""
+    duration_ms: int = 0
+    run_id: str | None = None
+    run_date: str | None = None
+    error: str | None = None
+    continue_evening_chain: bool = False
+    result: dict[str, Any] = Field(default_factory=dict)
 
 
 class FinLabExecutionSmokeRequest(BaseModel):
@@ -72,6 +103,43 @@ def _model_dump(model: BaseModel) -> dict[str, Any]:
     return model.dict()
 
 
+def _controller_base_url() -> str:
+    return (
+        os.environ.get("ML_CONTROLLER_PUBLIC_URL", "").strip()
+        or os.environ.get("ML_CONTROLLER_URL", "").strip()
+        or DEFAULT_CONTROLLER_PUBLIC_URL
+    ).rstrip("/")
+
+
+def _controller_token() -> str:
+    return (
+        os.environ.get("ML_CONTROLLER_TOKEN", "").strip()
+        or os.environ.get("ML_CONTROLLER_SECRET", "").strip()
+        or os.environ.get("INTERNAL_TOKEN", "").strip()
+    )
+
+
+def _sql_verb(sql: str) -> str:
+    cleaned = (sql or "").strip()
+    if not cleaned:
+        raise ValueError("sql is required")
+    if ";" in cleaned:
+        raise ValueError("multiple SQL statements are not allowed")
+    return cleaned.split(None, 1)[0].upper()
+
+
+def _validate_d1_proxy_sql(sql: str, *, allow_read: bool, allow_dml: bool) -> str:
+    verb = _sql_verb(sql)
+    allowed: set[str] = set()
+    if allow_read:
+        allowed.update(D1_PROXY_ALLOWED_READ)
+    if allow_dml:
+        allowed.update(D1_PROXY_ALLOWED_DML)
+    if verb not in allowed:
+        raise ValueError(f"SQL verb not allowed for FinLab D1 proxy: {verb}")
+    return verb
+
+
 def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[str, Any]:
     if req.years not in {3, 5}:
         raise ValueError("years must be 3 or 5")
@@ -88,6 +156,14 @@ def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[s
         payload["callback_url"] = f"{worker_url}/api/admin/scheduler-callback"
     if worker_token:
         payload["callback_token"] = worker_token
+    controller_base_url = _controller_base_url()
+    controller_token = _controller_token()
+    if controller_base_url:
+        payload["controller_callback_url"] = f"{controller_base_url}/finlab/backfill/callback"
+        payload["controller_d1_query_url"] = f"{controller_base_url}/finlab/backfill/d1/query"
+        payload["controller_d1_batch_url"] = f"{controller_base_url}/finlab/backfill/d1/batch"
+    if controller_token:
+        payload["controller_token"] = controller_token
     return payload
 
 
@@ -105,15 +181,30 @@ async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
 
     executor = os.environ.get("FINLAB_BACKFILL_EXECUTOR", "").strip().lower()
     if req.dry_run:
+        safe_payload = {
+            **payload,
+            "callback_token": "***" if payload.get("callback_token") else "",
+            "controller_token": "***" if payload.get("controller_token") else "",
+        }
         return {
             "status": "dry_run",
             "executor": executor or "not_configured",
-            "payload": payload,
+            "payload": safe_payload,
         }
     if req.continue_evening_chain and not (payload.get("callback_url") and payload.get("callback_token")):
         raise HTTPException(
             status_code=409,
             detail="STOCKVISION_WORKER_URL and STOCKVISION_AUTH_TOKEN are required for FinLab evening-chain callback",
+        )
+    if not (
+        payload.get("controller_callback_url")
+        and payload.get("controller_d1_query_url")
+        and payload.get("controller_d1_batch_url")
+        and payload.get("controller_token")
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="ML_CONTROLLER_PUBLIC_URL and ML_CONTROLLER_SECRET are required for Modal FinLab controller callback/D1 proxy",
         )
     if executor != "modal":
         raise HTTPException(
@@ -123,6 +214,69 @@ async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
     from services import modal_client
 
     return await modal_client.spawn_finlab_v4_backfill(payload)
+
+
+@router.post("/backfill/d1/query")
+async def finlab_backfill_d1_query(req: FinLabD1QueryRequest) -> dict:
+    """Controller-owned D1 proxy for Modal FinLab backfill read/write steps."""
+    try:
+        verb = _validate_d1_proxy_sql(req.sql, allow_read=True, allow_dml=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from services import d1_client
+
+    if verb in D1_PROXY_ALLOWED_READ:
+        rows = d1_client.query(req.sql, req.params, timeout=120.0)
+        item = {
+            "success": True,
+            "results": rows,
+            "meta": {"mode": "controller_d1_proxy", "operation": "query"},
+        }
+    else:
+        result = d1_client.execute(req.sql, req.params, timeout=120.0)
+        item = {
+            "success": True,
+            "results": result.get("results", []),
+            "meta": {**(result.get("meta") or {}), "mode": "controller_d1_proxy", "operation": "execute"},
+        }
+    return {"success": True, "result": [item]}
+
+
+@router.post("/backfill/d1/batch")
+async def finlab_backfill_d1_batch(req: FinLabD1BatchRequest) -> dict:
+    """Controller-owned D1 batch proxy for Modal FinLab canonical writes."""
+    if not req.statements:
+        raise HTTPException(status_code=400, detail="statements must be a non-empty array")
+    statements: list[tuple[str, list[Any]]] = []
+    try:
+        for statement in req.statements:
+            _validate_d1_proxy_sql(statement.sql, allow_read=False, allow_dml=True)
+            statements.append((statement.sql, statement.params))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from services import d1_client
+
+    result = d1_client.batch_execute(statements, timeout=120.0, chunk_size=req.chunk_size)
+    return {"ok": True, **result}
+
+
+@router.post("/backfill/callback")
+async def finlab_backfill_controller_callback(req: FinLabBackfillCallbackRequest) -> dict:
+    """Receive Modal FinLab completion on GCP, then forward scheduler callback to Worker."""
+    from routers.pipeline import _callback_worker
+
+    body = _model_dump(req)
+    await _callback_worker(body)
+    return {
+        "ok": True,
+        "forwarded": True,
+        "task": body.get("task"),
+        "status": body.get("status"),
+        "run_id": body.get("run_id"),
+        "run_date": body.get("run_date"),
+    }
 
 
 @router.post("/execution/smoke")

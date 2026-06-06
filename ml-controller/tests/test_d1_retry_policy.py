@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -30,7 +31,7 @@ def test_d1_post_retries_overloaded_429(monkeypatch):
     monkeypatch.setattr(d1_client, "CF_API_TOKEN", "token")
     monkeypatch.setattr(d1_client, "CF_ACCOUNT_ID", "account")
     monkeypatch.setattr(d1_client, "CF_D1_DB_ID", "db")
-    monkeypatch.setattr(d1_client.httpx, "post", fake_post)
+    monkeypatch.setattr(d1_client, "httpx", SimpleNamespace(post=fake_post, RequestError=Exception))
     monkeypatch.setattr(d1_client, "_sleep_before_retry", lambda *_args, **_kwargs: None)
 
     rows = d1_client.query("SELECT 1 AS ok")

@@ -69,4 +69,5 @@ worker/
 deploy_ml_controller.sh
 tools/*
 !tools/finlab_v4_remote_backfill.py
+!tools/finlab_macro_context_snapshot.py
 *.sh

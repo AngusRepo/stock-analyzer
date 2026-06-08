@@ -1,4 +1,6 @@
 import json
+import sys
+from pathlib import Path
 
 from app import timesfm_universal
 from app.timesfm_universal import DEFAULT_MODEL_ID, DEFAULT_PRED_LEN, DEFAULT_SEQ_LEN
@@ -98,3 +100,46 @@ def test_timesfm_uses_artifact_seq_len_when_contract_matches(monkeypatch):
 
     assert len(rows) == 1
     assert f"insufficient data (60 < {DEFAULT_SEQ_LEN})" == rows[0]["error"]
+
+
+def test_timesfm_dependency_is_pinned_to_artifact_runtime():
+    requirements = (
+        Path(__file__)
+        .resolve()
+        .parents[1]
+        .joinpath("requirements.txt")
+        .read_bytes()
+        .decode("utf-8", errors="ignore")
+    )
+
+    assert "timesfm[torch]==1.3.0" in requirements
+    assert "timesfm[torch]>=" not in requirements
+
+
+def test_timesfm_20_artifact_rejects_25_only_runtime(monkeypatch):
+    timesfm_universal._MODEL_CACHE.clear()
+
+    class _TwoPointFiveOnlyRuntime:
+        class TimesFM_2p5_200M_torch:
+            @classmethod
+            def from_pretrained(cls, _model_id):
+                raise AssertionError("2.5 loader must not be used for 2.0 artifact")
+
+    monkeypatch.setitem(sys.modules, "timesfm", _TwoPointFiveOnlyRuntime)
+
+    try:
+        timesfm_universal._load_timesfm_model(
+            {
+                "model_id": "google/timesfm-2.0-500m-pytorch",
+                "seq_len": DEFAULT_SEQ_LEN,
+                "pred_len": DEFAULT_PRED_LEN,
+            }
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected runtime/artifact mismatch to fail closed")
+
+    assert "2.5 torch runtime" in message
+    assert "google/timesfm-2.0-500m-pytorch" in message
+    assert "timesfm[torch]==1.3.0" in message

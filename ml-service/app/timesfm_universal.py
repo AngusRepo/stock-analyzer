@@ -52,6 +52,11 @@ def load_config_from_gcs(version: str = "v1") -> dict | None:
         return None
 
 
+def _uses_timesfm_2p5_model(model_id: str) -> bool:
+    normalized = model_id.lower()
+    return "timesfm-2.5" in normalized or "2p5" in normalized
+
+
 def _load_timesfm_model(config: dict):
     import timesfm
 
@@ -62,7 +67,7 @@ def _load_timesfm_model(config: dict):
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
 
-    if hasattr(timesfm, "TimesFM_2p5_200M_torch"):
+    if hasattr(timesfm, "TimesFM_2p5_200M_torch") and _uses_timesfm_2p5_model(model_id):
         model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(model_id)
         model.compile(
             timesfm.ForecastConfig(
@@ -92,6 +97,13 @@ def _load_timesfm_model(config: dict):
         )
         _MODEL_CACHE[cache_key] = model
         return model
+
+    if hasattr(timesfm, "TimesFM_2p5_200M_torch"):
+        raise RuntimeError(
+            "TimesFM package exposes only the 2.5 torch runtime, but the serving "
+            f"artifact model_id is {model_id}. Pin timesfm[torch]==1.3.0 for "
+            "google/timesfm-2.0-500m-pytorch or issue a matching 2.5 artifact."
+        )
 
     raise RuntimeError("timesfm package exposes neither TimesFM_2p5_200M_torch nor TimesFm")
 

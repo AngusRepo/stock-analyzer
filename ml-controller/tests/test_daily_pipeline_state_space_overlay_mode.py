@@ -262,7 +262,7 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
 
 
 def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
-    series = [{"symbol": "2330", "prices": list(range(60))}]
+    series = [{"symbol": "2330", "prices": list(range(260))}]
     pool = {"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04, "last_ic_sample_count": 50}}}
 
     allowed, meta = daily_pipeline_v2._timesfm_sync_gate(
@@ -274,6 +274,7 @@ def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
 
     assert allowed is True
     assert meta["reason"] == "timesfm_gate_passed"
+    assert meta["sequence_contract_points"] == 256
 
     blocked, blocked_meta = daily_pipeline_v2._timesfm_sync_gate(
         model_status={"TimesFM": "active"},
@@ -284,3 +285,15 @@ def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
 
     assert blocked is False
     assert blocked_meta["reason"] == "timesfm_non_positive_effective_ic"
+
+    short_series = [{"symbol": "2330", "prices": list(range(60))}]
+    blocked, blocked_meta = daily_pipeline_v2._timesfm_sync_gate(
+        model_status={"TimesFM": "active"},
+        pool=pool,
+        ev2_cfg={},
+        sequence_series=short_series,
+    )
+
+    assert blocked is False
+    assert blocked_meta["reason"] == "timesfm_sequence_contract_unmet"
+    assert blocked_meta["coverage"]["min_points"] == 256

@@ -13,6 +13,7 @@ def test_daily_pipeline_calls_all_l3_sequence_predictors():
     assert "modal_client.patchtst_batch_predict" in source
     assert "modal_client.itransformer_batch_predict" in source
     assert "modal_client.timesfm_batch_predict" in source
+    assert "sequence_contract_points=timesfm_gate.get(\"sequence_contract_points\")" in source
     assert "iTransformer production predictor missing artifact/endpoint" not in source
     assert "TimesFM production predictor missing artifact/endpoint" not in source
 

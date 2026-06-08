@@ -841,13 +841,21 @@ async def _modal_timesfm_universal_predict(payload: dict) -> dict:
     return await _modal_remote_call("timesfm_universal_predict", payload)
 
 
-async def timesfm_batch_predict(series_list: list[dict], horizon_used: int = 5, version: str = "v1") -> dict:
+async def timesfm_batch_predict(
+    series_list: list[dict],
+    horizon_used: int = 5,
+    version: str = "v1",
+    sequence_contract_points: int | None = None,
+) -> dict:
     """Config-backed TimesFM forecast for a batch of stocks."""
-    return await _modal_timesfm_universal_predict({
+    payload = {
         "series_list": series_list,
         "horizon_used": horizon_used,
         "version": version,
-    })
+    }
+    if sequence_contract_points is not None:
+        payload["sequence_contract_points"] = int(sequence_contract_points)
+    return await _modal_timesfm_universal_predict(payload)
 
 
 async def _modal_gnn_graphsage_universal_predict(payload: dict) -> dict:

@@ -19,6 +19,8 @@ type ChainedTask = {
   critical?: boolean
 }
 
+const TASK_OBSERVABILITY_TIMEOUT_MS = 5_000
+
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 }
@@ -36,6 +38,57 @@ function isCurrentBusinessDate(runDate?: string): boolean {
   return !!runDate && runDate === twDateToday()
 }
 
+async function withObservabilityTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${TASK_OBSERVABILITY_TIMEOUT_MS}ms`)),
+          TASK_OBSERVABILITY_TIMEOUT_MS,
+        )
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function emitChainedTaskObservability(
+  env: Bindings,
+  ctx: ChainContext,
+  task: string,
+  status: SchedulerRunStatus,
+  summary: string,
+  durationMs: number,
+  error?: string,
+): Promise<void> {
+  const results = await Promise.allSettled([
+    withObservabilityTimeout(`${task} scheduler log`, logSchedulerResult(env.KV, task, {
+      status,
+      summary,
+      duration_ms: durationMs,
+      error,
+      run_id: ctx.upstreamRunId,
+      run_date: ctx.runDate,
+    }, env)),
+    withObservabilityTimeout(`${task} compute profile`, recordWorkerTaskComputeProfile(env, {
+      task,
+      status,
+      durationMs,
+      runDate: ctx.runDate,
+      runId: ctx.upstreamRunId,
+      chain: 'post_market_callback',
+    })),
+  ])
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn(`[postMarketChain] ${task} observability write failed:`, result.reason)
+    }
+  }
+}
+
 async function logChainedTask(
   env: Bindings,
   ctx: ChainContext,
@@ -50,41 +103,12 @@ async function logChainedTask(
     const summary = normalizeSummary(rawSummary)
     const status = classifySchedulerSummary(summary)
     const durationMs = Date.now() - t0
-    await logSchedulerResult(env.KV, task, {
-      status,
-      summary,
-      duration_ms: durationMs,
-      run_id: ctx.upstreamRunId,
-      run_date: ctx.runDate,
-    }, env)
-    await recordWorkerTaskComputeProfile(env, {
-      task,
-      status,
-      durationMs,
-      runDate: ctx.runDate,
-      runId: ctx.upstreamRunId,
-      chain: 'post_market_callback',
-    })
+    await emitChainedTaskObservability(env, ctx, task, status, summary, durationMs)
     return { task, summary, status, critical }
   } catch (e: any) {
     const summary = e?.message ?? `${task} failed`
     const durationMs = Date.now() - t0
-    await logSchedulerResult(env.KV, task, {
-      status: 'error',
-      summary,
-      duration_ms: durationMs,
-      error: String(e),
-      run_id: ctx.upstreamRunId,
-      run_date: ctx.runDate,
-    }, env)
-    await recordWorkerTaskComputeProfile(env, {
-      task,
-      status: 'error',
-      durationMs,
-      runDate: ctx.runDate,
-      runId: ctx.upstreamRunId,
-      chain: 'post_market_callback',
-    })
+    await emitChainedTaskObservability(env, ctx, task, 'error', summary, durationMs, String(e))
     return { task, summary, status: 'error', critical }
   }
 }

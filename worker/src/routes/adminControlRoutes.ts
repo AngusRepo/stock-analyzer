@@ -386,30 +386,39 @@ async function handleSchedulerCallback(c: any) {
     ['success', 'skipped'].includes(String(body.status)) &&
     c.env.ML_CONTROLLER_URL
   if (verifyCanContinue) {
-    try {
-      const { runPostVerifyCallbackChain } = await import('../lib/postMarketChain')
-      await runPostVerifyCallbackChain(c.env, {
-        runDate: callbackRunDate,
-        upstreamRunId: callbackRunId,
-      })
-    } catch (e: any) {
-      await logSchedulerResult(c.env.KV, 'post-verify-chain', {
-        status: 'error',
-        summary: e?.message ?? 'post-verify callback chain failed',
-        duration_ms: 0,
-        error: String(e),
-        run_id: callbackRunId,
-        run_date: callbackRunDate,
-      }, c.env as any)
-      await logSchedulerResult(c.env.KV, 'evening-chain', {
-        status: 'error',
-        summary: e?.message ?? 'root chain stopped in post-verify callback chain',
-        duration_ms: 0,
-        error: String(e),
-        run_id: callbackRunId,
-        run_date: callbackRunDate,
-      }, c.env as any)
-    }
+    await logSchedulerResult(c.env.KV, 'post-verify-chain', {
+      status: 'triggered',
+      summary: 'post-verify chain accepted by verify-v2 callback',
+      duration_ms: 0,
+      run_id: callbackRunId,
+      run_date: callbackRunDate,
+    }, c.env as any)
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { runPostVerifyCallbackChain } = await import('../lib/postMarketChain')
+        await runPostVerifyCallbackChain(c.env, {
+          runDate: callbackRunDate,
+          upstreamRunId: callbackRunId,
+        })
+      } catch (e: any) {
+        await logSchedulerResult(c.env.KV, 'post-verify-chain', {
+          status: 'error',
+          summary: e?.message ?? 'post-verify callback chain failed',
+          duration_ms: 0,
+          error: String(e),
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: 'error',
+          summary: e?.message ?? 'root chain stopped in post-verify callback chain',
+          duration_ms: 0,
+          error: String(e),
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
+      }
+    })())
   }
 
   if (body.task === 'verify-v2' && String(body.status) === 'error') {

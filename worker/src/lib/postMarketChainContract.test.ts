@@ -30,8 +30,9 @@ assert(
   'pipeline terminal callback must await post-pipeline chain before returning; waitUntil can silently drop verify trigger evidence',
 )
 assert(
-  !verifyCallbackBlock.includes('executionCtx.waitUntil'),
-  'verify terminal callback must await post-verify chain before returning; waitUntil can silently drop final closure evidence',
+  verifyCallbackBlock.includes('executionCtx.waitUntil') &&
+    verifyCallbackBlock.includes('post-verify chain accepted by verify-v2 callback'),
+  'verify terminal callback must accept post-verify closure and continue it in waitUntil so Cloud Run callback is not blocked by the long chain',
 )
 
 assert(
@@ -110,6 +111,12 @@ assert(
 assert(
   postMarketChain.includes('recordWorkerTaskComputeProfile'),
   'post-market callback tasks must emit compute profile events from the shared task logger',
+)
+assert(
+  postMarketChain.includes('Promise.allSettled') &&
+    postMarketChain.includes('withObservabilityTimeout') &&
+    postMarketChain.includes('TASK_OBSERVABILITY_TIMEOUT_MS'),
+  'post-market task observability writes must not let KV/profile logging block downstream chain tasks',
 )
 assert(
   postMarketChain.includes("task === 'post-verify-chain'") &&

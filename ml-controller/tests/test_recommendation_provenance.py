@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -8,16 +9,65 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
-from services import modal_client  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
+    apply_sparse_tangent_allocation,
     build_reason,
     build_ml_vote_summary_data,
     filter_and_score_recommendations,
-    hybrid_ranking_promotion,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
     write_predictions_to_d1,
 )
+
+
+def _score_components(
+    *,
+    final_score: float = 60.0,
+    chip_flow: float = 10.0,
+    technical_structure: float = 12.0,
+    ml_edge: float = 0.0,
+) -> dict:
+    return {
+        "version": "score_v2",
+        "weights": {
+            "mlEdge": 25,
+            "chipFlow": 25,
+            "technicalStructure": 25,
+            "fundamentalQuality": 20,
+            "newsTheme": 5,
+        },
+        "components": {
+            "mlEdge": ml_edge,
+            "chipFlow": chip_flow,
+            "technicalStructure": technical_structure,
+            "fundamentalQuality": 0.0,
+            "newsTheme": 0.0,
+        },
+        "total": final_score,
+        "finalScore": final_score,
+        "seedComponents": {
+            "chipFlowSeed40": 16.0,
+            "technicalSeed30": 18.0,
+            "screenerMomentumSeed20": 6.0,
+            "mlEdgeSeed30": ml_edge,
+            "personaAlphaSeed": 0.0,
+        },
+        "technicalBreakdown": {
+            "trendStructure": 3.0,
+            "volatilityStructure": 2.0,
+            "reversalExtreme": 2.0,
+            "volumeConfirmation": 3.0,
+            "executionRisk": 1.0,
+        },
+        "legacyComponents": {
+            "chip": 18.0,
+            "technical": 12.0,
+        },
+    }
+
+
+def _score_seed_inputs() -> dict:
+    return _score_components()["seedComponents"]
 
 
 def _screener_rec(symbol: str) -> dict:
@@ -34,6 +84,7 @@ def _screener_rec(symbol: str) -> dict:
         "eligible_for_pending_buy": 1,
         "chip_score": 18.0,
         "tech_score": 12.0,
+        "score_components": _score_components(),
     }
 
 
@@ -44,6 +95,17 @@ def _payload(symbol: str) -> dict:
         "indicators": [{"date": "2026-04-21", "rsi14": 58.0, "macdHist": 0.4, "ma20": 96.0}],
         "chips": [{"date": "2026-04-21", "foreign_net": 1200, "trust_net": 300}],
         "market_env": {},
+    }
+
+
+def _sparse_policy(buy_signal_count: int = 1, slate_size: int = 3) -> dict:
+    return {
+        "allocation": {
+            "engine": "sparse_tangent_inverse_risk",
+            "controller": "sparse_tangent_inverse_risk",
+            "buy_signal_count": buy_signal_count,
+            "slate_size": slate_size,
+        }
     }
 
 
@@ -229,6 +291,7 @@ def test_build_reason_formats_chip_cash_billions_without_raw_share_scaling():
         "current_price": 100,
         "ma20": 95,
         "ml_vote_summary": "ML 資料不足",
+        "score_components": _score_components(),
     })
 
     assert "600000000" not in reason
@@ -282,7 +345,7 @@ def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
     assert row["score_components"]["weights"]["mlEdge"] == 25
     assert row["score_components"]["components"]["chipFlow"] == pytest.approx(10.0)
     assert row["score"] == pytest.approx(row["score_components"]["finalScore"])
-    assert row["score_components"]["legacyComponents"]["chip"] == pytest.approx(16.0)
+    assert row["score_components"]["seedComponents"]["chipFlowSeed40"] == pytest.approx(16.0)
     assert row["score_components"]["chipEvidence"]["source"] == "finlab.rotc_broker_transactions"
     assert row["score_components"]["chipEvidence"]["broker_net_amount_5d_billion"] == pytest.approx(0.013395)
 
@@ -325,10 +388,12 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
         "reason": "ok",
         "watch_points": ["watch"],
         "current_price": 100.0,
+        "score_seed_inputs": _score_seed_inputs(),
+        "score_components": _score_components(),
     }], "2026-04-27")
 
     assert "DELETE FROM daily_recommendations" in captured["cleanup_sql"]
-    assert "stock_id NOT IN" in captured["cleanup_sql"]
+    assert "stock_id IN (?)" in captured["cleanup_sql"]
     assert captured["cleanup_params"] == ["2026-04-27", 1]
 
     sql, params = captured["statements"][0]
@@ -375,6 +440,8 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
             "reason": "ok",
             "watch_points": ["watch"],
             "current_price": 100.0,
+            "score_seed_inputs": _score_seed_inputs(),
+            "score_components": _score_components(),
         },
         {
             "date": "2026-04-27",
@@ -393,6 +460,8 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
             "reason": "orphan",
             "watch_points": [],
             "current_price": 10.0,
+            "score_seed_inputs": _score_seed_inputs(),
+            "score_components": _score_components(final_score=30.0),
         },
     ], "2026-04-27")
 
@@ -417,7 +486,7 @@ def test_update_recommendations_in_d1_fails_when_no_seed_rows_exist(monkeypatch)
         }], "2026-04-27")
 
 
-def test_hybrid_ranking_promotion_marks_signal_source():
+def test_sparse_tangent_allocation_marks_signal_source():
     rows = [{
         "symbol": "2330",
         "chip_score": 20.0,
@@ -426,21 +495,25 @@ def test_hybrid_ranking_promotion_marks_signal_source():
         "signal": "HOLD",
         "signal_source": "ensemble_v2",
         "has_buy_signal": 0,
+        "score": 70.0,
+        "ml_forecast_pct": 0.03,
+        "score_components": _score_components(final_score=70.0),
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        ranking_config={"enabled": True, "promoteMinConf": 0.72},
+        alpha_policy=_sparse_policy(buy_signal_count=1),
     )
 
-    assert promoted[0]["ranking_promoted"] is True
+    assert promoted[0]["sparse_tangent_selected"] is True
+    assert promoted[0]["ranking_promoted"] is False
     assert promoted[0]["signal"] == "BUY"
     assert promoted[0]["signal_raw"] == "HOLD"
-    assert promoted[0]["signal_source"] == "ranking_promotion"
+    assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
 
 
-def test_hybrid_ranking_promotion_blocks_negative_forecast():
+def test_sparse_tangent_allocation_blocks_negative_forecast():
     rows = [{
         "symbol": "5292",
         "chip_score": 36.0,
@@ -450,20 +523,22 @@ def test_hybrid_ranking_promotion_blocks_negative_forecast():
         "signal_source": "ensemble_v2",
         "has_buy_signal": 0,
         "ml_forecast_pct": -0.01,
+        "score": 80.0,
+        "score_components": _score_components(final_score=80.0),
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1),
     )
 
     assert promoted[0]["signal"] == "HOLD"
-    assert promoted[0].get("ranking_promoted") is not True
+    assert promoted[0].get("sparse_tangent_selected") is not True
     assert promoted[0]["promotion_blocked_reason"] == "negative_or_below_min_forecast"
 
 
-def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied():
+def test_sparse_tangent_allocation_reowns_existing_buy_labels():
     rows = [{
         "symbol": "2330",
         "chip_score": 20.0,
@@ -473,6 +548,9 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
         "signal_source": "ensemble_v2_topk_policy",
         "has_buy_signal": 1,
         "topk_forced": True,
+        "score": 72.0,
+        "ml_forecast_pct": 0.03,
+        "score_components": _score_components(final_score=72.0),
     }, {
         "symbol": "2317",
         "chip_score": 19.0,
@@ -481,20 +559,25 @@ def test_hybrid_ranking_promotion_skips_when_controller_policy_already_applied()
         "signal": "HOLD",
         "signal_source": "ensemble_v2",
         "has_buy_signal": 0,
+        "score": 62.0,
+        "ml_forecast_pct": 0.01,
+        "score_components": _score_components(final_score=62.0),
     }]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 3, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        ensemble_v2_cfg={"topKConfidenceOverride": 0.72},
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1),
     )
 
-    assert promoted[0]["signal_source"] == "ensemble_v2_topk_policy"
+    assert promoted[0]["signal_source_raw"] == "ensemble_v2_topk_policy"
+    assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
+    assert promoted[0]["sparse_tangent_selected"] is True
     assert promoted[1]["signal"] == "HOLD"
-    assert promoted[1].get("ranking_promoted") is not True
+    assert promoted[1].get("sparse_tangent_selected") is not True
 
 
-def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
+def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
     rows = [
         {
             "symbol": "2330",
@@ -504,7 +587,9 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
             "signal": "BUY",
             "has_buy_signal": 1,
             "score": 70.0,
+            "ml_forecast_pct": 0.03,
             "alpha_context": {"edge_bucket": "trend_following"},
+            "score_components": _score_components(final_score=70.0),
         },
         {
             "symbol": "2317",
@@ -514,7 +599,9 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
             "signal": "BUY",
             "has_buy_signal": 1,
             "score": 69.0,
+            "ml_forecast_pct": 0.02,
             "alpha_context": {"edge_bucket": "mean_reversion"},
+            "score_components": _score_components(final_score=69.0),
         },
         {
             "symbol": "2454",
@@ -524,14 +611,16 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
             "signal": "BUY",
             "has_buy_signal": 1,
             "score": 68.0,
+            "ml_forecast_pct": 0.01,
             "alpha_context": {"edge_bucket": "defensive_accumulation"},
+            "score_components": _score_components(final_score=68.0),
         },
     ]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         rows,
-        ranking_config={"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2},
-        alpha_policy={"allocation": {"slateSize": 2}},
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=2, slate_size=2),
         regime_label="sideways",
     )
 
@@ -539,8 +628,10 @@ def test_hybrid_ranking_promotion_uses_alpha_policy_slate_size():
     assert len(selected) == 2
 
 
-@pytest.mark.asyncio
-async def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
+def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
+    pytest.importorskip("httpx")
+    from services import modal_client
+
     monkeypatch.setattr(modal_client, "_USE_MODAL", False)
     monkeypatch.setattr(modal_client, "_ML_SERVICE_URL", "https://ml.example.com")
 
@@ -554,7 +645,7 @@ async def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
 
     monkeypatch.setattr(modal_client, "_http_batch", _fake_http_batch)
 
-    result = await modal_client.batch_predict([{"symbol": "2330"}])
+    result = asyncio.run(modal_client.batch_predict([{"symbol": "2330"}]))
 
     assert result == [{"ok": True}]
     assert observed["path"] == "/predict/v2"
@@ -683,11 +774,12 @@ def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monke
         return {"meta": {"changes": 12}}
 
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "query", lambda *_args, **_kwargs: [{"stock_id": 9}])
 
     deleted = prune_predictions_outside_universe([1, 2, 3], "2026-04-30")
 
     assert deleted == 12
     assert "DELETE FROM predictions" in captured["sql"]
     assert "prediction_date = ?" in captured["sql"]
-    assert "stock_id NOT IN (?,?,?)" in captured["sql"]
-    assert captured["params"] == ["2026-04-30", 1, 2, 3]
+    assert "stock_id IN (?)" in captured["sql"]
+    assert captured["params"] == ["2026-04-30", 9]

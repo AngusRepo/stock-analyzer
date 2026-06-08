@@ -75,6 +75,8 @@ from services.persona_service import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = 256
+
 D1_RETRY_DELAYS_SECONDS = (3.0, 8.0, 15.0)
 D1_RETRYABLE_MARKERS = (
     "HTTP 429",
@@ -199,6 +201,16 @@ def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str,
     return {"total": total, "usable": usable, "ratio": round(ratio, 6), "min_points": min_points}
 
 
+def _timesfm_sequence_contract_points() -> int:
+    raw = os.environ.get("TIMESFM_SEQUENCE_CONTRACT_POINTS")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS
+    value = int(str(raw).strip())
+    if value <= 0:
+        raise ValueError("TIMESFM_SEQUENCE_CONTRACT_POINTS must be positive")
+    return value
+
+
 def _timesfm_sync_gate(
     *,
     model_status: dict[str, str],
@@ -210,16 +222,17 @@ def _timesfm_sync_gate(
     if status not in {"active", "degraded"}:
         return False, {"allowed": False, "reason": "timesfm_retired_by_model_pool", "status": status}
 
-    min_points = int(os.environ.get("TIMESFM_MIN_SEQUENCE_POINTS", "50") or "50")
-    min_coverage = float(os.environ.get("TIMESFM_MIN_SEQUENCE_COVERAGE", "0.80") or "0.80")
-    coverage = _sequence_coverage(sequence_series, min_points=min_points)
+    sequence_contract_points = _timesfm_sequence_contract_points()
+    min_coverage = float(os.environ.get("TIMESFM_MIN_SEQUENCE_COVERAGE", "1.00") or "1.00")
+    coverage = _sequence_coverage(sequence_series, min_points=sequence_contract_points)
     if coverage["ratio"] < min_coverage:
         return False, {
             "allowed": False,
-            "reason": "sequence_coverage_below_gate",
+            "reason": "timesfm_sequence_contract_unmet",
             "status": status,
             "coverage": coverage,
             "min_coverage": min_coverage,
+            "sequence_contract_points": sequence_contract_points,
         }
 
     serving_ic = _build_serving_ic_bundle(pool, "GLOBAL", ev2_cfg or {})
@@ -233,6 +246,7 @@ def _timesfm_sync_gate(
             "coverage": coverage,
             "effective_weight": weight,
             "diagnostic": diagnostic,
+            "sequence_contract_points": sequence_contract_points,
         }
     return True, {
         "allowed": True,
@@ -241,6 +255,7 @@ def _timesfm_sync_gate(
         "coverage": coverage,
         "effective_weight": weight,
         "diagnostic": diagnostic,
+        "sequence_contract_points": sequence_contract_points,
     }
 
 
@@ -697,7 +712,12 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         sequence_series=sequence_series,
     )
     timesfm_task = (
-        modal_client.timesfm_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("TimesFM", "v1"))
+        modal_client.timesfm_batch_predict(
+            sequence_series,
+            horizon_used=5,
+            version=active_versions.get("TimesFM", "v1"),
+            sequence_contract_points=timesfm_gate.get("sequence_contract_points"),
+        )
         if timesfm_allowed
         else _skip_batch(f"TimesFM skipped by serving gate: {timesfm_gate.get('reason')}")
     )
@@ -891,7 +911,23 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 sym = row.get("symbol")
                 if sym and not row.get("error"):
                     out[sym] = row
-            logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(series)} succeeded")
+            summary = _modal_batch_result_summary(raw)
+            error_summary = summary.get("error_summary")
+            if len(out) == 0 and series and name == "TimesFM":
+                raise RuntimeError(
+                    "TimesFM active model returned zero usable predictions; "
+                    f"contract_error_summary={error_summary or 'none'}"
+                )
+            if error_summary:
+                logger.warning(
+                    "[Pipeline V2] %s: %s/%s succeeded error_summary=%s",
+                    name,
+                    len(out),
+                    len(series),
+                    error_summary,
+                )
+            else:
+                logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(series)} succeeded")
         elif isinstance(raw, dict) and raw.get("results") == []:
             logger.debug(f"[Pipeline V2] {name} skipped: {raw.get('error')}")
         else:
@@ -2361,8 +2397,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     # 3. Update daily_recommendations
     rec_updated = update_recommendations_in_d1(final, run_date)
 
-    # 4. Delete SELL-filtered rows
-    sell_deleted = delete_filtered_recommendations(state.get("sell_filtered_symbols") or [], run_date)
+    # 4. Preserve screener seed rows while marking SELL/NO_SIGNAL outputs as non-buy.
+    sell_marked_non_buy = delete_filtered_recommendations(state.get("sell_filtered_symbols") or [], run_date)
 
     # 5. Re-rank
     re_rank_recommendations(run_date)
@@ -2388,7 +2424,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "prediction_output_models": round(predictions_written / len(stock_id_map)) if stock_id_map else 0,
         "stale_predictions_deleted": stale_predictions_deleted,
         "recommendations_updated": rec_updated,
-        "sell_deleted": sell_deleted,
+        "sell_marked_non_buy": sell_marked_non_buy,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),
         "breeze2_reason_shadow": breeze2_reason_shadow_metrics(state.get("breeze2_reason_shadow") or {}),
         "alpha_bucket_counts": alpha_bucket_counts,

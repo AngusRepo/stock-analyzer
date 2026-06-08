@@ -74,6 +74,16 @@ def _prediction_delete_date_expr(run_date: str | None) -> tuple[str, list[Any]]:
     return f"{COL_PREDICTION_DATE} = date('now', '+8 hours')", []
 
 
+def _require_prediction_feature_version(symbol: str, data: dict) -> str:
+    feature_version = str(data.get("feature_version") or "").strip()
+    if not feature_version:
+        raise ValueError(
+            f"missing_feature_version_contract: symbol={symbol} "
+            "prediction writer requires canonical feature_version"
+        )
+    return feature_version
+
+
 def prune_predictions_outside_universe(stock_ids: list[int], run_date: str) -> int:
     """Remove same-date prediction rows that no longer belong to the current V2 universe."""
     safe_ids = {int(stock_id) for stock_id in stock_ids if stock_id}
@@ -2093,6 +2103,7 @@ def write_predictions_to_d1(
         stock_id = stock_id_map.get(symbol)
         if not stock_id:
             continue
+        feature_version = _require_prediction_feature_version(str(symbol), data)
         sanitized_count = 0
         skipped_model_rows: list[str] = []
         # ML_POOL Plan A migration: ensemble_v2 (8-model w/ R1+R3) drives the
@@ -2168,7 +2179,7 @@ def write_predictions_to_d1(
                 target1,
                 target2,
                 trade_signal,
-                data.get("feature_version"),
+                feature_version,
                 raw_signal,
             ],
         ))
@@ -2212,7 +2223,7 @@ def write_predictions_to_d1(
                     target1,
                     target2,
                     trade_signal,
-                    data.get("feature_version"),
+                    feature_version,
                     raw_signal,
                 ],
             ))
@@ -2714,16 +2725,31 @@ def update_recommendations_in_d1(
 
 
 def delete_filtered_recommendations(filtered_symbols: list[str], run_date: str) -> int:
-    """Delete daily_recommendations rows where symbol in filtered list (SELL/NO_SIGNAL)."""
+    """Preserve screener-owned rows and mark ML-filtered symbols as non-buy."""
     if not filtered_symbols:
         return 0
     statements = [
-        ("DELETE FROM daily_recommendations WHERE date = ? AND symbol = ?",
-         [run_date, sym])
+        (
+            """
+            UPDATE daily_recommendations
+               SET signal = 'HOLD',
+                   has_buy_signal = 0,
+                   watch_points = CASE
+                     WHEN json_valid(watch_points) THEN json_insert(
+                       watch_points,
+                       '$[#]',
+                       'ml_filter:preserved_screener_seed_not_buy'
+                     )
+                     ELSE json_array('ml_filter:preserved_screener_seed_not_buy')
+                   END
+             WHERE date = ? AND symbol = ?
+            """.strip(),
+            [run_date, sym],
+        )
         for sym in filtered_symbols
     ]
     d1_client.batch_execute(statements)
-    logger.info(f"[recommendation_service] Deleted {len(filtered_symbols)} filtered rows")
+    logger.info(f"[recommendation_service] Preserved {len(filtered_symbols)} ML-filtered screener seed rows")
     return len(filtered_symbols)
 
 

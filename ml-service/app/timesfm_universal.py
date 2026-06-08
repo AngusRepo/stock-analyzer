@@ -104,7 +104,10 @@ def _forecast(model, *, horizon: int, inputs: list[np.ndarray]):
 
 
 def timesfm_batch_predict(
-    series_list: list[dict], horizon_used: int = DEFAULT_PRED_LEN, version: str = "v1"
+    series_list: list[dict],
+    horizon_used: int = DEFAULT_PRED_LEN,
+    version: str = "v1",
+    sequence_contract_points: int | None = None,
 ) -> list[dict]:
     config = load_config_from_gcs(version)
     if not config:
@@ -114,6 +117,19 @@ def timesfm_batch_predict(
         ]
 
     seq_len = int(config.get("seq_len") or DEFAULT_SEQ_LEN)
+    if sequence_contract_points is not None:
+        contract_points = int(sequence_contract_points)
+        if contract_points != seq_len:
+            return [
+                {
+                    "symbol": row.get("symbol", "?"),
+                    "error": (
+                        "TimesFM sequence contract mismatch "
+                        f"(controller={contract_points}, artifact_seq_len={seq_len}, version={version})"
+                    ),
+                }
+                for row in series_list
+            ]
     pred_len = int(config.get("pred_len") or DEFAULT_PRED_LEN)
     horizon = max(pred_len, int(horizon_used))
     inputs: list[np.ndarray] = []

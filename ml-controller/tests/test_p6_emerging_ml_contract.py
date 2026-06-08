@@ -11,11 +11,47 @@ from services.payload_builder import (  # noqa: E402
     build_stock_meta_with_segment,
 )
 from services.recommendation_service import (  # noqa: E402
+    apply_sparse_tangent_allocation,
     filter_and_score_recommendations,
-    hybrid_ranking_promotion,
     update_recommendations_in_d1,
     write_predictions_to_d1,
 )
+
+
+def _score_components() -> dict:
+    return {
+        "version": "score_v2",
+        "weights": {
+            "mlEdge": 25,
+            "chipFlow": 25,
+            "technicalStructure": 25,
+            "fundamentalQuality": 20,
+            "newsTheme": 5,
+        },
+        "components": {
+            "mlEdge": 0.0,
+            "chipFlow": 18.0,
+            "technicalStructure": 15.0,
+            "fundamentalQuality": 0.0,
+            "newsTheme": 0.0,
+        },
+        "total": 60.0,
+        "finalScore": 60.0,
+        "seedComponents": {
+            "chipFlowSeed40": 28.0,
+            "technicalSeed30": 20.0,
+            "screenerMomentumSeed20": 5.0,
+            "mlEdgeSeed30": 0.0,
+            "personaAlphaSeed": 0.0,
+        },
+        "technicalBreakdown": {
+            "volumeConfirmation": 3.0,
+        },
+    }
+
+
+def _score_seed_inputs() -> dict:
+    return _score_components()["seedComponents"]
 
 
 def test_emerging_daily_recommendation_enters_ml_universe_but_not_execution():
@@ -74,6 +110,7 @@ def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted():
             "chip_score": 35,
             "tech_score": 25,
             "score": 60,
+            "score_components": _score_components(),
             "watch_points": ["research_only:emerging_not_for_auto_trade"],
         }
     ]
@@ -107,10 +144,17 @@ def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted():
     assert final[0]["eligible_for_pending_buy"] is False
     assert "research_only:emerging_not_for_auto_trade" in final[0]["watch_points"]
 
-    promoted = hybrid_ranking_promotion(
+    promoted = apply_sparse_tangent_allocation(
         final,
-        {"enabled": True, "topK": 1, "alpha": 0.4, "beta": 0.4, "gamma": 0.2, "screenerDenominator": 60, "promoteMinConf": 0.6},
-        {"topKConfidenceOverride": 0.72},
+        {"enabled": True, "promoteMinConf": 0.6},
+        alpha_policy={
+            "allocation": {
+                "engine": "sparse_tangent_inverse_risk",
+                "controller": "sparse_tangent_inverse_risk",
+                "buy_signal_count": 1,
+                "slate_size": 1,
+            }
+        },
     )
     assert promoted[0]["has_buy_signal"] == 0
 
@@ -122,8 +166,9 @@ def test_prediction_forecast_data_preserves_market_segment_metadata(monkeypatch)
         captured["statements"] = statements
         return len(statements)
 
-    def fake_query(sql, params):
-        captured["seed_query"] = (sql, params)
+    def fake_query(sql, params, **_kwargs):
+        if "dr.stock_id IN" in sql:
+            captured["seed_query"] = (sql, params)
         return [{"stock_id": 2}]
 
     monkeypatch.setattr("services.recommendation_service.d1_client.batch_execute", fake_batch)
@@ -139,6 +184,7 @@ def test_prediction_forecast_data_preserves_market_segment_metadata(monkeypatch)
                 "stop_loss": 95.0,
                 "target1": 110.0,
                 "target2": 120.0,
+                "feature_version": "v2",
                 "rank_scores": {"XGBoost": 0.71},
                 "stock_meta": {
                     "market_segment": "EMERGING",
@@ -175,8 +221,9 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
         captured["statements"] = statements
         return len(statements)
 
-    def fake_query(sql, params):
-        captured["seed_query"] = (sql, params)
+    def fake_query(sql, params, **_kwargs):
+        if "dr.stock_id IN" in sql:
+            captured["seed_query"] = (sql, params)
         return [{"stock_id": 2}]
 
     def fake_execute(sql, params, timeout=None):
@@ -209,6 +256,8 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
                 "chip_score": 30,
                 "tech_score": 24,
                 "ml_score": 26,
+                "score_seed_inputs": _score_seed_inputs(),
+                "score_components": _score_components(),
                 "industry": "other",
                 "market_segment": "EMERGING",
                 "recommendation_lane": "emerging_watchlist",
@@ -229,4 +278,4 @@ def test_daily_recommendation_writer_persists_segment_governance(monkeypatch):
     assert "EMERGING" in params
     assert "emerging_watchlist" in params
     assert 1 in params
-    assert captured["seed_query"][1] == ["2026-04-30", 2]
+    assert captured["seed_query"][1] == ["2026-04-30", "2026-04-30", 2]

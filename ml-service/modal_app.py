@@ -1882,9 +1882,11 @@ def timesfm_universal_predict(payload: dict) -> dict:
             series_list=payload.get("series_list") or [],
             horizon_used=payload.get("horizon_used", 5),
             version=payload.get("version", "v1"),
+            sequence_contract_points=payload.get("sequence_contract_points"),
         )
         return {"results": results, "n_input": len(payload.get("series_list") or []),
-                "n_success": sum(1 for r in results if not r.get("error"))}
+                "n_success": sum(1 for r in results if not r.get("error")),
+                "n_error": sum(1 for r in results if r.get("error"))}
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "timesfm_universal_predict"}

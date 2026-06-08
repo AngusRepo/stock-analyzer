@@ -361,7 +361,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     """Structured ML vote evidence for UI/OBS; text reasons are derived elsewhere."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
     tracked = [
-        "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
+        "XGBoost", "ExtraTrees", "LightGBM",
         "TabM", "GNN",
         "DLinear", "PatchTST", "iTransformer", "TimesFM",
     ]
@@ -389,7 +389,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     model_scores: dict[str, float] = {}
     rank_scores = (ml or {}).get("rank_scores") or {}
     if isinstance(rank_scores, dict):
-        for name in ["XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"]:
+        for name in ["XGBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"]:
             try:
                 if rank_scores.get(name) is not None:
                     model_scores[name] = float(rank_scores[name])
@@ -1636,7 +1636,7 @@ def apply_core_ml_gate(
 
 
 _CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
-    "tree": ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM"),
+    "tree": ("XGBoost", "ExtraTrees", "LightGBM"),
     "tabular_neural": ("TabM",),
     "graph": ("GNN",),
     "learned_sequence": ("DLinear", "PatchTST", "iTransformer"),
@@ -2361,7 +2361,7 @@ def write_layer3_formal_gate_audit(
 # Models whose rank scores we want stored for alpha IC tracking.
 # State-space overlays explain regime/risk context rather than vote as alpha.
 _PER_MODEL_TRACKED = (
-    "XGBoost", "CatBoost", "ExtraTrees", "LightGBM",
+    "XGBoost", "ExtraTrees", "LightGBM",
     "TabM", "GNN",
     "DLinear", "PatchTST", "iTransformer", "TimesFM",
 )
@@ -2380,7 +2380,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     import math
     out: dict[str, float] = {}
     rank_scores = pred.get("rank_scores") or {}
-    for name in ("XGBoost", "CatBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"):
+    for name in ("XGBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"):
         v = rank_scores.get(name)
         if v is not None:
             try:

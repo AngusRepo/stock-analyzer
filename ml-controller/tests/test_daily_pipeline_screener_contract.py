@@ -127,12 +127,14 @@ def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypa
                 "symbol": "2330",
                 "rank_scores": {"LightGBM": 0.8, "XGBoost": 0.7, "ExtraTrees": 0.9},
                 "core_ml_gate": {"selected": True, "rank": 1, "target_size": 1},
+                "feature_version": "l2_tree_predict_v1",
                 "prediction_stage": "L2",
             },
             "2317": {
                 "symbol": "2317",
                 "rank_scores": {"LightGBM": 0.4, "XGBoost": 0.5, "ExtraTrees": 0.45},
                 "core_ml_gate": {"selected": False, "rank": 2, "target_size": 1},
+                "feature_version": "l2_tree_predict_v1",
                 "prediction_stage": "L2",
             },
         },
@@ -143,7 +145,9 @@ def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypa
     assert observed_payload_symbols == [["2330"]]
     assert result["predictions"]["2330"]["prediction_stage"] == "L3"
     assert result["predictions"]["2330"]["core_ml_gate"] == {"selected": True, "rank": 1, "target_size": 1}
+    assert result["predictions"]["2330"]["feature_version"] == "l2_tree_predict_v1"
     assert result["predictions"]["2317"]["prediction_stage"] == "L2"
+    assert result["predictions"]["2317"]["feature_version"] == "l2_tree_predict_v1"
     assert result["l3_predictions"]["2330"]["rank_scores"] == {"TabM": 0.81, "GNN": 0.76}
 
 

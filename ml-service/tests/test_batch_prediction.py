@@ -192,6 +192,7 @@ def test_l2_tree_batch_predict_uses_only_tree_models(monkeypatch):
     assert batch["n_success"] == 2
     assert batch["results"][0]["source"] == "l2_tree_predict"
     assert batch["results"][0]["prediction_stage"] == "L2"
+    assert batch["results"][0]["feature_version"] == "l2_tree_predict_v1"
     assert set(batch["results"][0]["rank_scores"]) == {"LightGBM", "XGBoost", "ExtraTrees"}
 
 

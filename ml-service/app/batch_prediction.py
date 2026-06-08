@@ -451,6 +451,7 @@ def predict_l2_tree_batch(payloads: list[dict]) -> dict:
             "rank_scores": {name: round(float(score), 6) for name, score in sorted(scores.items())},
             "model_errors": list(ctx.model_errors),
             "l2_tree_score": round(avg_rank, 6),
+            "feature_version": "l2_tree_predict_v1",
             "source": "l2_tree_predict",
             "prediction_stage": "L2",
         }

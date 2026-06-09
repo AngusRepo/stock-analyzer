@@ -35,6 +35,14 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     'morning setup should widen execution pool with ML-qualified watch candidates instead of only final buy rows',
   )
   assert(
+    !morningSetupQuery.includes('WHERE dr.date = ?\n         AND dr.confidence >= ?\n         AND COALESCE(dr.eligible_for_pending_buy, 1) = 1'),
+    'morning setup must not let adaptive buyConfThreshold block final allocator has_buy_signal rows',
+  )
+  assert(
+    morningSetupQuery.includes('dr.has_buy_signal = 1\n           OR (\n             dr.confidence >= ?\n             AND COALESCE(dr.eligible_for_ml, 1) = 1'),
+    'morning setup should apply adaptive buyConfThreshold only to ML-qualified watch candidates',
+  )
+  assert(
     !morningSetupQuery.includes('WHERE dr.date = ?\n         AND dr.has_buy_signal = 1'),
     'morning setup must not keep a standalone final-buy filter that blocks ML-qualified watch candidates',
   )

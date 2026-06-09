@@ -739,12 +739,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
            LIMIT 1
        )
        WHERE dr.date = ?
-         AND dr.confidence >= ?
          AND COALESCE(dr.eligible_for_pending_buy, 1) = 1
          AND (
            dr.has_buy_signal = 1
            OR (
-             COALESCE(dr.eligible_for_ml, 1) = 1
+             dr.confidence >= ?
+             AND COALESCE(dr.eligible_for_ml, 1) = 1
              AND json_valid(dr.score_components)
              AND COALESCE(CAST(json_extract(dr.score_components, '$.components.mlEdge') AS REAL), 0) >= ?
              AND COALESCE(

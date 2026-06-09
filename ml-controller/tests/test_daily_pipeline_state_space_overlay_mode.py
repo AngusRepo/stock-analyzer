@@ -55,10 +55,10 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _payload(symbol: str = "2330") -> dict:
+def _payload(symbol: str = "2330", *, price_count: int = 65) -> dict:
     start = date(2026, 1, 1)
     prices = []
-    for idx in range(65):
+    for idx in range(price_count):
         close = 100.0 + idx * 0.1
         prices.append({
             "date": (start + timedelta(days=idx)).isoformat(),
@@ -87,7 +87,7 @@ def _feature_prediction(symbol: str = "2330") -> dict:
 
 def _patch_common(monkeypatch, *, state_space_result: dict | None = None, state_space_fn=None):
     async def fake_batch_predict(payloads):
-        return [_feature_prediction(payloads[0]["symbol"])]
+        return [_feature_prediction(payload["symbol"]) for payload in payloads]
 
     async def empty_ts(*_args, **_kwargs):
         return {"results": []}
@@ -297,3 +297,89 @@ def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
     assert blocked is False
     assert blocked_meta["reason"] == "timesfm_sequence_contract_unmet"
     assert blocked_meta["coverage"]["min_points"] == 256
+
+    mixed_series = [
+        {"symbol": "2330", "prices": list(range(260))},
+        {"symbol": "2317", "prices": list(range(60))},
+    ]
+    allowed, meta = daily_pipeline_v2._timesfm_sync_gate(
+        model_status={"TimesFM": "active"},
+        pool=pool,
+        ev2_cfg={},
+        sequence_series=mixed_series,
+    )
+
+    assert allowed is True
+    assert meta["sequence_contract_mode"] == "per_symbol_subset"
+    assert meta["coverage"]["total"] == 2
+    assert meta["coverage"]["usable"] == 1
+    assert meta["coverage"]["excluded_count"] == 1
+    assert meta["coverage"]["excluded_symbols"] == [
+        {"symbol": "2317", "points": 60, "reason": "insufficient_sequence_points"}
+    ]
+
+
+def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
+    monkeypatch.setenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", "60")
+    monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "disabled")
+    calls = []
+
+    async def fake_timesfm(series_list, *_args, **kwargs):
+        calls.append({
+            "symbols": [row["symbol"] for row in series_list],
+            "sequence_contract_points": kwargs.get("sequence_contract_points"),
+        })
+        return {
+            "results": [
+                {"symbol": row["symbol"], "forecast_pct": 0.02, "confidence": 0.63}
+                for row in series_list
+            ],
+        }
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(modal_client, "timesfm_batch_predict", fake_timesfm)
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "_load_model_pool_versions",
+        lambda: (
+            {
+                "GNN": "retired",
+                "DLinear": "retired",
+                "PatchTST": "retired",
+                "iTransformer": "retired",
+                "TimesFM": "active",
+                "KalmanFilter": "retired",
+                "MarkovSwitching": "retired",
+            },
+            {"TimesFM": "v1"},
+            {},
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "_load_pool_and_ic",
+        lambda: (
+            {"TimesFM": "active"},
+            {},
+            1.0,
+            {},
+            True,
+            {"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04, "last_ic_sample_count": 80}}},
+        ),
+    )
+
+    result = _run(daily_pipeline_v2.node_ml_predict({
+        "payloads": [
+            _payload("2330", price_count=65),
+            _payload("2317", price_count=20),
+        ]
+    }))
+
+    assert calls == [{"symbols": ["2330"], "sequence_contract_points": 60}]
+    assert "timesfm" in result["predictions"]["2330"]
+    assert "timesfm" not in result["predictions"]["2317"]
+    gate = result["modal_wait_telemetry"]["timesfm_gate"]
+    assert gate["allowed"] is True
+    assert gate["coverage"]["usable"] == 1
+    assert gate["coverage"]["excluded_count"] == 1

@@ -190,15 +190,34 @@ def _modal_batch_result_summary(raw: Any) -> dict:
     return summary
 
 
-def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str, Any]:
-    total = len(series or [])
-    usable = 0
+def _sequence_contract_subset(
+    series: list[dict],
+    *,
+    min_points: int,
+) -> tuple[list[dict], list[dict[str, Any]]]:
+    usable: list[dict] = []
+    excluded: list[dict[str, Any]] = []
     for row in series or []:
         prices = row.get("prices") if isinstance(row, dict) else None
-        if isinstance(prices, list) and len(prices) >= max(1, int(min_points)):
-            usable += 1
-    ratio = usable / total if total else 0.0
-    return {"total": total, "usable": usable, "ratio": round(ratio, 6), "min_points": min_points}
+        point_count = len(prices) if isinstance(prices, list) else 0
+        if point_count >= max(1, int(min_points)):
+            usable.append(row)
+            continue
+        symbol = str(row.get("symbol") or row.get("stock_id") or "") if isinstance(row, dict) else ""
+        excluded.append({
+            "symbol": symbol,
+            "points": point_count,
+            "reason": "insufficient_sequence_points",
+        })
+    return usable, excluded
+
+
+def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str, Any]:
+    total = len(series or [])
+    usable, _excluded = _sequence_contract_subset(series, min_points=min_points)
+    usable_count = len(usable)
+    ratio = usable_count / total if total else 0.0
+    return {"total": total, "usable": usable_count, "ratio": round(ratio, 6), "min_points": min_points}
 
 
 def _timesfm_sequence_contract_points() -> int:
@@ -223,15 +242,19 @@ def _timesfm_sync_gate(
         return False, {"allowed": False, "reason": "timesfm_retired_by_model_pool", "status": status}
 
     sequence_contract_points = _timesfm_sequence_contract_points()
-    min_coverage = float(os.environ.get("TIMESFM_MIN_SEQUENCE_COVERAGE", "1.00") or "1.00")
     coverage = _sequence_coverage(sequence_series, min_points=sequence_contract_points)
-    if coverage["ratio"] < min_coverage:
+    usable_series, excluded = _sequence_contract_subset(
+        sequence_series,
+        min_points=sequence_contract_points,
+    )
+    coverage["excluded_count"] = len(excluded)
+    coverage["excluded_symbols"] = excluded[:20]
+    if not usable_series:
         return False, {
             "allowed": False,
             "reason": "timesfm_sequence_contract_unmet",
             "status": status,
             "coverage": coverage,
-            "min_coverage": min_coverage,
             "sequence_contract_points": sequence_contract_points,
         }
 
@@ -256,6 +279,7 @@ def _timesfm_sync_gate(
         "effective_weight": weight,
         "diagnostic": diagnostic,
         "sequence_contract_points": sequence_contract_points,
+        "sequence_contract_mode": "per_symbol_subset",
     }
 
 
@@ -711,9 +735,13 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         ev2_cfg=serving_ev2_cfg,
         sequence_series=sequence_series,
     )
+    timesfm_sequence_series, _timesfm_excluded = _sequence_contract_subset(
+        sequence_series,
+        min_points=int(timesfm_gate.get("sequence_contract_points") or DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS),
+    )
     timesfm_task = (
         modal_client.timesfm_batch_predict(
-            sequence_series,
+            timesfm_sequence_series,
             horizon_used=5,
             version=active_versions.get("TimesFM", "v1"),
             sequence_contract_points=timesfm_gate.get("sequence_contract_points"),
@@ -982,7 +1010,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
     itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_series)
-    timesfm_map = _drain_ts_result(timesfm_raw, "TimesFM", sequence_series)
+    timesfm_map = _drain_ts_result(timesfm_raw, "TimesFM", timesfm_sequence_series)
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")

@@ -1,3 +1,5 @@
+import { buildTwOrderLegs, getTwTickSize, normalizeTwLimitPrice, type TwOrderLeg } from './twMarketRules'
+
 export interface OrderIntentPendingBuy {
   symbol: string
   confidence: number
@@ -10,10 +12,16 @@ export interface StockVisionOrderIntent {
   accountId: number
   tradeDate: string
   symbol: string
-  side: 'buy'
+  side: 'buy' | 'sell'
   maxBudget: number
   maxPrice: number
+  minPrice?: number | null
+  limitPrice: number
+  priceRole: 'buy_max' | 'sell_min'
+  priceTick: number
+  priceSnapMode: 'floor_to_buy_limit' | 'ceil_to_sell_limit'
   requestedShares: number
+  orderLegs: TwOrderLeg[]
   strategyType: string
   timeInForce: 'ROD'
   liveSubmitRequested: false
@@ -57,16 +65,34 @@ export interface BuildStockVisionOrderIntentInput {
   }
 }
 
+export interface BuildStockVisionSellOrderIntentInput {
+  accountId: number
+  tradeDate: string
+  symbol: string
+  limitPrice: number
+  currentPrice: number
+  shares: number
+  reason?: string | null
+  strategyType?: string | null
+  marketRiskLevel?: string | null
+  quote: {
+    bestBid?: number | null
+    bestAsk?: number | null
+    source?: string | null
+    quoteAgeMs?: number | null
+  }
+}
+
 function finitePositive(value: unknown, fallback = 0): number {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : fallback
 }
 
-function roundPrice(value: number): number {
-  return Math.round(value * 100) / 100
-}
-
 export function buildStockVisionOrderIntent(input: BuildStockVisionOrderIntentInput): StockVisionOrderIntent {
+  const rawMaxPrice = finitePositive(input.limitPrice, input.currentPrice)
+  const maxPrice = normalizeTwLimitPrice(rawMaxPrice, 'buy')
+  const requestedShares = Math.max(0, Math.floor(finitePositive(input.shares)))
+
   return {
     schemaVersion: 'stockvision-order-intent-v1',
     accountId: input.accountId,
@@ -74,8 +100,14 @@ export function buildStockVisionOrderIntent(input: BuildStockVisionOrderIntentIn
     symbol: input.pending.symbol,
     side: 'buy',
     maxBudget: Math.round(finitePositive(input.budget)),
-    maxPrice: roundPrice(finitePositive(input.limitPrice, input.currentPrice)),
-    requestedShares: Math.max(0, Math.floor(finitePositive(input.shares))),
+    maxPrice,
+    minPrice: null,
+    limitPrice: maxPrice,
+    priceRole: 'buy_max',
+    priceTick: getTwTickSize(maxPrice),
+    priceSnapMode: 'floor_to_buy_limit',
+    requestedShares,
+    orderLegs: buildTwOrderLegs(requestedShares),
     strategyType: String(input.strategyMode || 'trend'),
     timeInForce: 'ROD',
     liveSubmitRequested: false,
@@ -91,6 +123,47 @@ export function buildStockVisionOrderIntent(input: BuildStockVisionOrderIntentIn
       maxEntryChasePct: Number(input.adaptivePolicy.maxEntryChasePct ?? 0),
       minVolumeRatio: input.adaptivePolicy.minVolumeRatio ?? null,
       minRangePosition: input.adaptivePolicy.minRangePosition ?? null,
+      bestBid: input.quote.bestBid ?? null,
+      bestAsk: input.quote.bestAsk ?? null,
+    },
+  }
+}
+
+export function buildStockVisionSellOrderIntent(input: BuildStockVisionSellOrderIntentInput): StockVisionOrderIntent {
+  const rawMinPrice = finitePositive(input.limitPrice, input.currentPrice)
+  const minPrice = normalizeTwLimitPrice(rawMinPrice, 'sell')
+  const requestedShares = Math.max(0, Math.floor(finitePositive(input.shares)))
+
+  return {
+    schemaVersion: 'stockvision-order-intent-v1',
+    accountId: input.accountId,
+    tradeDate: input.tradeDate,
+    symbol: input.symbol,
+    side: 'sell',
+    maxBudget: 0,
+    maxPrice: minPrice,
+    minPrice,
+    limitPrice: minPrice,
+    priceRole: 'sell_min',
+    priceTick: getTwTickSize(minPrice),
+    priceSnapMode: 'ceil_to_sell_limit',
+    requestedShares,
+    orderLegs: buildTwOrderLegs(requestedShares),
+    strategyType: String(input.strategyType || 'exit'),
+    timeInForce: 'ROD',
+    liveSubmitRequested: false,
+    riskContext: {
+      marketRiskLevel: String(input.marketRiskLevel || 'unknown'),
+      confidence: 0,
+      riskPct: 0,
+      kellyPct: null,
+    },
+    executionConstraints: {
+      quoteSource: String(input.quote.source || 'none'),
+      quoteAgeMs: input.quote.quoteAgeMs ?? null,
+      maxEntryChasePct: 0,
+      minVolumeRatio: null,
+      minRangePosition: null,
       bestBid: input.quote.bestBid ?? null,
       bestAsk: input.quote.bestAsk ?? null,
     },

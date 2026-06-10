@@ -32,8 +32,9 @@ import {
   type FinLabL5Quote,
 } from './finlabL5MarketData'
 import { fetchFinLabExecutionPreview } from './finlabExecutionPreviewClient'
-import { buildStockVisionOrderIntent } from './stockvisionOrderIntent'
+import { buildStockVisionOrderIntent, buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { buildPaperBrokerReconciliation } from './paperBrokerReconciliation'
+import { buildTwOrderLegs, getTwTickSize, normalizeTwFilledSharesForRequestedOrder, normalizeTwLimitPrice } from './twMarketRules'
 import {
   buildIntradayTechnicalSnapshot,
   floorRollingBarIntervalMs,
@@ -831,6 +832,23 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         continue
       }
       const sellPrice = sellFill.fillPrice
+      const sellOrderIntent = buildStockVisionSellOrderIntent({
+        accountId: ACCOUNT_ID,
+        tradeDate: today,
+        symbol: weakest.symbol,
+        limitPrice: sellPrice,
+        currentPrice: weakQuote.last,
+        shares: weakPos.shares,
+        reason: 'auto_swap',
+        strategyType: 'auto_swap',
+        marketRiskLevel: marketRisk.risk_level,
+        quote: {
+          bestBid: weakQuote.bid ?? null,
+          bestAsk: weakQuote.ask ?? null,
+          source: weakQuote.source ?? null,
+          quoteAgeMs: quoteAgeMs(weakQuote.quoteTime),
+        },
+      })
       console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(rank=${replacementDecision.candidateRank ?? 'na'})`)
       const sellValue = sellPrice * weakPos.shares
       const sellTax = calcTax(sellValue, cfg)
@@ -843,6 +861,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         allocator_reason: replacementDecision.reason,
         replaced_by: pending.symbol,
         entry_date: weakPos.entry_date ?? null,
+        order_intent: sellOrderIntent,
+        order_legs: sellOrderIntent.orderLegs,
       }, {
         entryPrice: weakPos.entry_price ?? weakPos.avg_cost,
         exitPrice: sellPrice,
@@ -882,6 +902,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           candidate_rank: replacementDecision.candidateRank ?? null,
           allocator_reason: replacementDecision.reason,
           fill_reason: sellFill.reason,
+          order_intent: sellOrderIntent,
+          order_legs: sellOrderIntent.orderLegs,
           quote_last: weakQuote.last,
           quote_bid: weakQuote.bid ?? null,
           quote_ask: weakQuote.ask ?? null,
@@ -1461,7 +1483,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue
     }
 
-    const limitPrice = preTrade.limitPrice ?? executionEntryPrice
+    const rawLimitPrice = preTrade.limitPrice ?? executionEntryPrice
+    const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'buy')
     const fill = resolveLimitBuyFill({
       currentPrice: price,
       limitPrice,
@@ -1618,8 +1641,19 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
     }
     const executableVolume = Number(currentOhlc?.totalVolume ?? 0)
-    shares = applyPartialFill(shares, fillPrice, executableVolume, cfg)
+    const rawFilledShares = applyPartialFill(shares, fillPrice, executableVolume, cfg)
+    shares = normalizeTwFilledSharesForRequestedOrder(requestedShares, rawFilledShares)
+    if (shares <= 0) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'submitted',
+        'paper_partial_fill_below_tradeable_lot',
+        `requested=${requestedShares};raw_filled=${rawFilledShares}`,
+      )
+      continue
+    }
     const isPartialFill = shares < requestedShares
+    const filledOrderLegs = buildTwOrderLegs(shares)
 
     const txValue = fillPrice * shares
     if (txValue < minPosVal) {
@@ -1758,7 +1792,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             atr14,
             budget: Math.round(budget),
             fill_type: 'limit_intraday',
+            raw_limit_price: rawLimitPrice,
+            normalized_limit_price: limitPrice,
+            price_tick: getTwTickSize(limitPrice),
             requested_shares: requestedShares,
+            requested_order_legs: orderIntent.orderLegs,
+            filled_order_legs: filledOrderLegs,
             partial_fill: isPartialFill,
             quote_bid: currentOhlc?.bid ?? null,
             quote_ask: currentOhlc?.ask ?? null,
@@ -1813,6 +1852,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         intent_key: intent.intentKey,
         requested_shares: requestedShares,
         shares,
+        requested_order_legs: orderIntent.orderLegs,
+        filled_order_legs: filledOrderLegs,
+        raw_limit_price: rawLimitPrice,
+        normalized_limit_price: limitPrice,
+        price_tick: getTwTickSize(limitPrice),
         fill_price: fillPrice,
         total_cost: totalCost,
         quote_bid: currentOhlc?.bid ?? null,

@@ -26,7 +26,7 @@ export interface PaperBrokerReconciliation {
   status: 'matched' | 'blocked_by_preview' | 'preview_missing' | 'simulation_not_fillable' | 'mismatch'
   liveSubmitEnabled: false
   symbol: string
-  side: 'buy'
+  side: 'buy' | 'sell'
   previewStatus: string
   simulatedFillReason: string
   expectedSlippagePct: number | null

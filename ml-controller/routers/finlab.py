@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from services.finlab_execution_smoke import run_finlab_execution_smoke
 from services.finlab_execution_preview_service import run_finlab_execution_preview
+from services.finlab_live_submit_service import run_finlab_live_submit
 from services.finlab_production_simulated_loop import (
     build_execution_loop_plan as build_production_simulated_loop_plan,
     run_production_simulated_execution_loop,
@@ -86,6 +87,11 @@ class FinLabL5MarketDataRequest(BaseModel):
 class FinLabExecutionPreviewRequest(BaseModel):
     intent: dict[str, Any] = Field(default_factory=dict)
     allow_broker_login: bool = False
+
+
+class FinLabLiveSubmitRequest(BaseModel):
+    intent: dict[str, Any] = Field(default_factory=dict)
+    allow_live_submit: bool = False
 
 
 class FinLabProductionSimulatedLoopRequest(BaseModel):
@@ -319,6 +325,20 @@ async def run_finlab_execution_preview_route(req: FinLabExecutionPreviewRequest)
     return run_finlab_execution_preview(
         intent=req.intent,
         allow_broker_login=req.allow_broker_login,
+    )
+
+
+@router.post("/execution/live-submit")
+async def run_finlab_live_submit_route(req: FinLabLiveSubmitRequest) -> dict:
+    """Submit a validated StockVision order intent through FinLab/Sinopac.
+
+    The route is installed before real trading so the execution contract is
+    production-shaped, but it stays blocked unless FINLAB_LIVE_SUBMIT_ENABLED
+    and request allow_live_submit are both explicit.
+    """
+    return run_finlab_live_submit(
+        intent=req.intent,
+        allow_live_submit=req.allow_live_submit,
     )
 
 

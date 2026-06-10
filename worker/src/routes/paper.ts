@@ -31,6 +31,8 @@ import { loadPendingBuyRunHistory, loadPendingBuySnapshot } from '../lib/pending
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from '../lib/paperAccountValue'
 import { isTwIntradayTradingMinute } from '../lib/twMarketSession'
+import { normalizeTwLimitPrice } from '../lib/twMarketRules'
+import { buildStockVisionOrderIntent, buildStockVisionSellOrderIntent } from '../lib/stockvisionOrderIntent'
 import {
   appendUniqueWatchPoint,
   buildMarketStructureWatchPoint,
@@ -679,8 +681,9 @@ paper.post('/buy', async (c) => {
   if (!sharesRaw || sharesRaw <= 0) return c.json({ error: 'shares 必須為正整數' }, 400)
 
   const resolvedPrice = await resolveManualExecutablePrice(c, symbol, priceOverride)
-  const price = resolvedPrice.price
-  if (!price) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格，請稍後再試` }, 404)
+  const rawPrice = resolvedPrice.price
+  if (!rawPrice) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格，請稍後再試` }, 404)
+  const price = normalizeTwLimitPrice(rawPrice, 'buy')
 
   const name        = await getStockName(c.env.DB, symbol)
   const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -705,6 +708,33 @@ paper.post('/buy', async (c) => {
   const txValue     = price * sharesRaw
   const commission  = calcCommission(txValue, cfg)
   const totalCost   = txValue + commission   // Buy orders do not include sell-side tax.
+  const orderIntent = buildStockVisionOrderIntent({
+    accountId: ACCOUNT_ID,
+    tradeDate: todayStr,
+    pending: {
+      symbol,
+      confidence: confidence ?? 0,
+      risk_pct: 0,
+      kelly_pct: null,
+    },
+    limitPrice: price,
+    currentPrice: rawPrice,
+    budget: totalCost,
+    shares: sharesRaw,
+    strategyMode: source,
+    marketRiskLevel: 'manual',
+    quote: {
+      bestAsk: null,
+      bestBid: null,
+      source: resolvedPrice.source,
+      quoteAgeMs: null,
+    },
+    adaptivePolicy: {
+      maxEntryChasePct: 0,
+      minVolumeRatio: null,
+      minRangePosition: null,
+    },
+  })
 
   // T+2 cash rule: use settled cash minus pending buys plus same-day sell offsets.
   const acc = await c.env.DB.prepare('SELECT cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
@@ -757,7 +787,14 @@ paper.post('/buy', async (c) => {
     source,
     signal ?? null,
     confidence ?? null,
-    note ? `${note} | price_source=${resolvedPrice.source}` : `price_source=${resolvedPrice.source}`,
+    JSON.stringify({
+      memo: note ?? null,
+      price_source: resolvedPrice.source,
+      raw_price: rawPrice,
+      normalized_price: price,
+      order_intent: orderIntent,
+      order_legs: orderIntent.orderLegs,
+    }),
   )
 
   await c.env.DB.batch([
@@ -810,7 +847,7 @@ paper.post('/buy', async (c) => {
     eventType: 'paper_order',
     status: 'filled',
     reason: 'manual_buy',
-    detail: { shares: sharesRaw, price, price_source: resolvedPrice.source, total_cost: totalCost },
+    detail: { shares: sharesRaw, order_intent: orderIntent, order_legs: orderIntent.orderLegs, raw_price: rawPrice, price, price_source: resolvedPrice.source, total_cost: totalCost },
     orderId: lastOrder?.id ?? null,
     source,
   })
@@ -855,8 +892,9 @@ paper.post('/sell', async (c) => {
   }
 
   const resolvedPrice = await resolveManualExecutablePrice(c, symbol, priceOverride)
-  const price = resolvedPrice.price
-  if (!price) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格` }, 404)
+  const rawPrice = resolvedPrice.price
+  if (!rawPrice) return c.json({ error: resolvedPrice.error ?? `找不到 ${symbol} 的可用成交價格` }, 404)
+  const price = normalizeTwLimitPrice(rawPrice, 'sell')
 
   const name       = pos.name || await getStockName(c.env.DB, symbol)
   const txValue    = price * sharesRaw
@@ -875,11 +913,32 @@ paper.post('/sell', async (c) => {
   const { getSettlementDate } = await import('../lib/dateUtils')
   const todayStr = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const settlementDate = await getSettlementDate(todayStr, c.env.KV)
+  const sellOrderIntent = buildStockVisionSellOrderIntent({
+    accountId: ACCOUNT_ID,
+    tradeDate: todayStr,
+    symbol,
+    limitPrice: price,
+    currentPrice: rawPrice,
+    shares: sharesRaw,
+    reason: 'manual_sell',
+    strategyType: source,
+    marketRiskLevel: 'manual',
+    quote: {
+      bestBid: null,
+      bestAsk: null,
+      source: resolvedPrice.source,
+      quoteAgeMs: null,
+    },
+  })
 
   const sellNote = buildSellOrderNote(
     {
       memo: note ? `${note} | price_source=${resolvedPrice.source}` : `price_source=${resolvedPrice.source}`,
       entry_date: pos.entry_date ?? null,
+      raw_price: rawPrice,
+      normalized_price: price,
+      order_intent: sellOrderIntent,
+      order_legs: sellOrderIntent.orderLegs,
     },
     { entryPrice: pos.avg_cost, exitPrice: price, shares: sharesRaw, commission, tax },
   )
@@ -921,7 +980,7 @@ paper.post('/sell', async (c) => {
     eventType: 'paper_order',
     status: 'filled',
     reason: 'manual_sell',
-    detail: { shares: sharesRaw, price, price_source: resolvedPrice.source, proceeds, realized_pnl: Math.round(realizedPnl) },
+    detail: { shares: sharesRaw, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, raw_price: rawPrice, price, price_source: resolvedPrice.source, proceeds, realized_pnl: Math.round(realizedPnl) },
     orderId: lastSellOrder?.id ?? null,
     source,
   })

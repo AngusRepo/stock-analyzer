@@ -7,6 +7,7 @@ import { buildSellOrderNote } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
+import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 
 const ACCOUNT_ID = 1
 
@@ -242,8 +243,25 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
   const name = pos?.name ?? symbol
   const entryPrice = pos?.entry_price ?? pos?.avg_cost ?? price
   const daysHeld = pos?.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : 0
+  const tradeDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const sellOrderIntent = buildStockVisionSellOrderIntent({
+    accountId: ACCOUNT_ID,
+    tradeDate,
+    symbol,
+    limitPrice: sellPrice,
+    currentPrice: quote?.last ?? price,
+    shares,
+    reason,
+    strategyType: 'rescore_sell',
+    quote: {
+      bestBid: quote?.bid ?? null,
+      bestAsk: quote?.ask ?? null,
+      source: quote?.source ?? null,
+      quoteAgeMs: null,
+    },
+  })
   const sellNote = buildSellOrderNote(
-    { reason, entry_date: pos?.entry_date, days_held: daysHeld },
+    { reason, entry_date: pos?.entry_date, days_held: daysHeld, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs },
     { entryPrice, exitPrice: sellPrice, shares, commission, tax },
   )
 
@@ -275,6 +293,8 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
     reason,
     detail: {
       shares,
+      order_intent: sellOrderIntent,
+      order_legs: sellOrderIntent.orderLegs,
       sell_price: sellPrice,
       proceeds,
       days_held: daysHeld,

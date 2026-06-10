@@ -57,6 +57,18 @@ def test_production_simulated_loop_once_records_l5_preview_and_reconciliation_ev
                     "liveSubmitRequested": False,
                     "requestedShares": 1000,
                     "maxPrice": 100.5,
+                    "priceTick": 0.5,
+                    "priceSnapMode": "floor_to_buy_limit",
+                    "orderLegs": [
+                        {
+                            "lotType": "board_lot",
+                            "shares": 1000,
+                            "finlabQuantity": 1,
+                            "finlabQuantityUnit": "lots",
+                            "oddLot": False,
+                            "orderLot": "common",
+                        }
+                    ],
                 },
             }
         ]

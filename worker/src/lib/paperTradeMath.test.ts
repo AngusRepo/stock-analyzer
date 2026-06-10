@@ -1,4 +1,5 @@
 import { applyPartialFill, resolveLimitBuyFill, resolveLimitSellFill, resolveMarketSellFill } from './paperTradeMath'
+import { isValidTwTickPrice } from './twMarketRules'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -66,6 +67,21 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const fill = resolveLimitBuyFill({
+    currentPrice: 141.5,
+    limitPrice: 141.6,
+    bestAsk: 141.5,
+    intradayLow: 141,
+    intradayHigh: 144.5,
+    slippageTicks: 1,
+    requireBestAsk: true,
+  })
+  assert(fill.fillable, 'buy should fill when legal best ask is within normalized limit')
+  assert(fill.fillPrice === 141.5, 'illegal 141.6 buy limit should be normalized to 141.5')
+  assert(isValidTwTickPrice(fill.fillPrice), 'buy fill price must be a legal TW tick')
+}
+
+{
   const filledShares = applyPartialFill(10_000, 100, 50_000, {
     position: {
       partialFillThreshold: 0.05,
@@ -122,6 +138,21 @@ function assert(condition: unknown, message: string): void {
   })
   assert(!fill.fillable, 'sell limit must not fill when intraday high stays below limit')
   assert(fill.reason.startsWith('limit_not_touched'), 'unfilled sell should explain high < limit')
+}
+
+{
+  const fill = resolveLimitSellFill({
+    currentPrice: 141.5,
+    limitPrice: 141.6,
+    bestBid: 142,
+    intradayLow: 141,
+    intradayHigh: 144.5,
+    slippageTicks: 1,
+    requireBestBid: true,
+  })
+  assert(fill.fillable, 'sell should fill when legal bid is above normalized minimum')
+  assert(fill.fillPrice === 142, 'illegal 141.6 sell limit should be normalized to 142')
+  assert(isValidTwTickPrice(fill.fillPrice), 'sell fill price must be a legal TW tick')
 }
 
 {

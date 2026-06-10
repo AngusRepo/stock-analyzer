@@ -1,11 +1,12 @@
 import type { TradingConfig } from './tradingConfig'
+import { getTwTickSize, normalizeTwLimitPrice, snapToTwPriceTick } from './twMarketRules'
 
 export function calcCommission(value: number, cfg: TradingConfig): number {
   return Math.max(Math.round(value * cfg.fees.commission), cfg.fees.minCommission)
 }
 
 export function getTickSize(price: number): number {
-  return price < 10 ? 0.01 : price < 50 ? 0.05 : price < 100 ? 0.1 : price < 500 ? 0.5 : price < 1000 ? 1 : 5
+  return getTwTickSize(price)
 }
 
 export function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1, dailyTurnover?: number): number {
@@ -16,7 +17,8 @@ export function applySlippage(price: number, side: 'buy' | 'sell', ticks = 1, da
     else if (dailyTurnover < 50_000_000) extraTicks = 1
   }
   const slippage = tickSize * (ticks + extraTicks)
-  return side === 'buy' ? price + slippage : Math.max(price - slippage, tickSize)
+  const slippedPrice = side === 'buy' ? price + slippage : Math.max(price - slippage, tickSize)
+  return snapToTwPriceTick(slippedPrice, side === 'buy' ? 'ceil' : 'floor')
 }
 
 export interface LimitBuyFillInput {
@@ -71,9 +73,10 @@ export interface MarketSellFillResult {
 
 export function resolveLimitBuyFill(input: LimitBuyFillInput): LimitBuyFillResult {
   const currentPrice = Number(input.currentPrice)
-  const limitPrice = Number(input.limitPrice)
+  const rawLimitPrice = Number(input.limitPrice)
+  const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'buy')
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) return { fillable: false, reason: 'invalid_current_price' }
-  if (!Number.isFinite(limitPrice) || limitPrice <= 0) return { fillable: false, reason: 'invalid_limit_price' }
+  if (!Number.isFinite(rawLimitPrice) || rawLimitPrice <= 0 || !Number.isFinite(limitPrice) || limitPrice <= 0) return { fillable: false, reason: 'invalid_limit_price' }
 
   const low = input.intradayLow == null ? null : Number(input.intradayLow)
   const high = input.intradayHigh == null ? null : Number(input.intradayHigh)
@@ -115,7 +118,9 @@ export function resolveLimitBuyFill(input: LimitBuyFillInput): LimitBuyFillResul
         ? currentPrice
         : limitPrice
   const slippedPrice = applySlippage(referencePrice, 'buy', input.slippageTicks ?? 1)
-  const fillPrice = Math.round(Math.min(limitPrice, slippedPrice) * 100) / 100
+  const candidatePrice = Math.min(limitPrice, slippedPrice)
+  const snappedCandidate = snapToTwPriceTick(candidatePrice, 'ceil')
+  const fillPrice = snappedCandidate > limitPrice ? limitPrice : snappedCandidate
   if (low != null && Number.isFinite(low) && fillPrice < low) {
     return {
       fillable: false,
@@ -137,9 +142,10 @@ export function resolveLimitBuyFill(input: LimitBuyFillInput): LimitBuyFillResul
 
 export function resolveLimitSellFill(input: LimitSellFillInput): LimitSellFillResult {
   const currentPrice = Number(input.currentPrice)
-  const limitPrice = Number(input.limitPrice)
+  const rawLimitPrice = Number(input.limitPrice)
+  const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'sell')
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) return { fillable: false, reason: 'invalid_current_price' }
-  if (!Number.isFinite(limitPrice) || limitPrice <= 0) return { fillable: false, reason: 'invalid_limit_price' }
+  if (!Number.isFinite(rawLimitPrice) || rawLimitPrice <= 0 || !Number.isFinite(limitPrice) || limitPrice <= 0) return { fillable: false, reason: 'invalid_limit_price' }
 
   const low = input.intradayLow == null ? null : Number(input.intradayLow)
   const high = input.intradayHigh == null ? null : Number(input.intradayHigh)
@@ -181,7 +187,9 @@ export function resolveLimitSellFill(input: LimitSellFillInput): LimitSellFillRe
         ? currentPrice
         : limitPrice
   const slippedPrice = applySlippage(referencePrice, 'sell', input.slippageTicks ?? 1)
-  const fillPrice = Math.round(Math.max(limitPrice, slippedPrice) * 100) / 100
+  const candidatePrice = Math.max(limitPrice, slippedPrice)
+  const snappedCandidate = snapToTwPriceTick(candidatePrice, 'floor')
+  const fillPrice = snappedCandidate < limitPrice ? limitPrice : snappedCandidate
   if (low != null && Number.isFinite(low) && fillPrice < low) {
     return {
       fillable: false,
@@ -219,7 +227,7 @@ export function resolveMarketSellFill(input: MarketSellFillInput): MarketSellFil
     return { fillable: false, reason: 'missing_best_bid' }
   }
   const referencePrice = bestBid != null && Number.isFinite(bestBid) && bestBid > 0 ? bestBid : currentPrice
-  const fillPrice = Math.round(applySlippage(referencePrice, 'sell', input.slippageTicks ?? 1) * 100) / 100
+  const fillPrice = snapToTwPriceTick(applySlippage(referencePrice, 'sell', input.slippageTicks ?? 1), 'floor')
   if (low != null && Number.isFinite(low) && fillPrice < low) {
     return {
       fillable: false,

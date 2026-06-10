@@ -1,28 +1,14 @@
-/**
- * validateOrder.ts — Level 4 per-order gates (2026-04-21 R3)
- *
- * Last check before execute. R3 minimum set:
- *   G5  Fat finger (single-order NT$ cap)
- *   G6  Price deviation (limit price vs ref close)
- *   G7  Lot size (台股 1000-share integer)
- *   G14 Liquidity (participation vs 20d avg volume)
- *
- * Deferred to R3b:
- *   G8  T+2 settlement cash availability
- *   G11 Cooldown (exists in paper.ts morning-setup already)
- *   G12 Punished stock (exists in marketScreener already)
- *   G13 Limit-up lock (runtime detection, hard to pre-validate)
- */
 import type { RiskConfig } from './riskConfig'
 import type { OrderValidation, OrderViolation } from './riskTypes'
+import { buildTwOrderLegs, isValidTwTickPrice, normalizeTwLimitPrice } from './twMarketRules'
 
 export interface ValidateOrderInput {
   symbol: string
   side: 'buy' | 'sell'
   shares: number
   limitPrice: number
-  refClose: number | null       // previous close or last print
-  avgVolume20d: number | null   // shares
+  refClose: number | null
+  avgVolume20d: number | null
 }
 
 export async function validateOrder(
@@ -31,96 +17,110 @@ export async function validateOrder(
 ): Promise<OrderValidation> {
   const { order } = riskCfg
   const violations: OrderViolation[] = []
-  let adjShares = input.shares
-  let adjPrice = input.limitPrice
+  const requestedShares = Math.max(0, Math.floor(Number(input.shares) || 0))
+  let adjShares = requestedShares
+  const adjPrice = normalizeTwLimitPrice(input.limitPrice, input.side)
   const adjustReasons: string[] = []
 
-  // G5 fat finger — value cap
-  const orderValue = input.shares * input.limitPrice
+  if (!Number.isFinite(adjPrice) || adjPrice <= 0) {
+    violations.push({
+      gate: 'G6',
+      severity: 'block',
+      message: 'invalid TW limit price',
+      requestedValue: input.limitPrice,
+      allowedValue: 0,
+    })
+  } else if (!isValidTwTickPrice(input.limitPrice)) {
+    adjustReasons.push(`TW tick normalize ${input.limitPrice} -> ${adjPrice}`)
+    violations.push({
+      gate: 'G6',
+      severity: 'adjust',
+      message: `limit price normalized to TW tick: ${input.limitPrice} -> ${adjPrice}`,
+      requestedValue: input.limitPrice,
+      allowedValue: adjPrice,
+    })
+  }
+
+  if (requestedShares <= 0) {
+    violations.push({
+      gate: 'G7',
+      severity: 'block',
+      message: `invalid TW order shares: ${input.shares}`,
+      requestedValue: input.shares,
+      allowedValue: 1,
+    })
+  }
+
+  const orderValue = requestedShares * adjPrice
   if (orderValue > order.maxSingleOrderValue) {
     violations.push({
       gate: 'G5',
       severity: 'block',
-      message: `單筆 ${orderValue.toFixed(0)} 超過上限 ${order.maxSingleOrderValue}`,
+      message: `single order value ${orderValue.toFixed(0)} exceeds cap ${order.maxSingleOrderValue}`,
       requestedValue: orderValue,
       allowedValue: order.maxSingleOrderValue,
     })
   }
 
-  // G6 price deviation from ref
   if (input.refClose && input.refClose > 0) {
-    const dev = Math.abs((input.limitPrice - input.refClose) / input.refClose)
+    const dev = Math.abs((adjPrice - input.refClose) / input.refClose)
     if (dev > order.maxPriceDeviationPct) {
       violations.push({
         gate: 'G6',
         severity: 'block',
-        message: `限價偏離參考價 ${(dev * 100).toFixed(1)}% > ${(order.maxPriceDeviationPct * 100).toFixed(1)}%`,
-        requestedValue: input.limitPrice,
+        message: `limit price deviation ${(dev * 100).toFixed(1)}% > ${(order.maxPriceDeviationPct * 100).toFixed(1)}%`,
+        requestedValue: adjPrice,
         allowedValue: input.refClose * (1 + order.maxPriceDeviationPct),
       })
     }
   }
 
-  // G7 lot size — 台股整股 1000 shares (零股獨立市場不在此)
-  if (order.enforceRegularLots && input.shares % 1000 !== 0) {
-    const rounded = Math.floor(input.shares / 1000) * 1000
-    if (rounded <= 0) {
-      violations.push({
-        gate: 'G7',
-        severity: 'block',
-        message: `非整張單 ${input.shares} 股，低於最小整張 1000 股`,
-        requestedValue: input.shares,
-        allowedValue: 1000,
-      })
-    } else {
-      adjShares = rounded
-      adjustReasons.push(`G7 round to ${rounded} shares`)
-      violations.push({
-        gate: 'G7',
-        severity: 'adjust',
-        message: `shares rounded down to integer lots: ${input.shares} → ${rounded}`,
-        requestedValue: input.shares,
-        allowedValue: rounded,
-      })
-    }
+  if (order.enforceRegularLots && requestedShares > 0 && buildTwOrderLegs(requestedShares).length === 0) {
+    violations.push({
+      gate: 'G7',
+      severity: 'block',
+      message: `unable to split shares into TW order legs: ${requestedShares}`,
+      requestedValue: requestedShares,
+      allowedValue: 1,
+    })
   }
 
-  // G14 liquidity participation — no single order > 5% of 20d avg volume
   if (input.avgVolume20d && input.avgVolume20d > 0) {
-    const cap = Math.floor(input.avgVolume20d * order.maxVolumeParticipation / 1000) * 1000
-    if (input.shares > cap && cap >= 1000) {
+    const cap = Math.floor(input.avgVolume20d * order.maxVolumeParticipation)
+    if (requestedShares > cap && cap >= 1) {
       adjShares = Math.min(adjShares, cap)
-      adjustReasons.push(`G14 cap to ${cap} shares (${(order.maxVolumeParticipation * 100).toFixed(1)}% of 20d avg vol)`)
+      adjustReasons.push(`G14 cap to ${cap} shares (${(order.maxVolumeParticipation * 100).toFixed(1)}% of 20d avg volume)`)
       violations.push({
         gate: 'G14',
         severity: 'adjust',
-        message: `單筆 ${input.shares} > 20d 均量參與率上限 ${cap}`,
-        requestedValue: input.shares,
+        message: `shares ${requestedShares} > 20d volume participation cap ${cap}`,
+        requestedValue: requestedShares,
         allowedValue: cap,
       })
-    } else if (cap < 1000) {
-      // 20d avg vol < 20k shares → unusable liquidity, block
+    } else if (cap < 1) {
       violations.push({
         gate: 'G14',
         severity: 'block',
-        message: `流動性不足：20d 均量 ${input.avgVolume20d} → 參與率上限 ${cap} < 1 整張`,
-        requestedValue: input.shares,
+        message: `20d average volume ${input.avgVolume20d} leaves no tradeable participation capacity`,
+        requestedValue: requestedShares,
         allowedValue: cap,
       })
     }
   }
 
-  const blocked = violations.some(v => v.severity === 'block')
+  const blocked = violations.some((v) => v.severity === 'block')
   const adjusted = !blocked && adjustReasons.length > 0
 
   return {
     approved: !blocked,
     violations,
-    adjustedOrder: adjusted ? {
-      shares: adjShares,
-      limitPrice: adjPrice,
-      adjustmentReasons: adjustReasons,
-    } : null,
+    adjustedOrder: adjusted
+      ? {
+          shares: adjShares,
+          limitPrice: adjPrice,
+          adjustmentReasons: adjustReasons,
+        }
+      : null,
     checkedAt: new Date().toISOString(),
   }
 }

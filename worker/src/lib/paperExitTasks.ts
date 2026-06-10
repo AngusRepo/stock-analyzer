@@ -13,6 +13,7 @@ import {
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
+import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
   getCurrentRegime as getCurrentSltpRegime,
@@ -22,6 +23,33 @@ import {
 } from './tradingConfig'
 
 const ACCOUNT_ID = 1
+
+function buildPaperSellOrderIntent(params: {
+  tradeDate: string
+  symbol: string
+  shares: number
+  fillPrice: number
+  quote: IntradayOHLC
+  reason: string
+  strategyType: string
+}) {
+  return buildStockVisionSellOrderIntent({
+    accountId: ACCOUNT_ID,
+    tradeDate: params.tradeDate,
+    symbol: params.symbol,
+    limitPrice: params.fillPrice,
+    currentPrice: params.quote.last,
+    shares: params.shares,
+    reason: params.reason,
+    strategyType: params.strategyType,
+    quote: {
+      bestBid: params.quote.bid ?? null,
+      bestAsk: params.quote.ask ?? null,
+      source: params.quote.source ?? null,
+      quoteAgeMs: null,
+    },
+  })
+}
 
 function resolveExitSellFill(quote: IntradayOHLC): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
   const fill = resolveMarketSellFill({
@@ -149,6 +177,15 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       continue
     }
     const fillPrice = sellFill.price
+    const sellOrderIntent = buildPaperSellOrderIntent({
+      tradeDate: today,
+      symbol: pos.symbol,
+      shares,
+      fillPrice,
+      quote,
+      reason: decision.reason,
+      strategyType: 'daytrade_force_close',
+    })
     const txValue = fillPrice * shares
     const commission = calcCommission(txValue, cfg)
     const tax = calcTax(txValue, cfg, true)
@@ -157,6 +194,8 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     const sellNote = buildSellOrderNote({
       reason: `[13:25 daytrade force close] ${decision.reason}`,
       entry_date: pos.entry_date,
+      order_intent: sellOrderIntent,
+      order_legs: sellOrderIntent.orderLegs,
     }, { entryPrice, exitPrice: fillPrice, shares, commission, tax })
 
     await env.DB.batch([
@@ -186,7 +225,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       eventType: 'paper_order',
       status: 'filled',
       reason: 'daytrade_force_close',
-      detail: { shares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+      detail: { shares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
       orderId,
       source: 'daytrade_force_close',
     })
@@ -294,6 +333,15 @@ export async function runEODExit(env: Bindings): Promise<void> {
         continue
       }
       const fillPrice = sellFill.price
+      const sellOrderIntent = buildPaperSellOrderIntent({
+        tradeDate: eodToday,
+        symbol: pos.symbol,
+        shares,
+        fillPrice,
+        quote,
+        reason: decision.reason,
+        strategyType: 'eod_exit',
+      })
       const txValue = fillPrice * shares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
@@ -304,6 +352,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
         reason: decision.reason,
         entry_date: pos.entry_date,
         days_held: daysHeld,
+        order_intent: sellOrderIntent,
+        order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares, commission, tax })
 
       await env.DB.batch([
@@ -334,7 +384,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'eod_exit',
-        detail: { shares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        detail: { shares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'eod_exit',
       })
@@ -362,6 +412,15 @@ export async function runEODExit(env: Bindings): Promise<void> {
         continue
       }
       const fillPrice = sellFill.price
+      const sellOrderIntent = buildPaperSellOrderIntent({
+        tradeDate: eodToday,
+        symbol: pos.symbol,
+        shares: sellShares,
+        fillPrice,
+        quote,
+        reason: decision.reason,
+        strategyType: 'eod_tp1',
+      })
       const txValue = fillPrice * sellShares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
@@ -372,6 +431,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
         reason: decision.reason,
         entry_date: pos.entry_date,
         days_held: pos.entry_date ? Math.round((Date.now() - new Date(pos.entry_date).getTime()) / 86400000) : null,
+        order_intent: sellOrderIntent,
+        order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
 
       await env.DB.batch([
@@ -395,7 +456,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'eod_tp1',
-        detail: { shares: sellShares, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        detail: { shares: sellShares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'eod_tp1',
       })
@@ -514,6 +575,15 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         continue
       }
       const sellFillPrice = sellFill.price
+      const sellOrderIntent = buildPaperSellOrderIntent({
+        tradeDate: intradayToday,
+        symbol: pos.symbol,
+        shares,
+        fillPrice: sellFillPrice,
+        quote,
+        reason: decision.reason,
+        strategyType: 'intraday_exit',
+      })
       const txValue = sellFillPrice * shares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
@@ -522,6 +592,8 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason} (mkt=${currentPrice}, -1 tick fill)`,
         entry_date: pos.entry_date,
+        order_intent: sellOrderIntent,
+        order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax })
 
       await env.DB.batch([
@@ -551,7 +623,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'intraday_exit',
-        detail: { shares, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        detail: { shares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_exit',
       })
@@ -579,6 +651,15 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         continue
       }
       const fillPrice = sellFill.price
+      const sellOrderIntent = buildPaperSellOrderIntent({
+        tradeDate: intradayToday,
+        symbol: pos.symbol,
+        shares: sellShares,
+        fillPrice,
+        quote,
+        reason: decision.reason,
+        strategyType: 'intraday_tp1',
+      })
       const txValue = fillPrice * sellShares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
@@ -588,6 +669,8 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason}`,
         entry_date: pos.entry_date,
+        order_intent: sellOrderIntent,
+        order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
 
       await env.DB.batch([
@@ -622,7 +705,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         eventType: 'paper_order',
         status: 'filled',
         reason: 'intraday_tp1',
-        detail: { shares: sellShares, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        detail: { shares: sellShares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_tp1',
       })

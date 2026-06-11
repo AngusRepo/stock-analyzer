@@ -57,7 +57,7 @@ export interface LinUcbRewardRefreshReport {
 }
 
 export interface NeuralMetaBanditTrainingPayload {
-  policy_id: 'NeuralUCB' | 'NeuralTS'
+  policy_id: 'NeuralUCB' | 'NeuralTS' | 'NeuCB'
   contexts: number[][]
   arms: number[]
   rewards: number[]
@@ -254,7 +254,7 @@ export function buildLinUcbRewardLedgerRows(
 }
 
 export function buildNeuralMetaBanditTrainingPayload(
-  policyId: 'NeuralUCB' | 'NeuralTS',
+  policyId: 'NeuralUCB' | 'NeuralTS' | 'NeuCB',
   rows: LinUcbRewardSourceRow[],
   options: { businessDate?: string; maxRows?: number } = {},
 ): NeuralMetaBanditTrainingPayload {

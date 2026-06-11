@@ -68,6 +68,11 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'model-ic-tracker', () => runModelIcRollingRefresh") <
+    postMarketChain.indexOf("'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache"),
+  'post-verify chain must clear intraday price cache after model IC and before current-date report tasks',
+)
+assert(
+  postMarketChain.indexOf("'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache") <
     postMarketChain.indexOf("'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh"),
   'LinUCB reward ledger must run after rolling IC evidence refresh',
 )
@@ -136,4 +141,5 @@ assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visibl
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
 assert(logger.includes("'strategy-learning'"), 'Strategy learning closure must be visible in scheduler/OBS logs')
+assert(logger.includes("'paper-intraday-cache-clear'"), 'paper intraday cache cleanup must be visible in scheduler/OBS logs')
 assert(logger.includes("'paper-active-postmarket'"), 'paper-active postmarket must be visible in scheduler/OBS logs')

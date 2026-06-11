@@ -4,6 +4,7 @@ import { runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPro
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
+import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 
@@ -139,11 +140,18 @@ async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): P
     dryRun: false,
     timeoutMs: 45_000,
   })
+  const neuCb = await runNeuralMetaShadow(env, {
+    policyId: 'NeuCB',
+    endDate: ctx.runDate,
+    dryRun: false,
+    timeoutMs: 45_000,
+  })
   return [
     `registry_created=${registry.created.length}`,
     `registry_total=${registry.total}`,
     `neural_ucb=${normalizeSummary(neuralUcb)}`,
     `neural_ts=${normalizeSummary(neuralTs)}`,
+    `neucb=${normalizeSummary(neuCb)}`,
   ].join(' ')
 }
 
@@ -198,6 +206,7 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
 
   if (isCurrentBusinessDate(ctx.runDate)) {
+    results.push(await logChainedTask(env, ctx, 'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache(env), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
     results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
@@ -206,6 +215,7 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'paper-intraday-cache-clear'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))

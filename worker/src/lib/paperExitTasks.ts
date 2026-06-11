@@ -12,6 +12,7 @@ import {
 } from './paperMarketData'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
+import { putIntradayPrice } from './paperIntradayPriceCache'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
@@ -498,7 +499,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   }
 
   await Promise.allSettled(
-    [...quoteMap].map(([symbol, quote]) => env.KV.put(`intraday:price:${symbol}`, String(quote.last), { expirationTtl: 600 })),
+    [...quoteMap].map(([symbol, quote]) => putIntradayPrice(env.KV, symbol, quote.last)),
   )
 
   const intradayToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)

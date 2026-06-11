@@ -52,6 +52,29 @@ function assert(condition: unknown, message: string): void {
   assert(quote?.totalVolume === 1234, 'snapshot should preserve total volume for partial fill')
 }
 
+{
+  const quote = normalizeShioajiSnapshot({
+    last: 135.9,
+    low: 134.5,
+    high: 136.5,
+  })
+  assert(quote === null, 'snapshot should reject non-executable TW tick prices')
+}
+
+{
+  const quote = normalizeShioajiSnapshot({
+    last: 136,
+    bid_prices: [{ volume: 7 }],
+    ask_prices: [{ volume: 8 }],
+    bid_volumes: [{ volume: 7 }],
+    ask_volumes: [{ volume: 8 }],
+  })
+  assert(quote?.bid == null, 'volume-only bid objects must not become bid prices')
+  assert(quote?.ask == null, 'volume-only ask objects must not become ask prices')
+  assert(quote?.bidVolume === 7, 'volume-only bid objects should still populate bid volume')
+  assert(quote?.askVolume === 8, 'volume-only ask objects should still populate ask volume')
+}
+
 ;(async () => {
   const originalFetch = globalThis.fetch
   const calls: string[] = []

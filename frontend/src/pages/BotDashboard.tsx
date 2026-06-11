@@ -120,7 +120,13 @@ function WinLossBadge({ win }: { win: boolean | null }) {
 
 function PortfolioSummary() {
   const { data: account } = useQuery({ queryKey: ['paper', 'account'], queryFn: paperApi.account, staleTime: 60_000 })
-  const { data: positions } = useQuery({ queryKey: ['paper', 'positions'], queryFn: paperApi.positions, staleTime: 30_000, refetchInterval: isTWMarketOpen() ? 60_000 : false })
+  const { data: positions } = useQuery({
+    queryKey: ['paper', 'positions'],
+    queryFn: paperApi.positions,
+    staleTime: 30_000,
+    refetchInterval: isTWMarketOpen() ? 60_000 : 5 * 60_000,
+    refetchOnWindowFocus: true,
+  })
   const { data: pnlData } = useQuery({ queryKey: ['paper', 'pnl'], queryFn: paperApi.pnl, staleTime: 5 * 60_000 })
   // 歷史已實現損益（Server-side 全歷史計算）
   const { data: realizedData } = useQuery({ queryKey: ['paper', 'realized'], queryFn: paperApi.realized, staleTime: 5 * 60_000 })
@@ -596,7 +602,8 @@ function PositionsTable() {
     queryKey: ['paper', 'positions'],
     queryFn: paperApi.positions,
     staleTime: 60_000,
-    refetchInterval: 60 * 60_000, // 每小時更新現價
+    refetchInterval: isTWMarketOpen() ? 60_000 : 5 * 60_000,
+    refetchOnWindowFocus: true,
   })
   const { data: ordersData } = useQuery({
     queryKey: ['paper', 'orders'],
@@ -732,7 +739,7 @@ function PositionsTable() {
           </thead>
           <tbody>
             {positions.map((p: any) => {
-              const entry = p.entry_price ?? p.avg_cost ?? 0
+              const entry = p.avg_cost ?? p.entry_price ?? 0
               const current = p.current_price ?? entry
               const shares = p.shares ?? 0
               const lots = formatTaiwanShareLots(shares)

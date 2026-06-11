@@ -338,6 +338,8 @@ if (!acc) return c.json({ error: '找不到 paper account，請先完成 migrati
 // GET /api/paper/positions — open positions plus settlement summary.
 
 paper.get('/positions', async (c) => {
+  c.header('Cache-Control', 'no-store, max-age=0')
+  c.header('Pragma', 'no-cache')
   const acc = await c.env.DB.prepare(
     'SELECT cash, initial_cash FROM paper_accounts WHERE id=?'
   ).bind(ACCOUNT_ID).first<any>()

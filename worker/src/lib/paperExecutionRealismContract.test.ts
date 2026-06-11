@@ -9,6 +9,8 @@ const entryTasks = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
 const workerTasks = readFileSync('src/lib/paperWorkerTasks.ts', 'utf8')
 const cronOrchestrator = readFileSync('src/lib/cronOrchestrator.ts', 'utf8')
 const intradayData = readFileSync('src/lib/paperIntradayData.ts', 'utf8')
+const intradayPriceCache = readFileSync('src/lib/paperIntradayPriceCache.ts', 'utf8')
+const paperRoutes = readFileSync('src/routes/paper.ts', 'utf8')
 
 assert(
   exitTasks.includes('batchGetIntradayOHLC'),
@@ -77,6 +79,16 @@ assert(
 assert(
   intradayData.includes('/orderbook/${symbol}') && intradayData.includes('enrichMissingOrderbookQuotes'),
   'broker snapshots missing bid/ask must be enriched from Shioaji orderbook before execution',
+)
+assert(
+  exitTasks.includes('putIntradayPrice(env.KV, symbol, quote.last)') &&
+    intradayPriceCache.includes("INTRADAY_PRICE_PREFIX = 'intraday:price:'") &&
+    intradayPriceCache.includes('clearOpenPositionIntradayPriceCache'),
+  'intraday price cache must have explicit write/clear ownership instead of ad hoc quote.last KV writes',
+)
+assert(
+  paperRoutes.includes("c.header('Cache-Control', 'no-store, max-age=0')"),
+  'paper positions API must be no-store so post-market EOD prices are not masked by stale intraday responses',
 )
 assert(
   !entryTasks.includes('remaining_order_policy_pending'),

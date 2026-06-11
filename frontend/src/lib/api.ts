@@ -39,7 +39,12 @@ async function req<T>(method: string, path: string, body?: unknown, extraHeaders
   const headers: Record<string,string> = { 'Content-Type': 'application/json' }
   if (_token) headers['Authorization'] = `Bearer ${_token}`
   Object.assign(headers, extraHeaders)
-  const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    cache: method === 'GET' ? 'no-store' : undefined,
+  })
   if (res.status === 401) { clearToken(); throw new Error('Unauthorized') }
   if (!res.ok) {
     const e = await res.json().catch(() => ({})) as any
@@ -1011,7 +1016,7 @@ export const strategyLabApi = {
     { ...body, dry_run: body?.dry_run ?? false },
     body?.confirm !== false ? { 'X-Confirm-Meta-Learning': 'true' } : undefined,
   ),
-  runNeuralShadow: (body: { policy_id: 'NeuralUCB' | 'NeuralTS'; start_date?: string; end_date?: string; limit?: number; dry_run?: boolean; confirm?: boolean }) => req<any>(
+  runNeuralShadow: (body: { policy_id: 'NeuralUCB' | 'NeuralTS' | 'NeuCB'; start_date?: string; end_date?: string; limit?: number; dry_run?: boolean; confirm?: boolean }) => req<any>(
     'POST',
     '/admin/meta-learning/neural-shadow/run',
     { ...body, dry_run: body.dry_run ?? false },
@@ -1152,10 +1157,22 @@ export type ModelArtifactRegistryResponse = {
   artifacts: ModelArtifactRegistryRow[]
 }
 
+export type ModelArtifactSuppressedRow = {
+  artifact_id?: string | null
+  model_name: string
+  candidate_version?: string | null
+  candidate_type: string
+  superseded_by?: string | null
+  reason: string
+  action_context?: ModelArtifactActionContext
+}
+
 export type ModelArtifactSelectionResponse = {
   status: string
   source_of_truth: string
   selection_policy: string
+  suppressed_count?: number
+  suppressed?: ModelArtifactSuppressedRow[]
   models: Record<string, {
     monthly_release_candidate?: ModelArtifactRegistryRow | null
     weekly_drift_candidate?: ModelArtifactRegistryRow | null
@@ -1175,14 +1192,7 @@ export type ModelArtifactPromotionQueueResponse = {
   promotion_owner: string
   count: number
   suppressed_count?: number
-  suppressed?: Array<{
-    artifact_id?: string | null
-    model_name: string
-    candidate_version?: string | null
-    candidate_type: string
-    superseded_by?: string | null
-    reason: string
-  }>
+  suppressed?: ModelArtifactSuppressedRow[]
   queue: Array<{
     artifact_id?: string | null
     model_name: string

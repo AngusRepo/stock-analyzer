@@ -1,3 +1,5 @@
+import { isValidTwTickPrice } from './twMarketRules'
+
 export interface IntradayOHLC {
   last: number
   low?: number
@@ -26,6 +28,30 @@ function finiteNumber(value: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
+function finiteTwTickPrice(value: unknown): number | undefined {
+  const n = finiteNumber(value)
+  return n != null && isValidTwTickPrice(n) ? n : undefined
+}
+
+function firstFiniteTwTickPrice(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const first = firstFiniteTwTickPrice(...value)
+      if (first != null) return first
+      continue
+    }
+    if (value && typeof value === 'object') {
+      const obj = value as Record<string, unknown>
+      const n = firstFiniteTwTickPrice(obj.price, obj.p, obj.value)
+      if (n != null) return n
+      continue
+    }
+    const n = finiteTwTickPrice(value)
+    if (n != null) return n
+  }
+  return undefined
+}
+
 function firstFiniteNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (Array.isArray(value)) {
@@ -46,11 +72,11 @@ function firstFiniteNumber(...values: unknown[]): number | undefined {
 }
 
 export function normalizeShioajiSnapshot(snapshot: any): IntradayOHLC | null {
-  const low = finiteNumber(snapshot?.low)
-  const high = finiteNumber(snapshot?.high)
-  const open = finiteNumber(snapshot?.open)
-  const bid = firstFiniteNumber(snapshot?.bid, snapshot?.bid_price, snapshot?.bidPrice, snapshot?.best_bid, snapshot?.bestBid, snapshot?.bid_prices, snapshot?.bids)
-  const ask = firstFiniteNumber(snapshot?.ask, snapshot?.ask_price, snapshot?.askPrice, snapshot?.best_ask, snapshot?.bestAsk, snapshot?.ask_prices, snapshot?.asks)
+  const low = finiteTwTickPrice(snapshot?.low)
+  const high = finiteTwTickPrice(snapshot?.high)
+  const open = finiteTwTickPrice(snapshot?.open)
+  const bid = firstFiniteTwTickPrice(snapshot?.bid, snapshot?.bid_price, snapshot?.bidPrice, snapshot?.best_bid, snapshot?.bestBid, snapshot?.bid_prices, snapshot?.bids)
+  const ask = firstFiniteTwTickPrice(snapshot?.ask, snapshot?.ask_price, snapshot?.askPrice, snapshot?.best_ask, snapshot?.bestAsk, snapshot?.ask_prices, snapshot?.asks)
   const bidVolume = firstFiniteNumber(snapshot?.bid_volume, snapshot?.bidVolume, snapshot?.best_bid_volume, snapshot?.bestBidVolume, snapshot?.bid_volumes)
   const askVolume = firstFiniteNumber(snapshot?.ask_volume, snapshot?.askVolume, snapshot?.best_ask_volume, snapshot?.bestAskVolume, snapshot?.ask_volumes)
   const totalVolume = firstFiniteNumber(snapshot?.total_volume, snapshot?.totalVolume, snapshot?.volume, snapshot?.totalVol)
@@ -63,15 +89,18 @@ export function normalizeShioajiSnapshot(snapshot: any): IntradayOHLC | null {
         : typeof snapshot?.updated_at === 'string'
           ? snapshot.updated_at
           : undefined
-  let last = finiteNumber(snapshot?.last)
-    ?? finiteNumber(snapshot?.price)
-    ?? finiteNumber(snapshot?.last_price)
-    ?? finiteNumber(snapshot?.trade_price)
-    ?? finiteNumber(snapshot?.close)
+  let last = firstFiniteTwTickPrice(
+    snapshot?.last,
+    snapshot?.price,
+    snapshot?.last_price,
+    snapshot?.trade_price,
+    snapshot?.close,
+  )
   if (last == null) return null
 
   if (low != null && last < low) last = low
   if (high != null && last > high) last = high
+  if (!isValidTwTickPrice(last)) return null
 
   return { last, low, high, open, bid, ask, bidVolume, askVolume, totalVolume, quoteTime, source: 'shioaji' }
 }

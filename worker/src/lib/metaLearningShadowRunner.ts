@@ -10,7 +10,7 @@ import {
 } from './metaLearningShadowDecisions'
 
 export interface NeuralShadowRunOptions {
-  policyId: 'NeuralUCB' | 'NeuralTS'
+  policyId: 'NeuralUCB' | 'NeuralTS' | 'NeuCB'
   startDate?: string
   endDate?: string
   limit?: number

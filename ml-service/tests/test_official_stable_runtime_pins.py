@@ -37,3 +37,16 @@ def test_active_9_runtime_dependencies_are_tightly_pinned_to_reviewed_versions()
     ]
     for spec in drifting_specs:
         assert spec not in requirements
+
+
+def test_cloud_run_image_uses_python_runtime_compatible_with_stable_pins():
+    dockerfile = (
+        Path(__file__)
+        .resolve()
+        .parents[1]
+        .joinpath("Dockerfile")
+        .read_text(encoding="utf-8", errors="ignore")
+    )
+
+    assert "FROM python:3.12-slim" in dockerfile
+    assert "FROM python:3.10-slim" not in dockerfile

@@ -45,7 +45,7 @@ def _sequence_input_series_count(series_close: list[list[float]], sequence_repor
     return len(series_close)
 
 # Defaults aligned with v2 pipeline (60d lookback, 5d horizon, kernel=25)
-DEFAULT_SEQ_LEN = 60
+DEFAULT_SEQ_LEN = 512
 DEFAULT_PRED_LEN = 5
 DEFAULT_KERNEL = 25
 

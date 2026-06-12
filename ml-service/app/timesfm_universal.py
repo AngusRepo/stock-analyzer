@@ -10,7 +10,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SEQ_LEN = 128
+DEFAULT_SEQ_LEN = 1024
 DEFAULT_PRED_LEN = 5
 DEFAULT_MAX_CONTEXT = 1024
 DEFAULT_MODEL_ID = "google/timesfm-2.5-200m-pytorch"

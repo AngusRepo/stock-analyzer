@@ -37,7 +37,14 @@ REQUIRED_RUNTIME_PINS = (
     "neuralforecast==3.1.9",
     "tabm==0.0.3",
     "timesfm[torch]==2.0.1",
+    "optuna==4.9.0",
 )
+
+REQUIRED_WORKER_RUNTIME_PINS = {
+    "dependencies.hono": "4.12.25",
+    "devDependencies.wrangler": "4.100.0",
+    "devDependencies.typescript": "6.0.3",
+}
 
 REPLAY_EVIDENCE_FILES = (
     "ml-service/benchmark_results/adaptive_meta_policy_replay_20260605_20260611.json",
@@ -76,10 +83,31 @@ def _scheduler_checks(root: Path) -> list[dict[str, Any]]:
 
 def _runtime_pin_checks(root: Path) -> list[dict[str, Any]]:
     requirements = _read_text(root, "ml-service/requirements.txt")
-    return [
+    controller_requirements = _read_text(root, "ml-controller/requirements.txt")
+    checks = [
         _check(pin in requirements, f"runtime_pin:{pin}", "reviewed official/stable runtime pin is present")
         for pin in REQUIRED_RUNTIME_PINS
     ]
+    checks.append(_check(
+        "optuna==4.9.0" in controller_requirements,
+        "controller_runtime_pin:optuna==4.9.0",
+        "controller Optuna/GA route dependency is pinned to reviewed official/stable version",
+    ))
+    return checks
+
+
+def _worker_runtime_pin_checks(root: Path) -> list[dict[str, Any]]:
+    package_json = _load_json(root, "worker/package.json")
+    checks: list[dict[str, Any]] = []
+    for key, expected in REQUIRED_WORKER_RUNTIME_PINS.items():
+        section, name = key.split(".", 1)
+        actual = str((package_json.get(section) or {}).get(name) or "")
+        checks.append(_check(
+            actual == expected,
+            f"worker_runtime_pin:{name}=={expected}",
+            f"reviewed Worker/meta runtime pin is present (actual={actual or 'missing'})",
+        ))
+    return checks
 
 
 def _model_track_checks() -> list[dict[str, Any]]:
@@ -139,6 +167,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
     checks = [
         *_scheduler_checks(root),
         *_runtime_pin_checks(root),
+        *_worker_runtime_pin_checks(root),
         *_model_track_checks(),
         *_ui_contract_checks(root),
         *_replay_checks(root),

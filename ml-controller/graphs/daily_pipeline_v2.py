@@ -35,12 +35,20 @@ from services.payload_builder import (
     build_payloads,
     build_ml_universe,
 )
+from services.active9_dataset_policy import (
+    ACTIVE_ALPHA_MODELS,
+    RETIRED_ALPHA_MODELS,
+    daily_sequence_target_points,
+)
 from services.modal_client import batch_predict
 from services.model_score_quality import drop_degenerate_rank_scores
 from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
 from services.screener_sizing_policy import resolve_controller_screener_sizing
-from services.state_space_series import build_state_space_series_from_payloads
+from services.state_space_series import (
+    build_state_space_series_from_payloads,
+    enrich_state_space_series_with_long_history,
+)
 from services.recommendation_service import (
     apply_core_family_rank,
     apply_core_ml_gate,
@@ -75,7 +83,9 @@ from services.persona_service import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = 128
+DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
+ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
+RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 
 D1_RETRY_DELAYS_SECONDS = (3.0, 8.0, 15.0)
 D1_RETRYABLE_MARKERS = (
@@ -220,10 +230,35 @@ def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str,
     return {"total": total, "usable": usable_count, "ratio": round(ratio, 6), "min_points": min_points}
 
 
-def _timesfm_sequence_contract_points() -> int:
+def _timesfm_artifact_sequence_contract_points(pool: dict | None) -> int | None:
+    entry = ((pool or {}).get("models") or {}).get("TimesFM") or {}
+    gcs_path = str(entry.get("gcs_path") or "").strip()
+    version = str(entry.get("version") or "").strip()
+    if not gcs_path and version:
+        gcs_path = f"universal/timesfm/{version}.json"
+    if not gcs_path:
+        return None
+    try:
+        from google.cloud import storage
+
+        bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+        if not bucket_name:
+            return None
+        blob = storage.Client().bucket(bucket_name).blob(gcs_path)
+        if not blob.exists():
+            return None
+        config = json.loads(blob.download_as_text().lstrip("\ufeff"))
+        seq_len = int(config.get("seq_len") or 0)
+        return seq_len if seq_len > 0 else None
+    except Exception as exc:  # noqa: BLE001 - gate falls back to policy default.
+        logger.debug("[Pipeline V2] TimesFM artifact sequence contract lookup failed: %s", exc)
+        return None
+
+
+def _timesfm_sequence_contract_points(pool: dict | None = None) -> int:
     raw = os.environ.get("TIMESFM_SEQUENCE_CONTRACT_POINTS")
     if raw is None or not str(raw).strip():
-        return DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS
+        return _timesfm_artifact_sequence_contract_points(pool) or DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS
     value = int(str(raw).strip())
     if value <= 0:
         raise ValueError("TIMESFM_SEQUENCE_CONTRACT_POINTS must be positive")
@@ -241,7 +276,7 @@ def _timesfm_sync_gate(
     if status not in {"active", "degraded"}:
         return False, {"allowed": False, "reason": "timesfm_retired_by_model_pool", "status": status}
 
-    sequence_contract_points = _timesfm_sequence_contract_points()
+    sequence_contract_points = _timesfm_sequence_contract_points(pool)
     coverage = _sequence_coverage(sequence_series, min_points=sequence_contract_points)
     usable_series, excluded = _sequence_contract_subset(
         sequence_series,
@@ -665,8 +700,13 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     if not payloads:
         return {"predictions": {}}
 
-    # Build shared close-price series once for time-series predictors.
-    sequence_series = build_state_space_series_from_payloads(payloads)
+    # Build shared close-price series once for time-series predictors, then
+    # enrich from the FinLab long-history sequence artifact when available.
+    base_sequence_series = build_state_space_series_from_payloads(payloads)
+    sequence_series, sequence_dataset_meta = enrich_state_space_series_with_long_history(
+        base_sequence_series,
+        target_points=daily_sequence_target_points(),
+    )
 
     # Parallel: alpha predictors + state overlays.
     # Kalman/Markov are state overlays only; they do not enter alpha challenger.
@@ -847,6 +887,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         "state_space_overlay_mode": state_space_mode,
         "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
         "timesfm_gate": timesfm_gate,
+        "sequence_dataset": sequence_dataset_meta,
         "gnn_result_summary": gnn_result_summary,
         "n_input": n,
     }
@@ -1433,6 +1474,9 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
         active_versions = dict(active_defaults)
         challenger_versions: dict[str, str] = {}
         for name, entry in (pool.get("models") or {}).items():
+            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+                logger.warning("[Pipeline V2] Ignoring legacy/non-active-9 model_pool entry: %s", name)
+                continue
             status[name] = entry.get("status", "active")
             if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
                 active_versions[name] = entry["version"]
@@ -1704,6 +1748,8 @@ def _build_serving_ic_bundle(
     weights: dict[str, float] = {}
     diagnostics: dict[str, dict] = {}
     for name, entry in ((pool or {}).get("models") or {}).items():
+        if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+            continue
         ic_value, source = _entry_serving_ic(entry, None if scope == "GLOBAL" else scope)
         multiplier, validation_status, validation_reason = _validation_multiplier(entry)
         sample_count = _entry_ic_sample_count(entry, source)
@@ -1895,6 +1941,9 @@ def _load_pool_and_ic():
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}
         for name, entry in pool.get("models", {}).items():
+            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+                logger.warning("[Pipeline V2] Ignoring legacy/non-active-9 model_pool IC entry: %s", name)
+                continue
             model_status[name] = entry.get("status", "active")
             last_status = str(entry.get("last_ic_status") or "").strip()
             last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()

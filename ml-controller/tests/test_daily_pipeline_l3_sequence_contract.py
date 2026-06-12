@@ -22,8 +22,9 @@ def test_timesfm_default_sequence_contract_matches_25_artifact_context():
     source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
     timesfm_runtime = (REPO / "ml-service" / "app" / "timesfm_universal.py").read_text(encoding="utf-8")
 
-    assert "DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = 128" in source
-    assert "DEFAULT_SEQ_LEN = 128" in timesfm_runtime
+    assert "DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()" in source
+    assert "DEFAULT_SEQ_LEN = 1024" in timesfm_runtime
+    assert "_timesfm_artifact_sequence_contract_points(pool)" in source
 
 
 def test_l2_cheap_ml_node_does_not_call_l3_models():

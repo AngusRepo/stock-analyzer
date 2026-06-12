@@ -618,6 +618,16 @@ def retrain_orchestrator(payload: dict) -> dict:
                     ),
                 }
 
+            def _sequence_seq_len_for_target(model_name: str) -> int:
+                key = f"{model_name.lower()}_seq_len"
+                if payload.get(key):
+                    return int(payload[key])
+                if payload.get("sequence_seq_len"):
+                    return int(payload["sequence_seq_len"])
+                if model_name == "iTransformer":
+                    return 1024
+                return 512
+
             def _validate_timesfm_config() -> dict:
                 from app.model_pool import load_pool
                 from google.cloud import storage as _gcs
@@ -661,6 +671,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                         train_payload = {
                             **_base_artifact_payload(target),
                             "sequence_records": sequence_records,
+                            "seq_len": _sequence_seq_len_for_target(target),
                             "device": payload.get("sequence_device") or "cuda",
                             "sequence_gcs_prefix": sequence_gcs_prefix,
                             "sequence_batch_count": sequence_batch_count,
@@ -672,6 +683,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                         train_payload = {
                             **_base_artifact_payload(target),
                             "sequence_records": sequence_records,
+                            "seq_len": _sequence_seq_len_for_target(target),
                             "device": payload.get("sequence_device") or "cuda",
                             "sequence_gcs_prefix": sequence_gcs_prefix,
                             "sequence_batch_count": sequence_batch_count,
@@ -1695,7 +1707,7 @@ def train_dlinear_universal(payload: dict) -> dict:
         result = train_dlinear(
             series_close=payload.get("series_close") or [],
             sequence_records=payload.get("sequence_records") or None,
-            seq_len=payload.get("seq_len", 60),
+            seq_len=payload.get("seq_len", 512),
             pred_len=payload.get("pred_len", 5),
             kernel=payload.get("kernel", 25),
             n_epochs=payload.get("n_epochs", 30),
@@ -1775,7 +1787,7 @@ def train_patchtst_universal(payload: dict) -> dict:
         result = train_patchtst(
             series_close=payload.get("series_close") or [],
             sequence_records=payload.get("sequence_records") or None,
-            seq_len=payload.get("seq_len", 60),
+            seq_len=payload.get("seq_len", 512),
             pred_len=payload.get("pred_len", 5),
             n_epochs=payload.get("n_epochs", 30),
             batch_size=payload.get("batch_size", 256),

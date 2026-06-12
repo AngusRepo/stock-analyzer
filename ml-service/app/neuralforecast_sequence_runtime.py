@@ -27,7 +27,7 @@ from .sequence_training import build_sequence_window_dataset
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SEQ_LEN = 60
+DEFAULT_SEQ_LEN = 512
 DEFAULT_PRED_LEN = 5
 DEFAULT_MAX_STEPS = 30
 DEFAULT_BATCH_SIZE = 128
@@ -39,12 +39,14 @@ MODEL_CONFIG: dict[str, dict[str, str]] = {
         "gcs_prefix": "universal/patchtst",
         "artifact_schema": "neuralforecast_patchtst_universal_v1",
         "model_type": "time_series_transformer_neuralforecast_patchtst",
+        "default_seq_len": "512",
     },
     "iTransformer": {
         "nf_model_name": "iTransformer",
         "gcs_prefix": "universal/itransformer",
         "artifact_schema": "neuralforecast_itransformer_universal_v1",
         "model_type": "time_series_transformer_neuralforecast_itransformer",
+        "default_seq_len": "1024",
     },
 }
 
@@ -57,6 +59,10 @@ def _require_model(model_name: str) -> dict[str, str]:
     if model_name not in MODEL_CONFIG:
         raise ValueError(f"unsupported NeuralForecast sequence model: {model_name}")
     return MODEL_CONFIG[model_name]
+
+
+def default_seq_len_for_model(model_name: str) -> int:
+    return int(_require_model(model_name).get("default_seq_len") or DEFAULT_SEQ_LEN)
 
 
 def _coerce_close(row: dict[str, Any]) -> list[float]:
@@ -368,7 +374,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         raise RuntimeError("GCS bucket not available")
 
     version = str(payload.get("output_model_version") or payload.get("version") or _utc_version())
-    seq_len = int(payload.get("seq_len") or payload.get("data_slice", {}).get("seq_len") or DEFAULT_SEQ_LEN)
+    seq_len = int(payload.get("seq_len") or payload.get("data_slice", {}).get("seq_len") or default_seq_len_for_model(model_name))
     pred_len = int(payload.get("pred_len") or payload.get("data_slice", {}).get("pred_len") or DEFAULT_PRED_LEN)
     max_steps = int(payload.get("max_steps") or payload.get("n_epochs") or payload.get("epochs") or DEFAULT_MAX_STEPS)
     batch_size = int(payload.get("batch_size") or DEFAULT_BATCH_SIZE)

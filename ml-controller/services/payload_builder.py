@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from services import d1_client, kv_client
 from services.adaptive import resolve_adaptive_params_for_regime
+from services.active9_dataset_policy import daily_price_history_limit, daily_price_lookback_years
 from services.market_regime_state import resolve_market_regime_contract
 from services.market_segment_policy import policy_for_segment
 
@@ -450,21 +451,24 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
 # Bulk per-stock loaders — pull all active stocks in single queries
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _bulk_load_prices(stock_ids: list[int], limit: int = 500) -> dict[int, list[dict]]:
+def _bulk_load_prices(stock_ids: list[int], limit: int | None = None) -> dict[int, list[dict]]:
     """
     Load last `limit` rows of stock_prices for each stock_id.
     Returns: {stock_id: [{date, close, high, low, open, volume}, ...]} (oldest→newest).
 
     D1 doesn't support window functions efficiently, so we pull all rows for the
-    relevant date range then group in-memory. Use date >= '-2 years' as cutoff.
+    relevant date range then group in-memory. Active-9 policy defaults to a
+    five-year / 1280-row cap so long rolling features remain available.
     """
     if not stock_ids:
         return {}
+    row_limit = daily_price_history_limit() if limit is None else max(1, int(limit))
+    years = daily_price_lookback_years()
     placeholders = ",".join("?" * len(stock_ids))
     rows = d1_client.query(
         f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
         f"FROM stock_prices "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years') "
+        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
         f"ORDER BY stock_id ASC, date ASC",
         list(stock_ids),
         timeout=120.0,
@@ -481,14 +485,16 @@ def _bulk_load_prices(stock_ids: list[int], limit: int = 500) -> dict[int, list[
             })
     # Truncate to last `limit` per stock (oldest is dropped if > limit)
     for sid in grouped:
-        if len(grouped[sid]) > limit:
-            grouped[sid] = grouped[sid][-limit:]
+        if len(grouped[sid]) > row_limit:
+            grouped[sid] = grouped[sid][-row_limit:]
     return grouped
 
 
-def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, list[dict]]:
+def _bulk_load_indicators(stock_ids: list[int], limit: int | None = None) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
+    row_limit = daily_price_history_limit() if limit is None else max(1, int(limit))
+    years = daily_price_lookback_years()
     placeholders = ",".join("?" * len(stock_ids))
     rows = d1_client.query(
         f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
@@ -496,7 +502,7 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
         f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
         f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10 "
         f"FROM technical_indicators "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-3 years') "
+        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
         f"ORDER BY stock_id ASC, date ASC",
         list(stock_ids),
         timeout=120.0,
@@ -521,8 +527,8 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int = 500) -> dict[int, l
                 "volumeMomentumDivergence132710": r.get("volume_momentum_divergence_13_27_10"),
             })
     for sid in grouped:
-        if len(grouped[sid]) > limit:
-            grouped[sid] = grouped[sid][-limit:]
+        if len(grouped[sid]) > row_limit:
+            grouped[sid] = grouped[sid][-row_limit:]
     return grouped
 
 

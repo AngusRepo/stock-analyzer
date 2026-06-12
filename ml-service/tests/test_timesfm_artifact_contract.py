@@ -51,10 +51,10 @@ def test_timesfm_loads_config_artifact(monkeypatch):
 
 
 def test_timesfm25_config_builder_is_local_prod_ready_without_mutating_production():
-    config = timesfm_universal.build_timesfm25_config(version="v-local-ready", seq_len=128)
+    config = timesfm_universal.build_timesfm25_config(version="v-local-ready")
 
     assert config["model_id"] == "google/timesfm-2.5-200m-pytorch"
-    assert config["seq_len"] == 128
+    assert config["seq_len"] == 1024
     assert config["max_context"] == DEFAULT_MAX_CONTEXT
     assert config["artifact_schema"] == "timesfm_2p5_config_v1"
     assert config["forecast_flags"]["use_continuous_quantile_head"] is True

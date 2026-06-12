@@ -10,11 +10,11 @@
     "db:init:remote": "wrangler d1 execute stockvision-db --remote --file=./schema.sql"
   },
   "dependencies": {
-    "hono": "4.12.14"
+    "hono": "4.12.25"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
-    "typescript": "^5.4.0",
-    "wrangler": "4.86.0"
+    "typescript": "6.0.3",
+    "wrangler": "4.100.0"
   }
 }

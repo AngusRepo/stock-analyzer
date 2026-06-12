@@ -17,7 +17,7 @@ polars>=1.0.0
 finlab==2.0.7  # V4 primary structured data adapter; auth flow must migrate before 2026-08-01
 shioaji[speed]>=1.2.5  # Sinopac L5 market-data fallback used by FinLab execution lane checks
 dagster==1.13.4  # V4 data asset orchestration runtime; schedules stay disabled in formal-shadow mode
-optuna>=3.6.0
+optuna==4.9.0
 scipy>=1.10.0  # optuna_feature_window 需要
 # 2026-04-07 LangGraph A+B refactor: real StateGraph + LLM reason in controller
 langgraph==1.0.10

@@ -49,6 +49,28 @@ def test_build_state_space_series_from_payloads_preserves_pipeline_shape_and_ord
     ]
 
 
+def test_long_history_enrichment_prefers_gcs_sequence_and_trims_to_target(monkeypatch):
+    monkeypatch.setattr(
+        state_space_series,
+        "load_long_history_sequence_map",
+        lambda **_kwargs: {"2330": [float(i) for i in range(1200)]},
+    )
+
+    enriched, meta = state_space_series.enrich_state_space_series_with_long_history(
+        [{"symbol": "2330", "prices": [1.0, 2.0]}, {"symbol": "2317", "prices": [90.0, 91.0]}],
+        target_points=1024,
+    )
+
+    assert meta["status"] == "ok"
+    assert meta["target_points"] == 1024
+    assert meta["enriched_series"] == 1
+    assert enriched[0]["sequence_source"] == "gcs_long_history"
+    assert len(enriched[0]["prices"]) == 1024
+    assert enriched[0]["prices"][0] == 176.0
+    assert enriched[1]["sequence_source"] == "payload_prices"
+    assert enriched[1]["prices"] == [90.0, 91.0]
+
+
 def test_build_state_space_series_export_applies_limit():
     export = state_space_series.build_state_space_series_export(
         run_date="2026-05-18",

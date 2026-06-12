@@ -48,6 +48,6 @@ tabm==0.0.3
 # fails closed if the active GCS config points at an incompatible archived model.
 timesfm[torch]==2.0.1
 # 2026-04-07 Phase 1: Optuna routes (auto-search + push KV)
-optuna>=3.6.0
+optuna==4.9.0
 # 2.0 Feature Selection: Target Permutation elbow detection
 kneed>=0.8.0

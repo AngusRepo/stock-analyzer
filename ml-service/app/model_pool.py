@@ -188,7 +188,7 @@ def load_pool() -> Optional[dict]:
     global _POOL_CACHE, _POOL_CACHE_LOADED_AT
     ttl = int(os.environ.get("MODEL_POOL_CACHE_TTL_SECONDS", "300") or "300")
     if _POOL_CACHE is not None and time.time() - _POOL_CACHE_LOADED_AT < max(0, ttl):
-        return json.loads(json.dumps(_POOL_CACHE))
+        return sanitize_pool_active9(json.loads(json.dumps(_POOL_CACHE)))
     try:
         bucket = _get_bucket()
         blob = bucket.blob(GCS_POOL_KEY)
@@ -196,7 +196,7 @@ def load_pool() -> Optional[dict]:
             return None
         _POOL_CACHE = json.loads(blob.download_as_text().lstrip("\ufeff"))
         _POOL_CACHE_LOADED_AT = time.time()
-        return json.loads(json.dumps(_POOL_CACHE))
+        return sanitize_pool_active9(json.loads(json.dumps(_POOL_CACHE)))
     except Exception as e:
         logger.warning(f"[ModelPool] Load failed: {e}")
         return None
@@ -205,6 +205,7 @@ def load_pool() -> Optional[dict]:
 def save_pool(pool: dict) -> None:
     """Write model_pool.json to GCS with updated last_updated timestamp."""
     global _POOL_CACHE, _POOL_CACHE_LOADED_AT
+    pool = sanitize_pool_active9(pool)
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
     bucket = _get_bucket()
     bucket.blob(GCS_POOL_KEY).upload_from_string(
@@ -214,6 +215,29 @@ def save_pool(pool: dict) -> None:
     _POOL_CACHE = json.loads(json.dumps(pool))
     _POOL_CACHE_LOADED_AT = time.time()
     logger.info(f"[ModelPool] Saved {GCS_POOL_KEY} ({len(pool.get('models', {}))} models)")
+
+
+def sanitize_pool_active9(pool: dict | None) -> dict:
+    """Drop retired alpha-model residue from model_pool models.
+
+    State overlays, shadow models, meta optimizers, and research benchmarks are
+    separate namespaces; only direct alpha prediction models are constrained to
+    active-9.
+    """
+
+    if not isinstance(pool, dict):
+        return {}
+    cloned = json.loads(json.dumps(pool))
+    models = cloned.get("models")
+    if not isinstance(models, dict):
+        cloned["models"] = {}
+        return cloned
+    cloned["models"] = {
+        name: models[name]
+        for name in ALPHA_PREDICTION_MODELS
+        if name in models and name not in RETIRED_ALPHA_MODELS
+    }
+    return cloned
 
 
 def init_default_pool() -> dict:

@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import modal_client
+from services.active9_dataset_policy import ACTIVE_ALPHA_MODELS, RETIRED_ALPHA_MODELS
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
@@ -39,6 +40,8 @@ from services.model_upgrade_research_track import build_research_benchmark_manif
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/model_pool", tags=["model_pool"])
+ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
+RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 
 
 def _bucket_name() -> str:
@@ -1012,11 +1015,18 @@ async def promote_check(req: PromoteCheckRequest):
     pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
     today = datetime.now(timezone.utc).date()
     today_iso = today.isoformat()
+    legacy_model_names = [
+        name
+        for name in list((pool.get("models") or {}).keys())
+        if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET
+    ]
 
     # Family balance baseline: count current active alpha predictors per family.
     def _family_actives(p: dict) -> dict[str, int]:
         counts = {"tree": 0, "tabular": 0, "graph": 0, "time_series": 0}
-        for entry in p.get("models", {}).values():
+        for model_name, entry in p.get("models", {}).items():
+            if model_name in RETIRED_ALPHA_MODEL_SET or model_name not in ACTIVE_ALPHA_MODEL_SET:
+                continue
             if entry.get("status") == "active":
                 fam = entry.get("balance_family", "tree")
                 if fam == "feature":
@@ -1027,7 +1037,18 @@ async def promote_check(req: PromoteCheckRequest):
     projected_actives = _family_actives(pool)
 
     actions: list[dict] = []
+    for name in legacy_model_names:
+        actions.append({
+            "model": name,
+            "transition": "delete_legacy_residue",
+            "from": "model_pool.models",
+            "to": None,
+            "reason": "non-active-9 alpha model residue removed from canonical model_pool",
+        })
+
     for name, entry in pool.get("models", {}).items():
+        if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+            continue
         status = entry.get("status", "active")
         family = entry.get("balance_family", "tree")
         if family == "feature":
@@ -1317,6 +1338,12 @@ async def promote_check(req: PromoteCheckRequest):
         for action in actions:
             t = action["transition"]
             name = action["model"]
+            if t == "delete_legacy_residue":
+                removed = pool.get("models", {}).pop(name, None)
+                if removed is not None:
+                    applied_count += 1
+                    _audit(action, "model_pool.models", None)
+                continue
             entry = pool["models"][name]
             if t == "promote":
                 # Move challenger -> active; keep history of v_old as "retired" sub-entry
@@ -1671,6 +1698,8 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
             raise HTTPException(status_code=404, detail="model_pool.json not found")
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         for name, entry in (pool.get("models") or {}).items():
+            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+                continue
             version = entry.get("version")
             if version:
                 champion_versions[str(name)] = str(version)
@@ -1707,6 +1736,8 @@ async def lineage():
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         out: dict[str, dict] = {}
         for name, entry in (pool.get("models") or {}).items():
+            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+                continue
             version = entry.get("version")
             artifact_path = entry.get("gcs_path") or (version and _model_artifact_path(name, version))
             metadata_path = _model_metadata_path(name, version) if version else None

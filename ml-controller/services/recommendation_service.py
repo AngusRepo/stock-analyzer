@@ -40,6 +40,7 @@ from services.alpha_framework import (
     normalize_alpha_policy,
     regime_aware_allocate,
 )
+from services.active9_dataset_policy import gnn_return_history_lookback
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
 from services.portfolio_allocation import allocate_sparse_tangent
@@ -1569,10 +1570,10 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     return True
 
 
-def build_return_history_from_payloads(payloads: list[dict], *, lookback: int = 60) -> dict[str, list[float]]:
+def build_return_history_from_payloads(payloads: list[dict], *, lookback: int | None = None) -> dict[str, list[float]]:
     """Build close-to-close return history for allocator risk estimates."""
     history: dict[str, list[float]] = {}
-    safe_lookback = max(2, min(int(lookback or 60), 252))
+    safe_lookback = max(2, min(int(lookback or gnn_return_history_lookback()), 504))
     for payload in payloads or []:
         symbol = str(payload.get("symbol") or payload.get("stock_id") or "").strip()
         if not symbol:

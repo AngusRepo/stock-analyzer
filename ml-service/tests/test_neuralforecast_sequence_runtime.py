@@ -1,4 +1,9 @@
-from app.neuralforecast_sequence_runtime import _panel_train_eval_rows
+from app.neuralforecast_sequence_runtime import _panel_train_eval_rows, default_seq_len_for_model
+
+
+def test_neuralforecast_sequence_defaults_follow_model_core_windows():
+    assert default_seq_len_for_model("PatchTST") == 512
+    assert default_seq_len_for_model("iTransformer") == 1024
 
 
 def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():

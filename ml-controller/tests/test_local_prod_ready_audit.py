@@ -38,7 +38,19 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "neuralforecast==3.1.9",
             "tabm==0.0.3",
             "timesfm[torch]==2.0.1",
+            "optuna==4.9.0",
         ]),
+    )
+    _write(tmp_path / "ml-controller/requirements.txt", "optuna==4.9.0")
+    _write(
+        tmp_path / "worker/package.json",
+        json.dumps({
+            "dependencies": {"hono": "4.12.25"},
+            "devDependencies": {
+                "wrangler": "4.100.0",
+                "typescript": "6.0.3",
+            },
+        }),
     )
     _write(
         tmp_path / "frontend/src/pages/ModelPoolPage.tsx",

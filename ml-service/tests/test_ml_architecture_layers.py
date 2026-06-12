@@ -80,3 +80,19 @@ def test_chronos_is_retired_from_alpha_pool():
     assert "Chronos" in model_pool.RETIRED_ALPHA_MODELS
     assert "Chronos" not in model_pool.ALPHA_PREDICTION_MODELS
     assert "Chronos" not in model_pool.MANAGED_MODELS
+
+
+def test_model_pool_sanitizer_drops_legacy_alpha_residue_but_keeps_meta_layers():
+    pool = model_pool.init_default_pool()
+    pool["models"]["CatBoost"] = {"status": "degraded", "version": "legacy"}
+    pool["models"]["FT-Transformer"] = {"status": "active", "version": "legacy"}
+    pool["models"]["Chronos"] = {"status": "degraded", "version": "legacy"}
+
+    sanitized = model_pool.sanitize_pool_active9(pool)
+
+    assert set(sanitized["models"]) == set(model_pool.ALPHA_PREDICTION_MODELS)
+    assert "CatBoost" not in sanitized["models"]
+    assert "FT-Transformer" not in sanitized["models"]
+    assert "Chronos" not in sanitized["models"]
+    assert "GAOptimizer" in sanitized["meta_optimizers"]
+    assert set(sanitized["state_overlays"]) == {"KalmanFilter", "MarkovSwitching"}

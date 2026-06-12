@@ -74,14 +74,22 @@ def _coerce_close(row: dict[str, Any]) -> list[float]:
 def _panel_train_eval_rows(
     records: list[dict[str, Any]],
     *,
+    seq_len: int,
     pred_len: int,
     max_series: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     train_rows: list[dict[str, Any]] = []
     eval_rows: list[dict[str, Any]] = []
-    for record in records[: max(1, max_series)]:
+    min_history = int(seq_len) + int(pred_len)
+    skipped_short_history = 0
+    considered = 0
+    for record in records:
+        considered += 1
+        if len(eval_rows) >= max(1, max_series):
+            break
         close = _coerce_close(record)
-        if len(close) < pred_len + 10:
+        if len(close) < min_history:
+            skipped_short_history += 1
             continue
         symbol = str(record.get("symbol") or f"series_{len(eval_rows)}")
         train_close = close[:-pred_len]
@@ -96,7 +104,15 @@ def _panel_train_eval_rows(
             "actual_last": float(actual_close[-1]),
             "history_len": int(len(close)),
         })
-    return train_rows, eval_rows
+    return train_rows, eval_rows, {
+        "considered_series": int(considered),
+        "valid_series": int(len(eval_rows)),
+        "skipped_short_history": int(skipped_short_history),
+        "min_history": int(min_history),
+        "seq_len": int(seq_len),
+        "pred_len": int(pred_len),
+        "max_series": int(max_series),
+    }
 
 
 def _series_list_to_df_rows(series_list: list[dict[str, Any]], *, seq_len: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -374,9 +390,19 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset_source = load_sequence_dataset(payload)
-    train_rows, eval_rows = _panel_train_eval_rows(dataset_source.records, pred_len=pred_len, max_series=max_series)
+    train_rows, eval_rows, series_filter = _panel_train_eval_rows(
+        dataset_source.records,
+        seq_len=seq_len,
+        pred_len=pred_len,
+        max_series=max_series,
+    )
     if len(eval_rows) < 10:
-        raise ValueError(f"{model_name} NeuralForecast training requires >=10 valid series, got {len(eval_rows)}")
+        raise ValueError(
+            f"{model_name} NeuralForecast training requires >=10 valid series, got {len(eval_rows)} "
+            f"(min_history={series_filter['min_history']}, "
+            f"skipped_short_history={series_filter['skipped_short_history']}, "
+            f"considered_series={series_filter['considered_series']})"
+        )
     nf, df = _train_nf(
         train_rows,
         model_name=cfg["nf_model_name"],
@@ -461,6 +487,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             "sequence_gcs_prefix": sequence_gcs_prefix,
             "batch_count": sequence_batch_count,
             "max_series": max_series,
+            "series_filter": series_filter,
             "data_slice_report": data_slice_report(dataset=dataset_source, start_date=payload.get("start_date"), end_date=payload.get("end_date")),
             "prep_lineage": prep_lineage,
             "prep_freshness": prep_freshness,

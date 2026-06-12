@@ -146,6 +146,11 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
             "validation_range": ["2026-02-01", "2026-05-01"],
             "metrics": {"oos_samples": 500},
             "prep_lineage": {"date_max": "2026-06-04", "feature_hash": "sha256:itransformer"},
+            "artifact_schema": "neuralforecast_itransformer_universal_v1",
+            "runtime_package": "neuralforecast",
+            "seq_len": 1024,
+            "pred_len": 5,
+            "metadata_path": "universal/itransformer/metadata_new.json",
         },
         reason="test",
     )
@@ -158,8 +163,14 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
     assert entry["last_ic_root_cause"] == "new_neuralforecast_itransformer_artifact_awaiting_verified_predictions"
     assert "ic_4w_avg" not in entry
     assert "weekly_ic" not in entry
+    assert entry["artifact_schema"] == "neuralforecast_itransformer_universal_v1"
+    assert entry["runtime_package"] == "neuralforecast"
+    assert entry["seq_len"] == 1024
+    assert entry["pred_len"] == 5
+    assert entry["metadata_path"] == "universal/itransformer/metadata_new.json"
     assert entry["last_artifact_evidence"]["prep_lineage"]["date_max"] == "2026-06-04"
     assert slot["status"] == "artifact_backed_model_pool_active"
+    assert slot["seq_len"] == 1024
 
 
 def test_patchtst_model_pool_registration_updates_formal_slot_alias():
@@ -185,6 +196,10 @@ def test_patchtst_model_pool_registration_updates_formal_slot_alias():
             "metrics": {"oos_samples": 600, "pbo": 0.2},
             "prep_lineage": {"date_max": "2026-06-04", "feature_hash": "sha256:patchtst"},
             "artifact_schema": "neuralforecast_patchtst_universal_v1",
+            "runtime_package": "neuralforecast",
+            "seq_len": 512,
+            "pred_len": 5,
+            "metadata_path": "universal/patchtst/metadata_new.json",
         },
         reason="test",
     )
@@ -199,7 +214,13 @@ def test_patchtst_model_pool_registration_updates_formal_slot_alias():
     assert "ic_4w_avg" not in entry
     assert "weekly_ic" not in entry
     assert "challenger" not in entry
+    assert entry["artifact_schema"] == "neuralforecast_patchtst_universal_v1"
+    assert entry["runtime_package"] == "neuralforecast"
+    assert entry["seq_len"] == 512
+    assert entry["pred_len"] == 5
+    assert entry["metadata_path"] == "universal/patchtst/metadata_new.json"
     assert entry["last_artifact_evidence"]["prep_lineage"]["date_max"] == "2026-06-04"
     assert slot["status"] == "artifact_backed_model_pool_active"
+    assert slot["seq_len"] == 512
     assert slot["direct_prediction"] is False
     assert slot["vote_weight"] == 0.0

@@ -437,6 +437,17 @@ def retrain_orchestrator(payload: dict) -> dict:
         {**payload, "batch_count": batch_count},
         candidate_version=candidate_version,
     )
+
+    def _train_group_seq_len(group: str) -> int:
+        key = f"{group}_seq_len"
+        if payload.get(key):
+            return int(payload[key])
+        if payload.get("sequence_seq_len"):
+            return int(payload["sequence_seq_len"])
+        if group == "itransformer":
+            return 1024
+        return 512
+
     train_group_specs = {
         "tree": {
             "spawn": lambda p: train_tree_models.spawn(p),
@@ -453,6 +464,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "version": candidate_version,
                 "sequence_gcs_prefix": sequence_gcs_prefix,
                 "sequence_batch_count": sequence_batch_count,
+                "seq_len": _train_group_seq_len("dlinear"),
             },
             "mergeable": training_group_feature_policy("dlinear").mergeable_oos,
             "models": models_for_training_group("dlinear"),
@@ -466,6 +478,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "version": candidate_version,
                 "sequence_gcs_prefix": sequence_gcs_prefix,
                 "sequence_batch_count": sequence_batch_count,
+                "seq_len": _train_group_seq_len("patchtst"),
             },
             "mergeable": training_group_feature_policy("patchtst").mergeable_oos,
             "models": models_for_training_group("patchtst"),

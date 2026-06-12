@@ -33,6 +33,7 @@ from services.payload_builder import (
     _bulk_load_sentiment,
     PredictPayload,
 )
+from services.active9_dataset_policy import long_history_sequence_enabled, long_history_sequence_prefix
 from services.training_calendar import monthly_revenue_available_date
 from services.training_policy import TrainingPolicy
 from services.modal_client import batch_retrain, prep_universal_batch, train_universal, shap_audit
@@ -67,6 +68,12 @@ class UniversalRetrainTriggerRequest(BaseModel):
     artifact_lifecycle_targets: list[str] = Field(default_factory=list)
     artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)
     artifact_lifecycle_only: bool = False
+    sequence_gcs_prefix: str | None = Field(default=None, description="GCS prefix for sequence_records_v2 batches.")
+    sequence_batch_count: int | None = Field(default=None, description="Number of sequence_records_v2 batches.")
+    sequence_seq_len: int | None = Field(default=None, description="Shared L3 sequence context override.")
+    dlinear_seq_len: int | None = Field(default=None, description="DLinear sequence context override.")
+    patchtst_seq_len: int | None = Field(default=None, description="PatchTST sequence context override.")
+    itransformer_seq_len: int | None = Field(default=None, description="iTransformer sequence context override.")
 
 
 def _force_https(url: str) -> str:
@@ -96,6 +103,49 @@ def _parse_gcs_uri(uri: str) -> tuple[str, str]:
     if not bucket or not blob:
         raise ValueError(f"invalid_gcs_uri:{uri}")
     return bucket, blob
+
+
+def _sequence_batch_count_from_manifest(manifest: dict, fallback: int) -> int:
+    try:
+        batch_size = int(manifest.get("batch_size") or 0)
+    except (TypeError, ValueError):
+        batch_size = 0
+    records = 0
+    for report in manifest.get("lane_reports") or []:
+        if not isinstance(report, dict):
+            continue
+        try:
+            records += int(report.get("sequence_records") or 0)
+        except (TypeError, ValueError):
+            continue
+    if records <= 0:
+        try:
+            records = int((manifest.get("summary") or {}).get("symbols") or 0)
+        except (TypeError, ValueError):
+            records = 0
+    if records <= 0 or batch_size <= 0:
+        return max(1, int(fallback))
+    return max(1, int((records + batch_size - 1) // batch_size))
+
+
+def _infer_sequence_batch_count(sequence_gcs_prefix: str, fallback: int) -> int:
+    if not sequence_gcs_prefix:
+        return max(1, int(fallback))
+    try:
+        from google.cloud import storage as _gcs
+
+        bucket_name = os.environ.get("GCS_BUCKET_NAME") or os.environ.get("RETRAIN_LOCK_BUCKET")
+        if not bucket_name:
+            return max(1, int(fallback))
+        prefix = sequence_gcs_prefix.strip().rstrip("/")
+        blob = _gcs.Client().bucket(bucket_name).blob(f"{prefix}/prep/sequence_manifest.json")
+        if not blob.exists():
+            return max(1, int(fallback))
+        manifest = json.loads(blob.download_as_text().lstrip("\ufeff"))
+        return _sequence_batch_count_from_manifest(manifest if isinstance(manifest, dict) else {}, fallback)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[retrain/universal] sequence manifest read failed: %s", exc)
+        return max(1, int(fallback))
 
 
 def _snapshot_component_uris(snapshot: dict) -> dict[str, str]:
@@ -947,8 +997,27 @@ async def trigger_universal_retrain(
     # Cloud Run 觸發一次 Modal retrain_orchestrator，後面全在 Modal 內完成
     from services.modal_client import retrain_orchestrator
     followup_webhook_url = _build_followup_webhook_url(request)
+    sequence_required = (
+        any(group in {"dlinear", "patchtst"} for group in (req.train_model_groups or []))
+        or any(target in {"PatchTST", "iTransformer"} for target in (req.artifact_lifecycle_targets or []))
+    )
+    sequence_gcs_prefix = (req.sequence_gcs_prefix or "").strip().rstrip("/")
+    if not sequence_gcs_prefix and sequence_required and long_history_sequence_enabled():
+        sequence_gcs_prefix = long_history_sequence_prefix()
+    sequence_batch_count = req.sequence_batch_count
+    if sequence_gcs_prefix and not sequence_batch_count:
+        sequence_batch_count = _infer_sequence_batch_count(sequence_gcs_prefix, batch_count)
+    sequence_contract: dict[str, object] = {}
+    if sequence_gcs_prefix:
+        sequence_contract["sequence_gcs_prefix"] = sequence_gcs_prefix
+        sequence_contract["sequence_batch_count"] = int(sequence_batch_count or batch_count)
+    for key in ("sequence_seq_len", "dlinear_seq_len", "patchtst_seq_len", "itransformer_seq_len"):
+        value = getattr(req, key, None)
+        if value:
+            sequence_contract[key] = int(value)
     logger.info(f"[retrain/universal] Flow B: spawning Modal orchestrator "
-                f"(batches={batch_count}, monthly={is_monthly}, followup={followup_webhook_url})")
+                f"(batches={batch_count}, monthly={is_monthly}, sequence={sequence_contract or None}, "
+                f"followup={followup_webhook_url})")
     try:
         orchestrator_result = await retrain_orchestrator(
             payload={
@@ -969,6 +1038,7 @@ async def trigger_universal_retrain(
                 "run_id": run_id,
                 "lock_key": lock_key,
                 "run_date": run_date,
+                **sequence_contract,
             },
             fire_and_forget=True,  # Cloud Run 不等 Modal 完成，避免 3600s timeout
         )
@@ -1005,6 +1075,7 @@ async def trigger_universal_retrain(
             "is_monthly": is_monthly,
             "batch_count": batch_count,
             "prep_concurrency": prep_concurrency,
+            "sequence_contract": sequence_contract or None,
             "dataset_snapshot": dataset_snapshot_info,
             "total_prep_rows": total_rows,
             "followup_webhook_url": followup_webhook_url,
@@ -1025,6 +1096,7 @@ async def trigger_universal_retrain(
         "skipped_sample": skipped[:20],
         "batch_count": batch_count,
         "prep_concurrency": prep_concurrency,
+        "sequence_contract": sequence_contract or None,
         "dataset_snapshot": dataset_snapshot_info,
         "total_prep_rows": total_rows,
         "prep_results": prep_results,

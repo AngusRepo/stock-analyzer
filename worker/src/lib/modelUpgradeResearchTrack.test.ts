@@ -36,7 +36,7 @@ function assert(condition: unknown, message: string): void {
 {
   const productionSlots = listModelUpgradeCandidates('production_slot_member')
   const ids = productionSlots.map((candidate) => candidate.id).sort().join(',')
-  assert(ids === 'GNN,TabM,TimesFM,iTransformer', `production slot targets mismatch: ${ids}`)
+  assert(ids === 'DLinear,GNN,PatchTST,TabM,TimesFM,iTransformer', `production slot targets mismatch: ${ids}`)
   assert(productionSlots.every((candidate) => candidate.can_predict), 'production slot targets must be prediction-capable')
   assert(productionSlots.every((candidate) => candidate.can_vote), 'production slot targets must be vote-capable')
   assert(productionSlots.every((candidate) => candidate.vote_weight > 0), 'production slot targets must have nominal vote weight')

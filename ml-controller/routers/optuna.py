@@ -1135,21 +1135,6 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
     }
 
 
-class FtArchReq(BaseModel):
-    """Retired FT-Transformer architecture Optuna request."""
-    n_trials: int = 20
-    subset_size: int | None = None  # None = full ~681K, int = subsample for coarse
-    gcs_prefix: str = "universal"
-
-
-@router.post("/ft_arch")
-async def run_ft_arch(req: FtArchReq = Body(default=FtArchReq())):
-    raise HTTPException(
-        status_code=410,
-        detail="FT-Transformer is retired from the production model pool; architecture search is disabled.",
-    )
-
-
 class L2SensitivityReq(BaseModel):
     """L2 sensitivity search request (#28 P7)."""
     n_trials: int = 50
@@ -1159,6 +1144,11 @@ class L2SensitivityReq(BaseModel):
     dry_run: bool = False
     dd_penalty: float | None = None
     sampler: str = "nsga2"          # 'nsga2' | 'tpe'
+    walk_forward_evidence: dict[str, Any] | None = Field(
+        default=None,
+        description="Promotion-grade walk-forward evidence. KV push requires this to pass.",
+    )
+    require_walk_forward_evidence: bool = True
 
 
 @router.post("/l2_sensitivity")
@@ -1176,7 +1166,7 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     """
     try:
         from optuna_l2_sensitivity import (  # type: ignore
-            run_l2_sensitivity_search, DEFAULT_SEARCH_SPACE, _l2_push_allowed,
+            run_l2_sensitivity_search, DEFAULT_SEARCH_SPACE, _l2_push_allowed, _l2_push_blockers,
         )
     except ImportError as e:
         raise HTTPException(500, f"optuna_l2_sensitivity import failed: {e}")
@@ -1238,11 +1228,21 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     # ── KV push (nested form matches trading:config shape) ──────────────────
     push_response = None
     push_skipped_reason = None
+    push_blockers = _l2_push_blockers(
+        push_kv=req.push_kv,
+        dry_run=req.dry_run,
+        best_params_nested=result.get("best_params_nested"),
+        pbo_audit=result.get("pbo_audit"),
+        walk_forward_evidence=req.walk_forward_evidence,
+        require_walk_forward=req.require_walk_forward_evidence,
+    )
     if _l2_push_allowed(
         push_kv=req.push_kv,
         dry_run=req.dry_run,
         best_params_nested=result.get("best_params_nested"),
         pbo_audit=result.get("pbo_audit"),
+        walk_forward_evidence=req.walk_forward_evidence,
+        require_walk_forward=req.require_walk_forward_evidence,
     ):
         push_response = push_optuna_result(
             source="l2_sensitivity",
@@ -1252,6 +1252,7 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
                 "best_value": result.get("best_value"),
                 "pbo_candidate_count": len(result.get("strategy_returns_by_partition") or {}),
                 "pbo_audit": result.get("pbo_audit"),
+                "walk_forward_evidence": req.walk_forward_evidence,
                 "start_date": start_date,
                 "end_date": end_date,
                 "sampler": req.sampler,
@@ -1260,7 +1261,14 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
             },
         )
     elif req.push_kv and not req.dry_run:
-        push_skipped_reason = "pbo_audit_not_passed"
+        push_skipped_reason = ",".join(push_blockers) if push_blockers else "push_gate_not_passed"
+    walk_forward_evidence_passed = (
+        not req.require_walk_forward_evidence
+        or (
+            bool(req.walk_forward_evidence)
+            and "walk_forward_evidence_not_passed" not in push_blockers
+        )
+    )
 
     return {
         "status": "completed",
@@ -1277,6 +1285,8 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
         "pbo_persist": pbo_persist_response,
         "push": push_response,
         "push_skipped_reason": push_skipped_reason,
+        "push_blockers": push_blockers,
+        "walk_forward_evidence_status": "passed" if walk_forward_evidence_passed else "missing_or_failed",
     }
 
 

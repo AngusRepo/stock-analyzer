@@ -68,8 +68,8 @@ def _model_artifact_path(model_name: str, version: str) -> str:
         "TabM": "pt",
         "GNN": "pt",
         "DLinear": "pt",
-        "PatchTST": "pt",
-        "iTransformer": "pt",
+        "PatchTST": "zip",
+        "iTransformer": "zip",
         "TimesFM": "json",
     }
     ext = ext_map.get(model_name)
@@ -449,7 +449,7 @@ async def train_patchtst(req: TrainPatchTSTRequest):
     if not req.confirm:
         raise HTTPException(
             status_code=400,
-            detail="train_patchtst requires confirm=true -> overwrites " + _bucket_uri(f"universal/patchtst/{req.version}.pt"),
+            detail="train_patchtst requires confirm=true -> overwrites " + _bucket_uri(f"universal/patchtst/{req.version}.zip"),
         )
 
     t0 = time.time()
@@ -1866,8 +1866,8 @@ async def init_pool(req: InitPoolRequest):
         ("TabM",            "tabular_neural",         "tabular",     "pt"),
         ("GNN",             "cross_stock_graphsage",  "graph",       "pt"),
         ("DLinear",         "time_series_learnable",  "time_series", "pt"),
-        ("PatchTST",        "time_series_learnable",  "time_series", "pt"),
-        ("iTransformer",    "time_series_transformer","time_series", "pt"),
+        ("PatchTST",        "time_series_neuralforecast_patchtst", "time_series", "zip"),
+        ("iTransformer",    "time_series_neuralforecast_itransformer", "time_series", "zip"),
         ("TimesFM",         "time_series_foundation", "time_series", "json"),
     ]
     shadow_managed = [
@@ -1955,25 +1955,3 @@ async def init_pool(req: InitPoolRequest):
         "research_benchmark_count": len(research_benchmarks),
         "last_updated": iso_now,
     }
-
-
-# ---------------------------------------------------------------------------
-# Retired Chronos guard
-# ---------------------------------------------------------------------------
-
-
-class WriteChronosConfigRequest(BaseModel):
-    version: str = "v2"
-    model_id: str = "amazon/chronos-2"
-    horizon_default: int = 5
-    num_samples_default: int = 20
-    confirm: bool = False
-
-
-@router.post("/write_chronos_config")
-async def write_chronos_config(req: WriteChronosConfigRequest):
-    """Fail-closed retired Chronos config writer."""
-    raise HTTPException(
-        status_code=410,
-        detail="Chronos is retired from the production model pool; use TimesFM/iTransformer artifact gates instead.",
-    )

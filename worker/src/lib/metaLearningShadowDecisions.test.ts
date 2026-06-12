@@ -32,6 +32,18 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const normalized = normalizeMetaShadowDecisionInput({
+    policy_id: 'NeuCB',
+    decisions: [
+      { business_date: '2026-05-07', symbol: '2330', arm_id: 'tree_family', baseline_action: 'hold', shadow_action: 'buy', counterfactual_reward: 0.014 },
+    ],
+  }, { nowIso: '2026-05-08T00:00:00.000Z', idPrefix: 'test' })
+
+  assert(normalized.ok, `NeuCB research benchmark should be valid: ${normalized.errors.join(',')}`)
+  assert(normalized.rows[0].policy_id === 'NeuCB', 'NeuCB policy id should be preserved')
+}
+
+{
   const invalid = normalizeMetaShadowDecisionInput({
     policy_id: 'OnlinePortfolioBandit',
     decisions: [{ business_date: '2026-05-07', symbol: '2330', arm_id: 'x', baseline_action: 'hold', shadow_action: 'buy' }],

@@ -501,6 +501,89 @@ def test_update_live_gate_from_ic_ignores_retired_model_challenger_rows(monkeypa
     assert executed == []
 
 
+def test_candidate_selection_suppresses_non_active9_artifact_models():
+    selection = registry.build_candidate_selection([
+        {
+            "artifact_id": "CatBoost:vM:monthly_release",
+            "model_name": "CatBoost",
+            "version": "vM",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "updated_at": "2026-05-17T00:00:00Z",
+        },
+        {
+            "artifact_id": "LightGBM:vM:monthly_release",
+            "model_name": "LightGBM",
+            "version": "vM",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "updated_at": "2026-05-17T00:00:00Z",
+        },
+    ])
+
+    assert "CatBoost" not in selection["models"]
+    assert "LightGBM" in selection["models"]
+    assert selection["suppressed_count"] == 1
+    assert selection["suppressed"][0]["reason"] == "model_not_active_production_artifact"
+    assert selection["suppressed"][0]["action_context"]["evidence_status"] == "suppressed"
+
+
+def test_build_promotion_queue_suppresses_non_active9_artifact_models():
+    queue = registry.build_promotion_queue(
+        [
+            {
+                "artifact_id": "CatBoost:vM:monthly_release",
+                "model_name": "CatBoost",
+                "version": "vM",
+                "candidate_type": "monthly_release",
+                "state": "live_gate_passed",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "passed",
+                "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+                "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
+            },
+        ],
+        champion_versions={"CatBoost": "vOld"},
+    )
+
+    assert queue["queue"] == []
+    assert queue["suppressed_count"] == 1
+    assert queue["suppressed"][0]["artifact_id"] == "CatBoost:vM:monthly_release"
+    assert queue["suppressed"][0]["reason"] == "model_not_active_production_artifact"
+
+
+def test_promotion_controller_blocks_non_active9_artifact_models():
+    result = registry.run_promotion_controller(
+        artifact_id="CatBoost:vM:monthly_release",
+        registry_rows=[{
+            "artifact_id": "CatBoost:vM:monthly_release",
+            "model_name": "CatBoost",
+            "version": "vM",
+            "candidate_type": "monthly_release",
+            "state": "live_gate_passed",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+            "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+        }],
+        d1_pointers=[{
+            "model_name": "CatBoost",
+            "champion_version": "vOld",
+            "champion_artifact_id": "CatBoost:vOld:monthly_release",
+        }],
+        model_pool_versions={"CatBoost": "vOld"},
+        confirm=False,
+        approved=False,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["decision"] == "blocked"
+    assert result["can_promote"] is False
+    assert "model_not_active_production_artifact" in result["evidence"]["blockers"]
+
+
 def test_build_promotion_queue_requires_approval_for_weekly_drift():
     queue = registry.build_promotion_queue(
         [
@@ -853,12 +936,12 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
             "PatchTST": {
                 "status": "active",
                 "version": "v1",
-                "gcs_path": "universal/patchtst/v1.pt",
+                "gcs_path": "universal/patchtst/v1.zip",
                 "weekly_ic": [0.1],
                 "ic_4w_avg": 0.1,
                 "challenger": {
                     "version": "vNew",
-                    "gcs_path": "universal/patchtst/vNew.pt",
+                    "gcs_path": "universal/patchtst/vNew.zip",
                     "weekly_ic": [0.2],
                     "ic_4w_avg": 0.2,
                     "rolling_ic": 0.21,
@@ -875,7 +958,7 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
             "model_name": "PatchTST",
             "version": "vNew",
             "candidate_type": "weekly_drift",
-            "artifact_path": "universal/patchtst/vNew.pt",
+            "artifact_path": "universal/patchtst/vNew.zip",
         },
         reason="wei_approval",
         promoted_at="2026-05-14T17:31:25+00:00",
@@ -889,6 +972,33 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
     assert "challenger" not in entry
     assert entry["retired_versions"][0]["version"] == "v1"
     assert entry["promotion_controller"]["artifact_id"] == "PatchTST:vNew:weekly_drift"
+
+
+def test_apply_promoted_artifact_to_model_pool_rejects_non_active9_artifacts():
+    pool = {
+        "models": {
+            "CatBoost": {
+                "version": "vOld",
+                "status": "retired",
+            },
+        },
+    }
+
+    try:
+        registry.apply_promoted_artifact_to_model_pool(
+            pool,
+            {
+                "artifact_id": "CatBoost:vM:monthly_release",
+                "model_name": "CatBoost",
+                "version": "vM",
+                "candidate_type": "monthly_release",
+            },
+            reason="test",
+        )
+    except ValueError as exc:
+        assert "not eligible for production artifact promotion" in str(exc)
+    else:
+        raise AssertionError("CatBoost artifact promotion should be rejected")
 
 
 def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versions(monkeypatch):

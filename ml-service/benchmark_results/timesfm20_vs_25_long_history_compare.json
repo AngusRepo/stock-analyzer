@@ -1,0 +1,43 @@
+{
+  "comparison_policy": {
+    "higher_is_better": [
+      "oos_ic",
+      "direction_accuracy",
+      "p10_p90_coverage"
+    ],
+    "lower_is_better": [
+      "price_mae",
+      "price_rmse",
+      "price_mape",
+      "price_smape",
+      "return_mae",
+      "return_rmse",
+      "return_p90_abs_error",
+      "extreme_return_mae",
+      "extreme_return_rmse",
+      "p10_p90_crossing_rate",
+      "quantile_monotonic_violation_rate"
+    ]
+  },
+  "contexts": [],
+  "production_mutation_allowed": false,
+  "promotion_allowed": false,
+  "runtime": {
+    "after": {
+      "latency_sec": 211.52,
+      "python_tracemalloc_current_mb": 3653.511,
+      "python_tracemalloc_peak_mb": 12670.975,
+      "rss_mb": 5981.07,
+      "vram_peak_mb": null
+    },
+    "before": {
+      "latency_sec": 431.36,
+      "python_tracemalloc_current_mb": 3699.207,
+      "python_tracemalloc_peak_mb": 12714.477,
+      "rss_mb": 12811.703,
+      "vram_peak_mb": null
+    }
+  },
+  "schema_version": "timesfm-migration-comparison-v1",
+  "status": "completed"
+}

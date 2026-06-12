@@ -429,14 +429,18 @@ adminWriteRoutes.post('/api/admin/meta-learning/neural-shadow/run', async (c) =>
   if (authError) return authError
 
   type Body = {
-    policy_id?: 'NeuralUCB' | 'NeuralTS'
+    policy_id?: 'NeuralUCB' | 'NeuralTS' | 'NeuCB'
     start_date?: string
     end_date?: string
     limit?: number
     dry_run?: boolean
   }
   const body = await c.req.json<Body>().catch(() => ({} as Body))
-  const policyId = body.policy_id === 'NeuralTS' ? 'NeuralTS' : 'NeuralUCB'
+  const policyId = body.policy_id === 'NeuralTS'
+    ? 'NeuralTS'
+    : body.policy_id === 'NeuCB'
+      ? 'NeuCB'
+      : 'NeuralUCB'
   const dryRun = body.dry_run !== false
   if (!dryRun && c.req.header('X-Confirm-Meta-Learning') !== 'true') {
     return c.json({

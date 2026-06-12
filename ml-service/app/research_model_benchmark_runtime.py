@@ -13,19 +13,39 @@ from typing import Any
 
 
 BENCHMARK_ADAPTERS: dict[str, dict[str, str]] = {
+    "DLinear": {
+        "package": "torch",
+        "module": "app.research_benchmarks.current_dlinear_adapter",
+        "function": "run_benchmark",
+    },
+    "DartsDLinear": {
+        "package": "darts",
+        "module": "app.research_benchmarks.darts_dlinear_adapter",
+        "function": "run_benchmark",
+    },
+    "PatchTST": {
+        "package": "neuralforecast",
+        "module": "app.research_benchmarks.neuralforecast_patchtst_adapter",
+        "function": "run_benchmark",
+    },
     "TabM": {
         "package": "tabm",
         "module": "app.research_benchmarks.tabm_adapter",
         "function": "run_benchmark",
     },
     "iTransformer": {
-        "package": "torch",
-        "module": "app.research_benchmarks.itransformer_adapter",
+        "package": "neuralforecast",
+        "module": "app.research_benchmarks.neuralforecast_itransformer_adapter",
         "function": "run_benchmark",
     },
     "TimesFM": {
         "package": "timesfm",
         "module": "app.research_benchmarks.timesfm_adapter",
+        "function": "run_benchmark",
+    },
+    "TimesFM25": {
+        "package": "timesfm",
+        "module": "app.research_benchmarks.timesfm25_adapter",
         "function": "run_benchmark",
     },
 }

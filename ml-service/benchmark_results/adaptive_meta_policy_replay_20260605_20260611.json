@@ -1,0 +1,448 @@
+{
+  "allowed_use": "research_only",
+  "arm_names": [
+    "tree_family",
+    "tabular_neural_family",
+    "graph_family",
+    "time_series_family",
+    "do_nothing"
+  ],
+  "baselines": {
+    "best_fixed_hindsight": {
+      "arm": "tree_family",
+      "average_reward": 0.11833019,
+      "note": "hindsight upper-bound reference, not deployment evidence",
+      "windows": 4
+    },
+    "current_production_heuristic": {
+      "action_concentration": 1.0,
+      "action_counts": {
+        "tree_family": 4
+      },
+      "action_stability": 1.0,
+      "average_reward": 0.11833019,
+      "cumulative_reward": 0.47332075,
+      "max_drawdown_reward": 0.0167506,
+      "mean_oracle_regret": 0.07026011,
+      "positive_reward_rate": 0.75,
+      "reward_std": 0.10397772,
+      "selection_score": 0.0815901,
+      "windows": 4
+    },
+    "equal_weight_guarded": {
+      "action_concentration": 1.0,
+      "action_counts": {
+        "equal_weight_guarded": 4
+      },
+      "action_stability": 1.0,
+      "average_reward": 0.07031977,
+      "cumulative_reward": 0.28127909,
+      "max_drawdown_reward": 0.0,
+      "mean_oracle_regret": 0.11827053,
+      "positive_reward_rate": 1.0,
+      "reward_std": 0.04863212,
+      "selection_score": 0.02325214,
+      "windows": 4
+    }
+  },
+  "best_ranked_method": "LinUCB",
+  "context_version": "meta-context-v2-python",
+  "date_end": "2026-06-10",
+  "date_start": "2026-06-05",
+  "gates": [
+    {
+      "name": "walk_forward_windows",
+      "passed": true,
+      "reason": "enough_windows"
+    },
+    {
+      "name": "beats_current_heuristic",
+      "passed": false,
+      "reason": "candidate_does_not_beat_current_heuristic"
+    },
+    {
+      "name": "no_single_arm_collapse",
+      "passed": true,
+      "reason": "action_concentration_within_policy"
+    },
+    {
+      "name": "positive_average_reward",
+      "passed": true,
+      "reason": "candidate_average_reward_positive"
+    }
+  ],
+  "generated_at": "2026-06-12T11:20:58.036894+00:00",
+  "methods": {
+    "LinUCB": {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    },
+    "NeuCB": {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    },
+    "NeuralTS": {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    },
+    "NeuralUCB": {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    }
+  },
+  "production_effect": false,
+  "ranking": [
+    {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "method": "LinUCB",
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    },
+    {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "method": "NeuralUCB",
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    },
+    {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "method": "NeuralTS",
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    },
+    {
+      "action_concentration": 0.25,
+      "action_counts": {
+        "graph_family": 1,
+        "tabular_neural_family": 1,
+        "time_series_family": 1,
+        "tree_family": 1
+      },
+      "action_stability": 0.0,
+      "average_reward": 0.09518834,
+      "cumulative_reward": 0.38075335,
+      "max_drawdown_reward": 0.08628572,
+      "mean_oracle_regret": 0.09340196,
+      "method": "NeuCB",
+      "positive_reward_rate": 0.5,
+      "reward_std": 0.14106947,
+      "selection_score": 0.06320928,
+      "windows": 4
+    }
+  ],
+  "recommended_method": null,
+  "reward_policy": {
+    "fallbacks": [
+      "direction_correct",
+      "trade_pnl_pct_or_actual_return_pct"
+    ],
+    "formula": "0.55*spearman_ic + 0.30*direction_hit_rate_edge + 0.15*clipped_pnl",
+    "ic_source": "forecast_data.rank_score_vs_actual_return_pct",
+    "primary": "family_date_reward"
+  },
+  "sample_preview": [
+    {
+      "arm_rewards": {
+        "graph_family": {
+          "hit_rate": null,
+          "ic": 0.30339831,
+          "n_directional": 0,
+          "n_rank_pairs": 49,
+          "n_symbols": 49,
+          "pnl_mean": -0.03256528,
+          "reward": 0.20349301,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tabular_neural_family": {
+          "hit_rate": null,
+          "ic": 0.17632653,
+          "n_directional": 0,
+          "n_rank_pairs": 49,
+          "n_symbols": 49,
+          "pnl_mean": -0.03256528,
+          "reward": 0.1036509,
+          "score_source": "forecast_data.rank_score"
+        },
+        "time_series_family": {
+          "hit_rate": null,
+          "ic": 0.28030612,
+          "n_directional": 0,
+          "n_rank_pairs": 49,
+          "n_symbols": 49,
+          "pnl_mean": -0.03256528,
+          "reward": 0.18534915,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tree_family": {
+          "hit_rate": 0.75,
+          "ic": -0.09641608,
+          "n_directional": 4,
+          "n_rank_pairs": 65,
+          "n_symbols": 65,
+          "pnl_mean": -0.03685095,
+          "reward": 0.06933294,
+          "score_source": "forecast_data.rank_score"
+        }
+      },
+      "available_arms": [
+        "graph_family",
+        "tabular_neural_family",
+        "time_series_family",
+        "tree_family"
+      ],
+      "date": "2026-06-05"
+    },
+    {
+      "arm_rewards": {
+        "graph_family": {
+          "hit_rate": null,
+          "ic": 0.12740448,
+          "n_directional": 0,
+          "n_rank_pairs": 45,
+          "n_symbols": 45,
+          "pnl_mean": 0.02802451,
+          "reward": 0.13012978,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tabular_neural_family": {
+          "hit_rate": null,
+          "ic": -0.12503294,
+          "n_directional": 0,
+          "n_rank_pairs": 45,
+          "n_symbols": 45,
+          "pnl_mean": 0.02802451,
+          "reward": -0.06821391,
+          "score_source": "forecast_data.rank_score"
+        },
+        "time_series_family": {
+          "hit_rate": null,
+          "ic": -0.07022398,
+          "n_directional": 0,
+          "n_rank_pairs": 45,
+          "n_symbols": 45,
+          "pnl_mean": 0.02802451,
+          "reward": -0.02514972,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tree_family": {
+          "hit_rate": 0.33333333,
+          "ic": 0.13191116,
+          "n_directional": 9,
+          "n_rank_pairs": 59,
+          "n_symbols": 59,
+          "pnl_mean": 0.01426435,
+          "reward": -0.0167506,
+          "score_source": "forecast_data.rank_score"
+        }
+      },
+      "available_arms": [
+        "graph_family",
+        "tabular_neural_family",
+        "time_series_family",
+        "tree_family"
+      ],
+      "date": "2026-06-08"
+    },
+    {
+      "arm_rewards": {
+        "graph_family": {
+          "hit_rate": null,
+          "ic": 0.06300692,
+          "n_directional": 0,
+          "n_rank_pairs": 52,
+          "n_symbols": 52,
+          "pnl_mean": -0.0092914,
+          "reward": 0.03955037,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tabular_neural_family": {
+          "hit_rate": null,
+          "ic": 0.07256894,
+          "n_directional": 0,
+          "n_rank_pairs": 52,
+          "n_symbols": 52,
+          "pnl_mean": -0.0092914,
+          "reward": 0.04706339,
+          "score_source": "forecast_data.rank_score"
+        },
+        "time_series_family": {
+          "hit_rate": null,
+          "ic": -0.0103304,
+          "n_directional": 0,
+          "n_rank_pairs": 52,
+          "n_symbols": 52,
+          "pnl_mean": -0.0092914,
+          "reward": -0.01807181,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tree_family": {
+          "hit_rate": 0.66666667,
+          "ic": 0.12287176,
+          "n_directional": 3,
+          "n_rank_pairs": 69,
+          "n_symbols": 69,
+          "pnl_mean": -0.01384949,
+          "reward": 0.15719235,
+          "score_source": "forecast_data.rank_score"
+        }
+      },
+      "available_arms": [
+        "graph_family",
+        "tabular_neural_family",
+        "time_series_family",
+        "tree_family"
+      ],
+      "date": "2026-06-09"
+    },
+    {
+      "arm_rewards": {
+        "graph_family": {
+          "hit_rate": null,
+          "ic": 0.10064422,
+          "n_directional": 0,
+          "n_rank_pairs": 42,
+          "n_symbols": 42,
+          "pnl_mean": -0.00302986,
+          "reward": 0.07583133,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tabular_neural_family": {
+          "hit_rate": null,
+          "ic": 0.12268547,
+          "n_directional": 0,
+          "n_rank_pairs": 42,
+          "n_symbols": 42,
+          "pnl_mean": -0.00302986,
+          "reward": 0.09314945,
+          "score_source": "forecast_data.rank_score"
+        },
+        "time_series_family": {
+          "hit_rate": null,
+          "ic": -0.14221466,
+          "n_directional": 0,
+          "n_rank_pairs": 42,
+          "n_symbols": 42,
+          "pnl_mean": -0.00302986,
+          "reward": -0.11498636,
+          "score_source": "forecast_data.rank_score"
+        },
+        "tree_family": {
+          "hit_rate": 0.75,
+          "ic": 0.21845896,
+          "n_directional": 4,
+          "n_rank_pairs": 56,
+          "n_symbols": 56,
+          "pnl_mean": -0.00880849,
+          "reward": 0.26354606,
+          "score_source": "forecast_data.rank_score"
+        }
+      },
+      "available_arms": [
+        "graph_family",
+        "tabular_neural_family",
+        "time_series_family",
+        "tree_family"
+      ],
+      "date": "2026-06-10"
+    }
+  ],
+  "sample_windows": 4,
+  "schema_version": "adaptive-meta-policy-replay-v1",
+  "source_rows": 1824,
+  "status": "fail"
+}

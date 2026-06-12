@@ -22,7 +22,7 @@ from .features import (
     get_lgbm_features,  # #6 feature input diversity
 )
 from .models import (
-    run_kalman_filter, run_dlinear, run_markov_switching, run_patchtst,
+    run_kalman_filter, run_dlinear, run_markov_switching,
     run_xgboost, run_extra_trees, run_lightgbm,
     run_garch_volatility,
 )
@@ -149,7 +149,7 @@ class FactorAuditRequest(BaseModel):
 
 
 class NeuralMetaBanditRequest(BaseModel):
-    policy_id: str = Field(..., pattern="^(NeuralUCB|NeuralTS)$")
+    policy_id: str = Field(..., pattern="^(NeuralUCB|NeuralTS|NeuCB)$")
     contexts: list[list[float]]
     arms: list[int]
     rewards: list[float]
@@ -160,6 +160,24 @@ class NeuralMetaBanditRequest(BaseModel):
     epochs: int = Field(default=120, ge=1, le=2000)
     hidden_dim: int = Field(default=32, ge=4, le=256)
     learning_rate: float = Field(default=0.01, gt=0, le=1)
+    seed: int = Field(default=42, ge=0)
+
+
+class AdaptiveMetaPolicyReplayRequest(BaseModel):
+    rows: list[dict]
+    min_ic_samples: int = Field(default=5, ge=1, le=200)
+    min_windows: int = Field(default=8, ge=1, le=260)
+    neural_epochs: int = Field(default=80, ge=1, le=1000)
+    seed: int = Field(default=42, ge=0)
+
+
+class LinUcbMultiplierReplayRequest(BaseModel):
+    rows: list[dict]
+    candidates: list[dict] | None = None
+    search_space: dict[str, list[float]] | None = None
+    min_decisions: int = Field(default=30, ge=1, le=10000)
+    max_grid_evals: int = Field(default=96, ge=1, le=500)
+    recent_loss_window: int = Field(default=5, ge=1, le=60)
     seed: int = Field(default=42, ge=0)
 
 
@@ -207,7 +225,7 @@ async def factor_ic_audit(req: FactorAuditRequest, request: Request):
 
 @app.post("/meta-learning/neural-shadow/train")
 async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, request: Request):
-    """Train NeuralUCB/NeuralTS shadow challenger and return evidence only."""
+    """Train NeuralUCB/NeuralTS/NeuCB research challenger and return evidence only."""
     await verify_service_token(request)
     from .neural_meta_bandit import (
         NeuralMetaBanditConfig,
@@ -218,7 +236,7 @@ async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, reques
     contexts = np.asarray(req.contexts, dtype="float32")
     arms = np.asarray(req.arms, dtype=np.int64)
     rewards = np.asarray(req.rewards, dtype="float32")
-    mode = "ts" if req.policy_id == "NeuralTS" else "ucb"
+    mode = "ts" if req.policy_id == "NeuralTS" else "greedy" if req.policy_id == "NeuCB" else "ucb"
     policy = train_neural_meta_bandit(
         contexts,
         arms,
@@ -247,6 +265,54 @@ async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, reques
         "training_report": policy.training_report.__dict__,
         "shadow_decisions": decisions,
         "production_effect": "none",
+    }
+
+
+@app.post("/meta-learning/adaptive-policy-replay")
+async def adaptive_meta_policy_replay_endpoint(req: AdaptiveMetaPolicyReplayRequest, request: Request):
+    """Run read-only Mode B-style replay for LinUCB/NeuralUCB/NeuralTS/NeuCB."""
+    await verify_service_token(request)
+    from .adaptive_meta_policy_replay import ReplayConfig, run_adaptive_meta_policy_replay
+
+    report = run_adaptive_meta_policy_replay(
+        req.rows,
+        config=ReplayConfig(
+            min_ic_samples=req.min_ic_samples,
+            min_windows=req.min_windows,
+            neural_epochs=req.neural_epochs,
+            seed=req.seed,
+        ),
+    )
+    return {
+        **report,
+        "production_effect": False,
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
+    }
+
+
+@app.post("/meta-learning/linucb-multiplier-replay")
+async def linucb_multiplier_replay_endpoint(req: LinUcbMultiplierReplayRequest, request: Request):
+    """Run read-only replay for LinUCB bandit_* L2 multiplier constants."""
+    await verify_service_token(request)
+    from .linucb_multiplier_replay import MultiplierReplayConfig, run_linucb_multiplier_replay
+
+    report = run_linucb_multiplier_replay(
+        req.rows,
+        candidates=req.candidates,
+        search_space=req.search_space,
+        config=MultiplierReplayConfig(
+            min_decisions=req.min_decisions,
+            max_grid_evals=req.max_grid_evals,
+            recent_loss_window=req.recent_loss_window,
+            seed=req.seed,
+        ),
+    )
+    return {
+        **report,
+        "production_effect": False,
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
     }
 
 
@@ -380,6 +446,20 @@ UniversalPrepRequest = CentralUniversalPrepRequest
 UniversalTrainRequest = CentralUniversalTrainRequest
 
 
+class FinLabLongSequencePrepRequest(BaseModel):
+    source_artifact_root: str | None = None
+    source_gcs_prefix: str | None = None
+    output_gcs_prefix: str = "universal/sequence_long"
+    lanes: list[str] | str | None = None
+    min_len: int = Field(65, ge=1)
+    batch_size: int = Field(512, ge=1)
+    max_series: int | None = Field(None, ge=1)
+    start_date: str | None = None
+    end_date: str | None = None
+    dry_run: bool = False
+    return_records: bool = False
+
+
 def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     from .universal_training import prep_universal_batch as _prep_universal_batch
 
@@ -396,6 +476,16 @@ async def prep_universal_endpoint(req: CentralUniversalPrepRequest, request: Req
     from .universal_training import prep_universal_batch as _prep_universal_batch
 
     return _prep_universal_batch(req)
+
+
+@app.post("/retrain/universal/sequence-prep")
+async def prep_finlab_long_sequence_endpoint(req: FinLabLongSequencePrepRequest, request: Request):
+    await verify_service_token(request)
+    from .long_history_sequence_prep import build_finlab_long_history_sequence_prep
+
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    return build_finlab_long_history_sequence_prep(payload)
+
 
 @app.post("/retrain/universal/train")
 async def train_universal_endpoint(req: CentralUniversalTrainRequest, request: Request):

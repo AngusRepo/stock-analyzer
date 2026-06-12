@@ -6,8 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "optuna_scripts"))
 
 from optuna_l2_sensitivity import (  # noqa: E402
+    DEFAULT_SEARCH_SPACE,
     OptunaL2Policy,
     _l2_push_allowed,
+    _l2_push_blockers,
     _pbo_audit_from_strategy_returns,
     _score_l2_trial,
     _strategy_returns_by_partition_from_trials,
@@ -94,12 +96,13 @@ def test_pbo_audit_from_strategy_returns_fails_closed_when_candidates_missing():
     assert "candidate" in audit["verdict_reason"].lower()
 
 
-def test_l2_push_allowed_requires_passed_pbo_audit():
+def test_l2_push_allowed_requires_passed_pbo_and_walk_forward_evidence():
     assert _l2_push_allowed(
         push_kv=True,
         dry_run=False,
         best_params_nested={"circuit": {"buyConfThreshold": 0.62}},
         pbo_audit={"go_live_verdict": "FAIL"},
+        walk_forward_evidence={"passed": True},
     ) is False
 
     assert _l2_push_allowed(
@@ -107,4 +110,30 @@ def test_l2_push_allowed_requires_passed_pbo_audit():
         dry_run=False,
         best_params_nested={"circuit": {"buyConfThreshold": 0.62}},
         pbo_audit={"go_live_verdict": "PASS"},
+    ) is False
+
+    assert _l2_push_allowed(
+        push_kv=True,
+        dry_run=False,
+        best_params_nested={"circuit": {"buyConfThreshold": 0.62}},
+        pbo_audit={"go_live_verdict": "PASS"},
+        walk_forward_evidence={"decision": "PASS"},
     ) is True
+
+
+def test_l2_push_blockers_explain_missing_walk_forward_evidence():
+    blockers = _l2_push_blockers(
+        push_kv=True,
+        dry_run=False,
+        best_params_nested={"L2_formula": {"confidence_risk_mult": 0.2}},
+        pbo_audit={"go_live_verdict": "PASS"},
+        walk_forward_evidence={"passed": False},
+    )
+
+    assert blockers == ["walk_forward_evidence_not_passed"]
+
+
+def test_l2_sensitivity_excludes_bandit_constants_until_objective_consumes_multiplier_replay():
+    names = {str(dim["name"]) for dim in DEFAULT_SEARCH_SPACE}
+
+    assert not any(name.startswith("bandit_") for name in names)

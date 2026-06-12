@@ -1,4 +1,4 @@
-"""Contracts for legacy Optuna scripts and their search-space defaults."""
+"""Contracts for active Optuna scripts and their search-space defaults."""
 
 from __future__ import annotations
 
@@ -30,15 +30,6 @@ OPTUNA_SCRIPT_CONTRACTS: dict[str, OptunaScriptContract] = {
         push_target="worker_kv_sandbox_by_default",
         requires_external_gate=True,
         notes=("Uses verified prediction outcomes with alpha_context; skips safely when sample size is insufficient.",),
-    ),
-    "adaptive_l2": OptunaScriptContract(
-        source="adaptive_l2",
-        script="optuna_adaptive_l2.py",
-        production_effect="production_capable_cli",
-        range_role="production_bound_seeded_range",
-        push_target="worker_kv_live_if_push_kv",
-        requires_external_gate=True,
-        notes=("CLI can push through risk_params/L2_formula; route should remain gated before live use.",),
     ),
     "barrier": OptunaScriptContract(
         source="barrier",
@@ -73,15 +64,6 @@ OPTUNA_SCRIPT_CONTRACTS: dict[str, OptunaScriptContract] = {
         requires_external_gate=False,
         notes=("Learns optimizer state directly; applying learned params to trading config still requires a separate gate.",),
     ),
-    "ft_arch": OptunaScriptContract(
-        source="ft_arch",
-        script="modal_ft_arch_search",
-        production_effect="research_only",
-        range_role="research_bootstrap_seeded_range",
-        push_target="none_manual_apply_only",
-        requires_external_gate=True,
-        notes=("Winning params require manual application and retrain before any production effect.",),
-    ),
     "l2_sensitivity": OptunaScriptContract(
         source="l2_sensitivity",
         script="optuna_l2_sensitivity.py",
@@ -89,7 +71,10 @@ OPTUNA_SCRIPT_CONTRACTS: dict[str, OptunaScriptContract] = {
         range_role="kv_primary_bootstrap_fallback",
         push_target="worker_kv_live",
         requires_external_gate=True,
-        notes=("Production caller should prefer trading:config.optuna_l2.search_space over DEFAULT_SEARCH_SPACE.",),
+        notes=(
+            "Production caller should prefer trading:config.optuna_l2.search_space over DEFAULT_SEARCH_SPACE.",
+            "KV push requires Mode B replay, CSCV rank-logit PBO PASS, and attached walk-forward evidence PASS.",
+        ),
     ),
     "per_regime_robust": OptunaScriptContract(
         source="per_regime_robust",

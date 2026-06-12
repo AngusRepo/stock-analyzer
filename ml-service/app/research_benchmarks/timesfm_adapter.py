@@ -20,6 +20,22 @@ from .common import (
 _MODEL_CACHE: dict[str, Any] = {}
 
 
+def _blocked(candidate_id: str, blocker: str, dataset_source: Any | None = None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "blocked",
+        "candidate_id": candidate_id,
+        "blockers": [blocker],
+    }
+    if dataset_source is not None:
+        payload = payload or {}
+        result["data_slice_report"] = data_slice_report(
+            dataset=dataset_source,
+            start_date=payload.get("start_date"),
+            end_date=payload.get("end_date"),
+        )
+    return result
+
+
 def _load_timesfm_model(payload: dict[str, Any]):
     import timesfm
 
@@ -30,7 +46,9 @@ def _load_timesfm_model(payload: dict[str, Any]):
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
 
-    if hasattr(timesfm, "TimesFM_2p5_200M_torch"):
+    if "2.5" in model_id or "2p5" in model_id:
+        if not hasattr(timesfm, "TimesFM_2p5_200M_torch"):
+            raise RuntimeError("timesfm package does not expose TimesFM_2p5_200M_torch")
         model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(model_id)
         model.compile(
             timesfm.ForecastConfig(
@@ -47,9 +65,14 @@ def _load_timesfm_model(payload: dict[str, Any]):
         return model
 
     if hasattr(timesfm, "TimesFm"):
+        try:
+            import torch
+            backend = "gpu" if torch.cuda.is_available() else "cpu"
+        except Exception:  # noqa: BLE001
+            backend = "cpu"
         model = timesfm.TimesFm(
             hparams=timesfm.TimesFmHparams(
-                backend="gpu",
+                backend=backend,
                 per_core_batch_size=32,
                 horizon_len=max_horizon,
                 num_layers=50,
@@ -74,6 +97,7 @@ def _forecast_timesfm(model, *, horizon: int, inputs: list[np.ndarray]):
 
 def run_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
     started_at = time.time()
+    candidate_id = str(payload.get("candidate_id") or "TimesFM")
     seq_len = int(payload.get("seq_len") or payload.get("data_slice", {}).get("seq_len") or 60)
     pred_len = int(payload.get("pred_len") or payload.get("data_slice", {}).get("pred_len") or 5)
     dataset_source = load_sequence_dataset(payload)
@@ -84,21 +108,22 @@ def run_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
         oos_ratio=float(payload.get("oos_ratio") or 0.2),
     )
     if not window_dataset.report.get("lifecycle_ready"):
-        return {
-            "status": "blocked",
-            "candidate_id": "TimesFM",
-            "blockers": ["sequence_dataset_not_lifecycle_ready"],
-            "data_slice_report": data_slice_report(dataset=dataset_source, start_date=payload.get("start_date"), end_date=payload.get("end_date")),
-        }
+        return _blocked(candidate_id, "sequence_dataset_not_lifecycle_ready", dataset_source, payload)
 
     max_oos = int(payload.get("max_oos_windows") or payload.get("data_slice", {}).get("max_oos_windows") or 512)
     oos_take = np.arange(len(window_dataset.X_oos))
     if len(oos_take) > max_oos:
         oos_take = np.linspace(0, len(oos_take) - 1, max_oos).astype(int)
 
-    model = _load_timesfm_model(payload)
+    try:
+        model = _load_timesfm_model(payload)
+    except Exception as exc:  # noqa: BLE001
+        return _blocked(candidate_id, f"timesfm_model_load_error:{type(exc).__name__}:{exc}", dataset_source, payload)
     inputs = [np.asarray(row, dtype=np.float32) for row in window_dataset.X_oos[oos_take]]
-    point_forecast, _quantiles = _forecast_timesfm(model, horizon=pred_len, inputs=inputs)
+    try:
+        point_forecast, _quantiles = _forecast_timesfm(model, horizon=pred_len, inputs=inputs)
+    except Exception as exc:  # noqa: BLE001
+        return _blocked(candidate_id, f"timesfm_forecast_error:{type(exc).__name__}:{exc}", dataset_source, payload)
     forecast_last = np.asarray(point_forecast, dtype=float)[:, -1]
     actual_last = window_dataset.y_oos[oos_take, -1]
     selected_oos_index = window_dataset.oos_index[oos_take]
@@ -126,7 +151,7 @@ def run_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
         }]
     return {
         "status": "available",
-        "candidate_id": "TimesFM",
+        "candidate_id": candidate_id,
         "fold_metrics": fold_metrics,
         "pbo": cpcv_proxy_pbo(fold_metrics),
         "cost_sensitivity": cost_sensitivity(started_at, gpu="torch_runtime", rows=int(window_dataset.report.get("windows", 0)), folds=len(fold_metrics)),

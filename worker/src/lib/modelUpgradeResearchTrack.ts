@@ -10,10 +10,13 @@ export type ModelUpgradeStage =
 
 export type ModelUpgradeCandidateId =
   | 'ResidualMLP'
+  | 'DLinear'
+  | 'PatchTST'
   | 'GNN'
   | 'TabM'
   | 'iTransformer'
   | 'TimesFM'
+  | 'TimesFM25'
   | 'GAOptimizer'
   | 'KalmanFilter'
   | 'MarkovSwitching'
@@ -50,6 +53,32 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     notes: 'May produce predictions, but must stay out of production voting until lifecycle promotion passes.',
   },
   {
+    id: 'DLinear',
+    stage: 'production_slot_member',
+    family: 'time_series_linear_current',
+    role: 'L3 sequence family production slot; current StockVision DLinear retained after maintained-library comparison',
+    vote_weight: 1,
+    can_predict: true,
+    can_vote: true,
+    can_promote_directly: false,
+    requires_review_packet: true,
+    evidence_required: ['production_artifact', 'sequence_policy', 'walk_forward', 'pbo', 'cost_profile', 'model_cpcv'],
+    notes: 'Production slot member; maintained-library comparison lost and was removed from the upgrade track.',
+  },
+  {
+    id: 'PatchTST',
+    stage: 'production_slot_member',
+    family: 'time_series_neuralforecast_patchtst',
+    role: 'L3 sequence family production slot backed by NeuralForecast PatchTST artifact serving',
+    vote_weight: 1,
+    can_predict: true,
+    can_vote: true,
+    can_promote_directly: false,
+    requires_review_packet: true,
+    evidence_required: ['production_artifact', 'sequence_policy', 'walk_forward', 'pbo', 'cost_profile', 'model_cpcv'],
+    notes: 'NeuralForecast PatchTST won before/after replay; legacy in-repo Torch PatchTST adapter removed.',
+  },
+  {
     id: 'GNN',
     stage: 'production_slot_member',
     family: 'cross_stock_graphsage',
@@ -78,15 +107,28 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
   {
     id: 'iTransformer',
     stage: 'production_slot_member',
-    family: 'time_series_transformer',
-    role: 'L3 sequence family production slot; artifact-backed batch runtime votes when lifecycle IC weight is positive',
+    family: 'time_series_neuralforecast_itransformer',
+    role: 'L3 sequence family production slot backed by NeuralForecast iTransformer artifact serving',
     vote_weight: 1,
     can_predict: true,
     can_vote: true,
     can_promote_directly: false,
     requires_review_packet: true,
     evidence_required: ['production_artifact', 'sequence_policy', 'walk_forward', 'pbo', 'cost_profile', 'positive_ic'],
-    notes: 'Production slot member; missing artifact or non-positive lifecycle evidence yields zero contribution at serving time.',
+    notes: 'NeuralForecast iTransformer won before/after replay; legacy simplified Torch iTransformer adapter removed.',
+  },
+  {
+    id: 'TimesFM25',
+    stage: 'benchmark_only',
+    family: 'foundation_time_series_maintained_runtime',
+    role: 'TimesFM 2.5 migration benchmark against current TimesFM config artifact',
+    vote_weight: 0,
+    can_predict: false,
+    can_vote: false,
+    can_promote_directly: false,
+    requires_review_packet: true,
+    evidence_required: ['forecast_validation', 'walk_forward', 'cost_profile', 'serving_parity', 'positive_ic'],
+    notes: 'Temporary migration benchmark; if it wins and parity passes, cut TimesFM config to 2.5 then remove the adapter.',
   },
   {
     id: 'TimesFM',

@@ -19,9 +19,28 @@ if (-not $AuthToken) { throw 'Missing SCHEDULER_AUTH_TOKEN.' }
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 $base = $WorkerBaseUrl.TrimEnd('/')
-$headers = "Authorization=Bearer $AuthToken"
 $managedIds = [System.Collections.Generic.HashSet[string]]::new()
 $currentIds = [System.Collections.Generic.HashSet[string]]::new()
+
+function New-SchedulerHeaderArg {
+  param([object]$Job)
+
+  $pairs = [System.Collections.Generic.List[string]]::new()
+  [void]$pairs.Add("Authorization=Bearer $AuthToken")
+
+  if ($Job.headers) {
+    foreach ($prop in $Job.headers.PSObject.Properties) {
+      $name = [string]$prop.Name
+      $value = [string]$prop.Value
+      if ($name -match '[=,]' -or $value -match ',') {
+        throw "Invalid scheduler header for job $($Job.id): $name"
+      }
+      [void]$pairs.Add("$name=$value")
+    }
+  }
+
+  return ($pairs -join ',')
+}
 
 $currentJobs = @()
 if (-not $DryRun) {
@@ -41,6 +60,7 @@ foreach ($job in $manifest.jobs) {
   }
   $description = [string]$job.description
   $timeZone = if ($job.timeZone) { [string]$job.timeZone } else { [string]$manifest.timeZone }
+  $headers = New-SchedulerHeaderArg -Job $job
   $exists = $DryRun -or $currentIds.Contains([string]$job.id)
 
   if ($exists) {

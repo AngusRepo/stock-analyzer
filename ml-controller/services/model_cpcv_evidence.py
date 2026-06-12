@@ -67,7 +67,7 @@ def _policy(policy: dict[str, Any] | None) -> dict[str, Any]:
     return merged
 
 
-def _chronos_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
+def _foundation_forecast_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
     merged = {
         "min_samples": 30,
         "min_rank_ic": 0.0,
@@ -87,8 +87,8 @@ def build_model_cpcv_evidence(
 ) -> dict[str, Any]:
     """Aggregate CPCV fold metrics into a lifecycle promotion packet.
 
-    Expected fold fields are intentionally generic so tree, FT, DLinear,
-    PatchTST, and Chronos adapters can all emit the same contract:
+    Expected fold fields are intentionally generic so tree, TabM, DLinear,
+    PatchTST, iTransformer, and TimesFM adapters can all emit the same contract:
     `oos_ic` or `rank_ic`, `test_rows`, and optional `coverage`.
     """
 
@@ -154,13 +154,14 @@ def build_model_cpcv_evidence(
     }
 
 
-def build_chronos_forecast_validation_evidence(
+def build_foundation_forecast_validation_evidence(
     *,
+    model: str = "TimesFM",
     predictions: list[dict[str, Any]],
     realized_returns: dict[str, Any] | list[dict[str, Any]],
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    p = _chronos_policy(policy)
+    p = _foundation_forecast_policy(policy)
     rows: list[dict[str, Any]] = []
     missing_outcomes: list[str] = []
     valid_predictions = 0
@@ -215,25 +216,25 @@ def build_chronos_forecast_validation_evidence(
 
     failed_gates: list[str] = []
     if missing_outcomes:
-        failed_gates.append("chronos_outcome_missing")
+        failed_gates.append("foundation_outcome_missing")
     if samples < _as_int(p["min_samples"]):
-        failed_gates.append("chronos_min_samples")
+        failed_gates.append("foundation_min_samples")
     if coverage < _as_float(p["min_coverage"]):
-        failed_gates.append("chronos_coverage")
+        failed_gates.append("foundation_coverage")
     if rank_ic < _as_float(p["min_rank_ic"]):
-        failed_gates.append("chronos_rank_ic")
+        failed_gates.append("foundation_rank_ic")
     if direction_accuracy < _as_float(p["min_direction_accuracy"]):
-        failed_gates.append("chronos_direction_accuracy")
+        failed_gates.append("foundation_direction_accuracy")
     if abs(bias) > _as_float(p["max_abs_bias"]):
-        failed_gates.append("chronos_forecast_bias")
+        failed_gates.append("foundation_forecast_bias")
 
     decision = "PASS" if not failed_gates else "FAIL"
     return {
         "schema_version": MODEL_CPCV_EVIDENCE_SCHEMA_VERSION,
-        "model": "Chronos",
+        "model": model,
         "family": "foundation_time_series",
         "forecast_family": "foundation_time_series",
-        "method": "chronos_forecast_rank_ic",
+        "method": "foundation_forecast_rank_ic",
         "decision": decision,
         "passed": decision == "PASS",
         "failed_gates": failed_gates,
@@ -257,5 +258,5 @@ def build_chronos_forecast_validation_evidence(
         }] if samples else [],
         "sample_rows": rows[:100],
         "retrain_required": False,
-        "reason": "Chronos is validated by forecast/outcome evidence; retrain-style CPCV is not the default owner.",
+        "reason": f"{model} is validated by forecast/outcome evidence; retrain-style CPCV is not the default owner.",
     }

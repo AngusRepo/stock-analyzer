@@ -35,7 +35,6 @@ from .models import (
     run_kalman_filter,
     run_lightgbm,
     run_markov_switching,
-    run_patchtst,
     run_xgboost,
 )
 
@@ -344,8 +343,8 @@ def predict_stock(req: PredictRequest) -> dict:
         ("KalmanFilter", lambda: run_kalman_filter(prices_arr, req.horizon, stock_id)),
         ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
         ("MarkovSwitching", lambda: run_markov_switching(adj_prices_arr, req.horizon, stock_id)),
-        ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, stock_id)),
     ]
+    print("[PatchTST] embedded predictor disabled; use artifact-backed batch serving")
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(fn): name for name, fn in price_model_fns}
@@ -692,9 +691,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     if run_embedded_time_series:
         ts_model_fns = [
             ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
-            ("PatchTST", lambda: run_patchtst(prices_arr, req.horizon, req.stock_id)),
         ]
-        for missing_sequence in ("iTransformer", "TimesFM"):
+        for missing_sequence in ("PatchTST", "iTransformer", "TimesFM"):
             model_errors.append(f"{missing_sequence}: production predictor requires artifact-backed batch serving")
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {}

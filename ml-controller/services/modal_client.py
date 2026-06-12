@@ -698,11 +698,6 @@ async def _modal_shap_audit(payload: dict) -> dict:
     return await _modal_remote_call("shap_feature_audit", payload)
 
 
-async def _modal_ft_arch_search(payload: dict) -> dict:
-    """Retired FT-Transformer architecture-search guard."""
-    return {"error": "FT-Transformer retired from the production model pool", "status": "retired"}
-
-
 async def _modal_batch_arf(payloads: list[dict]) -> list[dict]:
     function_name = "update_arf_reward"
     t0 = time.time()
@@ -728,10 +723,6 @@ async def _modal_train_wf_tree_window(payload: dict) -> dict:
     return await _modal_remote_call("train_wf_tree_window", payload)
 
 
-async def _modal_train_wf_ftt_window(payload: dict) -> dict:
-    return {"error": "FT-Transformer retired from walk-forward training", "status": "retired"}
-
-
 async def _modal_train_wf_hmm_window(payload: dict) -> dict:
     return await _modal_remote_call("train_wf_hmm_window", payload)
 
@@ -740,16 +731,6 @@ def _spawn_wf_tree_window(payload: dict):
     """Spawn tree training (returns handle immediately, caller .get() later)."""
     fn = _lookup("train_wf_tree_window")
     return fn.spawn(payload)
-
-
-# Retired Chronos guard.
-async def _modal_chronos_universal_predict(payload: dict) -> dict:
-    return {"error": "Chronos retired from the production model pool", "results": []}
-
-
-async def chronos_batch_predict(series_list: list[dict], horizon: int = 5, num_samples: int = 20) -> dict:
-    """Fail-closed retired Chronos batch endpoint."""
-    return {"error": "Chronos retired from the production model pool", "results": [], "n_input": len(series_list or []), "n_success": 0}
 
 
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal helpers
@@ -1055,11 +1036,6 @@ def spawn_state_space_overlays_batch_predict(
     }
 
 
-def _spawn_wf_ftt_window(payload: dict):
-    """Retired FT-Transformer walk-forward guard."""
-    raise RuntimeError("FT-Transformer retired from walk-forward training")
-
-
 def spawn_walk_forward_orchestrator(payload: dict):
     """Spawn the Modal-resident walk-forward orchestrator and return its FunctionCall.
     Fire-and-forget from ml-controller side: orchestrator runs inside Modal for
@@ -1267,6 +1243,33 @@ async def feature_selection(payload: dict | None = None, fire_and_forget: bool =
         async with httpx.AsyncClient(timeout=httpx.Timeout(3600.0, connect=15.0)) as client:
             resp = await client.post(url, json=payload, headers=_ml_headers())
             return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}"}
+    raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
+
+async def build_finlab_long_sequence_prep(payload: dict | None = None, fire_and_forget: bool = False) -> dict:
+    """Build sequence-only prep from existing FinLab 3Y/5Y artifacts."""
+    payload = payload or {}
+    if _USE_MODAL:
+        fn = _lookup("build_finlab_long_sequence_prep")
+        if fire_and_forget:
+            logger.info("[ml_client] Modal.spawn build_finlab_long_sequence_prep (fire-and-forget)")
+            t0 = time.time()
+            await fn.spawn.aio(payload)
+            await _record_modal_observation(
+                "build_finlab_long_sequence_prep",
+                wall_sec=time.time() - t0,
+                compute_sec=0.0,
+                source="modal_spawn",
+                meta={"call_type": "spawn"},
+            )
+            return {"status": "spawned", "message": "FinLab long sequence prep running in background"}
+        logger.info("[ml_client] Modal.remote build_finlab_long_sequence_prep")
+        return await _modal_remote_call("build_finlab_long_sequence_prep", payload)
+    if _ML_SERVICE_URL:
+        url = f"{_ML_SERVICE_URL}/retrain/universal/sequence-prep"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=15.0)) as client:
+            resp = await client.post(url, json=payload, headers=_ml_headers())
+            return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}", "text": resp.text[:500]}
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
 
 

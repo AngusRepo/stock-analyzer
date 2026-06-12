@@ -1,0 +1,101 @@
+{
+  "comparison_policy": {
+    "higher_is_better": [
+      "oos_ic",
+      "direction_accuracy",
+      "p10_p90_coverage"
+    ],
+    "lower_is_better": [
+      "price_mae",
+      "price_rmse",
+      "price_mape",
+      "price_smape",
+      "return_mae",
+      "return_rmse",
+      "return_p90_abs_error",
+      "extreme_return_mae",
+      "extreme_return_rmse",
+      "p10_p90_crossing_rate",
+      "quantile_monotonic_violation_rate"
+    ]
+  },
+  "contexts": [
+    {
+      "after_candidate_id": "TimesFM25",
+      "after_direction_accuracy": 0.478,
+      "after_extreme_return_mae": 0.26027277,
+      "after_extreme_return_rmse": 0.28830387,
+      "after_model_id": "google/timesfm-2.5-200m-pytorch",
+      "after_oos_ic": -0.01046774,
+      "after_p10_p90_coverage": 0.71875,
+      "after_p10_p90_crossing_rate": 0.0,
+      "after_price_mae": 10.79285401,
+      "after_price_mape": 0.05850279,
+      "after_price_rmse": 64.73133667,
+      "after_price_smape": 0.06178668,
+      "after_quantile_monotonic_violation_rate": 0.0,
+      "after_return_mae": 0.06465864,
+      "after_return_p90_abs_error": 0.14903276,
+      "after_return_rmse": 0.10774394,
+      "after_status": "available",
+      "before_candidate_id": "TimesFM",
+      "before_direction_accuracy": 0.494,
+      "before_extreme_return_mae": 0.2540803,
+      "before_extreme_return_rmse": 0.2810126,
+      "before_model_id": "google/timesfm-2.0-500m-pytorch",
+      "before_oos_ic": 0.02050834,
+      "before_p10_p90_coverage": 0.71484375,
+      "before_p10_p90_crossing_rate": 0.0,
+      "before_price_mae": 10.23625618,
+      "before_price_mape": 0.05931536,
+      "before_price_rmse": 55.65001446,
+      "before_price_smape": 0.06253255,
+      "before_quantile_monotonic_violation_rate": 5.531e-05,
+      "before_return_mae": 0.06523778,
+      "before_return_p90_abs_error": 0.15858731,
+      "before_return_rmse": 0.10694892,
+      "before_status": "available",
+      "context_len": 256,
+      "delta_direction_accuracy": -0.016,
+      "delta_extreme_return_mae": 0.00619247,
+      "delta_extreme_return_rmse": 0.00729127,
+      "delta_oos_ic": -0.03097608,
+      "delta_p10_p90_coverage": 0.00390625,
+      "delta_p10_p90_crossing_rate": 0.0,
+      "delta_price_mae": 0.55659783,
+      "delta_price_mape": -0.00081257,
+      "delta_price_rmse": 9.08132221,
+      "delta_price_smape": -0.00074587,
+      "delta_quantile_monotonic_violation_rate": -5.531e-05,
+      "delta_return_mae": -0.00057914,
+      "delta_return_p90_abs_error": -0.00955455,
+      "delta_return_rmse": 0.00079502,
+      "row_alignment": {
+        "after_rows": 512,
+        "before_rows": 512,
+        "matched_rows": 512,
+        "same_batch": true
+      }
+    }
+  ],
+  "production_mutation_allowed": false,
+  "promotion_allowed": false,
+  "runtime": {
+    "after": {
+      "latency_sec": 373.937,
+      "python_tracemalloc_current_mb": 360.235,
+      "python_tracemalloc_peak_mb": 676.169,
+      "rss_mb": 1843.906,
+      "vram_peak_mb": null
+    },
+    "before": {
+      "latency_sec": 80.312,
+      "python_tracemalloc_current_mb": 414.341,
+      "python_tracemalloc_peak_mb": 739.056,
+      "rss_mb": 4899.785,
+      "vram_peak_mb": null
+    }
+  },
+  "schema_version": "timesfm-migration-comparison-v1",
+  "status": "completed"
+}

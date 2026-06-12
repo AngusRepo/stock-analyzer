@@ -1,8 +1,8 @@
 """GCS model artifact storage helpers for StockVision.
 
 Active alpha model artifacts are managed through ``model_pool.py`` and the
-universal GCS layout. CatBoost, FT-Transformer, and Chronos are retired from
-the production alpha path.
+universal GCS layout. CatBoost, FT-Transformer/FTTransformer, Chronos, and
+Chronos2 aliases are retired from the production alpha path.
 """
 import os
 import io
@@ -86,7 +86,7 @@ def save_model(
 ) -> bool:
     """
     序列化模型並上傳到 GCS
-    model_name: 'XGBoost' | 'CatBoost' | 'ExtraTrees' | 'MLP' | 'TCN'
+    model_name: active-9 production artifact model name, for example 'LightGBM' | 'XGBoost' | 'ExtraTrees'
     feature_medians: training-time per-feature median, used by predict_stock_v2
                      for name-based alignment when a feature is missing at predict time
     gcs_prefix:      Override default path. If None: 'universal' (stock_id=0) or str(stock_id).

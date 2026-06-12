@@ -118,6 +118,13 @@ assert(
     workflows.includes('weekly_drift skipped: no supported retrain groups'),
   'weekly drift retrain must route formal L3 artifact slots through artifact lifecycle targets instead of falling back to tree retrain',
 )
+assert(
+  workflows.includes('ACTIVE_WEEKLY_DRIFT_MODEL_NAMES') &&
+    workflows.includes('ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name)') &&
+    !/MODEL_GROUP_BY_NAME[\s\S]*CatBoost/.test(workflows) &&
+    !/MODEL_GROUP_BY_NAME[\s\S]*Chronos/.test(workflows),
+  'weekly drift retrain must filter to active-9 and must not map retired CatBoost/Chronos into retrain groups',
+)
 
 assert(
   adminGcp.includes("'weekly-drift-retrain'") &&

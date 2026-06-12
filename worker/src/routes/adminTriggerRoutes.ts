@@ -15,7 +15,8 @@ const SYNC_REQUIRED_TASKS = new Set([
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'weekly-cleanup', 'weekly-backtest',
-  'weekly-optuna', 'monthly-optuna', 'weekly-drift-retrain',
+  'weekly-optuna', 'adaptive-meta-policy-replay', 'linucb-multiplier-replay',
+  'monthly-optuna', 'weekly-drift-retrain',
   'finlab-v4-backfill',
   'monthly-retrain',
 ])
@@ -109,8 +110,11 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'optuna-queue',
       'retrain',
       'monthly-retrain',
+      'adaptive-meta-policy-replay',
+      'linucb-multiplier-replay',
       'neural-ucb-shadow',
       'neural-ts-shadow',
+      'neucb-shadow',
     ])
 
     if (longRunning.has(task) && !syncMode) {

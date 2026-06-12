@@ -48,7 +48,7 @@ Schema (model_pool.json):
     DLinear / PatchTST / iTransformer / TimesFM
 
 Retired alpha models:
-  CatBoost / FT-Transformer / Chronos
+  CatBoost / FT-Transformer / Chronos / Chronos2ZeroShot / Chronos2LoRA
 
 State-space (KalmanFilter, MarkovSwitching) handled by Stage 6.
 """
@@ -85,7 +85,10 @@ ALPHA_PREDICTION_MODELS = (
 RETIRED_ALPHA_MODELS = (
     "CatBoost",
     "FT-Transformer",
+    "FTTransformer",
     "Chronos",
+    "Chronos2ZeroShot",
+    "Chronos2LoRA",
 )
 
 STATE_SPACE_OVERLAY_MODELS = (
@@ -106,17 +109,7 @@ META_OPTIMIZERS = {
     },
 }
 
-RESEARCH_BENCHMARK_MODELS = {
-    "Moirai": {
-        "status": "benchmark_only",
-        "model_type": "foundation_time_series",
-        "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
-    },
-}
+RESEARCH_BENCHMARK_MODELS = {}
 
 # 9 alpha prediction model slots managed by ML_POOL.
 # State-space overlays and meta optimizers live in separate namespaces below.
@@ -128,8 +121,8 @@ MANAGED_MODELS = {
     "TabM":             ("tabular_neural",             "tabular",     "pt"),
     "GNN":              ("cross_stock_graphsage",      "graph",       "pt"),
     "DLinear":          ("time_series_learnable",      "time_series", "pt"),
-    "PatchTST":         ("time_series_learnable",      "time_series", "pt"),
-    "iTransformer":     ("time_series_transformer",    "time_series", "pt"),
+    "PatchTST":         ("time_series_neuralforecast_patchtst", "time_series", "zip"),
+    "iTransformer":     ("time_series_neuralforecast_itransformer", "time_series", "zip"),
     "TimesFM":          ("time_series_foundation",     "time_series", "json"),
 }
 

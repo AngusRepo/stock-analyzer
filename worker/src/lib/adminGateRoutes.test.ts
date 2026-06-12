@@ -467,7 +467,7 @@ void (async () => {
       }, env)
       const statusBody = await statusRes.json() as any
       const candidateIds = new Set(statusBody.candidates.map((row: any) => row.candidate_id))
-      for (const id of ['ResidualMLP', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
+      for (const id of ['ResidualMLP', 'DLinear', 'PatchTST', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
         assert(candidateIds.has(id), `model upgrade status should include full P7 track candidate ${id}`)
       }
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'track_only' && row.requires_experiment_registry === false), 'non-experiment tracks should be visible as track_only')

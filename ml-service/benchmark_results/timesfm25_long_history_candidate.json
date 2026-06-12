@@ -1,0 +1,100 @@
+{
+  "candidate_id": "TimesFM25",
+  "contexts": [
+    {
+      "blockers": [
+        "RuntimeError:installed timesfm package does not expose TimesFM_2p5_200M_torch"
+      ],
+      "candidate_id": "TimesFM25",
+      "context_len": 128,
+      "sequence_report": {
+        "dropped_bad": 0,
+        "dropped_short": 102,
+        "input_series": 3070,
+        "lifecycle_ready": true,
+        "oos_dates": 206,
+        "oos_windows": 516280,
+        "train_windows": 2065122,
+        "windows": 2581402
+      },
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "RuntimeError:installed timesfm package does not expose TimesFM_2p5_200M_torch"
+      ],
+      "candidate_id": "TimesFM25",
+      "context_len": 256,
+      "sequence_report": {
+        "dropped_bad": 0,
+        "dropped_short": 330,
+        "input_series": 3070,
+        "lifecycle_ready": true,
+        "oos_dates": 184,
+        "oos_windows": 442817,
+        "train_windows": 1771268,
+        "windows": 2214085
+      },
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "RuntimeError:installed timesfm package does not expose TimesFM_2p5_200M_torch"
+      ],
+      "candidate_id": "TimesFM25",
+      "context_len": 512,
+      "sequence_report": {
+        "dropped_bad": 0,
+        "dropped_short": 634,
+        "input_series": 3070,
+        "lifecycle_ready": true,
+        "oos_dates": 138,
+        "oos_windows": 310997,
+        "train_windows": 1243989,
+        "windows": 1554986
+      },
+      "status": "blocked"
+    },
+    {
+      "blockers": [
+        "RuntimeError:installed timesfm package does not expose TimesFM_2p5_200M_torch"
+      ],
+      "candidate_id": "TimesFM25",
+      "context_len": 1024,
+      "sequence_report": {
+        "dropped_bad": 0,
+        "dropped_short": 980,
+        "input_series": 3070,
+        "lifecycle_ready": true,
+        "oos_dates": 39,
+        "oos_windows": 79316,
+        "train_windows": 317267,
+        "windows": 396583
+      },
+      "status": "blocked"
+    }
+  ],
+  "data_slice_report": {
+    "end_date": null,
+    "max_series_len": 1233,
+    "min_series_len": 65,
+    "rows": 2983705,
+    "source": "gs://*/universal/sequence_long/finlab_5y20260518_plus_3y20260611/prep/*.npz",
+    "start_date": null,
+    "status": "available",
+    "symbols": 3070
+  },
+  "model_id": "google/timesfm-2.5-200m-pytorch",
+  "production_mutation_allowed": false,
+  "promotion_allowed": false,
+  "row_evidence": [],
+  "runtime": {
+    "latency_sec": 211.52,
+    "python_tracemalloc_current_mb": 3653.511,
+    "python_tracemalloc_peak_mb": 12670.975,
+    "rss_mb": 5981.07,
+    "vram_peak_mb": null
+  },
+  "schema_version": "timesfm-migration-benchmark-v1",
+  "status": "completed"
+}

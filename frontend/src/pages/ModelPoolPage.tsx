@@ -3,7 +3,12 @@ import { Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import ModelPoolNewFlowWorkbench from '@/components/model-pool/ModelPoolNewFlowWorkbench'
 import { SignalInsightCard } from '@/components/workstation/DecisionArchitecture'
-import { WorkstationPageTitle, WorkstationPanel, WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
+import {
+  WorkstationPageTitle,
+  WorkstationPanel,
+  WorkstationPill,
+  type WorkstationTone,
+} from '@/components/workstation/WorkstationChrome'
 import { Button } from '@/components/ui/button'
 import {
   modelPoolApi,
@@ -27,15 +32,17 @@ import {
 const RETIRED_MODEL_NAMES = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
 const PRODUCTION_SLOT_MODEL_NAMES = new Set<string>(MODEL_POOL_PRODUCTION_SLOT_IDS)
 
+type OverlayEntry = [string, ModelPoolStateOverlay]
+
 function fmt(value: unknown): string {
   if (value === null || value === undefined || value === '') return 'N/A'
   if (typeof value === 'number') return value.toFixed(4)
   return String(value)
 }
 
-function toneFromStatus(status?: string): WorkstationTone {
-  if (status === 'active' || status === 'ok') return 'ok'
-  if (status === 'degraded' || status === 'warn' || status === 'coverage_low') return 'warn'
+function toneFromStatus(status?: string | null): WorkstationTone {
+  if (status === 'active' || status === 'ok' || status === 'ready_for_review' || status === 'approved_for_patch') return 'ok'
+  if (status === 'degraded' || status === 'warn' || status === 'coverage_low' || status === 'evaluation_pending') return 'warn'
   if (status === 'retired' || status === 'failed' || status === 'error' || status === 'artifact_mismatch') return 'error'
   return 'neutral'
 }
@@ -48,7 +55,7 @@ function isProductionSlotModelName(name: string): boolean {
   return PRODUCTION_SLOT_MODEL_NAMES.has(name)
 }
 
-function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel) {
+function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel): boolean {
   return (
     name === 'KalmanFilter' ||
     name === 'MarkovSwitching' ||
@@ -57,16 +64,14 @@ function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel) {
   )
 }
 
-function shortEvidenceId(value?: string | null): string {
-  if (!value) return '-'
-  return value.length > 44 ? `${value.slice(0, 26)}...${value.slice(-10)}` : value
-}
-
-function preflightLabel(row?: ModelUpgradeResearchStatusRow): string {
-  if (!row) return 'blocked'
-  if (row.registry_preflight_ready) return 'ready'
-  const missing = row.artifact_intent_missing_fields?.slice(0, 3).join(', ')
-  return missing ? `blocked; missing ${missing}` : 'blocked'
+function registryLabel(label?: string | null): string {
+  if (!label) return 'needs evidence'
+  if (label === 'experiment_missing') return 'registry missing'
+  if (label === 'evaluation_pending') return 'evidence pending'
+  if (label === 'ready_for_review') return 'evidence ready'
+  if (label === 'needs_attention') return 'needs attention'
+  if (label === 'approved_for_patch') return 'approved for patch'
+  return label
 }
 
 function candidateExperiments(candidateId: string, experiments: ResearchExperiment[]) {
@@ -85,50 +90,32 @@ function candidateExperiments(candidateId: string, experiments: ResearchExperime
     .slice(0, 3)
 }
 
-function experimentEvidence(candidateId: string, experiments: ResearchExperiment[], statusRows: ModelUpgradeResearchStatusRow[] = []) {
+function candidateEvidence(candidateId: string, experiments: ResearchExperiment[], statusRows: ModelUpgradeResearchStatusRow[] = []) {
   const matched = candidateExperiments(candidateId, experiments)
   const latest = matched[0]
   const statusRow = statusRows.find((row) => row.candidate_id.toLowerCase() === candidateId.toLowerCase())
-  const isEvidenceReady = Boolean(
-    statusRow?.registry_status === 'ready_for_review' ||
-    statusRow?.registry_status === 'approved_for_patch' ||
-    latest &&
-    (latest.status === 'ready_for_review' || latest.status === 'approved_for_patch' || latest.status === 'completed' || latest.status === 'reviewed') &&
-    latest.metrics?.some((metric) => /oos|ic|pbo|cpcv|cost|slice/i.test(metric)),
-  )
-  return {
-    matched,
-    latest,
-    statusRow,
-    metricText: latest?.metrics?.length ? latest.metrics.join(', ') : 'missing',
-    isEvidenceReady,
-  }
-}
-
-function upgradeRegistryLabel(label: string) {
-  if (label === 'experiment_missing') return '尚未建立 Strategy Lab 實驗'
-  if (label === 'evaluation_pending') return '等待 dry-run 驗證'
-  if (label === 'ready_for_review') return 'evidence ready'
-  if (label === 'needs_attention') return '需檢查 blockers'
-  if (label === 'approved_for_patch') return 'approved for patch'
-  return label
-}
-
-function promotionMetric(result: ModelArtifactPromotionControllerResponse, keys: string[], digits = 4): string {
-  const value = promotionMetricNumber(result, keys)
-  if (value == null) return 'N/A'
-  return digits > 0 ? value.toFixed(digits) : Math.round(value).toLocaleString()
+  const registryStatus = statusRow?.registry_status
+    ?? (latest?.status === 'ready_for_review' || latest?.status === 'approved_for_patch' || latest?.status === 'completed'
+      ? 'ready_for_review'
+      : latest ? 'evaluation_pending' : 'experiment_missing')
+  const ready = registryStatus === 'ready_for_review' || registryStatus === 'approved_for_patch'
+  return { matched, latest, statusRow, registryStatus, ready }
 }
 
 function promotionMetricNumber(result: ModelArtifactPromotionControllerResponse, keys: string[]): number | null {
   const evidence = result.evidence ?? {}
   const metrics = evidence.metrics && typeof evidence.metrics === 'object' ? evidence.metrics as Record<string, unknown> : evidence
   for (const key of keys) {
-    const value = metrics[key]
-    const n = Number(value)
+    const n = Number(metrics[key])
     if (Number.isFinite(n)) return n
   }
   return null
+}
+
+function promotionMetric(result: ModelArtifactPromotionControllerResponse, keys: string[], digits = 4): string {
+  const value = promotionMetricNumber(result, keys)
+  if (value == null) return 'N/A'
+  return digits > 0 ? value.toFixed(digits) : Math.round(value).toLocaleString()
 }
 
 function promotionComparisonSummary(result: ModelArtifactPromotionControllerResponse) {
@@ -140,9 +127,9 @@ function promotionComparisonSummary(result: ModelArtifactPromotionControllerResp
   const blockers = Array.isArray(result.evidence?.blockers) ? result.evidence.blockers.map(String) : []
   const approvalRequired = result.approval_required === true || result.decision === 'approval_required'
   const resultLabel = beatsChampion
-    ? approvalRequired ? 'beats champion, Wei approval required' : 'beats champion'
+    ? approvalRequired ? 'beats champion; Wei approval required' : 'beats champion'
     : hasLiveComparison ? 'does not beat champion yet' : 'live comparison missing'
-  return { shadowIc, productionIc, icDelta, hasLiveComparison, beatsChampion, blockers, approvalRequired, resultLabel }
+  return { icDelta, hasLiveComparison, beatsChampion, blockers, approvalRequired, resultLabel }
 }
 
 function ActionContextNote({ context }: { context?: ModelArtifactActionContext }) {
@@ -185,22 +172,10 @@ function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromo
         <span className="font-mono text-[#fff1cf]">{result.artifact_id ?? 'artifact N/A'}</span>
       </div>
       <div className="grid gap-2 md:grid-cols-4">
-        <div className="rounded-lg border border-[#263247] bg-[#070a10] p-2">
-          <p className="font-mono text-[#70809b]">shadow IC</p>
-          <p className="mt-1 text-slate-100">{promotionMetric(result, ['shadow_ic', 'shadowIc'], 4)}</p>
-        </div>
-        <div className="rounded-lg border border-[#263247] bg-[#070a10] p-2">
-          <p className="font-mono text-[#70809b]">champion IC</p>
-          <p className="mt-1 text-slate-100">{promotionMetric(result, ['production_ic', 'productionIc'], 4)}</p>
-        </div>
-        <div className="rounded-lg border border-[#263247] bg-[#070a10] p-2">
-          <p className="font-mono text-[#70809b]">delta</p>
-          <p className="mt-1 text-slate-100">{summary.icDelta == null ? 'N/A' : summary.icDelta.toFixed(4)}</p>
-        </div>
-        <div className="rounded-lg border border-[#263247] bg-[#070a10] p-2">
-          <p className="font-mono text-[#70809b]">target</p>
-          <p className="mt-1 text-slate-100">{result.target_state ?? 'N/A'}</p>
-        </div>
+        <SignalInsightCard title="Shadow IC" value={promotionMetric(result, ['shadow_ic', 'shadowIc'])} detail="candidate live evidence" />
+        <SignalInsightCard title="Champion IC" value={promotionMetric(result, ['production_ic', 'productionIc'])} detail="current pointer evidence" />
+        <SignalInsightCard title="Delta" value={summary.icDelta == null ? 'N/A' : summary.icDelta.toFixed(4)} detail="candidate minus champion" tone={summary.beatsChampion ? 'ok' : 'warn'} />
+        <SignalInsightCard title="Target" value={result.target_state ?? 'N/A'} detail="promotion target state" />
       </div>
       <p className="mt-3 text-[#d0d8e8]">{summary.resultLabel}</p>
       {result.next_action && <p className="mt-1 text-[#8a92a6]">next: {result.next_action}</p>}
@@ -213,30 +188,26 @@ function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromo
   )
 }
 
-function UpgradeTrackPanelV2({ experiments = [], statusRows = [] }: { experiments?: ResearchExperiment[]; statusRows?: ModelUpgradeResearchStatusRow[] }) {
+function UpgradeTrackPanelV2({
+  experiments = [],
+  statusRows = [],
+}: {
+  experiments?: ResearchExperiment[]
+  statusRows?: ModelUpgradeResearchStatusRow[]
+}) {
   const candidates = MODEL_UPGRADE_CANDIDATES.filter((candidate) => isProductionSlotModelName(candidate.id))
 
   return (
-    <WorkstationPanel title="L3 Production Slots / artifact-backed gates" kicker="TabM, GNN, iTransformer, TimesFM">
+    <WorkstationPanel title="Active-9 L3 Slots" kicker="Tree, TabM, Sequence, GNN">
       <div className="border-b border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
-        These four models are formal L3 family slots. They can vote only when artifact registry,
-        schema, lifecycle IC, and promotion evidence are ready; GAOptimizer remains proposal
-        evidence and Kalman/Markov stay in L4 overlay.
+        These nine alpha models are the formal L3 family slots. They can vote only when artifact
+        registry, verified rows, lifecycle IC, final compare, and approval evidence are ready.
+        GAOptimizer emits parameter candidates; OPB is shown as L4 allocation evidence, not a model vote.
       </div>
-      <div className="grid gap-3 p-3 lg:grid-cols-2">
+      <div className="grid gap-3 p-3 lg:grid-cols-3">
         {candidates.map((candidate) => {
-          const evidence = experimentEvidence(candidate.id, experiments, statusRows)
-          const registryLabel = evidence.statusRow?.registry_status
-            ?? (evidence.isEvidenceReady
-              ? 'ready_for_review'
-              : evidence.latest
-                ? 'evaluation_pending'
-                : 'experiment_missing')
-          const statusTone: WorkstationTone = evidence.isEvidenceReady
-            ? 'ok'
-            : evidence.latest || evidence.statusRow
-              ? 'warn'
-              : 'info'
+          const evidence = candidateEvidence(candidate.id, experiments, statusRows)
+          const statusTone: WorkstationTone = evidence.ready ? 'ok' : evidence.latest || evidence.statusRow ? 'warn' : 'info'
           return (
             <div key={candidate.id} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
               <div className="flex items-start justify-between gap-3">
@@ -244,36 +215,24 @@ function UpgradeTrackPanelV2({ experiments = [], statusRows = [] }: { experiment
                   <p className="font-mono text-[13px] font-semibold text-[#fff1cf]">{candidate.id}</p>
                   <p className="mt-1 text-[11px] text-[#70809b]">{candidate.layer} / {candidate.family}</p>
                 </div>
-                <WorkstationPill tone={statusTone}>{upgradeRegistryLabel(registryLabel)}</WorkstationPill>
+                <WorkstationPill tone={statusTone}>{registryLabel(evidence.registryStatus)}</WorkstationPill>
               </div>
               <p className="mt-2 text-xs leading-5 text-[#9aa7bd]">{candidate.roleZh}</p>
               <div className="mt-3 grid gap-2 text-[11px] md:grid-cols-2">
                 <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
                   <p className="font-mono text-[#70809b]">registry</p>
-                  <p className="mt-1 text-slate-200">{evidence.latest?.id ?? evidence.statusRow?.latest_experiment_id ?? 'not created'}</p>
+                  <p className="mt-1 break-all text-slate-200">{evidence.latest?.id ?? evidence.statusRow?.latest_experiment_id ?? 'not created'}</p>
                 </div>
                 <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
                   <p className="font-mono text-[#70809b]">evaluation</p>
                   <p className="mt-1 text-slate-200">{evidence.statusRow?.latest_evaluation_verdict ?? 'pending'}</p>
                 </div>
-                <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="font-mono text-[#70809b]">artifact intent</p>
-                  <p className="mt-1 text-slate-200">{evidence.statusRow?.latest_artifact_intent_status ?? 'pending'}</p>
-                </div>
-                <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="font-mono text-[#70809b]">preflight</p>
-                  <p className="mt-1 text-slate-200">{preflightLabel(evidence.statusRow)}</p>
-                </div>
               </div>
               <div className="mt-3 flex flex-wrap gap-1">
-                {candidate.requiredEvidence.map((item) => (
+                {candidate.requiredEvidence.slice(0, 6).map((item) => (
                   <WorkstationPill key={item} tone="neutral">{item}</WorkstationPill>
                 ))}
               </div>
-              <p className="mt-3 rounded-lg border border-sky-400/20 bg-sky-400/[0.04] p-2 text-[11px] leading-5 text-sky-100">
-                Strategy Lab owns the evidence matrix: OOS IC, CPCV/PBO, slice stability, and
-                artifact preflight all need to pass before this slot receives positive L3 weight.
-              </p>
             </div>
           )
         })}
@@ -296,14 +255,11 @@ function PromotionQueuePanelV2({
   const rows = queue?.queue ?? []
   const approvalCount = rows.filter((row) => row.approval_required).length
   const autoCount = rows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
-  const blockedCount = rows.filter((row) => row.promotion_decision.includes('blocked') || (row.blockers?.length ?? 0) > 0).length
+  const blockedCount = rows.filter((row) => String(row.promotion_decision ?? '').includes('blocked') || (row.blockers?.length ?? 0) > 0).length
   const suppressedCount = queue?.suppressed_count ?? queue?.suppressed?.length ?? 0
 
   return (
-    <WorkstationPanel
-      title="Promotion & Parameter Governance / 參數與版本晉升"
-      kicker="artifact candidate, final compare, approval, champion pointer"
-    >
+    <WorkstationPanel title="Promotion & Parameter Governance" kicker="artifact candidate, final compare, approval, champion pointer">
       <div className="grid gap-3 p-3 md:grid-cols-4">
         <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="monthly release passed live gate and final compare" tone={autoCount ? 'ok' : 'neutral'} />
         <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="weekly/manual changes still require Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
@@ -311,12 +267,14 @@ function PromotionQueuePanelV2({
         <SignalInsightCard title="Blocked" value={String(blockedCount)} detail="missing champion pointer, weak evidence, or final compare gap" tone={blockedCount ? 'error' : 'ok'} />
       </div>
       <div className="border-t border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
-        這區保留參數比較與晉升操作：Optuna/GA/allocator knobs 只產 candidate，artifact candidate 先做 final compare，再經 approval gate 更新 champion pointer。它不是 L2/L3 模型家族投票圖。
+        Optuna, GA, and allocator controllers emit parameter candidates. Artifact candidates still
+        need final compare, approval gate, and champion pointer updates; this panel is governance,
+        not the L2/L3 family vote graph.
       </div>
       <div className="grid gap-3 border-t border-[#263247] p-3 lg:grid-cols-2">
         {rows.length ? rows.map((row) => {
           const blockers = Array.isArray(row.blockers) ? row.blockers : []
-          const isBlocked = row.promotion_decision.includes('blocked') || blockers.length > 0
+          const isBlocked = String(row.promotion_decision ?? '').includes('blocked') || blockers.length > 0
           return (
             <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
               <div className="flex items-start justify-between gap-3">
@@ -342,20 +300,6 @@ function PromotionQueuePanelV2({
               </div>
               <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
               <ActionContextNote context={row.action_context} />
-              {blockers.length > 0 && (
-                <div className="mt-3 rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-3 text-[12px] leading-5">
-                  <div className="mb-2 font-mono text-amber-200">Promotion blockers</div>
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {blockers.map((blocker) => (
-                      <div key={blocker.code} className="rounded-lg border border-[#33415c] bg-[#05070c] p-2">
-                        <div className="font-semibold text-slate-100">{blocker.label}</div>
-                        <div className="mt-1 text-[#9aa7bd]">{blocker.next_action}</div>
-                        <div className="mt-1 font-mono text-[10px] text-[#70809b]">{blocker.code}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
@@ -392,18 +336,14 @@ function PromotionQueuePanelV2({
           )
         }) : (
           <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-sm text-[#8a92a6] lg:col-span-2">
-            目前沒有 artifact 通過 live gate；promotion-controller 沒有待處理項目。
+            No artifact candidate is currently ready for live-gate promotion review.
           </div>
         )}
-        {promotionResult && (
-          <PromotionControllerResultPanel result={promotionResult} />
-        )}
+        {promotionResult && <PromotionControllerResultPanel result={promotionResult} />}
       </div>
     </WorkstationPanel>
   )
 }
-
-type OverlayEntry = [string, ModelPoolStateOverlay]
 
 export default function ModelPoolPage() {
   const queryClient = useQueryClient()
@@ -485,11 +425,11 @@ export default function ModelPoolPage() {
       <div className="space-y-6 p-4 lg:p-6">
         <WorkstationPageTitle
           kicker="Model care"
-          title="模型池"
-          description="對齊新 screener：L2 coarse、L3 family ML、近 production 候選、參數晉升與 champion pointer；L1 策略 diversity 回到 Strategy Lab，單次流程追蹤回到 Pipeline Trace。"
+          title="Model Pool"
+          description="新流程：L2 coarse、L3 family ML、near-production candidate、active-9 confidence hook、weekly replay evidence、promotion queue 與 champion pointer governance。L1 strategy diversity stays in Strategy Lab；single-run tracing stays in Pipeline Trace."
           action={
             <div className="flex flex-wrap items-center gap-2">
-              {isFetching && <WorkstationPill tone="info">更新中</WorkstationPill>}
+              {isFetching && <WorkstationPill tone="info">refreshing</WorkstationPill>}
               <Button
                 size="sm"
                 variant="outline"
@@ -503,7 +443,7 @@ export default function ModelPoolPage() {
                   modelUpgradeStatus.refetch()
                 }}
               >
-                <RefreshCw className="mr-1 h-3 w-3" /> 更新
+                <RefreshCw className="mr-1 h-3 w-3" /> Refresh
               </Button>
             </div>
           }
@@ -541,10 +481,12 @@ export default function ModelPoolPage() {
               statusRows={modelUpgradeStatus.data?.candidates ?? []}
             />
 
-            <WorkstationPanel title="State-space Overlays / 狀態空間 Overlay" kicker="regime risk overlay, not alpha vote model">
+            <WorkstationPanel title="State-space Overlays" kicker="regime risk overlay, not alpha vote model">
               <div className="space-y-2 p-3 text-xs text-muted-foreground">
                 <p>
-                  Kalman / Markov 只提供 regime、noise、risk overlay，服務 L4 allocation/sizing/context；不算 L3 alpha model，也不進 alpha IC promotion gate。
+                  Kalman and Markov provide regime, noise, and risk overlay context for L4
+                  allocation and sizing. They are not L3 alpha models and do not enter the
+                  alpha IC promotion gate.
                 </p>
                 <div className="grid gap-2 md:grid-cols-2">
                   {overlayList.map(([name, overlay]) => (
@@ -567,7 +509,7 @@ export default function ModelPoolPage() {
               </div>
             </WorkstationPanel>
 
-            <WorkstationPanel title="最近生命週期事件" kicker="promote, degrade, restore, retire audit">
+            <WorkstationPanel title="Lifecycle Events" kicker="promote, degrade, restore, retire audit">
               <div className="space-y-2 p-3">
                 {(data?.events ?? []).slice().reverse().slice(0, 20).map((event, index) => (
                   <div key={index} className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-2 text-[11px]">

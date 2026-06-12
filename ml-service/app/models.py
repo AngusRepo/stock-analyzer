@@ -4,7 +4,6 @@ Model adapters for StockVision inference.
 Alpha predictors:
   - DLinear / PatchTST
   - XGBoost / ExtraTrees / LightGBM
-  - Retired stubs: Chronos / CatBoost / FT-Transformer
 
 State-space overlays:
   - KalmanFilter / MarkovSwitching
@@ -456,121 +455,8 @@ def _fallback_momentum(prices: np.ndarray, horizon: int, stock_id: int, reason: 
     return pred
 
 
-# ?????? Model 4: PatchTST??atch ?????+ Ridge ??????????????????????????????????????????????????????????????
 def run_patchtst(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> ModelPrediction:
-    """
-    PatchTST ??"A Time Series is Worth 64 Words" (Nie et al., ICLR 2023)
-
-    ??????????????patch??????????????patch ?????????oken????
-    ?????? Transformer ??? patch tokens????????Ridge Regression??? PyTorch ??????
-      1. ?????N_PATCH ??patch?????patch ??PATCH_LEN????????
-      2. ?????????????Ridge ?????
-      3. ??????????????????walk-forward??
-
-    ????????????????????
-      KalmanFilter????????????
-      DLinear???????????
-      N-HiTS?????????
-      PatchTST???????????????????????????????????????
-    """
-    PATCH_LEN   = 16    # ????patch ?????
-    PATCH_STRIDE = 8    # patch ????????0% ?????
-    N_PATCHES   = 6     # ??????????patch
-
-    total_len = PATCH_LEN + PATCH_STRIDE * (N_PATCHES - 1)
-    if len(prices) < total_len + horizon + 10:
-        return _fallback_model("PatchTST", prices, horizon, "insufficient data")
-
-    try:
-        # #10 PatchTST: Ridge ??MLPClassifier???????pattern matching??
-        from sklearn.neural_network import MLPClassifier
-        from sklearn.preprocessing import StandardScaler
-    except ImportError:
-        return _fallback_model("PatchTST", prices, horizon, "sklearn not available")
-
-    n = len(prices)
-
-    def _extract_patches(seg: np.ndarray) -> np.ndarray:
-        """Extract fixed-length patches for PatchTST fallback."""
-        patches = []
-        for i in range(N_PATCHES):
-            start = len(seg) - total_len + PATCH_STRIDE * i
-            end   = start + PATCH_LEN
-            patch = seg[start:end].astype(float)
-            # ????patch ????????
-            p_mu, p_std = patch.mean(), patch.std() + 1e-8
-            patches.append((patch - p_mu) / p_std)
-        return np.concatenate(patches)  # shape: (N_PATCHES * PATCH_LEN,)
-
-    # ???????????X=patches, y=5??????)
-    min_train = total_len + 5
-    X_rows, y_rows = [], []
-    for i in range(min_train, n - 5):
-        try:
-            feat = _extract_patches(prices[:i])
-            label = 1 if prices[i + 4] > prices[i - 1] else 0
-            X_rows.append(feat)
-            y_rows.append(label)
-        except Exception:
-            continue
-
-    if len(X_rows) < 20:
-        return _fallback_model("PatchTST", prices, horizon, "not enough training windows")
-
-    X_arr = np.array(X_rows)
-    y_arr = np.array(y_rows)
-    split = int(len(X_arr) * 0.8)
-
-    scaler  = StandardScaler()
-    X_train = scaler.fit_transform(X_arr[:split])
-    if split < len(X_arr):
-        X_test = scaler.transform(X_arr[split:])
-        y_test = y_arr[split:]
-    else:
-        X_test = np.empty((0, X_arr.shape[1]))
-        y_test = np.array([])
-
-    model = MLPClassifier(
-        hidden_layer_sizes=(32, 16), max_iter=300,
-        random_state=42, early_stopping=True, validation_fraction=0.15,
-    )
-    model.fit(X_train, y_arr[:split])
-
-    dir_acc  = float(model.score(X_test, y_test)) if len(y_test) > 0 else 0.5
-    x_latest = scaler.transform(_extract_patches(prices).reshape(1, -1))
-    proba    = model.predict_proba(x_latest)[0]
-    up_prob  = float(proba[1]) if len(proba) > 1 else 0.5
-    up_prob  = min(0.95, max(0.05, up_prob))
-
-    pct           = (up_prob - 0.5) * 2 * 0.05
-    forecast_vals = [prices[-1] * (1 + pct * (i + 1) / horizon) for i in range(horizon)]
-    std           = float(np.std(np.diff(prices[-20:]))) if len(prices) >= 21 else prices[-1] * 0.015
-    confidence    = max(up_prob, 1 - up_prob)
-    confidence    = min(0.87, max(0.35, dir_acc * (1 + abs(pct) * 4)))
-
-    last_date = datetime.now()
-    dates     = _add_trading_days(last_date, horizon)
-    forecasts = _make_forecast_points(forecast_vals, std, dates)
-
-    return ModelPrediction(
-        model_name="PatchTST",
-        direction="up" if up_prob > 0.5 else "down",
-        confidence=round(confidence, 3),
-        forecast_pct=round(pct, 4),
-        forecasts=forecasts,
-        direction_accuracy=round(dir_acc, 3),
-    )
-
-
-# Retired slot: Chronos.
-def run_chronos(prices: np.ndarray, horizon: int = 14, stock_id: int = 0) -> ModelPrediction:
-    """Retired production slot; TimesFM/iTransformer own sequence-family serving."""
-    return _fallback_model(
-        "Chronos",
-        prices,
-        horizon,
-        "Chronos retired from the production model pool; use TimesFM/iTransformer artifact gates",
-    )
+    raise RuntimeError("PatchTST local predictor removed; use NeuralForecast artifact-backed batch serving")
 
 
 def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
@@ -634,14 +520,6 @@ def run_xgboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         )
     except Exception as e:
         return _fallback_model("XGBoost", prices, horizon, str(e))
-
-
-# Retired slot: CatBoost.
-def run_catboost(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
-                 prices: np.ndarray, horizon: int = 14,
-                 stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
-    """Retired production slot; tree family is LightGBM/XGBoost/ExtraTrees."""
-    return _fallback_model("CatBoost", prices, horizon, "CatBoost retired from the production model pool")
 
 
 def run_extra_trees(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
@@ -712,7 +590,7 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
                  prices: np.ndarray, horizon: int = 14,
                  stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
     """
-    LightGBM ????XGBoost/CatBoost ??????
+    LightGBM ????XGBoost/ExtraTrees ??????
     - Leaf-wise ??????vs level-wise?????? leaf ????????????
     - Histogram-based feature binning?????250 ????????XGB ??3-5x
     - ??????????????????????????????
@@ -783,14 +661,6 @@ def run_lightgbm(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
         )
     except Exception as e:
         return _fallback_model("LightGBM", prices, horizon, str(e))
-
-
-# Retired slot: FT-Transformer.
-def run_ft_transformer(X: np.ndarray, y: np.ndarray, X_latest: np.ndarray,
-                       prices: np.ndarray, horizon: int = 14,
-                       stock_id: int = 0, feature_names: list[str] | None = None) -> ModelPrediction:
-    """Retired production slot; TabM owns the tabular neural family serving gate."""
-    return _fallback_model("FT-Transformer", prices, horizon, "FT-Transformer retired from the production model pool")
 
 
 def run_garch_volatility(prices: np.ndarray, horizon: int = 5) -> float:

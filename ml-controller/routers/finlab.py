@@ -177,6 +177,69 @@ def _truthy_flag(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes"}
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        value = int(str(os.environ.get(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _finlab_backfill_prefix() -> str:
+    return os.environ.get("FINLAB_BACKFILL_GCS_PREFIX", "finlab/v4/backfill").strip().strip("/") or "finlab/v4/backfill"
+
+
+def _long_sequence_base_5y_prefix(bucket_name: str) -> str:
+    explicit = os.environ.get("FINLAB_LONG_SEQUENCE_5Y_BASE_PREFIX", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    run_id = os.environ.get("FINLAB_LONG_SEQUENCE_5Y_BASE_RUN_ID", "finlab-v4-5y-20260518-024944").strip()
+    return f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
+
+
+async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, Any]:
+    """Refresh long-history sequence prep after a successful daily 3Y FinLab run."""
+    if not _truthy_flag(os.environ.get("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")):
+        return {"status": "skipped", "reason": "disabled"}
+    if str(body.get("status") or "").lower() != "success":
+        return {"status": "skipped", "reason": "non_success_backfill"}
+
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    run_id = str(result.get("run_id") or body.get("run_id") or "").strip()
+    if not run_id or "-3y-" not in run_id:
+        return {"status": "skipped", "reason": "not_daily_3y_backfill", "run_id": run_id}
+
+    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket_name:
+        return {"status": "skipped", "reason": "GCS_BUCKET_NAME_not_configured"}
+
+    output_prefix = os.environ.get("FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/latest").strip().strip("/")
+    tail_prefix = f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
+    payload = {
+        "source_gcs_prefixes": [
+            _long_sequence_base_5y_prefix(bucket_name),
+            tail_prefix,
+        ],
+        "output_gcs_prefix": output_prefix,
+        "min_len": _int_env("FINLAB_LONG_SEQUENCE_MIN_LEN", 65),
+        "batch_size": _int_env("FINLAB_LONG_SEQUENCE_BATCH_SIZE", 512),
+        "trigger_source": "finlab_backfill_controller_callback",
+        "trigger_run_id": run_id,
+        "run_date": body.get("run_date"),
+    }
+
+    from services import modal_client
+
+    spawned = await modal_client.build_finlab_long_sequence_prep(payload, fire_and_forget=True)
+    return {
+        "status": spawned.get("status", "spawned"),
+        "function": "build_finlab_long_sequence_prep",
+        "output_gcs_prefix": output_prefix,
+        "source_gcs_prefixes": payload["source_gcs_prefixes"],
+        "trigger_run_id": run_id,
+    }
+
+
 @router.post("/backfill/run")
 async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
     """Spawn FinLab backfill on Modal; do not run the long job in ml-controller."""
@@ -274,6 +337,7 @@ async def finlab_backfill_controller_callback(req: FinLabBackfillCallbackRequest
     from routers.pipeline import _callback_worker
 
     body = _model_dump(req)
+    long_sequence_refresh = await _maybe_spawn_long_sequence_refresh(body)
     await _callback_worker(body)
     return {
         "ok": True,
@@ -282,6 +346,7 @@ async def finlab_backfill_controller_callback(req: FinLabBackfillCallbackRequest
         "status": body.get("status"),
         "run_id": body.get("run_id"),
         "run_date": body.get("run_date"),
+        "long_sequence_refresh": long_sequence_refresh,
     }
 
 

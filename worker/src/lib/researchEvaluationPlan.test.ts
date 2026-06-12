@@ -57,7 +57,7 @@ function assert(condition: unknown, message: string): void {
     data_slice: {
       start_date: '2025-01-01',
       end_date: '2026-04-30',
-      benchmark_candidates: ['TabM', 'iTransformer', 'TimesFM'],
+      benchmark_candidates: ['DLinear', 'PatchTST', 'iTransformer', 'TimesFM', 'TimesFM25'],
     },
     metrics: ['model_benchmark', 'oos_ic', 'pbo', 'cost_sensitivity'],
     follow_up: ['produce benchmark review packet'],
@@ -74,7 +74,7 @@ function assert(condition: unknown, message: string): void {
   })
 
   const benchmarkSteps = plan.steps.filter((step) => step.kind === 'model_benchmark')
-  assert(benchmarkSteps.length === 3, 'model upgrade research should create one benchmark step per supported requested candidate')
+  assert(benchmarkSteps.length === 5, 'model upgrade research should create one benchmark step per supported requested candidate')
   assert(
     benchmarkSteps.every((step) => step.controller_endpoint === '/research/model-benchmark/dry-run'),
     'model benchmark steps should call the research benchmark endpoint',
@@ -84,7 +84,7 @@ function assert(condition: unknown, message: string): void {
     'model benchmark steps must stay non-mutating',
   )
   assert(
-    benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'TabM,iTransformer,TimesFM',
+    benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'DLinear,PatchTST,iTransformer,TimesFM,TimesFM25',
     'model benchmark steps should preserve supported benchmark candidates',
   )
 }

@@ -38,16 +38,18 @@ for (const id of ['TabM', 'GNN', 'iTransformer', 'TimesFM']) {
   assert(workbench.includes(id), `${id} must appear in the L3 model cockpit`)
 }
 
-for (const retired of ['FT-Transformer', 'Chronos', 'Chronos2ZeroShot', 'Chronos2LoRA', 'ResidualMLP']) {
+for (const retired of ['FT-Transformer', 'FTTransformer', 'Chronos', 'Chronos2ZeroShot', 'Chronos2LoRA']) {
   assert(track.includes(`'${retired}'`), `${retired} must be documented in the retired model list`)
 }
 
+assert(track.includes('MODEL_POOL_RESEARCH_SHADOW_MODEL_IDS'), 'ResidualMLP must be documented as research shadow, not retired alpha')
+assert(track.includes("'ResidualMLP'"), 'ResidualMLP research shadow id must stay visible to taxonomy readers')
 assert(!track.includes("id: 'ResidualMLP'"), 'ResidualMLP must not be a visible production candidate')
 assert(!track.includes("id: 'Chronos2ZeroShot'"), 'Chronos2ZeroShot must not be a visible production candidate')
 assert(!track.includes("id: 'Chronos2LoRA'"), 'Chronos2LoRA must not be a visible production candidate')
 assert(track.includes('production_slot_member'), 'L3 targets must be formal production slots')
 assert(!track.includes('benchmark-only'), 'L3 target candidates must not be described as benchmark-only')
-assert(track.includes('formal_layer3_slots'), 'TimesFM evidence must require formal L3 slot wiring')
+assert(track.includes('formal L3 slot wiring'), 'TimesFM evidence must require formal L3 slot wiring')
 assert(track.includes("stage: 'meta_optimizer'"), 'GAOptimizer must be a meta optimizer')
 assert(track.includes("stage: 'state_space_overlay'"), 'Kalman/Markov must stay overlays')
 

@@ -29,6 +29,22 @@ class BenchmarkCandidateSpec:
 
 
 BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
+    "DLinear": BenchmarkCandidateSpec(
+        candidate_id="DLinear",
+        family="time_series_linear_current",
+        runtime_package="torch",
+        adapter_module="app.research_benchmarks.current_dlinear_adapter",
+        expected_evidence=("oos_ic", "cpcv_pbo", "cost_sensitivity", "data_slice_report"),
+        notes="Current StockVision in-repo DLinear baseline retained after maintained-library comparison lost.",
+    ),
+    "PatchTST": BenchmarkCandidateSpec(
+        candidate_id="PatchTST",
+        family="time_series_transformer_neuralforecast",
+        runtime_package="neuralforecast",
+        adapter_module="app.research_benchmarks.neuralforecast_patchtst_adapter",
+        expected_evidence=("oos_ic", "cpcv_pbo", "cost_sensitivity", "data_slice_report"),
+        notes="Production PatchTST slot now uses NeuralForecast PatchTST; legacy in-repo Torch adapter removed.",
+    ),
     "TabM": BenchmarkCandidateSpec(
         candidate_id="TabM",
         family="tabular_deep_learning",
@@ -39,11 +55,11 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
     ),
     "iTransformer": BenchmarkCandidateSpec(
         candidate_id="iTransformer",
-        family="time_series_transformer",
-        runtime_package="torch",
-        adapter_module="app.research_benchmarks.itransformer_adapter",
+        family="time_series_transformer_neuralforecast",
+        runtime_package="neuralforecast",
+        adapter_module="app.research_benchmarks.neuralforecast_itransformer_adapter",
         expected_evidence=("oos_ic", "cpcv_pbo", "cost_sensitivity", "data_slice_report"),
-        notes="Sequence benchmark; must use sequence policy, not tabular all-features.",
+        notes="Production iTransformer slot now uses NeuralForecast iTransformer; legacy simplified Torch adapter removed.",
     ),
     "TimesFM": BenchmarkCandidateSpec(
         candidate_id="TimesFM",
@@ -52,6 +68,14 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
         adapter_module="app.research_benchmarks.timesfm_adapter",
         expected_evidence=("oos_ic", "forecast_validation", "cost_sensitivity", "data_slice_report"),
         notes="Foundation time-series benchmark against the active sequence family; should not enter production without review.",
+    ),
+    "TimesFM25": BenchmarkCandidateSpec(
+        candidate_id="TimesFM25",
+        family="foundation_time_series_maintained_runtime",
+        runtime_package="timesfm",
+        adapter_module="app.research_benchmarks.timesfm25_adapter",
+        expected_evidence=("oos_ic", "forecast_validation", "cost_sensitivity", "data_slice_report"),
+        notes="TimesFM 2.5 migration benchmark; production cut requires new 2.5 config artifact and serving parity evidence.",
     ),
 }
 
@@ -132,13 +156,13 @@ def build_model_family_benchmark_report(
     executor_result = executor_result or {}
     fold_metrics = _normalize_fold_metrics(executor_result.get("fold_metrics"))
     blockers: list[str] = []
-    if not _package_available(spec.runtime_package):
+    if not executor_result and not _package_available(spec.runtime_package):
         blockers.append(f"missing_runtime_package:{spec.runtime_package}")
     if not executor_result:
         blockers.append("missing_executor_result")
     if not fold_metrics:
         blockers.append("missing_oos_fold_metrics")
-    if not executor_result.get("pbo") and not executor_result.get("cpcv_pbo"):
+    if "pbo" not in executor_result and "cpcv_pbo" not in executor_result:
         blockers.append("missing_pbo_cpcv")
 
     cpcv = build_model_cpcv_evidence(

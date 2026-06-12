@@ -1,6 +1,6 @@
 import type { MetaLearningTrackId } from './metaLearningResearchTrack'
 
-export type ShadowPolicyId = Extract<MetaLearningTrackId, 'NeuralUCB' | 'NeuralTS'>
+export type ShadowPolicyId = Extract<MetaLearningTrackId, 'NeuralUCB' | 'NeuralTS' | 'NeuCB'>
 
 export interface MetaShadowDecisionInputRow {
   business_date?: string
@@ -55,7 +55,7 @@ function safeJson(value: unknown): string {
 }
 
 function isShadowPolicy(value: unknown): value is ShadowPolicyId {
-  return value === 'NeuralUCB' || value === 'NeuralTS'
+  return value === 'NeuralUCB' || value === 'NeuralTS' || value === 'NeuCB'
 }
 
 export function normalizeMetaShadowDecisionInput(

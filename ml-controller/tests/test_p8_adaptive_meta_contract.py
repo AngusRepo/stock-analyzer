@@ -20,6 +20,7 @@ def test_adaptive_params_expose_p8_governance_metadata():
     provenance = params["provenance"]
     assert provenance["owner"] == "ml-controller"
     assert provenance["source"] == "risk-assess"
+    assert provenance["l2_formula_source"] == "controller_fallback_defaults"
     assert provenance["update_frequency"] == "daily_after_verify"
     assert provenance["fallback"] is False
 

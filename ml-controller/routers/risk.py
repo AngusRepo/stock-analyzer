@@ -32,7 +32,7 @@ Worker 呼叫格式：
 """
 import logging
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, Optional
 
 from services.adaptive import compute_adaptive_params
@@ -48,6 +48,9 @@ class MarketData(BaseModel):
 
 class AccuracyData(BaseModel):
     global_30d: float = 0.6
+    active_9_quality_30d: float | None = None
+    active_9_samples_30d: int | None = None
+    active_9_model_count_30d: int | None = None
     rows_30d: list[dict[str, Any]] = []
     rows_90d: list[dict[str, Any]] = []
 
@@ -57,11 +60,17 @@ class TradingData(BaseModel):
     total_5d: int = 0
 
 
+class AdaptiveConfigData(BaseModel):
+    L2_formula: dict[str, Any] = Field(default_factory=dict)
+    baseline_buy_signal_score: float | None = None
+
+
 class RiskAssessRequest(BaseModel):
     date: str
     market: MarketData = MarketData()
     accuracy: AccuracyData = AccuracyData()
     trading: TradingData = TradingData()
+    adaptive_config: AdaptiveConfigData = Field(default_factory=AdaptiveConfigData)
     current_version: int = 0
 
 
@@ -76,6 +85,11 @@ def post_risk_assess(req: RiskAssessRequest):
         losses_5d=req.trading.losses_5d,
         total_5d=req.trading.total_5d,
         current_version=req.current_version,
+        L2_formula=req.adaptive_config.L2_formula,
+        baseline_buy_signal_score=req.adaptive_config.baseline_buy_signal_score,
+        active_9_quality_30d=req.accuracy.active_9_quality_30d,
+        active_9_samples_30d=req.accuracy.active_9_samples_30d,
+        active_9_model_count_30d=req.accuracy.active_9_model_count_30d,
     )
 
     sl_tp = params.get("sl_tp_override")

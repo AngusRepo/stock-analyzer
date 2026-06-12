@@ -12,7 +12,8 @@ from typing import Literal, Sequence
 
 import numpy as np
 
-PolicyId = Literal["NeuralUCB", "NeuralTS"]
+PolicyId = Literal["NeuralUCB", "NeuralTS", "NeuCB"]
+DecisionMode = Literal["ucb", "ts", "greedy"]
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,7 @@ class TrainedNeuralMetaBandit:
         one_hot[:, arm_idx] = 1.0
         return np.concatenate([contexts, one_hot], axis=1).astype("float32")
 
-    def score_actions(self, contexts: np.ndarray, mode: Literal["ucb", "ts"] = "ucb") -> np.ndarray:
+    def score_actions(self, contexts: np.ndarray, mode: DecisionMode = "ucb") -> np.ndarray:
         contexts = _validate_contexts(contexts, expected_dim=self.context_dim)
         scores: list[np.ndarray] = []
         for arm_idx in range(self.arm_count):
@@ -112,7 +113,7 @@ class TrainedNeuralMetaBandit:
             scores.append(pred)
         return np.stack(scores, axis=1)
 
-    def choose_actions(self, contexts: np.ndarray, mode: Literal["ucb", "ts"] = "ucb") -> list[str]:
+    def choose_actions(self, contexts: np.ndarray, mode: DecisionMode = "ucb") -> list[str]:
         scores = self.score_actions(contexts, mode=mode)
         return [self.arm_names[int(i)] for i in np.argmax(scores, axis=1)]
 
@@ -199,7 +200,7 @@ def build_shadow_decisions(
     symbols: Sequence[str],
     contexts: np.ndarray,
     baseline_actions: Sequence[str],
-    mode: Literal["ucb", "ts"] = "ucb",
+    mode: DecisionMode = "ucb",
 ) -> list[dict]:
     contexts = _validate_contexts(contexts, expected_dim=policy.context_dim)
     if len(symbols) != len(contexts) or len(baseline_actions) != len(contexts):

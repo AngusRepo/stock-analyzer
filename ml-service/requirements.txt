@@ -8,7 +8,7 @@ pandas[pyarrow]>=2.2.0
 finlab==2.0.7
 # Tree models, hmmlearn, and SHAP share the scikit-learn runtime.
 scikit-learn==1.9.0
-xgboost==2.1.1
+xgboost==3.2.0
 statsmodels==0.14.4
 httpx==0.27.2
 pydantic==2.9.2
@@ -20,9 +20,9 @@ Mako==1.3.11
 zipp>=3.19.1
 hmmlearn==0.3.2
 arch==7.0.0
-lightgbm>=4.0.0
+lightgbm==4.6.0
 # PyTorch is required by DLinear/PatchTST/GNN/TabM/TimesFM runtime paths.
-torch==2.8.0
+torch==2.12.0
 # Breeze2 reason-generation shadow provider. The model card requires
 # transformers 4.47.x plus MediaTek's prompt helpers; this path is shadow-only
 # and is activated explicitly through BREEZE2_REASON_SHADOW_PROVIDER.
@@ -37,15 +37,16 @@ shap>=0.46.0
 # P3#29: RL Shadow Framework
 gymnasium>=0.29.0
 stable-baselines3>=2.3.0
-# P3#28: GNN Shadow (cross-stock relations)
-torch-geometric>=2.5.0
+# P3#28: GNN / GraphSAGE production artifact runtime.
+torch-geometric==2.8.0
+# Maintained-library sequence production adapters.
+neuralforecast==3.1.9
 # P7 research benchmarks: not production voters; used by research_model_benchmark
 # to produce OOS IC / CPCV-PBO / cost / data-slice evidence.
-tabm>=0.0.3
-# Production artifact universal/timesfm/v20260605T063035 targets
-# google/timesfm-2.0-500m-pytorch. TimesFM 2.x is the 2.5 runtime and is
-# incompatible until a matching 2.5 serving artifact is issued.
-timesfm[torch]==1.3.0
+tabm==0.0.3
+# TimesFM 2.5 runtime package. Serving still loads config-backed artifacts and
+# fails closed if the active GCS config points at an incompatible archived model.
+timesfm[torch]==2.0.1
 # 2026-04-07 Phase 1: Optuna routes (auto-search + push KV)
 optuna>=3.6.0
 # 2.0 Feature Selection: Target Permutation elbow detection

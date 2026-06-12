@@ -18,7 +18,10 @@ import json
 import logging
 from typing import Any, Optional
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:  # allow pure domain tests to import services without HTTP deps
+    httpx = None
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,8 @@ def get(key: str, timeout: float = 30.0) -> Optional[str]:
     Read raw string from KV. Returns None if key not found.
     """
     _check_env()
+    if httpx is None:
+        raise RuntimeError("KV request failed: httpx not installed")
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
         f"/storage/kv/namespaces/{CF_KV_NAMESPACE_ID}/values/{key}"

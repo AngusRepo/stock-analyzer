@@ -11,7 +11,7 @@ router = APIRouter(prefix="/meta-learning", tags=["meta-learning"])
 
 
 class NeuralShadowTrainRequest(BaseModel):
-    policy_id: Literal["NeuralUCB", "NeuralTS"]
+    policy_id: Literal["NeuralUCB", "NeuralTS", "NeuCB"]
     contexts: list[list[float]] = Field(default_factory=list, max_items=20000)
     arms: list[int] = Field(default_factory=list, max_items=20000)
     rewards: list[float] = Field(default_factory=list, max_items=20000)
@@ -92,6 +92,8 @@ def _score_actions(policy_id: str, phi: np.ndarray, models: list[dict[str, Any]]
         if policy_id == "NeuralTS":
             sampled_beta = rng.multivariate_normal(beta, 0.05 * a_inv)
             scores[:, arm_idx] = phi @ sampled_beta
+        elif policy_id == "NeuCB":
+            scores[:, arm_idx] = mean
         else:
             scores[:, arm_idx] = mean + alpha * uncertainty
     return scores, means
@@ -148,7 +150,13 @@ async def train_neural_shadow(req: NeuralShadowTrainRequest):
         "policy_id": req.policy_id,
         "shadow_decisions": decisions,
         "training_report": {
-            "algorithm": "NeuralUCB" if req.policy_id == "NeuralUCB" else "Neural Thompson Sampling",
+            "algorithm": (
+                "NeuralUCB"
+                if req.policy_id == "NeuralUCB"
+                else "NeuCB greedy benchmark"
+                if req.policy_id == "NeuCB"
+                else "Neural Thompson Sampling"
+            ),
             "samples": int(x.shape[0]),
             "context_dim": int(x.shape[1]),
             "feature_dim": int(phi.shape[1]),

@@ -56,7 +56,7 @@ function parseBoundedPositiveInt(raw: string | null | undefined, fallback: numbe
 
 async function runNeuralShadowTask(
   c: any,
-  policyId: 'NeuralUCB' | 'NeuralTS',
+  policyId: 'NeuralUCB' | 'NeuralTS' | 'NeuCB',
   endDate?: string,
 ): Promise<string> {
   const persist = c.req.query('persist') === '1' || c.req.query('dry_run') === 'false'
@@ -83,6 +83,44 @@ async function runNeuralShadowTask(
   ]
   if ((result as any).reason) summary.push(`reason=${(result as any).reason}`)
   return summary.join(' ')
+}
+
+async function runAdaptiveMetaPolicyReplayTask(c: any, endDate?: string): Promise<string> {
+  const persist = c.req.query('persist') === '1' || c.req.query('dry_run') === 'false'
+  if (persist && c.req.header('X-Confirm-Meta-Learning') !== 'true') {
+    throw new Error('adaptive meta-policy replay evidence persistence requires X-Confirm-Meta-Learning:true')
+  }
+
+  const { runAdaptiveMetaPolicyReplay } = await import('./adaptiveMetaPolicyReplayRunner')
+  const result = await runAdaptiveMetaPolicyReplay(c.env, {
+    startDate: c.req.query('start_date') || undefined,
+    endDate,
+    limit: parseBoundedPositiveInt(c.req.query('limit'), 20000, 50000),
+    minIcSamples: parseBoundedPositiveInt(c.req.query('min_ic_samples'), 5, 200),
+    minWindows: parseBoundedPositiveInt(c.req.query('min_windows'), 8, 260),
+    neuralEpochs: parseBoundedPositiveInt(c.req.query('neural_epochs'), 80, 1000),
+    persist,
+  })
+  return String(result.summary ?? `adaptive_meta_replay status=${result.status ?? 'unknown'}`)
+}
+
+async function runLinUcbMultiplierReplayTask(c: any, endDate?: string): Promise<string> {
+  const persist = c.req.query('persist') === '1' || c.req.query('dry_run') === 'false'
+  if (persist && c.req.header('X-Confirm-Meta-Learning') !== 'true') {
+    throw new Error('LinUCB multiplier replay evidence persistence requires X-Confirm-Meta-Learning:true')
+  }
+
+  const { runLinUcbMultiplierReplay } = await import('./linucbMultiplierReplayRunner')
+  const result = await runLinUcbMultiplierReplay(c.env, {
+    startDate: c.req.query('start_date') || undefined,
+    endDate,
+    limit: parseBoundedPositiveInt(c.req.query('limit'), 20000, 50000),
+    minDecisions: parseBoundedPositiveInt(c.req.query('min_decisions'), 30, 10000),
+    maxGridEvals: parseBoundedPositiveInt(c.req.query('max_grid_evals'), 96, 500),
+    recentLossWindow: parseBoundedPositiveInt(c.req.query('recent_loss_window'), 5, 60),
+    persist,
+  })
+  return String(result.summary ?? `linucb_multiplier_replay status=${result.status ?? 'unknown'}`)
 }
 
 export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
@@ -177,6 +215,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const { runLinUcbRewardLedgerRefresh } = await import('./adaptiveEngine')
       return runLinUcbRewardLedgerRefresh(c.env, requestedRunDate())
     },
+    'adaptive-meta-policy-replay': () => runAdaptiveMetaPolicyReplayTask(c, requestedRunDate()),
+    'linucb-multiplier-replay': () => runLinUcbMultiplierReplayTask(c, requestedRunDate()),
     verify: async () => {
       return runVerifyV2(c.env)
     },
@@ -210,5 +250,6 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     'neural-ucb-shadow': () => runNeuralShadowTask(c, 'NeuralUCB', requestedRunDate()),
     'neural-ts-shadow': () => runNeuralShadowTask(c, 'NeuralTS', requestedRunDate()),
+    'neucb-shadow': () => runNeuralShadowTask(c, 'NeuCB', requestedRunDate()),
   }
 }

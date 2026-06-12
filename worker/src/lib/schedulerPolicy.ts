@@ -56,6 +56,8 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'weekly-backtest': { kind: 'research', holidayGated: false, description: 'weekly lightweight backtest, Monte Carlo, PBO validation' },
   'alpha-quality': { kind: 'research', holidayGated: false, description: 'weekly alpha quality research' },
   'weekly-optuna': { kind: 'research', holidayGated: false, description: 'weekly lightweight Optuna/GA calibration' },
+  'adaptive-meta-policy-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only active-9 adaptive meta-policy replay' },
+  'linucb-multiplier-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only LinUCB bandit multiplier replay' },
   'weekly-drift-retrain': { kind: 'research', holidayGated: false, description: 'approval-gated weekly drift hotfix candidate; not weekly cleanup' },
   'sector-leaders': { kind: 'research', holidayGated: false, description: 'weekly sector leader refresh' },
   'monthly-optuna': { kind: 'research', holidayGated: false, description: 'monthly Optuna research sweep' },

@@ -129,7 +129,7 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
         "models": {
             "iTransformer": {
                 "version": "old",
-                "gcs_path": "universal/itransformer/old.pt",
+                "gcs_path": "universal/itransformer/old.zip",
                 "ic_4w_avg": -0.02,
                 "weekly_ic": [-0.02],
             }
@@ -139,7 +139,7 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
     itransformer_training._update_model_pool_active(
         bucket,
         version="new",
-        artifact_path="universal/itransformer/new.pt",
+        artifact_path="universal/itransformer/new.zip",
         metadata={
             "oos_ic": 0.04,
             "direction_accuracy": 0.56,
@@ -154,8 +154,8 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
     entry = updated["models"]["iTransformer"]
     slot = updated["formal_layer3_slots"]["iTransformer"]
     assert entry["status"] == "active"
-    assert entry["gcs_path"] == "universal/itransformer/new.pt"
-    assert entry["last_ic_root_cause"] == "new_itransformer_artifact_awaiting_verified_predictions"
+    assert entry["gcs_path"] == "universal/itransformer/new.zip"
+    assert entry["last_ic_root_cause"] == "new_neuralforecast_itransformer_artifact_awaiting_verified_predictions"
     assert "ic_4w_avg" not in entry
     assert "weekly_ic" not in entry
     assert entry["last_artifact_evidence"]["prep_lineage"]["date_max"] == "2026-06-04"

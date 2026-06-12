@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from app import timesfm_universal
-from app.timesfm_universal import DEFAULT_MODEL_ID, DEFAULT_PRED_LEN, DEFAULT_SEQ_LEN
+from app.timesfm_universal import DEFAULT_MAX_CONTEXT, DEFAULT_MODEL_ID, DEFAULT_PRED_LEN, DEFAULT_SEQ_LEN
 
 
 class _FakeBlob:
@@ -48,6 +48,18 @@ def test_timesfm_loads_config_artifact(monkeypatch):
     )
 
     assert timesfm_universal.load_config_from_gcs("v1") == config
+
+
+def test_timesfm25_config_builder_is_local_prod_ready_without_mutating_production():
+    config = timesfm_universal.build_timesfm25_config(version="v-local-ready", seq_len=128)
+
+    assert config["model_id"] == "google/timesfm-2.5-200m-pytorch"
+    assert config["seq_len"] == 128
+    assert config["max_context"] == DEFAULT_MAX_CONTEXT
+    assert config["artifact_schema"] == "timesfm_2p5_config_v1"
+    assert config["forecast_flags"]["use_continuous_quantile_head"] is True
+    assert config["forecast_flags"]["fix_quantile_crossing"] is True
+    assert config["production_mutation_allowed"] is False
 
 
 def test_timesfm_rejects_controller_artifact_sequence_contract_mismatch(monkeypatch):
@@ -102,7 +114,7 @@ def test_timesfm_uses_artifact_seq_len_when_contract_matches(monkeypatch):
     assert f"insufficient data (60 < {DEFAULT_SEQ_LEN})" == rows[0]["error"]
 
 
-def test_timesfm_dependency_is_pinned_to_artifact_runtime():
+def test_timesfm_dependency_uses_25_ready_runtime_package():
     requirements = (
         Path(__file__)
         .resolve()
@@ -112,7 +124,9 @@ def test_timesfm_dependency_is_pinned_to_artifact_runtime():
         .decode("utf-8", errors="ignore")
     )
 
-    assert "timesfm[torch]==1.3.0" in requirements
+    assert "timesfm[torch]==2.0.1" in requirements
+    assert "timesfm[torch]==1.3.0" not in requirements
+    assert "timesfm[torch]==2.0.0" not in requirements
     assert "timesfm[torch]>=" not in requirements
 
 
@@ -142,4 +156,4 @@ def test_timesfm_20_artifact_rejects_25_only_runtime(monkeypatch):
 
     assert "2.5 torch runtime" in message
     assert "google/timesfm-2.0-500m-pytorch" in message
-    assert "timesfm[torch]==1.3.0" in message
+    assert "matching TimesFM 2.5 config artifact" in message

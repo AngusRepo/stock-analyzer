@@ -1,0 +1,593 @@
+{
+  "config": {
+    "base_payload": {
+      "batch_size": 128,
+      "data_slice": {
+        "batch_size": 128,
+        "epochs": 5,
+        "max_oos_windows": 512,
+        "max_steps": 10,
+        "max_windows": 8000,
+        "oos_ratio": 0.2,
+        "pred_len": 5,
+        "seed": 42
+      },
+      "epochs": 5,
+      "max_oos_windows": 512,
+      "max_steps": 10,
+      "max_windows": 8000,
+      "oos_ratio": 0.2,
+      "pred_len": 5,
+      "seed": 42
+    },
+    "contexts": [
+      128,
+      256,
+      512,
+      1024
+    ],
+    "max_series": 256,
+    "models": [
+      "DLinear",
+      "DartsDLinear"
+    ]
+  },
+  "new_source": {
+    "batch_count": 6,
+    "date_max": "2026-06-11",
+    "date_min": "2021-05-18",
+    "max_len": 1233,
+    "min_len": 65,
+    "prefix": "universal/sequence_long/finlab_5y20260518_plus_3y20260611",
+    "rows": 2983705,
+    "symbols": 3070
+  },
+  "old_source": {
+    "batch_count": 5,
+    "date_max": "2026-06-05",
+    "date_min": "2025-01-17",
+    "max_len": 329,
+    "min_len": 72,
+    "prefix": "universal",
+    "rows": 714407,
+    "symbols": 2285
+  },
+  "production_mutation_allowed": false,
+  "promotion_allowed": false,
+  "results": [
+    {
+      "context_len": 128,
+      "min_len": 133,
+      "models": {
+        "DLinear": {
+          "delta_oos_ic_mean": 0.02559719,
+          "delta_pbo": -0.4,
+          "new": {
+            "blockers": [],
+            "context_len": 128,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 347,
+              "rows": 310758,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.51406504,
+            "folds": 5,
+            "latency_sec": 1.253,
+            "model": "DLinear",
+            "oos_ic_mean": 0.05321788,
+            "pbo": 0.0,
+            "rows_metric": 276966,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 221,
+              "oos_windows": 55393,
+              "train_windows": 221573,
+              "windows": 276966
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [],
+            "context_len": 128,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 329,
+              "min_series_len": 285,
+              "rows": 83192,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.48840514,
+            "folds": 5,
+            "latency_sec": 3.629,
+            "model": "DLinear",
+            "oos_ic_mean": 0.02762069,
+            "pbo": 0.4,
+            "rows_metric": 49400,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 41,
+              "oos_windows": 9880,
+              "train_windows": 39520,
+              "windows": 49400
+            },
+            "source_name": "current_universal",
+            "status": "available"
+          }
+        },
+        "DartsDLinear": {
+          "delta_oos_ic_mean": 0.10122507,
+          "delta_pbo": -0.4,
+          "new": {
+            "blockers": [],
+            "context_len": 128,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 347,
+              "rows": 310758,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.53318555,
+            "folds": 5,
+            "latency_sec": 2.487,
+            "model": "DartsDLinear",
+            "oos_ic_mean": 0.15231487,
+            "pbo": 0.2,
+            "rows_metric": 276966,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 221,
+              "oos_windows": 55393,
+              "train_windows": 221573,
+              "windows": 276966
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [],
+            "context_len": 128,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 329,
+              "min_series_len": 285,
+              "rows": 83192,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.52175685,
+            "folds": 5,
+            "latency_sec": 3.211,
+            "model": "DartsDLinear",
+            "oos_ic_mean": 0.0510898,
+            "pbo": 0.6,
+            "rows_metric": 49400,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 41,
+              "oos_windows": 9880,
+              "train_windows": 39520,
+              "windows": 49400
+            },
+            "source_name": "current_universal",
+            "status": "available"
+          }
+        }
+      },
+      "new_selection": {
+        "alignment_mode": "common_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 133,
+        "selected_symbols": 256
+      },
+      "old_selection": {
+        "alignment_mode": "common_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 133,
+        "selected_symbols": 256
+      }
+    },
+    {
+      "context_len": 256,
+      "min_len": 261,
+      "models": {
+        "DLinear": {
+          "delta_oos_ic_mean": -0.025127,
+          "delta_pbo": 0.0,
+          "new": {
+            "blockers": [],
+            "context_len": 256,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 347,
+              "rows": 310758,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.51615381,
+            "folds": 5,
+            "latency_sec": 1.264,
+            "model": "DLinear",
+            "oos_ic_mean": 0.05734396,
+            "pbo": 0.2,
+            "rows_metric": 244198,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 195,
+              "oos_windows": 48839,
+              "train_windows": 195359,
+              "windows": 244198
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [],
+            "context_len": 256,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 329,
+              "min_series_len": 285,
+              "rows": 83192,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.5092531,
+            "folds": 5,
+            "latency_sec": 0.534,
+            "model": "DLinear",
+            "oos_ic_mean": 0.08247096,
+            "pbo": 0.2,
+            "rows_metric": 16632,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 14,
+              "oos_windows": 3326,
+              "train_windows": 13306,
+              "windows": 16632
+            },
+            "source_name": "current_universal",
+            "status": "available"
+          }
+        },
+        "DartsDLinear": {
+          "delta_oos_ic_mean": 0.09770579,
+          "delta_pbo": 0.0,
+          "new": {
+            "blockers": [],
+            "context_len": 256,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 347,
+              "rows": 310758,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.53515458,
+            "folds": 5,
+            "latency_sec": 2.302,
+            "model": "DartsDLinear",
+            "oos_ic_mean": 0.07718956,
+            "pbo": 0.4,
+            "rows_metric": 244198,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 195,
+              "oos_windows": 48839,
+              "train_windows": 195359,
+              "windows": 244198
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [],
+            "context_len": 256,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 329,
+              "min_series_len": 285,
+              "rows": 83192,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.54318654,
+            "folds": 5,
+            "latency_sec": 1.458,
+            "model": "DartsDLinear",
+            "oos_ic_mean": -0.02051623,
+            "pbo": 0.4,
+            "rows_metric": 16632,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 14,
+              "oos_windows": 3326,
+              "train_windows": 13306,
+              "windows": 16632
+            },
+            "source_name": "current_universal",
+            "status": "available"
+          }
+        }
+      },
+      "new_selection": {
+        "alignment_mode": "common_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 261,
+        "selected_symbols": 256
+      },
+      "old_selection": {
+        "alignment_mode": "common_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 261,
+        "selected_symbols": 256
+      }
+    },
+    {
+      "context_len": 512,
+      "min_len": 517,
+      "models": {
+        "DLinear": {
+          "delta_oos_ic_mean": null,
+          "delta_pbo": null,
+          "new": {
+            "blockers": [],
+            "context_len": 512,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 517,
+              "rows": 292609,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.49399215,
+            "folds": 5,
+            "latency_sec": 1.26,
+            "model": "DLinear",
+            "oos_ic_mean": 0.00249965,
+            "pbo": 0.4,
+            "rows_metric": 160513,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 134,
+              "oos_windows": 32102,
+              "train_windows": 128411,
+              "windows": 160513
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [
+              "no_current_universal_records_for_context"
+            ],
+            "context_len": 512,
+            "model": "DLinear",
+            "source_name": "current_universal",
+            "status": "blocked"
+          }
+        },
+        "DartsDLinear": {
+          "delta_oos_ic_mean": null,
+          "delta_pbo": null,
+          "new": {
+            "blockers": [],
+            "context_len": 512,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 517,
+              "rows": 292609,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.52228874,
+            "folds": 5,
+            "latency_sec": 2.053,
+            "model": "DartsDLinear",
+            "oos_ic_mean": -0.09967025,
+            "pbo": 0.6,
+            "rows_metric": 160513,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 134,
+              "oos_windows": 32102,
+              "train_windows": 128411,
+              "windows": 160513
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [
+              "no_current_universal_records_for_context"
+            ],
+            "context_len": 512,
+            "model": "DartsDLinear",
+            "source_name": "current_universal",
+            "status": "blocked"
+          }
+        }
+      },
+      "new_selection": {
+        "alignment_mode": "source_only_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 517,
+        "selected_symbols": 256
+      },
+      "old_selection": {
+        "alignment_mode": "source_only_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 517,
+        "selected_symbols": 0
+      }
+    },
+    {
+      "context_len": 1024,
+      "min_len": 1029,
+      "models": {
+        "DLinear": {
+          "delta_oos_ic_mean": null,
+          "delta_pbo": null,
+          "new": {
+            "blockers": [],
+            "context_len": 1024,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 1037,
+              "rows": 311157,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.53713774,
+            "folds": 5,
+            "latency_sec": 0.955,
+            "model": "DLinear",
+            "oos_ic_mean": 0.19050099,
+            "pbo": 0.0,
+            "rows_metric": 47989,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 39,
+              "oos_windows": 9597,
+              "train_windows": 38392,
+              "windows": 47989
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [
+              "no_current_universal_records_for_context"
+            ],
+            "context_len": 1024,
+            "model": "DLinear",
+            "source_name": "current_universal",
+            "status": "blocked"
+          }
+        },
+        "DartsDLinear": {
+          "delta_oos_ic_mean": null,
+          "delta_pbo": null,
+          "new": {
+            "blockers": [],
+            "context_len": 1024,
+            "data_slice_report": {
+              "end_date": null,
+              "max_series_len": 1233,
+              "min_series_len": 1037,
+              "rows": 311157,
+              "source": "payload.sequence_records",
+              "start_date": null,
+              "symbols": 256
+            },
+            "direction_accuracy_mean": 0.47049521,
+            "folds": 5,
+            "latency_sec": 2.092,
+            "model": "DartsDLinear",
+            "oos_ic_mean": -0.00120521,
+            "pbo": 0.4,
+            "rows_metric": 47989,
+            "sequence_report": {
+              "dropped_bad": 0,
+              "dropped_short": 0,
+              "input_series": 256,
+              "lifecycle_ready": true,
+              "oos_dates": 39,
+              "oos_windows": 9597,
+              "train_windows": 38392,
+              "windows": 47989
+            },
+            "source_name": "long_finlab_5y_plus_3y",
+            "status": "available"
+          },
+          "old": {
+            "blockers": [
+              "no_current_universal_records_for_context"
+            ],
+            "context_len": 1024,
+            "model": "DartsDLinear",
+            "source_name": "current_universal",
+            "status": "blocked"
+          }
+        }
+      },
+      "new_selection": {
+        "alignment_mode": "source_only_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 1029,
+        "selected_symbols": 256
+      },
+      "old_selection": {
+        "alignment_mode": "source_only_symbols",
+        "common_symbols_total": 2284,
+        "max_series": 256,
+        "min_len": 1029,
+        "selected_symbols": 0
+      }
+    }
+  ],
+  "schema_version": "sequence-source-benchmark-comparison-v1",
+  "status": "completed"
+}

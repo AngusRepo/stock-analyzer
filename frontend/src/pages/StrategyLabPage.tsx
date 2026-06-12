@@ -636,7 +636,7 @@ function MetaLearningDecisionDesk({
   selectedTrackId?: string | null
   onCreateTrackExperiment: (track: MetaLearningTrack) => void
   onRefreshLinucb: () => void
-  onRunNeuralShadow: (policyId: 'NeuralUCB' | 'NeuralTS') => void
+  onRunNeuralShadow: (policyId: 'NeuralUCB' | 'NeuralTS' | 'NeuCB') => void
   onSelectTrack: (track: MetaLearningTrack) => void
   actionResult: string | null
 }) {
@@ -724,8 +724,8 @@ function MetaLearningDecisionDesk({
                       {actionBusy === 'linucb-ledger' ? '補跑中...' : '手動補跑 Reward Ledger'}
                     </Button>
                   )}
-                  {(track.id === 'NeuralUCB' || track.id === 'NeuralTS') && (
-                    <Button size="sm" className="bg-cyan-400 text-slate-950 hover:bg-cyan-300" disabled={actionBusy === `shadow:${track.id}`} onClick={() => onRunNeuralShadow(track.id as 'NeuralUCB' | 'NeuralTS')}>
+                  {(track.id === 'NeuralUCB' || track.id === 'NeuralTS' || track.id === 'NeuCB') && (
+                    <Button size="sm" className="bg-cyan-400 text-slate-950 hover:bg-cyan-300" disabled={actionBusy === `shadow:${track.id}`} onClick={() => onRunNeuralShadow(track.id as 'NeuralUCB' | 'NeuralTS' | 'NeuCB')}>
                       {actionBusy === `shadow:${track.id}` ? '執行中...' : '執行 Shadow 驗證'}
                     </Button>
                   )}
@@ -1546,7 +1546,7 @@ export default function StrategyLabPage() {
     }
   }
 
-  async function runNeuralShadow(policyId: 'NeuralUCB' | 'NeuralTS') {
+  async function runNeuralShadow(policyId: 'NeuralUCB' | 'NeuralTS' | 'NeuCB') {
     try {
       setMetaActionBusy(`shadow:${policyId}`)
       setDraftError(null)

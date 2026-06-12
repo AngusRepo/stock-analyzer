@@ -6,6 +6,7 @@ export type AdaptiveParamSource = 'ml-controller' | 'risk-assess' | 'manual' | '
 export interface AdaptiveParamProvenance {
   owner: 'ml-controller'
   source: AdaptiveParamSource | string
+  l2_formula_source?: string
   schema_version: 'adaptive-params-v2'
   update_frequency: 'daily_after_verify'
   computed_at: string
@@ -49,10 +50,9 @@ export interface AdaptiveMetaLayerGovernance {
 
 export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
   alpha_vote_models: [
-    'XGBoost',
-    'CatBoost',
-    'ExtraTrees',
     'LightGBM',
+    'XGBoost',
+    'ExtraTrees',
     'TabM',
     'GNN',
     'DLinear',
@@ -60,7 +60,7 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     'iTransformer',
     'TimesFM',
   ],
-  formal_layer3_slots: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],
+  formal_layer3_slots: ['DLinear', 'PatchTST', 'TabM', 'GNN', 'iTransformer', 'TimesFM'],
   state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
   meta_optimizers: ['GAOptimizer'],
   adaptive_components: {
@@ -259,6 +259,7 @@ function normalizeProvenance(
   return {
     owner: 'ml-controller',
     source,
+    ...(provenance.l2_formula_source != null ? { l2_formula_source: String(provenance.l2_formula_source) } : {}),
     schema_version: 'adaptive-params-v2',
     update_frequency: 'daily_after_verify',
     computed_at: String(provenance.computed_at ?? params.computed_at ?? ''),

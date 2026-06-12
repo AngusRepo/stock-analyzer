@@ -156,7 +156,7 @@ const TRACKS: readonly Omit<MetaLearningTrack, 'registered_experiment_ids'>[] = 
   {
     id: 'NeuCB',
     stage: 'research_only',
-    role: 'neural contextual bandit benchmark; useful for literature comparison, not a production router until registry evidence exists',
+    role: 'neural contextual bandit benchmark; it may emit evidence-only shadow rows, but is not a production router until registry evidence exists',
     learning_targets: ['nonlinear_context_embedding', 'model_family_weights', 'exploration_policy'],
     required_evidence: ['strategy_lab_experiment', 'benchmark_report', 'oos_reward', 'pbo', 'cost_profile'],
     experiment_template: {
@@ -219,7 +219,7 @@ export function buildMetaLearningDecisionPacket(experiments: ResearchExperimentR
   const tracks = listMetaLearningTracks(experiments)
   const lines = [
     `Meta learning research track: ${META_LEARNING_TRACK_VERSION}`,
-    'Rules: LinUCB remains the interpretable production baseline; NeuralUCB and NeuralTS are shadow challengers; portfolio bandit and NeuCB stay in Strategy Lab until evidence exists.',
+    'Rules: LinUCB remains the interpretable production baseline; NeuralUCB and NeuralTS are shadow challengers; NeuCB may emit research-only shadow evidence; portfolio bandit stays in L4 Strategy Lab until execution evidence exists.',
   ]
   for (const track of tracks) {
     lines.push(`${track.id}: stage=${track.stage}, status=${track.decision_queue_status}, experiments=${track.registered_experiment_ids.join(',') || 'none'}`)
@@ -307,7 +307,7 @@ export function buildMetaLearningEvidenceMatrix(
         : 'not_applicable'
 
     const shadowStatus: MetaLearningEvidenceMatrixRow['shadow_status'] =
-      track.stage === 'shadow_challenger'
+      track.stage === 'shadow_challenger' || track.id === 'NeuCB'
         ? shadowSamples >= 30 ? 'ready' : shadowSamples > 0 ? 'partial' : 'missing'
         : 'not_applicable'
 
@@ -317,6 +317,7 @@ export function buildMetaLearningEvidenceMatrix(
         ? rewardLedgerStatus === 'ready' ? 'ready' : 'missing'
         : track.stage === 'shadow_challenger'
           ? shadowStatus === 'ready' && hasResearchEvidence ? 'ready' : shadowStatus !== 'missing' || hasResearchEvidence ? 'partial' : 'missing'
+          : track.id === 'NeuCB' && (shadowStatus !== 'missing' || hasResearchEvidence) ? 'partial'
           : hasResearchEvidence ? 'partial' : 'missing'
 
     const missingEvidence = track.required_evidence.filter((item) => {

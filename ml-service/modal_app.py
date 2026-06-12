@@ -282,6 +282,18 @@ def retrain_orchestrator(payload: dict) -> dict:
     is_monthly = payload.get("is_monthly", False)
     followup_webhook_url = payload.get("followup_webhook_url")
     gcs_prefix = payload.get("gcs_prefix", "universal")
+    data_slice = payload.get("data_slice") if isinstance(payload.get("data_slice"), dict) else {}
+    sequence_gcs_prefix = (
+        payload.get("sequence_gcs_prefix")
+        or data_slice.get("sequence_gcs_prefix")
+        or gcs_prefix
+    )
+    sequence_batch_count = int(
+        payload.get("sequence_batch_count")
+        or data_slice.get("sequence_batch_count")
+        or payload.get("batch_count")
+        or 5
+    )
     window_id = payload.get("window_id")
     run_id = payload.get("run_id")
     lock_key = payload.get("lock_key")
@@ -321,6 +333,13 @@ def retrain_orchestrator(payload: dict) -> dict:
             print(f"[Orchestrator] GCS batch count verified: {actual_batch_count} batches")
     except Exception as _e:
         print(f"[Orchestrator] GCS batch count check failed (using payload value {batch_count}): {_e}")
+
+    if (
+        not payload.get("sequence_batch_count")
+        and not data_slice.get("sequence_batch_count")
+        and str(sequence_gcs_prefix).strip().rstrip("/") == str(gcs_prefix).strip().rstrip("/")
+    ):
+        sequence_batch_count = int(batch_count)
 
     result = {"stages": {}}
     partial_results: dict[str, dict] = {}
@@ -388,8 +407,11 @@ def retrain_orchestrator(payload: dict) -> dict:
     )
     if not sequence_records and sequence_required:
         try:
-            sequence_records = _load_sequence_records_from_gcs(gcs_prefix, batch_count)
-            print(f"[Orchestrator] Loaded {len(sequence_records)} sequence records from GCS for sequence artifacts")
+            sequence_records = _load_sequence_records_from_gcs(sequence_gcs_prefix, sequence_batch_count)
+            print(
+                f"[Orchestrator] Loaded {len(sequence_records)} sequence records from "
+                f"GCS prefix={sequence_gcs_prefix} batches={sequence_batch_count}"
+            )
         except Exception as e:
             print(f"[Orchestrator] sequence records load failed: {e}")
             sequence_records = []
@@ -404,6 +426,8 @@ def retrain_orchestrator(payload: dict) -> dict:
         ),
         "min_len": training_policy.sequence_min_length(payload),
         "contract": "sequence_records_v2",
+        "source_gcs_prefix": sequence_gcs_prefix,
+        "batch_count": sequence_batch_count,
     }
     if any(g in requested_train_groups for g in ("dlinear", "patchtst")):
         print(f"[Orchestrator] sequence series validation: {sequence_report}")
@@ -426,6 +450,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
+                "sequence_gcs_prefix": sequence_gcs_prefix,
+                "sequence_batch_count": sequence_batch_count,
             },
             "mergeable": training_group_feature_policy("dlinear").mergeable_oos,
             "models": models_for_training_group("dlinear"),
@@ -437,6 +463,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
+                "sequence_gcs_prefix": sequence_gcs_prefix,
+                "sequence_batch_count": sequence_batch_count,
             },
             "mergeable": training_group_feature_policy("patchtst").mergeable_oos,
             "models": models_for_training_group("patchtst"),
@@ -633,6 +661,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                             **_base_artifact_payload(target),
                             "sequence_records": sequence_records,
                             "device": payload.get("sequence_device") or "cuda",
+                            "sequence_gcs_prefix": sequence_gcs_prefix,
+                            "sequence_batch_count": sequence_batch_count,
                         }
                         lifecycle_results[target] = train_itransformer_universal.remote(train_payload)
                     elif target == "TimesFM":
@@ -1203,34 +1233,6 @@ def train_tree_models(payload: dict) -> dict:
 
 
 @app.function(
-    cpu=1,
-    memory=512,
-    timeout=60,
-    scaledown_window=60,
-    max_containers=1,
-)
-def train_ftt_model(payload: dict) -> dict:
-    """Retired Modal endpoint kept fail-closed for old callers."""
-    return {"error": "FT-Transformer retired from production training", "type": "ftt_model", "status": "retired"}
-
-
-@app.function(
-    cpu=1,
-    memory=512,
-    timeout=60,
-    scaledown_window=60,
-    max_containers=1,
-)
-def ft_transformer_arch_search(payload: dict) -> dict:
-    """Retired Modal endpoint kept fail-closed for old callers."""
-    return {
-        "error": "FT-Transformer retired from production training",
-        "type": "ft_arch_search",
-        "status": "retired",
-    }
-
-
-@app.function(
     cpu=2,
     memory=4096,
     timeout=3600,   # 60 min per window for tree models on short train windows.
@@ -1272,23 +1274,6 @@ def train_wf_tree_window(payload: dict) -> dict:
             "window_id": payload.get("window_id"),
             "type": "wf_tree",
         }
-
-
-@app.function(
-    cpu=1,
-    memory=512,
-    timeout=60,
-    scaledown_window=60,
-    max_containers=1,
-)
-def train_wf_ftt_window(payload: dict) -> dict:
-    """Retired Modal endpoint kept fail-closed for old callers."""
-    return {
-        "error": "FT-Transformer retired from walk-forward training",
-        "type": "wf_ftt_window",
-        "status": "retired",
-        "window_id": payload.get("window_id"),
-    }
 
 
 @app.function(
@@ -1651,6 +1636,25 @@ def feature_selection_pipeline(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc(), "type": "feature_selection"}
 
 
+@app.function(
+    cpu=2,
+    memory=4096,
+    timeout=1800,
+    scaledown_window=60,
+    max_containers=1,
+)
+def build_finlab_long_sequence_prep(payload: dict) -> dict:
+    """Hydrate existing FinLab 3Y/5Y artifacts into sequence-only prep batches."""
+    _setup_env()
+    from app.long_history_sequence_prep import build_finlab_long_history_sequence_prep
+
+    try:
+        return build_finlab_long_history_sequence_prep(payload or {})
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "finlab_long_sequence_prep"}
+
+
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal training (one-shot)
 @app.function(
     gpu="L4",
@@ -1752,44 +1756,31 @@ def dlinear_universal_predict(payload: dict) -> dict:
     max_containers=1,
 )
 def train_patchtst_universal(payload: dict) -> dict:
-    """One-shot universal PatchTST training across all stocks' close series."""
+    """One-shot NeuralForecast PatchTST training across all stocks' close series."""
     _setup_env()
-    from app.patchtst_universal import train_patchtst, save_to_gcs
+    from app.patchtst_universal import train_patchtst
     try:
-        import torch
-        device = payload.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         result = train_patchtst(
             series_close=payload.get("series_close") or [],
             sequence_records=payload.get("sequence_records") or None,
             seq_len=payload.get("seq_len", 60),
             pred_len=payload.get("pred_len", 5),
-            patch_len=payload.get("patch_len", 12),
-            stride=payload.get("stride", 12),
-            d_model=payload.get("d_model", 128),
-            n_heads=payload.get("n_heads", 8),
-            n_layers=payload.get("n_layers", 3),
-            dropout=payload.get("dropout", 0.1),
             n_epochs=payload.get("n_epochs", 30),
             batch_size=payload.get("batch_size", 256),
-            lr=payload.get("lr", 5e-4),
-            weight_decay=payload.get("weight_decay", 1e-5),
             val_ratio=payload.get("val_ratio", 0.15),
-            device=device,
+            version=payload.get("version", "v1"),
+            max_steps=payload.get("max_steps"),
             model_cpcv_policy=payload.get("model_cpcv_policy") or None,
         )
         if result.get("error"):
             return result
-        version = payload.get("version", "v1")
-        result["metadata"]["version"] = version
-        result["metadata"]["model_pool_version"] = version
-        saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
         return {
-            "saved": saved,
+            "saved": result.get("saved"),
             "metadata": result["metadata"],
             "ic_tracking": result.get("ic_tracking", {}),
-            "version": version,
-            "elapsed_s": result["metadata"].get("elapsed_s"),
-            "type": "patchtst_universal",
+            "version": result.get("version"),
+            "elapsed_s": result.get("elapsed_s"),
+            "type": result.get("type", "neuralforecast_patchtst_universal"),
         }
     except Exception as e:
         import traceback
@@ -1988,25 +1979,6 @@ def state_space_universal_predict(payload: dict) -> dict:
     if callback_status is not None:
         result["shadow_callback"] = callback_status
     return result
-
-
-# Retired Chronos universal batch predictor.
-@app.function(
-    cpu=1,
-    memory=512,
-    timeout=60,
-    scaledown_window=60,
-    max_containers=1,
-)
-def chronos_universal_predict(payload: dict) -> dict:
-    """Retired Modal endpoint kept fail-closed for old callers."""
-    return {
-        "error": "Chronos retired from the production model pool",
-        "results": [],
-        "n_input": len(payload.get("series_list") or []),
-        "n_success": 0,
-        "status": "retired",
-    }
 
 
 @app.function(

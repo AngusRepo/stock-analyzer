@@ -12,6 +12,8 @@ import {
   type Time,
 } from 'lightweight-charts'
 import {
+  MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
+  MODEL_POOL_L2_COARSE_MODEL_IDS,
   MODEL_POOL_PRODUCTION_SLOT_IDS,
   MODEL_POOL_RETIRED_MODEL_IDS,
   MODEL_UPGRADE_CANDIDATES,
@@ -24,6 +26,7 @@ import type {
   ModelUpgradeResearchStatusRow,
 } from '@/lib/api'
 import {
+  WorkstationFlow,
   WorkstationPanel,
   WorkstationPill,
   type WorkstationTone,
@@ -40,15 +43,39 @@ type ModelPoolNewFlowWorkbenchProps = {
 }
 
 const RETIRED_MODELS = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
+const ACTIVE_ALPHA_MODELS = new Set<string>(MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS)
 const PRODUCTION_SLOT_MODELS = new Set<string>(MODEL_POOL_PRODUCTION_SLOT_IDS)
-const COARSE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])
+const COARSE_MODELS = new Set<string>(MODEL_POOL_L2_COARSE_MODEL_IDS)
 const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])
 const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer', 'TimesFM'])
 const GRAPH_MODELS = new Set(['GNN'])
 const TABULAR_NEURAL_MODELS = new Set(['TabM'])
 
-function isServing(model: ModelPoolLineageModel): boolean {
-  return model.status === 'active' || model.status === 'degraded'
+const ADAPTIVE_EVIDENCE_STEPS = [
+  {
+    label: 'Active-9 confidence hook',
+    detail: 'Risk thresholds and PF quality use active-9 verified model_accuracy only; retired models stay out of confidence and quality multipliers.',
+    tone: 'ok' as const,
+  },
+  {
+    label: 'Mode B policy replay',
+    detail: 'Weekly adaptive-meta-policy-replay compares LinUCB, NeuralUCB, NeuralTS, and NeuCB as evidence-only meta-policy candidates.',
+    tone: 'info' as const,
+  },
+  {
+    label: 'LinUCB multiplier replay',
+    detail: 'Weekly linucb-multiplier-replay audits bandit_* L2 constants; L2 KV push also requires Mode B replay, PBO PASS, and walk-forward PASS.',
+    tone: 'info' as const,
+  },
+  {
+    label: 'Promotion gate',
+    detail: 'Artifact and parameter candidates still need final compare, explicit approval when required, and champion pointer readiness.',
+    tone: 'warn' as const,
+  },
+]
+
+function isServing(model?: ModelPoolLineageModel): boolean {
+  return model?.status === 'active' || model?.status === 'degraded'
 }
 
 function toneFromStatus(status?: string | null): WorkstationTone {
@@ -143,13 +170,13 @@ export default function ModelPoolNewFlowWorkbench({
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   const liveModels = useMemo(
-    () => models.filter(([name]) => !RETIRED_MODELS.has(name)),
+    () => models.filter(([name]) => ACTIVE_ALPHA_MODELS.has(name) && !RETIRED_MODELS.has(name)),
     [models],
   )
   const byName = useMemo(() => new Map(liveModels), [liveModels])
   const serving = useMemo(() => liveModels.filter(([, model]) => isServing(model)), [liveModels])
   const coarse = useMemo(() => [...COARSE_MODELS].map((name) => [name, byName.get(name)] as const), [byName])
-  const nearProduction = useMemo(
+  const activeSlots = useMemo(
     () => MODEL_UPGRADE_CANDIDATES.filter((candidate) => PRODUCTION_SLOT_MODELS.has(candidate.id)),
     [],
   )
@@ -166,20 +193,21 @@ export default function ModelPoolNewFlowWorkbench({
     return sum + (row.monthly_release_candidate ? 1 : 0) + (row.weekly_drift_candidate ? 1 : 0)
   }, 0)
   const promotionCount = promotionQueue?.count ?? promotionQueue?.queue?.length ?? 0
-  const nearReady = nearProduction.filter((candidate) => {
+  const evidenceReady = activeSlots.filter((candidate) => {
     const row = latestStatusFor(candidate.id, statusRows)
     return row?.registry_status === 'ready_for_review' || row?.registry_status === 'approved_for_patch'
   }).length
 
   const chartPoints = useMemo(() => {
+    const coarseServing = coarse.filter(([, model]) => isServing(model)).length
     const bars = [
-      { label: 'L2 coarse', value: coarse.filter(([, model]) => model && isServing(model)).length, blockers: coarse.filter(([, model]) => !model || !isServing(model)).length, color: '#38bdf8' },
-      { label: 'L3 serving', value: serving.length, blockers: liveModels.length - serving.length, color: '#34d399' },
-      { label: 'near-prod', value: nearReady, blockers: nearProduction.length - nearReady, color: '#facc15' },
+      { label: 'L2 coarse', value: coarseServing, blockers: coarse.length - coarseServing, color: '#38bdf8' },
+      { label: 'Active-9', value: serving.length, blockers: Math.max(0, activeSlots.length - serving.length), color: '#34d399' },
+      { label: 'evidence', value: evidenceReady, blockers: activeSlots.length - evidenceReady, color: '#facc15' },
       { label: 'promotion', value: promotionCount, blockers: selectedArtifacts ? Math.max(0, selectedArtifacts - promotionCount) : 0, color: '#c084fc' },
     ]
     return bars.map((bar, index) => ({ ...bar, time: chartDay(index) }))
-  }, [coarse, liveModels.length, nearProduction.length, nearReady, promotionCount, selectedArtifacts, serving.length])
+  }, [activeSlots.length, coarse, evidenceReady, promotionCount, selectedArtifacts, serving.length])
 
   useEffect(() => {
     const container = containerRef.current
@@ -236,27 +264,27 @@ export default function ModelPoolNewFlowWorkbench({
 
   return (
     <WorkstationPanel
-      title="Model Pool Cockpit / 新流程模型池"
-      kicker="L2 coarse -> L3 family -> promotion and parameter governance"
+      title="Model Pool Cockpit"
+      kicker="L2 coarse -> L3 family -> adaptive evidence -> promotion governance"
     >
       <div className="grid gap-3 border-b border-[#263247] p-3 lg:grid-cols-4">
         <StatCell
           label="L2 coarse"
-          value={`${coarse.filter(([, model]) => model && isServing(model)).length}/3`}
+          value={`${coarse.filter(([, model]) => isServing(model)).length}/3`}
           detail="LightGBM / XGBoost / ExtraTrees coarse gate health"
-          tone={coarse.every(([, model]) => model && isServing(model)) ? 'ok' : 'warn'}
+          tone={coarse.every(([, model]) => isServing(model)) ? 'ok' : 'warn'}
         />
         <StatCell
-          label="L3 serving"
-          value={serving.length}
+          label="Active-9 serving"
+          value={`${serving.length}/${activeSlots.length}`}
           detail={`families ${Object.entries(familyCounts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'none'}`}
-          tone={serving.length ? 'ok' : 'warn'}
+          tone={serving.length === activeSlots.length ? 'ok' : serving.length ? 'warn' : 'error'}
         />
         <StatCell
-          label="Near production"
-          value={`${nearReady}/${nearProduction.length}`}
-          detail="TabM / GNN / iTransformer / TimesFM evidence readiness"
-          tone={nearReady === nearProduction.length ? 'ok' : nearReady ? 'warn' : 'info'}
+          label="Evidence ready"
+          value={`${evidenceReady}/${activeSlots.length}`}
+          detail="Active-9 artifact, verified-row, and IC readiness"
+          tone={evidenceReady === activeSlots.length ? 'ok' : evidenceReady ? 'warn' : 'info'}
         />
         <StatCell
           label="Governance"
@@ -266,11 +294,16 @@ export default function ModelPoolNewFlowWorkbench({
         />
       </div>
 
-      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.25fr)_minmax(340px,0.75fr)]">
+      <div className="border-b border-[#263247] bg-[#05070c] p-3">
+        <WorkstationFlow steps={ADAPTIVE_EVIDENCE_STEPS} />
+      </div>
+
+      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
         <div className="bg-[#070a10] p-3">
-          <div ref={containerRef} className="min-h-[260px] w-full" />
+          <div ref={containerRef} className="min-h-[260px] w-full" aria-label="Active-9 evidence chain chart" />
           <p className="mt-2 text-[11px] leading-5 text-[#70809b]">
-            這張圖只做當前層級 snapshot：柱狀是該層可用數，紅線是 blocker 數；完整 run path 留在流程追蹤頁。
+            Snapshot of the active-9 evidence chain. Rising blockers mean the next scheduler path
+            should close artifact, verified-row, IC, or promotion evidence gaps.
           </p>
         </div>
         <div className="space-y-3 bg-[#070a10] p-3">
@@ -281,19 +314,20 @@ export default function ModelPoolNewFlowWorkbench({
             </div>
           </div>
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-300">L3 production targets</p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-300">Active-9 L3 slots</p>
             <div className="mt-2 grid gap-2">
-              {nearProduction.map((candidate) => {
+              {activeSlots.map((candidate) => {
                 const row = latestStatusFor(candidate.id, statusRows)
+                const model = byName.get(candidate.id)
                 return (
                   <div key={candidate.id} className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{candidate.id}</p>
-                        <p className="mt-0.5 text-[11px] text-[#70809b]">{candidate.layer} / {candidate.family}</p>
+                        <p className="mt-0.5 text-[11px] text-[#70809b]">{candidate.layer} / {candidate.family} / {model?.version ?? 'no artifact'}</p>
                       </div>
-                      <WorkstationPill tone={toneFromStatus(row?.registry_status)}>
-                        {row?.registry_status ?? 'needs evidence'}
+                      <WorkstationPill tone={toneFromStatus(row?.registry_status ?? model?.status)}>
+                        {row?.registry_status ?? model?.status ?? 'needs evidence'}
                       </WorkstationPill>
                     </div>
                     <p className="mt-2 text-xs leading-5 text-[#9aa7bd]">{candidate.roleZh}</p>
@@ -311,7 +345,9 @@ export default function ModelPoolNewFlowWorkbench({
       </div>
 
       <div className="border-t border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
-        參數比較與晉升資訊不移除：它屬於下方 Promotion & Parameter Governance。那裡處理 artifact candidate、final compare、champion pointer、Wei approval 與 allocator/meta 參數 proposal；不再混進 L2/L3 模型家族健康圖。
+        Parameter search and allocator/meta proposals stay in Promotion & Parameter Governance.
+        This cockpit is only the L2/L3 model evidence surface: active slots, artifacts, verified rows,
+        blockers, and champion pointer readiness.
       </div>
     </WorkstationPanel>
   )

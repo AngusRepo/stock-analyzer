@@ -19,6 +19,8 @@
     { "id": "weekly-backtest", "schedule": "0 22 * * 6", "task": "weekly-backtest", "query": "sync=1", "description": "Sunday TW 06:00 lightweight validation: backtest, MC, PBO" },
     { "id": "alpha-quality", "schedule": "0 22 * * 6", "task": "alpha-quality", "query": "sync=1", "description": "Sunday TW 06:00 alpha quality refresh" },
     { "id": "weekly-optuna", "schedule": "30 22 * * 6", "task": "weekly-optuna", "query": "sync=1", "description": "Sunday TW 06:30 lightweight Optuna/GA calibration" },
+    { "id": "adaptive-meta-policy-replay", "schedule": "40 22 * * 6", "task": "adaptive-meta-policy-replay", "query": "sync=1&persist=1", "headers": { "X-Confirm-Meta-Learning": "true" }, "description": "Sunday TW 06:40 persisted evidence-only active-9 replay comparing LinUCB, NeuralUCB, NeuralTS, and NeuCB" },
+    { "id": "linucb-multiplier-replay", "schedule": "50 22 * * 6", "task": "linucb-multiplier-replay", "query": "sync=1&persist=1", "headers": { "X-Confirm-Meta-Learning": "true" }, "description": "Sunday TW 06:50 persisted evidence-only active-9 replay for LinUCB bandit_* multiplier constants" },
     { "id": "sector-leaders", "schedule": "30 22 * * 6", "task": "sector-leaders", "query": "sync=1", "description": "Sunday TW 06:30 sector leader correlation refresh" },
     { "id": "monthly-optuna", "schedule": "first saturday of month 16:00", "task": "monthly-optuna", "query": "sync=1", "description": "Monthly first Saturday UTC Optuna research sweep" },
     { "id": "monthly-retrain", "schedule": "first sunday of month 02:00", "timeZone": "Asia/Taipei", "task": "monthly-retrain", "query": "sync=1", "description": "Monthly first Sunday TW 02:00 universal retrain lifecycle" },

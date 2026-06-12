@@ -190,8 +190,21 @@ def load_sequence_dataset(payload: dict[str, Any]) -> SequenceBenchmarkDataset:
     if isinstance(records, list) and records:
         return SequenceBenchmarkDataset(records=[row for row in records if isinstance(row, dict)], source="payload.sequence_records")
 
-    gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
-    batch_count = int(payload.get("batch_count") or payload.get("data_slice", {}).get("batch_count") or 5)
+    data_slice = payload.get("data_slice", {}) if isinstance(payload.get("data_slice"), dict) else {}
+    gcs_prefix = str(
+        payload.get("sequence_gcs_prefix")
+        or data_slice.get("sequence_gcs_prefix")
+        or payload.get("gcs_prefix")
+        or data_slice.get("gcs_prefix")
+        or "universal"
+    ).strip().rstrip("/")
+    batch_count = int(
+        payload.get("sequence_batch_count")
+        or data_slice.get("sequence_batch_count")
+        or payload.get("batch_count")
+        or data_slice.get("batch_count")
+        or 5
+    )
     bucket = _bucket()
     keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(batch_count)]
     from app.gcs_batch_io import download_existing_blobs

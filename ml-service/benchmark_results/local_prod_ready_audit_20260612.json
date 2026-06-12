@@ -1,0 +1,182 @@
+{
+  "checks": [
+    {
+      "detail": "required local scheduler job is present",
+      "id": "scheduler_manifest:weekly-optuna",
+      "status": "pass"
+    },
+    {
+      "detail": "required local scheduler job is present",
+      "id": "scheduler_manifest:adaptive-meta-policy-replay",
+      "status": "pass"
+    },
+    {
+      "detail": "required local scheduler job is present",
+      "id": "scheduler_manifest:linucb-multiplier-replay",
+      "status": "pass"
+    },
+    {
+      "detail": "required local scheduler job is present",
+      "id": "scheduler_manifest:monthly-optuna",
+      "status": "pass"
+    },
+    {
+      "detail": "required local scheduler job is present",
+      "id": "scheduler_manifest:optuna-queue",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:scikit-learn==1.9.0",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:xgboost==3.2.0",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:lightgbm==4.6.0",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:torch==2.12.0",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:torch-geometric==2.8.0",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:neuralforecast==3.1.9",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:tabm==0.0.3",
+      "status": "pass"
+    },
+    {
+      "detail": "reviewed official/stable runtime pin is present",
+      "id": "runtime_pin:timesfm[torch]==2.0.1",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:LightGBM",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:XGBoost",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:ExtraTrees",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:TabM",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:GNN",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:DLinear",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:PatchTST",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:iTransformer",
+      "status": "pass"
+    },
+    {
+      "detail": "active-9 model is a production_slot_member in the backend track",
+      "id": "active9_track:TimesFM",
+      "status": "pass"
+    },
+    {
+      "detail": "TimesFM25 remains a migration benchmark, not a second production voter",
+      "id": "timesfm25_track:benchmark_only",
+      "status": "pass"
+    },
+    {
+      "detail": "Model Pool renders the new workbench",
+      "id": "ui:new_flow_workbench",
+      "status": "pass"
+    },
+    {
+      "detail": "retired ML are filtered from the main surface",
+      "id": "ui:retired_hidden",
+      "status": "pass"
+    },
+    {
+      "detail": "meta replay is visible in the evidence flow",
+      "id": "ui:meta_replay_visible",
+      "status": "pass"
+    },
+    {
+      "detail": "LinUCB multiplier replay is visible in the evidence flow",
+      "id": "ui:multiplier_replay_visible",
+      "status": "pass"
+    },
+    {
+      "detail": "read-only replay evidence file exists",
+      "id": "replay_file:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass"
+    },
+    {
+      "detail": "replay evidence is explicitly non-mutating",
+      "id": "replay_fail_closed:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass"
+    },
+    {
+      "detail": "replay has a terminal gate status; fail is acceptable when fail-closed",
+      "id": "replay_status_terminal:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass"
+    },
+    {
+      "detail": "read-only replay evidence file exists",
+      "id": "replay_file:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass"
+    },
+    {
+      "detail": "replay evidence is explicitly non-mutating",
+      "id": "replay_fail_closed:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass"
+    },
+    {
+      "detail": "replay has a terminal gate status; fail is acceptable when fail-closed",
+      "id": "replay_status_terminal:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass"
+    }
+  ],
+  "failed_checks": [],
+  "local_closure": "done",
+  "local_prod_ready": "done",
+  "production_cutover_requires_wei_approval": [
+    "deploy_worker_and_frontend",
+    "sync_gcp_scheduler_manifest",
+    "write_or_promote_gcs_model_artifacts",
+    "update_model_pool_champion_pointers",
+    "remove_challenger_pointers_after approved cutover"
+  ],
+  "production_mutation_allowed": false,
+  "promotion_allowed": false,
+  "schema_version": "stockvision-local-prod-ready-audit-v1"
+}

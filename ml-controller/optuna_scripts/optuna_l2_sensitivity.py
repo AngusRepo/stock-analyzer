@@ -3,6 +3,11 @@ optuna_l2_sensitivity.py — 2026-04-20 #28 P7
 NSGA-II search over L2 / circuit dims that Mode B now consumes (P2-P5 done).
 
 Bandit dims (5) excluded by design — LinUCB runtime not simulated in Mode B.
+Clarification: `adaptive_meta_policy_replay` compares LinUCB / NeuralUCB /
+NeuralTS / NeuCB family-routing policies. It is not a substitute for searching
+`bandit_loss_thresh_*` or `bandit_max_mult_*` constants; those are evaluated
+by the separate read-only LinUCB multiplier replay until this Optuna objective
+explicitly consumes that replay evidence.
 Remaining 25 Mode-B-consumable dims split into:
   8 circuit + 6 L2-confidence + 6 SLTP-add + 4 night + 1 medium + 3 PF-search
   (PF 90d_weight = 1 - 30d_weight constrained, so 3 search dims cover 4 consumers)
@@ -16,6 +21,11 @@ Search space source-of-truth: trading:config.optuna_l2.search_space KV.
 This script accepts search_space as input (KV read is caller's responsibility).
 DEFAULT_SEARCH_SPACE is seeded fallback for bootstrap — production caller
 should override with KV read so Wei can retune ranges without code change.
+
+Live push gate:
+  Search completion is not enough to mutate trading:config. KV push requires
+  Mode B replay candidate evidence, CSCV rank-logit PBO PASS, and attached
+  walk-forward evidence PASS.
 
 Objective (single scalar for NSGA-II dominance):
   score = sharpe - dd_penalty * max_drawdown
@@ -213,10 +223,53 @@ def _l2_push_allowed(
     dry_run: bool,
     best_params_nested: dict[str, Any] | None,
     pbo_audit: dict[str, Any] | None,
+    walk_forward_evidence: dict[str, Any] | None = None,
+    require_walk_forward: bool = True,
 ) -> bool:
-    if not push_kv or dry_run or not best_params_nested:
+    return not _l2_push_blockers(
+        push_kv=push_kv,
+        dry_run=dry_run,
+        best_params_nested=best_params_nested,
+        pbo_audit=pbo_audit,
+        walk_forward_evidence=walk_forward_evidence,
+        require_walk_forward=require_walk_forward,
+    )
+
+
+def _walk_forward_evidence_passed(walk_forward_evidence: dict[str, Any] | None) -> bool:
+    if not isinstance(walk_forward_evidence, dict) or not walk_forward_evidence:
         return False
-    return str((pbo_audit or {}).get("go_live_verdict") or "").upper() == "PASS"
+    decision = str(walk_forward_evidence.get("decision") or walk_forward_evidence.get("status") or "").upper()
+    return bool(
+        walk_forward_evidence.get("passed")
+        or walk_forward_evidence.get("gate_pass")
+        or decision == "PASS"
+    )
+
+
+def _l2_push_blockers(
+    *,
+    push_kv: bool,
+    dry_run: bool,
+    best_params_nested: dict[str, Any] | None,
+    pbo_audit: dict[str, Any] | None,
+    walk_forward_evidence: dict[str, Any] | None = None,
+    require_walk_forward: bool = True,
+) -> list[str]:
+    blockers: list[str] = []
+    if not push_kv or dry_run or not best_params_nested:
+        if not push_kv:
+            blockers.append("push_kv_disabled")
+        if dry_run:
+            blockers.append("dry_run")
+        if not best_params_nested:
+            blockers.append("best_params_missing")
+        return blockers
+    if str((pbo_audit or {}).get("go_live_verdict") or "").upper() != "PASS":
+        blockers.append("pbo_audit_not_passed")
+    if require_walk_forward and not _walk_forward_evidence_passed(walk_forward_evidence):
+        blockers.append("walk_forward_evidence_not_passed")
+    return blockers
 
 
 def _score_l2_trial(

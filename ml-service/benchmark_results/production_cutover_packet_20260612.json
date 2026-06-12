@@ -1,0 +1,85 @@
+{
+  "actions_allowed_without_wei_approval": [],
+  "approval_required_actions": [
+    {
+      "approval_gate": "wei_explicit_approval_required",
+      "id": "deploy_worker_and_frontend",
+      "mutation_scope": "Cloudflare Worker / frontend production deploy"
+    },
+    {
+      "approval_gate": "wei_explicit_approval_required",
+      "id": "sync_gcp_scheduler_manifest",
+      "mutation_scope": "GCP Scheduler production job create/update"
+    },
+    {
+      "approval_gate": "wei_explicit_approval_required",
+      "id": "write_or_promote_gcs_model_artifacts",
+      "mutation_scope": "GCS model artifact write or champion artifact promotion"
+    },
+    {
+      "approval_gate": "wei_explicit_approval_required",
+      "id": "update_model_pool_champion_pointers",
+      "mutation_scope": "production model_pool champion pointer update"
+    },
+    {
+      "approval_gate": "wei_explicit_approval_required",
+      "id": "remove_challenger_pointers_after_approved_cutover",
+      "mutation_scope": "production challenger/shadow pointer cleanup"
+    }
+  ],
+  "blocked_reason": null,
+  "cutover_ready_for_review": true,
+  "evidence_inventory": [
+    {
+      "exists": true,
+      "path": "ml-service/benchmark_results/local_prod_ready_audit_20260612.json",
+      "required": true
+    },
+    {
+      "exists": true,
+      "path": "ml-service/benchmark_results/adaptive_meta_policy_replay_20260605_20260611.json",
+      "required": true
+    },
+    {
+      "exists": true,
+      "path": "ml-service/benchmark_results/linucb_multiplier_replay_20260605_20260611.json",
+      "required": true
+    }
+  ],
+  "local_gate": {
+    "audit_path": "ml-service/benchmark_results/local_prod_ready_audit_20260612.json",
+    "failed_check_count": 0,
+    "local_closure": "done",
+    "local_prod_ready": "done",
+    "passed": true
+  },
+  "production_mutation_allowed": false,
+  "remote_preflight_checks": [
+    {
+      "check_type": "remote_read_only",
+      "expected": "weekly-optuna, monthly-optuna, optuna-queue, adaptive-meta-policy-replay, linucb-multiplier-replay exist in GCP Scheduler",
+      "id": "scheduler_actual_matches_manifest"
+    },
+    {
+      "check_type": "remote_read_only",
+      "expected": "PatchTST and iTransformer production artifact slots point to NeuralForecast-backed zip artifacts",
+      "id": "sequence_artifacts_are_neuralforecast_zip"
+    },
+    {
+      "check_type": "remote_read_only",
+      "expected": "TimesFM migration config references google/timesfm-2.5-200m-pytorch and max_context >= 1024",
+      "id": "timesfm25_config_artifact_exists"
+    },
+    {
+      "check_type": "remote_read_only",
+      "expected": "production model_pool champion set contains only the active-9 ML families",
+      "id": "active9_model_pool_has_no_retired_champion"
+    },
+    {
+      "check_type": "remote_read_only",
+      "expected": "shadow/challenger rows are removed only after approved champion cutover evidence is captured",
+      "id": "challenger_cleanup_scope_is_explicit"
+    }
+  ],
+  "schema_version": "stockvision-production-cutover-packet-v1"
+}

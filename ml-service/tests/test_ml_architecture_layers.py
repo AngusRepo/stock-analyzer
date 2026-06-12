@@ -13,7 +13,15 @@ def test_alpha_prediction_pool_excludes_state_space_overlays():
         "iTransformer",
         "TimesFM",
     )
-    assert tuple(model_pool.RETIRED_ALPHA_MODELS) == ("CatBoost", "FT-Transformer", "Chronos")
+    assert tuple(model_pool.RETIRED_ALPHA_MODELS) == (
+        "CatBoost",
+        "FT-Transformer",
+        "FTTransformer",
+        "Chronos",
+        "Chronos2ZeroShot",
+        "Chronos2LoRA",
+    )
+    assert "ResidualMLP" not in model_pool.RETIRED_ALPHA_MODELS
     assert "KalmanFilter" not in model_pool.ALPHA_PREDICTION_MODELS
     assert "MarkovSwitching" not in model_pool.ALPHA_PREDICTION_MODELS
 

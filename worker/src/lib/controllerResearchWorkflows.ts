@@ -684,12 +684,22 @@ async function triggerUniversalRetrainModal(
   return `${taskId} triggered via Modal prep run_id=${runId} function_call_id=${functionCallId} callback expected`
 }
 
+const ACTIVE_WEEKLY_DRIFT_MODEL_NAMES = new Set([
+  'LightGBM',
+  'XGBoost',
+  'ExtraTrees',
+  'TabM',
+  'GNN',
+  'DLinear',
+  'PatchTST',
+  'iTransformer',
+  'TimesFM',
+])
+
 const MODEL_GROUP_BY_NAME: Record<string, string | null> = {
   XGBoost: 'tree',
-  CatBoost: 'tree',
   ExtraTrees: 'tree',
   LightGBM: 'tree',
-  Chronos: 'chronos',
   TabM: null,
   GNN: null,
   DLinear: 'dlinear',
@@ -726,7 +736,7 @@ export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
   const pool = await controllerJson<any>(env, '/model_pool/status', { timeoutMs: 30_000 })
   const models = pool?.models && typeof pool.models === 'object' ? pool.models as Record<string, Record<string, any>> : {}
   const targets = Object.entries(models)
-    .filter(([, model]) => isWeeklyDriftTarget(model))
+    .filter(([name, model]) => ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name) && isWeeklyDriftTarget(model))
     .map(([name, model]) => {
       const hasMappedGroup = Object.prototype.hasOwnProperty.call(MODEL_GROUP_BY_NAME, name)
       return {

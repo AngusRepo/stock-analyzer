@@ -60,3 +60,27 @@ def test_research_model_benchmark_aggregates_real_fold_metrics_without_promoting
     assert report["cost_sensitivity"]["status"] == "available"
     assert report["data_slice_report"]["symbols"] == 120
     assert report["promotion_allowed"] is False
+
+
+def test_research_model_benchmark_accepts_maintained_library_executor_metrics_without_controller_runtime():
+    report = build_model_family_benchmark_report(
+        candidate_id="PatchTST",
+        experiment_id="exp-sequence-upgrade",
+        start_date="2025-01-01",
+        end_date="2026-04-30",
+        data_slice={"universe": "twse_tpex"},
+        executor_result={
+            "fold_metrics": [
+                {"fold_id": "w1", "oos_ic": 0.04, "test_rows": 120, "coverage": 0.8},
+                {"fold_id": "w2", "oos_ic": 0.03, "test_rows": 120, "coverage": 0.8},
+                {"fold_id": "w3", "oos_ic": 0.02, "test_rows": 120, "coverage": 0.8},
+            ],
+            "pbo": 0.0,
+            "cost_sensitivity": {"status": "available", "latency_sec": 12.0, "gpu": "L4"},
+            "data_slice_report": {"status": "available", "symbols": 256, "rows": 40000},
+        },
+    )
+
+    assert report["candidate_id"] == "PatchTST"
+    assert not any(blocker.startswith("missing_runtime_package") for blocker in report["blockers"])
+    assert report["status"] == "ready_for_review"

@@ -32,6 +32,19 @@ ArtifactState = Literal[
     "archived",
 ]
 
+PRODUCTION_ARTIFACT_EXTENSIONS: dict[str, str] = {
+    "LightGBM": "joblib",
+    "XGBoost": "joblib",
+    "ExtraTrees": "joblib",
+    "TabM": "pt",
+    "GNN": "pt",
+    "DLinear": "pt",
+    "PatchTST": "zip",
+    "iTransformer": "zip",
+    "TimesFM": "json",
+}
+PRODUCTION_ARTIFACT_MODEL_NAMES = frozenset(PRODUCTION_ARTIFACT_EXTENSIONS)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -181,19 +194,13 @@ def candidate_type_from_retrain(*, is_monthly: bool | None, explicit: str | None
     return "unknown"
 
 
+def is_production_artifact_model(model_name: str) -> bool:
+    return model_name in PRODUCTION_ARTIFACT_MODEL_NAMES
+
+
 def model_artifact_path(model_name: str, version: str) -> str:
     folder = model_name.lower().replace("-", "_")
-    ext = {
-        "LightGBM": "joblib",
-        "XGBoost": "joblib",
-        "ExtraTrees": "joblib",
-        "TabM": "pt",
-        "GNN": "pt",
-        "DLinear": "pt",
-        "PatchTST": "pt",
-        "iTransformer": "pt",
-        "TimesFM": "json",
-    }.get(model_name)
+    ext = PRODUCTION_ARTIFACT_EXTENSIONS.get(model_name)
     if ext is None:
         raise ValueError(f"{model_name} is not a managed production artifact model")
     return f"universal/{folder}/{version}.{ext}"
@@ -846,6 +853,39 @@ def _build_superseded_action_context(
     }
 
 
+def _non_production_artifact_context(
+    row: dict[str, Any] | None,
+    *,
+    selection_slot: str | None = None,
+) -> dict[str, Any]:
+    model_name = str((row or {}).get("model_name") or "unknown")
+    return {
+        "root_cause": "model_not_active_production_artifact",
+        "impact": "Artifact is retained for audit evidence, but cannot enter active-9 selection, live shadow, or promotion.",
+        "next_action": "Archive or leave as historical evidence; use the active-9 model artifact lane for production candidates.",
+        "affected_downstream": ["artifact_registry", "model_pool_ui"],
+        "scheduler_dependency": [],
+        "evidence_status": "suppressed",
+        "selection_slot": selection_slot,
+        "metrics": {
+            "model_name": model_name,
+            "eligible_models": sorted(PRODUCTION_ARTIFACT_MODEL_NAMES),
+        },
+    }
+
+
+def _non_production_artifact_suppression(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "artifact_id": row.get("artifact_id"),
+        "model_name": str(row.get("model_name") or ""),
+        "candidate_version": row.get("version"),
+        "candidate_type": str(row.get("candidate_type") or "unknown"),
+        "superseded_by": None,
+        "reason": "model_not_active_production_artifact",
+        "action_context": _non_production_artifact_context(row),
+    }
+
+
 def _artifact_live_decision(row: dict[str, Any]) -> dict[str, Any]:
     live = _json_loads(row.get("live_evidence_json"))
     decision = live.get("decision")
@@ -929,6 +969,14 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "severity": severity,
         })
 
+    model_name = str(row.get("model_name") or "")
+    if model_name and not is_production_artifact_model(model_name):
+        add(
+            "model_not_active_production_artifact",
+            "Model is not in the active-9 production artifact set",
+            "Keep this artifact as historical/research evidence; production promotion must use an active-9 model.",
+        )
+
     if live_status not in {"passed", "multi_evidence_passed", "rolling_ic_passed"} and state != "live_gate_passed":
         add(
             "live_ic_not_ready",
@@ -1007,7 +1055,11 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
         )
 
     if live_status == "multi_evidence_passed":
-        return [b for b in blockers if b["code"] == "missing_current_champion"]
+        return [
+            b
+            for b in blockers
+            if b["code"] in {"missing_current_champion", "model_not_active_production_artifact"}
+        ]
     return blockers
 
 
@@ -1032,6 +1084,10 @@ def build_artifact_action_context(
             "scheduler_dependency": ["retrain_followup"],
             "evidence_status": "missing",
         }
+
+    model_name = str(row.get("model_name") or "")
+    if model_name and not is_production_artifact_model(model_name):
+        return _non_production_artifact_context(row, selection_slot=selection_slot)
 
     state = str(row.get("state") or "registered")
     offline_status = str(row.get("offline_gate_status") or "not_evaluated")
@@ -1169,8 +1225,13 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
     gate slot.
     """
     grouped: dict[str, list[dict[str, Any]]] = {}
+    suppressed: list[dict[str, Any]] = []
     for row in rows:
-        grouped.setdefault(str(row.get("model_name") or "unknown"), []).append(row)
+        model_name = str(row.get("model_name") or "unknown")
+        if not is_production_artifact_model(model_name):
+            suppressed.append(_non_production_artifact_suppression(row))
+            continue
+        grouped.setdefault(model_name, []).append(row)
 
     selections: dict[str, dict[str, Any]] = {}
     for model_name, items in grouped.items():
@@ -1248,6 +1309,8 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "status": "ok",
         "source_of_truth": "model_artifact_registry",
         "selection_policy": "release_train_v1",
+        "suppressed_count": len(suppressed),
+        "suppressed": suppressed,
         "models": selections,
     }
 
@@ -1473,11 +1536,13 @@ def build_promotion_queue(
     for row in rows:
         if str(row.get("candidate_type") or "") != "monthly_release":
             continue
+        model_name = str(row.get("model_name") or "")
+        if not is_production_artifact_model(model_name):
+            continue
         if str(row.get("state") or "") in {"archived", "rejected"}:
             continue
         if not _promotion_ready(row):
             continue
-        model_name = str(row.get("model_name") or "")
         current = promotable_monthly_by_model.get(model_name)
         if not current or _artifact_time_key(row) >= _artifact_time_key(current):
             promotable_monthly_by_model[model_name] = row
@@ -1499,6 +1564,9 @@ def build_promotion_queue(
         champion_version = champion_versions.get(model_name)
         candidate_type = str(row.get("candidate_type") or "unknown")
         candidate_version = str(row.get("version") or "")
+        if not is_production_artifact_model(model_name):
+            suppressed.append(_non_production_artifact_suppression(row))
+            continue
         if champion_version and candidate_version and candidate_version == champion_version:
             suppressed.append({
                 "artifact_id": row.get("artifact_id"),
@@ -1588,6 +1656,8 @@ def apply_promoted_artifact_to_model_pool(
     candidate_version = str(artifact.get("version") or "")
     if not model_name or not candidate_version:
         raise ValueError("artifact must include model_name and version")
+    if not is_production_artifact_model(model_name):
+        raise ValueError(f"{model_name} is not eligible for production artifact promotion")
 
     models = pool.setdefault("models", {})
     entry = models.get(model_name)

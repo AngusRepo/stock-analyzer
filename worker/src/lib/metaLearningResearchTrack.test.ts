@@ -69,7 +69,7 @@ const baseExperiment: ResearchExperimentRecord = {
 {
   const packet = buildMetaLearningDecisionPacket([baseExperiment])
   assert(packet.includes('LinUCB remains the interpretable production baseline'), 'packet should clarify LinUCB baseline')
-  assert(packet.includes('portfolio bandit and NeuCB stay in Strategy Lab'), 'packet should clarify non-shadow research tracks')
+assert(packet.includes('NeuCB may emit research-only shadow evidence'), 'packet should clarify NeuCB research-only shadow evidence')
 }
 
 {
@@ -92,14 +92,23 @@ const baseExperiment: ResearchExperimentRecord = {
         counterfactual_reward_mean: 0.011,
         latest_decision_at: '2026-05-08T00:00:00.000Z',
       },
+      {
+        policy_id: 'NeuCB',
+        samples: 12,
+        counterfactual_reward_mean: 0.006,
+        latest_decision_at: '2026-05-08T00:00:00.000Z',
+      },
     ],
   })
 
   const linucb = matrix.find((row) => row.id === 'LinUCB')
   const neural = matrix.find((row) => row.id === 'NeuralUCB')
+  const neucb = matrix.find((row) => row.id === 'NeuCB')
   const portfolio = matrix.find((row) => row.id === 'OnlinePortfolioBandit')
   assert(linucb?.reward_ledger_status === 'ready', 'LinUCB should become ready when reward ledger has samples')
   assert(neural?.shadow_status === 'partial', 'NeuralUCB should show partial shadow evidence when decisions exist')
+  assert(neucb?.shadow_status === 'partial', 'NeuCB should show partial research-only shadow evidence when decisions exist')
+  assert(neucb?.decision_queue_status === 'research_only', 'NeuCB must remain research-only even with shadow rows')
   assert(portfolio?.evidence_status === 'missing', 'portfolio bandit should remain missing without experiment evidence')
 }
 

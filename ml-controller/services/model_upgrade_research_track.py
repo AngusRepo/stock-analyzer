@@ -8,41 +8,95 @@ MODEL_UPGRADE_RESEARCH_TRACK_VERSION = "p7-model-upgrade-track-v1"
 V4_RESEARCH_CHALLENGER_REGISTRY_VERSION = "v4-research-challenger-registry-v1"
 
 RESEARCH_BENCHMARK_MODELS: dict[str, dict[str, Any]] = {
+    "LightGBM": {
+        "status": "production_slot_member",
+        "model_type": "tree_feature_lightgbm",
+        "family": "tree",
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "feature_policy", "walk_forward", "pbo", "cost_profile", "positive_ic"],
+    },
+    "XGBoost": {
+        "status": "production_slot_member",
+        "model_type": "tree_feature_xgboost",
+        "family": "tree",
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "feature_policy", "walk_forward", "pbo", "cost_profile", "positive_ic"],
+    },
+    "ExtraTrees": {
+        "status": "production_slot_member",
+        "model_type": "tree_feature_extratrees",
+        "family": "tree",
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "feature_policy", "walk_forward", "pbo", "cost_profile", "positive_ic"],
+    },
+    "DLinear": {
+        "status": "production_slot_member",
+        "model_type": "time_series_linear_current",
+        "family": "time_series",
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "sequence_policy", "walk_forward", "pbo", "cost_profile"],
+    },
+    "PatchTST": {
+        "status": "production_slot_member",
+        "model_type": "time_series_neuralforecast_patchtst",
+        "family": "time_series",
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "sequence_policy", "walk_forward", "pbo", "cost_profile"],
+    },
     "TabM": {
-        "status": "benchmark_only",
+        "status": "production_slot_member",
         "model_type": "tabular_deep_learning",
         "family": "tabular",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["feature_policy", "walk_forward", "pbo", "cost_profile"],
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "feature_policy", "walk_forward", "pbo", "cost_profile", "positive_ic"],
+    },
+    "GNN": {
+        "status": "production_slot_member",
+        "model_type": "cross_stock_graphsage",
+        "family": "graph",
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "graph_spec", "walk_forward", "pbo", "cost_profile", "positive_ic"],
     },
     "iTransformer": {
-        "status": "benchmark_only",
-        "model_type": "time_series_transformer",
+        "status": "production_slot_member",
+        "model_type": "time_series_neuralforecast_itransformer",
         "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["sequence_policy", "walk_forward", "pbo", "cost_profile"],
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "sequence_policy", "walk_forward", "pbo", "cost_profile"],
     },
     "TimesFM": {
-        "status": "benchmark_only",
+        "status": "production_slot_member",
         "model_type": "foundation_time_series",
         "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
+        "direct_prediction": True,
+        "vote_weight": 1.0,
+        "promotion_state": "model_pool_lifecycle",
+        "evidence_required": ["production_artifact", "forecast_validation", "walk_forward", "cost_profile", "positive_ic"],
     },
-    "Moirai": {
+    "TimesFM25": {
         "status": "benchmark_only",
-        "model_type": "foundation_time_series",
+        "model_type": "foundation_time_series_maintained_runtime",
         "family": "time_series",
         "direct_prediction": False,
         "vote_weight": 0.0,
         "promotion_state": "not_challenger",
-        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile"],
+        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile", "serving_parity"],
     },
 }
 
@@ -118,13 +172,20 @@ V4_OBJECTIVE_TRACKS = {
 
 def build_research_benchmark_manifest(created_at: str) -> dict[str, dict[str, Any]]:
     manifest = deepcopy(RESEARCH_BENCHMARK_MODELS)
-    for entry in manifest.values():
+    for name, entry in manifest.items():
         entry["created_at"] = created_at
-        entry["approval_gate"] = "research_review_packet_required"
-        entry["note"] = (
-            "Benchmark-only candidate; not a model_pool challenger and never votes "
-            "until promoted by a separate reviewed lifecycle path."
-        )
+        if entry["status"] == "benchmark_only":
+            entry["approval_gate"] = "research_review_packet_required"
+            entry["note"] = (
+                "Benchmark-only candidate; not a model_pool challenger and never votes "
+                "until promoted by a separate reviewed lifecycle path."
+            )
+        else:
+            entry["approval_gate"] = "model_pool_lifecycle_required"
+            entry["note"] = (
+                f"{name} is an active production slot member. It may vote only through "
+                "artifact-backed serving, lifecycle IC weighting, and the normal model_pool gates."
+            )
         entry["track_version"] = MODEL_UPGRADE_RESEARCH_TRACK_VERSION
     return manifest
 

@@ -36,6 +36,82 @@ def _tw_now() -> str:
     return datetime.now(tz).isoformat()
 
 
+def _as_float(value: object, default: float | None = None) -> float | None:
+    try:
+        if value is not None:
+            return float(value)
+    except (TypeError, ValueError):
+        return default
+    return default
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    try:
+        if value is not None:
+            return max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return default
+
+
+def build_ml_confidence_hook(
+    rows_30d: list[dict],
+    accuracy_30d: float,
+    *,
+    active_9_quality_30d: float | None = None,
+    active_9_samples_30d: int | None = None,
+    active_9_model_count_30d: int | None = None,
+) -> dict:
+    active = set(ALPHA_VOTE_MODELS)
+    total_samples = 0
+    weighted_accuracy = 0.0
+    active_models_seen: set[str] = set()
+    ignored_models: set[str] = set()
+
+    for row in rows_30d:
+        name = str(row.get("model_name") or "").strip()
+        if not name:
+            continue
+        if name not in active:
+            ignored_models.add(name)
+            continue
+        samples = _as_int(row.get("total_count"))
+        accuracy = _as_float(row.get("accuracy"))
+        if samples <= 0 or accuracy is None:
+            continue
+        total_samples += samples
+        weighted_accuracy += _clip(accuracy, 0.0, 1.0) * samples
+        active_models_seen.add(name)
+
+    provided_quality = _as_float(active_9_quality_30d)
+    if provided_quality is not None:
+        quality = _clip(provided_quality, 0.0, 1.0)
+        status = "active_9_worker_quality"
+        sample_count = _as_int(active_9_samples_30d, total_samples)
+        model_count = _as_int(active_9_model_count_30d, len(active_models_seen))
+    elif total_samples > 0:
+        quality = _clip(weighted_accuracy / total_samples, 0.0, 1.0)
+        status = "active_9_rows_quality"
+        sample_count = total_samples
+        model_count = len(active_models_seen)
+    else:
+        quality = _clip(float(accuracy_30d), 0.0, 1.0)
+        status = "fallback_global_accuracy"
+        sample_count = 0
+        model_count = 0
+
+    return {
+        "source": "model_accuracy_30d_active_9_verified_rows",
+        "status": status,
+        "model_quality_30d": round(quality, 4),
+        "sample_count_30d": int(sample_count),
+        "active_model_count_30d": int(model_count),
+        "active_models": ALPHA_VOTE_MODELS,
+        "ignored_non_active_models": sorted(ignored_models),
+        "effect": "threshold_components.model_quality_penalty",
+    }
+
+
 # ── 1. 信心門檻自適應 ──────────────────────────────────────────────────────────
 
 def compute_confidence_threshold(risk_score: float, accuracy_30d: float) -> float:
@@ -164,15 +240,18 @@ def compute_pf_quality_mults(
     lo  = float(L2.get("pf_quality_clip_lo", 0.3))
     hi  = float(L2.get("pf_quality_clip_hi", 1.8))
 
-    pf_90_map: dict[str, float] = {
-        r["model_name"]: r["profit_factor"]
-        for r in rows_90d
-        if r.get("profit_factor") is not None
-    }
+    active = set(ALPHA_VOTE_MODELS)
+    pf_90_map: dict[str, float] = {}
+    for r in rows_90d:
+        name = str(r.get("model_name") or "").strip()
+        if name in active and r.get("profit_factor") is not None:
+            pf_90_map[name] = r["profit_factor"]
 
     result: dict[str, float] = {}
     for r in rows_30d:
-        name = r["model_name"]
+        name = str(r.get("model_name") or "").strip()
+        if name not in active:
+            continue
         if r.get("total_count", 0) < 10 or r.get("profit_factor") is None:
             result[name] = 1.0
             continue
@@ -248,6 +327,7 @@ def compute_regime_overrides(
     risk_score: float | None = None,
     accuracy_30d: float | None = None,
     risk_level: str | None = None,
+    model_quality: float | None = None,
 ) -> dict[str, dict]:
     """Controller-owned per-regime adaptive deltas."""
     L2 = L2_formula or {}
@@ -273,6 +353,7 @@ def compute_regime_overrides(
                 L2,
                 risk_level=risk_level,
                 regime=regime,
+                model_quality=model_quality,
             )
             delta = component_bundle["effective_delta"]
         else:
@@ -343,6 +424,9 @@ def compute_adaptive_params(
     current_version: int = 0,
     L2_formula: dict | None = None,
     baseline_buy_signal_score: float | None = None,
+    active_9_quality_30d: float | None = None,
+    active_9_samples_30d: int | None = None,
+    active_9_model_count_30d: int | None = None,
 ) -> dict:
     """
     計算完整的自適應參數字典（可直接寫入 KV ml:adaptive_params）。
@@ -358,6 +442,14 @@ def compute_adaptive_params(
     """
     L2 = L2_formula or {}
     baseline_buy = baseline_buy_signal_score if baseline_buy_signal_score is not None else 0.52
+    ml_confidence_hook = build_ml_confidence_hook(
+        rows_30d,
+        accuracy_30d,
+        active_9_quality_30d=active_9_quality_30d,
+        active_9_samples_30d=active_9_samples_30d,
+        active_9_model_count_30d=active_9_model_count_30d,
+    )
+    model_quality_30d = ml_confidence_hook["model_quality_30d"]
 
     threshold_components = compute_confidence_components(
         risk_score,
@@ -365,6 +457,7 @@ def compute_adaptive_params(
         L2,
         risk_level=risk_level,
         regime="unknown",
+        model_quality=model_quality_30d,
     )
     conf_delta      = threshold_components["effective_delta"]
     pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d, L2)
@@ -378,6 +471,7 @@ def compute_adaptive_params(
         risk_score=risk_score,
         accuracy_30d=accuracy_30d,
         risk_level=risk_level,
+        model_quality=model_quality_30d,
     )
 
     # legacy backwards compat: 計算 effective absolute confidence threshold
@@ -389,6 +483,7 @@ def compute_adaptive_params(
         # 新 schema (delta-based)
         "confidence_delta":      conf_delta,
         "threshold_components":  threshold_components,
+        "ml_confidence_hook":    ml_confidence_hook,
         "position_pct_delta":    0.0,  # Phase 補齊
         "sltp_add":              sl_tp_add,
         "pf_quality_mult":       pf_quality_mult,
@@ -402,6 +497,7 @@ def compute_adaptive_params(
         "provenance": {
             "owner": "ml-controller",
             "source": "risk-assess",
+            "l2_formula_source": "worker_trading_config" if L2_formula else "controller_fallback_defaults",
             "schema_version": "adaptive-params-v2",
             "update_frequency": "daily_after_verify",
             "computed_at": computed_at,

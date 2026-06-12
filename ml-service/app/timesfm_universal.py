@@ -10,9 +10,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SEQ_LEN = 256
+DEFAULT_SEQ_LEN = 128
 DEFAULT_PRED_LEN = 5
-DEFAULT_MODEL_ID = "google/timesfm-2.0-500m-pytorch"
+DEFAULT_MAX_CONTEXT = 1024
+DEFAULT_MODEL_ID = "google/timesfm-2.5-200m-pytorch"
 GCS_CONFIG_PREFIX = "universal/timesfm"
 _MODEL_CACHE: dict[str, Any] = {}
 _CONFIG_CACHE: dict[str, dict | None] = {}
@@ -57,11 +58,51 @@ def _uses_timesfm_2p5_model(model_id: str) -> bool:
     return "timesfm-2.5" in normalized or "2p5" in normalized
 
 
+def _default_max_context(model_id: str, seq_len: int) -> int:
+    if _uses_timesfm_2p5_model(model_id):
+        return max(DEFAULT_MAX_CONTEXT, int(seq_len))
+    return max(256, int(seq_len))
+
+
+def build_timesfm25_config(
+    *,
+    version: str,
+    seq_len: int = DEFAULT_SEQ_LEN,
+    pred_len: int = DEFAULT_PRED_LEN,
+    max_context: int = DEFAULT_MAX_CONTEXT,
+    backend: str = "gpu",
+) -> dict[str, Any]:
+    """Build a TimesFM 2.5 config artifact payload without writing production."""
+
+    return {
+        "version": version,
+        "model_id": DEFAULT_MODEL_ID,
+        "seq_len": int(seq_len),
+        "pred_len": int(pred_len),
+        "max_context": max(int(max_context), int(seq_len)),
+        "max_horizon": int(pred_len),
+        "backend": backend,
+        "per_core_batch_size": 32,
+        "artifact_schema": "timesfm_2p5_config_v1",
+        "source": "local_timesfm25_config_builder",
+        "serving_contract": {"input": "sequence_records.close_only"},
+        "forecast_flags": {
+            "normalize_inputs": True,
+            "use_continuous_quantile_head": True,
+            "force_flip_invariance": True,
+            "infer_is_positive": True,
+            "fix_quantile_crossing": True,
+        },
+        "production_mutation_allowed": False,
+    }
+
+
 def _load_timesfm_model(config: dict):
     import timesfm
 
     model_id = str(config.get("model_id") or DEFAULT_MODEL_ID)
-    max_context = int(config.get("max_context") or max(DEFAULT_SEQ_LEN, int(config.get("seq_len") or DEFAULT_SEQ_LEN)))
+    seq_len = int(config.get("seq_len") or DEFAULT_SEQ_LEN)
+    max_context = int(config.get("max_context") or _default_max_context(model_id, seq_len))
     max_horizon = int(config.get("max_horizon") or max(DEFAULT_PRED_LEN, int(config.get("pred_len") or DEFAULT_PRED_LEN)))
     cache_key = f"{model_id}:{max_context}:{max_horizon}"
     if cache_key in _MODEL_CACHE:
@@ -101,8 +142,8 @@ def _load_timesfm_model(config: dict):
     if hasattr(timesfm, "TimesFM_2p5_200M_torch"):
         raise RuntimeError(
             "TimesFM package exposes only the 2.5 torch runtime, but the serving "
-            f"artifact model_id is {model_id}. Pin timesfm[torch]==1.3.0 for "
-            "google/timesfm-2.0-500m-pytorch or issue a matching 2.5 artifact."
+            f"artifact model_id is {model_id}. Keep serving fail-closed until a "
+            "matching TimesFM 2.5 config artifact passes OOS evidence and parity gates."
         )
 
     raise RuntimeError("timesfm package exposes neither TimesFM_2p5_200M_torch nor TimesFm")

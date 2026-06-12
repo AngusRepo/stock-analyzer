@@ -69,6 +69,18 @@ for (const required of ['evening-chain', 'intraday-rescore', 'weekly-backtest', 
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
+for (const replay of [
+  ['adaptive-meta-policy-replay', '40 22 * * 6'],
+  ['linucb-multiplier-replay', '50 22 * * 6'],
+]) {
+  const [task, schedule] = replay
+  const job = manifest.jobs.find((j: any) => j.id === task)
+  assert(job?.task === task, `${task} must be a first-class GCP Scheduler job, not a manual-only task`)
+  assert(job?.schedule === schedule, `${task} must run in the Sunday TW weekly evidence window`)
+  assert(job?.query === 'sync=1&persist=1', `${task} scheduler must run synchronously and persist evidence`)
+  assert(job?.headers?.['X-Confirm-Meta-Learning'] === 'true', `${task} scheduler must pass the explicit meta-learning evidence confirm header`)
+}
+
 for (const chained of ['ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'regime-compute', 'verify-v2']) {
   assert(
     !manifest.jobs.some((job: any) => job.task === chained || job.id === chained),
@@ -87,12 +99,14 @@ for (const critical of [
   'weekly-cleanup',
   'weekly-backtest',
   'weekly-optuna',
+  'adaptive-meta-policy-replay',
+  'linucb-multiplier-replay',
   'monthly-optuna',
   'monthly-retrain',
   'optuna-queue',
 ]) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
-  assert(job?.query === 'sync=1', `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
+  assert(String(job?.query ?? '').split('&').includes('sync=1'), `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }
 
 for (const monthly of ['monthly-optuna', 'monthly-retrain']) {
@@ -111,6 +125,8 @@ assert(syncScript.includes('STOCKVISION_WORKER_BASE_URL'), 'scheduler sync must 
 assert(syncScript.includes("'scheduler', 'jobs', 'update', 'http'"), 'scheduler sync must update existing jobs')
 assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler sync must create missing jobs')
 assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')
+assert(syncScript.includes('$Job.headers'), 'scheduler sync must support per-job headers for confirm-gated evidence jobs')
+assert(syncScript.includes('New-SchedulerHeaderArg'), 'scheduler sync must compose authorization and job-level headers deterministically')
 assert(syncScript.includes('$job.timeZone'), 'scheduler sync must support per-job time zones for groc monthly schedules')
 assert(syncScript.includes('[switch]$DeleteStale'), 'scheduler sync must support explicit stale GCP job deletion')
 assert(syncScript.includes('scheduler jobs delete'), 'scheduler sync must delete stale GCP jobs when DeleteStale is approved')

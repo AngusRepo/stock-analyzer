@@ -2,7 +2,6 @@ import sys
 import types
 
 import numpy as np
-import pytest
 
 
 def test_markov_switching_accepts_ndarray_params_without_fallback(monkeypatch):
@@ -76,23 +75,8 @@ def test_state_space_runners_accept_hyperparams():
     assert kalman.direction in ("up", "down")
 
 
-def test_run_ft_transformer_is_retired_fail_closed():
+def test_retired_alpha_predictor_stubs_are_removed():
     from app import models
 
-    X = np.random.RandomState(7).randn(64, 6).astype(np.float32)
-    y = (np.random.RandomState(11).rand(64) > 0.5).astype(np.int64)
-    prices = np.linspace(90, 120, 80, dtype=float)
-
-    result = models.run_ft_transformer(
-        X=X,
-        y=y,
-        X_latest=X[-1],
-        prices=prices,
-        horizon=5,
-        stock_id=0,
-        feature_names=[f"f{i}" for i in range(6)],
-    )
-
-    assert result.model_name == "FT-Transformer"
-    assert result.confidence == pytest.approx(0.35)
-    assert "retired" in result.fallback_reason
+    for name in ("run_catboost", "run_chronos", "run_ft_transformer"):
+        assert not hasattr(models, name)

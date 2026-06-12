@@ -1551,6 +1551,12 @@ def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> tuple[f
         ic_value = _coerce_ic_value(value)
         if ic_value is not None:
             return ic_value, key
+    evidence = entry.get("last_artifact_evidence")
+    status = str(entry.get("last_ic_status") or "").strip().lower()
+    if status in {"awaiting_live_ic", "artifact_oos_prior", "benchmark_evidence_pending_live_ic"} and isinstance(evidence, dict):
+        artifact_ic = _coerce_ic_value(evidence.get("oos_ic") or evidence.get("after_oos_ic"))
+        if artifact_ic is not None:
+            return artifact_ic, "last_artifact_evidence.oos_ic"
     return None, "missing"
 
 
@@ -1571,6 +1577,18 @@ def _entry_ic_sample_count(entry: dict, source: str) -> int:
         if isinstance(segment_value, dict):
             for key in ("n_samples", "sample_count", "samples", "coverage"):
                 count = _coerce_sample_count(segment_value.get(key))
+                if count is not None:
+                    return count
+    if source == "last_artifact_evidence.oos_ic":
+        evidence = entry.get("last_artifact_evidence")
+        if isinstance(evidence, dict):
+            for key in ("oos_samples", "validation_sample_count", "matched_rows", "sample_count"):
+                count = _coerce_sample_count(evidence.get(key))
+                if count is not None:
+                    return count
+            row_alignment = evidence.get("row_alignment")
+            if isinstance(row_alignment, dict):
+                count = _coerce_sample_count(row_alignment.get("matched_rows"))
                 if count is not None:
                     return count
     for key in ("last_ic_sample_count", "active_ic_samples", "ic_sample_count", "sample_count", "coverage_samples"):

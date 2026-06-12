@@ -274,7 +274,7 @@ def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
 
     assert allowed is True
     assert meta["reason"] == "timesfm_gate_passed"
-    assert meta["sequence_contract_points"] == 256
+    assert meta["sequence_contract_points"] == 128
 
     blocked, blocked_meta = daily_pipeline_v2._timesfm_sync_gate(
         model_status={"TimesFM": "active"},
@@ -296,7 +296,7 @@ def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
 
     assert blocked is False
     assert blocked_meta["reason"] == "timesfm_sequence_contract_unmet"
-    assert blocked_meta["coverage"]["min_points"] == 256
+    assert blocked_meta["coverage"]["min_points"] == 128
 
     mixed_series = [
         {"symbol": "2330", "prices": list(range(260))},
@@ -317,6 +317,37 @@ def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
     assert meta["coverage"]["excluded_symbols"] == [
         {"symbol": "2317", "points": 60, "reason": "insufficient_sequence_points"}
     ]
+
+
+def test_timesfm_gate_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypatch):
+    monkeypatch.delenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", raising=False)
+    series = [{"symbol": "2330", "prices": list(range(128))}]
+    pool = {
+        "models": {
+            "TimesFM": {
+                "status": "active",
+                "last_ic_status": "awaiting_live_ic",
+                "last_artifact_evidence": {
+                    "oos_ic": 0.04900895,
+                    "oos_samples": 512,
+                    "source": "timesfm25_migration_supported_contexts_context_128",
+                },
+            }
+        }
+    }
+
+    allowed, meta = daily_pipeline_v2._timesfm_sync_gate(
+        model_status={"TimesFM": "active"},
+        pool=pool,
+        ev2_cfg={},
+        sequence_series=series,
+    )
+
+    assert allowed is True
+    assert meta["reason"] == "timesfm_gate_passed"
+    assert meta["sequence_contract_points"] == 128
+    assert meta["diagnostic"]["ic_source"] == "last_artifact_evidence.oos_ic"
+    assert meta["diagnostic"]["ic_sample_count"] == 512
 
 
 def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):

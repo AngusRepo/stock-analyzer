@@ -123,3 +123,43 @@ def test_load_ic_weights_prefers_market_segment_ic(monkeypatch):
     assert 0.023 < listed_weights["LightGBM"] < 0.024
     assert 0.008 < listed_weights["PatchTST"] < 0.009
     assert otc_weights["LightGBM"] == 0.0
+
+
+def test_load_ic_weights_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypatch):
+    import json
+
+    from app import ensemble
+
+    class FakeBlob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps({
+                "models": {
+                    "TimesFM": {
+                        "status": "active",
+                        "last_ic_status": "awaiting_live_ic",
+                        "last_artifact_evidence": {
+                            "oos_ic": 0.04900895,
+                            "oos_samples": 512,
+                            "source": "timesfm25_migration_supported_contexts_context_128",
+                        },
+                    }
+                }
+            })
+
+    class FakeBucket:
+        def blob(self, path):
+            return FakeBlob()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr("app.model_pool._get_bucket", lambda: FakeBucket())
+    monkeypatch.setattr("app.model_pool._POOL_CACHE", None)
+    monkeypatch.setattr("app.model_pool._POOL_CACHE_LOADED_AT", 0.0)
+    ensemble._IC_WEIGHTS_CACHE = None
+    ensemble._IC_WEIGHTS_CACHE_LOADED_AT = 0.0
+
+    weights = ensemble.load_ic_weights()
+
+    assert 0.047 < weights["TimesFM"] < 0.049

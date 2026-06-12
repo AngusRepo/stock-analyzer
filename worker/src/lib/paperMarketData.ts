@@ -120,7 +120,7 @@ export async function isDayTradeAllowed(
 
 export async function getLatestPrice(db: D1Database, symbol: string): Promise<number | null> {
   const row = await db.prepare(`
-    SELECT COALESCE(sp.avg_price, sp.close) as price FROM stock_prices sp
+    SELECT sp.close as price FROM stock_prices sp
     JOIN stocks s ON s.id = sp.stock_id
     WHERE s.symbol = ? AND sp.close IS NOT NULL
     ORDER BY sp.date DESC LIMIT 1
@@ -132,7 +132,7 @@ export async function batchGetLatestPrices(db: D1Database, symbols: string[]): P
   if (symbols.length === 0) return new Map()
   const placeholders = symbols.map(() => '?').join(',')
   const { results } = await db.prepare(`
-    SELECT s.symbol, COALESCE(sp.avg_price, sp.close) as price
+    SELECT s.symbol, sp.close as price
     FROM stocks s
     JOIN stock_prices sp ON sp.stock_id = s.id
     INNER JOIN (

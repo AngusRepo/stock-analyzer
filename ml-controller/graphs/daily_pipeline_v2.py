@@ -75,7 +75,7 @@ from services.persona_service import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = 256
+DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = 128
 
 D1_RETRY_DELAYS_SECONDS = (3.0, 8.0, 15.0)
 D1_RETRYABLE_MARKERS = (

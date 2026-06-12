@@ -18,6 +18,14 @@ def test_daily_pipeline_calls_all_l3_sequence_predictors():
     assert "TimesFM production predictor missing artifact/endpoint" not in source
 
 
+def test_timesfm_default_sequence_contract_matches_25_artifact_context():
+    source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
+    timesfm_runtime = (REPO / "ml-service" / "app" / "timesfm_universal.py").read_text(encoding="utf-8")
+
+    assert "DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = 128" in source
+    assert "DEFAULT_SEQ_LEN = 128" in timesfm_runtime
+
+
 def test_l2_cheap_ml_node_does_not_call_l3_models():
     source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
     l2_body = source[

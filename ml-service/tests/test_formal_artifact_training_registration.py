@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app import gnn_training, itransformer_training, tabm_training
+from app import gnn_training, itransformer_training, patchtst_universal, tabm_training
 
 
 class _FakeBlob:
@@ -160,3 +160,46 @@ def test_itransformer_model_pool_registration_updates_formal_slot_alias():
     assert "weekly_ic" not in entry
     assert entry["last_artifact_evidence"]["prep_lineage"]["date_max"] == "2026-06-04"
     assert slot["status"] == "artifact_backed_model_pool_active"
+
+
+def test_patchtst_model_pool_registration_updates_formal_slot_alias():
+    bucket = _FakeBucket({
+        "models": {
+            "PatchTST": {
+                "version": "old",
+                "gcs_path": "universal/patchtst/old.pt",
+                "ic_4w_avg": -0.03,
+                "weekly_ic": [-0.03],
+                "challenger": {"version": "shadow"},
+            }
+        }
+    })
+
+    patchtst_universal._update_model_pool_active(
+        bucket,
+        version="new",
+        artifact_path="universal/patchtst/new.zip",
+        metadata={
+            "oos_ic": 0.05,
+            "direction_accuracy": 0.57,
+            "metrics": {"oos_samples": 600, "pbo": 0.2},
+            "prep_lineage": {"date_max": "2026-06-04", "feature_hash": "sha256:patchtst"},
+            "artifact_schema": "neuralforecast_patchtst_universal_v1",
+        },
+        reason="test",
+    )
+
+    updated = json.loads(bucket.blob("universal/model_pool.json").download_as_text())
+    entry = updated["models"]["PatchTST"]
+    slot = updated["formal_layer3_slots"]["PatchTST"]
+    assert entry["status"] == "active"
+    assert entry["gcs_path"] == "universal/patchtst/new.zip"
+    assert entry["model_type"] == "time_series_transformer_neuralforecast_patchtst"
+    assert entry["last_ic_root_cause"] == "new_neuralforecast_patchtst_artifact_awaiting_verified_predictions"
+    assert "ic_4w_avg" not in entry
+    assert "weekly_ic" not in entry
+    assert "challenger" not in entry
+    assert entry["last_artifact_evidence"]["prep_lineage"]["date_max"] == "2026-06-04"
+    assert slot["status"] == "artifact_backed_model_pool_active"
+    assert slot["direct_prediction"] is False
+    assert slot["vote_weight"] == 0.0

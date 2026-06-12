@@ -34,9 +34,9 @@ assert(followup.includes('/api/admin/scheduler-callback'), 'retrain followup mus
 assert(followup.includes('"monthly-retrain"'), 'monthly retrain followup must callback task=monthly-retrain')
 assert(followup.includes('"retrain"'), 'non-monthly retrain followup must still callback task=retrain for compatibility')
 assert(
-  workflows.includes("artifact_lifecycle_targets: ['GNN', 'TabM', 'iTransformer', 'TimesFM']") &&
+  workflows.includes("artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer', 'TimesFM']") &&
     workflows.includes("train_model_groups: ['tree', 'dlinear', 'patchtst']") &&
     workflows.includes('foundation_forecast_validation_config_refresh') &&
     workflows.includes('sequence_artifact_retrain_registration'),
-  'monthly retrain must explicitly separate trainable groups from formal artifact lifecycle targets including iTransformer and TimesFM',
+  'monthly retrain must explicitly separate trainable groups from formal artifact lifecycle targets including PatchTST, iTransformer, and TimesFM',
 )

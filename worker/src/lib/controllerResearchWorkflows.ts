@@ -711,6 +711,7 @@ const MODEL_GROUP_BY_NAME: Record<string, string | null> = {
 const FORMAL_ARTIFACT_LIFECYCLE_BY_NAME: Record<string, string> = {
   TabM: 'tabular_neural_artifact_retrain_registration',
   GNN: 'graphsage_full_universe_artifact_retrain_registration',
+  PatchTST: 'sequence_artifact_retrain_registration',
   iTransformer: 'sequence_artifact_retrain_registration',
   TimesFM: 'foundation_forecast_validation_config_refresh',
 }
@@ -797,10 +798,11 @@ export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskI
     limit: 2500,
     force_monthly: forceMonthly,
     train_model_groups: ['tree', 'dlinear', 'patchtst'],
-    artifact_lifecycle_targets: ['GNN', 'TabM', 'iTransformer', 'TimesFM'],
+    artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer', 'TimesFM'],
     artifact_lifecycle_contracts: {
       GNN: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.GNN,
       TabM: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.TabM,
+      PatchTST: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.PatchTST,
       iTransformer: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.iTransformer,
       TimesFM: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.TimesFM,
     },

@@ -403,6 +403,7 @@ def retrain_orchestrator(payload: dict) -> dict:
     sequence_records = list(payload.get("sequence_records") or [])
     sequence_required = (
         any(g in requested_train_groups for g in ("dlinear", "patchtst"))
+        or "PatchTST" in set(artifact_lifecycle_targets)
         or "iTransformer" in set(artifact_lifecycle_targets)
     )
     if not sequence_records and sequence_required:
@@ -654,6 +655,17 @@ def retrain_orchestrator(payload: dict) -> dict:
                     elif target == "TabM":
                         train_payload = _base_artifact_payload(target)
                         lifecycle_results[target] = train_tabm_universal.remote(train_payload)
+                    elif target == "PatchTST":
+                        if not sequence_records:
+                            raise RuntimeError("missing_sequence_records_artifact")
+                        train_payload = {
+                            **_base_artifact_payload(target),
+                            "sequence_records": sequence_records,
+                            "device": payload.get("sequence_device") or "cuda",
+                            "sequence_gcs_prefix": sequence_gcs_prefix,
+                            "sequence_batch_count": sequence_batch_count,
+                        }
+                        lifecycle_results[target] = train_patchtst_universal.remote(train_payload)
                     elif target == "iTransformer":
                         if not sequence_records:
                             raise RuntimeError("missing_sequence_records_artifact")
@@ -1768,9 +1780,18 @@ def train_patchtst_universal(payload: dict) -> dict:
             n_epochs=payload.get("n_epochs", 30),
             batch_size=payload.get("batch_size", 256),
             val_ratio=payload.get("val_ratio", 0.15),
-            version=payload.get("version", "v1"),
+            version=payload.get("output_model_version") or payload.get("version", "v1"),
             max_steps=payload.get("max_steps"),
             model_cpcv_policy=payload.get("model_cpcv_policy") or None,
+            promote_to_active=payload.get("promote_to_active", False),
+            promotion_reason=payload.get("promotion_reason"),
+            gcs_prefix=payload.get("gcs_prefix"),
+            sequence_gcs_prefix=payload.get("sequence_gcs_prefix"),
+            sequence_batch_count=payload.get("sequence_batch_count"),
+            batch_count=payload.get("batch_count"),
+            max_prep_stale_days=payload.get("max_prep_stale_days"),
+            run_date=payload.get("run_date"),
+            as_of_date=payload.get("as_of_date"),
         )
         if result.get("error"):
             return result
@@ -1781,6 +1802,7 @@ def train_patchtst_universal(payload: dict) -> dict:
             "version": result.get("version"),
             "elapsed_s": result.get("elapsed_s"),
             "type": result.get("type", "neuralforecast_patchtst_universal"),
+            "pool_update": result.get("pool_update"),
         }
     except Exception as e:
         import traceback

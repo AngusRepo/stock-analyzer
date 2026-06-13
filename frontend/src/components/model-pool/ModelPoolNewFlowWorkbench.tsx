@@ -238,11 +238,12 @@ function statusLabel(tone: WorkstationTone): string {
 }
 
 function grafanaCellClass(tone: WorkstationTone): string {
-  if (tone === 'ok') return 'border-emerald-400/30 bg-emerald-500/70 text-[#07130d]'
-  if (tone === 'warn') return 'border-amber-300/35 bg-amber-400/80 text-[#1b1300]'
-  if (tone === 'error') return 'border-rose-300/35 bg-rose-500/80 text-white'
-  if (tone === 'info') return 'border-sky-300/35 bg-sky-500/70 text-[#06111a]'
-  return 'border-slate-600/45 bg-slate-700/45 text-slate-300'
+  const base = 'rounded-[10px] shadow-[inset_0_1px_0_rgba(255,255,255,0.10)]'
+  if (tone === 'ok') return `${base} border-emerald-300/35 bg-emerald-400/75 text-[#07130d]`
+  if (tone === 'warn') return `${base} border-amber-300/40 bg-amber-300/80 text-[#1b1300]`
+  if (tone === 'error') return `${base} border-rose-300/40 bg-rose-500/80 text-white`
+  if (tone === 'info') return `${base} border-sky-300/40 bg-sky-400/75 text-[#06111a]`
+  return `${base} border-slate-500/45 bg-slate-700/45 text-slate-200`
 }
 
 function grafanaBorderClass(tone: WorkstationTone): string {
@@ -358,11 +359,11 @@ function GrafanaPanel({
   className?: string
 }) {
   return (
-    <section className={`border border-[#252b36] bg-[#111217] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] ${className}`}>
-      <header className="flex min-h-9 items-center justify-between gap-3 border-b border-[#252b36] bg-[#181b20] px-3">
+    <section className={`overflow-hidden rounded-2xl border border-[#2d3a49] bg-[#111821]/96 shadow-[0_14px_36px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.05)] ${className}`}>
+      <header className="flex min-h-12 items-center justify-between gap-3 border-b border-[#2d3a49] bg-[#18212c] px-4 py-2">
         <div className="min-w-0">
-          {kicker && <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#7f8da8]">{kicker}</p>}
-          <h3 className="truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-[#dce3ea]">{title}</h3>
+          {kicker && <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">{kicker}</p>}
+          <h3 className="truncate font-['Space_Grotesk'] text-[15px] font-semibold tracking-[0.02em] text-[#eef4fb]">{title}</h3>
         </div>
         {action}
       </header>
@@ -383,10 +384,10 @@ function GrafanaStat({
   tone: WorkstationTone
 }) {
   return (
-    <div className={`border-l-2 bg-[#0b0f14] px-3 py-2 ${grafanaBorderClass(tone)}`}>
-      <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-[#7f8da8]">{label}</p>
+    <div className={`rounded-xl border bg-[#0c1219] px-4 py-3 ${grafanaBorderClass(tone)}`}>
+      <p className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#8fa0b7]">{label}</p>
       <div className={`mt-1 font-mono text-xl font-semibold ${grafanaTextClass(tone)}`}>{value}</div>
-      <p className="mt-0.5 text-[11px] leading-4 text-[#8b96a8]">{detail}</p>
+      <p className="mt-1 text-xs leading-5 text-[#9aa8ba]">{detail}</p>
     </div>
   )
 }
@@ -411,20 +412,20 @@ function GrafanaDashboardHeader({
   const now = new Date()
 
   return (
-    <div className="border-b border-[#252b36] bg-[#0b0f14]">
-      <div className="flex flex-col gap-3 border-b border-[#252b36] px-3 py-2 xl:flex-row xl:items-center xl:justify-between">
+    <div className="border-b border-[#2d3a49] bg-[#0b1118]">
+      <div className="flex flex-col gap-3 border-b border-[#2d3a49] px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#f0b90b]">Grafana-style model operations</p>
-          <h2 className="mt-1 font-mono text-lg font-semibold uppercase tracking-[0.06em] text-[#f2ead8]">Active-9 Model Pool</h2>
+          <p className="font-mono text-[11px] uppercase tracking-[0.13em] text-[#f0c365]">Grafana-style model operations</p>
+          <h2 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-[0.01em] text-[#f4efe4]">Active-9 Model Pool</h2>
         </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#9aa7bd]">
-          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">env prod</span>
-          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">range last 5 evidence windows</span>
-          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">refresh 60s</span>
-          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">local {now.toLocaleTimeString()}</span>
+        <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.10em] text-[#a7b5c8]">
+          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">env prod</span>
+          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">last 5 evidence windows</span>
+          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">refresh 60s</span>
+          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">local {now.toLocaleTimeString()}</span>
         </div>
       </div>
-      <div className="grid gap-px bg-[#252b36] md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-2 bg-[#0b1118] p-3 md:grid-cols-2 xl:grid-cols-5">
         <GrafanaStat
           label="Fleet state"
           value={statusLabel(fleetTone)}
@@ -463,15 +464,15 @@ function GrafanaDashboardHeader({
 function FleetStatusStrip({ records }: { records: GrafanaModelRecord[] }) {
   return (
     <GrafanaPanel title="Fleet status" kicker="compact active-9 state cells">
-      <div className="grid gap-px bg-[#252b36] sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9">
+      <div className="grid gap-2 bg-[#0b1118] p-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9">
         {records.map((record) => (
-          <div key={record.candidate.id} className="bg-[#0b0f14] p-2">
+          <div key={record.candidate.id} className="rounded-xl border border-[#253242] bg-[#0c1219] p-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="truncate font-mono text-[11px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-              <span className={`h-2 w-2 shrink-0 ${record.statusTone === 'ok' ? 'bg-emerald-400' : record.statusTone === 'warn' ? 'bg-amber-300' : record.statusTone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} />
+              <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.statusTone === 'ok' ? 'bg-emerald-400' : record.statusTone === 'warn' ? 'bg-amber-300' : record.statusTone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} />
             </div>
-            <p className="mt-1 truncate text-[10px] text-[#7f8da8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
-            <div className={`mt-2 border px-1.5 py-1 text-center font-mono text-[10px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
+            <p className="mt-1 truncate text-[11px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
+            <div className={`mt-2 border px-2 py-1.5 text-center font-mono text-[11px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
               {statusLabel(record.statusTone)}
             </div>
           </div>
@@ -487,26 +488,26 @@ function StateTimelinePanel({ records }: { records: GrafanaModelRecord[] }) {
     <GrafanaPanel
       title="State timeline"
       kicker="weekly IC plus current registry state"
-      action={<span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#7f8da8]">green ok / amber warn / red crit / gray no data</span>}
+      action={<span className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">green ok / amber warn / red crit / gray no data</span>}
       className="min-h-[360px]"
     >
       <div className="overflow-x-auto">
         <div className="min-w-[760px]">
-          <div className="grid grid-cols-[136px_repeat(6,minmax(84px,1fr))] border-b border-[#252b36] bg-[#0b0f14] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[#7f8da8]">
+          <div className="grid grid-cols-[152px_repeat(6,minmax(90px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">
             <div>model</div>
             {labels.map((label) => <div key={label} className="text-center">{label}</div>)}
           </div>
-          <div className="divide-y divide-[#252b36]">
+          <div className="divide-y divide-[#263247]">
             {records.map((record) => (
-              <div key={record.candidate.id} className="grid grid-cols-[136px_repeat(6,minmax(84px,1fr))] items-center gap-2 px-3 py-2 hover:bg-[#141922]">
+              <div key={record.candidate.id} className="grid grid-cols-[152px_repeat(6,minmax(90px,1fr))] items-center gap-2.5 px-4 py-2.5 hover:bg-[#151d28]">
                 <div className="min-w-0">
-                  <p className="truncate font-mono text-[11px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-                  <p className="truncate text-[10px] text-[#7f8da8]">{record.family}</p>
+                  <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+                  <p className="truncate text-[11px] text-[#90a0b8]">{record.family}</p>
                 </div>
                 {record.history.map((cell) => (
                   <div
                     key={`${record.candidate.id}-${cell.label}`}
-                    className={`h-8 border px-2 py-1 text-center font-mono text-[10px] font-semibold ${grafanaCellClass(cell.tone)}`}
+                    className={`h-9 border px-2 py-1.5 text-center font-mono text-[11px] font-semibold ${grafanaCellClass(cell.tone)}`}
                     title={cell.title}
                     aria-label={cell.title}
                   >
@@ -531,26 +532,26 @@ function AlertQueuePanel({ records }: { records: GrafanaModelRecord[] }) {
     <GrafanaPanel title="Alert queue" kicker="promotion and evidence incidents">
       <div className="max-h-[360px] overflow-y-auto">
         {alerts.length ? alerts.map((record) => (
-          <div key={record.candidate.id} className="border-b border-[#252b36] bg-[#0b0f14] p-3 last:border-b-0">
+          <div key={record.candidate.id} className="m-2 rounded-xl border border-[#263247] bg-[#0c1219] p-3 last:mb-2">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="font-mono text-[12px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-                <p className="mt-1 text-[11px] leading-4 text-[#8b96a8]">{record.nextAction}</p>
+                <p className="font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+                <p className="mt-1 text-xs leading-5 text-[#9aa8ba]">{record.nextAction}</p>
               </div>
-              <span className={`border px-2 py-0.5 font-mono text-[10px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
+              <span className={`border px-2.5 py-1 font-mono text-[11px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
                 {statusLabel(record.statusTone)}
               </span>
             </div>
             <div className="mt-2 flex flex-wrap gap-1">
               {(record.blockers.length ? record.blockers : ['promotion_review']).slice(0, 4).map((blocker) => (
-                <span key={blocker} className="border border-[#303947] bg-[#151a22] px-1.5 py-0.5 font-mono text-[10px] text-[#b8c2d1]">
+                <span key={blocker} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[11px] text-[#c0cad8]">
                   {blocker}
                 </span>
               ))}
             </div>
           </div>
         )) : (
-          <div className="bg-[#0b0f14] p-3 text-xs text-[#8b96a8]">No active model-pool alerts.</div>
+          <div className="bg-[#0c1219] p-4 text-sm text-[#9aa8ba]">No active model-pool alerts.</div>
         )}
       </div>
     </GrafanaPanel>
@@ -570,25 +571,25 @@ function GateInspectorPanel({ records }: { records: GrafanaModelRecord[] }) {
 
   return (
     <GrafanaPanel title="Gate inspector" kicker={`selected model: ${selected.candidate.id}`}>
-      <div className="bg-[#0b0f14] p-3">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8da8]">Promotion readiness funnel</p>
+      <div className="bg-[#0c1219] p-4">
+        <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">Promotion readiness funnel</p>
         <div className="mt-3 space-y-2">
           {gates.map((gate, index) => (
-            <div key={gate.label} className="grid grid-cols-[24px_1fr_auto] items-center gap-2">
-              <span className="grid h-6 w-6 place-items-center border border-[#303947] bg-[#111217] font-mono text-[10px] text-[#9aa7bd]">{index + 1}</span>
+            <div key={gate.label} className="grid grid-cols-[28px_1fr_auto] items-center gap-2">
+              <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] font-mono text-[11px] text-[#a7b5c8]">{index + 1}</span>
               <div className="min-w-0">
-                <p className="font-mono text-[11px] text-[#f2ead8]">{gate.label}</p>
-                <p className="truncate text-[10px] text-[#7f8da8]">{gate.detail}</p>
+                <p className="font-['Space_Grotesk'] text-[13px] text-[#f2ead8]">{gate.label}</p>
+                <p className="truncate text-[11px] text-[#90a0b8]">{gate.detail}</p>
               </div>
-              <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
+              <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
                 {gate.ready ? 'PASS' : 'WAIT'}
               </span>
             </div>
           ))}
         </div>
-        <div className="mt-3 border-t border-[#252b36] pt-3">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8da8]">next action</p>
-          <p className="mt-1 text-xs leading-5 text-[#cbd5e1]">{selected.nextAction}</p>
+        <div className="mt-3 border-t border-[#2d3a49] pt-3">
+          <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">next action</p>
+          <p className="mt-1 text-sm leading-6 text-[#d4deeb]">{selected.nextAction}</p>
         </div>
       </div>
     </GrafanaPanel>
@@ -598,9 +599,9 @@ function GateInspectorPanel({ records }: { records: GrafanaModelRecord[] }) {
 function EvidenceTablePanel({ records }: { records: GrafanaModelRecord[] }) {
   return (
     <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, and promotion pressure">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[980px] border-collapse text-left">
-          <thead className="bg-[#0b0f14] font-mono text-[10px] uppercase tracking-[0.14em] text-[#7f8da8]">
+      <div className="overflow-x-auto bg-[#0b1118] p-3">
+        <table className="w-full min-w-[980px] border-separate border-spacing-y-2 text-left">
+          <thead className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">
             <tr>
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Family</th>
@@ -611,27 +612,27 @@ function EvidenceTablePanel({ records }: { records: GrafanaModelRecord[] }) {
               <th className="px-3 py-2 font-medium">Next action</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-[#252b36]">
+          <tbody>
             {records.map((record) => (
-              <tr key={record.candidate.id} className="bg-[#111217] hover:bg-[#151b24]">
-                <td className="px-3 py-2 font-mono text-[12px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
-                <td className="px-3 py-2 text-[11px] text-[#9aa7bd]">{record.family}</td>
-                <td className="max-w-[210px] truncate px-3 py-2 font-mono text-[11px] text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
-                <td className="px-3 py-2">
-                  <p className="font-mono text-[11px] text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
-                  <p className="text-[10px] text-[#7f8da8]">{record.dataset?.shape ?? 'N/A'}</p>
+              <tr key={record.candidate.id} className="bg-[#111821] hover:bg-[#151f2b]">
+                <td className="rounded-l-xl border-y border-l border-[#263247] px-3 py-3 font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
+                <td className="border-y border-[#263247] px-3 py-3 text-xs text-[#a7b5c8]">{record.family}</td>
+                <td className="max-w-[210px] truncate border-y border-[#263247] px-3 py-3 font-mono text-xs text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
+                <td className="border-y border-[#263247] px-3 py-3">
+                  <p className="font-mono text-xs text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
+                  <p className="text-[11px] text-[#90a0b8]">{record.dataset?.shape ?? 'N/A'}</p>
                 </td>
-                <td className="px-3 py-2">
-                  <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(record.pointerTone)}`}>
+                <td className="border-y border-[#263247] px-3 py-3">
+                  <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(record.pointerTone)}`}>
                     {record.pointerRow?.readiness ?? 'missing'}
                   </span>
                 </td>
-                <td className="px-3 py-2">
-                  <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(record.statusTone)}`}>
+                <td className="border-y border-[#263247] px-3 py-3">
+                  <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(record.statusTone)}`}>
                     {record.status}
                   </span>
                 </td>
-                <td className="max-w-[320px] px-3 py-2 text-[11px] leading-4 text-[#cbd5e1]">{record.nextAction}</td>
+                <td className="max-w-[320px] rounded-r-xl border-y border-r border-[#263247] px-3 py-3 text-xs leading-5 text-[#d4deeb]">{record.nextAction}</td>
               </tr>
             ))}
           </tbody>
@@ -644,14 +645,14 @@ function EvidenceTablePanel({ records }: { records: GrafanaModelRecord[] }) {
 function MetaBoundaryPanel() {
   return (
     <GrafanaPanel title="Meta boundary" kicker="evidence only outside active-9 alpha vote">
-      <div className="grid gap-px bg-[#252b36] md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-2 bg-[#0b1118] p-3 md:grid-cols-2 xl:grid-cols-4">
         {ADAPTIVE_EVIDENCE_STEPS.map((step) => (
-          <div key={step.label} className="bg-[#0b0f14] p-3">
+          <div key={step.label} className="rounded-xl border border-[#263247] bg-[#0c1219] p-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="font-mono text-[11px] font-semibold text-[#f2ead8]">{step.label}</p>
-              <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(step.tone)}`}>{statusLabel(step.tone)}</span>
+              <p className="font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{step.label}</p>
+              <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(step.tone)}`}>{statusLabel(step.tone)}</span>
             </div>
-            <p className="mt-2 text-[11px] leading-4 text-[#8b96a8]">{step.detail}</p>
+            <p className="mt-2 text-xs leading-5 text-[#9aa8ba]">{step.detail}</p>
           </div>
         ))}
       </div>
@@ -712,12 +713,12 @@ export default function ModelPoolNewFlowWorkbench({
         promotionCount={promotionCount}
       />
 
-      <div className="grid gap-3 bg-[#0b0f14] p-3">
+      <div className="grid gap-4 bg-[#0b1118] p-4">
         <FleetStatusStrip records={grafanaRecords} />
 
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.8fr)_minmax(320px,0.8fr)]">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(340px,0.8fr)]">
           <StateTimelinePanel records={grafanaRecords} />
-          <div className="grid gap-3">
+          <div className="grid gap-4">
             <AlertQueuePanel records={grafanaRecords} />
             <GateInspectorPanel records={grafanaRecords} />
           </div>
@@ -727,7 +728,7 @@ export default function ModelPoolNewFlowWorkbench({
         <MetaBoundaryPanel />
       </div>
 
-      <div className="border-t border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
+      <div className="border-t border-[#263247] bg-[#071018] p-4 text-sm leading-6 text-[#a7b5c8]">
         Parameter search and allocator/meta proposals stay in Promotion & Parameter Governance.
         This cockpit is only the L2/L3 model evidence surface: active slots, artifacts, verified rows,
         blockers, and champion pointer readiness.

@@ -1105,7 +1105,6 @@ export type ModelPoolLineage = {
   models: Record<string, ModelPoolLineageModel>
   state_overlays?: Record<string, ModelPoolStateOverlay>
   meta_optimizers?: Record<string, Record<string, unknown>>
-  events: Array<Record<string, unknown>>
   error?: string
 }
 

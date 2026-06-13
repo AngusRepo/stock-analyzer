@@ -134,7 +134,7 @@ async def test_promote_check_discards_mature_failed_challenger(monkeypatch):
     assert result["applied_count"] == 1
     saved = json.loads(bucket.pool_blob.download_as_text())
     assert "challenger" not in saved["models"]["XGBoost"]
-    assert saved["lifecycle_events"][0]["transition"] == "discard_challenger"
+    assert "lifecycle_events" not in saved
 
 
 @pytest.mark.asyncio

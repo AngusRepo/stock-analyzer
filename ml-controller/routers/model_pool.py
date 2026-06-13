@@ -1304,36 +1304,12 @@ async def promote_check(req: PromoteCheckRequest):
             model_cpcv_by_model=model_cpcv_by_model,
         )
 
-    # Apply transitions if requested
+    # Apply transitions if requested. Lifecycle event audit rows are intentionally
+    # not written; the active-9 surface is artifact, evidence, and pointer state.
     applied_count = 0
     if req.apply:
-        audit_events = pool.setdefault("lifecycle_events", [])
-
-        def _audit(action: dict, from_status: str | None, to_status: str | None) -> None:
-            audit_events.append({
-                "at": datetime.now(timezone.utc).isoformat(),
-                "model": action["model"],
-                "transition": action["transition"],
-                "from": from_status,
-                "to": to_status,
-                "reason": action.get("reason"),
-                "metrics": {
-                    k: action.get(k)
-                    for k in (
-                        "ic_active_4w",
-                        "ic_challenger_4w",
-                        "margin",
-                        "consecutive_negative_weeks",
-                        "recent_weeks_ic",
-                        "weekly_ic_count",
-                        "model_cpcv_decision",
-                        "model_cpcv_folds",
-                    )
-                    if k in action
-                },
-            })
-            if len(audit_events) > 200:
-                del audit_events[:-200]
+        def _audit(_action: dict, _from_status: str | None, _to_status: str | None) -> None:
+            return None
 
         for action in actions:
             t = action["transition"]
@@ -1723,7 +1699,7 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
 
 @router.get("/lineage")
 async def lineage():
-    """Return model_pool lineage pointers plus recent lifecycle events."""
+    """Return active-9 model_pool lineage pointers."""
     try:
         import json as _json
         from google.cloud import storage
@@ -1731,7 +1707,7 @@ async def lineage():
         bucket = storage.Client().bucket(_bucket_name())
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
-            return {"status": "not_initialized", "models": {}, "events": []}
+            return {"status": "not_initialized", "models": {}}
 
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         out: dict[str, dict] = {}
@@ -1835,7 +1811,6 @@ async def lineage():
             "research_benchmarks": pool.get("research_benchmarks") or build_research_benchmark_manifest(
                 datetime.now(timezone.utc).date().isoformat(),
             ),
-            "events": (pool.get("lifecycle_events") or [])[-100:],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GCS lineage read failed: {e}")

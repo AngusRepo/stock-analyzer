@@ -29,12 +29,6 @@ const RETIRED_MODEL_NAMES = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
 
 type OverlayEntry = [string, ModelPoolStateOverlay]
 
-function fmt(value: unknown): string {
-  if (value === null || value === undefined || value === '') return 'N/A'
-  if (typeof value === 'number') return value.toFixed(4)
-  return String(value)
-}
-
 function toneFromStatus(status?: string | null): WorkstationTone {
   if (status === 'active' || status === 'ok' || status === 'ready_for_review' || status === 'approved_for_patch') return 'ok'
   if (status === 'degraded' || status === 'warn' || status === 'coverage_low' || status === 'evaluation_pending') return 'warn'
@@ -386,7 +380,7 @@ export default function ModelPoolPage() {
                         </div>
                         <WorkstationPill tone={toneFromStatus(overlay.status)}>{overlay.status ?? 'active'}</WorkstationPill>
                       </div>
-                      <div className="mt-2 break-all font-mono text-[10px]">{overlay.gcs_path ?? 'default hyperparams'}</div>
+                      <div className="mt-2 break-all font-mono text-[11px]">{overlay.gcs_path ?? 'default hyperparams'}</div>
                       {overlay.note && <div className="mt-2 text-[11px]">{overlay.note}</div>}
                     </div>
                   ))}
@@ -394,22 +388,6 @@ export default function ModelPoolPage() {
                     <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">No state-space overlay registered.</div>
                   )}
                 </div>
-              </div>
-            </WorkstationPanel>
-
-            <WorkstationPanel title="Lifecycle Events" kicker="promote, degrade, restore, retire audit">
-              <div className="space-y-2 p-3">
-                {(data?.events ?? []).slice().reverse().slice(0, 20).map((event, index) => (
-                  <div key={index} className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-2 text-[11px]">
-                    <span className="font-mono text-sky-300">{fmt(event.model)}</span>
-                    <span className="mx-2 text-muted-foreground">{fmt(event.transition)}</span>
-                    <span className="text-muted-foreground">{fmt(event.at)}</span>
-                    {event.reason && <div className="mt-1 text-muted-foreground">{fmt(event.reason)}</div>}
-                  </div>
-                ))}
-                {(data?.events ?? []).length === 0 && (
-                  <div className="text-sm text-muted-foreground">No lifecycle events recorded yet.</div>
-                )}
               </div>
             </WorkstationPanel>
           </>

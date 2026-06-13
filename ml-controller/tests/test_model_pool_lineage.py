@@ -74,7 +74,6 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
                 },
             }
         },
-        "lifecycle_events": [{"model": "XGBoost", "transition": "register"}],
     }
     blobs = {
         "universal/model_pool.json": json.dumps(pool),
@@ -104,7 +103,7 @@ async def test_lineage_returns_active_and_challenger_metadata(monkeypatch):
     assert model["challenger"]["metadata_exists"] is True
     assert model["challenger"]["last_ic_root_cause"] == "ok"
     assert model["challenger"]["last_ic_sample_count"] == 88
-    assert result["events"] == [{"model": "XGBoost", "transition": "register"}]
+    assert "events" not in result
 
 
 @pytest.mark.asyncio

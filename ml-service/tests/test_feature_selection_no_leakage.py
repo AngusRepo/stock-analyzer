@@ -107,6 +107,18 @@ def test_candidate_algorithm_profile_resolves_core_knobs():
     assert config["embargo_mode"] == "label_horizon"
 
 
+def test_default_algorithm_profile_resolves_to_candidate_v2():
+    config = resolve_feature_selection_algorithm_config({})
+
+    assert config["algorithm_profile"] == "candidate_v2"
+    assert config["cluster_linkage"] == "average"
+    assert config["k_sweep_sampler"] == "motpe"
+    assert config["k_sweep_objective"] == "purged_rolling_ic"
+    assert config["k_sweep_knee_policy"] == "bootstrap_ci"
+    assert config["k_sweep_bootstrap_rounds"] == 50
+    assert config["embargo_mode"] == "label_horizon"
+
+
 def test_label_horizon_embargo_never_shorter_than_forward_label():
     days, evidence = resolve_feature_selection_embargo_days(
         120,

@@ -93,13 +93,13 @@ def _normalized_choice(value: object, *, default: str, allowed: set[str]) -> str
 def resolve_feature_selection_algorithm_config(selection_params: dict) -> dict:
     """Resolve feature-selection algorithm profile into explicit knobs.
 
-    `current` preserves production behavior. `candidate_v2` is the roadmap
-    profile used for offline replay before any production cutover.
+    `candidate_v2` is the production default after Mode B replay evidence.
+    `current` remains available as an explicit baseline profile.
     """
 
-    profile = str(selection_params.get("algorithm_profile") or "current").strip().lower()
+    profile = str(selection_params.get("algorithm_profile") or "candidate_v2").strip().lower()
     if profile not in _PROFILE_DEFAULTS:
-        profile = "current"
+        profile = "candidate_v2"
 
     config = dict(selection_params)
     profile_defaults = _PROFILE_DEFAULTS[profile]
@@ -114,27 +114,27 @@ def resolve_feature_selection_algorithm_config(selection_params: dict) -> dict:
 
     config["cluster_linkage"] = _normalized_choice(
         config.get("cluster_linkage"),
-        default=current_defaults["cluster_linkage"],
+        default=profile_defaults["cluster_linkage"],
         allowed=_SUPPORTED_CLUSTER_LINKAGES,
     )
     config["k_sweep_sampler"] = _normalized_choice(
         config.get("k_sweep_sampler"),
-        default=current_defaults["k_sweep_sampler"],
+        default=profile_defaults["k_sweep_sampler"],
         allowed=_SUPPORTED_K_SWEEP_SAMPLERS,
     )
     config["k_sweep_objective"] = _normalized_choice(
         config.get("k_sweep_objective"),
-        default=current_defaults["k_sweep_objective"],
+        default=profile_defaults["k_sweep_objective"],
         allowed=_SUPPORTED_K_SWEEP_OBJECTIVES,
     )
     config["k_sweep_knee_policy"] = _normalized_choice(
         config.get("k_sweep_knee_policy"),
-        default=current_defaults["k_sweep_knee_policy"],
+        default=profile_defaults["k_sweep_knee_policy"],
         allowed=_SUPPORTED_KNEE_POLICIES,
     )
     config["embargo_mode"] = _normalized_choice(
         config.get("embargo_mode"),
-        default=current_defaults["embargo_mode"],
+        default=profile_defaults["embargo_mode"],
         allowed=_SUPPORTED_EMBARGO_MODES,
     )
     config["label_horizon_days"] = _coerce_positive_int(

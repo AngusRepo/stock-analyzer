@@ -85,7 +85,7 @@ class FeatureSelectionPolicy:
     signal_sanity_max_workers: int = 2
     target_permutation_max_workers: int = 2
     k_sweep_n_jobs: int = 2
-    algorithm_profile: str = "current"
+    algorithm_profile: str = "candidate_v2"
     cluster_linkage: str = "ward"
     k_sweep_sampler: str = "nsga2"
     k_sweep_objective: str = "single_val_ic"

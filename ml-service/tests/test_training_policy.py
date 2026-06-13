@@ -32,7 +32,7 @@ from app.universal_training import (  # noqa: E402
 )
 
 
-def test_feature_selection_policy_keeps_current_defaults():
+def test_feature_selection_policy_uses_candidate_v2_default_profile():
     policy = FeatureSelectionPolicy.from_env()
 
     assert policy.to_selection_params() == {
@@ -44,7 +44,7 @@ def test_feature_selection_policy_keeps_current_defaults():
         "signal_sanity_max_workers": 2,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
-        "algorithm_profile": "current",
+        "algorithm_profile": "candidate_v2",
         "cluster_linkage": "ward",
         "k_sweep_sampler": "nsga2",
         "k_sweep_objective": "single_val_ic",
@@ -73,7 +73,7 @@ def test_feature_selection_policy_reads_env_overrides(monkeypatch):
         "signal_sanity_max_workers": 3,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
-        "algorithm_profile": "current",
+        "algorithm_profile": "candidate_v2",
         "cluster_linkage": "ward",
         "k_sweep_sampler": "nsga2",
         "k_sweep_objective": "single_val_ic",
@@ -96,7 +96,7 @@ def test_feature_selection_policy_merges_payload_overrides():
         "signal_sanity_max_workers": 2,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
-        "algorithm_profile": "current",
+        "algorithm_profile": "candidate_v2",
         "cluster_linkage": "ward",
         "k_sweep_sampler": "nsga2",
         "k_sweep_objective": "single_val_ic",
@@ -159,7 +159,7 @@ def test_feature_selection_policy_window_params_keep_lighter_default():
         "signal_sanity_max_workers": 2,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
-        "algorithm_profile": "current",
+        "algorithm_profile": "candidate_v2",
         "cluster_linkage": "ward",
         "k_sweep_sampler": "nsga2",
         "k_sweep_objective": "single_val_ic",

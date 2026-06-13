@@ -20,17 +20,12 @@ import {
   type ModelPoolLineage,
   type ModelPoolLineageModel,
   type ModelPoolStateOverlay,
-  type ModelUpgradeResearchStatusRow,
-  type ResearchExperiment,
 } from '@/lib/api'
 import {
-  MODEL_POOL_PRODUCTION_SLOT_IDS,
   MODEL_POOL_RETIRED_MODEL_IDS,
-  MODEL_UPGRADE_CANDIDATES,
 } from '@/lib/modelUpgradeTrack'
 
 const RETIRED_MODEL_NAMES = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
-const PRODUCTION_SLOT_MODEL_NAMES = new Set<string>(MODEL_POOL_PRODUCTION_SLOT_IDS)
 
 type OverlayEntry = [string, ModelPoolStateOverlay]
 
@@ -51,10 +46,6 @@ function isRetiredModelName(name: string): boolean {
   return RETIRED_MODEL_NAMES.has(name)
 }
 
-function isProductionSlotModelName(name: string): boolean {
-  return PRODUCTION_SLOT_MODEL_NAMES.has(name)
-}
-
 function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel): boolean {
   return (
     name === 'KalmanFilter' ||
@@ -62,44 +53,6 @@ function isStateSpaceOverlay(name: string, model: ModelPoolLineageModel): boolea
     model.model_type === 'state_space_overlay' ||
     model.balance_family === 'state_space'
   )
-}
-
-function registryLabel(label?: string | null): string {
-  if (!label) return 'needs evidence'
-  if (label === 'experiment_missing') return 'registry missing'
-  if (label === 'evaluation_pending') return 'evidence pending'
-  if (label === 'ready_for_review') return 'evidence ready'
-  if (label === 'needs_attention') return 'needs attention'
-  if (label === 'approved_for_patch') return 'approved for patch'
-  return label
-}
-
-function candidateExperiments(candidateId: string, experiments: ResearchExperiment[]) {
-  const needle = candidateId.toLowerCase()
-  return experiments
-    .filter((experiment) => {
-      const haystack = [
-        experiment.id,
-        experiment.hypothesis,
-        ...(experiment.source_refs ?? []),
-        ...(experiment.metrics ?? []),
-        ...(experiment.follow_up ?? []),
-      ].join(' ').toLowerCase()
-      return haystack.includes(needle)
-    })
-    .slice(0, 3)
-}
-
-function candidateEvidence(candidateId: string, experiments: ResearchExperiment[], statusRows: ModelUpgradeResearchStatusRow[] = []) {
-  const matched = candidateExperiments(candidateId, experiments)
-  const latest = matched[0]
-  const statusRow = statusRows.find((row) => row.candidate_id.toLowerCase() === candidateId.toLowerCase())
-  const registryStatus = statusRow?.registry_status
-    ?? (latest?.status === 'ready_for_review' || latest?.status === 'approved_for_patch' || latest?.status === 'completed'
-      ? 'ready_for_review'
-      : latest ? 'evaluation_pending' : 'experiment_missing')
-  const ready = registryStatus === 'ready_for_review' || registryStatus === 'approved_for_patch'
-  return { matched, latest, statusRow, registryStatus, ready }
 }
 
 function promotionMetricNumber(result: ModelArtifactPromotionControllerResponse, keys: string[]): number | null {
@@ -185,59 +138,6 @@ function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromo
         </div>
       )}
     </div>
-  )
-}
-
-function UpgradeTrackPanelV2({
-  experiments = [],
-  statusRows = [],
-}: {
-  experiments?: ResearchExperiment[]
-  statusRows?: ModelUpgradeResearchStatusRow[]
-}) {
-  const candidates = MODEL_UPGRADE_CANDIDATES.filter((candidate) => isProductionSlotModelName(candidate.id))
-
-  return (
-    <WorkstationPanel title="Active-9 L3 Slots" kicker="Tree, TabM, Sequence, GNN">
-      <div className="border-b border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">
-        These nine alpha models are the formal L3 family slots. They can vote only when artifact
-        registry, verified rows, lifecycle IC, final compare, and approval evidence are ready.
-        GAOptimizer emits parameter candidates; OPB is shown as L4 allocation evidence, not a model vote.
-      </div>
-      <div className="grid gap-3 p-3 lg:grid-cols-3">
-        {candidates.map((candidate) => {
-          const evidence = candidateEvidence(candidate.id, experiments, statusRows)
-          const statusTone: WorkstationTone = evidence.ready ? 'ok' : evidence.latest || evidence.statusRow ? 'warn' : 'info'
-          return (
-            <div key={candidate.id} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-mono text-[13px] font-semibold text-[#fff1cf]">{candidate.id}</p>
-                  <p className="mt-1 text-[11px] text-[#70809b]">{candidate.layer} / {candidate.family}</p>
-                </div>
-                <WorkstationPill tone={statusTone}>{registryLabel(evidence.registryStatus)}</WorkstationPill>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-[#9aa7bd]">{candidate.roleZh}</p>
-              <div className="mt-3 grid gap-2 text-[11px] md:grid-cols-2">
-                <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="font-mono text-[#70809b]">registry</p>
-                  <p className="mt-1 break-all text-slate-200">{evidence.latest?.id ?? evidence.statusRow?.latest_experiment_id ?? 'not created'}</p>
-                </div>
-                <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="font-mono text-[#70809b]">evaluation</p>
-                  <p className="mt-1 text-slate-200">{evidence.statusRow?.latest_evaluation_verdict ?? 'pending'}</p>
-                </div>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1">
-                {candidate.requiredEvidence.slice(0, 6).map((item) => (
-                  <WorkstationPill key={item} tone="neutral">{item}</WorkstationPill>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </WorkstationPanel>
   )
 }
 
@@ -354,12 +254,6 @@ export default function ModelPoolPage() {
     staleTime: 60_000,
     refetchInterval: 60_000,
   })
-  const researchData = useQuery({
-    queryKey: ['strategy-lab', 'experiments'],
-    queryFn: strategyLabApi.experiments,
-    retry: false,
-    staleTime: 60_000,
-  })
   const modelUpgradeStatus = useQuery({
     queryKey: ['strategy-lab', 'model-upgrade-status'],
     queryFn: strategyLabApi.modelUpgradeStatus,
@@ -413,7 +307,7 @@ export default function ModelPoolPage() {
       balance_family: model.balance_family,
       role: 'regime_risk_overlay',
       gcs_path: model.gcs_path,
-      note: 'Legacy lineage entry rendered as state-space overlay; excluded from alpha model IC counts.',
+      note: 'Lineage entry rendered as state-space overlay; excluded from alpha model IC counts.',
     }])
   const overlayList: OverlayEntry[] = [
     ...Object.entries(data?.state_overlays ?? {}),
@@ -424,9 +318,9 @@ export default function ModelPoolPage() {
     <AppShell>
       <div className="space-y-6 p-4 lg:p-6">
         <WorkstationPageTitle
-          kicker="Model care"
+          kicker="Model registry"
           title="Model Pool"
-          description="新流程：L2 coarse、L3 family ML、near-production candidate、active-9 confidence hook、weekly replay evidence、promotion queue 與 champion pointer governance。L1 strategy diversity stays in Strategy Lab；single-run tracing stays in Pipeline Trace."
+          description="Registry, lineage, active-9 evidence, adaptive replay, promotion queue, and champion pointer governance. L1 strategy diversity stays in Strategy Lab; single-run tracing stays in Pipeline Trace."
           action={
             <div className="flex flex-wrap items-center gap-2">
               {isFetching && <WorkstationPill tone="info">refreshing</WorkstationPill>}
@@ -439,7 +333,6 @@ export default function ModelPoolPage() {
                   artifactSelection.refetch()
                   artifactPromotionQueue.refetch()
                   championPointers.refetch()
-                  researchData.refetch()
                   modelUpgradeStatus.refetch()
                 }}
               >
@@ -474,11 +367,6 @@ export default function ModelPoolPage() {
               isPromoting={promotionController.isPending}
               promotionResult={promotionController.data}
               onPromote={(artifactId, approved, confirm) => promotionController.mutate({ artifactId, approved, confirm })}
-            />
-
-            <UpgradeTrackPanelV2
-              experiments={researchData.data?.experiments ?? []}
-              statusRows={modelUpgradeStatus.data?.candidates ?? []}
             />
 
             <WorkstationPanel title="State-space Overlays" kicker="regime risk overlay, not alpha vote model">

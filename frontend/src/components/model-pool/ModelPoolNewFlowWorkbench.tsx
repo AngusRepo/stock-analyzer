@@ -1,16 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
-import {
-  ColorType,
-  HistogramSeries,
-  LineSeries,
-  createChart,
-  createSeriesMarkers,
-  type ChartOptions,
-  type DeepPartial,
-  type IChartApi,
-  type SeriesMarker,
-  type Time,
-} from 'lightweight-charts'
+import { useMemo, type ReactNode } from 'react'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
   MODEL_POOL_L2_COARSE_MODEL_IDS,
@@ -26,9 +14,7 @@ import type {
   ModelUpgradeResearchStatusRow,
 } from '@/lib/api'
 import {
-  WorkstationFlow,
   WorkstationPanel,
-  WorkstationPill,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
 
@@ -74,6 +60,57 @@ const ADAPTIVE_EVIDENCE_STEPS = [
   },
 ]
 
+const MODEL_DATASET_REQUIREMENTS: Record<string, { window: string; shape: string; note: string }> = {
+  LightGBM: {
+    window: '2-5y panel',
+    shape: 'tabular feature matrix',
+    note: 'Rolling features need enough panel depth for stable tree splits.',
+  },
+  XGBoost: {
+    window: '2-5y panel',
+    shape: 'tabular ranking/regression',
+    note: 'Nonlinear tree interactions need the same panel history as LightGBM.',
+  },
+  ExtraTrees: {
+    window: '2-5y panel',
+    shape: 'robust tabular ensemble',
+    note: 'Diversity guard against noisy features and unstable tree splits.',
+  },
+  TabM: {
+    window: '2-5y panel',
+    shape: 'normalized dense tabular',
+    note: 'Sample count and feature normalization matter more than one-stock sequence length.',
+  },
+  GNN: {
+    window: '252+ lookback',
+    shape: 'market graph snapshot',
+    note: 'Correlation edges should be stable enough before graph inference.',
+  },
+  DLinear: {
+    window: '512/1024 sequence',
+    shape: 'close-only contiguous series',
+    note: 'Long history lets decomposition separate trend and seasonal components.',
+  },
+  PatchTST: {
+    window: '512/1024 sequence',
+    shape: 'NeuralForecast patch windows',
+    note: 'Patch transformer benefits from longer, clean sequence windows.',
+  },
+  iTransformer: {
+    window: '512/1024+ panel sequence',
+    shape: 'NeuralForecast multiseries',
+    note: 'Inverted attention is more useful with longer multiseries context.',
+  },
+  TimesFM: {
+    window: '1024/2048 context',
+    shape: 'TimesFM 2.5 zero-shot series',
+    note: 'Use 16k context only after data depth and cost evidence justify it.',
+  },
+}
+
+type SelectionModelRow = ModelArtifactSelectionResponse['models'][string]
+type PromotionQueueRow = ModelArtifactPromotionQueueResponse['queue'][number]
+
 function isServing(model?: ModelPoolLineageModel): boolean {
   return model?.status === 'active' || model?.status === 'degraded'
 }
@@ -98,64 +135,527 @@ function latestStatusFor(candidateId: string, rows?: ModelUpgradeResearchStatusR
   return rows?.find((row) => row.candidate_id.toLowerCase() === candidateId.toLowerCase())
 }
 
-function chartOptions(width: number): DeepPartial<ChartOptions> {
+function selectionCandidate(row?: SelectionModelRow) {
+  return row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null
+}
+
+function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {
+  if (!rows.length) return 'neutral'
+  if (rows.some((row) => (row.blockers?.length ?? 0) > 0 || String(row.promotion_decision ?? '').includes('blocked'))) return 'error'
+  if (rows.some((row) => row.approval_required)) return 'warn'
+  return 'ok'
+}
+
+function pointerTone(readiness?: string | null): WorkstationTone {
+  if (readiness === 'ready' || readiness === 'pointer_ready' || readiness === 'synced') return 'ok'
+  if (readiness === 'missing' || readiness === 'artifact_mismatch') return 'error'
+  if (readiness) return 'warn'
+  return 'neutral'
+}
+
+function toneFromIc(value: number | null | undefined): WorkstationTone {
+  if (value == null || !Number.isFinite(value)) return 'neutral'
+  if (value > 0.02) return 'ok'
+  if (value >= 0) return 'info'
+  if (value >= -0.02) return 'warn'
+  return 'error'
+}
+
+function artifactReady(model?: ModelPoolLineageModel, selectionRow?: SelectionModelRow): boolean {
+  const artifact = selectionCandidate(selectionRow)
+  return Boolean(artifact?.version || model?.version || model?.gcs_path || model?.artifact_uri)
+}
+
+function evidenceReady(statusRow?: ModelUpgradeResearchStatusRow, model?: ModelPoolLineageModel): boolean {
+  return (
+    statusRow?.registry_status === 'ready_for_review' ||
+    statusRow?.registry_status === 'approved_for_patch' ||
+    model?.status === 'active'
+  )
+}
+
+function pointerReady(pointerRow?: ModelChampionPointersResponse['models'][string]): boolean {
+  return pointerTone(pointerRow?.readiness) === 'ok'
+}
+
+function finalCompareReady(rows: PromotionQueueRow[], pointerRow?: ModelChampionPointersResponse['models'][string]): boolean {
+  return rows.some((row) => Boolean(row.final_compared_to)) || pointerReady(pointerRow)
+}
+
+function approvalClear(rows: PromotionQueueRow[]): boolean {
+  return rows.length === 0 || rows.every((row) => !row.approval_required && (row.blockers?.length ?? 0) === 0)
+}
+
+type GrafanaModelRecord = {
+  candidate: typeof MODEL_UPGRADE_CANDIDATES[number]
+  model?: ModelPoolLineageModel
+  family: ReturnType<typeof modelFamily>
+  status: string
+  statusTone: WorkstationTone
+  artifactVersion: string
+  dataset?: { window: string; shape: string; note: string }
+  pointerRow?: ModelChampionPointersResponse['models'][string]
+  pointerTone: WorkstationTone
+  promotionRows: PromotionQueueRow[]
+  statusRow?: ModelUpgradeResearchStatusRow
+  artifactOk: boolean
+  evidenceOk: boolean
+  finalCompareOk: boolean
+  approvalOk: boolean
+  pointerOk: boolean
+  blockers: string[]
+  nextAction: string
+  history: Array<{
+    label: string
+    value: string
+    title: string
+    tone: WorkstationTone
+  }>
+}
+
+const GRAFANA_HISTORY_BUCKETS = ['W-5', 'W-4', 'W-3', 'W-2', 'W-1'] as const
+
+function severityScore(tone: WorkstationTone): number {
+  if (tone === 'error') return 4
+  if (tone === 'warn') return 3
+  if (tone === 'info') return 2
+  if (tone === 'ok') return 1
+  return 0
+}
+
+function maxTone(tones: WorkstationTone[]): WorkstationTone {
+  return tones.reduce<WorkstationTone>((winner, tone) => (
+    severityScore(tone) > severityScore(winner) ? tone : winner
+  ), 'neutral')
+}
+
+function statusLabel(tone: WorkstationTone): string {
+  if (tone === 'ok') return 'OK'
+  if (tone === 'warn') return 'WARN'
+  if (tone === 'error') return 'CRIT'
+  if (tone === 'info') return 'INFO'
+  return 'NO DATA'
+}
+
+function grafanaCellClass(tone: WorkstationTone): string {
+  if (tone === 'ok') return 'border-emerald-400/30 bg-emerald-500/70 text-[#07130d]'
+  if (tone === 'warn') return 'border-amber-300/35 bg-amber-400/80 text-[#1b1300]'
+  if (tone === 'error') return 'border-rose-300/35 bg-rose-500/80 text-white'
+  if (tone === 'info') return 'border-sky-300/35 bg-sky-500/70 text-[#06111a]'
+  return 'border-slate-600/45 bg-slate-700/45 text-slate-300'
+}
+
+function grafanaBorderClass(tone: WorkstationTone): string {
+  if (tone === 'ok') return 'border-emerald-400/35'
+  if (tone === 'warn') return 'border-amber-300/40'
+  if (tone === 'error') return 'border-rose-300/40'
+  if (tone === 'info') return 'border-sky-300/35'
+  return 'border-slate-600/40'
+}
+
+function grafanaTextClass(tone: WorkstationTone): string {
+  if (tone === 'ok') return 'text-emerald-300'
+  if (tone === 'warn') return 'text-amber-300'
+  if (tone === 'error') return 'text-rose-300'
+  if (tone === 'info') return 'text-sky-300'
+  return 'text-slate-400'
+}
+
+function compactNumber(value: number | null | undefined, digits = 3): string {
+  if (value == null || !Number.isFinite(value)) return 'N/A'
+  return value.toFixed(digits)
+}
+
+function buildGrafanaRecord({
+  candidate,
+  model,
+  selectionRow,
+  pointerRow,
+  statusRow,
+  promotionRows,
+}: {
+  candidate: typeof MODEL_UPGRADE_CANDIDATES[number]
+  model?: ModelPoolLineageModel
+  selectionRow?: SelectionModelRow
+  pointerRow?: ModelChampionPointersResponse['models'][string]
+  statusRow?: ModelUpgradeResearchStatusRow
+  promotionRows: PromotionQueueRow[]
+}): GrafanaModelRecord {
+  const artifact = selectionCandidate(selectionRow)
+  const artifactOk = artifactReady(model, selectionRow)
+  const evidenceOk = evidenceReady(statusRow, model)
+  const pointerOk = pointerReady(pointerRow)
+  const queueTone = promotionPressureTone(promotionRows)
+  const blockers = [
+    ...(!artifactOk ? ['artifact_missing'] : []),
+    ...(!evidenceOk ? ['evidence_not_ready'] : []),
+    ...(!pointerOk ? ['champion_pointer_not_ready'] : []),
+    ...promotionRows.flatMap((row) => (row.blockers ?? []).map((blocker) => (
+      typeof blocker === 'string' ? blocker : blocker.code ?? blocker.label ?? 'promotion_blocker'
+    ))),
+  ]
+  const rawStatus = statusRow?.registry_status ?? model?.status ?? 'no_data'
+  const statusTone = blockers.length
+    ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
+    : toneFromStatus(rawStatus)
+  const weekly = (model?.weekly_ic ?? []).slice(-GRAFANA_HISTORY_BUCKETS.length)
+  const paddedWeekly = [
+    ...Array(Math.max(0, GRAFANA_HISTORY_BUCKETS.length - weekly.length)).fill(null),
+    ...weekly,
+  ] as Array<number | null>
+
   return {
-    width,
-    height: 260,
-    autoSize: true,
-    layout: {
-      background: { type: ColorType.Solid, color: '#070a10' },
-      textColor: '#9aa6bd',
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-    },
-    grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
-    },
-    rightPriceScale: { borderColor: 'rgba(148, 163, 184, 0.18)' },
-    timeScale: { borderColor: 'rgba(148, 163, 184, 0.18)' },
+    candidate,
+    model,
+    family: modelFamily(candidate.id, model),
+    status: rawStatus,
+    statusTone,
+    artifactVersion: artifact?.version ?? model?.version ?? 'no artifact',
+    dataset: MODEL_DATASET_REQUIREMENTS[candidate.id],
+    pointerRow,
+    pointerTone: pointerTone(pointerRow?.readiness),
+    promotionRows,
+    statusRow,
+    artifactOk,
+    evidenceOk,
+    finalCompareOk: finalCompareReady(promotionRows, pointerRow),
+    approvalOk: approvalClear(promotionRows),
+    pointerOk,
+    blockers,
+    nextAction: promotionRows[0]?.next_action ?? pointerRow?.next_action ?? statusRow?.next_action ?? 'no action queued',
+    history: [
+      ...GRAFANA_HISTORY_BUCKETS.map((label, index) => {
+        const value = paddedWeekly[index]
+        const tone = toneFromIc(value)
+        return {
+          label,
+          value: compactNumber(value),
+          title: value == null ? `${candidate.id} ${label}: weekly IC unavailable` : `${candidate.id} ${label}: weekly IC ${value.toFixed(4)}`,
+          tone,
+        }
+      }),
+      {
+        label: 'Now',
+        value: statusLabel(statusTone),
+        title: `${candidate.id}: ${rawStatus}`,
+        tone: statusTone,
+      },
+    ],
   }
 }
 
-function chartDay(index: number): string {
-  const day = new Date()
-  day.setDate(day.getDate() - (3 - index))
-  return day.toISOString().slice(0, 10)
+function GrafanaPanel({
+  title,
+  kicker,
+  children,
+  action,
+  className = '',
+}: {
+  title: string
+  kicker?: string
+  children: ReactNode
+  action?: ReactNode
+  className?: string
+}) {
+  return (
+    <section className={`border border-[#252b36] bg-[#111217] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] ${className}`}>
+      <header className="flex min-h-9 items-center justify-between gap-3 border-b border-[#252b36] bg-[#181b20] px-3">
+        <div className="min-w-0">
+          {kicker && <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#7f8da8]">{kicker}</p>}
+          <h3 className="truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-[#dce3ea]">{title}</h3>
+        </div>
+        {action}
+      </header>
+      {children}
+    </section>
+  )
 }
 
-function StatCell({
+function GrafanaStat({
   label,
   value,
   detail,
-  tone = 'neutral',
+  tone,
 }: {
   label: string
   value: string | number
   detail: string
-  tone?: WorkstationTone
+  tone: WorkstationTone
 }) {
   return (
-    <div className="border border-[#263247] bg-[#05070c] p-3">
-      <div className="flex items-start justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8da8]">{label}</p>
-        <WorkstationPill tone={tone}>{tone}</WorkstationPill>
-      </div>
-      <p className="mt-2 font-mono text-2xl font-semibold text-[#fff1cf]">{value}</p>
-      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{detail}</p>
+    <div className={`border-l-2 bg-[#0b0f14] px-3 py-2 ${grafanaBorderClass(tone)}`}>
+      <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-[#7f8da8]">{label}</p>
+      <div className={`mt-1 font-mono text-xl font-semibold ${grafanaTextClass(tone)}`}>{value}</div>
+      <p className="mt-0.5 text-[11px] leading-4 text-[#8b96a8]">{detail}</p>
     </div>
   )
 }
 
-function ModelBadge({ name, model }: { name: string; model?: ModelPoolLineageModel }) {
-  const status = model?.status ?? 'missing'
+function GrafanaDashboardHeader({
+  records,
+  readyPointers,
+  pointerTotal,
+  selectedArtifacts,
+  promotionCount,
+}: {
+  records: GrafanaModelRecord[]
+  readyPointers: number
+  pointerTotal: number
+  selectedArtifacts: number
+  promotionCount: number
+}) {
+  const okCount = records.filter((record) => record.statusTone === 'ok').length
+  const blockedCount = records.filter((record) => record.blockers.length > 0 || record.statusTone === 'error').length
+  const warnCount = records.filter((record) => record.statusTone === 'warn').length
+  const fleetTone = blockedCount ? 'error' : warnCount ? 'warn' : okCount === records.length ? 'ok' : 'info'
+  const now = new Date()
+
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-[#263247] bg-[#070a10] px-3 py-2">
-      <div className="min-w-0">
-        <p className="truncate font-mono text-[12px] font-semibold text-slate-100">{name}</p>
-        <p className="mt-0.5 truncate text-[11px] text-[#70809b]">{modelFamily(name, model)} / {model?.version ?? 'no artifact'}</p>
+    <div className="border-b border-[#252b36] bg-[#0b0f14]">
+      <div className="flex flex-col gap-3 border-b border-[#252b36] px-3 py-2 xl:flex-row xl:items-center xl:justify-between">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#f0b90b]">Grafana-style model operations</p>
+          <h2 className="mt-1 font-mono text-lg font-semibold uppercase tracking-[0.06em] text-[#f2ead8]">Active-9 Model Pool</h2>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#9aa7bd]">
+          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">env prod</span>
+          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">range last 5 evidence windows</span>
+          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">refresh 60s</span>
+          <span className="border border-[#252b36] bg-[#111217] px-2 py-1">local {now.toLocaleTimeString()}</span>
+        </div>
       </div>
-      <WorkstationPill tone={toneFromStatus(status)}>{status}</WorkstationPill>
+      <div className="grid gap-px bg-[#252b36] md:grid-cols-2 xl:grid-cols-5">
+        <GrafanaStat
+          label="Fleet state"
+          value={statusLabel(fleetTone)}
+          detail={`${okCount}/${records.length} active slots green`}
+          tone={fleetTone}
+        />
+        <GrafanaStat
+          label="Blocked"
+          value={blockedCount}
+          detail="artifact, evidence, pointer, or gate blockers"
+          tone={blockedCount ? 'error' : 'ok'}
+        />
+        <GrafanaStat
+          label="Pointer ready"
+          value={`${readyPointers}/${pointerTotal || 'N/A'}`}
+          detail="champion pointer serving parity"
+          tone={pointerTotal && readyPointers === pointerTotal ? 'ok' : 'warn'}
+        />
+        <GrafanaStat
+          label="Artifacts"
+          value={selectedArtifacts}
+          detail="selected monthly or weekly candidates"
+          tone={selectedArtifacts ? 'info' : 'neutral'}
+        />
+        <GrafanaStat
+          label="Promotion queue"
+          value={promotionCount}
+          detail="rows needing review or release action"
+          tone={promotionCount ? 'warn' : 'ok'}
+        />
+      </div>
     </div>
+  )
+}
+
+function FleetStatusStrip({ records }: { records: GrafanaModelRecord[] }) {
+  return (
+    <GrafanaPanel title="Fleet status" kicker="compact active-9 state cells">
+      <div className="grid gap-px bg-[#252b36] sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9">
+        {records.map((record) => (
+          <div key={record.candidate.id} className="bg-[#0b0f14] p-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="truncate font-mono text-[11px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+              <span className={`h-2 w-2 shrink-0 ${record.statusTone === 'ok' ? 'bg-emerald-400' : record.statusTone === 'warn' ? 'bg-amber-300' : record.statusTone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} />
+            </div>
+            <p className="mt-1 truncate text-[10px] text-[#7f8da8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
+            <div className={`mt-2 border px-1.5 py-1 text-center font-mono text-[10px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
+              {statusLabel(record.statusTone)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </GrafanaPanel>
+  )
+}
+
+function StateTimelinePanel({ records }: { records: GrafanaModelRecord[] }) {
+  const labels = [...GRAFANA_HISTORY_BUCKETS, 'Now']
+  return (
+    <GrafanaPanel
+      title="State timeline"
+      kicker="weekly IC plus current registry state"
+      action={<span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#7f8da8]">green ok / amber warn / red crit / gray no data</span>}
+      className="min-h-[360px]"
+    >
+      <div className="overflow-x-auto">
+        <div className="min-w-[760px]">
+          <div className="grid grid-cols-[136px_repeat(6,minmax(84px,1fr))] border-b border-[#252b36] bg-[#0b0f14] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[#7f8da8]">
+            <div>model</div>
+            {labels.map((label) => <div key={label} className="text-center">{label}</div>)}
+          </div>
+          <div className="divide-y divide-[#252b36]">
+            {records.map((record) => (
+              <div key={record.candidate.id} className="grid grid-cols-[136px_repeat(6,minmax(84px,1fr))] items-center gap-2 px-3 py-2 hover:bg-[#141922]">
+                <div className="min-w-0">
+                  <p className="truncate font-mono text-[11px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+                  <p className="truncate text-[10px] text-[#7f8da8]">{record.family}</p>
+                </div>
+                {record.history.map((cell) => (
+                  <div
+                    key={`${record.candidate.id}-${cell.label}`}
+                    className={`h-8 border px-2 py-1 text-center font-mono text-[10px] font-semibold ${grafanaCellClass(cell.tone)}`}
+                    title={cell.title}
+                    aria-label={cell.title}
+                  >
+                    {cell.value}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </GrafanaPanel>
+  )
+}
+
+function AlertQueuePanel({ records }: { records: GrafanaModelRecord[] }) {
+  const alerts = records
+    .filter((record) => record.blockers.length > 0 || record.promotionRows.length > 0 || record.statusTone === 'warn' || record.statusTone === 'error')
+    .sort((a, b) => severityScore(b.statusTone) - severityScore(a.statusTone))
+
+  return (
+    <GrafanaPanel title="Alert queue" kicker="promotion and evidence incidents">
+      <div className="max-h-[360px] overflow-y-auto">
+        {alerts.length ? alerts.map((record) => (
+          <div key={record.candidate.id} className="border-b border-[#252b36] bg-[#0b0f14] p-3 last:border-b-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-mono text-[12px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+                <p className="mt-1 text-[11px] leading-4 text-[#8b96a8]">{record.nextAction}</p>
+              </div>
+              <span className={`border px-2 py-0.5 font-mono text-[10px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
+                {statusLabel(record.statusTone)}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {(record.blockers.length ? record.blockers : ['promotion_review']).slice(0, 4).map((blocker) => (
+                <span key={blocker} className="border border-[#303947] bg-[#151a22] px-1.5 py-0.5 font-mono text-[10px] text-[#b8c2d1]">
+                  {blocker}
+                </span>
+              ))}
+            </div>
+          </div>
+        )) : (
+          <div className="bg-[#0b0f14] p-3 text-xs text-[#8b96a8]">No active model-pool alerts.</div>
+        )}
+      </div>
+    </GrafanaPanel>
+  )
+}
+
+function GateInspectorPanel({ records }: { records: GrafanaModelRecord[] }) {
+  const selected = records.find((record) => record.blockers.length > 0) ?? records[0]
+  if (!selected) return null
+  const gates = [
+    { label: 'Artifact', ready: selected.artifactOk, detail: selected.artifactVersion },
+    { label: 'Evidence', ready: selected.evidenceOk, detail: selected.statusRow?.registry_status ?? selected.model?.status ?? 'no data' },
+    { label: 'Final compare', ready: selected.finalCompareOk, detail: selected.promotionRows[0]?.final_compared_to ?? 'pending' },
+    { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
+    { label: 'Pointer', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
+  ]
+
+  return (
+    <GrafanaPanel title="Gate inspector" kicker={`selected model: ${selected.candidate.id}`}>
+      <div className="bg-[#0b0f14] p-3">
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8da8]">Promotion readiness funnel</p>
+        <div className="mt-3 space-y-2">
+          {gates.map((gate, index) => (
+            <div key={gate.label} className="grid grid-cols-[24px_1fr_auto] items-center gap-2">
+              <span className="grid h-6 w-6 place-items-center border border-[#303947] bg-[#111217] font-mono text-[10px] text-[#9aa7bd]">{index + 1}</span>
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] text-[#f2ead8]">{gate.label}</p>
+                <p className="truncate text-[10px] text-[#7f8da8]">{gate.detail}</p>
+              </div>
+              <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
+                {gate.ready ? 'PASS' : 'WAIT'}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 border-t border-[#252b36] pt-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8da8]">next action</p>
+          <p className="mt-1 text-xs leading-5 text-[#cbd5e1]">{selected.nextAction}</p>
+        </div>
+      </div>
+    </GrafanaPanel>
+  )
+}
+
+function EvidenceTablePanel({ records }: { records: GrafanaModelRecord[] }) {
+  return (
+    <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, and promotion pressure">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[980px] border-collapse text-left">
+          <thead className="bg-[#0b0f14] font-mono text-[10px] uppercase tracking-[0.14em] text-[#7f8da8]">
+            <tr>
+              <th className="px-3 py-2 font-medium">Model</th>
+              <th className="px-3 py-2 font-medium">Family</th>
+              <th className="px-3 py-2 font-medium">Artifact</th>
+              <th className="px-3 py-2 font-medium">Dataset</th>
+              <th className="px-3 py-2 font-medium">Pointer</th>
+              <th className="px-3 py-2 font-medium">OOS/Live state</th>
+              <th className="px-3 py-2 font-medium">Next action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#252b36]">
+            {records.map((record) => (
+              <tr key={record.candidate.id} className="bg-[#111217] hover:bg-[#151b24]">
+                <td className="px-3 py-2 font-mono text-[12px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
+                <td className="px-3 py-2 text-[11px] text-[#9aa7bd]">{record.family}</td>
+                <td className="max-w-[210px] truncate px-3 py-2 font-mono text-[11px] text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
+                <td className="px-3 py-2">
+                  <p className="font-mono text-[11px] text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
+                  <p className="text-[10px] text-[#7f8da8]">{record.dataset?.shape ?? 'N/A'}</p>
+                </td>
+                <td className="px-3 py-2">
+                  <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(record.pointerTone)}`}>
+                    {record.pointerRow?.readiness ?? 'missing'}
+                  </span>
+                </td>
+                <td className="px-3 py-2">
+                  <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(record.statusTone)}`}>
+                    {record.status}
+                  </span>
+                </td>
+                <td className="max-w-[320px] px-3 py-2 text-[11px] leading-4 text-[#cbd5e1]">{record.nextAction}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </GrafanaPanel>
+  )
+}
+
+function MetaBoundaryPanel() {
+  return (
+    <GrafanaPanel title="Meta boundary" kicker="evidence only outside active-9 alpha vote">
+      <div className="grid gap-px bg-[#252b36] md:grid-cols-2 xl:grid-cols-4">
+        {ADAPTIVE_EVIDENCE_STEPS.map((step) => (
+          <div key={step.label} className="bg-[#0b0f14] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-mono text-[11px] font-semibold text-[#f2ead8]">{step.label}</p>
+              <span className={`border px-2 py-0.5 font-mono text-[10px] ${grafanaCellClass(step.tone)}`}>{statusLabel(step.tone)}</span>
+            </div>
+            <p className="mt-2 text-[11px] leading-4 text-[#8b96a8]">{step.detail}</p>
+          </div>
+        ))}
+      </div>
+    </GrafanaPanel>
   )
 }
 
@@ -166,9 +666,6 @@ export default function ModelPoolNewFlowWorkbench({
   promotionQueue,
   statusRows,
 }: ModelPoolNewFlowWorkbenchProps) {
-  const chartRef = useRef<IChartApi | null>(null)
-  const containerRef = useRef<HTMLDivElement | null>(null)
-
   const liveModels = useMemo(
     () => models.filter(([name]) => ACTIVE_ALPHA_MODELS.has(name) && !RETIRED_MODELS.has(name)),
     [models],
@@ -193,155 +690,41 @@ export default function ModelPoolNewFlowWorkbench({
     return sum + (row.monthly_release_candidate ? 1 : 0) + (row.weekly_drift_candidate ? 1 : 0)
   }, 0)
   const promotionCount = promotionQueue?.count ?? promotionQueue?.queue?.length ?? 0
-  const evidenceReady = activeSlots.filter((candidate) => {
-    const row = latestStatusFor(candidate.id, statusRows)
-    return row?.registry_status === 'ready_for_review' || row?.registry_status === 'approved_for_patch'
-  }).length
-
-  const chartPoints = useMemo(() => {
-    const coarseServing = coarse.filter(([, model]) => isServing(model)).length
-    const bars = [
-      { label: 'L2 coarse', value: coarseServing, blockers: coarse.length - coarseServing, color: '#38bdf8' },
-      { label: 'Active-9', value: serving.length, blockers: Math.max(0, activeSlots.length - serving.length), color: '#34d399' },
-      { label: 'evidence', value: evidenceReady, blockers: activeSlots.length - evidenceReady, color: '#facc15' },
-      { label: 'promotion', value: promotionCount, blockers: selectedArtifacts ? Math.max(0, selectedArtifacts - promotionCount) : 0, color: '#c084fc' },
-    ]
-    return bars.map((bar, index) => ({ ...bar, time: chartDay(index) }))
-  }, [activeSlots.length, coarse, evidenceReady, promotionCount, selectedArtifacts, serving.length])
-
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-
-    const chart = createChart(container, chartOptions(container.clientWidth || 720))
-    chartRef.current = chart
-
-    const countSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: 'volume' },
-      priceScaleId: '',
-      color: '#38bdf8',
-      title: 'model count',
-    })
-    countSeries.setData(chartPoints.map((point) => ({
-      time: point.time,
-      value: point.value,
-      color: point.color,
-    })))
-
-    const blockerSeries = chart.addSeries(LineSeries, {
-      color: '#f87171',
-      lineWidth: 2,
-      priceLineVisible: false,
-      title: 'blockers',
-    })
-    blockerSeries.setData(chartPoints.map((point) => ({
-      time: point.time,
-      value: point.blockers,
-    })))
-
-    const markers: SeriesMarker<Time>[] = chartPoints.map((point) => ({
-      time: point.time,
-      position: point.blockers > 0 ? 'aboveBar' : 'belowBar',
-      shape: point.blockers > 0 ? 'circle' : 'arrowUp',
-      color: point.blockers > 0 ? '#f87171' : '#34d399',
-      text: `${point.label}: ${point.value}`,
-    }))
-    createSeriesMarkers(blockerSeries, markers)
-
-    chart.timeScale().fitContent()
-    const resizeObserver = new ResizeObserver((entries) => {
-      const entry = entries[0]
-      if (entry) chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)) })
-    })
-    resizeObserver.observe(container)
-
-    return () => {
-      resizeObserver.disconnect()
-      chart.remove()
-      chartRef.current = null
-    }
-  }, [chartPoints])
+  const grafanaRecords = useMemo(() => activeSlots.map((candidate) => buildGrafanaRecord({
+    candidate,
+    model: byName.get(candidate.id),
+    selectionRow: selection?.models?.[candidate.id],
+    pointerRow: pointers?.models?.[candidate.id],
+    statusRow: latestStatusFor(candidate.id, statusRows),
+    promotionRows: (promotionQueue?.queue ?? []).filter((row) => row.model_name === candidate.id),
+  })), [activeSlots, byName, selection, pointers, statusRows, promotionQueue])
 
   return (
     <WorkstationPanel
-      title="Model Pool Cockpit"
-      kicker="L2 coarse -> L3 family -> adaptive evidence -> promotion governance"
+      title="Model Ops Dashboard"
+      kicker="Grafana-style fleet monitoring for L2 coarse -> L3 family model registry"
     >
-      <div className="grid gap-3 border-b border-[#263247] p-3 lg:grid-cols-4">
-        <StatCell
-          label="L2 coarse"
-          value={`${coarse.filter(([, model]) => isServing(model)).length}/3`}
-          detail="LightGBM / XGBoost / ExtraTrees coarse gate health"
-          tone={coarse.every(([, model]) => isServing(model)) ? 'ok' : 'warn'}
-        />
-        <StatCell
-          label="Active-9 serving"
-          value={`${serving.length}/${activeSlots.length}`}
-          detail={`families ${Object.entries(familyCounts).map(([family, count]) => `${family}:${count}`).join(' / ') || 'none'}`}
-          tone={serving.length === activeSlots.length ? 'ok' : serving.length ? 'warn' : 'error'}
-        />
-        <StatCell
-          label="Evidence ready"
-          value={`${evidenceReady}/${activeSlots.length}`}
-          detail="Active-9 artifact, verified-row, and IC readiness"
-          tone={evidenceReady === activeSlots.length ? 'ok' : evidenceReady ? 'warn' : 'info'}
-        />
-        <StatCell
-          label="Governance"
-          value={`${readyPointers}/${pointerTotal || 'N/A'}`}
-          detail={`selected artifacts ${selectedArtifacts}; promotion queue ${promotionCount}`}
-          tone={pointerTotal && readyPointers === pointerTotal ? 'ok' : 'warn'}
-        />
-      </div>
+      <GrafanaDashboardHeader
+        records={grafanaRecords}
+        readyPointers={readyPointers}
+        pointerTotal={pointerTotal}
+        selectedArtifacts={selectedArtifacts}
+        promotionCount={promotionCount}
+      />
 
-      <div className="border-b border-[#263247] bg-[#05070c] p-3">
-        <WorkstationFlow steps={ADAPTIVE_EVIDENCE_STEPS} />
-      </div>
+      <div className="grid gap-3 bg-[#0b0f14] p-3">
+        <FleetStatusStrip records={grafanaRecords} />
 
-      <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
-        <div className="bg-[#070a10] p-3">
-          <div ref={containerRef} className="min-h-[260px] w-full" aria-label="Active-9 evidence chain chart" />
-          <p className="mt-2 text-[11px] leading-5 text-[#70809b]">
-            Snapshot of the active-9 evidence chain. Rising blockers mean the next scheduler path
-            should close artifact, verified-row, IC, or promotion evidence gaps.
-          </p>
-        </div>
-        <div className="space-y-3 bg-[#070a10] p-3">
-          <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-300">L2 coarse gate</p>
-            <div className="mt-2 grid gap-2">
-              {coarse.map(([name, model]) => <ModelBadge key={name} name={name} model={model} />)}
-            </div>
-          </div>
-          <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-300">Active-9 L3 slots</p>
-            <div className="mt-2 grid gap-2">
-              {activeSlots.map((candidate) => {
-                const row = latestStatusFor(candidate.id, statusRows)
-                const model = byName.get(candidate.id)
-                return (
-                  <div key={candidate.id} className="rounded-lg border border-[#263247] bg-[#05070c] p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-mono text-[12px] font-semibold text-[#fff1cf]">{candidate.id}</p>
-                        <p className="mt-0.5 text-[11px] text-[#70809b]">{candidate.layer} / {candidate.family} / {model?.version ?? 'no artifact'}</p>
-                      </div>
-                      <WorkstationPill tone={toneFromStatus(row?.registry_status ?? model?.status)}>
-                        {row?.registry_status ?? model?.status ?? 'needs evidence'}
-                      </WorkstationPill>
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-[#9aa7bd]">{candidate.roleZh}</p>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {candidate.requiredEvidence.slice(0, 4).map((item) => (
-                        <WorkstationPill key={item} tone="neutral">{item}</WorkstationPill>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.8fr)_minmax(320px,0.8fr)]">
+          <StateTimelinePanel records={grafanaRecords} />
+          <div className="grid gap-3">
+            <AlertQueuePanel records={grafanaRecords} />
+            <GateInspectorPanel records={grafanaRecords} />
           </div>
         </div>
+
+        <EvidenceTablePanel records={grafanaRecords} />
+        <MetaBoundaryPanel />
       </div>
 
       <div className="border-t border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-[#9aa7bd]">

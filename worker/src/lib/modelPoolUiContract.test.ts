@@ -23,15 +23,21 @@ const dashboardReadRoutes = fs.readFileSync(
 
 assert(page.includes('ModelPoolNewFlowWorkbench'), 'Model Pool must render the new L2/L3 cockpit')
 assert(page.includes('PromotionQueuePanelV2'), 'Model Pool must keep promotion and parameter governance')
-assert(page.includes('UpgradeTrackPanelV2'), 'Model Pool must render artifact-gated L3 tracks')
+assert(!page.includes('UpgradeTrackPanelV2'), 'Model Pool must not duplicate active-9 details outside the operating matrix')
 assert(page.includes('!isRetiredModelName(name)'), 'Model Pool must filter retired ML from the main surface')
 assert(!page.includes('{false &&'), 'Model Pool must not hide retired UI in a false render branch')
 
-assert(workbench.includes("from 'lightweight-charts'"), 'Model Pool cockpit must use lightweight-charts')
-assert(workbench.includes('HistogramSeries'), 'Model Pool cockpit must render layer count histograms')
-assert(workbench.includes('LineSeries'), 'Model Pool cockpit must render blocker line series')
-assert(workbench.includes('createSeriesMarkers'), 'Model Pool cockpit must render layer markers')
+assert(!workbench.includes("from 'lightweight-charts'"), 'Model Pool cockpit must not use the unclear fake timeline chart')
+assert(workbench.includes('Grafana-style model operations'), 'Model Pool cockpit must expose the Grafana-style operations header')
+assert(workbench.includes('Fleet status'), 'Model Pool cockpit must show active-9 fleet status cells')
+assert(workbench.includes('State timeline'), 'Model Pool cockpit must show a state-history style timeline')
+assert(workbench.includes('Alert queue'), 'Model Pool cockpit must show blocker and promotion alerts')
+assert(workbench.includes('Gate inspector'), 'Model Pool cockpit must keep release gate drilldown in an inspector')
+assert(workbench.includes('Evidence table'), 'Model Pool cockpit must keep dense registry evidence table')
+assert(workbench.includes('Promotion readiness funnel'), 'Gate inspector must show the release readiness funnel')
 assert(workbench.includes('L2 coarse -> L3 family'), 'Model Pool cockpit must show the L2/L3 ownership split')
+assert(workbench.includes('dataset, pointer, and promotion pressure'), 'Model Pool cockpit must show dataset, pointer, and promotion pressure in the evidence table')
+assert(!workbench.includes(['Snapshot', 'of the active-9 evidence chain'].join(' ')), 'Model Pool cockpit must remove the unclear snapshot copy')
 
 for (const id of ['TabM', 'GNN', 'iTransformer', 'TimesFM']) {
   assert(track.includes(`id: '${id}'`), `${id} must be listed as production_slot_member`)

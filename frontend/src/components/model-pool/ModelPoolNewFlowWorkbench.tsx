@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
   MODEL_POOL_L2_COARSE_MODEL_IDS,
@@ -461,12 +461,32 @@ function GrafanaDashboardHeader({
   )
 }
 
-function FleetStatusStrip({ records }: { records: GrafanaModelRecord[] }) {
+function selectedFrameClass(isSelected: boolean): string {
+  return isSelected ? 'border-[#f0c365]/70 bg-[#131b25] shadow-[0_0_0_1px_rgba(240,195,101,0.22)]' : 'border-[#253242] bg-[#0c1219]'
+}
+
+function FleetStatusStrip({
+  records,
+  selectedModelId,
+  onSelectModel,
+}: {
+  records: GrafanaModelRecord[]
+  selectedModelId?: string | null
+  onSelectModel: (modelId: string) => void
+}) {
   return (
     <GrafanaPanel title="Fleet status" kicker="compact active-9 state cells">
       <div className="grid gap-2 bg-[#0b1118] p-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9">
-        {records.map((record) => (
-          <div key={record.candidate.id} className="rounded-xl border border-[#253242] bg-[#0c1219] p-3">
+        {records.map((record) => {
+          const isSelected = selectedModelId === record.candidate.id
+          return (
+          <button
+            key={record.candidate.id}
+            type="button"
+            aria-pressed={isSelected}
+            onClick={() => onSelectModel(record.candidate.id)}
+            className={`rounded-xl border p-3 text-left transition-colors hover:border-[#f0c365]/55 focus:outline-none focus:ring-2 focus:ring-[#f0c365]/40 ${selectedFrameClass(isSelected)}`}
+          >
             <div className="flex items-center justify-between gap-2">
               <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.statusTone === 'ok' ? 'bg-emerald-400' : record.statusTone === 'warn' ? 'bg-amber-300' : record.statusTone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} />
@@ -475,14 +495,23 @@ function FleetStatusStrip({ records }: { records: GrafanaModelRecord[] }) {
             <div className={`mt-2 border px-2 py-1.5 text-center font-mono text-[11px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
               {statusLabel(record.statusTone)}
             </div>
-          </div>
-        ))}
+          </button>
+          )
+        })}
       </div>
     </GrafanaPanel>
   )
 }
 
-function StateTimelinePanel({ records }: { records: GrafanaModelRecord[] }) {
+function StateTimelinePanel({
+  records,
+  selectedModelId,
+  onSelectModel,
+}: {
+  records: GrafanaModelRecord[]
+  selectedModelId?: string | null
+  onSelectModel: (modelId: string) => void
+}) {
   const labels = [...GRAFANA_HISTORY_BUCKETS, 'Now']
   return (
     <GrafanaPanel
@@ -498,8 +527,16 @@ function StateTimelinePanel({ records }: { records: GrafanaModelRecord[] }) {
             {labels.map((label) => <div key={label} className="text-center">{label}</div>)}
           </div>
           <div className="divide-y divide-[#263247]">
-            {records.map((record) => (
-              <div key={record.candidate.id} className="grid grid-cols-[152px_repeat(6,minmax(90px,1fr))] items-center gap-2.5 px-4 py-2.5 hover:bg-[#151d28]">
+            {records.map((record) => {
+              const isSelected = selectedModelId === record.candidate.id
+              return (
+              <button
+                key={record.candidate.id}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => onSelectModel(record.candidate.id)}
+                className={`grid w-full grid-cols-[152px_repeat(6,minmax(90px,1fr))] items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
+              >
                 <div className="min-w-0">
                   <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
                   <p className="truncate text-[11px] text-[#90a0b8]">{record.family}</p>
@@ -514,8 +551,9 @@ function StateTimelinePanel({ records }: { records: GrafanaModelRecord[] }) {
                     {cell.value}
                   </div>
                 ))}
-              </div>
-            ))}
+              </button>
+              )
+            })}
           </div>
         </div>
       </div>
@@ -523,7 +561,15 @@ function StateTimelinePanel({ records }: { records: GrafanaModelRecord[] }) {
   )
 }
 
-function AlertQueuePanel({ records }: { records: GrafanaModelRecord[] }) {
+function AlertQueuePanel({
+  records,
+  selectedModelId,
+  onSelectModel,
+}: {
+  records: GrafanaModelRecord[]
+  selectedModelId?: string | null
+  onSelectModel: (modelId: string) => void
+}) {
   const alerts = records
     .filter((record) => record.blockers.length > 0 || record.promotionRows.length > 0 || record.statusTone === 'warn' || record.statusTone === 'error')
     .sort((a, b) => severityScore(b.statusTone) - severityScore(a.statusTone))
@@ -531,8 +577,16 @@ function AlertQueuePanel({ records }: { records: GrafanaModelRecord[] }) {
   return (
     <GrafanaPanel title="Alert queue" kicker="promotion and evidence incidents">
       <div className="max-h-[360px] overflow-y-auto">
-        {alerts.length ? alerts.map((record) => (
-          <div key={record.candidate.id} className="m-2 rounded-xl border border-[#263247] bg-[#0c1219] p-3 last:mb-2">
+        {alerts.length ? alerts.map((record) => {
+          const isSelected = selectedModelId === record.candidate.id
+          return (
+          <button
+            key={record.candidate.id}
+            type="button"
+            aria-pressed={isSelected}
+            onClick={() => onSelectModel(record.candidate.id)}
+            className={`m-2 block w-[calc(100%-1rem)] rounded-xl border p-3 text-left transition-colors hover:border-[#f0c365]/55 focus:outline-none focus:ring-2 focus:ring-[#f0c365]/40 last:mb-2 ${selectedFrameClass(isSelected)}`}
+          >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
@@ -549,8 +603,9 @@ function AlertQueuePanel({ records }: { records: GrafanaModelRecord[] }) {
                 </span>
               ))}
             </div>
-          </div>
-        )) : (
+          </button>
+          )
+        }) : (
           <div className="bg-[#0c1219] p-4 text-sm text-[#9aa8ba]">No active model-pool alerts.</div>
         )}
       </div>
@@ -558,8 +613,16 @@ function AlertQueuePanel({ records }: { records: GrafanaModelRecord[] }) {
   )
 }
 
-function GateInspectorPanel({ records }: { records: GrafanaModelRecord[] }) {
-  const selected = records.find((record) => record.blockers.length > 0) ?? records[0]
+function GateInspectorPanel({
+  records,
+  selectedModelId,
+}: {
+  records: GrafanaModelRecord[]
+  selectedModelId?: string | null
+}) {
+  const selected = records.find((record) => record.candidate.id === selectedModelId)
+    ?? records.find((record) => record.blockers.length > 0)
+    ?? records[0]
   if (!selected) return null
   const gates = [
     { label: 'Artifact', ready: selected.artifactOk, detail: selected.artifactVersion },
@@ -596,7 +659,15 @@ function GateInspectorPanel({ records }: { records: GrafanaModelRecord[] }) {
   )
 }
 
-function EvidenceTablePanel({ records }: { records: GrafanaModelRecord[] }) {
+function EvidenceTablePanel({
+  records,
+  selectedModelId,
+  onSelectModel,
+}: {
+  records: GrafanaModelRecord[]
+  selectedModelId?: string | null
+  onSelectModel: (modelId: string) => void
+}) {
   return (
     <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, and promotion pressure">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
@@ -613,8 +684,23 @@ function EvidenceTablePanel({ records }: { records: GrafanaModelRecord[] }) {
             </tr>
           </thead>
           <tbody>
-            {records.map((record) => (
-              <tr key={record.candidate.id} className="bg-[#111821] hover:bg-[#151f2b]">
+            {records.map((record) => {
+              const isSelected = selectedModelId === record.candidate.id
+              return (
+              <tr
+                key={record.candidate.id}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isSelected}
+                onClick={() => onSelectModel(record.candidate.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onSelectModel(record.candidate.id)
+                  }
+                }}
+                className={`cursor-pointer bg-[#111821] outline-none transition-colors hover:bg-[#151f2b] focus:bg-[#151f2b] focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151f2b]' : ''}`}
+              >
                 <td className="rounded-l-xl border-y border-l border-[#263247] px-3 py-3 font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
                 <td className="border-y border-[#263247] px-3 py-3 text-xs text-[#a7b5c8]">{record.family}</td>
                 <td className="max-w-[210px] truncate border-y border-[#263247] px-3 py-3 font-mono text-xs text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
@@ -634,7 +720,8 @@ function EvidenceTablePanel({ records }: { records: GrafanaModelRecord[] }) {
                 </td>
                 <td className="max-w-[320px] rounded-r-xl border-y border-r border-[#263247] px-3 py-3 text-xs leading-5 text-[#d4deeb]">{record.nextAction}</td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -699,6 +786,15 @@ export default function ModelPoolNewFlowWorkbench({
     statusRow: latestStatusFor(candidate.id, statusRows),
     promotionRows: (promotionQueue?.queue ?? []).filter((row) => row.model_name === candidate.id),
   })), [activeSlots, byName, selection, pointers, statusRows, promotionQueue])
+  const defaultSelectedModelId = useMemo(() => (
+    grafanaRecords.find((record) => record.blockers.length > 0)?.candidate.id
+      ?? grafanaRecords[0]?.candidate.id
+      ?? null
+  ), [grafanaRecords])
+  const [selectedModelIdIntent, setSelectedModelIdIntent] = useState<string | null>(null)
+  const selectedModelId = grafanaRecords.some((record) => record.candidate.id === selectedModelIdIntent)
+    ? selectedModelIdIntent
+    : defaultSelectedModelId
 
   return (
     <WorkstationPanel
@@ -714,17 +810,33 @@ export default function ModelPoolNewFlowWorkbench({
       />
 
       <div className="grid gap-4 bg-[#0b1118] p-4">
-        <FleetStatusStrip records={grafanaRecords} />
+        <FleetStatusStrip
+          records={grafanaRecords}
+          selectedModelId={selectedModelId}
+          onSelectModel={setSelectedModelIdIntent}
+        />
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(340px,0.8fr)]">
-          <StateTimelinePanel records={grafanaRecords} />
+          <StateTimelinePanel
+            records={grafanaRecords}
+            selectedModelId={selectedModelId}
+            onSelectModel={setSelectedModelIdIntent}
+          />
           <div className="grid gap-4">
-            <AlertQueuePanel records={grafanaRecords} />
-            <GateInspectorPanel records={grafanaRecords} />
+            <AlertQueuePanel
+              records={grafanaRecords}
+              selectedModelId={selectedModelId}
+              onSelectModel={setSelectedModelIdIntent}
+            />
+            <GateInspectorPanel records={grafanaRecords} selectedModelId={selectedModelId} />
           </div>
         </div>
 
-        <EvidenceTablePanel records={grafanaRecords} />
+        <EvidenceTablePanel
+          records={grafanaRecords}
+          selectedModelId={selectedModelId}
+          onSelectModel={setSelectedModelIdIntent}
+        />
         <MetaBoundaryPanel />
       </div>
 

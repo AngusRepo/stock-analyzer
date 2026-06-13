@@ -303,7 +303,9 @@ def retrain_orchestrator(payload: dict) -> dict:
         FeatureSelectionPolicy,
         PREDICT_ONLY_MODEL_NOTES,
         UniversalTrainingPolicy,
+        build_feature_selection_run_kwargs,
         build_group_train_payload,
+        dedupe_train_groups_for_artifact_lifecycle,
         models_for_training_group,
         training_group_feature_policy,
     )
@@ -364,7 +366,7 @@ def retrain_orchestrator(payload: dict) -> dict:
     if is_monthly and not artifact_lifecycle_only:
         print(f"[Orchestrator] Monthly -> running feature selection (max {selection_params['max_rounds']} rounds)")
         try:
-            fs_result = feature_selection_pipeline.remote(selection_params)
+            fs_result = feature_selection_pipeline.remote(build_feature_selection_run_kwargs(selection_params))
             fs_pool = fs_result.get("feature_pool", {}) if isinstance(fs_result.get("feature_pool"), dict) else {}
             fs_target_perm = fs_result.get("target_permutation", {}) if isinstance(fs_result.get("target_permutation"), dict) else {}
             fs_k_sweep = fs_result.get("k_sweep", {}) if isinstance(fs_result.get("k_sweep"), dict) else {}
@@ -376,6 +378,9 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "target_permutation_n": fs_target_perm.get("n_permutations"),
                 "k_sweep_trials": fs_k_sweep.get("actual_trials") or fs_k_sweep.get("n_trials"),
                 "objective_cache_hits": fs_k_sweep.get("objective_cache_hits"),
+                "algorithm_profile": fs_result.get("algorithm_profile"),
+                "algorithm_evidence": fs_result.get("algorithm_evidence"),
+                "stage_checkpoints": fs_result.get("stage_checkpoints"),
                 "elapsed_s": fs_result.get("elapsed_s", 0),
             }
             if "error" in fs_result:
@@ -398,7 +403,14 @@ def retrain_orchestrator(payload: dict) -> dict:
         summarize_training_stage_status,
     )
 
-    requested_train_groups = training_policy.requested_groups(payload)
+    raw_requested_train_groups = training_policy.requested_groups(payload)
+    requested_train_groups, suppressed_train_groups = dedupe_train_groups_for_artifact_lifecycle(
+        raw_requested_train_groups,
+        artifact_lifecycle_targets,
+        allow_duplicate=bool(payload.get("allow_duplicate_artifact_lifecycle_train_groups")),
+    )
+    if suppressed_train_groups:
+        print(f"[Orchestrator] Suppressed duplicate train groups: {suppressed_train_groups}")
     print(f"[Orchestrator] Training from {batch_count} GCS batches (groups={requested_train_groups})...")
     sequence_records = list(payload.get("sequence_records") or [])
     sequence_required = (
@@ -587,6 +599,8 @@ def retrain_orchestrator(payload: dict) -> dict:
         result["stages"]["train"] = {
             "status": summarize_training_stage_status(coverage),
             "requested_groups": requested_train_groups,
+            "raw_requested_groups": raw_requested_train_groups,
+            "suppressed_train_groups": suppressed_train_groups,
             "candidate_version": candidate_version,
             "group_coverage": coverage,
             "predict_only_models": predict_only_models,
@@ -1654,17 +1668,12 @@ def feature_selection_pipeline(payload: dict) -> dict:
     """
     _setup_env()
     from app.feature_selection import run_feature_selection_pipeline
-    from app.training_policy import FeatureSelectionPolicy
+    from app.training_policy import FeatureSelectionPolicy, build_feature_selection_run_kwargs
     selection_params = FeatureSelectionPolicy.from_env().to_selection_params(payload)
     try:
         return run_feature_selection_pipeline(
-            max_rounds=selection_params["max_rounds"],
-            alpha=selection_params["alpha"],
+            **build_feature_selection_run_kwargs(selection_params),
             dry_run=payload.get("dry_run", False),
-            icir_weight=selection_params["icir_weight"],
-            permutation_mode=selection_params["permutation_mode"],
-            target_permutation_max_workers=selection_params["target_permutation_max_workers"],
-            k_sweep_n_jobs=selection_params["k_sweep_n_jobs"],
             train_end_date=payload.get("train_end_date"),
             gcs_prefix=payload.get("gcs_prefix"),
         )
@@ -2058,7 +2067,7 @@ def feature_selection_per_window(payload: dict) -> dict:
     train_end_date = payload["train_end_date"]
     gcs_prefix = payload["gcs_prefix"].rstrip("/")
     force = bool(payload.get("force_refresh", False))
-    from app.training_policy import FeatureSelectionPolicy
+    from app.training_policy import FeatureSelectionPolicy, build_feature_selection_run_kwargs
     selection_params = FeatureSelectionPolicy.from_env().to_window_selection_params(payload)
 
     # Idempotency: skip if pool already exists for this window
@@ -2087,9 +2096,7 @@ def feature_selection_per_window(payload: dict) -> dict:
 
     try:
         result = run_feature_selection_pipeline(
-            max_rounds=selection_params["max_rounds"],
-            alpha=selection_params["alpha"],
-            icir_weight=selection_params["icir_weight"],
+            **build_feature_selection_run_kwargs(selection_params),
             train_end_date=train_end_date,
             gcs_prefix=gcs_prefix,
         )

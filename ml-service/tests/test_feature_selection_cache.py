@@ -1,4 +1,10 @@
-from app.feature_selection import build_feature_selection_cache_key
+from app.feature_selection import (
+    acquire_feature_selection_stage_lock,
+    build_feature_selection_cache_key,
+    load_feature_selection_stage_checkpoint,
+    run_feature_selection_stage,
+    save_feature_selection_stage_checkpoint,
+)
 
 
 class _Blob:
@@ -8,6 +14,36 @@ class _Blob:
         self.size = size
         self.crc32c = crc32c
         self.md5_hash = ""
+
+
+class _StoreBlob:
+    def __init__(self, name: str, store: dict[str, str]):
+        self.name = name
+        self.store = store
+        self.generation = "1"
+
+    def exists(self):
+        return self.name in self.store
+
+    def download_as_text(self):
+        return self.store[self.name]
+
+    def upload_from_string(self, text: str, content_type: str | None = None, if_generation_match=None):
+        if if_generation_match == 0 and self.exists():
+            raise RuntimeError("precondition failed")
+        self.store[self.name] = text
+        self.generation = str(int(self.generation) + 1)
+
+    def delete(self):
+        self.store.pop(self.name, None)
+
+
+class _StoreBucket:
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    def blob(self, name: str):
+        return _StoreBlob(name, self.store)
 
 
 def test_feature_selection_cache_key_changes_when_prep_generation_changes():
@@ -60,3 +96,62 @@ def test_feature_selection_cache_key_changes_when_policy_changes():
     )
 
     assert key1 != key2
+
+
+def test_feature_selection_stage_checkpoint_round_trips_json_safe_payload():
+    bucket = _StoreBucket()
+
+    save_feature_selection_stage_checkpoint(
+        bucket,
+        "cache-a",
+        "target_permutation",
+        {"per_feature": {"f1": {"score": 0.5}}, "active": {"f1"}},
+    )
+
+    loaded = load_feature_selection_stage_checkpoint(bucket, "cache-a", "target_permutation")
+
+    assert loaded == {"per_feature": {"f1": {"score": 0.5}}, "active": ["f1"]}
+
+
+def test_checkpointed_stage_hit_skips_compute(monkeypatch):
+    bucket = _StoreBucket()
+    stats = {}
+    save_feature_selection_stage_checkpoint(bucket, "cache-a", "signal_gate", {"passed": True})
+
+    result = run_feature_selection_stage(
+        bucket,
+        "cache-a",
+        "signal_gate",
+        dry_run=False,
+        checkpoint_stats=stats,
+        compute=lambda: (_ for _ in ()).throw(AssertionError("should not recompute")),
+    )
+
+    assert result == {"passed": True}
+    assert stats["signal_gate"]["status"] == "hit"
+
+
+def test_checkpointed_stage_lock_conflict_fails_open_and_saves(monkeypatch):
+    bucket = _StoreBucket()
+    stats = {}
+    acquire_feature_selection_stage_lock(
+        bucket,
+        "cache-a",
+        "k_sweep",
+        owner="other",
+        ttl_seconds=3600,
+    )
+    monkeypatch.setenv("FEATURE_SELECTION_STAGE_LOCK_WAIT_SECONDS", "0")
+
+    result = run_feature_selection_stage(
+        bucket,
+        "cache-a",
+        "k_sweep",
+        dry_run=False,
+        checkpoint_stats=stats,
+        compute=lambda: {"best_k": 20},
+    )
+
+    assert result == {"best_k": 20}
+    assert stats["k_sweep"]["status"] == "lock_conflict_fail_open"
+    assert load_feature_selection_stage_checkpoint(bucket, "cache-a", "k_sweep") == {"best_k": 20}

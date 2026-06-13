@@ -717,11 +717,10 @@ async def feature_selection_endpoint(request: Request):
     await verify_service_token(request)
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     from .feature_selection import run_feature_selection_pipeline
-    return run_feature_selection_pipeline(
-        max_rounds=body.get("max_rounds", 100),
-        alpha=body.get("alpha", 0.01),
-        required_power=body.get("required_power", 0.99),
-    )
+    from .training_policy import FeatureSelectionPolicy, build_feature_selection_run_kwargs
+
+    selection_params = FeatureSelectionPolicy.from_env().to_selection_params(body)
+    return run_feature_selection_pipeline(**build_feature_selection_run_kwargs(selection_params))
 
 
 # ARF reward update payload consumed by cron / controller callbacks.

@@ -10,9 +10,11 @@ from app.training_policy import (  # noqa: E402
     FEATURE_SELECTION_GOVERNANCE,
     MODEL_FEATURE_POLICIES,
     UniversalTrainingPolicy,
+    build_feature_selection_run_kwargs,
     build_model_feature_policy_metadata,
     build_group_train_payload,
     build_tree_model_child_payloads,
+    dedupe_train_groups_for_artifact_lifecycle,
     feature_policy_for_model,
     generated_model_pool_version,
     models_for_training_group,
@@ -42,6 +44,14 @@ def test_feature_selection_policy_keeps_current_defaults():
         "signal_sanity_max_workers": 2,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
+        "algorithm_profile": "current",
+        "cluster_linkage": "ward",
+        "k_sweep_sampler": "nsga2",
+        "k_sweep_objective": "single_val_ic",
+        "k_sweep_knee_policy": "kneedle_080",
+        "k_sweep_bootstrap_rounds": 0,
+        "embargo_mode": "dynamic",
+        "label_horizon_days": 5,
     }
 
 
@@ -63,6 +73,14 @@ def test_feature_selection_policy_reads_env_overrides(monkeypatch):
         "signal_sanity_max_workers": 3,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
+        "algorithm_profile": "current",
+        "cluster_linkage": "ward",
+        "k_sweep_sampler": "nsga2",
+        "k_sweep_objective": "single_val_ic",
+        "k_sweep_knee_policy": "kneedle_080",
+        "k_sweep_bootstrap_rounds": 0,
+        "embargo_mode": "dynamic",
+        "label_horizon_days": 5,
     }
 
 
@@ -78,7 +96,55 @@ def test_feature_selection_policy_merges_payload_overrides():
         "signal_sanity_max_workers": 2,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
+        "algorithm_profile": "current",
+        "cluster_linkage": "ward",
+        "k_sweep_sampler": "nsga2",
+        "k_sweep_objective": "single_val_ic",
+        "k_sweep_knee_policy": "kneedle_080",
+        "k_sweep_bootstrap_rounds": 0,
+        "embargo_mode": "dynamic",
+        "label_horizon_days": 5,
     }
+
+
+def test_feature_selection_policy_exposes_algorithm_profile_knobs(monkeypatch):
+    monkeypatch.setenv("UNIVERSAL_FEATURE_SELECTION_ALGO_PROFILE", "candidate_v2")
+    monkeypatch.setenv("UNIVERSAL_FEATURE_SELECTION_CLUSTER_LINKAGE", "average")
+    monkeypatch.setenv("UNIVERSAL_FEATURE_SELECTION_K_SWEEP_SAMPLER", "motpe")
+
+    policy = FeatureSelectionPolicy.from_env()
+    params = policy.to_selection_params({"k_sweep_knee_policy": "bootstrap_ci"})
+
+    assert params["algorithm_profile"] == "candidate_v2"
+    assert params["cluster_linkage"] == "average"
+    assert params["k_sweep_sampler"] == "motpe"
+    assert params["k_sweep_knee_policy"] == "bootstrap_ci"
+
+
+def test_feature_selection_run_kwargs_include_algorithm_knobs():
+    params = FeatureSelectionPolicy().to_selection_params({
+        "algorithm_profile": "candidate_v2",
+        "cluster_linkage": "average",
+        "k_sweep_sampler": "motpe",
+        "k_sweep_objective": "purged_rolling_ic",
+        "k_sweep_knee_policy": "bootstrap_ci",
+        "k_sweep_bootstrap_rounds": 25,
+        "embargo_mode": "label_horizon",
+        "label_horizon_days": 7,
+    })
+
+    kwargs = build_feature_selection_run_kwargs(params)
+
+    assert kwargs["algorithm_profile"] == "candidate_v2"
+    assert kwargs["cluster_linkage"] == "average"
+    assert kwargs["k_sweep_sampler"] == "motpe"
+    assert kwargs["k_sweep_objective"] == "purged_rolling_ic"
+    assert kwargs["k_sweep_knee_policy"] == "bootstrap_ci"
+    assert kwargs["k_sweep_bootstrap_rounds"] == 25
+    assert kwargs["embargo_mode"] == "label_horizon"
+    assert kwargs["label_horizon_days"] == 7
+    assert kwargs["permutation_mode"] == "within_date_sector"
+    assert "train_end_date" not in kwargs
 
 
 def test_feature_selection_policy_window_params_keep_lighter_default():
@@ -93,6 +159,14 @@ def test_feature_selection_policy_window_params_keep_lighter_default():
         "signal_sanity_max_workers": 2,
         "target_permutation_max_workers": 2,
         "k_sweep_n_jobs": 2,
+        "algorithm_profile": "current",
+        "cluster_linkage": "ward",
+        "k_sweep_sampler": "nsga2",
+        "k_sweep_objective": "single_val_ic",
+        "k_sweep_knee_policy": "kneedle_080",
+        "k_sweep_bootstrap_rounds": 0,
+        "embargo_mode": "dynamic",
+        "label_horizon_days": 5,
     }
 
 
@@ -236,6 +310,33 @@ def test_universal_training_policy_accepts_payload_group_string():
     policy = UniversalTrainingPolicy(default_train_groups=("tree",))
 
     assert policy.requested_groups({"train_model_groups": "tree,patchtst"}) == ["tree", "patchtst"]
+
+
+def test_artifact_lifecycle_targets_suppress_duplicate_train_groups():
+    groups, suppressed = dedupe_train_groups_for_artifact_lifecycle(
+        ["tree", "dlinear", "patchtst"],
+        ["GNN", "PatchTST", "iTransformer", "TimesFM"],
+    )
+
+    assert groups == ["tree", "dlinear"]
+    assert suppressed == [
+        {
+            "group": "patchtst",
+            "model": "PatchTST",
+            "reason": "artifact_lifecycle_target_owns_training",
+        }
+    ]
+
+
+def test_artifact_lifecycle_duplicate_train_groups_can_be_explicitly_allowed():
+    groups, suppressed = dedupe_train_groups_for_artifact_lifecycle(
+        ["patchtst"],
+        ["PatchTST"],
+        allow_duplicate=True,
+    )
+
+    assert groups == ["patchtst"]
+    assert suppressed == []
 
 
 def test_universal_train_without_version_should_become_model_pool_challenger():

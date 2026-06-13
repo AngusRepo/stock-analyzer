@@ -6,9 +6,12 @@ import numpy as np
 from app.feature_selection import (
     _k_sweep_summary,
     _permuted_target,
+    cluster_features,
     cur_representative_evidence,
     mutual_information_evidence,
     optuna_k_sweep,
+    resolve_feature_selection_algorithm_config,
+    resolve_feature_selection_embargo_days,
     signal_sanity_gate,
     stability_selection_evidence,
     update_feature_pool,
@@ -91,6 +94,54 @@ def test_feature_governance_evidence_produces_scores():
     assert mi["per_feature"]["signal"]["score"] >= mi["per_feature"]["noise_a"]["score"]
     assert "signal" in stability["per_feature"]
     assert "signal" in cur["per_feature"]
+
+
+def test_candidate_algorithm_profile_resolves_core_knobs():
+    config = resolve_feature_selection_algorithm_config({"algorithm_profile": "candidate_v2"})
+
+    assert config["algorithm_profile"] == "candidate_v2"
+    assert config["cluster_linkage"] == "average"
+    assert config["k_sweep_sampler"] == "motpe"
+    assert config["k_sweep_objective"] == "purged_rolling_ic"
+    assert config["k_sweep_knee_policy"] == "bootstrap_ci"
+    assert config["embargo_mode"] == "label_horizon"
+
+
+def test_label_horizon_embargo_never_shorter_than_forward_label():
+    days, evidence = resolve_feature_selection_embargo_days(
+        120,
+        embargo_mode="label_horizon",
+        label_horizon_days=15,
+        base_days=5,
+        embargo_pct=0.01,
+        max_days=10,
+    )
+
+    assert days == 15
+    assert evidence["source"] == "max(dynamic_embargo,label_horizon_days)"
+
+
+def test_cluster_features_supports_average_linkage_metadata():
+    rng = np.random.RandomState(7)
+    base = np.linspace(0, 1, 90)
+    X = np.column_stack([
+        base,
+        base + rng.normal(scale=0.01, size=90),
+        rng.normal(size=90),
+        rng.normal(size=90),
+    ])
+
+    result = cluster_features(
+        X,
+        ["trend_a", "trend_b", "noise_a", "noise_b"],
+        k_range=(2, 3),
+        linkage_method="average",
+    )
+
+    assert result["linkage_method"] == "average"
+    assert result["distance_metric"] == "1_abs_spearman"
+    assert result["linkage_caveat"] is None
+    assert result["n_groups"] >= 1
 
 
 def test_feature_pool_records_active_governance_evidence():

@@ -85,6 +85,14 @@ class FeatureSelectionPolicy:
     signal_sanity_max_workers: int = 2
     target_permutation_max_workers: int = 2
     k_sweep_n_jobs: int = 2
+    algorithm_profile: str = "current"
+    cluster_linkage: str = "ward"
+    k_sweep_sampler: str = "nsga2"
+    k_sweep_objective: str = "single_val_ic"
+    k_sweep_knee_policy: str = "kneedle_080"
+    k_sweep_bootstrap_rounds: int = 0
+    embargo_mode: str = "dynamic"
+    label_horizon_days: int = 5
 
     @classmethod
     def from_env(cls) -> "FeatureSelectionPolicy":
@@ -113,9 +121,41 @@ class FeatureSelectionPolicy:
                 "UNIVERSAL_FEATURE_SELECTION_K_SWEEP_JOBS",
                 cls.k_sweep_n_jobs,
             ),
+            algorithm_profile=os.environ.get(
+                "UNIVERSAL_FEATURE_SELECTION_ALGO_PROFILE",
+                cls.algorithm_profile,
+            ).strip() or cls.algorithm_profile,
+            cluster_linkage=os.environ.get(
+                "UNIVERSAL_FEATURE_SELECTION_CLUSTER_LINKAGE",
+                cls.cluster_linkage,
+            ).strip() or cls.cluster_linkage,
+            k_sweep_sampler=os.environ.get(
+                "UNIVERSAL_FEATURE_SELECTION_K_SWEEP_SAMPLER",
+                cls.k_sweep_sampler,
+            ).strip() or cls.k_sweep_sampler,
+            k_sweep_objective=os.environ.get(
+                "UNIVERSAL_FEATURE_SELECTION_K_SWEEP_OBJECTIVE",
+                cls.k_sweep_objective,
+            ).strip() or cls.k_sweep_objective,
+            k_sweep_knee_policy=os.environ.get(
+                "UNIVERSAL_FEATURE_SELECTION_K_SWEEP_KNEE_POLICY",
+                cls.k_sweep_knee_policy,
+            ).strip() or cls.k_sweep_knee_policy,
+            k_sweep_bootstrap_rounds=_env_int(
+                "UNIVERSAL_FEATURE_SELECTION_K_SWEEP_BOOTSTRAP_ROUNDS",
+                cls.k_sweep_bootstrap_rounds,
+            ),
+            embargo_mode=os.environ.get(
+                "UNIVERSAL_FEATURE_SELECTION_EMBARGO_MODE",
+                cls.embargo_mode,
+            ).strip() or cls.embargo_mode,
+            label_horizon_days=_env_int(
+                "UNIVERSAL_FEATURE_SELECTION_LABEL_HORIZON_DAYS",
+                cls.label_horizon_days,
+            ),
         )
 
-    def to_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int]:
+    def to_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int | str]:
         data = asdict(self)
         overrides = overrides or {}
         return {
@@ -133,12 +173,58 @@ class FeatureSelectionPolicy:
                 data["target_permutation_max_workers"],
             ),
             "k_sweep_n_jobs": _coerce_int(overrides.get("k_sweep_n_jobs"), data["k_sweep_n_jobs"]),
+            "algorithm_profile": str(overrides.get("algorithm_profile") or data["algorithm_profile"]),
+            "cluster_linkage": str(overrides.get("cluster_linkage") or data["cluster_linkage"]),
+            "k_sweep_sampler": str(overrides.get("k_sweep_sampler") or data["k_sweep_sampler"]),
+            "k_sweep_objective": str(overrides.get("k_sweep_objective") or data["k_sweep_objective"]),
+            "k_sweep_knee_policy": str(
+                overrides.get("k_sweep_knee_policy") or data["k_sweep_knee_policy"]
+            ),
+            "k_sweep_bootstrap_rounds": _coerce_int(
+                overrides.get("k_sweep_bootstrap_rounds"),
+                data["k_sweep_bootstrap_rounds"],
+            ),
+            "embargo_mode": str(overrides.get("embargo_mode") or data["embargo_mode"]),
+            "label_horizon_days": _coerce_int(
+                overrides.get("label_horizon_days"),
+                data["label_horizon_days"],
+            ),
         }
 
-    def to_window_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int]:
+    def to_window_selection_params(self, overrides: dict[str, Any] | None = None) -> dict[str, float | int | str]:
         overrides = dict(overrides or {})
         overrides.setdefault("max_rounds", self.per_window_max_rounds)
         return self.to_selection_params(overrides)
+
+
+FEATURE_SELECTION_RUN_KWARG_KEYS = (
+    "max_rounds",
+    "alpha",
+    "required_power",
+    "icir_weight",
+    "permutation_mode",
+    "signal_sanity_max_workers",
+    "target_permutation_max_workers",
+    "k_sweep_n_jobs",
+    "algorithm_profile",
+    "cluster_linkage",
+    "k_sweep_sampler",
+    "k_sweep_objective",
+    "k_sweep_knee_policy",
+    "k_sweep_bootstrap_rounds",
+    "embargo_mode",
+    "label_horizon_days",
+)
+
+
+def build_feature_selection_run_kwargs(selection_params: dict[str, Any]) -> dict[str, Any]:
+    """Map policy params to run_feature_selection_pipeline kwargs."""
+
+    return {
+        key: selection_params[key]
+        for key in FEATURE_SELECTION_RUN_KWARG_KEYS
+        if key in selection_params
+    }
 
 
 @dataclass(frozen=True)
@@ -209,6 +295,9 @@ PREDICT_ONLY_MODEL_NOTES = {
 TREE_MODEL_NAMES = ("LightGBM", "XGBoost", "ExtraTrees")
 FULL_TABULAR_MODEL_NAMES: tuple[str, ...] = ()
 SEQUENCE_MODEL_GROUPS = ("dlinear", "patchtst")
+ARTIFACT_LIFECYCLE_GROUP_MODEL = {
+    "patchtst": "PatchTST",
+}
 
 
 @dataclass(frozen=True)
@@ -416,6 +505,32 @@ def training_group_feature_policy(group: str) -> TrainingGroupFeaturePolicy | No
 def models_for_training_group(group: str) -> list[str]:
     policy = training_group_feature_policy(group)
     return list(policy.models) if policy else []
+
+
+def dedupe_train_groups_for_artifact_lifecycle(
+    requested_groups: list[str],
+    artifact_lifecycle_targets: list[str] | tuple[str, ...] | set[str] | None,
+    *,
+    allow_duplicate: bool = False,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Suppress train groups that would retrain the same artifact lifecycle target."""
+
+    if allow_duplicate:
+        return list(requested_groups), []
+    targets = {str(target).strip() for target in (artifact_lifecycle_targets or []) if str(target).strip()}
+    deduped: list[str] = []
+    suppressed: list[dict[str, str]] = []
+    for group in requested_groups:
+        model_name = ARTIFACT_LIFECYCLE_GROUP_MODEL.get(str(group or "").strip().lower())
+        if model_name and model_name in targets:
+            suppressed.append({
+                "group": group,
+                "model": model_name,
+                "reason": "artifact_lifecycle_target_owns_training",
+            })
+            continue
+        deduped.append(group)
+    return deduped, suppressed
 
 
 def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[str, Any]:

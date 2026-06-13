@@ -22,7 +22,7 @@ import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
-from typing import Optional
+from typing import Any, Callable, Optional
 from scipy import stats
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
@@ -33,6 +33,40 @@ from app.purged_cv import dynamic_embargo_days
 
 
 FEATURE_SELECTION_CACHE_SCHEMA_VERSION = "feature-selection-cache-v1"
+FEATURE_SELECTION_STAGE_CHECKPOINT_SCHEMA_VERSION = "feature-selection-stage-checkpoint-v1"
+FEATURE_SELECTION_STAGE_LOCK_SCHEMA_VERSION = "feature-selection-stage-lock-v1"
+FEATURE_SELECTION_ALGORITHM_EVIDENCE_SCHEMA_VERSION = "feature-selection-algorithm-evidence-v1"
+
+_CURRENT_ALGO_DEFAULTS = {
+    "algorithm_profile": "current",
+    "cluster_linkage": "ward",
+    "k_sweep_sampler": "nsga2",
+    "k_sweep_objective": "single_val_ic",
+    "k_sweep_knee_policy": "kneedle_080",
+    "k_sweep_bootstrap_rounds": 0,
+    "embargo_mode": "dynamic",
+    "label_horizon_days": 5,
+}
+
+_PROFILE_DEFAULTS = {
+    "current": _CURRENT_ALGO_DEFAULTS,
+    "candidate_v2": {
+        **_CURRENT_ALGO_DEFAULTS,
+        "algorithm_profile": "candidate_v2",
+        "cluster_linkage": "average",
+        "k_sweep_sampler": "motpe",
+        "k_sweep_objective": "purged_rolling_ic",
+        "k_sweep_knee_policy": "bootstrap_ci",
+        "k_sweep_bootstrap_rounds": 50,
+        "embargo_mode": "label_horizon",
+    },
+}
+
+_SUPPORTED_CLUSTER_LINKAGES = {"ward", "average", "complete", "weighted", "single"}
+_SUPPORTED_K_SWEEP_SAMPLERS = {"nsga2", "motpe", "tpe"}
+_SUPPORTED_K_SWEEP_OBJECTIVES = {"single_val_ic", "purged_rolling_ic"}
+_SUPPORTED_KNEE_POLICIES = {"kneedle_080", "bootstrap_ci"}
+_SUPPORTED_EMBARGO_MODES = {"dynamic", "label_horizon"}
 
 
 def _bounded_parallel_workers(value: object, *, default: int = 1, hard_cap: int = 4) -> int:
@@ -41,6 +75,79 @@ def _bounded_parallel_workers(value: object, *, default: int = 1, hard_cap: int 
     except (TypeError, ValueError):
         parsed = default
     return max(1, min(parsed, hard_cap))
+
+
+def _coerce_positive_int(value: object, default: int, *, minimum: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(int(minimum), parsed)
+
+
+def _normalized_choice(value: object, *, default: str, allowed: set[str]) -> str:
+    raw = str(value or default).strip().lower().replace("-", "_")
+    return raw if raw in allowed else default
+
+
+def resolve_feature_selection_algorithm_config(selection_params: dict) -> dict:
+    """Resolve feature-selection algorithm profile into explicit knobs.
+
+    `current` preserves production behavior. `candidate_v2` is the roadmap
+    profile used for offline replay before any production cutover.
+    """
+
+    profile = str(selection_params.get("algorithm_profile") or "current").strip().lower()
+    if profile not in _PROFILE_DEFAULTS:
+        profile = "current"
+
+    config = dict(selection_params)
+    profile_defaults = _PROFILE_DEFAULTS[profile]
+    current_defaults = _CURRENT_ALGO_DEFAULTS
+    config["algorithm_profile"] = profile
+    for key, value in profile_defaults.items():
+        if key == "algorithm_profile":
+            continue
+        raw = config.get(key)
+        if raw is None or raw == "" or (profile != "current" and raw == current_defaults.get(key)):
+            config[key] = value
+
+    config["cluster_linkage"] = _normalized_choice(
+        config.get("cluster_linkage"),
+        default=current_defaults["cluster_linkage"],
+        allowed=_SUPPORTED_CLUSTER_LINKAGES,
+    )
+    config["k_sweep_sampler"] = _normalized_choice(
+        config.get("k_sweep_sampler"),
+        default=current_defaults["k_sweep_sampler"],
+        allowed=_SUPPORTED_K_SWEEP_SAMPLERS,
+    )
+    config["k_sweep_objective"] = _normalized_choice(
+        config.get("k_sweep_objective"),
+        default=current_defaults["k_sweep_objective"],
+        allowed=_SUPPORTED_K_SWEEP_OBJECTIVES,
+    )
+    config["k_sweep_knee_policy"] = _normalized_choice(
+        config.get("k_sweep_knee_policy"),
+        default=current_defaults["k_sweep_knee_policy"],
+        allowed=_SUPPORTED_KNEE_POLICIES,
+    )
+    config["embargo_mode"] = _normalized_choice(
+        config.get("embargo_mode"),
+        default=current_defaults["embargo_mode"],
+        allowed=_SUPPORTED_EMBARGO_MODES,
+    )
+    config["label_horizon_days"] = _coerce_positive_int(
+        config.get("label_horizon_days"),
+        current_defaults["label_horizon_days"],
+        minimum=1,
+    )
+    config["k_sweep_bootstrap_rounds"] = _coerce_positive_int(
+        config.get("k_sweep_bootstrap_rounds"),
+        current_defaults["k_sweep_bootstrap_rounds"],
+        minimum=0,
+    )
+    return config
 
 
 def _blob_identity(blob) -> dict:
@@ -83,6 +190,34 @@ def _feature_selection_cache_path(cache_key: str) -> str:
     return f"universal/feature_selection_cache/{cache_key}.json"
 
 
+def _feature_selection_stage_checkpoint_path(cache_key: str, stage: str) -> str:
+    safe_stage = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in stage)
+    return f"universal/feature_selection_checkpoints/{cache_key}/{safe_stage}.json"
+
+
+def _feature_selection_stage_lock_path(cache_key: str, stage: str) -> str:
+    safe_stage = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in stage)
+    return f"universal/feature_selection_checkpoints/{cache_key}/locks/{safe_stage}.json"
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (set, tuple)):
+        return list(value)
+    return str(value)
+
+
+def _json_dumps(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=_json_default)
+
+
 def load_feature_selection_cache(bucket, cache_key: str) -> dict | None:
     try:
         blob = bucket.blob(_feature_selection_cache_path(cache_key))
@@ -108,17 +243,212 @@ def save_feature_selection_cache(bucket, cache_key: str, result: dict) -> None:
         "result": result,
     }
     bucket.blob(_feature_selection_cache_path(cache_key)).upload_from_string(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        _json_dumps(payload),
         content_type="application/json",
     )
+
+
+def load_feature_selection_stage_checkpoint(bucket, cache_key: str, stage: str) -> dict | None:
+    try:
+        blob = bucket.blob(_feature_selection_stage_checkpoint_path(cache_key, stage))
+        if not blob.exists():
+            return None
+        payload = json.loads(blob.download_as_text())
+        if payload.get("schema_version") != FEATURE_SELECTION_STAGE_CHECKPOINT_SCHEMA_VERSION:
+            return None
+        if payload.get("cache_key") != cache_key or payload.get("stage") != stage:
+            return None
+        result = payload.get("result")
+        return result if isinstance(result, dict) else None
+    except Exception as exc:
+        print(f"[FeatureSelection] Stage checkpoint read skipped stage={stage}: {exc}")
+        return None
+
+
+def save_feature_selection_stage_checkpoint(bucket, cache_key: str, stage: str, result: dict) -> None:
+    payload = {
+        "schema_version": FEATURE_SELECTION_STAGE_CHECKPOINT_SCHEMA_VERSION,
+        "cache_key": cache_key,
+        "stage": stage,
+        "saved_at": _utc_now(),
+        "result": result,
+    }
+    bucket.blob(_feature_selection_stage_checkpoint_path(cache_key, stage)).upload_from_string(
+        _json_dumps(payload),
+        content_type="application/json",
+    )
+
+
+def acquire_feature_selection_stage_lock(
+    bucket,
+    cache_key: str,
+    stage: str,
+    *,
+    owner: str,
+    ttl_seconds: int = 900,
+) -> dict:
+    """Acquire an advisory GCS lock for one stage.
+
+    The lock is intentionally advisory and fail-open; checkpoints are the
+    durable cost saver, while the lock only reduces accidental concurrent work.
+    """
+
+    now = time.time()
+    expires_at = now + max(60, int(ttl_seconds))
+    path = _feature_selection_stage_lock_path(cache_key, stage)
+    blob = bucket.blob(path)
+    payload = {
+        "schema_version": FEATURE_SELECTION_STAGE_LOCK_SCHEMA_VERSION,
+        "cache_key": cache_key,
+        "stage": stage,
+        "owner": owner,
+        "acquired_at": _utc_now(),
+        "expires_at_epoch": expires_at,
+    }
+    try:
+        blob.upload_from_string(_json_dumps(payload), content_type="application/json", if_generation_match=0)
+        return {"acquired": True, "path": path, "owner": owner, "stale_replaced": False}
+    except TypeError:
+        if not blob.exists():
+            blob.upload_from_string(_json_dumps(payload), content_type="application/json")
+            return {"acquired": True, "path": path, "owner": owner, "stale_replaced": False}
+    except Exception:
+        pass
+
+    try:
+        if not blob.exists():
+            blob.upload_from_string(_json_dumps(payload), content_type="application/json")
+            return {"acquired": True, "path": path, "owner": owner, "stale_replaced": False}
+        existing = json.loads(blob.download_as_text())
+        existing_expires = float(existing.get("expires_at_epoch") or 0.0)
+        if existing_expires <= now:
+            generation = getattr(blob, "generation", None)
+            try:
+                if generation:
+                    blob.upload_from_string(
+                        _json_dumps(payload),
+                        content_type="application/json",
+                        if_generation_match=int(generation),
+                    )
+                else:
+                    blob.upload_from_string(_json_dumps(payload), content_type="application/json")
+                return {"acquired": True, "path": path, "owner": owner, "stale_replaced": True}
+            except TypeError:
+                blob.upload_from_string(_json_dumps(payload), content_type="application/json")
+                return {"acquired": True, "path": path, "owner": owner, "stale_replaced": True}
+        return {
+            "acquired": False,
+            "path": path,
+            "owner": owner,
+            "existing_owner": existing.get("owner"),
+            "expires_at_epoch": existing_expires,
+        }
+    except Exception as exc:
+        print(f"[FeatureSelection] Stage lock acquire skipped stage={stage}: {exc}")
+        return {"acquired": False, "path": path, "owner": owner, "error": str(exc)}
+
+
+def release_feature_selection_stage_lock(bucket, cache_key: str, stage: str, *, owner: str) -> None:
+    try:
+        blob = bucket.blob(_feature_selection_stage_lock_path(cache_key, stage))
+        if not blob.exists():
+            return
+        payload = json.loads(blob.download_as_text())
+        if payload.get("owner") == owner:
+            blob.delete()
+    except Exception as exc:
+        print(f"[FeatureSelection] Stage lock release skipped stage={stage}: {exc}")
+
+
+def _checkpointing_enabled(*, dry_run: bool) -> bool:
+    if dry_run:
+        return False
+    raw = os.environ.get("FEATURE_SELECTION_STAGE_CHECKPOINTS", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def run_feature_selection_stage(
+    bucket,
+    cache_key: str,
+    stage: str,
+    *,
+    dry_run: bool,
+    checkpoint_stats: dict[str, dict],
+    compute: Callable[[], dict],
+) -> dict:
+    if not _checkpointing_enabled(dry_run=dry_run):
+        checkpoint_stats[stage] = {"status": "disabled"}
+        return compute()
+
+    checkpoint_path = _feature_selection_stage_checkpoint_path(cache_key, stage)
+    cached = load_feature_selection_stage_checkpoint(bucket, cache_key, stage)
+    if cached is not None:
+        print(f"[FeatureSelection] Stage checkpoint HIT stage={stage} key={cache_key[:12]}")
+        checkpoint_stats[stage] = {"status": "hit", "path": checkpoint_path}
+        return cached
+
+    owner = f"pid-{os.getpid()}-{int(time.time() * 1000)}"
+    lock = acquire_feature_selection_stage_lock(
+        bucket,
+        cache_key,
+        stage,
+        owner=owner,
+        ttl_seconds=int(os.environ.get("FEATURE_SELECTION_STAGE_LOCK_TTL_SECONDS", "900") or 900),
+    )
+    lock_acquired = bool(lock.get("acquired"))
+    try:
+        if not lock_acquired:
+            wait_seconds = int(os.environ.get("FEATURE_SELECTION_STAGE_LOCK_WAIT_SECONDS", "30") or 30)
+            deadline = time.time() + max(0, wait_seconds)
+            while time.time() < deadline:
+                time.sleep(5)
+                cached = load_feature_selection_stage_checkpoint(bucket, cache_key, stage)
+                if cached is not None:
+                    print(f"[FeatureSelection] Stage checkpoint HIT after wait stage={stage} key={cache_key[:12]}")
+                    checkpoint_stats[stage] = {
+                        "status": "hit_after_wait",
+                        "path": checkpoint_path,
+                        "lock": lock,
+                    }
+                    return cached
+            print(f"[FeatureSelection] Stage lock conflict fail-open stage={stage} key={cache_key[:12]}")
+            checkpoint_stats[stage] = {
+                "status": "lock_conflict_fail_open",
+                "path": checkpoint_path,
+                "lock": lock,
+            }
+            result = compute()
+        else:
+            checkpoint_stats[stage] = {
+                "status": "miss",
+                "path": checkpoint_path,
+                "lock": lock,
+            }
+            result = compute()
+
+        if isinstance(result, dict) and "error" not in result:
+            try:
+                save_feature_selection_stage_checkpoint(bucket, cache_key, stage, result)
+                checkpoint_stats[stage]["saved"] = True
+            except Exception as exc:
+                checkpoint_stats[stage]["save_error"] = str(exc)
+                print(f"[FeatureSelection] Stage checkpoint save skipped stage={stage}: {exc}")
+        return result
+    finally:
+        if lock_acquired:
+            release_feature_selection_stage_lock(bucket, cache_key, stage, owner=owner)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Step 1: Silhouette Clustering (保留 V2，不動)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def cluster_features(X: np.ndarray, feature_names: list[str],
-                     k_range: tuple[int, int] = (5, 40)) -> dict:
+def cluster_features(
+    X: np.ndarray,
+    feature_names: list[str],
+    k_range: tuple[int, int] = (5, 40),
+    linkage_method: str = "ward",
+) -> dict:
     """Cluster correlated features using Spearman correlation + Ward linkage.
 
     Auto-selects optimal k via Silhouette score (data-driven).
@@ -134,6 +464,11 @@ def cluster_features(X: np.ndarray, feature_names: list[str],
         }
     """
     t0 = time.time()
+    linkage_method = _normalized_choice(
+        linkage_method,
+        default="ward",
+        allowed=_SUPPORTED_CLUSTER_LINKAGES,
+    )
     n_features = X.shape[1]
 
     # Filter zero-variance features
@@ -154,6 +489,8 @@ def cluster_features(X: np.ndarray, feature_names: list[str],
             "groups": {"1": valid_names},
             "feature_to_group": {f: 1 for f in valid_names},
             "dropped_features": dropped_features,
+            "linkage_method": linkage_method,
+            "distance_metric": "1_abs_spearman",
             "elapsed_s": 0,
         }
 
@@ -176,7 +513,11 @@ def cluster_features(X: np.ndarray, feature_names: list[str],
     distance_matrix = np.nan_to_num(distance_matrix, nan=1.0, posinf=1.0, neginf=0.0)
 
     condensed = squareform(distance_matrix, checks=False)
-    linkage_matrix = hierarchy.ward(condensed)
+    linkage_matrix = (
+        hierarchy.ward(condensed)
+        if linkage_method == "ward"
+        else hierarchy.linkage(condensed, method=linkage_method)
+    )
 
     n_valid = len(valid_names)
     best_k, best_score = k_range[0], -1
@@ -208,6 +549,9 @@ def cluster_features(X: np.ndarray, feature_names: list[str],
         "groups": {str(k): v for k, v in groups.items()},
         "feature_to_group": feature_to_group,
         "dropped_features": dropped_features,
+        "linkage_method": linkage_method,
+        "distance_metric": "1_abs_spearman",
+        "linkage_caveat": "ward_on_precomputed_correlation_distance" if linkage_method == "ward" else None,
         "elapsed_s": elapsed,
     }
 
@@ -837,6 +1181,206 @@ def elbow_detection(per_feature: dict[str, dict], score_key: str = "score") -> d
 # Step 4b: Optuna K Sweep (replaces elbow_detection in 2.0 pipeline)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _spearman_ic(preds: np.ndarray, y: np.ndarray) -> float:
+    if np.std(preds) < 1e-10 or np.std(y) < 1e-10:
+        return 0.0
+    rho, _ = stats.spearmanr(preds, y)
+    return float(rho) if not np.isnan(rho) else 0.0
+
+
+def _make_optuna_sampler(optuna_module, sampler_name: str):
+    sampler_name = _normalized_choice(
+        sampler_name,
+        default="nsga2",
+        allowed=_SUPPORTED_K_SWEEP_SAMPLERS,
+    )
+    if sampler_name in {"motpe", "tpe"}:
+        return optuna_module.samplers.TPESampler(
+            seed=42,
+            multivariate=True,
+            group=True,
+            constant_liar=True,
+        )
+    return optuna_module.samplers.NSGAIISampler(seed=42)
+
+
+def _single_validation_k_ic(
+    indices: list[int],
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    *,
+    optuna_n_jobs: int,
+) -> float:
+    per_trial_jobs = max(1, (os.cpu_count() or 1) // max(1, optuna_n_jobs))
+    booster = _train_lgbm_regression(
+        X_train[:, indices],
+        y_train,
+        X_val[:, indices],
+        y_val,
+        seed=42,
+        lightgbm_n_jobs=per_trial_jobs,
+    )
+    return _spearman_ic(np.asarray(booster.predict(X_val[:, indices]), dtype=float), y_val)
+
+
+def _purged_rolling_k_ic(
+    indices: list[int],
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    *,
+    dates_train: np.ndarray | None,
+    dates_val: np.ndarray | None,
+    embargo_days: int,
+    optuna_n_jobs: int,
+    max_folds: int = 3,
+) -> tuple[float, dict]:
+    if dates_train is None or dates_val is None:
+        return (
+            _single_validation_k_ic(indices, X_train, y_train, X_val, y_val, optuna_n_jobs=optuna_n_jobs),
+            {"status": "fallback_single_val", "reason": "missing_dates"},
+        )
+
+    X_all = np.vstack([X_train, X_val])
+    y_all = np.concatenate([y_train, y_val])
+    dates_all = np.concatenate([dates_train, dates_val])
+    unique_dates = np.sort(np.unique(dates_all))
+    if len(unique_dates) < 40:
+        return (
+            _single_validation_k_ic(indices, X_train, y_train, X_val, y_val, optuna_n_jobs=optuna_n_jobs),
+            {"status": "fallback_single_val", "reason": "insufficient_dates"},
+        )
+
+    min_train_dates = max(int(len(unique_dates) * 0.5), 20)
+    available = len(unique_dates) - min_train_dates - max(0, int(embargo_days))
+    fold_size = max(5, available // max(1, int(max_folds)))
+    ics: list[float] = []
+    per_trial_jobs = max(1, (os.cpu_count() or 1) // max(1, optuna_n_jobs))
+
+    for fold_idx in range(max(1, int(max_folds))):
+        val_start = min_train_dates + fold_idx * fold_size
+        val_end = min(val_start + fold_size, len(unique_dates))
+        train_end = max(0, val_start - max(0, int(embargo_days)))
+        if val_end <= val_start or train_end < 20:
+            continue
+        train_dates = set(str(d) for d in unique_dates[:train_end])
+        val_dates = set(str(d) for d in unique_dates[val_start:val_end])
+        train_mask = np.array([str(d) in train_dates for d in dates_all])
+        val_mask = np.array([str(d) in val_dates for d in dates_all])
+        if train_mask.sum() < 100 or val_mask.sum() < 30:
+            continue
+        try:
+            booster = _train_lgbm_regression(
+                X_all[train_mask][:, indices],
+                y_all[train_mask],
+                X_all[val_mask][:, indices],
+                y_all[val_mask],
+                seed=42 + fold_idx,
+                lightgbm_n_jobs=per_trial_jobs,
+            )
+            ics.append(
+                _spearman_ic(
+                    np.asarray(booster.predict(X_all[val_mask][:, indices]), dtype=float),
+                    y_all[val_mask],
+                )
+            )
+        except Exception:
+            continue
+
+    if not ics:
+        return (
+            _single_validation_k_ic(indices, X_train, y_train, X_val, y_val, optuna_n_jobs=optuna_n_jobs),
+            {"status": "fallback_single_val", "reason": "no_valid_rolling_folds"},
+        )
+
+    median_ic = float(np.median(ics))
+    std_ic = float(np.std(ics))
+    robust_ic = median_ic - 0.25 * std_ic
+    return robust_ic, {
+        "status": "ok",
+        "folds": len(ics),
+        "median_ic": round(median_ic, 6),
+        "std_ic": round(std_ic, 6),
+        "penalty": 0.25,
+    }
+
+
+def _detect_pareto_knee(pareto_pts: list[tuple[int, float]]) -> int | None:
+    if len(pareto_pts) < 3:
+        return None
+    try:
+        from kneed import KneeLocator
+
+        kl = KneeLocator(
+            [p[0] for p in pareto_pts],
+            [p[1] for p in pareto_pts],
+            curve="concave",
+            direction="increasing",
+        )
+        return int(kl.knee) if kl.knee is not None else None
+    except Exception as exc:
+        print(f"[OptunaKSweep] Kneedle failed: {exc}")
+        return None
+
+
+def _select_k_from_pareto(
+    pareto_pts: list[tuple[int, float]],
+    *,
+    min_k: int,
+    n_max: int,
+    knee_policy: str,
+    bootstrap_rounds: int,
+) -> tuple[int, float, str, dict]:
+    if not pareto_pts:
+        return n_max, 0.0, "fallback_empty", {}
+
+    pareto_pts = sorted(pareto_pts, key=lambda x: x[0])
+    max_ic = max(ic for _k, ic in pareto_pts)
+    knee_method = "fallback"
+    knee_meta: dict[str, Any] = {}
+    knee_k = _detect_pareto_knee(pareto_pts)
+    if knee_k is not None:
+        knee_method = "kneedle"
+
+    if knee_policy == "bootstrap_ci" and len(pareto_pts) >= 5 and bootstrap_rounds > 0:
+        rng = np.random.RandomState(42)
+        sampled_knees: list[int] = []
+        for _ in range(int(bootstrap_rounds)):
+            sample_idx = rng.choice(len(pareto_pts), size=len(pareto_pts), replace=True)
+            sample = sorted({pareto_pts[int(i)] for i in sample_idx}, key=lambda x: x[0])
+            sample_knee = _detect_pareto_knee(sample)
+            if sample_knee is not None:
+                sampled_knees.append(int(sample_knee))
+        if sampled_knees:
+            lo, hi = np.percentile(sampled_knees, [10, 90])
+            median_k = int(np.median(sampled_knees))
+            knee_meta = {
+                "policy": "bootstrap_ci",
+                "rounds": int(bootstrap_rounds),
+                "valid_knees": len(sampled_knees),
+                "p10": int(lo),
+                "p50": median_k,
+                "p90": int(hi),
+            }
+            if (hi - lo) <= max(5, 0.2 * n_max):
+                knee_k = median_k
+                knee_method = "bootstrap_kneedle"
+
+    if knee_k is None:
+        threshold = 0.9 * max_ic if knee_policy == "bootstrap_ci" else 0.8 * max_ic
+        knee_k = next((k for k, ic in pareto_pts if ic >= threshold), pareto_pts[-1][0])
+        knee_method = "0.9_threshold" if knee_policy == "bootstrap_ci" else "0.8_threshold"
+
+    best_k = min(max(int(knee_k), int(min_k)), int(n_max))
+    best_ic = next((ic for k, ic in pareto_pts if k == best_k), 0.0)
+    if best_ic == 0.0:
+        best_ic = next((ic for k, ic in pareto_pts if k >= best_k), max_ic)
+    return best_k, float(best_ic), knee_method, knee_meta
+
+
 def optuna_k_sweep(
     per_feature: dict[str, dict],
     X_train: np.ndarray, y_train: np.ndarray,
@@ -846,6 +1390,13 @@ def optuna_k_sweep(
     score_key: str = "score",
     n_jobs: int = 1,
     min_k: int = 20,            # 2026-04-17: MIN_K guard（共線性保護，少於 20 稀釋 ensemble diversity）
+    sampler_name: str = "nsga2",
+    objective_mode: str = "single_val_ic",
+    knee_policy: str = "kneedle_080",
+    bootstrap_rounds: int = 0,
+    dates_train: np.ndarray | None = None,
+    dates_val: np.ndarray | None = None,
+    embargo_days: int = 10,
 ) -> dict:
     """Optuna K sweep: multi-objective Pareto (maximize IC, minimize K).
 
@@ -867,10 +1418,21 @@ def optuna_k_sweep(
     """
     import optuna
     from threading import Lock
-    from scipy.stats import spearmanr
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     t0 = time.time()
+    sampler_name = _normalized_choice(sampler_name, default="nsga2", allowed=_SUPPORTED_K_SWEEP_SAMPLERS)
+    objective_mode = _normalized_choice(
+        objective_mode,
+        default="single_val_ic",
+        allowed=_SUPPORTED_K_SWEEP_OBJECTIVES,
+    )
+    knee_policy = _normalized_choice(
+        knee_policy,
+        default="kneedle_080",
+        allowed=_SUPPORTED_KNEE_POLICIES,
+    )
+    optuna_n_jobs = _bounded_parallel_workers(n_jobs, default=1, hard_cap=4)
 
     # Sort features by score descending
     sorted_features = sorted(per_feature.items(), key=lambda x: -x[1].get(score_key, 0))
@@ -904,24 +1466,28 @@ def optuna_k_sweep(
             with objective_cache_lock:
                 objective_cache.setdefault(k, result)
             return result
-        Xtr = X_train[:, indices]
-        Xvl = X_val[:, indices]
         try:
-            per_trial_jobs = max(1, (os.cpu_count() or 1) // max(1, optuna_n_jobs))
-            booster = _train_lgbm_regression(
-                Xtr,
-                y_train,
-                Xvl,
-                y_val,
-                seed=42,
-                lightgbm_n_jobs=per_trial_jobs,
-            )
-            preds = booster.predict(Xvl)
-            if np.std(preds) < 1e-10 or np.std(y_val) < 1e-10:
-                ic = 0.0
+            if objective_mode == "purged_rolling_ic":
+                ic, _meta = _purged_rolling_k_ic(
+                    indices,
+                    X_train,
+                    y_train,
+                    X_val,
+                    y_val,
+                    dates_train=dates_train,
+                    dates_val=dates_val,
+                    embargo_days=embargo_days,
+                    optuna_n_jobs=optuna_n_jobs,
+                )
             else:
-                rho, _ = spearmanr(preds, y_val)
-                ic = float(rho) if not np.isnan(rho) else 0.0
+                ic = _single_validation_k_ic(
+                    indices,
+                    X_train,
+                    y_train,
+                    X_val,
+                    y_val,
+                    optuna_n_jobs=optuna_n_jobs,
+                )
         except Exception:
             ic = 0.0
         result = (ic, k)
@@ -929,13 +1495,14 @@ def optuna_k_sweep(
             objective_cache.setdefault(k, result)
         return result
 
-    # Multi-objective study: maximize IC, minimize K
-    # NSGAIISampler required — TPESampler does not support multi-objective
+    # Multi-objective study: maximize IC, minimize K.
+    # Keep NSGA-II as the deterministic production baseline; Optuna 4.x
+    # TPESampler also supports multi-objective and should be benchmarked before
+    # changing sampler behavior.
     study = optuna.create_study(
         directions=["maximize", "minimize"],
-        sampler=optuna.samplers.NSGAIISampler(seed=42),
+        sampler=_make_optuna_sampler(optuna, sampler_name),
     )
-    optuna_n_jobs = _bounded_parallel_workers(n_jobs, default=1, hard_cap=4)
     study.optimize(objective, n_trials=n_trials, n_jobs=optuna_n_jobs, show_progress_bar=False)
 
     # Collect all (k, ic) pairs from all trials
@@ -964,6 +1531,7 @@ def optuna_k_sweep(
     best_k = n_max
     best_ic = 0.0
     knee_method = "fallback"
+    knee_meta: dict[str, Any] = {}
 
     if pareto_pts:
         ks = [p[0] for p in pareto_pts]
@@ -996,6 +1564,15 @@ def optuna_k_sweep(
             # best_k was promoted by MIN_K guard — use IC of first Pareto point with k >= best_k
             best_ic = next((ic for k, ic in pareto_pts if k >= best_k), max_ic)
 
+    if knee_policy != "kneedle_080":
+        best_k, best_ic, knee_method, knee_meta = _select_k_from_pareto(
+            pareto_pts,
+            min_k=min_k,
+            n_max=n_max,
+            knee_policy=knee_policy,
+            bootstrap_rounds=bootstrap_rounds,
+        )
+
     # Clamp best_k to available feature count
     best_k = min(best_k, n_max)
 
@@ -1021,6 +1598,12 @@ def optuna_k_sweep(
         "reserve": reserve,
         "best_k": best_k,
         "best_ic": round(float(best_ic), 6),
+        "sampler": sampler_name,
+        "objective_mode": objective_mode,
+        "knee_policy": knee_policy,
+        "knee_method": knee_method,
+        "knee_meta": knee_meta,
+        "embargo_days": int(embargo_days),
         "n_jobs": optuna_n_jobs,
         "n_trials": int(n_trials),
         "actual_trials": len(study.trials),
@@ -1044,6 +1627,10 @@ def _k_sweep_summary(k_sweep_result: dict) -> dict:
         "actual_trials",
         "unique_k_evaluated",
         "objective_cache_hits",
+        "sampler",
+        "objective_mode",
+        "knee_policy",
+        "knee_method",
     )
     return {
         key: k_sweep_result.get(key)
@@ -1189,6 +1776,20 @@ def save_feature_pool(pool: dict, gcs_prefix: str | None = None) -> None:
         print(f"[FeatureSelection] Saved feature_pool.json + history/{month}.json to GCS")
 
 
+def save_feature_selection_algorithm_evidence(evidence: dict, gcs_prefix: str | None = None) -> None:
+    """Save feature-selection algorithm evidence packet next to feature_pool."""
+    bucket = _get_bucket()
+    if bucket is None:
+        raise RuntimeError("GCS_BUCKET_NAME not configured or bucket unavailable")
+    evidence_json = _json_dumps(evidence)
+    if gcs_prefix:
+        path = f"{gcs_prefix.rstrip('/')}/feature_selection_algorithm_evidence.json"
+    else:
+        path = "universal/feature_selection_algorithm_evidence.json"
+    bucket.blob(path).upload_from_string(evidence_json, content_type="application/json")
+    print(f"[FeatureSelection] Saved {path}")
+
+
 def load_feature_pool() -> Optional[dict]:
     """Load feature_pool.json from GCS."""
     bucket = _get_bucket()
@@ -1204,6 +1805,141 @@ def load_feature_pool() -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 # Full Pipeline (2.0)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _run_governance_evidence_stage(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    dates_train: np.ndarray,
+    feature_names: list[str],
+    *,
+    cluster_linkage: str = "ward",
+) -> dict:
+    cluster_result = cluster_features(X_train, feature_names, linkage_method=cluster_linkage)
+    return {
+        "cluster_result": cluster_result,
+        "mi_result": mutual_information_evidence(X_train, y_train, feature_names),
+        "stability_result": stability_selection_evidence(X_train, y_train, dates_train, feature_names),
+        "cur_result": cur_representative_evidence(X_train, feature_names, cluster_result),
+    }
+
+
+def _run_k_sweep_stage(
+    combined_scores: dict,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    feature_names: list[str],
+    k_sweep_n_jobs: int | None = None,
+    n_jobs: int | None = None,
+    sampler_name: str = "nsga2",
+    objective_mode: str = "single_val_ic",
+    knee_policy: str = "kneedle_080",
+    bootstrap_rounds: int = 0,
+    dates_train: np.ndarray | None = None,
+    dates_val: np.ndarray | None = None,
+    embargo_days: int = 10,
+) -> dict:
+    jobs = int(k_sweep_n_jobs if k_sweep_n_jobs is not None else n_jobs if n_jobs is not None else 1)
+    try:
+        result = optuna_k_sweep(
+            combined_scores, X_train, y_train, X_val, y_val,
+            feature_names=feature_names,
+            n_jobs=jobs,
+            sampler_name=sampler_name,
+            objective_mode=objective_mode,
+            knee_policy=knee_policy,
+            bootstrap_rounds=bootstrap_rounds,
+            dates_train=dates_train,
+            dates_val=dates_val,
+            embargo_days=embargo_days,
+        )
+        result["selection_method"] = result.get("selection_method", "optuna_k_sweep")
+        return result
+    except Exception as e:
+        print(f"[FeatureSelection] Optuna K sweep failed ({e}), falling back to elbow_detection")
+        result = elbow_detection(combined_scores)
+        result["selection_method"] = "elbow_fallback_after_optuna_error"
+        result["fallback_error"] = str(e)
+        return result
+
+
+def resolve_feature_selection_embargo_days(
+    n_dates: int,
+    *,
+    embargo_mode: str,
+    label_horizon_days: int,
+    base_days: int = 10,
+    embargo_pct: float = 0.015,
+    max_days: int = 20,
+) -> tuple[int, dict]:
+    dynamic_days = dynamic_embargo_days(
+        n_dates,
+        base_days=base_days,
+        embargo_pct=embargo_pct,
+        max_days=max_days,
+    )
+    mode = _normalized_choice(
+        embargo_mode,
+        default="dynamic",
+        allowed=_SUPPORTED_EMBARGO_MODES,
+    )
+    label_horizon_days = _coerce_positive_int(label_horizon_days, 5, minimum=1)
+    if mode == "label_horizon":
+        resolved = max(dynamic_days, label_horizon_days)
+        source = "max(dynamic_embargo,label_horizon_days)"
+    else:
+        resolved = dynamic_days
+        source = "dynamic_embargo"
+    return int(resolved), {
+        "mode": mode,
+        "source": source,
+        "base_days": int(base_days),
+        "embargo_pct": float(embargo_pct),
+        "max_days": int(max_days),
+        "dynamic_days": int(dynamic_days),
+        "label_horizon_days": int(label_horizon_days),
+        "resolved_days": int(resolved),
+    }
+
+
+def build_feature_selection_algorithm_evidence(
+    *,
+    algorithm_config: dict,
+    split_evidence: dict,
+    cluster_result: dict,
+    k_sweep_result: dict,
+    checkpoint_stats: dict,
+    elapsed_s: float,
+) -> dict:
+    return {
+        "schema_version": FEATURE_SELECTION_ALGORITHM_EVIDENCE_SCHEMA_VERSION,
+        "algorithm_profile": algorithm_config.get("algorithm_profile"),
+        "cluster": {
+            "linkage_method": cluster_result.get("linkage_method"),
+            "distance_metric": cluster_result.get("distance_metric"),
+            "best_k": cluster_result.get("best_k"),
+            "best_silhouette": cluster_result.get("best_silhouette"),
+            "n_groups": cluster_result.get("n_groups"),
+            "linkage_caveat": cluster_result.get("linkage_caveat"),
+        },
+        "k_sweep": {
+            "sampler": k_sweep_result.get("sampler"),
+            "objective_mode": k_sweep_result.get("objective_mode"),
+            "knee_policy": k_sweep_result.get("knee_policy"),
+            "knee_method": k_sweep_result.get("knee_method"),
+            "best_k": k_sweep_result.get("best_k"),
+            "best_ic": k_sweep_result.get("best_ic"),
+            "n_trials": k_sweep_result.get("n_trials"),
+            "actual_trials": k_sweep_result.get("actual_trials"),
+            "unique_k_evaluated": k_sweep_result.get("unique_k_evaluated"),
+            "objective_cache_hits": k_sweep_result.get("objective_cache_hits"),
+        },
+        "split": split_evidence,
+        "stage_checkpoints": checkpoint_stats,
+        "elapsed_s": elapsed_s,
+    }
+
 
 def run_feature_selection_pipeline(
     max_rounds: int | None = None,
@@ -1236,10 +1972,19 @@ def run_feature_selection_pipeline(
             "icir_weight": icir_weight,
         }
     )
+    selection_params = resolve_feature_selection_algorithm_config(selection_params)
     max_rounds = int(selection_params["max_rounds"])
     alpha = float(selection_params["alpha"])
     icir_weight = float(selection_params["icir_weight"])
     permutation_mode = str(selection_params["permutation_mode"])
+    algorithm_profile = str(selection_params["algorithm_profile"])
+    cluster_linkage = str(selection_params["cluster_linkage"])
+    k_sweep_sampler = str(selection_params["k_sweep_sampler"])
+    k_sweep_objective = str(selection_params["k_sweep_objective"])
+    k_sweep_knee_policy = str(selection_params["k_sweep_knee_policy"])
+    k_sweep_bootstrap_rounds = int(selection_params["k_sweep_bootstrap_rounds"])
+    embargo_mode = str(selection_params["embargo_mode"])
+    label_horizon_days = int(selection_params["label_horizon_days"])
     target_perm_workers = _bounded_parallel_workers(
         selection_params.get("target_permutation_max_workers"),
         default=2,
@@ -1295,6 +2040,7 @@ def run_feature_selection_pipeline(
         }
         cached["elapsed_s"] = round(time.time() - t0, 1)
         return cached
+    checkpoint_stats: dict[str, dict] = {}
 
     all_X, all_y, all_dates, all_sectors = [], [], [], []
     sector_blob_count = 0
@@ -1340,8 +2086,10 @@ def run_feature_selection_pipeline(
     # ── 2. Purged time-based split: 70 / embargo / 10(val) / embargo / 20(test) ──
     sorted_dates = np.sort(np.unique(dates))
     n_dates = len(sorted_dates)
-    embargo_days = dynamic_embargo_days(
+    embargo_days, split_evidence = resolve_feature_selection_embargo_days(
         n_dates,
+        embargo_mode=embargo_mode,
+        label_horizon_days=label_horizon_days,
         base_days=10,
         embargo_pct=0.015,
         max_days=20,
@@ -1367,54 +2115,106 @@ def run_feature_selection_pipeline(
     dates_val = dates[val_mask]
     sectors_train = sectors[train_mask] if sectors is not None else None
 
+    split_evidence.update({
+        "train_samples": int(len(X_train)),
+        "val_samples": int(len(X_val)),
+        "test_samples": int(len(X_test)),
+        "n_dates": int(n_dates),
+    })
     print(f"[FeatureSelection] Purged split: train={len(X_train)}, val={len(X_val)}, "
-          f"test={len(X_test)}, embargo={embargo_days}d")
+          f"test={len(X_test)}, embargo={embargo_days}d, profile={algorithm_profile}")
 
     # ── 2b. Signal Sanity Gate (P0-6) ───────────────────────────────────────
     print(f"[FeatureSelection] Running signal sanity gate (30 permutations)...")
-    gate_result = signal_sanity_gate(
-        X_train,
-        y_train,
-        X_val,
-        y_val,
-        n_permutations=30,
-        alpha=alpha,
-        dates_train=dates_train,
-        sectors_train=sectors_train,
-        permutation_mode=permutation_mode,
-        max_parallel_workers=signal_sanity_workers,
+    gate_result = run_feature_selection_stage(
+        bucket,
+        cache_key,
+        "signal_gate",
+        dry_run=dry_run,
+        checkpoint_stats=checkpoint_stats,
+        compute=lambda: signal_sanity_gate(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            n_permutations=30,
+            alpha=alpha,
+            dates_train=dates_train,
+            sectors_train=sectors_train,
+            permutation_mode=permutation_mode,
+            max_parallel_workers=signal_sanity_workers,
+        ),
     )
     if not gate_result.get("passed", False):
         print(f"[FeatureSelection] ❌ Signal gate FAILED (p={gate_result.get('p_value')}) — "
               f"no learnable signal in data. Aborting (keeping previous pool).")
-        return {"error": "signal_gate_failed", "gate": gate_result}
+        return {
+            "error": "signal_gate_failed",
+            "gate": gate_result,
+            "algorithm_profile": algorithm_profile,
+            "algorithm_config": selection_params,
+            "split": split_evidence,
+            "stage_checkpoints": checkpoint_stats,
+        }
     print(f"[FeatureSelection] ✅ Signal sanity gate passed (p={gate_result.get('p_value')})")
 
     # ── 3. Silhouette clustering ─────────────────────────────────────────────
-    cluster_result = cluster_features(X_train, feature_names)
-    mi_result = mutual_information_evidence(X_train, y_train, feature_names)
-    stability_result = stability_selection_evidence(X_train, y_train, dates_train, feature_names)
-    cur_result = cur_representative_evidence(X_train, feature_names, cluster_result)
+    governance_result = run_feature_selection_stage(
+        bucket,
+        cache_key,
+        "governance_evidence",
+        dry_run=dry_run,
+        checkpoint_stats=checkpoint_stats,
+        compute=lambda: _run_governance_evidence_stage(
+            X_train,
+            y_train,
+            dates_train,
+            feature_names,
+            cluster_linkage=cluster_linkage,
+        ),
+    )
+    cluster_result = governance_result["cluster_result"]
+    mi_result = governance_result["mi_result"]
+    stability_result = governance_result["stability_result"]
+    cur_result = governance_result["cur_result"]
 
     # ── 4. Target Permutation ────────────────────────────────────────────────
-    tp_result = target_permutation(
-        X_train, y_train, X_val, y_val,
-        feature_names=feature_names,
-        max_permutations=max_rounds,
-        ks_alpha=0.05,
-        ks_check_interval=10,
-        dates_train=dates_train,
-        sectors_train=sectors_train,
-        permutation_mode=permutation_mode,
-        max_parallel_workers=target_perm_workers,
+    tp_result = run_feature_selection_stage(
+        bucket,
+        cache_key,
+        "target_permutation",
+        dry_run=dry_run,
+        checkpoint_stats=checkpoint_stats,
+        compute=lambda: target_permutation(
+            X_train, y_train, X_val, y_val,
+            feature_names=feature_names,
+            max_permutations=max_rounds,
+            ks_alpha=0.05,
+            ks_check_interval=10,
+            dates_train=dates_train,
+            sectors_train=sectors_train,
+            permutation_mode=permutation_mode,
+            max_parallel_workers=target_perm_workers,
+        ),
     )
 
     if "error" in tp_result:
-        return tp_result
+        return {**tp_result, "stage_checkpoints": checkpoint_stats}
 
     # ── 5. IC/ICIR selection on validation; keep test as final audit only ───
-    ic_results = ic_icir_check(X_val, y_val, dates_val, feature_names)
-    final_oos_audit = ic_icir_check(X_test, y_test, dates[test_mask], feature_names)
+    ic_stage = run_feature_selection_stage(
+        bucket,
+        cache_key,
+        "ic_icir",
+        dry_run=dry_run,
+        checkpoint_stats=checkpoint_stats,
+        compute=lambda: {
+            "ic_results": ic_icir_check(X_val, y_val, dates_val, feature_names),
+            "final_oos_audit": ic_icir_check(X_test, y_test, dates[test_mask], feature_names),
+        },
+    )
+    ic_results = ic_stage["ic_results"]
+    final_oos_audit = ic_stage["final_oos_audit"]
 
     # ── 6. Combine TP score + IC stability into final score ─────────────────
     combined_scores = {}
@@ -1439,17 +2239,27 @@ def run_feature_selection_pipeline(
         }
 
     # ── 7. K selection: Optuna Pareto sweep + Kneedle (Plan B, 2026-04-17) ───
-    try:
-        k_sweep_result = optuna_k_sweep(
+    k_sweep_result = run_feature_selection_stage(
+        bucket,
+        cache_key,
+        "k_sweep",
+        dry_run=dry_run,
+        checkpoint_stats=checkpoint_stats,
+        compute=lambda: _run_k_sweep_stage(
             combined_scores, X_train, y_train, X_val, y_val,
             feature_names=feature_names,  # n_trials/min_k 走 function 預設 (150/20)
             n_jobs=k_sweep_n_jobs,
-        )
-        print(f"[FeatureSelection] Optuna K sweep: best_k={k_sweep_result.get('best_k')}, "
-              f"best_ic={k_sweep_result.get('best_ic')}")
-    except Exception as e:
-        print(f"[FeatureSelection] Optuna K sweep failed ({e}), falling back to elbow_detection")
-        k_sweep_result = elbow_detection(combined_scores)
+            sampler_name=k_sweep_sampler,
+            objective_mode=k_sweep_objective,
+            knee_policy=k_sweep_knee_policy,
+            bootstrap_rounds=k_sweep_bootstrap_rounds,
+            dates_train=dates_train,
+            dates_val=dates_val,
+            embargo_days=embargo_days,
+        ),
+    )
+    print(f"[FeatureSelection] Optuna K sweep: best_k={k_sweep_result.get('best_k')}, "
+          f"best_ic={k_sweep_result.get('best_ic')}")
 
     # ── 8. Diversity Guard ───────────────────────────────────────────────────
     active_sorted = sorted(
@@ -1524,9 +2334,19 @@ def run_feature_selection_pipeline(
     elapsed = round(time.time() - t0, 1)
     print(f"\n[FeatureSelection] === PIPELINE COMPLETE ({elapsed}s) ===")
     print(f"[FeatureSelection] Active: {len(active_final)}, Reserve: {len(reserve_final)}")
+    algorithm_evidence = build_feature_selection_algorithm_evidence(
+        algorithm_config=selection_params,
+        split_evidence=split_evidence,
+        cluster_result=cluster_result,
+        k_sweep_result=k_sweep_result,
+        checkpoint_stats=checkpoint_stats,
+        elapsed_s=elapsed,
+    )
 
     final_result = {
         "feature_pool": pool,
+        "algorithm_profile": algorithm_profile,
+        "algorithm_evidence": algorithm_evidence,
         "cluster": {k: v for k, v in cluster_result.items() if k != "groups"},
         "target_permutation": {
             "n_permutations": tp_result["n_permutations"],
@@ -1558,10 +2378,12 @@ def run_feature_selection_pipeline(
             "key": cache_key,
             "path": _feature_selection_cache_path(cache_key),
         },
+        "stage_checkpoints": checkpoint_stats,
         "elapsed_s": elapsed,
     }
     if not dry_run:
         try:
+            save_feature_selection_algorithm_evidence(algorithm_evidence, gcs_prefix=gcs_prefix)
             save_feature_selection_cache(bucket, cache_key, final_result)
             print(f"[FeatureSelection] Evidence cache saved key={cache_key[:12]}")
         except Exception as exc:

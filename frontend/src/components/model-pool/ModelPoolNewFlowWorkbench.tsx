@@ -196,6 +196,7 @@ type GrafanaModelRecord = {
   family: ReturnType<typeof modelFamily>
   status: string
   statusTone: WorkstationTone
+  fleetTone: WorkstationTone
   artifactVersion: string
   selectedArtifact?: SelectedArtifactRow | null
   dataset?: { window: string; shape: string; note: string }
@@ -232,6 +233,18 @@ function maxTone(tones: WorkstationTone[]): WorkstationTone {
   return tones.reduce<WorkstationTone>((winner, tone) => (
     severityScore(tone) > severityScore(winner) ? tone : winner
   ), 'neutral')
+}
+
+function fleetToneFromMatrix(statusTone: WorkstationTone, blockers: string[], history: GrafanaModelRecord['history']): WorkstationTone {
+  const requiredGateLabels = new Set(['OOS IC', 'LIVE', 'PBO/CPCV', 'COMPARE'])
+  const gateTones = history
+    .filter((cell) => requiredGateLabels.has(cell.label))
+    .map((cell) => (cell.tone === 'neutral' ? 'warn' : cell.tone))
+  return maxTone([
+    statusTone,
+    blockers.length ? 'warn' : 'ok',
+    ...gateTones,
+  ])
 }
 
 function statusLabel(tone: WorkstationTone): string {
@@ -312,6 +325,12 @@ function compactVersion(value: string | null | undefined, max = 16): string {
   const text = String(value ?? '').trim()
   if (!text) return 'pending'
   return text.length > max ? `${text.slice(0, max - 3)}...` : text
+}
+
+function humanizeToken(value: string | null | undefined): string {
+  const text = String(value ?? '').trim()
+  if (!text) return 'none'
+  return text.replace(/[_-]+/g, ' ')
 }
 
 function formatMetric(value: number | null | undefined, digits = 3): string {
@@ -430,6 +449,80 @@ function finalCompareCell(candidateId: string, finalComparedTo: string | null, p
         ? `${candidateId}: champion pointer is ready; final compare can use serving pointer baseline`
         : `${candidateId}: final comparison against current champion is still pending`,
     tone: ready ? 'ok' as WorkstationTone : 'warn' as WorkstationTone,
+  }
+}
+
+function artifactCompareSummary(record: GrafanaModelRecord) {
+  const promotion = record.promotionRows[0]
+  const candidate = firstText(
+    promotion?.candidate_version,
+    record.selectedArtifact?.version,
+  )
+  const champion = firstText(
+    promotion?.current_champion_version,
+    promotion?.final_compared_to,
+    promotion?.evaluation_baseline_version,
+    record.selectedArtifact?.final_compared_to,
+    record.selectedArtifact?.evaluation_baseline_version,
+    record.pointerRow?.serving_version,
+    record.pointerRow?.d1_pointer_version,
+  )
+  const finalComparedTo = firstText(promotion?.final_compared_to, record.selectedArtifact?.final_compared_to)
+  const hasCandidate = Boolean(candidate)
+  const hasChampionBaseline = Boolean(champion)
+  const compareReady = hasCandidate && Boolean(finalComparedTo)
+
+  return {
+    candidate: candidate ?? 'no selected candidate',
+    champion: champion ?? 'champion baseline missing',
+    finalComparedTo,
+    hasCandidate,
+    hasChampionBaseline,
+    compareReady,
+    tone: compareReady ? 'ok' as WorkstationTone : hasCandidate && hasChampionBaseline ? 'info' as WorkstationTone : 'warn' as WorkstationTone,
+    title: [
+      `${record.candidate.id}: weekly/monthly candidate artifact is compared against the current champion baseline before pointer migration.`,
+      `candidate=${candidate ?? 'missing'}`,
+      `current_champion=${champion ?? 'missing'}`,
+      `final_compared_to=${finalComparedTo ?? 'pending'}`,
+    ].join(' | '),
+  }
+}
+
+function researchStatusDiagnosis(record: GrafanaModelRecord) {
+  const status = record.status
+  const statusRow = record.statusRow
+  const missing = uniqueTokens([
+    ...(record.missingEvidence ?? []),
+    ...(statusRow?.artifact_intent_missing_fields ?? []),
+  ])
+  const nextAction = statusRow?.next_action ?? record.nextAction
+  let rootCause = 'No blocking research issue reported.'
+
+  if (status === 'syncing_evidence') {
+    rootCause = 'The model-upgrade evidence feed is still loading, so the UI is not allowed to mark gates PASS yet.'
+  } else if (status === 'experiment_missing') {
+    rootCause = 'No matching Strategy Lab / research experiment is registered for this model lane.'
+  } else if (status === 'evaluation_pending') {
+    rootCause = 'A research experiment exists, but no completed evaluation run has been attached yet.'
+  } else if (status === 'needs_attention') {
+    rootCause = missing.length
+      ? `Evaluation exists, but evidence is incomplete: ${missing.map(humanizeToken).join(', ')}.`
+      : 'Evaluation exists, but the latest verdict is needs_attention.'
+  } else if (status === 'ready_for_review') {
+    rootCause = 'Required research evidence is present and ready for manual review.'
+  } else if (status === 'approved_for_patch') {
+    rootCause = 'Research review approved this candidate for artifact registration / patch handoff.'
+  } else if (status === 'rejected') {
+    rootCause = 'The research lane was rejected or archived; create a new candidate experiment if needed.'
+  } else if (status === 'track_only') {
+    rootCause = 'This production slot is tracked inside the active-9 flow and does not need a separate research experiment gate.'
+  }
+
+  return {
+    rootCause,
+    nextAction: nextAction ? humanizeToken(nextAction) : 'no action queued',
+    missing,
   }
 }
 
@@ -554,6 +647,14 @@ function buildGrafanaRecord({
   const statusTone = modelUpgradeStatusReady && blockers.length
     ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
     : toneFromStatus(rawStatus)
+  const history = buildEvidenceCells({
+    candidateId: candidate.id,
+    model,
+    artifact,
+    promotionRows,
+    pointerOk,
+  })
+  const fleetTone = fleetToneFromMatrix(statusTone, blockers, history)
 
   return {
     candidate,
@@ -561,6 +662,7 @@ function buildGrafanaRecord({
     family: modelFamily(candidate.id, model),
     status: rawStatus,
     statusTone,
+    fleetTone,
     artifactVersion: artifact?.version ?? model?.version ?? 'no artifact',
     selectedArtifact: artifact,
     dataset: MODEL_DATASET_REQUIREMENTS[candidate.id],
@@ -578,13 +680,7 @@ function buildGrafanaRecord({
     nextAction: modelUpgradeStatusReady
       ? promotionRows[0]?.next_action ?? pointerRow?.next_action ?? statusRow?.next_action ?? 'no action queued'
       : 'Waiting for model-upgrade evidence status feed before rendering gate pass/fail.',
-    history: buildEvidenceCells({
-      candidateId: candidate.id,
-      model,
-      artifact,
-      promotionRows,
-      pointerOk,
-    }),
+    history,
   }
 }
 
@@ -605,8 +701,8 @@ function GrafanaPanel({
     <section className={`overflow-hidden rounded-2xl border border-[#2d3a49] bg-[#111821]/96 shadow-[0_14px_36px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.05)] ${className}`}>
       <header className="flex min-h-12 items-center justify-between gap-3 border-b border-[#2d3a49] bg-[#18212c] px-4 py-2">
         <div className="min-w-0">
-          {kicker && <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">{kicker}</p>}
-          <h3 className="truncate font-['Space_Grotesk'] text-[15px] font-semibold tracking-[0.02em] text-[#eef4fb]">{title}</h3>
+          {kicker && <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">{kicker}</p>}
+          <h3 className="truncate font-['Space_Grotesk'] text-[17px] font-semibold tracking-[0.01em] text-[#eef4fb]">{title}</h3>
         </div>
         {action}
       </header>
@@ -628,9 +724,9 @@ function GrafanaStat({
 }) {
   return (
     <div className={`rounded-xl border bg-[#0c1219] px-4 py-3 ${grafanaBorderClass(tone)}`}>
-      <p className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#8fa0b7]">{label}</p>
+      <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#8fa0b7]">{label}</p>
       <div className={`mt-1 font-mono text-xl font-semibold ${grafanaTextClass(tone)}`}>{value}</div>
-      <p className="mt-1 text-xs leading-5 text-[#9aa8ba]">{detail}</p>
+      <p className="mt-1 text-[13px] leading-5 text-[#9aa8ba]">{detail}</p>
     </div>
   )
 }
@@ -648,9 +744,9 @@ function GrafanaDashboardHeader({
   selectedArtifacts: number
   promotionCount: number
 }) {
-  const okCount = records.filter((record) => record.statusTone === 'ok').length
-  const blockedCount = records.filter((record) => record.blockers.length > 0 || record.statusTone === 'error').length
-  const warnCount = records.filter((record) => record.statusTone === 'warn').length
+  const okCount = records.filter((record) => record.fleetTone === 'ok').length
+  const blockedCount = records.filter((record) => record.blockers.length > 0 || record.fleetTone === 'error').length
+  const warnCount = records.filter((record) => record.fleetTone === 'warn').length
   const fleetTone = blockedCount ? 'error' : warnCount ? 'warn' : okCount === records.length ? 'ok' : 'info'
   const now = new Date()
 
@@ -658,10 +754,10 @@ function GrafanaDashboardHeader({
     <div className="border-b border-[#2d3a49] bg-[#0b1118]">
       <div className="flex flex-col gap-3 border-b border-[#2d3a49] px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.13em] text-[#f0c365]">Grafana-style model operations</p>
-          <h2 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-[0.01em] text-[#f4efe4]">Active-9 Model Pool</h2>
+          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#f0c365]">Grafana-style model operations</p>
+          <h2 className="mt-1 font-['Space_Grotesk'] text-[28px] font-semibold tracking-[0.01em] text-[#f4efe4]">Active-9 Model Pool</h2>
         </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.10em] text-[#a7b5c8]">
+        <div className="flex flex-wrap items-center gap-2 font-mono text-[12px] uppercase tracking-[0.08em] text-[#a7b5c8]">
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">env prod</span>
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">weekly + OOS/live gates</span>
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">refresh 60s</span>
@@ -731,12 +827,12 @@ function FleetStatusStrip({
             className={`rounded-xl border p-3 text-left transition-colors hover:border-[#f0c365]/55 focus:outline-none focus:ring-2 focus:ring-[#f0c365]/40 ${selectedFrameClass(isSelected)}`}
           >
             <div className="flex items-center justify-between gap-2">
-              <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.statusTone === 'ok' ? 'bg-emerald-400' : record.statusTone === 'warn' ? 'bg-amber-300' : record.statusTone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} />
+              <p className="truncate font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.fleetTone === 'ok' ? 'bg-emerald-400' : record.fleetTone === 'warn' ? 'bg-amber-300' : record.fleetTone === 'error' ? 'bg-rose-400' : record.fleetTone === 'info' ? 'bg-sky-400' : 'bg-slate-500'}`} />
             </div>
-            <p className="mt-1 truncate text-[11px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
-            <div className={`mt-2 border px-2 py-1.5 text-center font-mono text-[11px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
-              {statusLabel(record.statusTone)}
+            <p className="mt-1 truncate text-[12px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
+            <div className={`mt-2 border px-2 py-1.5 text-center font-mono text-[12px] font-semibold ${grafanaCellClass(record.fleetTone)}`}>
+              {statusLabel(record.fleetTone)}
             </div>
           </button>
           )
@@ -760,12 +856,12 @@ function StateTimelinePanel({
     <GrafanaPanel
       title="Evidence matrix"
       kicker="weekly trend, OOS evidence, live parity, overfit guard, champion compare"
-      action={<span className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">values include gate thresholds</span>}
+      action={<span className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">values include gate thresholds</span>}
       className="min-h-[360px]"
     >
       <div className="overflow-x-auto">
         <div className="min-w-[1060px]">
-          <div className="grid grid-cols-[152px_repeat(7,minmax(112px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">
+          <div className="grid grid-cols-[152px_repeat(7,minmax(112px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">
             <div>model</div>
             {labels.map((label) => <div key={label} className="text-center">{label}</div>)}
           </div>
@@ -781,18 +877,18 @@ function StateTimelinePanel({
                 className={`grid w-full grid-cols-[152px_repeat(7,minmax(112px,1fr))] items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
               >
                 <div className="min-w-0">
-                  <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-                  <p className="truncate text-[11px] text-[#90a0b8]">{record.family}</p>
+                  <p className="truncate font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+                  <p className="truncate text-[12px] text-[#90a0b8]">{record.family}</p>
                 </div>
                 {record.history.map((cell) => (
                   <div
                     key={`${record.candidate.id}-${cell.label}`}
-                    className={`min-h-[52px] border px-2 py-1.5 text-center font-mono text-[11px] font-semibold leading-4 ${grafanaCellClass(cell.tone)}`}
+                    className={`min-h-[58px] border px-2 py-2 text-center font-mono text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`}
                     title={cell.title}
                     aria-label={cell.title}
                   >
                     <span className="block">{cell.value}</span>
-                    {cell.detail && <span className="mt-0.5 block truncate text-[10px] font-medium opacity-80">{cell.detail}</span>}
+                    {cell.detail && <span className="mt-0.5 block truncate text-[12px] font-medium opacity-80">{cell.detail}</span>}
                   </div>
                 ))}
               </button>
@@ -816,42 +912,86 @@ function PromotionReadinessPanel({
     ?? records.find((record) => record.blockers.length > 0)
     ?? records[0]
   if (!selected) return null
+  const compare = artifactCompareSummary(selected)
+  const diagnosis = researchStatusDiagnosis(selected)
 
   const gates = [
-    { label: 'Artifact', ready: selected.artifactOk, detail: selected.artifactVersion },
-    { label: 'Evidence', ready: selected.evidenceOk, detail: selected.status },
+    { label: 'Candidate artifact', ready: compare.hasCandidate, detail: compare.candidate },
+    { label: 'Research evidence', ready: selected.evidenceOk, detail: selected.status },
     { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'PBO<0.50 / IC>=0' },
-    { label: 'Champion compare', ready: selected.finalCompareOk, detail: selected.promotionRows[0]?.final_compared_to ?? (selected.pointerOk ? 'serving pointer baseline' : 'pending') },
+    { label: 'Champion baseline', ready: compare.hasChampionBaseline, detail: compare.champion },
+    { label: 'Final compare', ready: compare.compareReady, detail: compare.finalComparedTo ?? 'pending candidate-vs-champion comparison' },
     { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
-    { label: 'Pointer', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
+    { label: 'Current pointer baseline', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
   ]
 
   return (
-    <GrafanaPanel title="Promotion readiness" kicker={`selected model: ${selected.candidate.id}`}>
+    <GrafanaPanel title="Candidate release readiness" kicker={`selected model: ${selected.candidate.id} / candidate gate, not current prod artifact`}>
       <div className="bg-[#0c1219] p-4">
         <div className={`rounded-xl border p-3 ${grafanaBorderClass(selected.statusTone)} bg-[#111821]`}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="font-['Space_Grotesk'] text-[16px] font-semibold text-[#f2ead8]">{selected.candidate.id}</p>
-              <p className="mt-1 text-xs leading-5 text-[#9aa8ba]">{selected.family} / {selected.dataset?.window ?? 'model-specific'} / {selected.artifactVersion}</p>
+              <p className="font-['Space_Grotesk'] text-[18px] font-semibold text-[#f2ead8]">{selected.candidate.id}</p>
+              <p className="mt-1 text-[13px] leading-5 text-[#9aa8ba]">{selected.family} / {selected.dataset?.window ?? 'model-specific'} / {selected.artifactVersion}</p>
             </div>
-            <span className={`border px-2.5 py-1 font-mono text-[11px] font-semibold ${grafanaCellClass(selected.statusTone)}`}>
+            <span className={`border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(selected.statusTone)}`}>
               {selected.status}
             </span>
           </div>
         </div>
 
         <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3">
-          <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">Promotion readiness funnel</p>
+          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">Research diagnosis</p>
+          <p className="mt-2 text-[13px] leading-5 text-[#dce3ea]">{diagnosis.rootCause}</p>
+          <div className="mt-2 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
+            <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">next action</p>
+            <p className="mt-1 text-[13px] leading-5 text-[#a7b5c8]">{diagnosis.nextAction}</p>
+          </div>
+          {diagnosis.missing.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {diagnosis.missing.slice(0, 5).map((item) => (
+                <span key={item} className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 font-mono text-[12px] text-amber-200">
+                  {humanizeToken(item)}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3" title={compare.title}>
+          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">Candidate vs current champion</p>
+          <div className="mt-3 grid gap-2">
+            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
+              <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">candidate artifact</p>
+              <p className="mt-1 break-all font-mono text-[13px] font-semibold text-[#dce3ea]">{compare.candidate}</p>
+            </div>
+            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
+              <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">current champion baseline</p>
+              <p className="mt-1 break-all font-mono text-[13px] font-semibold text-[#dce3ea]">{compare.champion}</p>
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
+              <div className="min-w-0">
+                <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">final compare</p>
+                <p className="mt-1 truncate text-[13px] text-[#a7b5c8]">{compare.finalComparedTo ? `completed vs ${compare.finalComparedTo}` : 'waiting for promotion-controller comparison'}</p>
+              </div>
+              <span className={`shrink-0 border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(compare.tone)}`}>
+                {compare.compareReady ? 'READY' : 'WAIT'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3">
+          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">Candidate release funnel</p>
           <div className="mt-3 space-y-2">
             {gates.map((gate, index) => (
               <div key={gate.label} className="grid grid-cols-[28px_1fr_auto] items-center gap-2">
-                <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] font-mono text-[11px] text-[#a7b5c8]">{index + 1}</span>
+                <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] font-mono text-[12px] text-[#a7b5c8]">{index + 1}</span>
                 <div className="min-w-0">
-                  <p className="font-['Space_Grotesk'] text-[13px] text-[#f2ead8]">{gate.label}</p>
-                  <p className="text-[11px] leading-4 text-[#90a0b8]">{gate.detail}</p>
+                  <p className="font-['Space_Grotesk'] text-[14px] text-[#f2ead8]">{gate.label}</p>
+                  <p className="text-[12px] leading-5 text-[#90a0b8]">{gate.detail}</p>
                 </div>
-                <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
+                <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
                   {gate.ready ? 'PASS' : 'WAIT'}
                 </span>
               </div>
@@ -873,19 +1013,19 @@ function EvidenceTablePanel({
   onSelectModel: (modelId: string) => void
 }) {
   return (
-    <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, promotion pressure, PBO/CPCV, and missing evidence">
+    <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, candidate compare, promotion pressure, and missing evidence">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
         <table className="w-full min-w-[1240px] border-separate border-spacing-y-2 text-left">
-          <thead className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">
+          <thead className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">
             <tr>
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Family</th>
               <th className="px-3 py-2 font-medium">Artifact</th>
               <th className="px-3 py-2 font-medium">Dataset</th>
               <th className="px-3 py-2 font-medium">Pointer</th>
-              <th className="px-3 py-2 font-medium">Research state</th>
-              <th className="px-3 py-2 font-medium">Pressure</th>
-              <th className="px-3 py-2 font-medium">PBO/CPCV</th>
+              <th className="px-3 py-2 font-medium" title="Latest research registry state for this model artifact lane.">Research state</th>
+              <th className="px-3 py-2 font-medium" title="Promotion queue load plus blockers that need review before release.">Review pressure</th>
+              <th className="px-3 py-2 font-medium">Artifact compare</th>
               <th className="px-3 py-2 font-medium">Missing evidence</th>
             </tr>
           </thead>
@@ -895,7 +1035,8 @@ function EvidenceTablePanel({
               const pressureTone = record.blockers.length ? maxTone([promotionPressureTone(record.promotionRows), 'warn']) : promotionPressureTone(record.promotionRows)
               const pressureLabel = record.promotionRows.length ? `${record.promotionRows.length} queued` : record.blockers.length ? 'blocked' : 'clear'
               const missing = uniqueTokens([...record.missingEvidence, ...record.blockers])
-              const pboCpcv = record.history.find((cell) => cell.label === 'PBO/CPCV')
+              const compare = artifactCompareSummary(record)
+              const diagnosis = researchStatusDiagnosis(record)
               return (
               <tr
                 key={record.candidate.id}
@@ -911,38 +1052,42 @@ function EvidenceTablePanel({
                 }}
                 className={`cursor-pointer bg-[#111821] outline-none transition-colors hover:bg-[#151f2b] focus:bg-[#151f2b] focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151f2b]' : ''}`}
               >
-                <td className="rounded-l-xl border-y border-l border-[#263247] px-3 py-3 font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
-                <td className="border-y border-[#263247] px-3 py-3 text-xs text-[#a7b5c8]">{record.family}</td>
-                <td className="max-w-[210px] truncate border-y border-[#263247] px-3 py-3 font-mono text-xs text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
+                <td className="rounded-l-xl border-y border-l border-[#263247] px-3 py-3 font-['Space_Grotesk'] text-[15px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
+                <td className="border-y border-[#263247] px-3 py-3 text-[13px] text-[#a7b5c8]">{record.family}</td>
+                <td className="max-w-[210px] truncate border-y border-[#263247] px-3 py-3 font-mono text-[13px] text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <p className="font-mono text-xs text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
-                  <p className="text-[11px] text-[#90a0b8]">{record.dataset?.shape ?? 'N/A'}</p>
+                  <p className="font-mono text-[13px] text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
+                  <p className="text-[12px] text-[#90a0b8]">{record.dataset?.shape ?? 'N/A'}</p>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(record.pointerTone)}`}>
+                  <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(record.pointerTone)}`}>
                     {record.pointerRow?.readiness ?? 'missing'}
                   </span>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(record.statusTone)}`}>
+                  <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(record.statusTone)}`}>
                     {record.status}
                   </span>
+                  <p className="mt-1 max-w-[280px] text-[12px] leading-5 text-[#a7b5c8]">{diagnosis.rootCause}</p>
+                  <p className="mt-1 max-w-[280px] font-mono text-[12px] leading-5 text-sky-200">next: {diagnosis.nextAction}</p>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(pressureTone)}`}>
+                  <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(pressureTone)}`}>
                     {pressureLabel}
                   </span>
                 </td>
-                <td className="border-y border-[#263247] px-3 py-3" title={pboCpcv?.title}>
-                  <span className={`inline-block border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(pboCpcv?.tone ?? 'neutral')}`}>
-                    {pboCpcv?.value ?? 'N/A'}
+                <td className="border-y border-[#263247] px-3 py-3" title={compare.title}>
+                  <span className={`inline-block border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(compare.tone)}`}>
+                    {compare.compareReady ? 'ready' : compare.hasCandidate ? 'baseline' : 'no candidate'}
                   </span>
-                  <p className="mt-1 max-w-[220px] text-[11px] leading-4 text-[#90a0b8]">{pboCpcv?.detail ?? 'PBO<0.50 / IC>=0'}</p>
+                  <p className="mt-1 max-w-[260px] break-all font-mono text-[12px] leading-5 text-[#90a0b8]">
+                    {compactVersion(compare.candidate, 18)} vs {compactVersion(compare.champion, 18)}
+                  </p>
                 </td>
                 <td className="rounded-r-xl border-y border-r border-[#263247] px-3 py-3">
                   <div className="flex max-w-[320px] flex-wrap gap-1">
                     {(missing.length ? missing : ['complete']).slice(0, 4).map((item) => (
-                      <span key={item} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[10px] text-[#c0cad8]">
+                      <span key={item} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[12px] text-[#c0cad8]">
                         {item}
                       </span>
                     ))}
@@ -965,10 +1110,10 @@ function MetaBoundaryPanel() {
         {ADAPTIVE_EVIDENCE_STEPS.map((step) => (
           <div key={step.label} className="rounded-xl border border-[#263247] bg-[#0c1219] p-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{step.label}</p>
-              <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(step.tone)}`}>{statusLabel(step.tone)}</span>
+              <p className="font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{step.label}</p>
+              <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(step.tone)}`}>{statusLabel(step.tone)}</span>
             </div>
-            <p className="mt-2 text-xs leading-5 text-[#9aa8ba]">{step.detail}</p>
+            <p className="mt-2 text-[13px] leading-5 text-[#9aa8ba]">{step.detail}</p>
           </div>
         ))}
       </div>
@@ -1067,7 +1212,7 @@ export default function ModelPoolNewFlowWorkbench({
         <MetaBoundaryPanel />
       </div>
 
-      <div className="border-t border-[#263247] bg-[#071018] p-4 text-sm leading-6 text-[#a7b5c8]">
+      <div className="border-t border-[#263247] bg-[#071018] p-4 text-[15px] leading-6 text-[#a7b5c8]">
         Parameter search and allocator/meta proposals stay in Promotion & Parameter Governance.
         This cockpit is only the L2/L3 model evidence surface: active slots, artifacts, verified rows,
         blockers, and champion pointer readiness.

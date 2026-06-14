@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -16,10 +17,12 @@ import {
   type ModelArtifactActionContext,
   type ModelArtifactPromotionControllerResponse,
   type ModelArtifactPromotionQueueResponse,
+  type ModelArtifactSelectionResponse,
   type ModelChampionPointersResponse,
   type ModelPoolLineage,
   type ModelPoolLineageModel,
   type ModelPoolStateOverlay,
+  type ModelUpgradeResearchStatusRow,
 } from '@/lib/api'
 import {
   MODEL_POOL_RETIRED_MODEL_IDS,
@@ -28,6 +31,15 @@ import {
 const RETIRED_MODEL_NAMES = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
 
 type OverlayEntry = [string, ModelPoolStateOverlay]
+
+type ModelPoolWorkbenchSnapshot = {
+  lineage: ModelPoolLineage
+  selection: ModelArtifactSelectionResponse
+  promotionQueue: ModelArtifactPromotionQueueResponse
+  pointers: ModelChampionPointersResponse
+  statusRows: ModelUpgradeResearchStatusRow[]
+  capturedAt: number
+}
 
 function toneFromStatus(status?: string | null): WorkstationTone {
   if (status === 'active' || status === 'ok' || status === 'ready_for_review' || status === 'approved_for_patch') return 'ok'
@@ -246,7 +258,6 @@ export default function ModelPoolPage() {
     queryFn: modelPoolApi.lineage,
     retry: false,
     staleTime: 60_000,
-    refetchInterval: 60_000,
   })
   const modelUpgradeStatus = useQuery({
     queryKey: ['strategy-lab', 'model-upgrade-status'],
@@ -259,22 +270,69 @@ export default function ModelPoolPage() {
     queryFn: () => modelPoolApi.artifactSelection(200),
     retry: false,
     staleTime: 60_000,
-    refetchInterval: 60_000,
   })
   const artifactPromotionQueue = useQuery({
     queryKey: ['model-pool', 'artifact-promotion-queue'],
     queryFn: () => modelPoolApi.artifactPromotionQueue(200),
     retry: false,
     staleTime: 60_000,
-    refetchInterval: 60_000,
   })
   const championPointers = useQuery<ModelChampionPointersResponse>({
     queryKey: ['model-pool', 'champion-pointers'],
     queryFn: () => modelPoolApi.championPointers(200),
     retry: false,
     staleTime: 60_000,
-    refetchInterval: 60_000,
   })
+  const [modelPoolSnapshot, setModelPoolSnapshot] = useState<ModelPoolWorkbenchSnapshot | null>(null)
+  const modelPoolFetching = (
+    isFetching ||
+    modelUpgradeStatus.isFetching ||
+    artifactSelection.isFetching ||
+    artifactPromotionQueue.isFetching ||
+    championPointers.isFetching
+  )
+  const modelPoolHydrated = Boolean(
+    data &&
+    modelUpgradeStatus.data &&
+    artifactSelection.data &&
+    artifactPromotionQueue.data &&
+    championPointers.data,
+  )
+  const refreshModelPoolSnapshot = useCallback(() => {
+    void Promise.allSettled([
+      refetch(),
+      modelUpgradeStatus.refetch(),
+      artifactSelection.refetch(),
+      artifactPromotionQueue.refetch(),
+      championPointers.refetch(),
+    ])
+  }, [artifactPromotionQueue, artifactSelection, championPointers, modelUpgradeStatus, refetch])
+
+  useEffect(() => {
+    if (!modelPoolHydrated || modelPoolFetching) return
+    setModelPoolSnapshot({
+      lineage: data!,
+      selection: artifactSelection.data!,
+      promotionQueue: artifactPromotionQueue.data!,
+      pointers: championPointers.data!,
+      statusRows: modelUpgradeStatus.data!.candidates ?? [],
+      capturedAt: Date.now(),
+    })
+  }, [
+    artifactPromotionQueue.data,
+    artifactSelection.data,
+    championPointers.data,
+    data,
+    modelPoolFetching,
+    modelPoolHydrated,
+    modelUpgradeStatus.data,
+  ])
+
+  useEffect(() => {
+    const timer = window.setInterval(refreshModelPoolSnapshot, 60_000)
+    return () => window.clearInterval(timer)
+  }, [refreshModelPoolSnapshot])
+
   const promotionController = useMutation({
     mutationFn: ({ artifactId, approved, confirm }: { artifactId: string; approved: boolean; confirm: boolean }) => modelPoolApi.promotionController({
       artifact_id: artifactId,
@@ -290,7 +348,7 @@ export default function ModelPoolPage() {
     },
   })
 
-  const models = data?.models ?? {}
+  const models = modelPoolSnapshot?.lineage.models ?? {}
   const modelList = Object.entries(models).filter(([name, model]) => !isStateSpaceOverlay(name, model) && !isRetiredModelName(name))
   const legacyOverlayList: OverlayEntry[] = Object.entries(models)
     .filter(([name, model]) => isStateSpaceOverlay(name, model))
@@ -304,9 +362,18 @@ export default function ModelPoolPage() {
       note: 'Lineage entry rendered as state-space overlay; excluded from alpha model IC counts.',
     }])
   const overlayList: OverlayEntry[] = [
-    ...Object.entries(data?.state_overlays ?? {}),
+    ...Object.entries(modelPoolSnapshot?.lineage.state_overlays ?? {}),
     ...legacyOverlayList,
   ]
+  const modelPoolSnapshotReady = Boolean(modelPoolSnapshot)
+  const modelPoolError = (
+    error ||
+    modelUpgradeStatus.error ||
+    artifactSelection.error ||
+    artifactPromotionQueue.error ||
+    championPointers.error
+  ) as Error | null
+  const modelPoolInitialLoading = !modelPoolSnapshotReady && !modelPoolError && (isLoading || modelPoolFetching || !modelPoolHydrated)
 
   return (
     <AppShell>
@@ -317,18 +384,12 @@ export default function ModelPoolPage() {
           description="Registry, lineage, active-9 evidence, adaptive replay, promotion queue, and champion pointer governance. L1 strategy diversity stays in Strategy Lab; single-run tracing stays in Pipeline Trace."
           action={
             <div className="flex flex-wrap items-center gap-2">
-              {isFetching && <WorkstationPill tone="info">refreshing</WorkstationPill>}
+              {modelPoolSnapshotReady && modelPoolFetching && <WorkstationPill tone="info">refreshing snapshot</WorkstationPill>}
               <Button
                 size="sm"
                 variant="outline"
                 className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]"
-                onClick={() => {
-                  refetch()
-                  artifactSelection.refetch()
-                  artifactPromotionQueue.refetch()
-                  championPointers.refetch()
-                  modelUpgradeStatus.refetch()
-                }}
+                onClick={refreshModelPoolSnapshot}
               >
                 <RefreshCw className="mr-1 h-3 w-3" /> Refresh
               </Button>
@@ -336,29 +397,29 @@ export default function ModelPoolPage() {
           }
         />
 
-        {isLoading && (
+        {modelPoolInitialLoading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading model pool...
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading complete model-pool evidence snapshot...
           </div>
         )}
 
-        {error && (
-          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{(error as Error).message}</div>
+        {modelPoolError && !modelPoolSnapshotReady && (
+          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{modelPoolError.message}</div>
         )}
 
-        {!isLoading && (
+        {modelPoolSnapshotReady && (
           <>
             <ModelPoolNewFlowWorkbench
               models={modelList}
-              selection={artifactSelection.data}
-              pointers={championPointers.data}
-              promotionQueue={artifactPromotionQueue.data}
-              statusRows={modelUpgradeStatus.data?.candidates ?? []}
-              modelUpgradeStatusReady={modelUpgradeStatus.isSuccess}
+              selection={modelPoolSnapshot!.selection}
+              pointers={modelPoolSnapshot!.pointers}
+              promotionQueue={modelPoolSnapshot!.promotionQueue}
+              statusRows={modelPoolSnapshot!.statusRows}
+              modelUpgradeStatusReady
             />
 
             <PromotionQueuePanelV2
-              queue={artifactPromotionQueue.data}
+              queue={modelPoolSnapshot!.promotionQueue}
               isPromoting={promotionController.isPending}
               promotionResult={promotionController.data}
               onPromote={(artifactId, approved, confirm) => promotionController.mutate({ artifactId, approved, confirm })}

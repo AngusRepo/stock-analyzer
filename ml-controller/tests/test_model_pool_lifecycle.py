@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -78,17 +79,31 @@ def _entry(
     return row
 
 
-@pytest.mark.asyncio
-async def test_promote_check_apply_requires_confirm():
+def test_promote_check_apply_requires_confirm():
     with pytest.raises(HTTPException) as exc:
-        await model_pool.promote_check(model_pool.PromoteCheckRequest(apply=True))
+        asyncio.run(model_pool.promote_check(model_pool.PromoteCheckRequest(apply=True)))
 
     assert exc.value.status_code == 400
     assert "confirm=true" in exc.value.detail
 
 
-@pytest.mark.asyncio
-async def test_promote_check_blocks_demote_when_family_min_would_break(monkeypatch):
+def test_register_challenger_blocks_active9_legacy_slot():
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            model_pool.register_challenger(
+                model_pool.RegisterChallengerRequest(
+                    model_name="LightGBM",
+                    version="vNext",
+                    confirm=True,
+                )
+            )
+        )
+
+    assert exc.value.status_code == 410
+    assert "artifact_registry" in exc.value.detail
+
+
+def test_promote_check_blocks_demote_when_family_min_would_break(monkeypatch):
     pool = {
         "schema_version": "1.0",
         "models": {
@@ -99,7 +114,7 @@ async def test_promote_check_blocks_demote_when_family_min_would_break(monkeypat
     }
     _install_fake_gcs(monkeypatch, pool)
 
-    result = await model_pool.promote_check(model_pool.PromoteCheckRequest())
+    result = asyncio.run(model_pool.promote_check(model_pool.PromoteCheckRequest()))
 
     demote_blocks = [a for a in result["actions"] if a["transition"] == "demote_blocked"]
     assert demote_blocks
@@ -107,8 +122,7 @@ async def test_promote_check_blocks_demote_when_family_min_would_break(monkeypat
     assert "family balance guard" in demote_blocks[0]["reason"]
 
 
-@pytest.mark.asyncio
-async def test_promote_check_discards_mature_failed_challenger(monkeypatch):
+def test_promote_check_discards_mature_failed_challenger(monkeypatch):
     challenger = {
         "version": "v2",
         "gcs_path": "universal/xgboost/v2.joblib",
@@ -127,8 +141,10 @@ async def test_promote_check_discards_mature_failed_challenger(monkeypatch):
     }
     bucket = _install_fake_gcs(monkeypatch, pool)
 
-    result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(apply=True, confirm=True)
+    result = asyncio.run(
+        model_pool.promote_check(
+            model_pool.PromoteCheckRequest(apply=True, confirm=True)
+        )
     )
 
     assert result["applied_count"] == 1
@@ -137,8 +153,7 @@ async def test_promote_check_discards_mature_failed_challenger(monkeypatch):
     assert "lifecycle_events" not in saved
 
 
-@pytest.mark.asyncio
-async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
+def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
     challenger = {
         "version": "v2",
         "gcs_path": "universal/xgboost/v2.joblib",
@@ -168,11 +183,13 @@ async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
 
     monkeypatch.setattr(shadow_ab_service, "load_shadow_ab_by_model", lambda lookback_days=90: {})
 
-    result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(
-            require_promotion_gate=False,
-            require_shadow_ab=True,
-            require_paper_order_ab=False,
+    result = asyncio.run(
+        model_pool.promote_check(
+            model_pool.PromoteCheckRequest(
+                require_promotion_gate=False,
+                require_shadow_ab=True,
+                require_paper_order_ab=False,
+            )
         )
     )
 
@@ -186,8 +203,7 @@ async def test_promote_check_blocks_promote_when_shadow_ab_missing(monkeypatch):
     assert not packet["blocked"]
 
 
-@pytest.mark.asyncio
-async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
+def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
     challenger = {
         "version": "v2",
         "gcs_path": "universal/xgboost/v2.joblib",
@@ -237,8 +253,10 @@ async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
         }
     })
 
-    result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(require_promotion_gate=False, require_shadow_ab=True)
+    result = asyncio.run(
+        model_pool.promote_check(
+            model_pool.PromoteCheckRequest(require_promotion_gate=False, require_shadow_ab=True)
+        )
     )
 
     promotes = [a for a in result["actions"] if a["transition"] == "promote"]
@@ -251,8 +269,7 @@ async def test_promote_check_allows_promote_when_shadow_ab_passes(monkeypatch):
     assert result["lifecycle_review_packet"]["shadow_ab_by_model"] == {}
 
 
-@pytest.mark.asyncio
-async def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch):
+def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch):
     challenger = {
         "version": "v2",
         "gcs_path": "universal/xgboost/v2.joblib",
@@ -281,8 +298,10 @@ async def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch)
         "XGBoost": {"decision": "PASS", "failed_gates": [], "orders": 25}
     })
 
-    result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(require_promotion_gate=False)
+    result = asyncio.run(
+        model_pool.promote_check(
+            model_pool.PromoteCheckRequest(require_promotion_gate=False)
+        )
     )
 
     blocked = [a for a in result["actions"] if a["transition"] == "promote_blocked"]
@@ -293,8 +312,7 @@ async def test_promote_check_blocks_promote_when_model_cpcv_missing(monkeypatch)
     assert result["lifecycle_review_packet"]["required_evidence"]["model_cpcv"]
 
 
-@pytest.mark.asyncio
-async def test_promote_check_apply_rejects_disabled_promotion_governance(monkeypatch):
+def test_promote_check_apply_rejects_disabled_promotion_governance(monkeypatch):
     challenger = {
         "version": "v2",
         "gcs_path": "universal/xgboost/v2.joblib",
@@ -320,11 +338,13 @@ async def test_promote_check_apply_rejects_disabled_promotion_governance(monkeyp
     }
     _install_fake_gcs(monkeypatch, pool)
 
-    result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(
-            apply=True,
-            confirm=True,
-            require_promotion_gate=False,
+    result = asyncio.run(
+        model_pool.promote_check(
+            model_pool.PromoteCheckRequest(
+                apply=True,
+                confirm=True,
+                require_promotion_gate=False,
+            )
         )
     )
 
@@ -332,8 +352,7 @@ async def test_promote_check_apply_rejects_disabled_promotion_governance(monkeyp
     assert result["actions"][0]["transition"] == "discard_challenger"
 
 
-@pytest.mark.asyncio
-async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
+def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
     challenger = {
         "version": "v2",
         "gcs_path": "universal/xgboost/v2.joblib",
@@ -368,8 +387,10 @@ async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
         "XGBoost": {"decision": "PASS", "failed_gates": [], "orders": 25}
     })
 
-    result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(require_promotion_gate=False)
+    result = asyncio.run(
+        model_pool.promote_check(
+            model_pool.PromoteCheckRequest(require_promotion_gate=False)
+        )
     )
 
     promotes = [a for a in result["actions"] if a["transition"] == "promote"]
@@ -379,8 +400,7 @@ async def test_promote_check_allows_promote_when_model_cpcv_passes(monkeypatch):
     assert "XGBoost" not in result["model_cpcv_by_model"]
 
 
-@pytest.mark.asyncio
-async def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypatch):
+def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypatch):
     cpcv = {
         "decision": "PASS",
         "method": "purged_cpcv_rank_ic",
@@ -425,8 +445,10 @@ async def test_promote_check_apply_preserves_model_cpcv_on_active_entry(monkeypa
         "validation_packet": {"decision": "PASS", "failed_gates": []},
     })
 
-    result = await model_pool.promote_check(
-        model_pool.PromoteCheckRequest(apply=True, confirm=True)
+    result = asyncio.run(
+        model_pool.promote_check(
+            model_pool.PromoteCheckRequest(apply=True, confirm=True)
+        )
     )
 
     assert result["applied_count"] == 1

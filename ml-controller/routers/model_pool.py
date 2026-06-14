@@ -4,11 +4,11 @@ ML Model Pool management endpoints (Plan A).
 2026-04-19 Stage 0.x bootstrap:
   POST /model_pool/train_dlinear   -> train universal DLinear from D1 close
 
-Future ML_POOL Stage 1+:
+Legacy ML_POOL Stage 1+:
   GET  /model_pool/status           -> read model_pool.json
-  POST /model_pool/promote/{name}   -> manual challenger -> active
+  POST /model_pool/promote/{name}   -> retired; artifact_registry owns promotion
   POST /model_pool/retire/{name}    -> manual active -> retired
-  POST /model_pool/promote_check    -> apply lifecycle transitions in model_pool.json
+  POST /model_pool/promote_check    -> cleans legacy challenger residue, no active-9 promotion
 """
 from __future__ import annotations
 import logging
@@ -560,21 +560,22 @@ class RegisterChallengerRequest(BaseModel):
 
 @router.post("/register_challenger")
 async def register_challenger(req: RegisterChallengerRequest):
-    """Mark a model version as challenger (shadow mode).
+    """Legacy challenger registration endpoint.
 
-    Caller must have already trained + saved the artifact at the implied
-    GCS path. This endpoint only
-    writes the bookkeeping entry to model_pool.json so predict_stock_v2
-    knows to also load + inference with the challenger.
-
-    Inference behavior after registration:
-      - Active version still drives ensemble vote (status_filter=1.0)
-      - Challenger predicts in parallel; result written to D1 as
-        model_name='{name}::challenger'
-      - Stage 4 promote gate compares challenger vs active weekly_ic
+    Active-9 model promotion is owned by artifact_registry promotion gates.
+    This endpoint is fail-closed for active/retired alpha production slots so
+    legacy model_pool challenger state cannot re-enter the new flow.
     """
     if not req.confirm:
         raise HTTPException(status_code=400, detail="register_challenger requires confirm=true")
+    if req.model_name in ACTIVE_ALPHA_MODEL_SET or req.model_name in RETIRED_ALPHA_MODEL_SET:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "legacy model_pool challenger registration is disabled for alpha production slots; "
+                "use artifact_registry monthly_release/weekly_drift candidates and promotion_controller"
+            ),
+        )
     import json as _json
     from datetime import datetime, timezone
     from google.cloud import storage

@@ -565,10 +565,10 @@ def retrain_orchestrator(payload: dict) -> dict:
             print(
                 f"[Orchestrator] Partial train error ({partial_error.get('group')}): "
                 f"{partial_error.get('error')}"
-            )
+        )
 
         challenger_registrations = {}
-        if payload.get("register_challengers", True):
+        if payload.get("register_challengers") is True:
             from app.model_pool import register_challenger as _register_challenger
 
             candidate_models = set(reduced_train["candidate_models"])
@@ -590,11 +590,12 @@ def retrain_orchestrator(payload: dict) -> dict:
                         "training_manifest_path": group_result.get("training_manifest_path"),
                     }
                 except Exception as e:
-                    challenger_registrations[model_name] = {
-                        "status": "error",
-                        "version": candidate_version,
-                        "error": str(e),
-                    }
+                    if "legacy model_pool challenger" not in str(e):
+                        challenger_registrations[model_name] = {
+                            "status": "error",
+                            "version": candidate_version,
+                            "error": str(e),
+                        }
 
         result["stages"]["train"] = {
             "status": summarize_training_stage_status(coverage),

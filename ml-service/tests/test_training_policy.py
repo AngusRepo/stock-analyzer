@@ -289,6 +289,20 @@ def test_universal_training_policy_keeps_current_defaults():
     }
 
 
+def test_universal_lifecycle_normalization_does_not_register_legacy_challengers():
+    req = UniversalTrainRequest(gcs_prefix="universal")
+
+    normalized = universal_training.normalize_universal_lifecycle_request(
+        req,
+        gcs_prefix="universal",
+        walk_forward_mode=False,
+        now_fn=lambda: "2026-06-14T00:00:00Z",
+    )
+
+    assert normalized.output_model_version == "v20260614T000000"
+    assert normalized.register_challengers is False
+
+
 def test_universal_training_policy_supports_artifact_lifecycle_only():
     policy = UniversalTrainingPolicy()
 
@@ -454,12 +468,7 @@ def test_model_feature_policy_metadata_records_feature_count_and_evidence():
     assert meta["selection_evidence"]["feature_pool_path"] == "universal/feature_pool.json"
 
 
-def test_register_challenger_safe_preserves_feature_policy_metadata(monkeypatch):
-    def fake_register_challenger(model_name, version, *, save, model_cpcv):
-        return {"model_name": model_name, "version": version, "save": save, "model_cpcv": model_cpcv}
-
-    monkeypatch.setattr(model_pool, "register_challenger", fake_register_challenger)
-
+def test_register_challenger_safe_is_disabled_but_preserves_feature_policy_metadata():
     result = universal_training._register_challenger_safe(
         "LightGBM",
         "v20260517170259",
@@ -468,6 +477,7 @@ def test_register_challenger_safe_preserves_feature_policy_metadata(monkeypatch)
         feature_policy={"model": "LightGBM", "feature_policy_type": "selected_tabular"},
     )
 
-    assert result["status"] == "registered"
+    assert result["status"] == "disabled"
+    assert "legacy_model_pool_challenger_disabled" in result["reason"]
     assert result["feature_policy_version"] == "model-feature-policy-v1"
     assert result["feature_policy"]["feature_policy_type"] == "selected_tabular"

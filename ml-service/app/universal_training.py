@@ -130,11 +130,13 @@ def normalize_universal_lifecycle_request(
     walk_forward_mode: bool,
     now_fn=now_utc_iso,
 ) -> UniversalTrainRequest:
-    """Ensure production universal retrain enters model_pool lifecycle.
+    """Ensure production universal retrain emits a versioned candidate artifact.
 
     Universal production retrain must not silently overwrite flat-file artifacts.
-    If an older caller omits output_model_version, generate a challenger version
-    so the artifact can be audited/promoted by model_pool instead of bypassing it.
+    If an older caller omits output_model_version, generate a candidate version
+    so the artifact can be audited/promoted by artifact_registry instead of
+    bypassing lifecycle evidence. The legacy model_pool challenger slot is
+    intentionally disabled for active-9 production models.
     """
     if not should_force_model_pool_challenger(
         gcs_prefix=gcs_prefix,
@@ -146,7 +148,7 @@ def normalize_universal_lifecycle_request(
     version = generated_model_pool_version(now_fn())
     update = {
         "output_model_version": version,
-        "register_challengers": True,
+        "register_challengers": False,
     }
     if hasattr(req, "model_copy"):
         return req.model_copy(update=update)
@@ -164,7 +166,7 @@ def _save_universal_versioned_model(
     feature_medians: dict[str, float],
     extra_metadata: dict | None = None,
 ) -> str:
-    """Save a universal model as a model_pool challenger artifact."""
+    """Save a universal model as a versioned artifact_registry candidate."""
     import joblib
 
     folder = model_name.lower().replace("-", "_")
@@ -213,27 +215,14 @@ def _register_challenger_safe(
     feature_policy_version: str | None = None,
     feature_policy: dict | None = None,
 ) -> dict:
-    try:
-        from .model_pool import register_challenger
-
-        pool = register_challenger(model_name, version, save=True, model_cpcv=model_cpcv)
-        return {
-            "status": "registered",
-            "version": version,
-            "pool_updated": bool(pool),
-            "model_cpcv": model_cpcv,
-            "feature_policy_version": feature_policy_version,
-            "feature_policy": feature_policy,
-        }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "version": version,
-            "error": str(exc),
-            "model_cpcv": model_cpcv,
-            "feature_policy_version": feature_policy_version,
-            "feature_policy": feature_policy,
-        }
+    return {
+        "status": "disabled",
+        "version": version,
+        "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+        "model_cpcv": model_cpcv,
+        "feature_policy_version": feature_policy_version,
+        "feature_policy": feature_policy,
+    }
 
 
 def build_validation_split_metadata(
@@ -1293,11 +1282,12 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         feature_policy_version=str(model_extra_meta.get("feature_policy_schema_version") or ""),
                         feature_policy=model_extra_meta.get("feature_policy") if isinstance(model_extra_meta.get("feature_policy"), dict) else None,
                     )
-                    registration["training_run_id"] = training_run_id
-                    registration["training_manifest_path"] = manifest_path
-                    challenger_registrations[model_name] = registration
+                    if registration.get("status") != "disabled":
+                        registration["training_run_id"] = training_run_id
+                        registration["training_manifest_path"] = manifest_path
+                        challenger_registrations[model_name] = registration
                 print(
-                    f"[TrainUniversal] Saved {model_name} challenger to {model_path} "
+                    f"[TrainUniversal] Saved {model_name} candidate artifact to {model_path} "
                     f"(version={req.output_model_version})"
                 )
                 continue

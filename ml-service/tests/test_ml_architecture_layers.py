@@ -76,6 +76,20 @@ def test_shadow_challenger_registration_excludes_ga_optimizer():
         raise AssertionError("GAOptimizer must not register as shadow predictor")
 
 
+def test_active9_legacy_challenger_registration_is_disabled():
+    pool = model_pool.init_default_pool()
+
+    try:
+        model_pool.register_challenger("LightGBM", "v2", pool=pool, save=False)
+    except ValueError as exc:
+        assert "legacy model_pool challenger registration is disabled" in str(exc)
+        assert "artifact_registry" in str(exc)
+    else:
+        raise AssertionError("active-9 models must not register legacy challengers")
+
+    assert "challenger" not in pool["models"]["LightGBM"]
+
+
 def test_chronos_is_retired_from_alpha_pool():
     assert "Chronos" in model_pool.RETIRED_ALPHA_MODELS
     assert "Chronos" not in model_pool.ALPHA_PREDICTION_MODELS

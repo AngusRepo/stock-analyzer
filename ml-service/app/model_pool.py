@@ -459,47 +459,18 @@ def register_challenger(
     save: bool = True,
     model_cpcv: dict | None = None,
 ) -> dict:
-    """Add a challenger entry to model_pool.json.
+    """Retired legacy challenger writer.
 
-    Caller responsible for ensuring the GCS artifact at the challenger path
-    actually exists. This function only writes the bookkeeping entry.
-
-    Args:
-      model_name: must be in MANAGED_MODELS
-      version:    new version string (e.g., "v2"); must NOT equal active
-      pool:       loaded pool (or None to fetch from GCS)
-      save:       write back to GCS
-
-    Returns the updated pool entry for model_name.
+    Active-9 artifacts are versioned candidates owned by artifact_registry and
+    promotion_controller. Experimental predictors must use
+    register_shadow_challenger() instead.
     """
-    if model_name not in MANAGED_MODELS:
-        raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
-    pool = pool or load_pool()
-    if not pool:
-        raise RuntimeError("model_pool.json not initialized; run /model_pool/init first")
-    entry = pool.get("models", {}).get(model_name)
-    if not entry:
-        raise ValueError(f"{model_name} missing from model_pool.json (likely Stage 1 init missed)")
-    if entry.get("version") == version:
-        raise ValueError(
-            f"{model_name} active version is already {version}; "
-            f"challenger must be a different version"
-        )
-
-    today = datetime.now(timezone.utc).date().isoformat()
-    entry["challenger"] = {
-        "version": version,
-        "gcs_path": gcs_path_for(model_name, version),
-        "shadow_since": today,
-        "weekly_ic": [],
-        "ic_4w_avg": None,
-        "consecutive_negative_weeks": 0,
-    }
-    if model_cpcv is not None:
-        entry["challenger"]["model_cpcv"] = model_cpcv
-    if save:
-        save_pool(pool)
-    return entry
+    raise ValueError(
+        "legacy model_pool challenger registration is disabled for active-9; "
+        "use artifact_registry monthly_release/weekly_drift candidates and "
+        "promotion_controller. For experimental shadow predictors use "
+        "register_shadow_challenger()."
+    )
 
 
 def register_shadow_challenger(

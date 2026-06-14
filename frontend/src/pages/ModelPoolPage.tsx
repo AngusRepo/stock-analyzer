@@ -354,6 +354,7 @@ export default function ModelPoolPage() {
               pointers={championPointers.data}
               promotionQueue={artifactPromotionQueue.data}
               statusRows={modelUpgradeStatus.data?.candidates ?? []}
+              modelUpgradeStatusReady={modelUpgradeStatus.isSuccess}
             />
 
             <PromotionQueuePanelV2

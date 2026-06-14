@@ -26,6 +26,7 @@ type ModelPoolNewFlowWorkbenchProps = {
   pointers?: ModelChampionPointersResponse
   promotionQueue?: ModelArtifactPromotionQueueResponse
   statusRows?: ModelUpgradeResearchStatusRow[]
+  modelUpgradeStatusReady?: boolean
 }
 
 const RETIRED_MODELS = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
@@ -116,6 +117,7 @@ function isServing(model?: ModelPoolLineageModel): boolean {
 }
 
 function toneFromStatus(status?: string | null): WorkstationTone {
+  if (status === 'syncing_evidence') return 'neutral'
   if (status === 'active' || status === 'ready_for_review' || status === 'approved_for_patch' || status === 'pointer_ready') return 'ok'
   if (status === 'degraded' || status === 'evaluation_pending' || status === 'needs_attention') return 'warn'
   if (status === 'failed' || status === 'retired' || status === 'rejected') return 'error'
@@ -166,7 +168,8 @@ function artifactReady(model?: ModelPoolLineageModel, selectionRow?: SelectionMo
   return Boolean(artifact?.version || model?.version || model?.gcs_path || model?.artifact_uri)
 }
 
-function evidenceReady(statusRow?: ModelUpgradeResearchStatusRow, model?: ModelPoolLineageModel): boolean {
+function evidenceReady(statusRow?: ModelUpgradeResearchStatusRow, model?: ModelPoolLineageModel, statusFeedReady = true): boolean {
+  if (!statusFeedReady) return false
   return (
     statusRow?.registry_status === 'ready_for_review' ||
     statusRow?.registry_status === 'approved_for_patch' ||
@@ -274,6 +277,7 @@ function buildGrafanaRecord({
   pointerRow,
   statusRow,
   promotionRows,
+  modelUpgradeStatusReady,
 }: {
   candidate: typeof MODEL_UPGRADE_CANDIDATES[number]
   model?: ModelPoolLineageModel
@@ -281,22 +285,26 @@ function buildGrafanaRecord({
   pointerRow?: ModelChampionPointersResponse['models'][string]
   statusRow?: ModelUpgradeResearchStatusRow
   promotionRows: PromotionQueueRow[]
+  modelUpgradeStatusReady: boolean
 }): GrafanaModelRecord {
   const artifact = selectionCandidate(selectionRow)
   const artifactOk = artifactReady(model, selectionRow)
-  const evidenceOk = evidenceReady(statusRow, model)
+  const evidenceOk = evidenceReady(statusRow, model, modelUpgradeStatusReady)
   const pointerOk = pointerReady(pointerRow)
   const queueTone = promotionPressureTone(promotionRows)
   const blockers = [
     ...(!artifactOk ? ['artifact_missing'] : []),
-    ...(!evidenceOk ? ['evidence_not_ready'] : []),
+    ...(!modelUpgradeStatusReady ? ['evidence_status_syncing'] : []),
+    ...(modelUpgradeStatusReady && !evidenceOk ? ['evidence_not_ready'] : []),
     ...(!pointerOk ? ['champion_pointer_not_ready'] : []),
     ...promotionRows.flatMap((row) => (row.blockers ?? []).map((blocker) => (
       typeof blocker === 'string' ? blocker : blocker.code ?? blocker.label ?? 'promotion_blocker'
     ))),
   ]
-  const rawStatus = statusRow?.registry_status ?? model?.status ?? 'no_data'
-  const statusTone = blockers.length
+  const rawStatus = modelUpgradeStatusReady
+    ? statusRow?.registry_status ?? model?.status ?? 'no_data'
+    : 'syncing_evidence'
+  const statusTone = modelUpgradeStatusReady && blockers.length
     ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
     : toneFromStatus(rawStatus)
   const weekly = (model?.weekly_ic ?? []).slice(-GRAFANA_HISTORY_BUCKETS.length)
@@ -323,7 +331,9 @@ function buildGrafanaRecord({
     approvalOk: approvalClear(promotionRows),
     pointerOk,
     blockers,
-    nextAction: promotionRows[0]?.next_action ?? pointerRow?.next_action ?? statusRow?.next_action ?? 'no action queued',
+    nextAction: modelUpgradeStatusReady
+      ? promotionRows[0]?.next_action ?? pointerRow?.next_action ?? statusRow?.next_action ?? 'no action queued'
+      : 'Waiting for model-upgrade evidence status feed before rendering gate pass/fail.',
     history: [
       ...GRAFANA_HISTORY_BUCKETS.map((label, index) => {
         const value = paddedWeekly[index]
@@ -626,7 +636,7 @@ function GateInspectorPanel({
   if (!selected) return null
   const gates = [
     { label: 'Artifact', ready: selected.artifactOk, detail: selected.artifactVersion },
-    { label: 'Evidence', ready: selected.evidenceOk, detail: selected.statusRow?.registry_status ?? selected.model?.status ?? 'no data' },
+    { label: 'Evidence', ready: selected.evidenceOk, detail: selected.status },
     { label: 'Final compare', ready: selected.finalCompareOk, detail: selected.promotionRows[0]?.final_compared_to ?? 'pending' },
     { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
     { label: 'Pointer', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
@@ -753,6 +763,7 @@ export default function ModelPoolNewFlowWorkbench({
   pointers,
   promotionQueue,
   statusRows,
+  modelUpgradeStatusReady = false,
 }: ModelPoolNewFlowWorkbenchProps) {
   const liveModels = useMemo(
     () => models.filter(([name]) => ACTIVE_ALPHA_MODELS.has(name) && !RETIRED_MODELS.has(name)),
@@ -785,7 +796,8 @@ export default function ModelPoolNewFlowWorkbench({
     pointerRow: pointers?.models?.[candidate.id],
     statusRow: latestStatusFor(candidate.id, statusRows),
     promotionRows: (promotionQueue?.queue ?? []).filter((row) => row.model_name === candidate.id),
-  })), [activeSlots, byName, selection, pointers, statusRows, promotionQueue])
+    modelUpgradeStatusReady,
+  })), [activeSlots, byName, selection, pointers, statusRows, promotionQueue, modelUpgradeStatusReady])
   const defaultSelectedModelId = useMemo(() => (
     grafanaRecords.find((record) => record.blockers.length > 0)?.candidate.id
       ?? grafanaRecords[0]?.candidate.id

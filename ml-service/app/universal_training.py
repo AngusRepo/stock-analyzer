@@ -37,8 +37,8 @@ from .training_policy import (
     ValidationGovernancePolicy,
     build_model_feature_policy_metadata,
     generated_model_pool_version,
+    should_force_artifact_candidate_version,
     should_force_full_feature_pool,
-    should_force_model_pool_challenger,
 )
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
@@ -138,7 +138,7 @@ def normalize_universal_lifecycle_request(
     bypassing lifecycle evidence. The legacy model_pool challenger slot is
     intentionally disabled for active-9 production models.
     """
-    if not should_force_model_pool_challenger(
+    if not should_force_artifact_candidate_version(
         gcs_prefix=gcs_prefix,
         walk_forward_mode=walk_forward_mode,
         output_model_version=req.output_model_version,
@@ -675,7 +675,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     )
     if req.output_model_version and not original_output_version and gcs_prefix == "universal" and not walk_forward_mode:
         print(
-            "[TrainUniversal] Lifecycle guard: generated challenger version "
+            "[TrainUniversal] Lifecycle guard: generated artifact candidate version "
             f"{req.output_model_version}; flat-file production overwrite disabled"
         )
 

@@ -410,37 +410,6 @@ def compute_weight(
 # Stage 3 challenger helpers (shadow mode)
 # ─────────────────────────────────────────────────────────────────────────────
 
-CHALLENGER_SUFFIX = "::challenger"   # convention: model_name@D1 = "XGBoost::challenger"
-
-
-def get_challenger_version(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
-    """If a challenger version is registered for model_name, return it. Else None."""
-    pool = pool or load_pool()
-    if not pool:
-        return None
-    entry = pool.get("models", {}).get(model_name)
-    if not entry:
-        return None
-    ch = entry.get("challenger")
-    if not ch:
-        return None
-    return ch.get("version")
-
-
-def get_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
-    """Return GCS path for challenger version, or None if no challenger registered."""
-    version = get_challenger_version(model_name, pool=pool)
-    if version is None:
-        return None
-    pool = pool or load_pool()
-    if pool:
-        ch = pool.get("models", {}).get(model_name, {}).get("challenger") or {}
-        if ch.get("gcs_path"):
-            return ch["gcs_path"]
-    # Fallback: derive from convention
-    return gcs_path_for(model_name, version)
-
-
 def get_shadow_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
     """Return the registered ResidualMLP experimental shadow path."""
     pool = pool or load_pool()

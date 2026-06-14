@@ -65,13 +65,32 @@ def generated_model_pool_version(now_iso: str) -> str:
     return f"v{now_iso.replace('-', '').replace(':', '').replace('.', '')[:15]}"
 
 
-def should_force_model_pool_challenger(
+def should_force_artifact_candidate_version(
     *,
     gcs_prefix: str,
     walk_forward_mode: bool,
     output_model_version: str | None,
 ) -> bool:
     return gcs_prefix == "universal" and not walk_forward_mode and not output_model_version
+
+
+def should_force_model_pool_challenger(
+    *,
+    gcs_prefix: str,
+    walk_forward_mode: bool,
+    output_model_version: str | None,
+) -> bool:
+    """Backward-compatible alias for older callers.
+
+    The active-9 flow no longer writes model_pool challenger slots; this helper
+    only decides whether a universal train needs an artifact candidate version.
+    """
+
+    return should_force_artifact_candidate_version(
+        gcs_prefix=gcs_prefix,
+        walk_forward_mode=walk_forward_mode,
+        output_model_version=output_model_version,
+    )
 
 
 @dataclass(frozen=True)

@@ -18,8 +18,8 @@ from app.training_policy import (  # noqa: E402
     feature_policy_for_model,
     generated_model_pool_version,
     models_for_training_group,
+    should_force_artifact_candidate_version,
     should_force_full_feature_pool,
-    should_force_model_pool_challenger,
     ValidationGovernancePolicy,
     training_group_feature_policy,
 )
@@ -353,8 +353,8 @@ def test_artifact_lifecycle_duplicate_train_groups_can_be_explicitly_allowed():
     assert suppressed == []
 
 
-def test_universal_train_without_version_should_become_model_pool_challenger():
-    assert should_force_model_pool_challenger(
+def test_universal_train_without_version_should_get_artifact_candidate_version():
+    assert should_force_artifact_candidate_version(
         gcs_prefix="universal",
         walk_forward_mode=False,
         output_model_version=None,
@@ -363,7 +363,7 @@ def test_universal_train_without_version_should_become_model_pool_challenger():
 
 
 def test_universal_train_walk_forward_keeps_explicit_storage_scope():
-    assert should_force_model_pool_challenger(
+    assert should_force_artifact_candidate_version(
         gcs_prefix="walk_forward/w0",
         walk_forward_mode=True,
         output_model_version=None,

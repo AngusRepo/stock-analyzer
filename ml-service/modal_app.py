@@ -568,34 +568,17 @@ def retrain_orchestrator(payload: dict) -> dict:
         )
 
         challenger_registrations = {}
+        suppressed_legacy_challenger_registrations = {}
         if payload.get("register_challengers") is True:
-            from app.model_pool import register_challenger as _register_challenger
-
             candidate_models = set(reduced_train["candidate_models"])
             for model_name in sorted(candidate_models):
                 if model_name in (tree_result.get("challenger_registrations") or {}):
                     continue
-                try:
-                    version = candidate_version
-                    _register_challenger(model_name, version, save=True)
-                    group_result = {}
-                    if model_name == "DLinear":
-                        group_result = aux_train.get("dlinear") or {}
-                    elif model_name == "PatchTST":
-                        group_result = aux_train.get("patchtst") or {}
-                    challenger_registrations[model_name] = {
-                        "status": "registered",
-                        "version": version,
-                        "training_run_id": group_result.get("training_run_id"),
-                        "training_manifest_path": group_result.get("training_manifest_path"),
-                    }
-                except Exception as e:
-                    if "legacy model_pool challenger" not in str(e):
-                        challenger_registrations[model_name] = {
-                            "status": "error",
-                            "version": candidate_version,
-                            "error": str(e),
-                        }
+                suppressed_legacy_challenger_registrations[model_name] = {
+                    "status": "disabled",
+                    "version": candidate_version,
+                    "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+                }
 
         result["stages"]["train"] = {
             "status": summarize_training_stage_status(coverage),
@@ -613,6 +596,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 **(tree_result.get("challenger_registrations") or {}),
                 **challenger_registrations,
             },
+            "suppressed_legacy_challenger_registrations": suppressed_legacy_challenger_registrations,
             "tree_elapsed_s": tree_result.get("elapsed_s"),
             "aux_train": {
                 k: {

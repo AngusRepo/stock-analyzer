@@ -59,7 +59,7 @@ assert(workbench.includes('evidence_status_syncing'), 'Model Pool cockpit should
 assert(workbench.includes('const rawStatus = modelUpgradeStatusReady'), 'Model Pool cockpit should guard status fallback behind model-upgrade readiness')
 assert(!workbench.includes("const rawStatus = statusRow?.registry_status ?? model?.status ?? 'no_data'"), 'Model Pool cockpit must not use an unguarded lineage-active status fallback')
 assert(workbench.includes('L2 coarse -> L3 family'), 'New model pool cockpit should describe the L2/L3 ownership split')
-assert(workbench.includes('candidate gate, not current prod artifact'), 'Candidate release panel should clarify it is not judging the already-serving prod artifact')
+assert(workbench.includes('release evidence; candidate gate when available'), 'Candidate release panel should clarify release evidence can exist even when no candidate gate is open')
 assert(workbench.includes('Candidate vs current champion'), 'Candidate release readiness should expose the selected candidate artifact against the current champion baseline')
 assert(workbench.includes('evaluation_pending') && workbench.includes('no completed evaluation run'), 'Research state diagnostics should explain evaluation_pending root cause')
 assert(workbench.includes('needs_attention') && workbench.includes('evidence is incomplete'), 'Research state diagnostics should explain needs_attention root cause')

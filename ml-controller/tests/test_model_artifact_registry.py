@@ -108,6 +108,128 @@ def test_explicit_candidate_type_from_weekly_drift_payload_wins_over_monthly_fla
     assert records[0]["candidate_type"] == "weekly_drift"
 
 
+def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets():
+    payload = {
+        "run_id": "universal-20260613T000147-b8bdd212",
+        "run_date": "2026-06-13",
+        "is_monthly": True,
+        "candidate_version": "v20260612165347",
+        "status": "completed",
+        "challenger_registrations": {},
+        "stages": {
+            "artifact_lifecycle": {
+                "status": "ok",
+                "results": {
+                    "TabM": {
+                        "status": "ok",
+                        "model": "TabM",
+                        "version": "v20260612165347",
+                        "artifact_path": "universal/tabm/v20260612165347.pt",
+                        "metadata_path": "universal/tabm/metadata_v20260612165347.json",
+                        "checksum": "sha256:tabm",
+                        "oos_ic": 0.081127,
+                        "pool_update": {
+                            "old_version": "vOldTabM",
+                            "new_version": "v20260612165347",
+                            "artifact_path": "universal/tabm/v20260612165347.pt",
+                        },
+                    },
+                    "GNN": {
+                        "status": "ok",
+                        "model": "GNN",
+                        "version": "v20260612165347",
+                        "artifact_path": "universal/gnn/v20260612165347.pt",
+                        "metadata_path": "universal/gnn/metadata_v20260612165347.json",
+                        "checksum": "sha256:gnn",
+                        "oos_ic": 0.033348,
+                    },
+                    "iTransformer": {
+                        "status": "ok",
+                        "model": "iTransformer",
+                        "version": "v20260612165347",
+                        "artifact_path": "universal/itransformer/v20260612165347.zip",
+                        "metadata_path": "universal/itransformer/metadata_v20260612165347.json",
+                        "checksum": "sha256:it",
+                        "oos_ic": -0.022954,
+                    },
+                    "TimesFM": {
+                        "status": "ok",
+                        "model": "TimesFM",
+                        "version": "v20260612T160113_timesfm25_ctx1024",
+                        "artifact_path": "universal/timesfm/v20260612T160113_timesfm25_ctx1024.json",
+                        "artifact_type": "foundation_forecast_config",
+                        "note": "TimesFM is config-backed foundation runtime; no local retrain is run.",
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    by_model = {row["model_name"]: row for row in records}
+    assert set(by_model) == {"TabM", "GNN", "iTransformer", "TimesFM"}
+    assert by_model["TabM"]["artifact_id"] == "TabM:v20260612165347:monthly_release"
+    assert by_model["TabM"]["candidate_type"] == "monthly_release"
+    assert by_model["TabM"]["state"] == "production"
+    assert by_model["TabM"]["evaluation_baseline_version"] == "vOldTabM"
+    assert by_model["GNN"]["state"] == "offline_passed_weak"
+    assert by_model["iTransformer"]["state"] == "offline_failed"
+    assert by_model["TimesFM"]["artifact_path"] == "universal/timesfm/v20260612T160113_timesfm25_ctx1024.json"
+    offline = json.loads(by_model["TabM"]["offline_evidence_json"])
+    assert offline["source"] == "artifact_lifecycle"
+    assert offline["production_cutover_source"] == "artifact_lifecycle"
+
+
+def test_lifecycle_registration_wins_when_train_and_lifecycle_share_artifact_id():
+    payload = {
+        "run_id": "monthly-duplicate-patchtst",
+        "run_date": "2026-06-13",
+        "is_monthly": True,
+        "candidate_version": "v2026061217170259",
+        "status": "completed",
+        "ic_summary": {"PatchTST": 0.076},
+        "challenger_registrations": {
+            "PatchTST": {
+                "status": "registered",
+                "version": "v2026061217170259",
+                "model_cpcv": {"decision": "PASS", "failed_gates": []},
+            },
+        },
+        "stages": {
+            "artifact_lifecycle": {
+                "results": {
+                    "PatchTST": {
+                        "status": "ok",
+                        "model": "PatchTST",
+                        "version": "v2026061217170259",
+                        "artifact_path": "universal/patchtst/v2026061217170259.zip",
+                        "metadata_path": "universal/patchtst/metadata_v2026061217170259.json",
+                        "checksum": "sha256:patch",
+                        "oos_ic": 0.076,
+                        "pool_update": {
+                            "old_version": "vOldPatch",
+                            "new_version": "v2026061217170259",
+                            "artifact_path": "universal/patchtst/v2026061217170259.zip",
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert len(records) == 1
+    row = records[0]
+    assert row["artifact_id"] == "PatchTST:v2026061217170259:monthly_release"
+    assert row["state"] == "production"
+    assert row["artifact_path"] == "universal/patchtst/v2026061217170259.zip"
+    assert row["evaluation_baseline_version"] == "vOldPatch"
+    offline = json.loads(row["offline_evidence_json"])
+    assert offline["source"] == "artifact_lifecycle"
+
+
 def test_followup_without_candidate_version_does_not_create_registry_records():
     records = registry.build_artifact_records_from_retrain_followup({
         "run_id": "legacy-run",
@@ -274,7 +396,10 @@ def test_candidate_selection_keeps_weekly_suppressed_after_monthly_promotes():
 
     model = selection["models"]["XGBoost"]
     assert model["monthly_release_candidate"] is None
+    assert model["serving_release_artifact"]["artifact_id"] == "XGBoost:v20260517170259:monthly_release"
+    assert model["latest_monthly_release_artifact"]["artifact_id"] == "XGBoost:v20260517170259:monthly_release"
     assert model["weekly_drift_candidate"] is None
+    assert "XGBoost:v20260517170259:monthly_release" not in model["archive_candidates"]
     assert model["superseded_candidates"] == ["XGBoost:v20260509200349:weekly_drift"]
 
 
@@ -780,6 +905,31 @@ def test_champion_pointer_projection_ready_when_d1_matches_serving():
     assert projection["migration_ready"] is True
     assert model["readiness"] == "pointer_ready"
     assert model["latest_registry_production_artifact"]["artifact_id"] == "PatchTST:vServing:monthly_release"
+
+
+def test_champion_pointer_projection_ignores_retired_pointer_when_serving_map_exists():
+    projection = registry.build_champion_pointer_projection(
+        registry_rows=[],
+        d1_pointers=[
+            {
+                "model_name": "PatchTST",
+                "champion_version": "vServing",
+                "champion_artifact_id": "PatchTST:vServing:production_backfill",
+            },
+            {
+                "model_name": "Chronos",
+                "champion_version": "vRetired",
+                "champion_artifact_id": "Chronos:vRetired:production_backfill",
+            },
+        ],
+        model_pool_versions={"PatchTST": "vServing"},
+    )
+
+    assert projection["model_count"] == 1
+    assert projection["ready_count"] == 1
+    assert projection["migration_ready"] is True
+    assert "PatchTST" in projection["models"]
+    assert "Chronos" not in projection["models"]
 
 
 def test_champion_pointer_projection_marks_version_only_pointer_not_migration_ready():

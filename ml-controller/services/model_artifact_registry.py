@@ -327,78 +327,233 @@ def _model_training_evidence(payload_dict: dict[str, Any], model_name: str) -> d
     return evidence
 
 
+def _normalise_lifecycle_registration(
+    *,
+    payload_dict: dict[str, Any],
+    model_name: str,
+    raw_result: Any,
+) -> dict[str, Any] | None:
+    if not is_production_artifact_model(model_name):
+        return None
+    if not isinstance(raw_result, dict):
+        raw_result = {"status": "unknown", "raw": raw_result}
+
+    metadata = _nested_dict(raw_result.get("metadata"))
+    saved = _nested_dict(raw_result.get("saved"))
+    metrics = _nested_dict(raw_result.get("metrics"))
+    ic_tracking = _nested_dict(raw_result.get("ic_tracking"))
+    model_ic = _nested_dict(ic_tracking.get(model_name))
+    pool_update = _nested_dict(raw_result.get("pool_update"))
+
+    version = (
+        raw_result.get("version")
+        or metadata.get("version")
+        or pool_update.get("new_version")
+        or payload_dict.get("candidate_version")
+    )
+    if not version:
+        return None
+    version = str(version)
+
+    artifact_path = (
+        raw_result.get("artifact_path")
+        or raw_result.get("gcs_path")
+        or saved.get("weights_path")
+        or metadata.get("artifact_path")
+        or pool_update.get("artifact_path")
+    )
+    metadata_path = (
+        raw_result.get("metadata_path")
+        or saved.get("metadata_path")
+        or metadata.get("metadata_path")
+    )
+    checksum = raw_result.get("checksum") or saved.get("checksum") or metadata.get("checksum")
+    oos_ic = (
+        raw_result.get("oos_ic")
+        if raw_result.get("oos_ic") is not None
+        else metrics.get("oos_ic")
+        if metrics.get("oos_ic") is not None
+        else model_ic.get("oos_ic")
+    )
+    model_cpcv = (
+        raw_result.get("model_cpcv")
+        or metrics.get("model_cpcv")
+        or model_ic.get("model_cpcv")
+        or metadata.get("model_cpcv")
+    )
+
+    raw_status = str(raw_result.get("status") or "").lower()
+    has_artifact = bool(artifact_path or saved or metadata)
+    status = "registered" if raw_status in {"ok", "registered", ""} and has_artifact else raw_status or "unknown"
+    promoted_to_active = bool(pool_update and str(pool_update.get("new_version") or "") == version)
+
+    registration: dict[str, Any] = {
+        "status": status,
+        "version": version,
+        "gcs_path": artifact_path,
+        "metadata_path": metadata_path,
+        "checksum": checksum,
+        "oos_ic": oos_ic,
+        "metrics": metrics or model_ic,
+        "model_cpcv": model_cpcv,
+        "training_run_id": payload_dict.get("run_id") or payload_dict.get("trained_at"),
+        "training_manifest_path": payload_dict.get("training_manifest_path"),
+        "evaluation_baseline_version": (
+            raw_result.get("evaluation_baseline_version")
+            or pool_update.get("old_version")
+        ),
+        "artifact_lifecycle_result": raw_result,
+        "artifact_lifecycle_target": model_name,
+        "artifact_lifecycle_promoted_to_active": promoted_to_active,
+        "production_cutover_source": "artifact_lifecycle" if promoted_to_active else None,
+    }
+    if metadata.get("feature_policy_schema_version") is not None:
+        registration["feature_policy_version"] = metadata.get("feature_policy_schema_version")
+    if metadata.get("feature_policy") is not None:
+        registration["feature_policy"] = metadata.get("feature_policy")
+    if metadata:
+        registration["metadata"] = metadata
+    return registration
+
+
+def _lifecycle_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    stages = _nested_dict(payload_dict.get("stages"))
+    lifecycle = _nested_dict(stages.get("artifact_lifecycle"))
+    results = _nested_dict(lifecycle.get("results"))
+    registrations: dict[str, dict[str, Any]] = {}
+    for model_name, raw_result in results.items():
+        registration = _normalise_lifecycle_registration(
+            payload_dict=payload_dict,
+            model_name=str(model_name),
+            raw_result=raw_result,
+        )
+        if registration is not None:
+            registrations[str(model_name)] = registration
+    return registrations
+
+
+def _artifact_record_from_registration(
+    *,
+    payload_dict: dict[str, Any],
+    model_name: str,
+    raw_registration: Any,
+    candidate_type: CandidateType,
+    now: str,
+    source: str,
+) -> dict[str, Any]:
+    if not isinstance(raw_registration, dict):
+        raw_registration = {"status": "unknown", "raw": raw_registration}
+    evidence = _model_training_evidence(payload_dict, model_name)
+    enriched_registration = {**evidence, **raw_registration}
+    if "model_cpcv" not in enriched_registration and evidence.get("model_cpcv") is not None:
+        enriched_registration["model_cpcv"] = evidence["model_cpcv"]
+    record_version = str(raw_registration.get("version") or payload_dict.get("candidate_version"))
+
+    ic_summary = payload_dict.get("ic_summary") if isinstance(payload_dict.get("ic_summary"), dict) else {}
+    local_ic_summary = dict(ic_summary)
+    if model_name not in local_ic_summary and raw_registration.get("oos_ic") is not None:
+        local_ic_summary[model_name] = raw_registration.get("oos_ic")
+
+    offline_gate = evaluate_offline_gate(
+        model_name=model_name,
+        registration=enriched_registration,
+        ic_summary=local_ic_summary,
+    )
+    promoted_to_active = bool(raw_registration.get("artifact_lifecycle_promoted_to_active"))
+    pool_update = _nested_dict(raw_registration.get("artifact_lifecycle_result")).get("pool_update")
+    artifact_id = f"{model_name}:{record_version}:{candidate_type}"
+    state = "production" if promoted_to_active else offline_gate["state"]
+    return {
+        "artifact_id": artifact_id,
+        "model_name": model_name,
+        "version": record_version,
+        "candidate_type": candidate_type,
+        "state": state,
+        "artifact_path": raw_registration.get("gcs_path") or model_artifact_path(model_name, record_version),
+        "metadata_path": raw_registration.get("metadata_path") or model_metadata_path(model_name, record_version),
+        "training_run_id": (
+            raw_registration.get("training_run_id")
+            or payload_dict.get("training_run_id")
+            or payload_dict.get("run_id")
+            or payload_dict.get("trained_at")
+        ),
+        "training_manifest_path": raw_registration.get("training_manifest_path") or payload_dict.get("training_manifest_path"),
+        "trained_from_snapshot": (
+            (payload_dict.get("stages") or {}).get("dataset_snapshot")
+            if isinstance(payload_dict.get("stages"), dict)
+            else None
+        ),
+        "evaluation_baseline_version": raw_registration.get("evaluation_baseline_version"),
+        "final_compared_to": raw_registration.get("final_compared_to"),
+        "feature_policy_version": raw_registration.get("feature_policy_version") or evidence.get("feature_policy_version"),
+        "checksum": raw_registration.get("checksum"),
+        "source_run_date": payload_dict.get("run_date"),
+        "is_monthly": 1 if payload_dict.get("is_monthly") else 0,
+        "offline_gate_status": offline_gate["status"],
+        "offline_gate_decision": offline_gate["decision"],
+        "offline_gate_failed_gates": _json_dumps(offline_gate["failed_gates"]),
+        "offline_evidence_json": _json_dumps({
+            "schema_version": "artifact-lifecycle-release-bridge-v1" if source == "artifact_lifecycle" else "retrain-followup-registry-v1",
+            "source": source,
+            "gate": offline_gate,
+            "registration": enriched_registration,
+            "ic_summary": {model_name: local_ic_summary.get(model_name)},
+            "callback_status": payload_dict.get("status"),
+            "callback_error": payload_dict.get("error"),
+            "pool_update": pool_update if isinstance(pool_update, dict) else None,
+            "production_cutover_source": raw_registration.get("production_cutover_source"),
+        }),
+        "live_gate_status": "not_applicable" if promoted_to_active else "not_started",
+        "live_evidence_json": "{}",
+        "promotion_decision": "current_production" if promoted_to_active else "not_evaluated",
+        "approval_state": "not_required",
+        "created_at": now,
+    }
+
+
 def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str, Any]]:
     payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     version = payload_dict.get("candidate_version")
     registrations = payload_dict.get("challenger_registrations") or {}
-    if not version or not isinstance(registrations, dict) or not registrations:
+    lifecycle_registrations = _lifecycle_registrations(payload_dict)
+    if not version or (
+        (not isinstance(registrations, dict) or not registrations)
+        and not lifecycle_registrations
+    ):
         return []
 
     candidate_type = candidate_type_from_retrain(
         is_monthly=payload_dict.get("is_monthly"),
         explicit=payload_dict.get("candidate_type"),
     )
-    ic_summary = payload_dict.get("ic_summary") if isinstance(payload_dict.get("ic_summary"), dict) else {}
     now = _now_iso()
-    out: list[dict[str, Any]] = []
+    out_by_id: dict[str, dict[str, Any]] = {}
 
     for model_name, raw_registration in registrations.items():
-        if not isinstance(raw_registration, dict):
-            raw_registration = {"status": "unknown", "raw": raw_registration}
-        evidence = _model_training_evidence(payload_dict, str(model_name))
-        enriched_registration = {**evidence, **raw_registration}
-        if "model_cpcv" not in enriched_registration and evidence.get("model_cpcv") is not None:
-            enriched_registration["model_cpcv"] = evidence["model_cpcv"]
-        record_version = str(raw_registration.get("version") or version)
-        offline_gate = evaluate_offline_gate(
-            model_name=str(model_name),
-            registration=enriched_registration,
-            ic_summary=ic_summary,
+        model_name = str(model_name)
+        if not is_production_artifact_model(model_name):
+            continue
+        record = _artifact_record_from_registration(
+            payload_dict=payload_dict,
+            model_name=model_name,
+            raw_registration=raw_registration,
+            candidate_type=candidate_type,
+            now=now,
+            source="train",
         )
-        artifact_id = f"{model_name}:{record_version}:{candidate_type}"
-        out.append({
-            "artifact_id": artifact_id,
-            "model_name": str(model_name),
-            "version": record_version,
-            "candidate_type": candidate_type,
-            "state": offline_gate["state"],
-            "artifact_path": raw_registration.get("gcs_path") or model_artifact_path(str(model_name), record_version),
-            "metadata_path": raw_registration.get("metadata_path") or model_metadata_path(str(model_name), record_version),
-            "training_run_id": (
-                raw_registration.get("training_run_id")
-                or payload_dict.get("training_run_id")
-                or payload_dict.get("run_id")
-                or payload_dict.get("trained_at")
-            ),
-            "training_manifest_path": raw_registration.get("training_manifest_path") or payload_dict.get("training_manifest_path"),
-            "trained_from_snapshot": (
-                (payload_dict.get("stages") or {}).get("dataset_snapshot")
-                if isinstance(payload_dict.get("stages"), dict)
-                else None
-            ),
-            "evaluation_baseline_version": raw_registration.get("evaluation_baseline_version"),
-            "final_compared_to": None,
-            "feature_policy_version": raw_registration.get("feature_policy_version") or evidence.get("feature_policy_version"),
-            "checksum": raw_registration.get("checksum"),
-            "source_run_date": payload_dict.get("run_date"),
-            "is_monthly": 1 if payload_dict.get("is_monthly") else 0,
-            "offline_gate_status": offline_gate["status"],
-            "offline_gate_decision": offline_gate["decision"],
-            "offline_gate_failed_gates": _json_dumps(offline_gate["failed_gates"]),
-            "offline_evidence_json": _json_dumps({
-                "gate": offline_gate,
-                "registration": enriched_registration,
-                "ic_summary": {str(model_name): ic_summary.get(str(model_name))},
-                "callback_status": payload_dict.get("status"),
-                "callback_error": payload_dict.get("error"),
-            }),
-            "live_gate_status": "not_started",
-            "live_evidence_json": "{}",
-            "promotion_decision": "not_evaluated",
-            "approval_state": "not_required",
-            "created_at": now,
-        })
-    return out
+        out_by_id[record["artifact_id"]] = record
+
+    for model_name, raw_registration in lifecycle_registrations.items():
+        record = _artifact_record_from_registration(
+            payload_dict=payload_dict,
+            model_name=model_name,
+            raw_registration=raw_registration,
+            candidate_type=candidate_type,
+            now=now,
+            source="artifact_lifecycle",
+        )
+        out_by_id[record["artifact_id"]] = record
+    return list(out_by_id.values())
 
 
 def upsert_artifact_record(record: dict[str, Any]) -> dict:
@@ -568,11 +723,13 @@ def build_champion_pointer_projection(
     already has a registry pointer and whether it matches the current serving
     version.
     """
-    models = sorted({
-        *(str(r.get("model_name")) for r in registry_rows if r.get("model_name")),
-        *model_pool_versions.keys(),
-        *(str(r.get("model_name")) for r in d1_pointers if r.get("model_name")),
-    })
+    if model_pool_versions:
+        models = sorted(str(name) for name in model_pool_versions.keys())
+    else:
+        models = sorted({
+            *(str(r.get("model_name")) for r in registry_rows if r.get("model_name")),
+            *(str(r.get("model_name")) for r in d1_pointers if r.get("model_name")),
+        })
     pointer_by_model = {str(r.get("model_name")): r for r in d1_pointers if r.get("model_name")}
     artifacts_by_model: dict[str, list[dict[str, Any]]] = {}
     for row in registry_rows:
@@ -1238,6 +1395,12 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
         monthly = [r for r in items if r.get("candidate_type") == "monthly_release"]
         weekly = [r for r in items if r.get("candidate_type") == "weekly_drift"]
         best_monthly = max(monthly, key=_candidate_rank, default=None)
+        latest_monthly = max(monthly, key=_artifact_time_key, default=None)
+        serving_release = max(
+            [r for r in monthly if r.get("state") == "production"],
+            key=_artifact_time_key,
+            default=None,
+        )
         best_weekly = max(weekly, key=_candidate_rank, default=None)
 
         selected_monthly = (
@@ -1259,7 +1422,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
         archive_candidates = [
             r.get("artifact_id")
             for r in items
-            if r is not selected_monthly and r is not selected_weekly
+            if r is not selected_monthly and r is not selected_weekly and r is not serving_release
         ]
         superseded_candidates = [
             superseded_candidate_id
@@ -1285,6 +1448,8 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
         selections[model_name] = {
             "monthly_release_candidate": selected_monthly,
             "weekly_drift_candidate": selected_weekly,
+            "latest_monthly_release_artifact": latest_monthly,
+            "serving_release_artifact": serving_release,
             "archive_candidates": archive_candidates,
             "superseded_candidates": superseded_candidates,
             "action_context": {
@@ -1297,6 +1462,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "policy": {
                 "monthly": "select best offline_passed or stronger artifact",
                 "weekly": "select only offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
+                "serving_release_artifact": "latest monthly_release artifact already marked production; audit evidence only, not a candidate queue slot",
                 "live_shadow_slots": {
                     "monthly": 1,
                     "weekly": 1,

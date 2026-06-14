@@ -1175,6 +1175,8 @@ export type ModelArtifactSelectionResponse = {
   models: Record<string, {
     monthly_release_candidate?: ModelArtifactRegistryRow | null
     weekly_drift_candidate?: ModelArtifactRegistryRow | null
+    latest_monthly_release_artifact?: ModelArtifactRegistryRow | null
+    serving_release_artifact?: ModelArtifactRegistryRow | null
     archive_candidates: string[]
     superseded_candidates?: string[]
     action_context?: {

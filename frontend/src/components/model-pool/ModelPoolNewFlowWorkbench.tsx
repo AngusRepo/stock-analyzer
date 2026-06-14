@@ -142,6 +142,10 @@ function selectionCandidate(row?: SelectionModelRow) {
   return row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null
 }
 
+function releaseArtifact(row?: SelectionModelRow) {
+  return selectionCandidate(row) ?? row?.serving_release_artifact ?? row?.latest_monthly_release_artifact ?? null
+}
+
 function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {
   if (!rows.length) return 'neutral'
   if (rows.some((row) => (row.blockers?.length ?? 0) > 0 || String(row.promotion_decision ?? '').includes('blocked'))) return 'error'
@@ -165,7 +169,7 @@ function toneFromIc(value: number | null | undefined): WorkstationTone {
 }
 
 function artifactReady(model?: ModelPoolLineageModel, selectionRow?: SelectionModelRow): boolean {
-  const artifact = selectionCandidate(selectionRow)
+  const artifact = releaseArtifact(selectionRow)
   return Boolean(artifact?.version || model?.version || model?.gcs_path || model?.artifact_uri)
 }
 
@@ -209,6 +213,7 @@ type GrafanaModelRecord = {
   finalCompareOk: boolean
   approvalOk: boolean
   pointerOk: boolean
+  releaseArtifact?: SelectedArtifactRow | null
   blockers: string[]
   missingEvidence: string[]
   nextAction: string
@@ -458,31 +463,43 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
     promotion?.candidate_version,
     record.selectedArtifact?.version,
   )
+  const releaseArtifactVersion = firstText(record.releaseArtifact?.version)
+  const releaseIsServing = record.releaseArtifact?.state === 'production'
+  const artifactDisplay = candidate ?? (
+    releaseArtifactVersion
+      ? `${releaseIsServing ? 'serving monthly release' : 'monthly release'} ${releaseArtifactVersion}`
+      : null
+  )
   const champion = firstText(
     promotion?.current_champion_version,
     promotion?.final_compared_to,
     promotion?.evaluation_baseline_version,
     record.selectedArtifact?.final_compared_to,
+    record.releaseArtifact?.final_compared_to,
     record.selectedArtifact?.evaluation_baseline_version,
+    record.releaseArtifact?.evaluation_baseline_version,
     record.pointerRow?.serving_version,
     record.pointerRow?.d1_pointer_version,
   )
   const finalComparedTo = firstText(promotion?.final_compared_to, record.selectedArtifact?.final_compared_to)
   const hasCandidate = Boolean(candidate)
+  const hasReleaseArtifact = Boolean(artifactDisplay)
   const hasChampionBaseline = Boolean(champion)
   const compareReady = hasCandidate && Boolean(finalComparedTo)
 
   return {
-    candidate: candidate ?? 'no selected candidate',
+    candidate: artifactDisplay ?? 'no monthly/weekly release artifact',
     champion: champion ?? 'champion baseline missing',
     finalComparedTo,
     hasCandidate,
+    hasReleaseArtifact,
     hasChampionBaseline,
     compareReady,
-    tone: compareReady ? 'ok' as WorkstationTone : hasCandidate && hasChampionBaseline ? 'info' as WorkstationTone : 'warn' as WorkstationTone,
+    tone: compareReady ? 'ok' as WorkstationTone : hasReleaseArtifact && hasChampionBaseline ? 'info' as WorkstationTone : 'warn' as WorkstationTone,
     title: [
       `${record.candidate.id}: weekly/monthly candidate artifact is compared against the current champion baseline before pointer migration.`,
-      `candidate=${candidate ?? 'missing'}`,
+      `artifact=${artifactDisplay ?? 'missing'}`,
+      `candidate_gate=${candidate ?? 'none'}`,
       `current_champion=${champion ?? 'missing'}`,
       `final_compared_to=${finalComparedTo ?? 'pending'}`,
     ].join(' | '),
@@ -628,6 +645,7 @@ function buildGrafanaRecord({
   modelUpgradeStatusReady: boolean
 }): GrafanaModelRecord {
   const artifact = selectionCandidate(selectionRow)
+  const release = releaseArtifact(selectionRow)
   const artifactOk = artifactReady(model, selectionRow)
   const evidenceOk = evidenceReady(statusRow, model, modelUpgradeStatusReady)
   const pointerOk = pointerReady(pointerRow)
@@ -650,7 +668,7 @@ function buildGrafanaRecord({
   const history = buildEvidenceCells({
     candidateId: candidate.id,
     model,
-    artifact,
+    artifact: release,
     promotionRows,
     pointerOk,
   })
@@ -663,8 +681,9 @@ function buildGrafanaRecord({
     status: rawStatus,
     statusTone,
     fleetTone,
-    artifactVersion: artifact?.version ?? model?.version ?? 'no artifact',
+    artifactVersion: release?.version ?? model?.version ?? 'no artifact',
     selectedArtifact: artifact,
+    releaseArtifact: release,
     dataset: MODEL_DATASET_REQUIREMENTS[candidate.id],
     pointerRow,
     pointerTone: pointerTone(pointerRow?.readiness),
@@ -916,7 +935,7 @@ function PromotionReadinessPanel({
   const diagnosis = researchStatusDiagnosis(selected)
 
   const gates = [
-    { label: 'Candidate artifact', ready: compare.hasCandidate, detail: compare.candidate },
+    { label: 'Release artifact', ready: compare.hasReleaseArtifact, detail: compare.candidate },
     { label: 'Research evidence', ready: selected.evidenceOk, detail: selected.status },
     { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'PBO<0.50 / IC>=0' },
     { label: 'Champion baseline', ready: compare.hasChampionBaseline, detail: compare.champion },
@@ -926,7 +945,7 @@ function PromotionReadinessPanel({
   ]
 
   return (
-    <GrafanaPanel title="Candidate release readiness" kicker={`selected model: ${selected.candidate.id} / candidate gate, not current prod artifact`}>
+    <GrafanaPanel title="Candidate release readiness" kicker={`selected model: ${selected.candidate.id} / release evidence; candidate gate when available`}>
       <div className="bg-[#0c1219] p-4">
         <div className={`rounded-xl border p-3 ${grafanaBorderClass(selected.statusTone)} bg-[#111821]`}>
           <div className="flex items-start justify-between gap-3">
@@ -1078,7 +1097,7 @@ function EvidenceTablePanel({
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3" title={compare.title}>
                   <span className={`inline-block border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(compare.tone)}`}>
-                    {compare.compareReady ? 'ready' : compare.hasCandidate ? 'baseline' : 'no candidate'}
+                    {compare.compareReady ? 'ready' : compare.hasCandidate ? 'baseline' : compare.hasReleaseArtifact ? 'serving' : 'no candidate'}
                   </span>
                   <p className="mt-1 max-w-[260px] break-all font-mono text-[12px] leading-5 text-[#90a0b8]">
                     {compactVersion(compare.candidate, 18)} vs {compactVersion(compare.champion, 18)}

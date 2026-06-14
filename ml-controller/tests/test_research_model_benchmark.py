@@ -86,6 +86,42 @@ def test_research_model_benchmark_accepts_maintained_library_executor_metrics_wi
     assert report["status"] == "ready_for_review"
 
 
+def test_timesfm_benchmark_does_not_require_pbo_for_single_official_config():
+    report = build_model_family_benchmark_report(
+        candidate_id="TimesFM",
+        experiment_id="exp-timesfm25-context",
+        start_date="2025-01-01",
+        end_date="2026-04-30",
+        data_slice={"universe": "twse_tpex", "search_trials": 1},
+        executor_result={
+            "coverage_mode": "sample_complete",
+            "fold_metrics": [
+                {
+                    "fold_id": f"ctx1024_{i}",
+                    "oos_ic": 0.03 + i * 0.001,
+                    "test_rows": 64,
+                    "coverage": 1.0,
+                    "dataset_coverage": 0.125,
+                }
+                for i in range(5)
+            ],
+            "cost_sensitivity": {"status": "available", "latency_sec": 18.0, "gpu": "L4"},
+            "data_slice_report": {
+                "status": "available",
+                "available_oos_windows": 4096,
+                "sampled_oos_windows": 512,
+                "dataset_coverage": 0.125,
+                "coverage_mode": "sample_complete",
+            },
+        },
+    )
+
+    assert "missing_pbo_cpcv" not in report["blockers"]
+    assert report["validation_policy"]["pbo"]["required"] is False
+    assert report["cpcv_evidence"]["policy"]["coverage_mode"] == "sample_complete"
+    assert report["status"] == "ready_for_review"
+
+
 def test_research_model_benchmark_does_not_expose_timesfm25_as_active_candidate():
     report = build_model_family_benchmark_report(
         candidate_id="TimesFM25",

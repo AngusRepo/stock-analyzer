@@ -470,6 +470,57 @@ def test_artifact_action_context_explains_failed_offline_gate():
     assert ctx["failed_gates"] == ["pbo_fail"]
 
 
+def test_offline_gate_uses_adaptive_oos_policy_metadata():
+    gate = registry.evaluate_offline_gate(
+        model_name="LightGBM",
+        registration={
+            "status": "registered",
+            "metrics": {"samples": 500, "regime": "volatile"},
+            "model_cpcv": {"decision": "PASS"},
+        },
+        ic_summary={"LightGBM": 0.0},
+    )
+
+    assert gate["decision"] == "FAIL"
+    assert "oos_ic_below_policy_floor" in gate["failed_gates"]
+    assert gate["metrics"]["validation_policy_version"]
+    assert gate["metrics"]["family"] == "tree"
+    assert gate["metrics"]["regime"] == "volatile"
+
+
+def test_promotion_blockers_use_adaptive_pbo_policy():
+    base_row = {
+        "artifact_id": "LightGBM:vNew:monthly_release",
+        "model_name": "LightGBM",
+        "candidate_type": "monthly_release",
+        "state": "live_gate_passed",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "passed",
+        "live_evidence_json": (
+            '{"decision":{"metrics":{"shadow_samples":250,'
+            '"production_samples":250,"min_samples":50}}}'
+        ),
+    }
+    offline = {
+        "gate": {"decision": "STRONG_PASS"},
+        "model_cpcv_decision": "PASS",
+        "pbo": {"pbo": 0.35, "method": "cscv_rank_logit"},
+        "deflated_sharpe": {"decision": "PASS", "value": 1.2},
+        "monte_carlo": {"decision": "PASS", "mdd_95th": 0.12},
+    }
+
+    row = dict(base_row, offline_evidence_json=json.dumps(offline))
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+
+    assert "pbo_threshold_missing" not in codes
+
+    offline["pbo"]["pbo"] = 0.49
+    row = dict(base_row, offline_evidence_json=json.dumps(offline))
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+
+    assert "pbo_threshold_missing" in codes
+
+
 def test_candidate_selection_keeps_shadowing_weekly_candidate_selected():
     selection = registry.build_candidate_selection([
         {
@@ -523,8 +574,8 @@ def test_build_artifact_records_enriches_cpcv_from_followup_train_stage():
     by_model = {row["model_name"]: row for row in records}
     assert by_model["XGBoost"]["state"] == "offline_strong_pass"
     assert by_model["XGBoost"]["offline_gate_decision"] == "STRONG_PASS"
-    assert by_model["DLinear"]["state"] == "offline_passed"
-    assert by_model["DLinear"]["offline_gate_decision"] == "PASS"
+    assert by_model["DLinear"]["state"] == "offline_strong_pass"
+    assert by_model["DLinear"]["offline_gate_decision"] == "STRONG_PASS"
     assert by_model["DLinear"]["feature_policy_version"] == "model-feature-policy-v1"
 
 

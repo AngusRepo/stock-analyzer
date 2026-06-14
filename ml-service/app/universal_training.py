@@ -26,6 +26,7 @@ from .artifact_contract import (
 )
 from .artifact_runtime_versions import load_joblib_with_artifact_health, sklearn_version_report
 from .model_store import _get_bucket, save_model
+from .model_validation_policy import resolve_model_validation_policy
 from .prep_lineage import (
     attach_prep_lineage_aliases,
     collect_prep_lineage,
@@ -1064,18 +1065,42 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             oos_ic = float(model_result.get("oos_ic") or 0.0)
         except (TypeError, ValueError):
             oos_ic = 0.0
+        validation_policy = resolve_model_validation_policy(
+            model_name=model_name,
+            family=model_result.get("family"),
+            regime=model_result.get("regime"),
+            stage="lifecycle",
+            sample_count=len(X_test),
+            fold_count=1,
+            search_trials=model_result.get("search_trials"),
+        )
+        oos_policy = validation_policy["oos_ic"]
+        min_oos_ic = float(oos_policy.get("min_oos_ic_mean") or 0.0)
+        weak_oos_ic = float(oos_policy.get("weak_oos_ic_mean") or min_oos_ic)
         ic_tracking[model_name] = {
             "oos_ic": oos_ic,
             "oos_samples": len(X_test),
-            "passed": oos_ic > 0,
+            "passed": oos_ic > min_oos_ic,
+            "validation_policy_version": validation_policy["policy_version"],
+            "validation_policy_source": validation_policy["source"],
+            "validation_policy_family": validation_policy["family"],
+            "validation_policy_regime": validation_policy["regime"],
+            "min_oos_ic_mean": min_oos_ic,
+            "weak_oos_ic_mean": weak_oos_ic,
         }
         if model_name in model_cpcv_evidence_by_model:
             ic_tracking[model_name]["model_cpcv"] = model_cpcv_evidence_by_model[model_name]
-        if oos_ic <= 0:
+        if oos_ic <= min_oos_ic:
             circuit_breaker_triggered = True
-            print(f"[IC-Breaker] {model_name} OOS IC={oos_ic:.4f} <= 0 -> breaker")
-        elif oos_ic < 0.02:
-            print(f"[IC-Warning] {model_name} OOS IC={oos_ic:.4f} < 0.02 -> watch drift")
+            print(
+                f"[IC-Breaker] {model_name} OOS IC={oos_ic:.4f} "
+                f"<= policy_floor={min_oos_ic:.4f} -> breaker"
+            )
+        elif oos_ic < weak_oos_ic:
+            print(
+                f"[IC-Warning] {model_name} OOS IC={oos_ic:.4f} "
+                f"< policy_weak={weak_oos_ic:.4f} -> watch drift"
+            )
 
     oos_artifact = None
     if req.output_model_version and oos_rank_predictions:

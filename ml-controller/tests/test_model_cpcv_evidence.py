@@ -27,8 +27,8 @@ def test_model_cpcv_evidence_passes_stable_positive_rank_ic():
 
 def test_model_cpcv_evidence_fails_low_fold_count_and_coverage():
     folds = [
-        {"fold_id": "A", "rank_ic": 0.04, "test_rows": 40, "coverage": 0.30},
-        {"fold_id": "B", "rank_ic": -0.01, "test_rows": 30, "coverage": 0.20},
+        {"fold_id": "A", "rank_ic": 0.04, "test_rows": 12, "coverage": 0.30},
+        {"fold_id": "B", "rank_ic": -0.01, "test_rows": 15, "coverage": 0.20},
     ]
 
     evidence = build_model_cpcv_evidence(model="TabM", fold_metrics=folds)
@@ -41,9 +41,9 @@ def test_model_cpcv_evidence_fails_low_fold_count_and_coverage():
 
 def test_model_cpcv_evidence_fails_unstable_or_negative_signal():
     folds = [
-        {"fold_id": 1, "oos_ic": 0.35, "test_rows": 200, "coverage": 0.95},
-        {"fold_id": 2, "oos_ic": -0.30, "test_rows": 210, "coverage": 0.95},
-        {"fold_id": 3, "oos_ic": -0.10, "test_rows": 205, "coverage": 0.95},
+        {"fold_id": 1, "oos_ic": 0.70, "test_rows": 200, "coverage": 0.95},
+        {"fold_id": 2, "oos_ic": -0.55, "test_rows": 210, "coverage": 0.95},
+        {"fold_id": 3, "oos_ic": -0.40, "test_rows": 205, "coverage": 0.95},
         {"fold_id": 4, "oos_ic": 0.01, "test_rows": 220, "coverage": 0.95},
         {"fold_id": 5, "oos_ic": -0.02, "test_rows": 190, "coverage": 0.95},
     ]
@@ -53,6 +53,36 @@ def test_model_cpcv_evidence_fails_unstable_or_negative_signal():
     assert evidence["decision"] == "FAIL"
     assert "cpcv_positive_fold_ratio" in evidence["failed_gates"]
     assert "cpcv_ic_instability" in evidence["failed_gates"]
+
+
+def test_timesfm_sample_complete_cpcv_keeps_dataset_coverage_informational():
+    folds = [
+        {
+            "fold_id": f"timesfm_{i}",
+            "oos_ic": 0.04 + i * 0.001,
+            "test_rows": 64,
+            "coverage": 1.0,
+            "sampled_coverage": 1.0,
+            "dataset_coverage": 0.125,
+            "fold_share": 0.2,
+        }
+        for i in range(5)
+    ]
+
+    evidence = build_model_cpcv_evidence(
+        model="TimesFM",
+        family="foundation_time_series_timesfm25",
+        fold_metrics=folds,
+        stage="research_benchmark",
+        search_trials=1,
+        coverage_mode="sample_complete",
+    )
+
+    assert evidence["decision"] == "PASS"
+    assert evidence["family"] == "foundation_sequence"
+    assert evidence["policy"]["coverage_mode"] == "sample_complete"
+    assert "cpcv_coverage" not in evidence["failed_gates"]
+    assert evidence["fold_metrics"][0]["dataset_coverage"] == 0.125
 
 
 def test_foundation_forecast_validation_is_lifecycle_compatible_without_retrain():

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.model_cpcv_evidence import build_model_cpcv_evidence
+from services.model_validation_policy import resolve_model_validation_policy
 
 
 MODEL_BENCHMARK_REPORT_SCHEMA_VERSION = "model-family-benchmark-report-v1"
@@ -104,6 +105,18 @@ def _normalize_fold_metrics(value: Any) -> list[dict[str, Any]]:
                 "coverage": float(coverage or 0.0),
             }
         )
+        for key in (
+            "sampled_coverage",
+            "dataset_coverage",
+            "fold_share",
+            "direction_accuracy",
+            "node_coverage",
+            "edge_coverage",
+            "date_coverage",
+            "symbol_coverage",
+        ):
+            if key in row:
+                rows[-1][key] = row.get(key)
     return rows
 
 
@@ -147,6 +160,25 @@ def build_model_family_benchmark_report(
 
     executor_result = executor_result or {}
     fold_metrics = _normalize_fold_metrics(executor_result.get("fold_metrics"))
+    sample_count = sum(int(row.get("test_rows") or 0) for row in fold_metrics)
+    data_slice_report_for_policy = executor_result.get("data_slice_report")
+    coverage_mode = executor_result.get("coverage_mode")
+    if not coverage_mode and isinstance(data_slice_report_for_policy, dict):
+        coverage_mode = data_slice_report_for_policy.get("coverage_mode")
+    search_trials = (
+        executor_result.get("search_trials")
+        or (data_slice or {}).get("search_trials")
+        or (data_slice or {}).get("context_sweep_trials")
+    )
+    policy_bundle = resolve_model_validation_policy(
+        model_name=candidate_id,
+        family=spec.family,
+        stage="research_benchmark",
+        sample_count=sample_count,
+        fold_count=len(fold_metrics),
+        search_trials=search_trials,
+        coverage_mode=coverage_mode,
+    )
     blockers: list[str] = []
     if not executor_result and not _package_available(spec.runtime_package):
         blockers.append(f"missing_runtime_package:{spec.runtime_package}")
@@ -154,20 +186,17 @@ def build_model_family_benchmark_report(
         blockers.append("missing_executor_result")
     if not fold_metrics:
         blockers.append("missing_oos_fold_metrics")
-    if "pbo" not in executor_result and "cpcv_pbo" not in executor_result:
+    if policy_bundle["pbo"].get("required") and "pbo" not in executor_result and "cpcv_pbo" not in executor_result:
         blockers.append("missing_pbo_cpcv")
 
     cpcv = build_model_cpcv_evidence(
         model=candidate_id,
         fold_metrics=fold_metrics,
-        policy={
-            "min_folds": 3,
-            "min_test_rows": 30,
-            "min_oos_ic_mean": 0.0,
-            "min_positive_fold_ratio": 0.55,
-            "max_oos_ic_std": 0.25,
-            "min_coverage": 0.50,
-        },
+        policy=policy_bundle["cpcv"],
+        family=spec.family,
+        stage="research_benchmark",
+        search_trials=search_trials,
+        coverage_mode=coverage_mode,
     )
     pbo = _finite_float(executor_result.get("pbo", executor_result.get("cpcv_pbo")))
     cost_sensitivity = _normalize_cost_sensitivity(executor_result.get("cost_sensitivity"))
@@ -200,6 +229,7 @@ def build_model_family_benchmark_report(
         "folds": cpcv["folds"],
         "coverage_mean": cpcv["coverage_mean"],
         "pbo": pbo,
+        "validation_policy": policy_bundle,
         "cpcv_evidence": cpcv,
         "cost_sensitivity": cost_sensitivity,
         "data_slice_report": data_slice_report,

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from services import d1_client
+from services.model_validation_policy import resolve_model_validation_policy
 
 CandidateType = Literal[
     "monthly_release",
@@ -229,6 +230,28 @@ def evaluate_offline_gate(
     if str(registration.get("status") or "").lower() != "registered":
         failed.append("artifact_registration_failed")
 
+    metrics = _nested_dict(registration.get("metrics"))
+    sample_count = _as_float(
+        registration.get("last_ic_sample_count")
+        or metrics.get("oos_samples")
+        or metrics.get("samples")
+        or metrics.get("sample_count")
+    )
+    policy_bundle = resolve_model_validation_policy(
+        model_name=model_name,
+        family=registration.get("family") or metrics.get("family"),
+        regime=registration.get("regime") or metrics.get("regime"),
+        stage="lifecycle",
+        sample_count=int(sample_count) if sample_count is not None else None,
+        search_trials=registration.get("search_trials") or metrics.get("search_trials"),
+        baseline_oos_ic=registration.get("baseline_oos_ic") or metrics.get("baseline_oos_ic"),
+        champion_oos_ic=registration.get("champion_oos_ic") or metrics.get("champion_oos_ic"),
+    )
+    oos_policy = policy_bundle["oos_ic"]
+    min_oos_ic = _as_float(oos_policy.get("min_oos_ic_mean")) or 0.0
+    weak_oos_ic = _as_float(oos_policy.get("weak_oos_ic_mean")) or min_oos_ic
+    strong_oos_ic = _as_float(oos_policy.get("strong_oos_ic_mean")) or weak_oos_ic
+
     model_cpcv = registration.get("model_cpcv")
     if not isinstance(model_cpcv, dict):
         warnings.append("model_cpcv_missing_from_callback")
@@ -242,9 +265,9 @@ def evaluate_offline_gate(
     ic_value = _as_float((ic_summary or {}).get(model_name))
     if ic_value is None:
         warnings.append("oos_ic_missing_from_callback")
-    elif ic_value <= 0:
-        failed.append("oos_ic_non_positive")
-    elif ic_value < 0.02:
+    elif ic_value <= min_oos_ic:
+        failed.append("oos_ic_below_policy_floor")
+    elif ic_value < weak_oos_ic:
         warnings.append("oos_ic_weak")
 
     if failed:
@@ -255,7 +278,7 @@ def evaluate_offline_gate(
         state = "offline_passed_weak"
         decision = "WEAK_PASS"
         status = "weak_pass"
-    elif ic_value is not None and ic_value >= 0.05:
+    elif ic_value is not None and ic_value >= strong_oos_ic:
         state = "offline_strong_pass"
         decision = "STRONG_PASS"
         status = "strong_pass"
@@ -272,6 +295,13 @@ def evaluate_offline_gate(
         "warnings": warnings,
         "metrics": {
             "oos_ic": ic_value,
+            "validation_policy_version": policy_bundle["policy_version"],
+            "validation_policy_source": policy_bundle["source"],
+            "min_oos_ic_mean": min_oos_ic,
+            "weak_oos_ic_mean": weak_oos_ic,
+            "strong_oos_ic_mean": strong_oos_ic,
+            "family": policy_bundle["family"],
+            "regime": policy_bundle["regime"],
             "model_cpcv_decision": (
                 model_cpcv.get("decision")
                 if isinstance(model_cpcv, dict)
@@ -1135,6 +1165,13 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
         })
 
     model_name = str(row.get("model_name") or "")
+    policy_bundle = resolve_model_validation_policy(
+        model_name=model_name,
+        regime=_deep_get(offline, {"regime", "alpha_regime", "market_regime"}),
+        stage="promotion",
+        sample_count=int(_as_float(metrics.get("shadow_samples")) or 0) or None,
+        search_trials=_deep_get(offline, {"search_trials", "trial_count", "optuna_trials", "context_sweep_trials"}),
+    )
     if model_name and not is_production_artifact_model(model_name):
         add(
             "model_not_active_production_artifact",
@@ -1158,18 +1195,20 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
 
     shadow_samples = _as_float(metrics.get("shadow_samples"))
     production_samples = _as_float(metrics.get("production_samples"))
-    min_samples = _as_float(metrics.get("min_samples")) or 50
-    if shadow_samples is None or shadow_samples < max(150, min_samples):
+    evidence_min_samples = _as_float(metrics.get("min_samples")) or 0
+    policy_min_samples = _as_float(policy_bundle["live_ic"].get("min_verified_rows")) or evidence_min_samples
+    required_samples = max(evidence_min_samples, policy_min_samples)
+    if shadow_samples is None or shadow_samples < required_samples:
         add(
             "shadow_sample_window_too_short",
             "Shadow sample window is too short",
-            "Collect at least 150 verified shadow rows and report the comparison window_start/window_end.",
+            f"Collect at least {int(required_samples)} verified shadow rows under the active family/regime policy.",
         )
-    if production_samples is None or production_samples < max(150, min_samples):
+    if production_samples is None or production_samples < required_samples:
         add(
             "champion_sample_window_too_short",
             "Champion baseline sample window is too short",
-            "Collect matching champion verified rows before calling the comparison promotion-grade.",
+            f"Collect at least {int(required_samples)} matching champion verified rows before final comparison.",
         )
 
     if not champion_version:
@@ -1186,24 +1225,42 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Rerun or inspect offline gate evidence: OOS IC, segment coverage, and artifact metadata.",
         )
 
-    cpcv = _deep_get(offline, {"model_cpcv_decision", "cpcv_decision", "cpcv"})
-    if not _truthy_gate_value(cpcv):
+    cpcv = _deep_get(offline, {"model_cpcv_decision", "cpcv_decision", "cpcv", "model_cpcv"})
+    forecast_validation = _deep_get(
+        offline,
+        {"forecast_validation", "foundation_forecast_validation", "last_artifact_evidence"},
+    )
+    cpcv_owner = str(policy_bundle["cpcv"].get("owner") or "family_specific_cpcv")
+    if cpcv_owner == "foundation_forecast_validation":
+        if not _truthy_gate_value(forecast_validation) and not _truthy_gate_value(cpcv):
+            add(
+                "foundation_forecast_validation_missing",
+                "Missing foundation forecast validation evidence",
+                "Attach TimesFM forecast/outcome validation evidence for the selected context before final comparison.",
+            )
+    elif not _truthy_gate_value(cpcv):
         add(
             "cpcv_pbo_missing",
             "Missing CPCV evidence",
-            "Attach CPCV/PBO validation evidence so rolling live IC is not treated as a one-window artifact.",
+            "Attach family-specific CPCV evidence so rolling live IC is not treated as a one-window artifact.",
         )
 
     pbo = _deep_get(offline, {"pbo", "pbo_score", "probability_of_backtest_overfitting"})
     pbo_value = _as_float(pbo.get("pbo") if isinstance(pbo, dict) else pbo)
     pbo_method = str(pbo.get("method") if isinstance(pbo, dict) else "").lower()
-    if not _truthy_gate_value(pbo, max_fail_value=0.2) or (pbo_value is not None and pbo_value > 0.2):
+    pbo_policy = policy_bundle["pbo"]
+    pbo_required = bool(pbo_policy.get("required"))
+    max_pbo = _as_float(pbo_policy.get("max_pbo"))
+    if pbo_required and (
+        not _truthy_gate_value(pbo, max_fail_value=max_pbo)
+        or (pbo_value is not None and max_pbo is not None and pbo_value > max_pbo)
+    ):
         add(
             "pbo_threshold_missing",
             "PBO threshold is missing or too high",
-            "Provide a PBO value at or below 0.20 before final promotion.",
+            f"Provide promotion-grade PBO at or below adaptive policy max_pbo={max_pbo}.",
         )
-    if isinstance(pbo, dict) and pbo_method and pbo_method != "cscv_rank_logit":
+    if pbo_required and isinstance(pbo, dict) and pbo_method and pbo_method != str(pbo_policy.get("method") or "cscv_rank_logit"):
         add(
             "pbo_method_not_promotion_grade",
             "PBO method is proxy-grade",

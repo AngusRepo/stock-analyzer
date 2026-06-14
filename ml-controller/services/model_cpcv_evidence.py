@@ -6,6 +6,8 @@ import math
 from statistics import mean, pstdev
 from typing import Any
 
+from services.model_validation_policy import resolve_model_validation_policy
+
 
 MODEL_CPCV_EVIDENCE_SCHEMA_VERSION = "model-cpcv-evidence-v1"
 
@@ -54,26 +56,54 @@ def _spearman(predicted: list[float], actual: list[float]) -> float:
     return num / den if den > 0 else 0.0
 
 
-def _policy(policy: dict[str, Any] | None) -> dict[str, Any]:
-    merged = {
-        "min_folds": 5,
-        "min_test_rows": 100,
-        "min_oos_ic_mean": 0.0,
-        "min_positive_fold_ratio": 0.55,
-        "max_oos_ic_std": 0.20,
-        "min_coverage": 0.60,
-    }
-    merged.update(policy or {})
-    return merged
+def _policy(
+    policy: dict[str, Any] | None,
+    *,
+    model: str,
+    family: str | None,
+    regime: Any,
+    stage: str,
+    sample_count: int,
+    fold_count: int,
+    search_trials: int | None,
+    coverage_mode: str | None,
+    baseline_oos_ic: Any,
+    champion_oos_ic: Any,
+) -> dict[str, Any]:
+    bundle = resolve_model_validation_policy(
+        model_name=model,
+        family=family,
+        regime=regime,
+        stage=stage,
+        sample_count=sample_count,
+        fold_count=fold_count,
+        search_trials=search_trials,
+        coverage_mode=coverage_mode,
+        baseline_oos_ic=baseline_oos_ic,
+        champion_oos_ic=champion_oos_ic,
+        overrides={"cpcv": policy} if policy else None,
+    )
+    cpcv = dict(bundle["cpcv"])
+    cpcv["policy_version"] = bundle["policy_version"]
+    cpcv["policy_source"] = bundle["source"]
+    return cpcv
 
 
 def _foundation_forecast_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
+    bundle = resolve_model_validation_policy(
+        model_name="TimesFM",
+        family="foundation_sequence",
+        stage="forecast_validation",
+        overrides={"coverage": {"min_coverage": policy.get("min_coverage")}} if isinstance(policy, dict) and "min_coverage" in policy else None,
+    )
     merged = {
         "min_samples": 30,
-        "min_rank_ic": 0.0,
+        "min_rank_ic": bundle["oos_ic"]["min_oos_ic_mean"],
         "min_direction_accuracy": 0.52,
-        "min_coverage": 0.60,
+        "min_coverage": bundle["coverage"]["min_coverage"],
         "max_abs_bias": 0.05,
+        "policy_version": bundle["policy_version"],
+        "policy_source": bundle["source"],
     }
     merged.update(policy or {})
     return merged
@@ -84,6 +114,13 @@ def build_model_cpcv_evidence(
     model: str,
     fold_metrics: list[dict[str, Any]],
     policy: dict[str, Any] | None = None,
+    family: str | None = None,
+    regime: Any = None,
+    stage: str = "lifecycle",
+    search_trials: int | None = None,
+    coverage_mode: str | None = None,
+    baseline_oos_ic: Any = None,
+    champion_oos_ic: Any = None,
 ) -> dict[str, Any]:
     """Aggregate CPCV fold metrics into a lifecycle promotion packet.
 
@@ -92,25 +129,49 @@ def build_model_cpcv_evidence(
     `oos_ic` or `rank_ic`, `test_rows`, and optional `coverage`.
     """
 
-    p = _policy(policy)
     rows = []
     for fold in fold_metrics or []:
         ic = _as_float(fold.get("oos_ic", fold.get("rank_ic")), math.nan)
         test_rows = _as_int(fold.get("test_rows"), 0)
         coverage = _as_float(fold.get("coverage"), 1.0 if test_rows > 0 else 0.0)
         if math.isfinite(ic):
-            rows.append(
-                {
-                    "fold_id": fold.get("fold_id"),
-                    "oos_ic": ic,
-                    "test_rows": test_rows,
-                    "coverage": coverage,
-                }
-            )
+            normalized = {
+                "fold_id": fold.get("fold_id"),
+                "oos_ic": ic,
+                "test_rows": test_rows,
+                "coverage": coverage,
+            }
+            for key in (
+                "sampled_coverage",
+                "dataset_coverage",
+                "fold_share",
+                "direction_accuracy",
+                "node_coverage",
+                "edge_coverage",
+                "date_coverage",
+                "symbol_coverage",
+            ):
+                if key in fold:
+                    normalized[key] = fold.get(key)
+            rows.append(normalized)
 
     ic_values = [row["oos_ic"] for row in rows]
     coverage_values = [row["coverage"] for row in rows]
     folds = len(rows)
+    sample_count = sum(int(row.get("test_rows") or 0) for row in rows)
+    p = _policy(
+        policy,
+        model=model,
+        family=family,
+        regime=regime,
+        stage=stage,
+        sample_count=sample_count,
+        fold_count=folds,
+        search_trials=search_trials,
+        coverage_mode=coverage_mode,
+        baseline_oos_ic=baseline_oos_ic,
+        champion_oos_ic=champion_oos_ic,
+    )
     ic_mean = mean(ic_values) if ic_values else 0.0
     ic_std = pstdev(ic_values) if len(ic_values) > 1 else 0.0
     positive_ratio = (
@@ -149,6 +210,11 @@ def build_model_cpcv_evidence(
         "positive_fold_ratio": round(positive_ratio, 6),
         "min_test_rows": min_test_rows,
         "coverage_mean": round(coverage_mean, 6),
+        "family": p.get("family"),
+        "regime": p.get("regime"),
+        "stage": stage,
+        "policy_version": p.get("policy_version"),
+        "policy_source": p.get("policy_source"),
         "policy": p,
         "fold_metrics": rows,
     }

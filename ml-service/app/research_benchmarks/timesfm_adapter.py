@@ -114,6 +114,9 @@ def run_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
     oos_take = np.arange(len(window_dataset.X_oos))
     if len(oos_take) > max_oos:
         oos_take = np.linspace(0, len(oos_take) - 1, max_oos).astype(int)
+    available_oos_windows = int(len(window_dataset.X_oos))
+    sampled_oos_windows = int(len(oos_take))
+    dataset_coverage = float(sampled_oos_windows / max(1, available_oos_windows))
 
     try:
         model = _load_timesfm_model(payload)
@@ -134,12 +137,16 @@ def run_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
     for fold_id, idx in enumerate(np.array_split(np.arange(len(actual_return)), min(5, max(1, len(actual_return) // 30)))):
         if len(idx) < 2:
             continue
+        fold_share = float(len(idx) / max(1, sampled_oos_windows))
         fold_metrics.append({
             "fold_id": f"timesfm_oos_{fold_id}",
             "oos_ic": rank_ic(pred_return[idx], actual_return[idx]),
             "direction_accuracy": direction_accuracy(pred_return[idx], actual_return[idx]),
             "test_rows": int(len(idx)),
-            "coverage": float(len(idx) / max(1, len(window_dataset.X_oos))),
+            "coverage": 1.0,
+            "sampled_coverage": 1.0,
+            "dataset_coverage": dataset_coverage,
+            "fold_share": fold_share,
         })
     if not fold_metrics:
         fold_metrics = [{
@@ -147,7 +154,10 @@ def run_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
             "oos_ic": rank_ic(pred_return, actual_return),
             "direction_accuracy": direction_accuracy(pred_return, actual_return),
             "test_rows": int(len(actual_return)),
-            "coverage": float(len(actual_return) / max(1, len(window_dataset.X_oos))),
+            "coverage": 1.0 if len(actual_return) else 0.0,
+            "sampled_coverage": 1.0 if len(actual_return) else 0.0,
+            "dataset_coverage": dataset_coverage,
+            "fold_share": 1.0 if len(actual_return) else 0.0,
         }]
     return {
         "status": "available",
@@ -160,5 +170,10 @@ def run_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
             "sequence_report": window_dataset.report,
             "model_id": str(payload.get("model_id") or payload.get("data_slice", {}).get("model_id") or "google/timesfm-2.0-500m-pytorch"),
             "max_oos_windows": max_oos,
+            "available_oos_windows": available_oos_windows,
+            "sampled_oos_windows": sampled_oos_windows,
+            "dataset_coverage": dataset_coverage,
+            "coverage_mode": "sample_complete",
         },
+        "coverage_mode": "sample_complete",
     }

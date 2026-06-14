@@ -120,6 +120,235 @@ type MlDiagnosticsSummary = {
   }
 }
 
+type SparseAllocationSummary = {
+  schema_version?: string
+  source?: string
+  allocation_method?: string
+  input_scope?: string
+  selection_policy?: string
+  decision_policy?: string
+  capacity_policy?: string
+  upstream_conflict_policy?: string
+  final_decision_scope?: string
+  max_capacity_not_target?: boolean
+  hard_minimum_fill?: boolean
+  allows_empty_portfolio?: boolean
+  zero_selection_allowed?: boolean
+  legacy_topk_fallback_allowed?: boolean
+  legacy_rank_topk_fallback_allowed?: boolean
+  is_final_allocation_owner?: boolean
+  engine?: string
+  controller?: string | null
+  selected?: boolean | number | string
+  allocation_weight?: number | string | null
+  buy_signal_count?: number | string | null
+  return_history_coverage?: number | string | null
+  return_history_symbol_count?: number | string | null
+  opb_controller?: Record<string, unknown> | null
+}
+
+type HardGateSummary = {
+  schema_version?: string
+  decision_policy?: string
+  gate_scope?: string
+  board_type?: string | null
+  tradability_tier?: string | null
+  recommendation_lane?: string | null
+  market_segment?: string | null
+  board_reason?: string | null
+  eligible_for_ml?: boolean | number | string | null
+  eligible_for_pending_buy?: boolean | number | string | null
+  ml_slate_allowed?: boolean | number | string | null
+  pending_buy_blocked?: boolean | number | string | null
+  hard_blocked?: boolean | number | string | null
+  notes?: string[]
+}
+
+type UniverseFeatureSummary = {
+  schema_version?: string
+  decision_policy?: string
+  selection_policy?: string
+  universe_decision?: string | null
+  universe_reason?: string | null
+  universe_passed?: boolean | number | string | null
+  base_score?: number | string | null
+  source_universe_count?: number | string | null
+  feature_group_count?: number | string | null
+  feature_groups?: string[]
+  has_score_v2_components?: boolean | number | string | null
+  has_strategy_raw_signals?: boolean | number | string | null
+  has_taxonomy_profile?: boolean | number | string | null
+  close?: number | string | null
+  avg_volume_20d?: number | string | null
+  avg_daily_turnover?: number | string | null
+}
+
+type StrategyLabelerSummary = {
+  schema_version?: string
+  decision_policy?: string
+  selection_policy?: string
+  label_scope?: string
+  next_layer_owner?: string
+  strategy_labeler_version?: string | null
+  source_universe_count?: number | string | null
+  decision?: string | null
+  reason_code?: string | null
+  strategy_count?: number | string | null
+  active_strategy_count?: number | string | null
+  research_strategy_count?: number | string | null
+  family_count?: number | string | null
+  vector_strategy_count?: number | string | null
+  strategy_ids?: string[]
+  research_strategy_ids?: string[]
+  family_ids?: string[]
+  vector_strategy_ids?: string[]
+  has_strategy_affinity_vector?: boolean | number | string | null
+  has_family_affinity_vector?: boolean | number | string | null
+  has_weak_label_vector?: boolean | number | string | null
+  has_hit_vector?: boolean | number | string | null
+  has_position_weight_vector?: boolean | number | string | null
+  has_overlap_vector?: boolean | number | string | null
+  max_strategy_affinity?: number | string | null
+  avg_strategy_affinity?: number | string | null
+  strategy_hit_count?: number | string | null
+  position_weight_sum?: number | string | null
+  max_strategy_overlap?: number | string | null
+}
+
+type StrategyPortfolioIntelligenceSummary = {
+  schema_version?: string
+  method?: string
+  decision_policy?: string
+  selection_policy?: string
+  output_scope?: string
+  consumed_by?: string
+  finlab_portfolio_intelligence_version?: string | null
+  portfolio_metric_source?: string | null
+  portfolio_metric_status?: string | null
+  portfolio_metric_count?: number | string | null
+  backtest_metric_count?: number | string | null
+  backtest_result_row_count?: number | string | null
+  strategy_count?: number | string | null
+  family_count?: number | string | null
+  strategy_ids?: string[]
+  family_ids?: string[]
+  strategy_prior_weight?: number | string | null
+  family_prior_weight?: number | string | null
+  strategy_reliability?: number | string | null
+  strategy_crowding_score?: number | string | null
+  strategy_diversification_value?: number | string | null
+  max_holding_overlap?: number | string | null
+  metric_dimensions?: string[]
+  crowding_action?: string | null
+  reliability_action?: string | null
+}
+
+type Layer2CoarseMlSummary = {
+  schema_version?: string
+  decision_policy?: string
+  capacity_policy?: string
+  model_scope?: string | null
+  expected_models?: string[]
+  expected_model_count?: number | string | null
+  formal_l2_queue?: boolean | number | string | null
+  formal_l2_pass?: boolean | number | string | null
+  worker_seed_only?: boolean | number | string | null
+  decision?: string | null
+  reason_code?: string | null
+  coarse_queue_size?: number | string | null
+  core_ml_shortlist_size?: number | string | null
+}
+
+type Layer3FormalMlSummary = {
+  schema_version?: string
+  decision_policy?: string
+  capacity_policy?: string
+  model_scope?: string | null
+  expected_models?: string[]
+  expected_model_count?: number | string | null
+  decision?: string | null
+  reason_code?: string | null
+  formal_family_score?: number | string | null
+  active_family_count?: number | string | null
+  active_families?: string[]
+  contributing_model_count?: number | string | null
+  contributing_models?: string[]
+  l2_contributing_models?: string[]
+  l3_contributing_models?: string[]
+  active_l3_model_count?: number | string | null
+}
+
+type StrategyRouterSummary = {
+  schema_version?: string
+  router_method?: string
+  router_scope?: string
+  decision_policy?: string
+  selection_policy?: string
+  capacity_policy?: string
+  no_topup_policy_scope?: string | null
+  observe_topup_policy?: string | null
+  no_minimum_fill?: boolean | number | string | null
+  is_topk_ranker?: boolean | number | string | null
+  output_scope?: string | null
+  teacher_label_scope?: string | null
+  expected_teacher_models?: string[]
+  expected_teacher_count?: number | string | null
+  teacher_models?: string[]
+  teacher_label_count?: number | string | null
+  formal_l2_queue?: boolean | number | string | null
+  observe_only_top_up?: boolean | number | string | null
+  strategy_labeler_version?: string | null
+  strategy_router_version?: string | null
+  strategy_router_decision?: string | null
+  strategy_router_reason?: string | null
+  route_score?: number | string | null
+  ml_slate_eligibility?: number | string | null
+  strategy_count?: number | string | null
+  family_count?: number | string | null
+  research_strategy_count?: number | string | null
+  strategy_ids?: string[]
+  family_ids?: string[]
+  research_strategy_ids?: string[]
+  diversity_contribution?: number | string | null
+  risk_adjusted_affinity?: number | string | null
+  uncertainty?: number | string | null
+  strategy_prior_weight?: number | string | null
+  family_prior_weight?: number | string | null
+  strategy_reliability?: number | string | null
+  strategy_crowding_score?: number | string | null
+  strategy_diversification_value?: number | string | null
+  teacher_alignment?: number | string | null
+  portfolio_metric_source?: string | null
+  portfolio_metric_status?: string | null
+  portfolio_metric_count?: number | string | null
+  backtest_metric_count?: number | string | null
+}
+
+type Layer35FusionSummary = {
+  schema_version?: string
+  fusion_method?: string
+  input_scope?: string
+  decision_policy?: string
+  selection_policy?: string
+  hard_shrink_allowed?: boolean | number | string | null
+  is_final_allocator?: boolean | number | string | null
+  final_allocation_owner?: string | null
+  output_scope?: string | null
+  decision?: string
+  conflict_level?: string
+  route_evidence_available?: boolean | number | string | null
+  formal_ml_evidence_available?: boolean | number | string | null
+  active_l3_family_sufficient?: boolean | number | string | null
+  layer1_route_score?: number | string | null
+  layer1_uncertainty?: number | string | null
+  layer3_formal_family_score?: number | string | null
+  active_family_count?: number | string | null
+  contributing_model_count?: number | string | null
+  contributing_models?: string[]
+  strategy_ml_score_gap?: number | string | null
+  recommended_action?: string | null
+}
+
 type EvidenceLink = {
   source?: string
   title?: string
@@ -229,6 +458,167 @@ function normalizePersistedForecastPctForUi(summary: any): number | null {
 function finiteMetric(raw: unknown): number | null {
   const value = Number(raw)
   return Number.isFinite(value) ? value : null
+}
+
+function boolFromValue(raw: unknown): boolean {
+  if (raw === true || raw === 1) return true
+  if (typeof raw === 'string') {
+    const value = raw.trim().toLowerCase()
+    return value === 'true' || value === '1' || value === 'yes'
+  }
+  return false
+}
+
+function sparseAllocationFromRec(rec: any): SparseAllocationSummary | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  const forecastData = parseForecastData(rec?.prediction_forecast_data)
+  const allocation = parseObject(rec?.l4_sparse_allocation)
+    ?? parseObject(funnelEvidence?.layer4_sparse_allocation)
+    ?? parseObject(rec?.alpha_allocation)
+    ?? parseObject(forecastData?.alpha_allocation)
+  if (!allocation) return null
+  if (String(allocation.engine ?? '').trim() !== 'sparse_tangent_inverse_risk') return null
+  return allocation
+}
+
+function hardGateFromRec(rec: any): HardGateSummary | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  const gate = parseObject(rec?.l05_hard_gate)
+    ?? parseObject(funnelEvidence?.layer05_hard_gate)
+  if (gate?.schema_version === 'l05_hard_gate_summary_v1') return gate
+  const hasGovernanceFields = rec?.board_type || rec?.tradability_tier || rec?.recommendation_lane || rec?.board_reason
+  if (!hasGovernanceFields) return null
+  return {
+    schema_version: 'l05_hard_gate_summary_v1',
+    decision_policy: 'exclude_untradable_or_untrusted_only_not_alpha_ranker',
+    gate_scope: 'tradeability_data_trust_pending_buy',
+    board_type: rec?.board_type ?? null,
+    tradability_tier: rec?.tradability_tier ?? null,
+    recommendation_lane: rec?.recommendation_lane ?? null,
+    market_segment: rec?.market_segment ?? null,
+    board_reason: rec?.board_reason ?? null,
+    eligible_for_ml: rec?.eligible_for_ml ?? null,
+    eligible_for_pending_buy: rec?.eligible_for_pending_buy ?? null,
+    ml_slate_allowed: rec?.eligible_for_ml ?? null,
+    pending_buy_blocked: rec?.eligible_for_pending_buy === false || rec?.eligible_for_pending_buy === 0,
+    hard_blocked: rec?.tradability_tier === 'blocked',
+  }
+}
+
+function universeFeaturesFromRec(rec: any): UniverseFeatureSummary | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  const layer0 = parseObject(funnelEvidence?.layer0_universe_features)
+  if (layer0?.schema_version === 'layer0_universe_features_summary_v1') return layer0
+  return null
+}
+
+function strategyLabelerEvidenceFromRec(rec: any): StrategyLabelerSummary | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  const labeler = parseObject(funnelEvidence?.layer1_strategy_labeler)
+  if (labeler?.schema_version === 'layer1_strategy_labeler_summary_v1') return labeler
+  return null
+}
+
+function strategyPortfolioIntelligenceFromRec(rec: any): StrategyPortfolioIntelligenceSummary | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  const portfolio = parseObject(funnelEvidence?.layer125_finlab_portfolio_intelligence)
+  if (portfolio?.schema_version === 'layer125_finlab_portfolio_intelligence_summary_v1') return portfolio
+  return null
+}
+
+function mlStackEvidenceFromRec(rec: any): { coarse: Layer2CoarseMlSummary | null; formal: Layer3FormalMlSummary | null } | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  if (!funnelEvidence) return null
+  const coarse = parseObject(funnelEvidence.layer2_3ml_coarse)
+    ?? parseObject(funnelEvidence.layer2_coarse_ml)
+    ?? parseObject(funnelEvidence.layer2_queue_seed)
+  const formal = parseObject(funnelEvidence.layer3_6ml_formal)
+    ?? parseObject(funnelEvidence.layer3_formal_ml)
+  if (!coarse && !formal) return null
+  return {
+    coarse: coarse
+      ? {
+          schema_version: coarse.schema_version ?? 'layer2_3ml_coarse_summary_v1',
+          decision_policy: coarse.decision_policy ?? 'three_ml_coarse_screen_not_final_ranker',
+          capacity_policy: coarse.capacity_policy ?? 'max_only_no_minimum_no_topup',
+          expected_models: Array.isArray(coarse.expected_models) ? coarse.expected_models.map(String) : ['LightGBM', 'XGBoost', 'ExtraTrees'],
+          expected_model_count: coarse.expected_model_count ?? 3,
+          formal_l2_pass: coarse.formal_l2_pass ?? (coarse.worker_seed_only === true ? false : coarse.decision === 'pass'),
+          worker_seed_only: coarse.worker_seed_only ?? false,
+          decision: coarse.decision ?? null,
+          reason_code: coarse.reason_code ?? null,
+          coarse_queue_size: coarse.coarse_queue_size ?? coarse.coarse_ml_queue_size ?? null,
+          core_ml_shortlist_size: coarse.core_ml_shortlist_size ?? null,
+        }
+      : null,
+    formal: formal
+      ? {
+          schema_version: formal.schema_version ?? 'layer3_6ml_formal_summary_v1',
+          decision_policy: formal.decision_policy ?? 'six_ml_formal_family_vote_not_topk',
+          capacity_policy: formal.capacity_policy ?? 'evidence_only_no_minimum_fill',
+          expected_models: Array.isArray(formal.expected_models) ? formal.expected_models.map(String) : ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM'],
+          expected_model_count: formal.expected_model_count ?? 6,
+          decision: formal.decision ?? null,
+          reason_code: formal.reason_code ?? null,
+          formal_family_score: formal.formal_family_score ?? formal.score_after ?? formal.family_score ?? null,
+          active_family_count: formal.active_family_count ?? null,
+          active_families: Array.isArray(formal.active_families) ? formal.active_families.map(String) : [],
+          contributing_model_count: formal.contributing_model_count ?? (Array.isArray(formal.contributing_models) ? formal.contributing_models.length : null),
+          contributing_models: Array.isArray(formal.contributing_models) ? formal.contributing_models.map(String) : [],
+          l2_contributing_models: Array.isArray(formal.l2_contributing_models) ? formal.l2_contributing_models.map(String) : [],
+          l3_contributing_models: Array.isArray(formal.l3_contributing_models) ? formal.l3_contributing_models.map(String) : [],
+          active_l3_model_count: formal.active_l3_model_count ?? null,
+        }
+      : null,
+  }
+}
+
+function strategyRouterEvidenceFromRec(rec: any): StrategyRouterSummary | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  const router = parseObject(funnelEvidence?.layer15_multi_strategy_router)
+    ?? parseObject(funnelEvidence?.layer1_breadth)
+  if (!router) return null
+  const hasRouterEvidence = router.schema_version === 'layer15_multi_strategy_router_summary_v1'
+    || router.strategy_router_version
+    || router.candidate_route_score != null
+    || router.route_score != null
+  if (!hasRouterEvidence) return null
+  return {
+    ...router,
+    route_score: router.route_score ?? router.candidate_route_score ?? router.strategy_router_score ?? null,
+  }
+}
+
+function layer35EvidenceFromRec(rec: any): Layer35FusionSummary | null {
+  const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
+  const fusion = parseObject(funnelEvidence?.layer35_evidence_fusion)
+  if (!fusion) return null
+  if (fusion.schema_version !== 'layer35_evidence_fusion_v1' && !fusion.conflict_level && !fusion.decision) return null
+  return fusion
+}
+
+function allocationWeightText(raw: unknown): string {
+  const value = finiteMetric(raw)
+  if (value == null) return '-'
+  const pct = Math.abs(value) <= 1 ? value * 100 : value
+  return `${fmtNumber(pct, 1)}%`
+}
+
+function percentText(raw: unknown, decimals = 0): string {
+  const value = finiteMetric(raw)
+  if (value == null) return '-'
+  const pct = Math.abs(value) <= 1 ? value * 100 : value
+  return `${fmtNumber(pct, decimals)}%`
+}
+
+function countText(raw: unknown): string {
+  const value = finiteMetric(raw)
+  return value == null ? '-' : fmtNumber(value, 0)
+}
+
+function allocationSlotText(raw: unknown): string {
+  const value = finiteMetric(raw)
+  return value == null ? 'capacity unknown' : `max ${fmtNumber(value, 0)} slots`
 }
 
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
@@ -831,6 +1221,366 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
   )
 }
 
+function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary | null }) {
+  if (!router) return null
+  const routerDecision = String(router?.strategy_router_decision ?? 'observe').replace(/_/g, ' ')
+  const formalL2Queue = boolFromValue(router?.formal_l2_queue)
+  const observeOnlyTopUp = boolFromValue(router?.observe_only_top_up)
+  const strategyCount = countText(router?.strategy_count ?? router?.strategy_ids?.length)
+  const familyCount = countText(router?.family_count ?? router?.family_ids?.length)
+  const researchCount = countText(router?.research_strategy_count ?? router?.research_strategy_ids?.length)
+  const teacherModels = router.expected_teacher_models?.length
+    ? router.expected_teacher_models.join(' / ')
+    : 'LightGBM / XGBoost / ExtraTrees / TabM / GNN / DLinear / PatchTST / iTransformer / TimesFM'
+
+  return (
+    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-emerald-700 dark:text-emerald-300">L1.5 PLE/Listwise Router</span>
+        <span className="font-mono text-[11px] text-muted-foreground">diversified ML slate, no forced fill</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <MetricPill label="route score" value={percentText(router.route_score)} />
+        <MetricPill label="decision" value={routerDecision} />
+        <MetricPill label="formal L2" value={formalL2Queue ? 'YES' : observeOnlyTopUp ? 'NO / observe' : 'NO'} />
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-4">
+        <MetricPill label="support" value={`${strategyCount} strategies / ${familyCount} families`} />
+        <MetricPill label="diversity" value={percentText(router.diversity_contribution)} />
+        <MetricPill label="risk affinity" value={percentText(router.risk_adjusted_affinity)} />
+        <MetricPill label="uncertainty" value={percentText(router.uncertainty)} />
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <MetricPill label="teacher labels" value={`${countText(router.teacher_label_count)} / ${countText(router.expected_teacher_count ?? 9)}`} />
+        <MetricPill label="teacher align" value={percentText(router.teacher_alignment)} />
+        <MetricPill label="top-up scope" value={router.no_topup_policy_scope ?? 'formal_ml_slate_no_minimum_fill'} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.router_method ?? 'multi_strategy_ple_listwise_distillation_router'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.router_scope ?? 'full_candidate_slate_to_diversified_ml_slate'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.decision_policy ?? 'diversified_ml_slate_not_topk'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.selection_policy ?? 'quality_floor_max_capacity_no_forced_fill'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.capacity_policy ?? 'max_only_no_minimum_no_topup'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.output_scope ?? 'candidate_route_score_ml_slate_eligibility_family_exposure_diversity_risk_uncertainty'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.teacher_label_scope ?? 'strategy_priors_future_reward_risk_diversity_9ml_teacher_labels'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.observe_topup_policy ?? 'research_observe_only_never_formal_l2'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">research attribution {researchCount}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">teachers {teacherModels}</span>
+      </div>
+    </div>
+  )
+}
+
+function EvidenceFusionBlock({ fusion }: { fusion: Layer35FusionSummary | null }) {
+  if (!fusion) return null
+  const conflict = String(fusion?.conflict_level ?? '').toLowerCase()
+  const conflictTone = conflict === 'high'
+    ? 'text-rose-600 dark:text-rose-300'
+    : conflict === 'medium'
+      ? 'text-amber-600 dark:text-amber-300'
+      : 'text-emerald-600 dark:text-emerald-300'
+  const fusionGap = (fusion as Record<string, unknown>)[['strategy_ml', 'score_gap'].join('_')]
+  const hardShrinkAllowed = boolFromValue(fusion.hard_shrink_allowed)
+  const finalAllocator = boolFromValue(fusion.is_final_allocator)
+
+  return (
+    <div className="rounded-lg border border-lime-500/20 bg-lime-500/[0.05] p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-lime-700 dark:text-lime-300">L3.5 Evidence Fusion</span>
+        <span className={cn('font-mono text-[11px] font-semibold uppercase', conflictTone)}>
+          {fusion.conflict_level ?? fusion.decision ?? 'unknown'}
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-4">
+        <MetricPill label="L1.5 route" value={percentText(fusion.layer1_route_score)} />
+        <MetricPill label="L3 family" value={percentText(fusion.layer3_formal_family_score)} />
+        <MetricPill label="score gap" value={percentText(fusionGap)} />
+        <MetricPill label="models" value={countText(fusion.contributing_model_count)} />
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <MetricPill label="hard shrink" value={hardShrinkAllowed ? 'enabled' : 'disabled'} />
+        <MetricPill label="final allocator" value={finalAllocator ? 'YES' : 'NO'} />
+        <MetricPill label="action" value={String(fusion.recommended_action ?? '-').replace(/_/g, ' ')} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.fusion_method ?? 'strategy_router_vs_9ml_formal_family_evidence_calibration'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.input_scope ?? 'layer15_route_score_layer3_formal_family_score_uncertainty_active_family_count'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.decision_policy ?? 'observe_only_no_hard_shrink'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.selection_policy ?? 'no_candidate_drop_no_topk_no_minimum_fill'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.output_scope ?? ['conflict_level_strategy', 'ml', 'score_gap_supportive_or_conflicted_evidence'].join('_')}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">final {fusion.final_allocation_owner ?? 'layer4_sparse_allocation'}</span>
+      </div>
+    </div>
+  )
+}
+
+function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
+  if (!gate) return null
+  const hardBlocked = boolFromValue(gate.hard_blocked)
+  const pendingBlocked = boolFromValue(gate.pending_buy_blocked)
+  const mlAllowed = boolFromValue(gate.ml_slate_allowed ?? gate.eligible_for_ml)
+  const tone = hardBlocked
+    ? 'border-rose-500/25 bg-rose-500/[0.06] text-rose-700 dark:text-rose-300'
+    : pendingBlocked
+      ? 'border-amber-500/25 bg-amber-500/[0.06] text-amber-700 dark:text-amber-300'
+      : 'border-sky-500/25 bg-sky-500/[0.06] text-sky-700 dark:text-sky-300'
+
+  return (
+    <div className={cn('rounded-lg border p-3 text-xs', tone)}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium">L0.5 Hard Gate</span>
+        <span className="font-mono text-[11px] text-muted-foreground">tradeability / data trust, not alpha ranker</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-4">
+        <MetricPill label="lane" value={String(gate.recommendation_lane ?? '-')} />
+        <MetricPill label="board" value={String(gate.board_type ?? gate.market_segment ?? '-')} />
+        <MetricPill label="ML slate" value={mlAllowed ? 'allowed' : 'blocked'} />
+        <MetricPill label="pending buy" value={pendingBlocked ? 'blocked' : 'allowed'} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.decision_policy ?? 'exclude_untradable_or_untrusted_only_not_alpha_ranker'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.gate_scope ?? 'tradeability_data_trust_pending_buy'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.tradability_tier ?? 'tradability unknown'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{gate.board_reason ?? 'board reason unknown'}</span>
+      </div>
+    </div>
+  )
+}
+
+function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureSummary | null }) {
+  if (!universe) return null
+  const passed = boolFromValue(universe.universe_passed)
+  const featureGroups = universe.feature_groups?.length
+    ? universe.feature_groups.join(' / ')
+    : 'feature groups unavailable'
+  const liquidity = finiteMetric(universe.avg_daily_turnover)
+
+  return (
+    <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-cyan-700 dark:text-cyan-300">L0 Universe / Features</span>
+        <span className="font-mono text-[11px] text-muted-foreground">feature coverage, not top-k</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-4">
+        <MetricPill label="universe" value={passed ? 'PASS' : String(universe.universe_decision ?? 'unknown')} />
+        <MetricPill label="source count" value={countText(universe.source_universe_count)} />
+        <MetricPill label="base score" value={fmtNumber(universe.base_score, 1)} />
+        <MetricPill label="feature groups" value={countText(universe.feature_group_count ?? universe.feature_groups?.length)} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{universe.decision_policy ?? 'feature_materialization_only_not_selector'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{universe.selection_policy ?? 'no_topk_no_shrink'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{featureGroups}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">liquidity {liquidity == null ? '-' : fmtNumber(liquidity, 0)}</span>
+      </div>
+    </div>
+  )
+}
+
+function StrategyLabelerEvidenceBlock({ labeler }: { labeler: StrategyLabelerSummary | null }) {
+  if (!labeler) return null
+  const vectors = [
+    boolFromValue(labeler.has_strategy_affinity_vector) ? 'affinity' : null,
+    boolFromValue(labeler.has_family_affinity_vector) ? 'family affinity' : null,
+    boolFromValue(labeler.has_weak_label_vector) ? 'weak labels' : null,
+    boolFromValue(labeler.has_hit_vector) ? 'hits' : null,
+    boolFromValue(labeler.has_position_weight_vector) ? 'position weights' : null,
+    boolFromValue(labeler.has_overlap_vector) ? 'overlap' : null,
+  ].filter(Boolean).join(' / ') || 'vectors unavailable'
+  const familyIds = labeler.family_ids?.length ? labeler.family_ids.join(' / ') : 'families unavailable'
+
+  return (
+    <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/[0.05] p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-indigo-700 dark:text-indigo-300">L1 Strategy Labeler</span>
+        <span className="font-mono text-[11px] text-muted-foreground">labels strategy views, not stock selector</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-4">
+        <MetricPill label="strategies" value={countText(labeler.strategy_count)} />
+        <MetricPill label="families" value={countText(labeler.family_count)} />
+        <MetricPill label="vector ids" value={countText(labeler.vector_strategy_count)} />
+        <MetricPill label="hits" value={countText(labeler.strategy_hit_count)} />
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <MetricPill label="max affinity" value={fmtNumber(labeler.max_strategy_affinity, 1)} />
+        <MetricPill label="avg affinity" value={fmtNumber(labeler.avg_strategy_affinity, 1)} />
+        <MetricPill label="max overlap" value={fmtNumber(labeler.max_strategy_overlap, 2)} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{labeler.decision_policy ?? 'label_all_candidates_not_selector'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{labeler.selection_policy ?? 'no_topk_no_shrink_no_minimum_fill'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{labeler.label_scope ?? 'strategy_affinity_family_affinity_weak_labels'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">vectors {vectors}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{familyIds}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">next {labeler.next_layer_owner ?? 'layer15_multi_strategy_ple_router'}</span>
+      </div>
+    </div>
+  )
+}
+
+function StrategyPortfolioIntelligenceBlock({ portfolio }: { portfolio: StrategyPortfolioIntelligenceSummary | null }) {
+  if (!portfolio) return null
+  const dimensions = portfolio.metric_dimensions?.length
+    ? portfolio.metric_dimensions.slice(0, 5).join(' / ')
+    : 'portfolio dimensions unavailable'
+  const moreDimensions = Math.max(0, (portfolio.metric_dimensions?.length ?? 0) - 5)
+  const familyIds = portfolio.family_ids?.length ? portfolio.family_ids.join(' / ') : 'families unavailable'
+
+  return (
+    <div className="rounded-lg border border-teal-500/20 bg-teal-500/[0.05] p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-teal-700 dark:text-teal-300">L1.25 FinLab Portfolio Intelligence</span>
+        <span className="font-mono text-[11px] text-muted-foreground">strategy-as-asset weights, not stock selector</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-4">
+        <MetricPill label="strategy prior" value={fmtNumber(portfolio.strategy_prior_weight, 2)} />
+        <MetricPill label="family prior" value={fmtNumber(portfolio.family_prior_weight, 2)} />
+        <MetricPill label="reliability" value={percentText(portfolio.strategy_reliability)} />
+        <MetricPill label="crowding" value={percentText(portfolio.strategy_crowding_score)} />
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-4">
+        <MetricPill label="diversity value" value={percentText(portfolio.strategy_diversification_value)} />
+        <MetricPill label="holding overlap" value={fmtNumber(portfolio.max_holding_overlap, 2)} />
+        <MetricPill label="metrics" value={countText(portfolio.portfolio_metric_count)} />
+        <MetricPill label="backtests" value={countText(portfolio.backtest_metric_count)} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.decision_policy ?? 'strategy_asset_weighting_not_stock_selector'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.selection_policy ?? 'no_stock_shrink_no_topk_no_minimum_fill'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.output_scope ?? 'strategy_prior_family_prior_reliability_crowding_diversification'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{portfolio.method ?? 'finlab_style_strategy_as_asset_portfolio_metrics'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">source {portfolio.portfolio_metric_status ?? 'unknown'} / {portfolio.portfolio_metric_source ?? 'metric source unavailable'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">dims {dimensions}{moreDimensions ? ` +${moreDimensions}` : ''}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{familyIds}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">next {portfolio.consumed_by ?? 'layer15_multi_strategy_ple_router'}</span>
+      </div>
+    </div>
+  )
+}
+
+function MlStackEvidenceBlock({
+  coarse,
+  formal,
+}: {
+  coarse: Layer2CoarseMlSummary | null
+  formal: Layer3FormalMlSummary | null
+}) {
+  if (!coarse && !formal) return null
+  const l2FormalPass = boolFromValue(coarse?.formal_l2_pass)
+  const workerSeedOnly = boolFromValue(coarse?.worker_seed_only)
+  const l2Models = coarse?.expected_models?.length ? coarse.expected_models.join(' / ') : 'LightGBM / XGBoost / ExtraTrees'
+  const l3Models = formal?.expected_models?.length ? formal.expected_models.join(' / ') : 'TabM / GNN / DLinear / PatchTST / iTransformer / TimesFM'
+  const l3Contributors = formal?.contributing_models?.length ? formal.contributing_models.join(' / ') : 'no formal contributors reported'
+
+  return (
+    <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.05] p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-violet-700 dark:text-violet-300">L2/L3 9ML Stack</span>
+        <span className="font-mono text-[11px] text-muted-foreground">L2 3ML coarse + L3 6ML formal, not top-k</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-4">
+        <MetricPill label="L2 expected" value={countText(coarse?.expected_model_count ?? 3)} />
+        <MetricPill label="L2 formal pass" value={l2FormalPass ? 'PASS' : workerSeedOnly ? 'seed only' : 'WAIT'} />
+        <MetricPill label="L3 expected" value={countText(formal?.expected_model_count ?? 6)} />
+        <MetricPill label="L3 active" value={countText(formal?.active_l3_model_count ?? formal?.contributing_model_count)} />
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <MetricPill label="L3 family score" value={percentText(formal?.formal_family_score)} />
+        <MetricPill label="active families" value={countText(formal?.active_family_count)} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{coarse?.decision_policy ?? 'three_ml_coarse_screen_not_final_ranker'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{formal?.decision_policy ?? 'six_ml_formal_family_vote_not_topk'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">L2 {l2Models}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">L3 {l3Models}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">contributors {l3Contributors}</span>
+      </div>
+    </div>
+  )
+}
+
+function MetricPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border/40 bg-background/50 p-2">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-0.5 break-words font-mono text-sm font-semibold text-foreground">{value}</p>
+    </div>
+  )
+}
+
+function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSummary | null }) {
+  if (!allocation) return null
+  const selected = boolFromValue(allocation.selected)
+  const controller = String(allocation.controller ?? '').trim() || 'controller unavailable'
+  const opb = parseObject(allocation.opb_controller)
+  const opbEnabled = boolFromValue(opb?.enabled)
+  const coverage = finiteMetric(allocation.return_history_coverage)
+  const coverageSymbols = finiteMetric(allocation.return_history_symbol_count)
+  const policyText = allocation.decision_policy === 'final_owner_no_topk_fallback'
+    ? 'final owner, no top-k fallback'
+    : 'sparse final owner'
+  const capacityText = allocation.capacity_policy === 'maximum_capacity_not_minimum_fill'
+    ? 'maximum capacity, no forced fill'
+    : 'capacity is advisory'
+  const methodText = allocation.allocation_method ?? 'sparse_tangent_inverse_risk_final_allocation'
+  const inputScope = allocation.input_scope ?? 'post_l3_5_evidence_fusion_candidates'
+  const selectionPolicy = allocation.selection_policy ?? 'positive_expected_edge_sparse_weights_no_forced_fill'
+  const upstreamPolicy = allocation.upstream_conflict_policy ?? 'l3_5_flags_conflict_l4_decides_weight_not_drop'
+
+  return (
+    <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-amber-700 dark:text-amber-300">L4 Sparse Allocation</span>
+        <span className="font-mono text-[11px] text-muted-foreground">{policyText}</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">decision</p>
+          <p className={cn('mt-0.5 font-mono text-sm font-semibold', selected ? 'text-emerald-600 dark:text-emerald-300' : 'text-muted-foreground')}>
+            {selected ? `BUY weight ${allocationWeightText(allocation.allocation_weight)}` : 'not selected / HOLD'}
+          </p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">capacity</p>
+          <p className="mt-0.5 font-mono text-sm font-semibold text-foreground">{allocationSlotText(allocation.buy_signal_count)}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">method</p>
+          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{methodText}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">scope</p>
+          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{inputScope}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">engine</p>
+          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{allocation.engine}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">controller</p>
+          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{controller}</p>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{selectionPolicy}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{capacityText}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">max capacity not target</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">no hard minimum fill</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">empty portfolio allowed</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">zero selection allowed</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">legacy top-k fallback off</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{upstreamPolicy}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">
+          return history {coverage == null ? '-' : fmtNumber(coverage, 0)}{coverageSymbols == null ? '' : `/${fmtNumber(coverageSymbols, 0)}`}
+        </span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">
+          OPB {opbEnabled ? 'enabled' : 'fallback/none'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function reasonTextFromValue(raw: unknown): string | null {
   if (!raw) return null
   if (typeof raw === 'string') {
@@ -1002,7 +1752,7 @@ function ProviderReasonCompare({
   return (
     <div className="mt-3 grid gap-2 sm:grid-cols-2">
       <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.05] p-3">
-        <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">Gemini 3.1 Flash</p>
+        <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">Gemini 3.5 Flash</p>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{geminiReason}</p>
         {geminiPoints.length > 0 && (
           <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
@@ -1782,6 +2532,14 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
   const mlDiagnostics = mlDiagnosticsFromRec(rec)
+  const universeFeatureEvidence = universeFeaturesFromRec(rec)
+  const hardGateEvidence = hardGateFromRec(rec)
+  const strategyLabelerEvidence = strategyLabelerEvidenceFromRec(rec)
+  const strategyPortfolioEvidence = strategyPortfolioIntelligenceFromRec(rec)
+  const mlStackEvidence = mlStackEvidenceFromRec(rec)
+  const strategyRouterEvidence = strategyRouterEvidenceFromRec(rec)
+  const layer35Fusion = layer35EvidenceFromRec(rec)
+  const sparseAllocation = sparseAllocationFromRec(rec)
   const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const chip5dRaw = rec.chip_cash_total_5d ?? (
@@ -1904,6 +2662,22 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           </div>
 
           <ScoreBreakdownV2 rec={rec} />
+
+          <UniverseFeatureEvidenceBlock universe={universeFeatureEvidence} />
+
+          <HardGateEvidenceBlock gate={hardGateEvidence} />
+
+          <StrategyLabelerEvidenceBlock labeler={strategyLabelerEvidence} />
+
+          <StrategyPortfolioIntelligenceBlock portfolio={strategyPortfolioEvidence} />
+
+          <StrategyRouterEvidenceBlock router={strategyRouterEvidence} />
+
+          <MlStackEvidenceBlock coarse={mlStackEvidence?.coarse ?? null} formal={mlStackEvidence?.formal ?? null} />
+
+          <EvidenceFusionBlock fusion={layer35Fusion} />
+
+          <SparseAllocationBlock allocation={sparseAllocation} />
 
           <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
 

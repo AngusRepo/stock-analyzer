@@ -20,6 +20,9 @@ worker/.tmp/
 worker/.tmp-test-run*/
 .playwright-cli/
 *.log
+lightning_logs/
+ml-service/lightning_logs/
+ml-service/benchmark_payloads/
 scripts/data/
 scripts/backfill_output*
 frontend/dev-dist/

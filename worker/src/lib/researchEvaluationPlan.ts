@@ -67,6 +67,14 @@ function cleanStringArray(value: unknown): string[] {
     .slice(0, 12)
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function containsToken(haystack: string, token: string): boolean {
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(token.toLowerCase())}([^a-z0-9]|$)`).test(haystack)
+}
+
 function wantsModelBenchmark(record: ResearchExperimentRecord): boolean {
   const haystack = [
     record.hypothesis,
@@ -108,6 +116,17 @@ function benchmarkCandidateIds(record: ResearchExperimentRecord): ModelUpgradeCa
   const shadowChallengers = listModelUpgradeCandidates('shadow_challenger')
   const eligible = [...productionSlots, ...artifactRequired, ...benchmarkOnly, ...shadowChallengers]
   if (!requested.size) {
+    const haystack = [
+      record.id,
+      record.hypothesis,
+      ...record.strategy_spec_ids,
+      ...record.source_refs,
+    ].join(' ').toLowerCase()
+    const inferred = eligible
+      .map((candidate) => candidate.id)
+      .filter((id) => containsToken(haystack, id))
+    if (inferred.length > 0) return inferred
+
     return wantsModelBenchmark(record)
       ? eligible.map((candidate) => candidate.id)
       : []
@@ -133,7 +152,8 @@ export function buildResearchEvaluationPlan(record: ResearchExperimentRecord): R
 
   const common = baseBody(record)
   const { startDate, endDate } = dateRange(record)
-  const modelBenchmarkSteps: ResearchEvaluationStep[] = benchmarkCandidateIds(record).map((candidateId) => ({
+  const candidateIds = benchmarkCandidateIds(record)
+  const modelBenchmarkSteps: ResearchEvaluationStep[] = candidateIds.map((candidateId) => ({
     id: `${record.id}:model-benchmark:${candidateId}`,
     kind: 'model_benchmark',
     controller_endpoint: '/research/model-benchmark/dry-run',
@@ -194,6 +214,7 @@ export function buildResearchEvaluationPlan(record: ResearchExperimentRecord): R
           subset_size: 200,
           batch_count: 5,
           concurrent_windows: 2,
+          models: candidateIds.length ? candidateIds : undefined,
         },
         mutation_allowed: false,
         gate_decision: walkForwardGate.decision,

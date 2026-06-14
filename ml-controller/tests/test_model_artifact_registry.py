@@ -182,6 +182,59 @@ def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets
     assert offline["production_cutover_source"] == "artifact_lifecycle"
 
 
+def test_timesfm_lifecycle_evidence_is_registered_instead_of_missing_oos_warning():
+    payload = {
+        "run_id": "timesfm25-oos-backfill",
+        "run_date": "2026-06-14",
+        "is_monthly": True,
+        "candidate_version": "v20260612T160113_timesfm25_ctx1024",
+        "status": "completed",
+        "stages": {
+            "artifact_lifecycle": {
+                "status": "ok",
+                "results": {
+                    "TimesFM": {
+                        "status": "ok",
+                        "model": "TimesFM",
+                        "version": "v20260612T160113_timesfm25_ctx1024",
+                        "artifact_path": "universal/timesfm/v20260612T160113_timesfm25_ctx1024.json",
+                        "metadata_path": "universal/timesfm/metadata_v20260612T160113_timesfm25_ctx1024.json",
+                        "artifact_type": "foundation_forecast_config",
+                        "oos_ic": -0.001443,
+                        "metrics": {
+                            "oos_ic": -0.001443,
+                            "oos_ic_std": 0.101689,
+                            "oos_samples": 512,
+                            "pbo": 0.8,
+                        },
+                        "model_cpcv": {
+                            "decision": "FAIL",
+                            "passed": False,
+                            "failed_gates": [
+                                "cpcv_oos_ic",
+                                "cpcv_positive_fold_ratio",
+                                "cpcv_coverage",
+                            ],
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert len(records) == 1
+    row = records[0]
+    assert row["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:monthly_release"
+    assert row["state"] == "production"
+    assert row["offline_gate_decision"] == "FAIL"
+    offline = json.loads(row["offline_evidence_json"])
+    assert offline["gate"]["metrics"]["oos_ic"] == -0.001443
+    assert offline["gate"]["metrics"]["model_cpcv_decision"] == "FAIL"
+    assert "oos_ic_missing_from_callback" not in offline["gate"]["warnings"]
+
+
 def test_lifecycle_registration_wins_when_train_and_lifecycle_share_artifact_id():
     payload = {
         "run_id": "monthly-duplicate-patchtst",

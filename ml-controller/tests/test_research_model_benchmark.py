@@ -84,3 +84,17 @@ def test_research_model_benchmark_accepts_maintained_library_executor_metrics_wi
     assert report["candidate_id"] == "PatchTST"
     assert not any(blocker.startswith("missing_runtime_package") for blocker in report["blockers"])
     assert report["status"] == "ready_for_review"
+
+
+def test_research_model_benchmark_does_not_expose_timesfm25_as_active_candidate():
+    report = build_model_family_benchmark_report(
+        candidate_id="TimesFM25",
+        experiment_id="exp-sequence-upgrade",
+        start_date="2025-01-01",
+        end_date="2026-04-30",
+    )
+
+    assert report["status"] == "blocked"
+    assert "unknown_benchmark_candidate" in report["blockers"]
+    assert "TimesFM" in report["supported_candidates"]
+    assert "TimesFM25" not in report["supported_candidates"]

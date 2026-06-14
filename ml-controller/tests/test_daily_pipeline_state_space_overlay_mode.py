@@ -261,7 +261,7 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
     assert result["modal_wait_telemetry"]["stage_timings"]["gnn_graphsage_universal_predict"]["required_alpha"] is True
 
 
-def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
+def test_timesfm_gate_requires_coverage_but_observes_non_positive_effective_ic(monkeypatch):
     series = [{"symbol": "2330", "prices": list(range(260))}]
     pool = {"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04, "last_ic_sample_count": 50}}}
 
@@ -276,15 +276,17 @@ def test_timesfm_gate_requires_coverage_and_positive_effective_ic(monkeypatch):
     assert meta["reason"] == "timesfm_gate_passed"
     assert meta["sequence_contract_points"] == 128
 
-    blocked, blocked_meta = daily_pipeline_v2._timesfm_sync_gate(
+    allowed, meta = daily_pipeline_v2._timesfm_sync_gate(
         model_status={"TimesFM": "active"},
         pool={"models": {"TimesFM": {"status": "active", "ic_4w_avg": -0.05, "last_ic_sample_count": 80}}},
         ev2_cfg={},
         sequence_series=series,
     )
 
-    assert blocked is False
-    assert blocked_meta["reason"] == "timesfm_non_positive_effective_ic"
+    assert allowed is True
+    assert meta["reason"] == "timesfm_observation_only_non_positive_effective_ic"
+    assert meta["ensemble_contribution_allowed"] is False
+    assert meta["effective_weight"] == 0.0
 
     short_series = [{"symbol": "2330", "prices": list(range(60))}]
     blocked, blocked_meta = daily_pipeline_v2._timesfm_sync_gate(

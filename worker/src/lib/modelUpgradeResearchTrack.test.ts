@@ -14,6 +14,11 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const allIds = listModelUpgradeCandidates().map((candidate) => String(candidate.id))
+  assert(!allIds.includes('TimesFM25'), 'TimesFM25 migration benchmark should not remain in active model-upgrade track')
+}
+
+{
   const benchmark = listModelUpgradeCandidates('benchmark_only')
   const ids = benchmark.map((candidate) => String(candidate.id))
   assert(!ids.includes('TabM'), 'TabM should no longer be benchmark-only')

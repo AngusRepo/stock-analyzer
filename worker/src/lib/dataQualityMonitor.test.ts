@@ -8,6 +8,7 @@ import {
   buildRrgTaxonomyCoverageCheck,
   buildScreenerSourceOfTruthCheck,
   buildPendingBuyDateSanityCheck,
+  buildPendingBuyAllocatorOwnerCheck,
   buildBoardLaneContractCheck,
   buildDatasetSnapshotManifestCheck,
   buildRetrainFollowupClosureCheck,
@@ -442,6 +443,41 @@ void (async () => {
     pendingBuyEmergingLike: 1,
   })
   assert(check.status === 'fail', 'emerging-style pending buys must fail the quality gate')
+}
+
+{
+  const check = buildPendingBuyAllocatorOwnerCheck({
+    activeCount: 2,
+    l4SparseFinalBuyCount: 2,
+    invalidAllocatorCount: 0,
+    watchSourceCount: 0,
+    missingRecommendationCount: 0,
+  })
+  assert(check.status === 'ok', 'pending buys should pass when every active row is L4 sparse final BUY')
+  assert(check.summary.includes('no executable watch fallback'), 'pending-buy allocator owner check should state watch fallback is disabled')
+}
+
+{
+  const check = buildPendingBuyAllocatorOwnerCheck({
+    activeCount: 2,
+    l4SparseFinalBuyCount: 1,
+    invalidAllocatorCount: 1,
+    watchSourceCount: 0,
+    missingRecommendationCount: 0,
+  })
+  assert(check.status === 'fail', 'pending buys must fail when any active row lacks L4 sparse selected evidence')
+}
+
+{
+  const check = buildPendingBuyAllocatorOwnerCheck({
+    activeCount: 1,
+    l4SparseFinalBuyCount: 0,
+    invalidAllocatorCount: 1,
+    watchSourceCount: 1,
+    missingRecommendationCount: 1,
+  })
+  assert(check.status === 'fail', 'pending buys must fail when WATCH_BUY or missing recommendation rows enter execution pool')
+  assert(check.summary.includes('watch=1'), 'pending-buy allocator owner check should expose watch leakage count')
 }
 
 {

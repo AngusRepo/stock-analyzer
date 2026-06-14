@@ -1,4 +1,11 @@
-import { buildMarketStructureWatchPoint, buildMlDiagnostics, buildMlVoteSummary, compactRecommendationForCard } from './recommendationContext'
+import {
+  buildHardGateSummary,
+  buildMarketStructureWatchPoint,
+  buildMlDiagnostics,
+  buildMlVoteSummary,
+  buildSparseAllocationSummary,
+  compactRecommendationForCard,
+} from './recommendationContext'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -25,6 +32,49 @@ function assert(condition: unknown, message: string): void {
 
   assert(watchPoint?.includes('optimistic_status=exceeded'), 'market structure watch point should expose exceeded optimistic status')
   assert(watchPoint?.includes('upside_to_optimistic_high_pct=-0.0351'), 'market structure watch point should expose upside gap')
+}
+
+{
+  const gate = buildHardGateSummary({
+    boardType: 'LISTED',
+    tradabilityTier: 'auto_tradable',
+    recommendationLane: 'tradable',
+    marketSegment: 'LISTED',
+    boardReason: 'regular_ohlc',
+    persistedRecommendationLane: 'tradable',
+    eligibleForMl: 1,
+    eligibleForPendingBuy: 1,
+  })
+
+  assert(gate.schema_version === 'l05_hard_gate_summary_v1', 'L0.5 hard gate summary should expose a stable schema version')
+  assert(gate.decision_policy === 'exclude_untradable_or_untrusted_only_not_alpha_ranker', 'L0.5 hard gate must not present itself as an alpha ranker')
+  assert(gate.gate_scope === 'tradeability_data_trust_pending_buy', 'L0.5 hard gate scope should be explicit')
+  assert(gate.ml_slate_allowed === true, 'tradable rows should remain eligible for ML slate')
+  assert(gate.pending_buy_blocked === false, 'tradable rows should remain eligible for pending buy')
+
+  const emerging = buildHardGateSummary({
+    boardType: 'EMERGING',
+    tradabilityTier: 'research_only',
+    recommendationLane: 'emerging_watchlist',
+    marketSegment: 'EMERGING',
+    boardReason: 'emerging_price_shape',
+    eligibleForMl: true,
+    eligibleForPendingBuy: false,
+  })
+  assert(emerging.ml_slate_allowed === true, 'emerging rows may remain ML/research evaluable')
+  assert(emerging.pending_buy_blocked === true, 'emerging rows must be blocked from pending buy')
+  assert(emerging.hard_blocked === false, 'emerging watchlist should not be treated as the same as a blocked ETF/unknown board')
+
+  const blocked = buildHardGateSummary({
+    boardType: 'ETF',
+    tradabilityTier: 'blocked',
+    recommendationLane: 'research_only',
+    boardReason: 'etf_excluded',
+    eligibleForMl: 0,
+    eligibleForPendingBuy: 0,
+  })
+  assert(blocked.hard_blocked === true, 'blocked/ETF rows should be hard gated out of the trade lane')
+  assert(blocked.ml_slate_allowed === false, 'blocked rows must not be marked ML-slate allowed')
 }
 
 const forecastData = {
@@ -97,6 +147,50 @@ const forecastData = {
   assert(diagnostics?.dispersion.mergeCompression === 0.62, 'rank compression should be visible to UI')
   assert(diagnostics?.zeroWeightModels?.[0] === 'DLinear', 'zero weight root-cause list should be visible to UI')
   assert(diagnostics?.validationBlockedModels?.[0] === 'DLinear', 'CPCV/PBO blocked models should be visible to UI')
+}
+
+{
+  const allocation = buildSparseAllocationSummary(JSON.stringify({
+    selected: true,
+    engine: 'sparse_tangent_inverse_risk',
+    controller: 'OnlinePortfolioBandit',
+    allocation_weight: 0.375,
+    buy_signal_count: 8,
+    return_history_coverage: 5,
+    return_history_symbols: ['2330', '2454'],
+    opb_controller: {
+      enabled: true,
+      stage: 'L3_production_allocation_controller',
+      selection_policy: 'posterior_sample',
+    },
+  }))
+
+  assert(allocation?.schema_version === 'l4_sparse_allocation_summary_v1', 'L4 sparse summary should expose a stable schema version')
+  assert(allocation?.allocation_method === 'sparse_tangent_inverse_risk_final_allocation', 'L4 sparse summary should expose sparse final allocation method')
+  assert(allocation?.input_scope === 'post_l3_5_evidence_fusion_candidates', 'L4 sparse summary should consume post-L3.5 evidence candidates')
+  assert(allocation?.selection_policy === 'positive_expected_edge_sparse_weights_no_forced_fill', 'L4 sparse summary should require positive sparse edge without forced fill')
+  assert(allocation?.decision_policy === 'final_owner_no_topk_fallback', 'L4 sparse summary should make the no-top-k policy explicit')
+  assert(allocation?.capacity_policy === 'maximum_capacity_not_minimum_fill', 'L4 sparse summary should expose capacity as a maximum, not a fill target')
+  assert(allocation?.upstream_conflict_policy === 'l3_5_flags_conflict_l4_decides_weight_not_drop', 'L4 sparse summary should document how L3.5 conflicts are consumed')
+  assert(allocation?.final_decision_scope === 'buy_hold_weight_zero_to_capacity', 'L4 sparse summary should own final BUY/HOLD/weight decisions')
+  assert(allocation?.max_capacity_not_target === true, 'L4 sparse allocation must treat capacity as max, not target')
+  assert(allocation?.hard_minimum_fill === false, 'L4 sparse allocation must not enforce a hard minimum fill')
+  assert(allocation?.allows_empty_portfolio === true, 'L4 sparse allocation must allow an empty portfolio')
+  assert(allocation?.zero_selection_allowed === true, 'L4 sparse allocation must allow zero final BUY rows')
+  assert(allocation?.legacy_topk_fallback_allowed === false, 'L4 sparse allocation must not allow legacy top-k fallback')
+  assert(allocation?.legacy_rank_topk_fallback_allowed === false, 'L4 sparse allocation must explicitly reject rank-topK fallback')
+  assert(allocation?.selected === true, 'selected rows should remain visible')
+  assert(allocation?.allocation_weight === 0.375, 'allocation weight should be normalized to a number')
+  assert(allocation?.return_history_symbol_count === 2, 'return history symbol coverage should be compacted')
+  assert((allocation?.opb_controller as any)?.enabled === true, 'OPB controller evidence should stay visible')
+
+  const defaultController = buildSparseAllocationSummary({
+    selected: false,
+    engine: 'sparse_tangent_inverse_risk',
+  })
+  assert(defaultController?.controller === 'OnlinePortfolioBandit', 'L4 sparse summary should expose default OnlinePortfolioBandit controller provenance')
+
+  assert(buildSparseAllocationSummary({ engine: 'rank_topk_equal_weight', selected: true }) === null, 'legacy top-k allocation must not be summarized as L4 sparse')
 }
 
 {

@@ -626,6 +626,51 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
 
     selected = [row for row in promoted if row.get("alpha_allocation", {}).get("selected")]
     assert len(selected) == 2
+    assert selected[0]["alpha_allocation"]["capacity_policy"] == "maximum_capacity_not_minimum_fill"
+    assert selected[0]["alpha_allocation"]["hard_minimum_fill"] is False
+
+
+def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge():
+    rows = [
+        {
+            "symbol": "2330",
+            "chip_score": 20.0,
+            "tech_score": 15.0,
+            "confidence": 0.80,
+            "signal": "HOLD",
+            "has_buy_signal": 0,
+            "score": 95.0,
+            "ml_forecast_pct": 0.0,
+            "score_components": _score_components(final_score=95.0),
+        },
+        {
+            "symbol": "2317",
+            "chip_score": 19.0,
+            "tech_score": 14.0,
+            "confidence": 0.78,
+            "signal": "HOLD",
+            "has_buy_signal": 0,
+            "score": 94.0,
+            "ml_forecast_pct": 0.0,
+            "score_components": _score_components(final_score=94.0),
+        },
+    ]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=2, slate_size=2),
+    )
+
+    assert all(row["signal"] == "HOLD" for row in promoted)
+    assert all(row.get("has_buy_signal") == 0 for row in promoted)
+    assert all(row.get("sparse_tangent_selected") is not True for row in promoted)
+    allocations = [row.get("alpha_allocation") for row in promoted]
+    assert all(isinstance(allocation, dict) for allocation in allocations)
+    assert all(allocation["selected"] is False for allocation in allocations)
+    assert all(allocation["allows_empty_portfolio"] is True for allocation in allocations)
+    assert all(allocation["hard_minimum_fill"] is False for allocation in allocations)
+    assert all(allocation["selection_policy"] == "positive_expected_edge_sparse_weights_no_forced_fill" for allocation in allocations)
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):

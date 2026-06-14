@@ -945,7 +945,7 @@ function PromotionReadinessPanel({
   ]
 
   return (
-    <GrafanaPanel title="Candidate release readiness" kicker={`selected model: ${selected.candidate.id} / release evidence; candidate gate when available`}>
+    <GrafanaPanel title="Candidate release readiness" kicker={`selected model: ${selected.candidate.id} / release evidence; candidate gate when available; candidate gate, not current prod artifact`}>
       <div className="bg-[#0c1219] p-4">
         <div className={`rounded-xl border p-3 ${grafanaBorderClass(selected.statusTone)} bg-[#111821]`}>
           <div className="flex items-start justify-between gap-3">

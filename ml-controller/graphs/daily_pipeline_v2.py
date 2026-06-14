@@ -297,14 +297,16 @@ def _timesfm_sync_gate(
     weight = float((serving_ic.get("weights") or {}).get("TimesFM") or 0.0)
     diagnostic = (serving_ic.get("diagnostics") or {}).get("TimesFM") or {}
     if weight <= 0.0:
-        return False, {
-            "allowed": False,
-            "reason": "timesfm_non_positive_effective_ic",
+        return True, {
+            "allowed": True,
+            "reason": "timesfm_observation_only_non_positive_effective_ic",
             "status": status,
             "coverage": coverage,
             "effective_weight": weight,
             "diagnostic": diagnostic,
             "sequence_contract_points": sequence_contract_points,
+            "sequence_contract_mode": "per_symbol_subset",
+            "ensemble_contribution_allowed": False,
         }
     return True, {
         "allowed": True,

@@ -22,7 +22,6 @@ def test_p7_benchmark_manifest_separates_production_slots_from_benchmarks():
         "GNN",
         "iTransformer",
         "TimesFM",
-        "TimesFM25",
     }
 
     for name in ("LightGBM", "XGBoost", "ExtraTrees", "DLinear", "PatchTST", "TabM", "GNN", "iTransformer", "TimesFM"):
@@ -36,13 +35,5 @@ def test_p7_benchmark_manifest_separates_production_slots_from_benchmarks():
         assert "production_artifact" in entry["evidence_required"], name
         assert "active production slot member" in entry["note"], name
 
-    for name in ("TimesFM25",):
-        entry = manifest[name]
-        assert entry["status"] == "benchmark_only", name
-        assert entry["direct_prediction"] is False, name
-        assert entry["vote_weight"] == 0.0, name
-        assert entry["promotion_state"] == "not_challenger", name
-        assert entry["approval_gate"] == "research_review_packet_required", name
-        assert entry["track_version"] == MODEL_UPGRADE_RESEARCH_TRACK_VERSION, name
-        assert "walk_forward" in entry["evidence_required"], name
-        assert "not a model_pool challenger" in entry["note"], name
+    assert manifest["TimesFM"]["model_type"] == "foundation_time_series_timesfm25"
+    assert "timesfm_2p5_config" in manifest["TimesFM"]["evidence_required"]

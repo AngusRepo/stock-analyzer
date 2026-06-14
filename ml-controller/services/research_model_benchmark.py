@@ -63,19 +63,11 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
     ),
     "TimesFM": BenchmarkCandidateSpec(
         candidate_id="TimesFM",
-        family="foundation_time_series",
+        family="foundation_time_series_timesfm25",
         runtime_package="timesfm",
         adapter_module="app.research_benchmarks.timesfm_adapter",
         expected_evidence=("oos_ic", "forecast_validation", "cost_sensitivity", "data_slice_report"),
-        notes="Foundation time-series benchmark against the active sequence family; should not enter production without review.",
-    ),
-    "TimesFM25": BenchmarkCandidateSpec(
-        candidate_id="TimesFM25",
-        family="foundation_time_series_maintained_runtime",
-        runtime_package="timesfm",
-        adapter_module="app.research_benchmarks.timesfm25_adapter",
-        expected_evidence=("oos_ic", "forecast_validation", "cost_sensitivity", "data_slice_report"),
-        notes="TimesFM 2.5 migration benchmark; production cut requires new 2.5 config artifact and serving parity evidence.",
+        notes="TimesFM production slot benchmark; active serving uses the TimesFM 2.5 config-backed runtime.",
     ),
 }
 

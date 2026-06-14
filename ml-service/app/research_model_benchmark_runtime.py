@@ -43,11 +43,6 @@ BENCHMARK_ADAPTERS: dict[str, dict[str, str]] = {
         "module": "app.research_benchmarks.timesfm_adapter",
         "function": "run_benchmark",
     },
-    "TimesFM25": {
-        "package": "timesfm",
-        "module": "app.research_benchmarks.timesfm25_adapter",
-        "function": "run_benchmark",
-    },
 }
 
 

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
     "db:init": "wrangler d1 execute stockvision-db --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute stockvision-db --remote --file=./schema.sql"
   },

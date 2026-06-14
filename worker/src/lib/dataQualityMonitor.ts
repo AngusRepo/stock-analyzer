@@ -57,6 +57,10 @@ interface CountRow {
   source_reco_date?: string | null
   candidate_count?: number
   active_count?: number
+  l4_sparse_final_buy_count?: number
+  pending_buy_invalid_allocator_count?: number
+  pending_buy_watch_source_count?: number
+  pending_buy_missing_recommendation_count?: number
   emerging_recommendations?: number
   pending_buy_emerging_like?: number
   top_concept_symbols?: number
@@ -789,6 +793,36 @@ export function buildBoardLaneContractCheck(input: {
   }
 }
 
+export function buildPendingBuyAllocatorOwnerCheck(input: {
+  activeCount: number
+  l4SparseFinalBuyCount: number
+  invalidAllocatorCount: number
+  watchSourceCount: number
+  missingRecommendationCount: number
+}): DataQualityCheck {
+  const activeCount = Number(input.activeCount ?? 0)
+  const l4SparseFinalBuyCount = Number(input.l4SparseFinalBuyCount ?? 0)
+  const invalidAllocatorCount = Number(input.invalidAllocatorCount ?? 0)
+  const watchSourceCount = Number(input.watchSourceCount ?? 0)
+  const missingRecommendationCount = Number(input.missingRecommendationCount ?? 0)
+  const failed = invalidAllocatorCount > 0 || watchSourceCount > 0 || missingRecommendationCount > 0
+  return {
+    id: 'pending_buy_l4_allocator_owner',
+    label: 'Pending-buy L4 allocator owner',
+    status: failed ? 'fail' : 'ok',
+    summary: failed
+      ? `pending buys must be L4 sparse final BUY only; invalid=${invalidAllocatorCount} watch=${watchSourceCount} missing_reco=${missingRecommendationCount}`
+      : `active=${activeCount}; l4_sparse_final_buy=${l4SparseFinalBuyCount}; no executable watch fallback`,
+    metrics: {
+      active_count: activeCount,
+      l4_sparse_final_buy_count: l4SparseFinalBuyCount,
+      pending_buy_invalid_allocator_count: invalidAllocatorCount,
+      pending_buy_watch_source_count: watchSourceCount,
+      pending_buy_missing_recommendation_count: missingRecommendationCount,
+    },
+  }
+}
+
 function buildSchemaCheck(columns: string[]): DataQualityCheck {
   const required = [
     'date',
@@ -1029,15 +1063,51 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     ).catch((): CountRow => ({})),
     firstCount(
       env.DB,
-      `SELECT r.trade_date AS run_trade_date,
+      `WITH latest_run AS (
+         SELECT *
+           FROM pending_buy_runs
+          WHERE trade_date = ? AND COALESCE(status, '') <> 'superseded'
+          ORDER BY id DESC
+          LIMIT 1
+       )
+       SELECT r.trade_date AS run_trade_date,
               r.source_reco_date AS source_reco_date,
               r.candidate_count AS candidate_count,
-              SUM(CASE WHEN COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired') THEN 1 ELSE 0 END) AS active_count
-       FROM pending_buy_runs r
+              SUM(CASE WHEN i.id IS NOT NULL AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired') THEN 1 ELSE 0 END) AS active_count,
+              SUM(CASE WHEN i.id IS NOT NULL
+                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
+                         AND COALESCE(dr.has_buy_signal, 0) = 1
+                         AND json_valid(dr.alpha_allocation)
+                         AND COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.selected') ELSE 0 END, 0) = 1
+                         AND COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.engine') ELSE '' END, '') = 'sparse_tangent_inverse_risk'
+                       THEN 1 ELSE 0 END) AS l4_sparse_final_buy_count,
+              SUM(CASE WHEN i.id IS NOT NULL
+                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
+                         AND (
+                           dr.symbol IS NULL
+                           OR COALESCE(dr.has_buy_signal, 0) <> 1
+                           OR NOT json_valid(dr.alpha_allocation)
+                           OR COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.selected') ELSE 0 END, 0) <> 1
+                           OR COALESCE(CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.engine') ELSE '' END, '') <> 'sparse_tangent_inverse_risk'
+                         )
+                       THEN 1 ELSE 0 END) AS pending_buy_invalid_allocator_count,
+              SUM(CASE WHEN i.id IS NOT NULL
+                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
+                         AND (
+                           UPPER(COALESCE(i.signal, '')) = 'WATCH_BUY'
+                           OR LOWER(COALESCE(i.source, '')) LIKE '%watch%'
+                         )
+                       THEN 1 ELSE 0 END) AS pending_buy_watch_source_count,
+              SUM(CASE WHEN i.id IS NOT NULL
+                         AND COALESCE(i.execution_status, 'pending') NOT IN ('filled', 'skipped', 'cancelled', 'expired')
+                         AND dr.symbol IS NULL
+                       THEN 1 ELSE 0 END) AS pending_buy_missing_recommendation_count
+       FROM latest_run r
        LEFT JOIN pending_buy_items i ON i.run_id = r.id
-      WHERE r.trade_date = ? AND COALESCE(r.status, '') <> 'superseded'
+       LEFT JOIN daily_recommendations dr
+         ON dr.date = COALESCE(r.source_reco_date, r.trade_date)
+        AND dr.symbol = i.symbol
        GROUP BY r.id
-       ORDER BY r.id DESC
        LIMIT 1`,
       targetDate,
     ).catch((): CountRow => ({})),
@@ -1289,6 +1359,13 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       sourceRecoDate: pendingBuyStats.source_reco_date,
       candidateCount: Number(pendingBuyStats.candidate_count ?? 0),
       activeCount: Number(pendingBuyStats.active_count ?? 0),
+    }),
+    buildPendingBuyAllocatorOwnerCheck({
+      activeCount: Number(pendingBuyStats.active_count ?? 0),
+      l4SparseFinalBuyCount: Number(pendingBuyStats.l4_sparse_final_buy_count ?? 0),
+      invalidAllocatorCount: Number(pendingBuyStats.pending_buy_invalid_allocator_count ?? 0),
+      watchSourceCount: Number(pendingBuyStats.pending_buy_watch_source_count ?? 0),
+      missingRecommendationCount: Number(pendingBuyStats.pending_buy_missing_recommendation_count ?? 0),
     }),
     buildSurfaceRoleConsistencyCheck({
       recommendationRole: 'recommendation_candidate',

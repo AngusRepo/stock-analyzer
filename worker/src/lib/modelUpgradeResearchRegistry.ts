@@ -105,7 +105,7 @@ export function experimentMatchesModelUpgradeCandidate(
     ...(Array.isArray(dataSlice.benchmark_candidates) ? dataSlice.benchmark_candidates : []),
     ...(Array.isArray(dataSlice.shadow_candidates) ? dataSlice.shadow_candidates : []),
   ].map((item) => cleanText(item).toLowerCase())
-  if (explicit.includes(candidate.id.toLowerCase())) return true
+  if (explicit.length > 0) return explicit.includes(candidate.id.toLowerCase())
 
   const haystack = [
     record.id,
@@ -137,10 +137,11 @@ function seedInputForCandidate(candidate: ModelUpgradeCandidate): Parameters<typ
     sourceRefs: ['strategy-lab-ui', 'model-upgrade-track', P7_MODEL_UPGRADE_TRACK_VERSION],
     strategySpecIds: [isProductionSlot ? 'model_family_production_slot_member_v1' : isArtifactRequired ? 'model_family_production_artifact_required_v1' : isBenchmark ? 'model_family_benchmark_v1' : 'model_family_shadow_v1'],
     dataSlice: {
-      start_date: '2026-04-01',
+      start_date: '2025-01-01',
       lane: isProductionSlot ? 'production_slot_member' : isArtifactRequired ? 'production_artifact_required' : isShadow ? 'tradable_shadow' : 'research_benchmark',
       benchmark_candidates: (isBenchmark || isArtifactRequired) ? [candidate.id] : [],
       shadow_candidates: isShadow ? [candidate.id] : [],
+      production_slot_candidates: isProductionSlot ? [candidate.id] : [],
       production_mutation_allowed: false,
     },
     metrics: isProductionSlot

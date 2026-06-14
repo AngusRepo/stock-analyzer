@@ -9,6 +9,7 @@ import {
   resolveStrategyCapacityBudget,
   type StrategyCandidatePoolCandidate,
 } from './strategyCandidatePool'
+import { ACTIVE_9_ML_TEACHERS, buildMultiStrategyPleRoutingPlan } from './multiStrategyPleRouter'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -224,6 +225,171 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_decision === 'ml_queue'), 'Layer2 coarse queue should contain formal strategy hits before controller-side coarse ML pruning')
   assert(Number((plan.telemetry as any).coarse_ml_target_size) === 8, 'Layer2 coarse queue should preserve the controller target size as telemetry')
   assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_fallback_source !== 'raw_signal_top_up'), 'raw-signal top-up must not enter formal L2 coarse queue')
+}
+
+{
+  const broadCandidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 16 }, (_, index) => ({
+    symbol: `${6100 + index}`,
+    name: `Broad ${index}`,
+    industry: index === 15 ? 'Niche' : 'Crowded',
+    score_components: scoreV2Payload({ finalScore: 55, chipFlow: 16, technicalStructure: 18, momentumScore: 7 }),
+    raw_signals: rawSignalPayload({
+      closeAboveMa20Pct: index === 15 ? 0.08 : 0.015,
+      volumeExpansion20: index === 15 ? 1.55 : 1.05,
+      return20d: index === 15 ? 0.12 : 0.02,
+      foreignTrustNet5d: index === 15 ? 3000 : 300,
+      brokerCount: index === 15 ? 9 : 4,
+      revenueGrowthYoY: index === 15 ? 16 : 2,
+      monthlyRevenueYoY: index === 15 ? 18 : 3,
+      roe: index === 15 ? 18 : 6,
+    }),
+    current_price: 40 + index,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+  }))
+  const broadSpec = {
+    id: 'broad_everything_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Broad everything',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    familyId: 'TREND_RECLAIM_CONTINUATION' as const,
+    variantId: 'broad_everything_v1',
+    ownerType: 'strategy' as const,
+    promotionStatus: 'production' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Broad strategy should be treated as crowded portfolio evidence.',
+    thresholds: { minPrice: 10 },
+    candidatePolicy: { poolQuota: 20, costBudget: 20 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const nicheSpec = {
+    ...broadSpec,
+    id: 'niche_quality_breakout_v1',
+    name: 'Niche quality breakout',
+    familyId: 'REVENUE_QUALITY_MOMENTUM' as const,
+    variantId: 'niche_quality_breakout_v1',
+    alphaBucket: 'breakout_vol_expansion' as const,
+    thesis: 'Niche candidate adds low-crowding family support.',
+    thresholds: { minPrice: 10, includeIndustries: ['Niche'], minCloseAboveMa20Pct: 0.05, minVolumeExpansion20: 1.4, minRevenueGrowthYoY: 8 },
+  }
+  const plan = buildMultiStrategyPleRoutingPlan(broadCandidates, [broadSpec, nicheSpec], {
+    maxSlateSize: 3,
+    regime: 'bull',
+  })
+  assert(plan.mlSlate.length <= 3, 'L1.5 router capacity is a maximum, not a minimum')
+  assert(plan.telemetry.capacity_policy === 'max_only_no_minimum', 'L1.5 router must document no minimum top-up policy')
+  assert(plan.mlSlate.some((candidate) => candidate.symbol === '6115'), 'FinLab-style portfolio intelligence should let niche multi-family support survive broad crowded labels')
+  const niche = plan.mlSlate.find((candidate) => candidate.symbol === '6115') as any
+  assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
+  assert((niche.strategy_family_ids ?? []).length === 2, 'niche candidate should retain cross-family strategy evidence')
+  assert(niche.strategy_weak_label_vector?.broad_everything_v1 != null, 'L1 labeler must expose weak labels per strategy')
+  assert(niche.strategy_hit_vector?.niche_quality_breakout_v1 === 1, 'L1 labeler must expose strategy hits per strategy')
+  assert(niche.strategy_position_weight_vector?.niche_quality_breakout_v1 > 0, 'L1 labeler must expose position-weight style strategy attribution')
+  assert(niche.family_exposure?.REVENUE_QUALITY_MOMENTUM != null, 'L1.5 router must expose family exposure')
+  assert(niche.diversity_contribution != null && niche.risk_adjusted_affinity != null && niche.uncertainty != null, 'L1.5 router must expose diversity/risk/uncertainty outputs')
+  assert(niche.strategy_router_components?.strategy_crowding_score != null, 'L1.25 FinLab-style prior must feed router crowding components')
+  assert(niche.strategy_portfolio_prior?.strategy_metrics?.niche_quality_breakout_v1?.prior_weight != null, 'L1.25 prior must expose strategy-as-asset metrics')
+}
+
+{
+  const plan = buildMultiStrategyPleRoutingPlan(candidates.slice(0, 8), [], {
+    maxSlateSize: 6,
+    regime: 'bull',
+  })
+  assert(plan.mlSlate.length === 0, 'L1.5 router must not backfill formal ML slate when no active strategy labels exist')
+  assert(plan.observeOnly.length === 8, 'unrouted candidates should remain observable for research/audit')
+}
+
+{
+  assert(ACTIVE_9_ML_TEACHERS.length === 9, 'L1.5 router must preserve 9ML teacher-label contract')
+  assert(ACTIVE_9_ML_TEACHERS.includes('LightGBM') && ACTIVE_9_ML_TEACHERS.includes('TimesFM'), '9ML teacher-label contract must keep L2/L3 model families visible')
+
+  const strongCandidate: StrategyCandidatePoolCandidate = {
+    symbol: '7701',
+    name: 'Reliable Strategy Candidate',
+    industry: 'Reliable',
+    score_components: scoreV2Payload({ finalScore: 70, chipFlow: 22, technicalStructure: 24, momentumScore: 11 }),
+    raw_signals: rawSignalPayload({ closeAboveMa20Pct: 0.07, volumeExpansion20: 1.5, return20d: 0.12, revenueGrowthYoY: 18 }),
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+  }
+  const weakCandidate: StrategyCandidatePoolCandidate = {
+    ...strongCandidate,
+    symbol: '7702',
+    name: 'Crowded Strategy Candidate',
+    industry: 'Crowded',
+  }
+  const reliableSpec = {
+    id: 'reliable_low_corr_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Reliable low correlation',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    familyId: 'REVENUE_QUALITY_MOMENTUM' as const,
+    variantId: 'reliable_low_corr_v1',
+    ownerType: 'strategy' as const,
+    promotionStatus: 'production' as const,
+    alphaBucket: 'breakout_vol_expansion' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Reliable low-correlation strategy should receive higher L1.25 prior.',
+    thresholds: { includeIndustries: ['Reliable'], minPrice: 10, minCloseAboveMa20Pct: 0.03 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const crowdedSpec = {
+    ...reliableSpec,
+    id: 'crowded_low_sharpe_v1',
+    name: 'Crowded low sharpe',
+    familyId: 'TREND_RECLAIM_CONTINUATION' as const,
+    variantId: 'crowded_low_sharpe_v1',
+    alphaBucket: 'trend_following' as const,
+    thesis: 'Crowded low-reliability strategy should be down-weighted by L1.25.',
+    thresholds: { includeIndustries: ['Crowded'], minPrice: 10, minCloseAboveMa20Pct: 0.03 },
+  }
+  const plan = buildMultiStrategyPleRoutingPlan([weakCandidate, strongCandidate], [crowdedSpec, reliableSpec], {
+    maxSlateSize: 2,
+    regime: 'bull',
+    mlTeacherLabels: {
+      '7701': { LightGBM: 0.8, XGBoost: 0.75, ExtraTrees: 0.72, TabM: 0.7, GNN: 0.68, DLinear: 0.66, PatchTST: 0.64, iTransformer: 0.62, TimesFM: 0.6 },
+    },
+    strategyPortfolioMetrics: {
+      reliable_low_corr_v1: {
+        rolling_sharpe: 1.4,
+        max_drawdown: 0.08,
+        recent_alpha: 0.08,
+        return_correlation: 0.15,
+        holding_overlap: 0.1,
+        turnover: 0.18,
+        factor_crowding: 0.12,
+        rank_ic: 0.12,
+        live_backtest_divergence: 0.05,
+      },
+      crowded_low_sharpe_v1: {
+        rolling_sharpe: -0.4,
+        max_drawdown: 0.34,
+        recent_alpha: -0.04,
+        return_correlation: 0.82,
+        holding_overlap: 0.76,
+        turnover: 0.7,
+        factor_crowding: 0.78,
+        rank_ic: -0.03,
+        live_backtest_divergence: 0.32,
+      },
+    },
+  })
+  const annotated = [...plan.mlSlate, ...plan.observeOnly] as any[]
+  const reliable = annotated.find((candidate) => candidate.symbol === '7701') as any
+  const crowded = annotated.find((candidate) => candidate.symbol === '7702') as any
+  assert(reliable && crowded, 'router should annotate both candidates even when quality floor blocks one from formal slate')
+  assert(reliable.strategy_router_decision === 'ml_slate', 'reliable low-correlation support should enter formal L1.5 slate')
+  assert(reliable.candidate_route_score > crowded.candidate_route_score, 'L1.25 reliability/diversification prior should outrank crowded low-sharpe support')
+  assert(reliable.ml_teacher_labels.LightGBM === 0.8, 'L1.5 should carry 9ML teacher labels as distillation labels')
+  assert(reliable.strategy_router_components.teacher_alignment > crowded.strategy_router_components.teacher_alignment, 'teacher labels should improve router evidence without replacing 9ML')
+  assert(reliable.strategy_portfolio_prior.strategy_reliability.reliable_low_corr_v1 > reliable.strategy_portfolio_prior.strategy_reliability.crowded_low_sharpe_v1, 'FinLab-style prior must expose strategy reliability spread')
 }
 
 {

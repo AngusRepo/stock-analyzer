@@ -1,0 +1,359 @@
+{
+  "schema_version": "stockvision-local-prod-ready-audit-v2",
+  "roadmap_scope_version": "planscope-full-session-root-2026-06-14",
+  "roadmap_scope": "full_session_root",
+  "audit_scope": [
+    "p0_source_of_truth_semantics",
+    "p1_active9_data_chain",
+    "p1_optuna_adaptive_search_scheduler",
+    "p1_mode_b_confidence_bandit_replay",
+    "p2_opb_l4_allocation",
+    "p2_promotion_governance",
+    "p2_legacy_cleanup",
+    "p3_model_pool_ui_observability"
+  ],
+  "local_closure": "done",
+  "local_prod_ready": "done",
+  "promotion_allowed": false,
+  "production_mutation_allowed": false,
+  "checks": [
+    {
+      "id": "scheduler_manifest:weekly-optuna",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:adaptive-meta-policy-replay",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:linucb-multiplier-replay",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:monthly-optuna",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:optuna-queue",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "runtime_pin:scikit-learn==1.9.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:xgboost==3.2.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:lightgbm==4.6.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:torch==2.12.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:torch-geometric==2.8.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:neuralforecast==3.1.9",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:tabm==0.0.3",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:timesfm[torch]==2.0.1",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:optuna==4.9.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "controller_runtime_pin:optuna==4.9.0",
+      "status": "pass",
+      "detail": "controller Optuna/GA route dependency is pinned to reviewed official/stable version"
+    },
+    {
+      "id": "worker_runtime_pin:hono==4.12.25",
+      "status": "pass",
+      "detail": "reviewed Worker/meta runtime pin is present (actual=4.12.25)"
+    },
+    {
+      "id": "worker_runtime_pin:wrangler==4.100.0",
+      "status": "pass",
+      "detail": "reviewed Worker/meta runtime pin is present (actual=4.100.0)"
+    },
+    {
+      "id": "worker_runtime_pin:typescript==6.0.3",
+      "status": "pass",
+      "detail": "reviewed Worker/meta runtime pin is present (actual=6.0.3)"
+    },
+    {
+      "id": "active9_track:LightGBM",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:XGBoost",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:ExtraTrees",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:TabM",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:GNN",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:DLinear",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:PatchTST",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:iTransformer",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:TimesFM",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:TimesFM:timesfm25",
+      "status": "pass",
+      "detail": "TimesFM production slot is backed by the TimesFM 2.5 runtime/config, not a separate TimesFM25 voter"
+    },
+    {
+      "id": "ui:new_flow_workbench",
+      "status": "pass",
+      "detail": "Model Pool renders the new workbench"
+    },
+    {
+      "id": "ui:retired_hidden",
+      "status": "pass",
+      "detail": "retired ML are filtered from the main surface"
+    },
+    {
+      "id": "ui:meta_replay_visible",
+      "status": "pass",
+      "detail": "meta replay is visible in the evidence flow"
+    },
+    {
+      "id": "ui:multiplier_replay_visible",
+      "status": "pass",
+      "detail": "LinUCB multiplier replay is visible in the evidence flow"
+    },
+    {
+      "id": "roadmap:p0:adaptive_l2_name_boundary",
+      "status": "pass",
+      "detail": "legacy adaptive_l2 formula constants remain separated from new L2 coarse ML gate/search naming"
+    },
+    {
+      "id": "roadmap:p0:l2_l3_semantics",
+      "status": "pass",
+      "detail": "L2 is 3ML coarse and L3 is 6ML formal family evidence, not a single top-k ranker"
+    },
+    {
+      "id": "roadmap:p0:l3_family_view",
+      "status": "pass",
+      "detail": "Model Pool exposes L3 by Tree/TabM/Sequence/GNN family semantics"
+    },
+    {
+      "id": "roadmap:p0:meta_policy_boundary",
+      "status": "pass",
+      "detail": "LinUCB/NeuralUCB/NeuralTS/NeuCB are meta-policy research lanes with LinUCB as production baseline"
+    },
+    {
+      "id": "roadmap:p0:l4_allocator_boundary",
+      "status": "pass",
+      "detail": "L4 sparse allocation is separated from meta-policy replay and legacy top-k override remains disabled"
+    },
+    {
+      "id": "roadmap:p0:opb_controller_ml_controller_surface",
+      "status": "pass",
+      "detail": "ML controller adaptive surface describes OPB as the sparse tangent allocation controller, not a separate research owner"
+    },
+    {
+      "id": "roadmap:p0:opb_controller_worker_surface",
+      "status": "pass",
+      "detail": "Worker adaptive governance describes OPB consistently with the controller surface"
+    },
+    {
+      "id": "roadmap:p1:active9_dataset_policy",
+      "status": "pass",
+      "detail": "active-9 dataset policy includes all production slots and retired model exclusions"
+    },
+    {
+      "id": "roadmap:p1:active9_verified_replay_source",
+      "status": "pass",
+      "detail": "adaptive meta replay uses verified active-9 prediction rows only"
+    },
+    {
+      "id": "roadmap:p1:active9_confidence_hook",
+      "status": "pass",
+      "detail": "adaptive confidence hook is scoped to active-9 evidence and excludes retired CatBoost"
+    },
+    {
+      "id": "roadmap:p1:retired_models_not_ic_tracked",
+      "status": "pass",
+      "detail": "retired models are not tracked as active model IC sources"
+    },
+    {
+      "id": "roadmap:p1:active9_teacher_labels",
+      "status": "pass",
+      "detail": "PLE/Listwise router evidence expects active-9 teacher labels without fake backfill"
+    },
+    {
+      "id": "roadmap:p1:optuna_worker_boundary",
+      "status": "pass",
+      "detail": "Worker triggers controller-owned 9-source sweep Job; it does not fan out or mutate production"
+    },
+    {
+      "id": "roadmap:p1:optuna_controller_boundary",
+      "status": "pass",
+      "detail": "controller owns long-running research sweep and separates L2/circuit search from bandit dims"
+    },
+    {
+      "id": "roadmap:p1:scheduler_policy_surface",
+      "status": "pass",
+      "detail": "scheduler policy exposes required Optuna/adaptive replay tasks"
+    },
+    {
+      "id": "roadmap:p1:post_verify_chain",
+      "status": "pass",
+      "detail": "post-verify chain closes rolling IC, reward ledger, adaptive params, shadow evidence, and strategy learning"
+    },
+    {
+      "id": "roadmap:p1:neural_shadow_replay_read_only",
+      "status": "pass",
+      "detail": "NeuralUCB/NeuralTS/NeuCB shadow state is evidence/research, not production mutation"
+    },
+    {
+      "id": "roadmap:p2:strategy_promotion_gate",
+      "status": "pass",
+      "detail": "strategy promotion requires shadow-first evidence and Wei approval for production allocation"
+    },
+    {
+      "id": "roadmap:p2:strategy_lab_governance_ui",
+      "status": "pass",
+      "detail": "Strategy Lab exposes shadow approval and Wei approval gates"
+    },
+    {
+      "id": "roadmap:p2:model_pool_promotion_governance",
+      "status": "pass",
+      "detail": "Model Pool separates artifact/parameter governance from the L2/L3 alpha vote graph"
+    },
+    {
+      "id": "roadmap:p2:active9_artifact_promotion_blocker",
+      "status": "pass",
+      "detail": "artifact promotion blocks non-active-9 models from production selection"
+    },
+    {
+      "id": "roadmap:p2:l4_pending_buy_policy",
+      "status": "pass",
+      "detail": "pending-buy execution is owned by L4 sparse final BUY rows only"
+    },
+    {
+      "id": "roadmap:p2:l4_pending_buy_query",
+      "status": "pass",
+      "detail": "pending-buy orchestrator filters executable rows to sparse tangent allocation output"
+    },
+    {
+      "id": "roadmap:p2:l4_data_quality_owner",
+      "status": "pass",
+      "detail": "DataQuality has an explicit owner check for L4 allocator pending-buy execution"
+    },
+    {
+      "id": "roadmap:p2:l4_recommendation_context",
+      "status": "pass",
+      "detail": "recommendation context exposes sparse final allocation evidence and controller provenance"
+    },
+    {
+      "id": "roadmap:p3:layered_funnel_evidence",
+      "status": "pass",
+      "detail": "daily recommendation evidence exposes L1/L1.25/L1.5/L3.5 layer contracts"
+    },
+    {
+      "id": "roadmap:p3:daily_health_observability",
+      "status": "pass",
+      "detail": "daily recommendation API returns strategy portfolio intelligence health"
+    },
+    {
+      "id": "roadmap:p3:model_pool_evidence_ui",
+      "status": "pass",
+      "detail": "Model Pool UI surfaces active-9 fleet health and meta-policy evidence boundaries"
+    },
+    {
+      "id": "replay_file:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "read-only replay evidence file exists"
+    },
+    {
+      "id": "replay_fail_closed:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay evidence is explicitly non-mutating"
+    },
+    {
+      "id": "replay_status_terminal:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay has a terminal gate status; fail is acceptable when fail-closed"
+    },
+    {
+      "id": "replay_file:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "read-only replay evidence file exists"
+    },
+    {
+      "id": "replay_fail_closed:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay evidence is explicitly non-mutating"
+    },
+    {
+      "id": "replay_status_terminal:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay has a terminal gate status; fail is acceptable when fail-closed"
+    }
+  ],
+  "failed_checks": [],
+  "production_cutover_requires_wei_approval": [
+    "deploy_worker_and_frontend",
+    "sync_gcp_scheduler_manifest",
+    "write_or_promote_gcs_model_artifacts",
+    "update_model_pool_champion_pointers",
+    "remove_challenger_pointers_after approved cutover"
+  ]
+}

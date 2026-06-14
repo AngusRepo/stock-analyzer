@@ -13,6 +13,7 @@ import {
 } from './strategySpec'
 import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
+import { buildMultiStrategyPleRoutingPlan, type StrategyPortfolioMetrics } from './multiStrategyPleRouter'
 
 export const STRATEGY_CANDIDATE_POOL_VERSION = 'strategy-candidate-pool-v1'
 
@@ -81,6 +82,26 @@ export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   strategy_pool_fallback_source?: string
   strategy_pool_decision?: StrategyQueueDecision
   strategy_pool_reason?: string
+  strategy_labeler_version?: string
+  strategy_affinity_vector?: Record<string, number>
+  strategy_weak_label_vector?: Record<string, number>
+  strategy_hit_vector?: Record<string, number>
+  strategy_position_weight_vector?: Record<string, number>
+  strategy_overlap_vector?: Record<string, number>
+  strategy_family_affinity?: Record<string, number>
+  strategy_portfolio_prior?: unknown
+  strategy_router_version?: string
+  strategy_router_score?: number
+  candidate_route_score?: number
+  ml_slate_eligibility?: number
+  family_exposure?: Record<string, number>
+  diversity_contribution?: number
+  risk_adjusted_affinity?: number
+  uncertainty?: number
+  ml_teacher_labels?: Record<string, number>
+  strategy_router_decision?: 'ml_slate' | 'observe_only' | 'research_only' | 'capacity_overflow'
+  strategy_router_reason?: string
+  strategy_router_components?: Record<string, number>
   strategy_matches?: Array<{ specId: string; alphaBucket: string; status: string; label: string; reason: string }>
   strategy_tags?: string[]
   strategy_watch_points?: string[]
@@ -176,6 +197,15 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     strategy_selected_count: number
     raw_signal_top_up_count: number
     source_universe_count: number
+    strategy_labeler_version?: string
+    finlab_portfolio_intelligence_version?: string
+    l15_router_version?: string
+    l15_router_selection_order?: string
+    l15_router_ml_slate_count?: number
+    l15_router_observe_only_count?: number
+    l15_router_capacity_overflow_count?: number
+    strategy_portfolio_metric_source?: string
+    strategy_portfolio_metric_count?: number
   }
 }
 
@@ -931,6 +961,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     coarseMlQueueSize: number
     regime?: AlphaFrameworkRegime | string | null
     strategyWeights?: Record<string, number>
+    strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
+    strategyPortfolioMetricSource?: string
     policy?: StrategyCandidatePoolPolicy
   },
 ): Layer1StrategyBreadthPlan<T> {
@@ -951,9 +983,15 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     capacity: { requestedTotalCap: targetSize },
     mlQueueCapOverride: targetSize,
   })
+  const routerPlan = buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
+    maxSlateSize: targetSize,
+    regime: options.regime,
+    strategyWeights: options.strategyWeights,
+    strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+  })
 
-  const selectedSymbols = new Set(selection.mlQueue.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
-  const strategySelected = selection.mlQueue.slice(0, targetSize)
+  const selectedSymbols = new Set(routerPlan.mlSlate.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
+  const strategySelected = routerPlan.mlSlate.slice(0, targetSize)
   const topUp = featureEnrichedUniverse
     .filter((candidate) => {
       const symbol = cleanText(candidate.symbol).toUpperCase()
@@ -984,6 +1022,15 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       strategy_selected_count: strategySelected.length,
       raw_signal_top_up_count: topUp.length,
       source_universe_count: featureEnrichedUniverse.length,
+      strategy_labeler_version: routerPlan.labeler_version,
+      finlab_portfolio_intelligence_version: routerPlan.portfolio_intelligence_version,
+      l15_router_version: routerPlan.version,
+      l15_router_selection_order: routerPlan.selection_order,
+      l15_router_ml_slate_count: routerPlan.telemetry.ml_slate_count,
+      l15_router_observe_only_count: routerPlan.telemetry.observe_only_count,
+      l15_router_capacity_overflow_count: routerPlan.telemetry.capacity_overflow_count,
+      strategy_portfolio_metric_source: options.strategyPortfolioMetricSource,
+      strategy_portfolio_metric_count: Object.keys(options.strategyPortfolioMetrics ?? {}).length,
     },
   }
 }

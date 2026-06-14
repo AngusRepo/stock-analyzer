@@ -10,10 +10,10 @@ Rationale (ship-day):
   growing again post Debate FinMem) also needs tracking. All instrumented
   calls record here so Wei + Discord alerts can see daily / monthly spend.
 
-Pricing table (USD per 1M tokens, input / output, 2026-04 rates):
+Pricing table (USD per 1M tokens, input / output, 2026-06 Gemini rates):
   claude-sonnet-4-6:          3.00 / 15.00
   claude-opus-4-7:           15.00 / 75.00
-  gemini-3.1-flash-lite:      0.075 / 0.30
+  gemini-3.5-flash:           1.50 / 9.00
   gemini-2.5-flash-lite:      0.10 / 0.40
   deepseek-v3:                0.14 / 0.28
   gemma-27b (via Gemini API): 0.05 / 0.10  (approximate)
@@ -48,8 +48,7 @@ _PRICE_PER_1K: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6":              (0.003, 0.015),
     "claude-sonnet-4-5-20250929":     (0.003, 0.015),
     "claude-opus-4-7":                (0.015, 0.075),
-    "gemini-3.1-flash-lite":          (0.000075, 0.00030),
-    "gemini-3.1-flash-lite-preview":  (0.000075, 0.00030),
+    "gemini-3.5-flash":               (0.0015, 0.009),
     "gemini-2.5-flash-lite":          (0.0001, 0.00040),
     "deepseek-v3":                    (0.00014, 0.00028),
     "gemma-27b":                      (0.00005, 0.00010),

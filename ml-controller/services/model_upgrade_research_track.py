@@ -82,21 +82,12 @@ RESEARCH_BENCHMARK_MODELS: dict[str, dict[str, Any]] = {
     },
     "TimesFM": {
         "status": "production_slot_member",
-        "model_type": "foundation_time_series",
+        "model_type": "foundation_time_series_timesfm25",
         "family": "time_series",
         "direct_prediction": True,
         "vote_weight": 1.0,
         "promotion_state": "model_pool_lifecycle",
-        "evidence_required": ["production_artifact", "forecast_validation", "walk_forward", "cost_profile", "positive_ic"],
-    },
-    "TimesFM25": {
-        "status": "benchmark_only",
-        "model_type": "foundation_time_series_maintained_runtime",
-        "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "not_challenger",
-        "evidence_required": ["forecast_validation", "walk_forward", "cost_profile", "serving_parity"],
+        "evidence_required": ["production_artifact", "timesfm_2p5_config", "forecast_validation", "walk_forward", "cost_profile", "positive_ic"],
     },
 }
 

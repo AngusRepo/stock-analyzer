@@ -256,9 +256,12 @@ function PortfolioSummary() {
 
 // ─── Today's ML Signals ─────────────────────────────────────────────────────
 
-function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: boolean; meta?: any }) {
+function PendingBuyStateBadges({ state, stale, meta, policy }: { state?: any; stale?: boolean; meta?: any; policy?: any }) {
   const execution = state?.execution_counts ?? {}
   const events = Array.isArray(meta?.execution_events) ? meta.execution_events.slice(-3) : []
+  const executionPolicy = policy?.execution_pool_policy ?? 'l4_sparse_final_buy_only'
+  const sourceRecoDate = policy?.source_reco_date ?? meta?.source_reco_date ?? null
+  const watchFallbackOff = policy?.watch_fallback_allowed === false
   const stateClass =
     state?.state === 'ready_to_execute' ? 'border-emerald-500/30 text-emerald-400'
       : state?.state === 'debate_pending' ? 'border-sky-500/30 text-sky-400'
@@ -276,6 +279,23 @@ function PendingBuyStateBadges({ state, stale, meta }: { state?: any; stale?: bo
       <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-400">
         active {state?.active_count ?? 0}/{state?.total_count ?? 0}
       </Badge>
+      <Badge
+        variant="outline"
+        title={executionPolicy}
+        className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+      >
+        L4 sparse final BUY
+      </Badge>
+      {watchFallbackOff && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-300">
+          watch fallback off
+        </Badge>
+      )}
+      {sourceRecoDate && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-300">
+          src {sourceRecoDate}
+        </Badge>
+      )}
       {(execution.filled ?? 0) > 0 && (
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-cyan-500/30 text-cyan-300">
           filled {execution.filled}
@@ -377,6 +397,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   const isStalePending = Boolean(pbData?.is_stale)
   const pendingState = pbData?.state
   const pendingMeta = pbData?.meta
+  const pendingExecutionPolicy = pbData?.execution_policy
 
   // Quadrant filter
   const { data: qfData } = useQuery({
@@ -397,9 +418,12 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <div className="space-y-3">
         <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
         <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys execution state</div>
-        <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
+        <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
         <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
           {pendingBuyEmptyMessage(pendingMeta)}
+          <div className="mt-2 font-mono text-[10px] text-muted-foreground/70">
+            Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.
+          </div>
         </div>
       </div>
     )
@@ -407,8 +431,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · T2 篩選後掛單</div>
-      <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} />
+      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · L4 sparse final-buy execution pool</div>
+      <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
         const executionBadge = formatExecutionStatusBadge(b.execution_status)
@@ -445,6 +469,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
                 <span>execution: {executionBadge.label}</span>
                 <span>debate: {b.debate_status ?? 'pending'}</span>
                 <span>source: {b.source ?? 'morning_setup'}</span>
+                <span className="break-all">policy: {pendingExecutionPolicy?.execution_pool_policy ?? 'l4_sparse_final_buy_only'}</span>
                 <span>retry: {b.retry_count ?? 0}</span>
               </div>
               <div className="mt-1 text-muted-foreground/70">
@@ -490,6 +515,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   })
   const { tradable: tradableRecs, emerging: emergingRecs } = splitRecommendationLanes<any>(recData)
   const recs = tradableRecs
+  const strategyPortfolioHealth = recData?.strategy_portfolio_intelligence_health
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
   if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
@@ -505,7 +531,21 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
         </Badge>
-        <span className="text-muted-foreground/70">這是 pipeline 產出的推薦候選；下一個交易日 morning setup / debate 後才會產生 pending buys。</span>
+        {strategyPortfolioHealth && (
+          <Badge
+            variant="outline"
+            title={strategyPortfolioHealth.degraded_reason ?? strategyPortfolioHealth.source ?? 'L1.25 strategy portfolio intelligence'}
+            className={[
+              'h-5 px-1.5 text-[9px]',
+              strategyPortfolioHealth.used_live_strategy_asset_metrics
+                ? 'border-teal-500/30 bg-teal-500/10 text-teal-300'
+                : 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+            ].join(' ')}
+          >
+            L1.25 {strategyPortfolioHealth.portfolio_metric_status ?? 'unknown'} metrics {strategyPortfolioHealth.metric_count_max ?? 0}
+          </Badge>
+        )}
+        <span className="text-muted-foreground/70">Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.</span>
       </div>
 
       <div className="grid grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1.05fr)_minmax(300px,0.95fr)]">
@@ -513,7 +553,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
           <div className="flex items-center justify-between px-1">
             <div>
               <p className="text-[11px] font-semibold text-emerald-300">上市櫃交易流</p>
-              <p className="text-[10px] text-muted-foreground/70">會進 morning setup / debate / pending buys。</p>
+              <p className="text-[10px] text-muted-foreground/70">L4 selected rows can enter pending buys.</p>
             </div>
             <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-300">
               {recs.length} 檔

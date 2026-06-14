@@ -4,7 +4,7 @@ llm_debate_client.py — Multi-provider LLM client for the Debate service
 Ported from worker/src/lib/debateTrader.ts callLLM.
 ml-controller variant removes Layer 1 (Local Tunnel) and Layer 2 (Workers AI)
 since those are Worker-only bindings. Priority:
-  1. Gemini 3.1 Flash Lite (primary — cheap, fast, good zh-TW)
+  1. Gemini 3.5 Flash (primary — stable, fast, stronger agentic/coding model)
   2. Anthropic Claude Haiku 4.5 (fallback)
 
 KV-driven config (ml-controller reads via CF_API_TOKEN → D1/KV):
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-GEMINI_MODEL_DEFAULT    = "gemini-3.1-flash-lite-preview"
+GEMINI_MODEL_DEFAULT    = "gemini-3.5-flash"
 ANTHROPIC_MODEL_DEFAULT = "claude-haiku-4-5-20251001"
 
 # CF Worker KV read (for debate_model override). ml-controller already has

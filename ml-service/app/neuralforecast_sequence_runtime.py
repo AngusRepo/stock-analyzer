@@ -6,9 +6,11 @@ import hashlib
 import io
 import json
 import logging
+import os
 import shutil
 import tempfile
 import time
+import warnings
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +35,7 @@ DEFAULT_MAX_STEPS = 30
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_MAX_SERIES = 1024
 DEFAULT_BATCH_COUNT = 5
+_RUNTIME_CONFIGURED = False
 MODEL_CONFIG: dict[str, dict[str, str]] = {
     "PatchTST": {
         "nf_model_name": "PatchTST",
@@ -63,6 +66,28 @@ def _require_model(model_name: str) -> dict[str, str]:
 
 def default_seq_len_for_model(model_name: str) -> int:
     return int(_require_model(model_name).get("default_seq_len") or DEFAULT_SEQ_LEN)
+
+
+def _configure_neuralforecast_runtime() -> None:
+    global _RUNTIME_CONFIGURED
+    if not _RUNTIME_CONFIGURED:
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*isinstance\(treespec, LeafSpec\).*",
+            category=UserWarning,
+            module=r"pytorch_lightning\.utilities\._pytree",
+        )
+        logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+        logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
+        _RUNTIME_CONFIGURED = True
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            precision = os.environ.get("TORCH_FLOAT32_MATMUL_PRECISION", "high").strip() or "high"
+            torch.set_float32_matmul_precision(precision)
+    except Exception as exc:  # noqa: BLE001 - runtime tuning must never block training.
+        logger.debug("NeuralForecast torch runtime tuning skipped: %s", exc)
 
 
 def _coerce_close(row: dict[str, Any]) -> list[float]:
@@ -169,14 +194,21 @@ def _fold_metrics(candidate_id: str, pred_return: np.ndarray, actual_return: np.
 
 
 def _make_nf_model(model_name: str, *, pred_len: int, seq_len: int, max_steps: int, batch_size: int, seed: int, n_series: int):
+    _configure_neuralforecast_runtime()
     from neuralforecast.models import PatchTST, iTransformer
 
+    val_check_steps = max(1, min(int(max_steps), 10))
     common = {
         "h": pred_len,
         "input_size": seq_len,
         "max_steps": max_steps,
+        "val_check_steps": val_check_steps,
         "batch_size": batch_size,
         "random_seed": seed,
+        "enable_checkpointing": False,
+        "enable_model_summary": False,
+        "enable_progress_bar": False,
+        "logger": False,
     }
     if model_name == "PatchTST":
         return PatchTST(**common)
@@ -196,6 +228,7 @@ def _train_nf(
     seed: int,
     n_series: int,
 ):
+    _configure_neuralforecast_runtime()
     import pandas as pd
     from neuralforecast import NeuralForecast
 
@@ -268,6 +301,7 @@ _MODEL_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def load_neuralforecast_artifact(model_name: str, version: str = "v1") -> tuple[Any | None, dict[str, Any] | None]:
+    _configure_neuralforecast_runtime()
     from neuralforecast import NeuralForecast
 
     cfg = _require_model(model_name)

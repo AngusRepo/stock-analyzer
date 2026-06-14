@@ -33,6 +33,10 @@ export interface ScreenerScoreCandidate {
   reason?: string
 }
 
+const CANDIDATE_POOL_DEFAULT = 120
+const CANDIDATE_POOL_MIN = 30
+const CANDIDATE_POOL_MAX = 240
+
 function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
@@ -56,7 +60,12 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   const raw = config.screener as Record<string, unknown>
   const adaptiveScreener = adaptive?.screener ?? {}
 
-  const candidatePoolBase = positiveInt(raw.candidatePoolSize, 200, 180, 240)
+  const candidatePoolBase = positiveInt(
+    raw.candidatePoolSize,
+    CANDIDATE_POOL_DEFAULT,
+    CANDIDATE_POOL_MIN,
+    CANDIDATE_POOL_MAX,
+  )
   const coarseMlQueueBase = positiveInt(raw.coarseMlQueueSize, 80, 30, 160)
   const coarseMlKeepRatio = clamp(finiteNumber(raw.coarseMlKeepRatio) ?? 0.75, 0.25, 1)
   const mlShortlistBase = positiveInt(raw.mlShortlistSize ?? raw.maxCandidates, 35, 15, 80)
@@ -65,8 +74,8 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   const candidatePoolSize = applyAdaptiveDelta(
     candidatePoolBase,
     adaptiveScreener.candidate_pool_delta,
-    180,
-    240,
+    CANDIDATE_POOL_MIN,
+    CANDIDATE_POOL_MAX,
   )
   const coarseMlQueueSize = Math.min(
     applyAdaptiveDelta(coarseMlQueueBase, adaptiveScreener.coarse_ml_queue_delta, 30, 160),

@@ -39,12 +39,6 @@ export interface PostExitOutcome {
   reason?: string
 }
 
-function boundedNumber(value: unknown, fallback: number, lo: number, hi: number): number {
-  const numeric = Number(value)
-  const resolved = Number.isFinite(numeric) ? numeric : fallback
-  return Math.max(lo, Math.min(hi, resolved))
-}
-
 export const COOLDOWN_DAYS: Record<ExitReasonCategory, number> = {
   HardStop: 5,
   InitStop: 3,
@@ -151,9 +145,6 @@ export async function onPostExit(
   opts: {
     enableRerank?: boolean
     maxPositions: number
-    executionWatchMinMlEdge?: number
-    executionWatchMinFinalScore?: number
-    executionWatchRiskMultiplier?: number
   },
 ): Promise<PostExitOutcome> {
   const category = classifyExitReason(ctx.exitReason)
@@ -193,9 +184,6 @@ export async function onPostExit(
       return outcome
     }
 
-    const minWatchMlEdge = boundedNumber(opts.executionWatchMinMlEdge, 12, 0, 25)
-    const minWatchFinalScore = boundedNumber(opts.executionWatchMinFinalScore, 55, 0, 100)
-    const watchRiskMultiplier = boundedNumber(opts.executionWatchRiskMultiplier, 0.55, 0.1, 1)
     const { results: recs } = await ctx.db.prepare(`
       SELECT dr.symbol, dr.name, dr.signal, dr.confidence, dr.current_price,
              dr.reason, dr.score_components, dr.has_buy_signal,
@@ -203,23 +191,11 @@ export async function onPostExit(
         FROM daily_recommendations dr
        WHERE dr.date = ?
          AND COALESCE(dr.eligible_for_pending_buy, 1) = 1
-         AND (
-           dr.has_buy_signal = 1
-           OR (
-             COALESCE(dr.eligible_for_ml, 1) = 1
-             AND json_valid(dr.score_components)
-             AND COALESCE(CAST(json_extract(dr.score_components, '$.components.mlEdge') AS REAL), 0) >= ?
-             AND COALESCE(
-               CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
-               CAST(json_extract(dr.score_components, '$.total') AS REAL),
-               0
-             ) >= ?
-           )
-         )
-       ORDER BY CASE WHEN dr.has_buy_signal = 1 THEN 0 ELSE 1 END ASC,
-          CASE WHEN json_valid(dr.alpha_allocation)
-            AND json_extract(dr.alpha_allocation, '$.selected') = 1 THEN 0 ELSE 1 END ASC,
-          CASE WHEN json_valid(dr.score_components) THEN
+         AND COALESCE(dr.has_buy_signal, 0) = 1
+         AND json_valid(dr.alpha_allocation)
+         AND json_extract(dr.alpha_allocation, '$.selected') = 1
+         AND json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'
+       ORDER BY CASE WHEN json_valid(dr.score_components) THEN
           COALESCE(
             CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
             CAST(json_extract(dr.score_components, '$.total') AS REAL),
@@ -227,7 +203,7 @@ export async function onPostExit(
           ) ELSE 0 END DESC,
           dr.confidence DESC
        LIMIT 20
-    `).bind(ctx.today, minWatchMlEdge, minWatchFinalScore).all<any>()
+    `).bind(ctx.today).all<any>()
     if (!recs || recs.length === 0) {
       outcome.reason = 'no_candidates'
       return outcome
@@ -259,9 +235,8 @@ export async function onPostExit(
       outcome.reason = 'missing_score_v2_payload'
       return outcome
     }
-    const isFinalBuy = Number(best.has_buy_signal ?? 0) === 1
-    const rerankSignal = isFinalBuy ? (best.signal ?? 'BUY') : 'WATCH_BUY'
-    const rerankSource = isFinalBuy ? 'post_exit_rerank' : 'post_exit_ml_watch_rerank'
+    const rerankSignal = best.signal ?? 'BUY'
+    const rerankSource = 'post_exit_l4_sparse_rerank'
 
     const snapshot = await loadPendingBuySnapshot(ctx as any, ctx.today, { allowFallbackRecent: false })
     const alreadyQueued = (snapshot.pendingBuys ?? []).some((item: any) => item.symbol === best.symbol)
@@ -281,7 +256,7 @@ export async function onPostExit(
       ml_target2: null,
       reason: `${rerankSource} (replaces ${ctx.soldSymbol}; ${best.reason ?? ''})`,
       debate_verdict: 'skipped',
-      risk_pct: isFinalBuy ? 0.01 : 0.01 * watchRiskMultiplier,
+      risk_pct: 0.01,
       kelly_pct: null,
       score_v2: serializeScoreV2Snapshot(scoreV2),
       source: rerankSource,

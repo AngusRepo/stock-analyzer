@@ -419,12 +419,12 @@ async function generateRiskSummary(
 
 請用2-3句繁體中文，給出今日大盤風險的簡要說明與操作建議。語氣客觀，不過度樂觀也不過度悲觀。`
 
-  // Layer 1: Gemini 3.1 Flash Lite（便宜+快速）
+  // Layer 1: Gemini 3.5 Flash
   // 2026-04-10: 取代 Haiku，省 $0.2/月
   if (geminiKey) {
     try {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${geminiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

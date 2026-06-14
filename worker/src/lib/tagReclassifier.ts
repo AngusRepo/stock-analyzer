@@ -4,11 +4,13 @@
  * 讀取 stock_profiles（TimeVerse）+ 現有 stock_tags，
  * 用 LLM 判斷每支股票的核心概念（1~3 個，不強制湊滿）+ 權重（0.1~1.0）。
  *
- * LLM 優先級：Anthropic Sonnet → Gemini 3.1 Flash Lite → 規則 fallback
+ * LLM 優先級：Anthropic Sonnet → Gemini 3.5 Flash → 規則 fallback
  * 觸發方式：POST /api/admin/trigger/reclassify-tags
  */
 
 import type { Bindings } from '../types'
+
+const GEMINI_TAG_RECLASSIFY_MODEL = 'gemini-3.5-flash'
 
 interface TagWeight {
   tag: string
@@ -86,7 +88,7 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
         '[{"tag":"概念名","weight":1.0}]',
       ].filter(Boolean).join('\n')
 
-      // 呼叫 LLM：優先 Anthropic API（Sonnet），fallback Gemini 3.1 Flash Lite
+      // 呼叫 LLM：優先 Anthropic API（Sonnet），fallback Gemini 3.5 Flash
       let result: TagWeight[] | null = null
 
       // 1. Anthropic API (Opus) — on-demand 用途，品質最高
@@ -120,12 +122,12 @@ export async function reclassifyTags(env: Bindings): Promise<{ processed: number
         }
       }
 
-      // 2. Fallback: Gemini 3.1 Flash Lite（便宜+快速+中文好）
+      // 2. Fallback: Gemini 3.5 Flash
       const geminiKey = (env as any).GEMINI_API_KEY as string | undefined
       if (!result && geminiKey) {
         try {
           const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TAG_RECLASSIFY_MODEL}:generateContent?key=${geminiKey}`,
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

@@ -5,7 +5,7 @@
 ## 背景
 
 Phase 0 precondition locked:
-- LLM: Gemini 3.1 Flash Lite
+- LLM: Gemini 3.5 Flash
 - Platform: Modal
 - Universe: Screener ~350 檔
 - Cron: Monthly
@@ -83,7 +83,7 @@ Phase 1 T1.5 延伸任務 — 若 A 不方便可 ship `/admin/quantaalpha-verify
 | 風險 | 應對 |
 |---|---|
 | QuantaAlpha repo hardcode CSI 300 / 中國股碼 | Modal log 會噴錯，改 configs/ overrides |
-| Gemini 3.1 Flash Lite tool-use 表現差 | 改 `CHAT_MODEL=gemini-3.1-pro` 重跑 |
+| Gemini 3.5 Flash tool-use 表現差 | 改 `CHAT_MODEL=gemini-3.1-pro-preview` 重跑 |
 | Image build 失敗 | 降級 requirements.txt install 到最小子集 |
 | Modal cycle timeout | 先縮 universe 到 50 檔；逐步擴 |
 

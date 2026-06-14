@@ -1871,11 +1871,13 @@ def _allocation_method(policy: dict) -> str:
 
 def _row_expected_return(row: dict) -> float:
     for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
+        if key not in row or row.get(key) is None:
+            continue
         try:
-            value = float(row.get(key) or 0.0)
+            value = float(row.get(key))
         except (TypeError, ValueError):
             value = 0.0
-        if math.isfinite(value) and value != 0.0:
+        if math.isfinite(value):
             return value
     return max(0.0, (float(row.get("score") or 0.0) - 50.0) / 5000.0)
 
@@ -1892,11 +1894,24 @@ def _apply_sparse_tangent_buy_selection(
     buy_signal_count = int(allocation.get("buy_signal_count") or 3)
     buy_signal_count = max(1, min(30, buy_signal_count))
     risk_history = return_history or {}
+    allocation_contract = {
+        "engine": "sparse_tangent_inverse_risk",
+        "allocation_method": "sparse_tangent_inverse_risk_final_allocation",
+        "input_scope": "post_l3_5_evidence_fusion_candidates",
+        "selection_policy": "positive_expected_edge_sparse_weights_no_forced_fill",
+        "capacity_policy": "maximum_capacity_not_minimum_fill",
+        "max_capacity_not_target": True,
+        "hard_minimum_fill": False,
+        "allows_empty_portfolio": True,
+        "legacy_rank_topk_fallback_allowed": False,
+        "buy_signal_count": buy_signal_count,
+    }
 
     eligible_rows = [
         row for row in scored
         if _can_promote_ranking_candidate(row, ranking_config)
     ]
+    eligible_row_ids = {id(row) for row in eligible_rows}
     controller = str(allocation.get("controller") or "OnlinePortfolioBandit").strip()
     for row in scored:
         had_buy_signal = str(row.get("signal") or "").upper() == "BUY" or int(row.get("has_buy_signal") or 0) == 1
@@ -1913,8 +1928,8 @@ def _apply_sparse_tangent_buy_selection(
             alpha_allocation = row.get("alpha_allocation") if isinstance(row.get("alpha_allocation"), dict) else {}
             row["alpha_allocation"] = {
                 **alpha_allocation,
+                **allocation_contract,
                 "selected": False,
-                "engine": "sparse_tangent_inverse_risk",
                 "controller": controller,
             }
 
@@ -1947,6 +1962,8 @@ def _apply_sparse_tangent_buy_selection(
         weights = {}
 
     if not weights:
+        # `buy_signal_count` is a max candidate capacity. Sparse tangent can
+        # legally return empty/fewer weights when expected edge is not positive.
         weights = allocate_sparse_tangent(
             allocation_candidates,
             risk_history,
@@ -1975,11 +1992,10 @@ def _apply_sparse_tangent_buy_selection(
         alpha_allocation = row.get("alpha_allocation") if isinstance(row.get("alpha_allocation"), dict) else {}
         row["alpha_allocation"] = {
             **alpha_allocation,
+            **allocation_contract,
             "selected": True,
-            "engine": "sparse_tangent_inverse_risk",
             "controller": controller,
             "allocation_weight": round(float(weight), 8),
-            "buy_signal_count": buy_signal_count,
             "return_history_coverage": history_coverage,
             "return_history_symbols": sorted(symbol for symbol in selected_symbols if risk_history.get(symbol)),
             "opb_controller": {
@@ -2000,16 +2016,17 @@ def _apply_sparse_tangent_buy_selection(
         if row.get("symbol") in selected_symbols:
             continue
         alpha_allocation = row.get("alpha_allocation")
-        if isinstance(alpha_allocation, dict):
+        if isinstance(alpha_allocation, dict) or id(row) in eligible_row_ids:
             row["alpha_allocation"] = {
-                **alpha_allocation,
+                **(alpha_allocation if isinstance(alpha_allocation, dict) else {}),
+                **allocation_contract,
                 "selected": False,
-                "engine": "sparse_tangent_inverse_risk",
+                "controller": controller,
             }
 
     logger.info(
         "[Ranking] sparse_tangent_inverse_risk selected "
-        f"{len(selected_symbols)}/{buy_signal_count} BUY rows: {sorted(selected_symbols)}"
+        f"{len(selected_symbols)}/{buy_signal_count} capacity BUY rows: {sorted(selected_symbols)}"
     )
     return scored
 

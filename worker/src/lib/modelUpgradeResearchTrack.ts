@@ -16,7 +16,6 @@ export type ModelUpgradeCandidateId =
   | 'TabM'
   | 'iTransformer'
   | 'TimesFM'
-  | 'TimesFM25'
   | 'GAOptimizer'
   | 'KalmanFilter'
   | 'MarkovSwitching'
@@ -118,30 +117,17 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     notes: 'NeuralForecast iTransformer won before/after replay; legacy simplified Torch iTransformer adapter removed.',
   },
   {
-    id: 'TimesFM25',
-    stage: 'benchmark_only',
-    family: 'foundation_time_series_maintained_runtime',
-    role: 'TimesFM 2.5 migration benchmark against current TimesFM config artifact',
-    vote_weight: 0,
-    can_predict: false,
-    can_vote: false,
-    can_promote_directly: false,
-    requires_review_packet: true,
-    evidence_required: ['forecast_validation', 'walk_forward', 'cost_profile', 'serving_parity', 'positive_ic'],
-    notes: 'Temporary migration benchmark; if it wins and parity passes, cut TimesFM config to 2.5 then remove the adapter.',
-  },
-  {
     id: 'TimesFM',
     stage: 'production_slot_member',
-    family: 'foundation_time_series',
-    role: 'L3 sequence foundation production slot; config-backed TimesFM runtime votes when lifecycle IC weight is positive',
+    family: 'foundation_time_series_timesfm25',
+    role: 'L3 sequence foundation production slot backed by TimesFM 2.5 config artifact',
     vote_weight: 1,
     can_predict: true,
     can_vote: true,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['production_artifact', 'forecast_validation', 'walk_forward', 'cost_profile', 'positive_ic'],
-    notes: 'Production slot member; missing config, unavailable model runtime, or non-positive lifecycle evidence yields zero contribution at serving time.',
+    evidence_required: ['production_artifact', 'timesfm_2p5_config', 'forecast_validation', 'walk_forward', 'cost_profile', 'positive_ic'],
+    notes: 'Production slot member; serving id remains TimesFM while the active artifact/config uses TimesFM 2.5. Missing config, unavailable runtime, or non-positive lifecycle evidence yields zero contribution.',
   },
   {
     id: 'GAOptimizer',

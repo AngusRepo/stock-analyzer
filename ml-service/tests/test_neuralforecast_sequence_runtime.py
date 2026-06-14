@@ -1,4 +1,4 @@
-from app.neuralforecast_sequence_runtime import _panel_train_eval_rows, default_seq_len_for_model
+from app.neuralforecast_sequence_runtime import _make_nf_model, _panel_train_eval_rows, default_seq_len_for_model
 
 
 def test_neuralforecast_sequence_defaults_follow_model_core_windows():
@@ -45,3 +45,21 @@ def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid()
     assert stats["considered_series"] == 4
     assert stats["skipped_short_history"] == 2
     assert stats["valid_series"] == 2
+
+
+def test_neuralforecast_model_runtime_suppresses_known_trainer_warnings():
+    model = _make_nf_model(
+        "PatchTST",
+        pred_len=5,
+        seq_len=128,
+        max_steps=7,
+        batch_size=16,
+        seed=42,
+        n_series=20,
+    )
+
+    assert model.val_check_steps == 7
+    assert model.trainer_kwargs["enable_checkpointing"] is False
+    assert model.trainer_kwargs["enable_model_summary"] is False
+    assert model.trainer_kwargs["enable_progress_bar"] is False
+    assert model.trainer_kwargs["logger"] is False

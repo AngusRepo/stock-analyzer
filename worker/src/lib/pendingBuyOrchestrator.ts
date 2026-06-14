@@ -165,12 +165,6 @@ function clampNumber(value: unknown, lo: number, hi: number, fallback: number): 
   return Math.max(lo, Math.min(hi, numeric))
 }
 
-function optionalNumber(value: unknown, fallback: number, lo: number, hi: number): number {
-  const numeric = Number(value)
-  const resolved = Number.isFinite(numeric) ? numeric : fallback
-  return Math.max(lo, Math.min(hi, resolved))
-}
-
 function parseAlphaContext(rawForecastData: unknown): AlphaForecastContext | null {
   const forecastData = parsePredictionForecastData(rawForecastData)
   const ctx = forecastData?.alpha_context
@@ -674,19 +668,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
     const sourceRecoDate = prevDay
     const pendingBuyLimit = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
-    const executionPoolLimit = Math.max(
-      pendingBuyLimit,
-      Math.floor(optionalNumber(
-        env.EXECUTION_WATCH_POOL_SIZE,
-        cfg.alphaFramework?.allocation?.slateSize ?? Math.max(10, pendingBuyLimit),
-        pendingBuyLimit,
-        30,
-      )),
-    )
-    const minWatchMlEdge = optionalNumber(env.EXECUTION_WATCH_MIN_ML_EDGE, 12, 0, 25)
-    const minWatchFinalScore = optionalNumber(env.EXECUTION_WATCH_MIN_FINAL_SCORE, 55, 0, 100)
-    const watchRiskMultiplier = optionalNumber(env.EXECUTION_WATCH_RISK_MULTIPLIER, 0.55, 0.1, 1)
-    const candidateLimit = Math.max(12, executionPoolLimit * 3)
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
@@ -740,20 +721,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
        )
        WHERE dr.date = ?
          AND COALESCE(dr.eligible_for_pending_buy, 1) = 1
-         AND (
-           dr.has_buy_signal = 1
-           OR (
-             dr.confidence >= ?
-             AND COALESCE(dr.eligible_for_ml, 1) = 1
-             AND json_valid(dr.score_components)
-             AND COALESCE(CAST(json_extract(dr.score_components, '$.components.mlEdge') AS REAL), 0) >= ?
-             AND COALESCE(
-               CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
-               CAST(json_extract(dr.score_components, '$.total') AS REAL),
-               0
-             ) >= ?
-           )
-         )
+         AND COALESCE(dr.has_buy_signal, 0) = 1
+         AND json_valid(dr.alpha_allocation)
+         AND json_extract(dr.alpha_allocation, '$.selected') = 1
+         AND json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'
          AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
          AND (
            SELECT sp_exec.open
@@ -763,10 +734,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             ORDER BY sp_exec.date DESC
             LIMIT 1
          ) IS NOT NULL
-        ORDER BY CASE WHEN dr.has_buy_signal = 1 THEN 0 ELSE 1 END ASC,
-           CASE WHEN json_valid(dr.alpha_allocation)
-             AND json_extract(dr.alpha_allocation, '$.selected') = 1 THEN 0 ELSE 1 END ASC,
-           CASE WHEN json_valid(dr.score_components) THEN
+        ORDER BY CASE WHEN json_valid(dr.score_components) THEN
            COALESCE(
              CAST(json_extract(dr.score_components, '$.finalScore') AS REAL),
              CAST(json_extract(dr.score_components, '$.total') AS REAL),
@@ -776,10 +744,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         LIMIT ?
     `).bind(sourceRecoDate,
       sourceRecoDate,
-      cb.buyConfThreshold,
-      minWatchMlEdge,
-      minWatchFinalScore,
-      candidateLimit,
+      pendingBuyLimit,
     ).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
@@ -893,12 +858,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         })
         continue
       }
-      const executionRole = Number(rec.has_buy_signal ?? 0) === 1
-        ? 'final_buy'
-        : 'ml_qualified_watch'
-      const pendingSignal = executionRole === 'final_buy'
-        ? (rec.signal ?? 'BUY')
-        : 'WATCH_BUY'
+      const executionRole = 'l4_sparse_final_buy'
+      const pendingSignal = rec.signal ?? 'BUY'
       if (alphaContext?.risk_overlay?.skip === true) {
         quadrantFilterLog.push({
           symbol: rec.symbol,
@@ -934,7 +895,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
 
       let debateVerdict = 'PENDING'
       let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
-      if (executionRole === 'ml_qualified_watch') riskPct *= watchRiskMultiplier
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
       riskPct *= alphaSizing
       if (quadrant?.quadrant === 'Weakening') {
@@ -1067,10 +1027,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         risk_pct: riskPct,
         kelly_pct: kellyResult?.pct ?? null,
         score_v2: serializeScoreV2Snapshot(scoreV2),
-        source: executionRole === 'final_buy' ? 'morning_setup' : 'morning_setup_ml_watch',
+        source: 'morning_setup_l4_sparse',
         original_entry: originalEntry,
       })
-      if (pendingBuys.length >= executionPoolLimit) break
+      if (pendingBuys.length >= pendingBuyLimit) break
     }
 
     await persistPendingBuys(env, pendingDate, pendingBuys, {
@@ -1078,9 +1038,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       count: pendingBuys.length,
       prev_day: prevDay,
       final_buy_limit: pendingBuyLimit,
-      execution_pool_limit: executionPoolLimit,
-      execution_watch_min_ml_edge: minWatchMlEdge,
-      execution_watch_min_final_score: minWatchFinalScore,
+      execution_pool_limit: pendingBuyLimit,
+      execution_pool_policy: 'l4_sparse_final_buy_only',
     })
 
     if (quadrantFilterLog.length > 0) {

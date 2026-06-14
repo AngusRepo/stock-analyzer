@@ -2,7 +2,7 @@
 modal_app_quantaalpha.py — #11 QuantaAlpha POC (Phase 1 T1.1)
 
 Runs on Modal (python 3.10) — base image clones QuantaAlpha repo, installs Qlib,
-configures Gemini 3.1 Flash Lite via OpenAI-compatible endpoint. Consumes a
+configures Gemini 3.5 Flash via OpenAI-compatible endpoint. Consumes a
 pre-built Qlib binary directory (built by scripts/d1_to_qlib_adapter.py, T1.2)
 mounted via a Modal Volume at /data/qlib_tw.
 
@@ -87,13 +87,13 @@ VOL_RESULTS = "/data/results"
 
 
 def _gemini_env() -> dict[str, str]:
-    """OpenAI-compatible endpoint config for Gemini 3.1 Flash Lite."""
+    """OpenAI-compatible endpoint config for Gemini 3.5 Flash."""
     api_key = os.environ.get("GEMINI_API_KEY", "")
     return {
         "OPENAI_API_KEY": api_key,
         "OPENAI_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "CHAT_MODEL": "gemini-3.1-flash-lite",
-        "REASONING_MODEL": "gemini-3.1-flash-lite",
+        "CHAT_MODEL": "gemini-3.5-flash",
+        "REASONING_MODEL": "gemini-3.5-flash",
         "QLIB_DATA_DIR": VOL_QLIB,
         "DATA_RESULTS_DIR": VOL_RESULTS,
     }

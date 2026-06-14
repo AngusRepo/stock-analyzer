@@ -6,7 +6,7 @@ from typing import Any
 
 SCHEMA_VERSION = "stockvision-production-cutover-packet-v1"
 
-DEFAULT_LOCAL_AUDIT_PATH = "ml-service/benchmark_results/local_prod_ready_audit_20260612.json"
+DEFAULT_LOCAL_AUDIT_PATH = "ml-service/benchmark_results/local_prod_ready_audit_20260614.json"
 
 REQUIRED_EVIDENCE_FILES = (
     DEFAULT_LOCAL_AUDIT_PATH,
@@ -54,9 +54,9 @@ REMOTE_PREFLIGHT_CHECKS = (
         "expected": "PatchTST and iTransformer production artifact slots point to NeuralForecast-backed zip artifacts",
     },
     {
-        "id": "timesfm25_config_artifact_exists",
+        "id": "timesfm_active_slot_uses_25_config",
         "check_type": "remote_read_only",
-        "expected": "TimesFM migration config references google/timesfm-2.5-200m-pytorch and max_context >= 1024",
+        "expected": "TimesFM production slot config references google/timesfm-2.5-200m-pytorch and max_context >= 1024",
     },
     {
         "id": "active9_model_pool_has_no_retired_champion",

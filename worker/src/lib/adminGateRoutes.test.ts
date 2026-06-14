@@ -470,6 +470,9 @@ void (async () => {
       for (const id of ['ResidualMLP', 'DLinear', 'PatchTST', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
         assert(candidateIds.has(id), `model upgrade status should include full P7 track candidate ${id}`)
       }
+      const timesFmRow = statusBody.candidates.find((row: any) => row.candidate_id === 'TimesFM')
+      assert(timesFmRow?.stage === 'production_slot_member', 'TimesFM should remain the single active production slot for the 2.5 runtime')
+      assert(!candidateIds.has('TimesFM25'), 'TimesFM25 migration benchmark must not appear as a tenth active model-upgrade candidate')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'track_only' && row.requires_experiment_registry === false), 'non-experiment tracks should be visible as track_only')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'ready_for_review'), 'model upgrade status should surface review-ready evidence after batch run')
       const target = statusBody.candidates.find((row: any) => row.registry_status === 'ready_for_review' && row.requires_experiment_registry && row.latest_experiment_id)

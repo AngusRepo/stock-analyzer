@@ -8,6 +8,35 @@ const pendingBuyOrchestrator = readFileSync('src/lib/pendingBuyOrchestrator.ts',
 const postExit = readFileSync('src/lib/postExit.ts', 'utf8')
 const paperEntryTasks = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
 const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
+const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
+
+{
+  assert(
+    paperRoute.includes('pending_buy_execution_policy_v1') &&
+      paperRoute.includes("execution_pool_policy: 'l4_sparse_final_buy_only'") &&
+      paperRoute.includes("allocator_owner: 'layer4_sparse_allocation'") &&
+      paperRoute.includes("allocation_engine: 'sparse_tangent_inverse_risk'"),
+    '/paper/pending-buys must expose stable L4 sparse execution policy provenance',
+  )
+  assert(
+    paperRoute.includes('execution_policy: executionPolicy') &&
+      paperRoute.includes('buildPendingBuyExecutionPolicy(snapshot.meta'),
+    '/paper/pending-buys response must include the execution policy beside state and pendingBuys',
+  )
+  assert(
+    paperRoute.includes('watch_fallback_allowed: false') &&
+      paperRoute.includes('ml_watch_rows_executable: false') &&
+      paperRoute.includes('raw_recommendation_rows_executable: false') &&
+      paperRoute.includes('legacy_topk_fallback_allowed: false'),
+    '/paper/pending-buys policy must keep watch/raw/top-k fallback out of executable pending buys',
+  )
+  assert(
+    paperRoute.includes("'has_buy_signal=1'") &&
+      paperRoute.includes("'alpha_allocation.selected=1'") &&
+      paperRoute.includes("'alpha_allocation.engine=sparse_tangent_inverse_risk'"),
+    '/paper/pending-buys policy must document the required L4 daily_recommendations evidence',
+  )
+}
 
 {
   const morningSetupQueryStart = pendingBuyOrchestrator.indexOf('const { results } = await env.DB.prepare')
@@ -30,28 +59,31 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     'morning setup pending buys should rank by canonical Score V2 finalScore',
   )
   assert(
-    morningSetupQuery.includes('dr.has_buy_signal = 1') &&
-      morningSetupQuery.includes("json_extract(dr.score_components, '$.components.mlEdge')"),
-    'morning setup should widen execution pool with ML-qualified watch candidates instead of only final buy rows',
+    morningSetupQuery.includes('COALESCE(dr.has_buy_signal, 0) = 1') &&
+      morningSetupQuery.includes("json_extract(dr.alpha_allocation, '$.selected') = 1") &&
+      morningSetupQuery.includes("json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'"),
+    'morning setup execution pool must only consume L4 sparse final BUY rows',
   )
   assert(
     !morningSetupQuery.includes('WHERE dr.date = ?\n         AND dr.confidence >= ?\n         AND COALESCE(dr.eligible_for_pending_buy, 1) = 1'),
     'morning setup must not let adaptive buyConfThreshold block final allocator has_buy_signal rows',
   )
   assert(
-    morningSetupQuery.includes('dr.has_buy_signal = 1\n           OR (\n             dr.confidence >= ?\n             AND COALESCE(dr.eligible_for_ml, 1) = 1'),
-    'morning setup should apply adaptive buyConfThreshold only to ML-qualified watch candidates',
+    !morningSetupQuery.includes('OR (\n             dr.confidence >= ?') &&
+      !morningSetupQuery.includes("json_extract(dr.score_components, '$.components.mlEdge') >= ?"),
+    'morning setup must not reintroduce ML-qualified watch fallback after L4 sparse allocation',
   )
   assert(
-    !morningSetupQuery.includes('WHERE dr.date = ?\n         AND dr.has_buy_signal = 1'),
-    'morning setup must not keep a standalone final-buy filter that blocks ML-qualified watch candidates',
+    pendingBuyOrchestrator.includes("execution_pool_policy: 'l4_sparse_final_buy_only'") &&
+      pendingBuyOrchestrator.includes("const executionRole = 'l4_sparse_final_buy'"),
+    'morning setup must label the executable pool as L4 sparse final BUY only',
   )
   assert(
-    pendingBuyOrchestrator.includes('EXECUTION_WATCH_POOL_SIZE') &&
-      pendingBuyOrchestrator.includes('EXECUTION_WATCH_MIN_ML_EDGE') &&
-      pendingBuyOrchestrator.includes('ml_qualified_watch') &&
-      pendingBuyOrchestrator.includes('execution_pool:${executionRole}'),
-    'morning setup should make the ML-qualified execution watch pool explicit and auditable',
+    !pendingBuyOrchestrator.includes('ml_qualified_watch') &&
+      !pendingBuyOrchestrator.includes('morning_setup_ml_watch') &&
+      !pendingBuyOrchestrator.includes('WATCH_BUY') &&
+      !pendingBuyOrchestrator.includes('EXECUTION_WATCH_POOL_SIZE'),
+    'morning setup must keep ML watch evidence out of executable pending buys',
   )
   assert(
     pendingBuyOrchestrator.includes('debate_retry_pending') &&
@@ -115,7 +147,7 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
 
 {
   const postExitRecommendationQueryStart = postExit.indexOf('const { results: recs } = await ctx.db.prepare')
-  const postExitRecommendationQueryEnd = postExit.indexOf(').bind(ctx.today,', postExitRecommendationQueryStart)
+  const postExitRecommendationQueryEnd = postExit.indexOf(').bind(ctx.today)', postExitRecommendationQueryStart)
   assert(
     postExitRecommendationQueryStart >= 0 && postExitRecommendationQueryEnd > postExitRecommendationQueryStart,
     'post-exit daily recommendation query should be locatable',
@@ -141,17 +173,19 @@ const pendingBuyStore = readFileSync('src/lib/pendingBuyStore.ts', 'utf8')
     'post-exit rerank should read canonical Score V2 payload from daily_recommendations',
   )
   assert(
-    postExitRecommendationQuery.includes('dr.has_buy_signal = 1') &&
-      postExitRecommendationQuery.includes("json_extract(dr.score_components, '$.components.mlEdge')") &&
-      !postExitRecommendationQuery.includes('WHERE dr.date = ?\n         AND dr.has_buy_signal = 1'),
-    'post-exit rerank should use the same final-buy plus ML-qualified watch pool as morning setup',
+    postExitRecommendationQuery.includes('COALESCE(dr.has_buy_signal, 0) = 1') &&
+      postExitRecommendationQuery.includes("json_extract(dr.alpha_allocation, '$.selected') = 1") &&
+      postExitRecommendationQuery.includes("json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'") &&
+      !postExitRecommendationQuery.includes("json_extract(dr.score_components, '$.components.mlEdge') >= ?"),
+    'post-exit rerank must only use L4 sparse final BUY rows',
   )
   assert(
-    postExit.includes('post_exit_ml_watch_rerank') &&
-      postExit.includes('WATCH_BUY') &&
+    postExit.includes('post_exit_l4_sparse_rerank') &&
       postExit.includes('position_cap(') &&
+      !postExit.includes('post_exit_ml_watch_rerank') &&
+      !postExit.includes('WATCH_BUY') &&
       !postExit.includes('at_topK('),
-    'post-exit rerank should label ML watch replacements and avoid old top-k terminology',
+    'post-exit rerank should only enqueue L4 sparse final BUY replacements and avoid old top-k/watch terminology',
   )
   assert(
     postExitRecommendationQuery.includes("json_extract(dr.score_components, '$.finalScore')"),

@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS cost_events (
   date            TEXT NOT NULL,              -- TW YYYY-MM-DD (derived)
   source          TEXT NOT NULL,              -- 'llm_reason' | 'llm_debate' | 'llm_newsanalyst' | 'modal_function' | 'manual'
   provider        TEXT,                       -- 'anthropic' | 'gemini' | 'deepseek' | 'modal' | ...
-  model           TEXT,                       -- e.g. 'claude-sonnet-4-6', 'gemini-3.1-flash-lite', 'run_mine_cycle'
+  model           TEXT,                       -- e.g. 'claude-sonnet-4-6', 'gemini-3.5-flash', 'run_mine_cycle'
   tokens_in       INTEGER,                    -- null for non-LLM
   tokens_out      INTEGER,
   compute_sec     REAL,                       -- Modal function runtime (null for LLM)

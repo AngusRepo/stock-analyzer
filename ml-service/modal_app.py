@@ -656,6 +656,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 return 512
 
             def _validate_timesfm_config() -> dict:
+                import json
                 from app.model_pool import load_pool
                 from google.cloud import storage as _gcs
 
@@ -668,17 +669,80 @@ def retrain_orchestrator(payload: dict) -> dict:
                 bucket_name = _get_gcs_bucket_name()
                 if not bucket_name:
                     raise RuntimeError("GCS bucket not configured")
-                exists = _gcs.Client().bucket(bucket_name).blob(gcs_path).exists()
-                if not exists:
+                bucket = _gcs.Client().bucket(bucket_name)
+                config_blob = bucket.blob(gcs_path)
+                if not config_blob.exists():
                     raise RuntimeError(f"TimesFM config artifact missing in GCS: {gcs_path}")
-                return {
+
+                def _load_json_blob(path: str) -> dict:
+                    if not path:
+                        return {}
+                    blob = bucket.blob(path)
+                    if not blob.exists():
+                        return {}
+                    try:
+                        loaded = json.loads(blob.download_as_text())
+                    except Exception:
+                        return {}
+                    return loaded if isinstance(loaded, dict) else {}
+
+                config = _load_json_blob(gcs_path)
+                metadata_path = (
+                    str(entry.get("metadata_path") or "").strip()
+                    or str(config.get("metadata_path") or "").strip()
+                    or f"universal/timesfm/metadata_{version}.json"
+                )
+                metadata = _load_json_blob(metadata_path)
+                evidence = {}
+                for candidate in (
+                    config.get("last_artifact_evidence"),
+                    metadata.get("last_artifact_evidence"),
+                    config.get("benchmark_evidence"),
+                    metadata.get("benchmark_evidence"),
+                ):
+                    if isinstance(candidate, dict) and (candidate.get("oos_ic") is not None or candidate.get("after_oos_ic") is not None):
+                        evidence = dict(candidate)
+                        break
+                oos_ic = evidence.get("oos_ic") if evidence.get("oos_ic") is not None else evidence.get("after_oos_ic")
+                model_cpcv = (
+                    evidence.get("model_cpcv")
+                    or config.get("model_cpcv")
+                    or metadata.get("model_cpcv")
+                    or metadata.get("cpcv_evidence")
+                )
+                metrics = {
+                    key: evidence.get(key)
+                    for key in (
+                        "oos_ic",
+                        "after_oos_ic",
+                        "direction_accuracy",
+                        "oos_samples",
+                        "pbo",
+                        "price_mae",
+                        "price_rmse",
+                        "p10_p90_coverage",
+                    )
+                    if evidence.get(key) is not None
+                }
+                if oos_ic is not None:
+                    metrics["oos_ic"] = oos_ic
+                result = {
                     "status": "ok",
                     "model": "TimesFM",
                     "version": version,
                     "artifact_path": gcs_path,
+                    "metadata_path": metadata_path if metadata else None,
                     "artifact_type": "foundation_forecast_config",
                     "note": "TimesFM is config-backed foundation runtime; no local retrain is run.",
                 }
+                if metrics:
+                    result["metrics"] = metrics
+                if oos_ic is not None:
+                    result["oos_ic"] = oos_ic
+                    result["last_artifact_evidence"] = evidence
+                if isinstance(model_cpcv, dict):
+                    result["model_cpcv"] = model_cpcv
+                return result
 
             for target in artifact_lifecycle_targets:
                 target = str(target).strip()

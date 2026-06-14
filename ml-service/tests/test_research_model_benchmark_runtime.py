@@ -8,7 +8,6 @@ def test_research_model_benchmark_runtime_supports_sequence_upgrade_candidates_w
         "PatchTST",
         "iTransformer",
         "TimesFM",
-        "TimesFM25",
     ]:
         result = run_research_model_benchmark({
             "candidate_id": candidate_id,
@@ -31,3 +30,12 @@ def test_research_model_benchmark_runtime_fails_closed_for_unknown_candidate():
 
     assert result["status"] == "blocked"
     assert "unknown_benchmark_candidate" in result["blockers"]
+
+
+def test_research_model_benchmark_runtime_does_not_expose_timesfm25_candidate():
+    result = run_research_model_benchmark({"candidate_id": "TimesFM25"})
+
+    assert result["status"] == "blocked"
+    assert "unknown_benchmark_candidate" in result["blockers"]
+    assert "TimesFM" in result["supported_candidates"]
+    assert "TimesFM25" not in result["supported_candidates"]

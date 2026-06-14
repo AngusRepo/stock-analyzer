@@ -23,6 +23,7 @@ import { isEtfPatternSymbol } from './boardTradability'
 import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
 import { buildPriceActionStructure } from './priceActionStructure'
+import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION } from './multiStrategyPleRouter'
 import {
   buildFinLabTaxonomyThemeSignals,
   refreshStockThemeFeaturesFromSignals,
@@ -1911,24 +1912,35 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let overlayEligibleSymbols = new Set<string>()
   let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
   try {
-    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, strategyCandidatePoolModule] = await Promise.all([
+    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, strategyCandidatePoolModule, strategyPortfolioMetricsModule] = await Promise.all([
       import('./strategyLearning'),
       import('./strategyCandidatePool'),
+      import('./strategyPortfolioMetrics'),
     ])
     const { buildLayer1StrategyBreadthPlan } = strategyCandidatePoolModule
+    const { loadStrategyPortfolioMetricOverrides } = strategyPortfolioMetricsModule
     passesLayer1TopUpQualityGuard = strategyCandidatePoolModule.passesLayer1TopUpQualityGuard
+    const currentRegime = (adaptiveParams as any)?.provenance?.regime ?? null
     const [{ specs, source }, policyState] = await Promise.all([
       listStrategySpecsForLearning(env.DB),
       getLatestStrategyPolicyState(env.DB).catch(() => null),
     ])
+    const strategyPortfolioMetrics = await loadStrategyPortfolioMetricOverrides(env.DB, {
+      regime: currentRegime,
+      marketSegment: 'all',
+      minSamples: 5,
+      knownStrategyIds: specs.map((spec: any) => String(spec.id || '').trim()).filter(Boolean),
+    })
     const layer1BreadthPlan = buildLayer1StrategyBreadthPlan(
       strategySourceUniverse as any,
       specs,
       {
         targetSize: screenerPolicy.sizing.candidatePoolSize,
         coarseMlQueueSize: coarseQueueSize,
-        regime: (adaptiveParams as any)?.provenance?.regime ?? null,
+        regime: currentRegime,
         strategyWeights: policyState?.strategy_weights ?? undefined,
+        strategyPortfolioMetrics: strategyPortfolioMetrics.metrics,
+        strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
       },
     )
     strategySelectionPlan = layer1BreadthPlan.selection
@@ -1946,6 +1958,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       layer1_breadth_count: layer1BreadthPool.length,
       layer2_coarse_queue_seed_count: layer2CoarseQueueSeed.length,
       selection_order: layer1BreadthPlan.telemetry.selection_order,
+      strategy_labeler_version: layer1BreadthPlan.telemetry.strategy_labeler_version ?? null,
+      finlab_portfolio_intelligence_version: layer1BreadthPlan.telemetry.finlab_portfolio_intelligence_version ?? null,
+      l15_router_version: layer1BreadthPlan.telemetry.l15_router_version ?? null,
+      l15_router_selection_order: layer1BreadthPlan.telemetry.l15_router_selection_order ?? null,
+      l15_router_ml_slate_count: layer1BreadthPlan.telemetry.l15_router_ml_slate_count ?? null,
+      l15_router_observe_only_count: layer1BreadthPlan.telemetry.l15_router_observe_only_count ?? null,
+      l15_router_capacity_overflow_count: layer1BreadthPlan.telemetry.l15_router_capacity_overflow_count ?? null,
+      strategy_portfolio_metrics: strategyPortfolioMetrics.telemetry,
       pool_status: strategySelectionPlan.pools.map((pool: any) => ({
         strategy_id: pool.strategy_id,
         status: pool.status,
@@ -1960,7 +1980,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `source_universe=${strategySourceUniverse.length} layer1=${layer1BreadthPool.length}/${screenerPolicy.sizing.candidatePoolSize} ` +
       `coarse_seed=${layer2CoarseQueueSeed.length} keep_ratio=${screenerPolicy.sizing.coarseMlKeepRatio} core_ml=${maxCandidates} ` +
       `research_only=${strategySelectionPlan.researchOnlyQueue.length} overflow=${strategySelectionPlan.telemetry.overflow_count} ` +
-      `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode}`,
+      `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode} ` +
+      `l125_metrics=${strategyPortfolioMetrics.telemetry.status}:${strategyPortfolioMetrics.telemetry.metric_count}`,
     )
     layer1BreadthPool.forEach((candidate, index) => {
       const isObserveTopUp = String((candidate as any).strategy_pool_fallback_source ?? '') === 'raw_signal_top_up'
@@ -1980,6 +2001,31 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
           strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
           strategy_pool_score: (candidate as any).strategy_pool_score ?? null,
+          strategy_labeler_version: (candidate as any).strategy_labeler_version ?? null,
+          finlab_portfolio_intelligence_version: layer1BreadthPlan.telemetry.finlab_portfolio_intelligence_version ?? null,
+          strategy_router_version: (candidate as any).strategy_router_version ?? null,
+          strategy_router_score: (candidate as any).strategy_router_score ?? null,
+          strategy_router_decision: (candidate as any).strategy_router_decision ?? null,
+          strategy_router_reason: (candidate as any).strategy_router_reason ?? null,
+          strategy_router_components: (candidate as any).strategy_router_components ?? null,
+          strategy_portfolio_metric_source: strategyPortfolioMetrics.telemetry.source,
+          strategy_portfolio_metric_status: strategyPortfolioMetrics.telemetry.status,
+          strategy_portfolio_metric_count: strategyPortfolioMetrics.telemetry.metric_count,
+          strategy_portfolio_backtest_metric_count: strategyPortfolioMetrics.telemetry.backtest_metric_count ?? null,
+          strategy_portfolio_backtest_result_row_count: strategyPortfolioMetrics.telemetry.backtest_result_row_count ?? null,
+          candidate_route_score: (candidate as any).candidate_route_score ?? null,
+          ml_slate_eligibility: (candidate as any).ml_slate_eligibility ?? null,
+          family_exposure: (candidate as any).family_exposure ?? null,
+          diversity_contribution: (candidate as any).diversity_contribution ?? null,
+          risk_adjusted_affinity: (candidate as any).risk_adjusted_affinity ?? null,
+          uncertainty: (candidate as any).uncertainty ?? null,
+          ml_teacher_labels: (candidate as any).ml_teacher_labels ?? null,
+          strategy_affinity_vector: (candidate as any).strategy_affinity_vector ?? null,
+          strategy_weak_label_vector: (candidate as any).strategy_weak_label_vector ?? null,
+          strategy_hit_vector: (candidate as any).strategy_hit_vector ?? null,
+          strategy_position_weight_vector: (candidate as any).strategy_position_weight_vector ?? null,
+          strategy_overlap_vector: (candidate as any).strategy_overlap_vector ?? null,
+          strategy_family_affinity: (candidate as any).strategy_family_affinity ?? null,
           target_size: screenerPolicy.sizing.candidatePoolSize,
           coarse_ml_queue_size_legacy: screenerPolicy.sizing.coarseMlQueueSize,
           coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
@@ -2016,6 +2062,31 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           research_strategy_ids: (candidate as any).research_strategy_ids ?? [],
           strategy_pool_fallback_source: (candidate as any).strategy_pool_fallback_source ?? null,
           strategy_pool_reason: (candidate as any).strategy_pool_reason ?? null,
+          strategy_labeler_version: (candidate as any).strategy_labeler_version ?? null,
+          finlab_portfolio_intelligence_version: layer1BreadthPlan.telemetry.finlab_portfolio_intelligence_version ?? null,
+          strategy_router_version: (candidate as any).strategy_router_version ?? null,
+          strategy_router_score: (candidate as any).strategy_router_score ?? null,
+          strategy_router_decision: (candidate as any).strategy_router_decision ?? null,
+          strategy_router_reason: (candidate as any).strategy_router_reason ?? null,
+          strategy_router_components: (candidate as any).strategy_router_components ?? null,
+          strategy_portfolio_metric_source: strategyPortfolioMetrics.telemetry.source,
+          strategy_portfolio_metric_status: strategyPortfolioMetrics.telemetry.status,
+          strategy_portfolio_metric_count: strategyPortfolioMetrics.telemetry.metric_count,
+          strategy_portfolio_backtest_metric_count: strategyPortfolioMetrics.telemetry.backtest_metric_count ?? null,
+          strategy_portfolio_backtest_result_row_count: strategyPortfolioMetrics.telemetry.backtest_result_row_count ?? null,
+          candidate_route_score: (candidate as any).candidate_route_score ?? null,
+          ml_slate_eligibility: (candidate as any).ml_slate_eligibility ?? null,
+          family_exposure: (candidate as any).family_exposure ?? null,
+          diversity_contribution: (candidate as any).diversity_contribution ?? null,
+          risk_adjusted_affinity: (candidate as any).risk_adjusted_affinity ?? null,
+          uncertainty: (candidate as any).uncertainty ?? null,
+          ml_teacher_labels: (candidate as any).ml_teacher_labels ?? null,
+          strategy_affinity_vector: (candidate as any).strategy_affinity_vector ?? null,
+          strategy_weak_label_vector: (candidate as any).strategy_weak_label_vector ?? null,
+          strategy_hit_vector: (candidate as any).strategy_hit_vector ?? null,
+          strategy_position_weight_vector: (candidate as any).strategy_position_weight_vector ?? null,
+          strategy_overlap_vector: (candidate as any).strategy_overlap_vector ?? null,
+          strategy_family_affinity: (candidate as any).strategy_family_affinity ?? null,
           raw_signals: candidate.raw_signals ?? null,
           layer1_rank: (candidate as any).strategy_pool_rank ?? index + 1,
           coarse_ml_queue_size_legacy: screenerPolicy.sizing.coarseMlQueueSize,
@@ -2043,6 +2114,31 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_pool_fallback_source: entry.strategy_pool_fallback_source ?? null,
           strategy_pool_score: entry.strategy_pool_score ?? null,
           strategy_pool_decision: entry.strategy_pool_decision ?? null,
+          strategy_labeler_version: entry.strategy_labeler_version ?? null,
+          finlab_portfolio_intelligence_version: layer1BreadthPlan.telemetry.finlab_portfolio_intelligence_version ?? null,
+          strategy_router_version: entry.strategy_router_version ?? null,
+          strategy_router_score: entry.strategy_router_score ?? null,
+          strategy_router_decision: entry.strategy_router_decision ?? null,
+          strategy_router_reason: entry.strategy_router_reason ?? null,
+          strategy_router_components: entry.strategy_router_components ?? null,
+          strategy_portfolio_metric_source: strategyPortfolioMetrics.telemetry.source,
+          strategy_portfolio_metric_status: strategyPortfolioMetrics.telemetry.status,
+          strategy_portfolio_metric_count: strategyPortfolioMetrics.telemetry.metric_count,
+          strategy_portfolio_backtest_metric_count: strategyPortfolioMetrics.telemetry.backtest_metric_count ?? null,
+          strategy_portfolio_backtest_result_row_count: strategyPortfolioMetrics.telemetry.backtest_result_row_count ?? null,
+          candidate_route_score: entry.candidate_route_score ?? null,
+          ml_slate_eligibility: entry.ml_slate_eligibility ?? null,
+          family_exposure: entry.family_exposure ?? null,
+          diversity_contribution: entry.diversity_contribution ?? null,
+          risk_adjusted_affinity: entry.risk_adjusted_affinity ?? null,
+          uncertainty: entry.uncertainty ?? null,
+          ml_teacher_labels: entry.ml_teacher_labels ?? null,
+          strategy_affinity_vector: entry.strategy_affinity_vector ?? null,
+          strategy_weak_label_vector: entry.strategy_weak_label_vector ?? null,
+          strategy_hit_vector: entry.strategy_hit_vector ?? null,
+          strategy_position_weight_vector: entry.strategy_position_weight_vector ?? null,
+          strategy_overlap_vector: entry.strategy_overlap_vector ?? null,
+          strategy_family_affinity: entry.strategy_family_affinity ?? null,
           source_universe: 'post_safety_hard_filter_pre_rrg',
           source_universe_count: strategySourceUniverse.length,
           market_segment: entry.market_segment ?? null,
@@ -2992,6 +3088,22 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_pool_fallback_source: sc.strategy_pool_fallback_source ?? null,
       strategy_pool_score: sc.strategy_pool_score ?? null,
       strategy_pool_reason: sc.strategy_pool_reason ?? null,
+      strategy_labeler_version: sc.strategy_labeler_version ?? null,
+      finlab_portfolio_intelligence_version: FINLAB_PORTFOLIO_INTELLIGENCE_VERSION,
+      strategy_router_version: sc.strategy_router_version ?? null,
+      candidate_route_score: sc.candidate_route_score ?? null,
+      ml_slate_eligibility: sc.ml_slate_eligibility ?? null,
+      family_exposure: sc.family_exposure ?? null,
+      diversity_contribution: sc.diversity_contribution ?? null,
+      risk_adjusted_affinity: sc.risk_adjusted_affinity ?? null,
+      uncertainty: sc.uncertainty ?? null,
+      ml_teacher_labels: sc.ml_teacher_labels ?? null,
+      strategy_affinity_vector: sc.strategy_affinity_vector ?? null,
+      strategy_weak_label_vector: sc.strategy_weak_label_vector ?? null,
+      strategy_hit_vector: sc.strategy_hit_vector ?? null,
+      strategy_position_weight_vector: sc.strategy_position_weight_vector ?? null,
+      strategy_overlap_vector: sc.strategy_overlap_vector ?? null,
+      strategy_family_affinity: sc.strategy_family_affinity ?? null,
       l1_breadth_seed_size: finalCandidates.length,
       layer2_owner: 'ml-controller',
       layer2_coarse_queue_size_legacy: coarseQueueSize,
@@ -3018,6 +3130,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategy_owner_types: sc.strategy_owner_types ?? [],
         strategy_pool_score: sc.strategy_pool_score ?? null,
         strategy_pool_reason: sc.strategy_pool_reason ?? null,
+        strategy_labeler_version: sc.strategy_labeler_version ?? null,
+        strategy_router_version: sc.strategy_router_version ?? null,
+        candidate_route_score: sc.candidate_route_score ?? null,
+        ml_slate_eligibility: sc.ml_slate_eligibility ?? null,
+        family_exposure: sc.family_exposure ?? null,
+        diversity_contribution: sc.diversity_contribution ?? null,
+        risk_adjusted_affinity: sc.risk_adjusted_affinity ?? null,
+        uncertainty: sc.uncertainty ?? null,
       },
     })
     pushFunnelItem(funnelItems, {

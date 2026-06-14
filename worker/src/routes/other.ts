@@ -23,14 +23,16 @@ import {
   answerStockQuestion,
 } from '../lib/llm'
 import {
+  buildHardGateSummary,
+  buildSparseAllocationSummary,
   buildMlDiagnostics,
   buildMlVoteSummary,
   compactRecommendationForCard,
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
-import { classifyBoard } from '../lib/boardTradability'
-import { summarizeScreenerFunnelRows } from '../lib/screenerFunnelEvidence'
+import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
+import { summarizeScreenerFunnelRows, summarizeStrategyPortfolioIntelligenceHealth } from '../lib/screenerFunnelEvidence'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import {
   buildMarketRegimeFactorPacket,
@@ -1283,10 +1285,15 @@ recommendations.get('/daily', async (c) => {
          WHERE run_id = (SELECT run_id FROM latest_screener_run)
            AND symbol IN (${placeholders})
            AND stage IN (
+             'universe',
              'scoring',
              'rrg_overlay',
              'buzz_evidence',
              'diversity_cooldown',
+             'layer1_strategy_breadth_gate',
+             'layer2_coarse_ml_gate',
+             'layer3_formal_ml_gate',
+             'l1_candidate_seed_after_overlay',
              'strategy_pool_ml_queue',
              'strategy_pool_research_only',
              'final_selection'
@@ -1328,9 +1335,19 @@ recommendations.get('/daily', async (c) => {
     const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
     const persistedAlphaContext = parsePredictionForecastData(r.alpha_context)
     const persistedAlphaAllocation = parsePredictionForecastData(r.alpha_allocation)
+    const alphaAllocation = forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null
+    const l4SparseAllocation = buildSparseAllocationSummary(alphaAllocation)
     const persistedMlVoteSummary = parsePredictionForecastData(r.ml_vote_summary)
     const persistedScoreComponents = parsePredictionForecastData(r.score_components)
     const screenerFunnel = screenerFunnelBySymbol.get(String(r.symbol ?? '').trim()) ?? null
+    const screenerFunnelEvidenceBase = screenerFunnel?.evidence
+      ? {
+          ...screenerFunnel.evidence,
+          ...(l4SparseAllocation ? { layer4_sparse_allocation: l4SparseAllocation } : {}),
+        }
+      : l4SparseAllocation
+        ? { layer4_sparse_allocation: l4SparseAllocation }
+        : null
     const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
     const parsedWatchPoints = (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })()
     const emergingBrokerEvidence = buildEmergingBrokerEvidence(r)
@@ -1343,22 +1360,40 @@ recommendations.get('/daily', async (c) => {
       symbol: r.symbol,
     })
     const persistedLane = String(r.recommendation_lane || '').trim()
-    const recommendationLane = persistedLane || board.recommendationLane
-    const eligibleForMl = r.eligible_for_ml == null ? board.eligibleForMl : Number(r.eligible_for_ml) === 1
-    const eligibleForPendingBuy = r.eligible_for_pending_buy == null
-      ? board.eligibleForPendingBuy
-      : Number(r.eligible_for_pending_buy) === 1
+    const governance = resolveRecommendationGovernance(board, {
+      recommendationLane: persistedLane,
+      eligibleForMl: r.eligible_for_ml,
+      eligibleForPendingBuy: r.eligible_for_pending_buy,
+    })
+    const hardGateSummary = buildHardGateSummary({
+      boardType: board.boardType,
+      tradabilityTier: board.tradabilityTier,
+      recommendationLane: governance.recommendationLane,
+      marketSegment: r.market_segment || board.boardType,
+      boardReason: board.reason,
+      persistedRecommendationLane: persistedLane,
+      eligibleForMl: governance.eligibleForMl,
+      eligibleForPendingBuy: governance.eligibleForPendingBuy,
+    })
+    const screenerFunnelEvidence = screenerFunnelEvidenceBase
+      ? {
+          ...screenerFunnelEvidenceBase,
+          layer05_hard_gate: hardGateSummary,
+        }
+      : { layer05_hard_gate: hardGateSummary }
     return {
       ...r,
       market_segment: r.market_segment || board.boardType,
       board_type: board.boardType,
       tradability_tier: board.tradabilityTier,
-      recommendation_lane: recommendationLane,
-      eligible_for_ml: eligibleForMl,
-      eligible_for_pending_buy: eligibleForPendingBuy,
+      recommendation_lane: governance.recommendationLane,
+      eligible_for_ml: governance.eligibleForMl,
+      eligible_for_pending_buy: governance.eligibleForPendingBuy,
       board_reason: board.reason,
+      l05_hard_gate: hardGateSummary,
       alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
-      alpha_allocation: forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null,
+      alpha_allocation: alphaAllocation,
+      l4_sparse_allocation: l4SparseAllocation,
       ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
       ml_diagnostics: buildMlDiagnostics(forecastData),
       score_components: scoreComponents,
@@ -1366,7 +1401,7 @@ recommendations.get('/daily', async (c) => {
       reason: mergeEmergingBrokerReason(r.reason, emergingBrokerEvidence),
       screener_funnel_rank: screenerFunnel?.rank ?? null,
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,
-      screener_funnel_evidence: screenerFunnel?.evidence ?? null,
+      screener_funnel_evidence: screenerFunnelEvidence,
       screener_funnel_timeline: screenerFunnel?.timeline ?? [],
       watch_points: watchPoints,
     }
@@ -1391,6 +1426,10 @@ recommendations.get('/daily', async (c) => {
   const emergingPayload = emergingRecs.map(shape)
   const researchOnlyPayload = researchOnlyRecs.map(shape)
   const allPayload = recs.map(shape)
+  const strategyPortfolioIntelligenceHealth = summarizeStrategyPortfolioIntelligenceHealth(
+    screenerFunnelBySymbol.values(),
+    recs.length,
+  )
 
   return c.json({
     requested_date: requestedOrToday,
@@ -1408,6 +1447,7 @@ recommendations.get('/daily', async (c) => {
       emerging_watchlist: { count: emergingRecs.length },
       research_only: { count: researchOnlyRecs.length },
     },
+    strategy_portfolio_intelligence_health: strategyPortfolioIntelligenceHealth,
     generated_at: recs[0]?.created_at ?? null,
   })
 })
@@ -1485,7 +1525,8 @@ recommendations.get('/sector-trend', async (c) => {
   const binds = type ? [sector, days, type] : [sector, days]
 
   const { results } = await c.env.DB.prepare(`
-    SELECT date, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, up_count, stock_count, classification
+    SELECT date, foreign_net, trust_net, total_net, avg_rsi, avg_momentum_5d, up_count, stock_count,
+           classification, turnover_value, turnover_share, turnover_share_delta
     FROM sector_flow
     WHERE sector = ? AND date >= date('now', '-' || ? || ' days') ${typeFilter}
     ORDER BY date ASC

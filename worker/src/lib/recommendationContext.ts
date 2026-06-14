@@ -41,6 +41,63 @@ export interface MlDiagnosticsSummary {
   }
 }
 
+export interface SparseAllocationSummary {
+  schema_version: 'l4_sparse_allocation_summary_v1'
+  source: 'alpha_allocation'
+  allocation_method: 'sparse_tangent_inverse_risk_final_allocation'
+  input_scope: 'post_l3_5_evidence_fusion_candidates'
+  selection_policy: 'positive_expected_edge_sparse_weights_no_forced_fill'
+  decision_policy: 'final_owner_no_topk_fallback'
+  capacity_policy: 'maximum_capacity_not_minimum_fill'
+  upstream_conflict_policy: 'l3_5_flags_conflict_l4_decides_weight_not_drop'
+  final_decision_scope: 'buy_hold_weight_zero_to_capacity'
+  max_capacity_not_target: true
+  hard_minimum_fill: false
+  allows_empty_portfolio: true
+  zero_selection_allowed: true
+  legacy_topk_fallback_allowed: false
+  legacy_rank_topk_fallback_allowed: false
+  is_final_allocation_owner: true
+  engine: 'sparse_tangent_inverse_risk'
+  controller: string | null
+  selected: boolean
+  allocation_weight: number | null
+  buy_signal_count: number | null
+  return_history_coverage: number | null
+  return_history_symbol_count: number | null
+  opb_controller: Record<string, unknown> | null
+}
+
+export interface HardGateSummary {
+  schema_version: 'l05_hard_gate_summary_v1'
+  source: 'board_tradability+persisted_recommendation_governance'
+  decision_policy: 'exclude_untradable_or_untrusted_only_not_alpha_ranker'
+  gate_scope: 'tradeability_data_trust_pending_buy'
+  board_type: string | null
+  tradability_tier: string | null
+  recommendation_lane: string | null
+  market_segment: string | null
+  board_reason: string | null
+  persisted_recommendation_lane: string | null
+  eligible_for_ml: boolean
+  eligible_for_pending_buy: boolean
+  ml_slate_allowed: boolean
+  pending_buy_blocked: boolean
+  hard_blocked: boolean
+  notes: string[]
+}
+
+export interface HardGateSummaryInput {
+  boardType?: string | null
+  tradabilityTier?: string | null
+  recommendationLane?: string | null
+  marketSegment?: string | null
+  boardReason?: string | null
+  persistedRecommendationLane?: string | null
+  eligibleForMl?: unknown
+  eligibleForPendingBuy?: unknown
+}
+
 export interface PerModelPredictionRow {
   model_name?: string | null
   signal_raw?: string | null
@@ -79,6 +136,7 @@ export const ALPHA_PREDICTION_MODEL_NAMES = [
 
 const TRACKED_MODEL_NAMES = [...ALPHA_PREDICTION_MODEL_NAMES]
 const TRACKED_MODEL_NAME_SET = new Set<string>(TRACKED_MODEL_NAMES)
+const DEFAULT_SPARSE_ALLOCATION_CONTROLLER = 'OnlinePortfolioBandit'
 
 function normalizeModelName(raw: unknown): string {
   const value = String(raw ?? '').trim()
@@ -158,6 +216,17 @@ function finiteOrDefault(value: unknown, fallback: number): number {
 function finiteOrNull(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function boolFromUnknown(value: unknown): boolean {
+  if (value === true || value === 1) return true
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true' || value.trim() === '1'
+  return false
+}
+
+function cleanTextOrNull(value: unknown): string | null {
+  const text = String(value ?? '').trim()
+  return text ? text : null
 }
 
 function clamp01(value: number): number {
@@ -327,6 +396,89 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
       mergeCompression: finiteOrNull(dispersion.merge_compression),
       weightHhi: finiteOrNull(dispersion.weight_hhi),
     },
+  }
+}
+
+export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAllocationSummary | null {
+  const allocation = parsePredictionForecastData(alphaAllocation)
+  if (!allocation) return null
+  if (String(allocation.engine ?? '').trim() !== 'sparse_tangent_inverse_risk') return null
+
+  const returnHistorySymbols = Array.isArray(allocation.return_history_symbols)
+    ? allocation.return_history_symbols.map(String).filter(Boolean)
+    : []
+  const opbController = allocation.opb_controller && typeof allocation.opb_controller === 'object'
+    ? allocation.opb_controller as Record<string, unknown>
+    : null
+  const controller = cleanTextOrNull(allocation.controller)
+    ?? cleanTextOrNull(opbController?.controller)
+    ?? cleanTextOrNull(opbController?.policy_id)
+    ?? DEFAULT_SPARSE_ALLOCATION_CONTROLLER
+
+  return {
+    schema_version: 'l4_sparse_allocation_summary_v1',
+    source: 'alpha_allocation',
+    allocation_method: 'sparse_tangent_inverse_risk_final_allocation',
+    input_scope: 'post_l3_5_evidence_fusion_candidates',
+    selection_policy: 'positive_expected_edge_sparse_weights_no_forced_fill',
+    decision_policy: 'final_owner_no_topk_fallback',
+    capacity_policy: 'maximum_capacity_not_minimum_fill',
+    upstream_conflict_policy: 'l3_5_flags_conflict_l4_decides_weight_not_drop',
+    final_decision_scope: 'buy_hold_weight_zero_to_capacity',
+    max_capacity_not_target: true,
+    hard_minimum_fill: false,
+    allows_empty_portfolio: true,
+    zero_selection_allowed: true,
+    legacy_topk_fallback_allowed: false,
+    legacy_rank_topk_fallback_allowed: false,
+    is_final_allocation_owner: true,
+    engine: 'sparse_tangent_inverse_risk',
+    controller,
+    selected: boolFromUnknown(allocation.selected),
+    allocation_weight: finiteOrNull(allocation.allocation_weight),
+    buy_signal_count: finiteOrNull(allocation.buy_signal_count),
+    return_history_coverage: finiteOrNull(allocation.return_history_coverage),
+    return_history_symbol_count: returnHistorySymbols.length || null,
+    opb_controller: opbController,
+  }
+}
+
+export function buildHardGateSummary(input: HardGateSummaryInput): HardGateSummary {
+  const boardType = cleanTextOrNull(input.boardType)
+  const tradabilityTier = cleanTextOrNull(input.tradabilityTier)
+  const recommendationLane = cleanTextOrNull(input.recommendationLane)
+  const marketSegment = cleanTextOrNull(input.marketSegment)
+  const boardReason = cleanTextOrNull(input.boardReason)
+  const persistedRecommendationLane = cleanTextOrNull(input.persistedRecommendationLane)
+  const eligibleForMl = boolFromUnknown(input.eligibleForMl)
+  const eligibleForPendingBuy = boolFromUnknown(input.eligibleForPendingBuy)
+  const hardBlocked = tradabilityTier === 'blocked'
+    || boardType === 'ETF'
+    || boardType === 'UNKNOWN'
+    || (recommendationLane === 'research_only' && !eligibleForMl && !eligibleForPendingBuy)
+  const notes = [
+    eligibleForMl ? 'ml_evaluation_allowed' : 'ml_evaluation_blocked',
+    eligibleForPendingBuy ? 'pending_buy_allowed' : 'pending_buy_blocked',
+    hardBlocked ? 'hard_gate_blocked_from_trade_lane' : 'hard_gate_passed_for_lane',
+  ]
+
+  return {
+    schema_version: 'l05_hard_gate_summary_v1',
+    source: 'board_tradability+persisted_recommendation_governance',
+    decision_policy: 'exclude_untradable_or_untrusted_only_not_alpha_ranker',
+    gate_scope: 'tradeability_data_trust_pending_buy',
+    board_type: boardType,
+    tradability_tier: tradabilityTier,
+    recommendation_lane: recommendationLane,
+    market_segment: marketSegment,
+    board_reason: boardReason,
+    persisted_recommendation_lane: persistedRecommendationLane,
+    eligible_for_ml: eligibleForMl,
+    eligible_for_pending_buy: eligibleForPendingBuy,
+    ml_slate_allowed: eligibleForMl && !hardBlocked,
+    pending_buy_blocked: !eligibleForPendingBuy,
+    hard_blocked: hardBlocked,
+    notes,
   }
 }
 

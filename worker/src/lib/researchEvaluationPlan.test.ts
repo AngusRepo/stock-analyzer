@@ -57,7 +57,7 @@ function assert(condition: unknown, message: string): void {
     data_slice: {
       start_date: '2025-01-01',
       end_date: '2026-04-30',
-      benchmark_candidates: ['DLinear', 'PatchTST', 'iTransformer', 'TimesFM', 'TimesFM25'],
+      benchmark_candidates: ['DLinear', 'PatchTST', 'iTransformer', 'TimesFM'],
     },
     metrics: ['model_benchmark', 'oos_ic', 'pbo', 'cost_sensitivity'],
     follow_up: ['produce benchmark review packet'],
@@ -74,7 +74,7 @@ function assert(condition: unknown, message: string): void {
   })
 
   const benchmarkSteps = plan.steps.filter((step) => step.kind === 'model_benchmark')
-  assert(benchmarkSteps.length === 5, 'model upgrade research should create one benchmark step per supported requested candidate')
+  assert(benchmarkSteps.length === 4, 'model upgrade research should create one benchmark step per supported requested candidate')
   assert(
     benchmarkSteps.every((step) => step.controller_endpoint === '/research/model-benchmark/dry-run'),
     'model benchmark steps should call the research benchmark endpoint',
@@ -84,7 +84,7 @@ function assert(condition: unknown, message: string): void {
     'model benchmark steps must stay non-mutating',
   )
   assert(
-    benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'DLinear,PatchTST,iTransformer,TimesFM,TimesFM25',
+    benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'DLinear,PatchTST,iTransformer,TimesFM',
     'model benchmark steps should preserve supported benchmark candidates',
   )
 }
@@ -114,4 +114,70 @@ function assert(condition: unknown, message: string): void {
 
   assert(plan.warnings.includes('strategy_spec_ids_missing'), 'plan should warn when strategy specs are missing')
   assert(plan.warnings.includes('metrics_missing'), 'plan should warn when metrics are missing')
+}
+
+{
+  const plan = buildResearchEvaluationPlan({
+    id: 'model-upgrade-dlinear-p7-model-upgrade-track-v1',
+    version: 'research-registry-v1',
+    status: 'running',
+    hypothesis: 'DLinear production_slot_member monitor artifact-backed serving and OOS evidence.',
+    source_refs: ['strategy-lab-ui', 'model-upgrade-track'],
+    strategy_spec_ids: ['model_family_production_slot_member_v1'],
+    data_slice: {
+      start_date: '2026-04-01',
+      lane: 'production_slot_member',
+    },
+    metrics: ['production_artifact', 'oos_ic', 'lifecycle_weight', 'serving_parity', 'cost_profile'],
+    follow_up: ['monitor production slot health'],
+    approval_gate: {
+      can_research: true,
+      can_generate_patch_or_report: true,
+      can_retrain_prod: false,
+      can_promote: false,
+      can_deploy: false,
+      can_trade: false,
+    },
+    created_at: '2026-06-13T00:00:00.000Z',
+    updated_at: '2026-06-13T00:00:00.000Z',
+  })
+
+  const benchmarkSteps = plan.steps.filter((step) => step.kind === 'model_benchmark')
+  const walkForward = plan.steps.find((step) => step.kind === 'walk_forward')
+  assert(benchmarkSteps.length === 1, 'production slot model-upgrade experiment should benchmark only its own candidate')
+  assert(benchmarkSteps[0].body.candidate_id === 'DLinear', 'DLinear production slot should not benchmark every active model')
+  assert(Array.isArray(walkForward?.body.models), 'production slot walk-forward should be model-scoped')
+  assert((walkForward?.body.models as string[]).join(',') === 'DLinear', 'DLinear walk-forward must not default to MODELS_ALL')
+}
+
+{
+  const plan = buildResearchEvaluationPlan({
+    id: 'model-upgrade-timesfm-p7-model-upgrade-track-v1',
+    version: 'research-registry-v1',
+    status: 'running',
+    hypothesis: 'TimesFM production_slot_member monitor config-backed serving and OOS evidence.',
+    source_refs: ['strategy-lab-ui', 'model-upgrade-track'],
+    strategy_spec_ids: ['model_family_production_slot_member_v1'],
+    data_slice: {
+      start_date: '2026-04-01',
+      lane: 'production_slot_member',
+    },
+    metrics: ['production_artifact', 'forecast_validation', 'walk_forward', 'cost_profile', 'positive_ic'],
+    follow_up: ['monitor production slot health'],
+    approval_gate: {
+      can_research: true,
+      can_generate_patch_or_report: true,
+      can_retrain_prod: false,
+      can_promote: false,
+      can_deploy: false,
+      can_trade: false,
+    },
+    created_at: '2026-06-13T00:00:00.000Z',
+    updated_at: '2026-06-13T00:00:00.000Z',
+  })
+
+  const benchmarkSteps = plan.steps.filter((step) => step.kind === 'model_benchmark')
+  const walkForward = plan.steps.find((step) => step.kind === 'walk_forward')
+  assert(benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'TimesFM', 'TimesFM production slot must not infer TimesFM25 benchmark candidate')
+  assert((walkForward?.body.models as string[]).join(',') === 'TimesFM', 'TimesFM walk-forward must stay scoped to TimesFM')
 }

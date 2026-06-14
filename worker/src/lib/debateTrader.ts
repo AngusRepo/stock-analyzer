@@ -6,7 +6,7 @@
  *
  * LLM 三層 fallback（成本最低優先）：
  *   1. 本地 Tunnel → Claude Opus（Max Plan 已付費，透過 Cloudflare Tunnel 呼叫）
- *   2. Gemini 3.1 Flash Lite（主力；便宜+快速+中文好）
+ *   2. Gemini 3.5 Flash（stable primary）
  *   3. Anthropic API → Claude Haiku（花錢，最後手段）
  *
  * Verdict: APPROVE → normal buy / DOWNGRADE → halve position / REJECT → skip
@@ -20,6 +20,8 @@ import {
   insertDebateMemory, getHistoricalThesis, renderHistoricalThesisBlock,
   verdictToDirection,
 } from './debateMemory'
+
+const GEMINI_FLASH_MODEL = 'gemini-3.5-flash'
 
 // ─── P1#14: Prompt Injection Detection ────────────────────────────────────────
 const DANGER_PATTERNS: Array<[RegExp, string, string]> = [
@@ -80,7 +82,7 @@ export interface StockProfile {
 export interface LLMEnv {
   LOCAL_TUNNEL_URL?: string   // e.g. https://claude-proxy.your-tunnel.cfargotunnel.com
   AI?: any                    // Cloudflare Workers AI binding
-  GEMINI_API_KEY?: string     // Gemini 3.1 Flash Lite (primary cheap+fast)
+  GEMINI_API_KEY?: string     // Gemini 3.5 Flash (stable primary)
   ANTHROPIC_API_KEY?: string  // Anthropic API key (last resort fallback)
   KV?: KVNamespace            // 讀 ml:config.debate_model（可 runtime 換模型）
   DB?: any                    // D1 for FinMem historical thesis (optional, graceful degrade)
@@ -112,7 +114,7 @@ async function getMlConfig(kv: KVNamespace): Promise<Record<string, any>> {
 /**
  * 依優先順序嘗試呼叫 LLM：
  *   1. 本地 Tunnel (Claude Opus) — 最強品質，Max Plan 免費
- *   2. Gemini 3.1 Flash Lite — 主力（便宜+快速+中文好）
+ *   2. Gemini 3.5 Flash — stable primary
  *   3. Anthropic API (Haiku) — 花錢，最後手段
  */
 export async function callLLM(
@@ -146,12 +148,11 @@ export async function callLLM(
     }
   }
 
-  // ── Layer 2: Gemini 3.1 Flash Lite — 主力（便宜+快速+中文好）──────────
+  // ── Layer 2: Gemini 3.5 Flash — stable primary ──────────
   if (env.GEMINI_API_KEY) {
     try {
-      const geminiModel = 'gemini-3.1-flash-lite-preview'
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${env.GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

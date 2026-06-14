@@ -23,7 +23,7 @@ def _seed_ready_evidence(root: Path, audit_payload: dict[str, object] | None = N
         "production_mutation_allowed": False,
     }
     _write(
-        root / "ml-service/benchmark_results/local_prod_ready_audit_20260612.json",
+        root / "ml-service/benchmark_results/local_prod_ready_audit_20260614.json",
         json.dumps(audit),
     )
     _write(
@@ -70,7 +70,7 @@ def test_production_cutover_packet_blocks_when_local_gate_is_not_done(tmp_path):
 
 def test_production_cutover_packet_blocks_when_evidence_is_missing(tmp_path):
     _write(
-        tmp_path / "ml-service/benchmark_results/local_prod_ready_audit_20260612.json",
+        tmp_path / "ml-service/benchmark_results/local_prod_ready_audit_20260614.json",
         json.dumps({
             "local_closure": "done",
             "local_prod_ready": "done",

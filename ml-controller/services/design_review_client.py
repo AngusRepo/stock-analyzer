@@ -15,7 +15,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_DESIGN_REVIEW_MODEL", "gemini-3.1-flash-lite-preview")
+GEMINI_MODEL = os.environ.get("GEMINI_DESIGN_REVIEW_MODEL", "gemini-3.5-flash")
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 

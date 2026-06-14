@@ -515,7 +515,7 @@ def compute_adaptive_params(
                 "GAOptimizer": "meta optimizer for ensemble weights, strategy params, and risk params",
                 "NeuralUCB": "shadow meta-router for nonlinear model-weight and threshold policy comparison",
                 "NeuralTS": "shadow Thompson sampler to audit NeuralUCB optimism before production consideration",
-                "OnlinePortfolioBandit": "research-layer allocation policy; waits for execution/slippage parity",
+                "OnlinePortfolioBandit": "production allocator controller for sparse_tangent_inverse_risk knobs; production-capable without replacing the final weight engine",
                 "NeuCB": "research-only neural contextual bandit benchmark until experiment registry evidence exists",
             },
             "immutable_risk_boundaries": [

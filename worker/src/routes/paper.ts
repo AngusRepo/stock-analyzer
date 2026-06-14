@@ -291,6 +291,30 @@ function stripLegacyPendingBuyRunHistory(runHistory: any): any {
   }
 }
 
+function buildPendingBuyExecutionPolicy(meta: Record<string, any> | null | undefined, sourceRecoDate: string): Record<string, any> {
+  const rawFinalBuyLimit = meta?.final_buy_limit ?? meta?.execution_pool_limit
+  const finalBuyLimit = Number(rawFinalBuyLimit)
+  return {
+    schema_version: 'pending_buy_execution_policy_v1',
+    execution_pool_policy: 'l4_sparse_final_buy_only',
+    allocator_owner: 'layer4_sparse_allocation',
+    allocation_engine: 'sparse_tangent_inverse_risk',
+    source_reco_date: sourceRecoDate,
+    final_buy_limit: rawFinalBuyLimit != null && Number.isFinite(finalBuyLimit) ? finalBuyLimit : null,
+    capacity_policy: 'maximum_capacity_not_minimum_fill',
+    watch_fallback_allowed: false,
+    ml_watch_rows_executable: false,
+    raw_recommendation_rows_executable: false,
+    l4_zero_selection_allowed: true,
+    legacy_topk_fallback_allowed: false,
+    required_daily_recommendation_evidence: [
+      'has_buy_signal=1',
+      'alpha_allocation.selected=1',
+      'alpha_allocation.engine=sparse_tangent_inverse_risk',
+    ],
+  }
+}
+
 // Auth middleware supporting both internal token and approved JWT sessions.
 
 const paperAuth = async (
@@ -593,6 +617,7 @@ paper.get('/pending-buys', async (c) => {
   const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
     ? snapshot.meta.source_reco_date
     : snapshot.date
+  const executionPolicy = buildPendingBuyExecutionPolicy(snapshot.meta as Record<string, any> | null, sourceRecoDate)
   const pendingBuys = await enrichPendingBuyContext(c.env.DB, snapshot.pendingBuys, sourceRecoDate)
   const runHistory = await loadPendingBuyRunHistory(c.env, twToday, { limit: 5 })
   const pendingBuysForResponse = pendingBuys.map((item) => removeLegacyPendingBuyScoreFields(item))
@@ -603,6 +628,7 @@ paper.get('/pending-buys', async (c) => {
     resolved_from: snapshot.resolved_from,
     source: snapshot.source,
     meta: snapshot.meta ?? null,
+    execution_policy: executionPolicy,
     state,
     pendingBuys: pendingBuysForResponse,
     runHistory: stripLegacyPendingBuyRunHistory(runHistory),

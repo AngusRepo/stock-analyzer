@@ -386,6 +386,14 @@ def _normalise_lifecycle_registration(
     has_artifact = bool(artifact_path or saved or metadata)
     status = "registered" if raw_status in {"ok", "registered", ""} and has_artifact else raw_status or "unknown"
     promoted_to_active = bool(pool_update and str(pool_update.get("new_version") or "") == version)
+    if (
+        not promoted_to_active
+        and model_name == "TimesFM"
+        and raw_status in {"ok", "registered", ""}
+        and str(raw_result.get("artifact_type") or "") == "foundation_forecast_config"
+        and has_artifact
+    ):
+        promoted_to_active = True
 
     registration: dict[str, Any] = {
         "status": status,

@@ -175,6 +175,7 @@ def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets
     assert by_model["TabM"]["evaluation_baseline_version"] == "vOldTabM"
     assert by_model["GNN"]["state"] == "offline_passed_weak"
     assert by_model["iTransformer"]["state"] == "offline_failed"
+    assert by_model["TimesFM"]["state"] == "production"
     assert by_model["TimesFM"]["artifact_path"] == "universal/timesfm/v20260612T160113_timesfm25_ctx1024.json"
     offline = json.loads(by_model["TabM"]["offline_evidence_json"])
     assert offline["source"] == "artifact_lifecycle"

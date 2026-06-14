@@ -21,6 +21,31 @@ function resolveBuildId() {
 const BUILD_ID = resolveBuildId()
 const BUILD_STAMP = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
 
+const MANUAL_CHUNK_GROUPS: Record<string, string[]> = {
+  'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+  'vendor-query': ['@tanstack/react-query'],
+  'vendor-charts': ['recharts', 'lightweight-charts'],
+  'vendor-ui': [
+    '@radix-ui/react-tabs',
+    '@radix-ui/react-dialog',
+    '@radix-ui/react-dropdown-menu',
+    '@radix-ui/react-tooltip',
+  ],
+}
+
+function resolveManualChunk(id: string) {
+  const normalized = id.replace(/\\/g, '/')
+  if (!normalized.includes('/node_modules/')) return undefined
+
+  for (const [chunkName, packages] of Object.entries(MANUAL_CHUNK_GROUPS)) {
+    if (packages.some((packageName) => normalized.includes(`/node_modules/${packageName}/`))) {
+      return chunkName
+    }
+  }
+
+  return undefined
+}
+
 export default defineConfig({
   define: {
     'import.meta.env.VITE_BUILD_ID': JSON.stringify(BUILD_ID),
@@ -99,17 +124,7 @@ export default defineConfig({
         entryFileNames: `assets/[name]-${BUILD_ID}-[hash].js`,
         chunkFileNames: `assets/[name]-${BUILD_ID}-[hash].js`,
         assetFileNames: `assets/[name]-${BUILD_ID}-[hash][extname]`,
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-query': ['@tanstack/react-query'],
-          'vendor-charts': ['recharts', 'lightweight-charts'],
-          'vendor-ui': [
-            '@radix-ui/react-tabs',
-            '@radix-ui/react-dialog',
-            '@radix-ui/react-dropdown-menu',
-            '@radix-ui/react-tooltip',
-          ],
-        },
+        manualChunks: resolveManualChunk,
       },
     },
     chunkSizeWarningLimit: 800,

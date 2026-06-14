@@ -110,6 +110,7 @@ const MODEL_DATASET_REQUIREMENTS: Record<string, { window: string; shape: string
 }
 
 type SelectionModelRow = ModelArtifactSelectionResponse['models'][string]
+type SelectedArtifactRow = NonNullable<SelectionModelRow['monthly_release_candidate']>
 type PromotionQueueRow = ModelArtifactPromotionQueueResponse['queue'][number]
 
 function isServing(model?: ModelPoolLineageModel): boolean {
@@ -196,6 +197,7 @@ type GrafanaModelRecord = {
   status: string
   statusTone: WorkstationTone
   artifactVersion: string
+  selectedArtifact?: SelectedArtifactRow | null
   dataset?: { window: string; shape: string; note: string }
   pointerRow?: ModelChampionPointersResponse['models'][string]
   pointerTone: WorkstationTone
@@ -207,6 +209,7 @@ type GrafanaModelRecord = {
   approvalOk: boolean
   pointerOk: boolean
   blockers: string[]
+  missingEvidence: string[]
   nextAction: string
   history: Array<{
     label: string
@@ -215,8 +218,6 @@ type GrafanaModelRecord = {
     tone: WorkstationTone
   }>
 }
-
-const GRAFANA_HISTORY_BUCKETS = ['W-5', 'W-4', 'W-3', 'W-2', 'W-1'] as const
 
 function severityScore(tone: WorkstationTone): number {
   if (tone === 'error') return 4
@@ -270,6 +271,155 @@ function compactNumber(value: number | null | undefined, digits = 3): string {
   return value.toFixed(digits)
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function firstFiniteNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return null
+}
+
+function firstText(...values: unknown[]): string | null {
+  for (const value of values) {
+    const text = String(value ?? '').trim()
+    if (text) return text
+  }
+  return null
+}
+
+function compactText(value: string | null | undefined, max = 18): string {
+  const text = String(value ?? '').trim()
+  if (!text) return 'N/A'
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text
+}
+
+function toneFromGate(value?: string | null): WorkstationTone {
+  const text = String(value ?? '').toLowerCase()
+  if (!text) return 'neutral'
+  if (text.includes('pass') || text.includes('ready') || text.includes('active') || text.includes('synced')) return 'ok'
+  if (text.includes('fail') || text.includes('blocked') || text.includes('reject') || text.includes('error')) return 'error'
+  if (text.includes('weak') || text.includes('pending') || text.includes('attention') || text.includes('required')) return 'warn'
+  if (text.includes('not_started') || text.includes('missing')) return 'neutral'
+  return 'info'
+}
+
+function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
+  const offline = asRecord(artifact?.offline_evidence_json)
+  const live = asRecord(artifact?.live_evidence_json)
+  const gate = asRecord(offline.gate)
+  const metrics = asRecord(gate.metrics)
+  const registration = asRecord(offline.registration)
+  const modelCpcv = asRecord(registration.model_cpcv)
+  const validationPacket = asRecord(offline.validation_packet)
+  const pbo = asRecord(offline.pbo ?? validationPacket.pbo)
+  const icSummary = asRecord(offline.ic_summary)
+  return { offline, live, gate, metrics, registration, modelCpcv, pbo, icSummary }
+}
+
+function buildEvidenceCells({
+  candidateId,
+  model,
+  artifact,
+  promotionRows,
+  pointerOk,
+  status,
+  statusTone,
+}: {
+  candidateId: string
+  model?: ModelPoolLineageModel
+  artifact?: SelectedArtifactRow | null
+  promotionRows: PromotionQueueRow[]
+  pointerOk: boolean
+  status: string
+  statusTone: WorkstationTone
+}): GrafanaModelRecord['history'] {
+  const weekly = (model?.weekly_ic ?? []).slice(-3)
+  const paddedWeekly = [
+    ...Array(Math.max(0, 3 - weekly.length)).fill(null),
+    ...weekly,
+  ] as Array<number | null>
+  const evidence = selectedArtifactEvidence(artifact)
+  const oosIc = firstFiniteNumber(
+    evidence.metrics.oos_ic,
+    evidence.icSummary[candidateId],
+    model?.challenger?.artifact_evidence?.oos_ic,
+    model?.rolling_ic,
+  )
+  const cpcvDecision = firstText(
+    evidence.metrics.model_cpcv_decision,
+    evidence.modelCpcv.decision,
+    evidence.pbo.decision,
+    evidence.pbo.status,
+  )
+  const liveStatus = firstText(
+    promotionRows[0]?.live_gate_status,
+    artifact?.live_gate_status,
+    evidence.live.status,
+  )
+  const finalComparedTo = firstText(
+    promotionRows[0]?.final_compared_to,
+    artifact?.final_compared_to,
+    pointerOk ? 'serving pointer' : null,
+  )
+
+  return [
+    ...(['W-3', 'W-2', 'W-1'] as const).map((label, index) => {
+      const value = paddedWeekly[index]
+      const tone = toneFromIc(value)
+      return {
+        label,
+        value: compactNumber(value),
+        title: value == null ? `${candidateId} ${label}: weekly IC unavailable` : `${candidateId} ${label}: weekly IC ${value.toFixed(4)}`,
+        tone,
+      }
+    }),
+    {
+      label: 'OOS IC',
+      value: compactNumber(oosIc),
+      title: oosIc == null ? `${candidateId}: OOS IC unavailable` : `${candidateId}: artifact OOS IC ${oosIc.toFixed(4)}`,
+      tone: toneFromIc(oosIc),
+    },
+    {
+      label: 'LIVE',
+      value: compactText(liveStatus, 12),
+      title: `${candidateId}: live gate ${liveStatus ?? 'unavailable'}`,
+      tone: toneFromGate(liveStatus),
+    },
+    {
+      label: 'PBO/CPCV',
+      value: compactText(cpcvDecision, 10),
+      title: `${candidateId}: PBO/CPCV ${cpcvDecision ?? 'unavailable'}`,
+      tone: toneFromGate(cpcvDecision),
+    },
+    {
+      label: 'FINAL',
+      value: compactText(finalComparedTo, 12),
+      title: `${candidateId}: final compared to ${finalComparedTo ?? 'pending'}`,
+      tone: finalComparedTo ? 'ok' : 'warn',
+    },
+    {
+      label: 'STATE',
+      value: statusLabel(statusTone),
+      title: `${candidateId}: ${status}`,
+      tone: statusTone,
+    },
+  ]
+}
+
 function buildGrafanaRecord({
   candidate,
   model,
@@ -307,11 +457,6 @@ function buildGrafanaRecord({
   const statusTone = modelUpgradeStatusReady && blockers.length
     ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
     : toneFromStatus(rawStatus)
-  const weekly = (model?.weekly_ic ?? []).slice(-GRAFANA_HISTORY_BUCKETS.length)
-  const paddedWeekly = [
-    ...Array(Math.max(0, GRAFANA_HISTORY_BUCKETS.length - weekly.length)).fill(null),
-    ...weekly,
-  ] as Array<number | null>
 
   return {
     candidate,
@@ -320,6 +465,7 @@ function buildGrafanaRecord({
     status: rawStatus,
     statusTone,
     artifactVersion: artifact?.version ?? model?.version ?? 'no artifact',
+    selectedArtifact: artifact,
     dataset: MODEL_DATASET_REQUIREMENTS[candidate.id],
     pointerRow,
     pointerTone: pointerTone(pointerRow?.readiness),
@@ -331,27 +477,19 @@ function buildGrafanaRecord({
     approvalOk: approvalClear(promotionRows),
     pointerOk,
     blockers,
+    missingEvidence: statusRow?.missing_evidence ?? [],
     nextAction: modelUpgradeStatusReady
       ? promotionRows[0]?.next_action ?? pointerRow?.next_action ?? statusRow?.next_action ?? 'no action queued'
       : 'Waiting for model-upgrade evidence status feed before rendering gate pass/fail.',
-    history: [
-      ...GRAFANA_HISTORY_BUCKETS.map((label, index) => {
-        const value = paddedWeekly[index]
-        const tone = toneFromIc(value)
-        return {
-          label,
-          value: compactNumber(value),
-          title: value == null ? `${candidate.id} ${label}: weekly IC unavailable` : `${candidate.id} ${label}: weekly IC ${value.toFixed(4)}`,
-          tone,
-        }
-      }),
-      {
-        label: 'Now',
-        value: statusLabel(statusTone),
-        title: `${candidate.id}: ${rawStatus}`,
-        tone: statusTone,
-      },
-    ],
+    history: buildEvidenceCells({
+      candidateId: candidate.id,
+      model,
+      artifact,
+      promotionRows,
+      pointerOk,
+      status: rawStatus,
+      statusTone,
+    }),
   }
 }
 
@@ -430,7 +568,7 @@ function GrafanaDashboardHeader({
         </div>
         <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.10em] text-[#a7b5c8]">
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">env prod</span>
-          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">last 5 evidence windows</span>
+          <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">weekly + OOS/live gates</span>
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">refresh 60s</span>
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">local {now.toLocaleTimeString()}</span>
         </div>
@@ -522,17 +660,17 @@ function StateTimelinePanel({
   selectedModelId?: string | null
   onSelectModel: (modelId: string) => void
 }) {
-  const labels = [...GRAFANA_HISTORY_BUCKETS, 'Now']
+  const labels = records[0]?.history.map((cell) => cell.label) ?? ['W-3', 'W-2', 'W-1', 'OOS IC', 'LIVE', 'PBO/CPCV', 'FINAL', 'STATE']
   return (
     <GrafanaPanel
-      title="State timeline"
-      kicker="weekly IC plus current registry state"
-      action={<span className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">green ok / amber warn / red crit / gray no data</span>}
+      title="Evidence matrix"
+      kicker="weekly trend, OOS evidence, live gate, overfit guard, final compare"
+      action={<span className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">text + color encode every gate</span>}
       className="min-h-[360px]"
     >
       <div className="overflow-x-auto">
-        <div className="min-w-[760px]">
-          <div className="grid grid-cols-[152px_repeat(6,minmax(90px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">
+        <div className="min-w-[980px]">
+          <div className="grid grid-cols-[152px_repeat(8,minmax(82px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">
             <div>model</div>
             {labels.map((label) => <div key={label} className="text-center">{label}</div>)}
           </div>
@@ -545,7 +683,7 @@ function StateTimelinePanel({
                 type="button"
                 aria-pressed={isSelected}
                 onClick={() => onSelectModel(record.candidate.id)}
-                className={`grid w-full grid-cols-[152px_repeat(6,minmax(90px,1fr))] items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
+                className={`grid w-full grid-cols-[152px_repeat(8,minmax(82px,1fr))] items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
               >
                 <div className="min-w-0">
                   <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
@@ -571,7 +709,7 @@ function StateTimelinePanel({
   )
 }
 
-function AlertQueuePanel({
+function GateAndIncidentsPanel({
   records,
   selectedModelId,
   onSelectModel,
@@ -583,57 +721,11 @@ function AlertQueuePanel({
   const alerts = records
     .filter((record) => record.blockers.length > 0 || record.promotionRows.length > 0 || record.statusTone === 'warn' || record.statusTone === 'error')
     .sort((a, b) => severityScore(b.statusTone) - severityScore(a.statusTone))
-
-  return (
-    <GrafanaPanel title="Alert queue" kicker="promotion and evidence incidents">
-      <div className="max-h-[360px] overflow-y-auto">
-        {alerts.length ? alerts.map((record) => {
-          const isSelected = selectedModelId === record.candidate.id
-          return (
-          <button
-            key={record.candidate.id}
-            type="button"
-            aria-pressed={isSelected}
-            onClick={() => onSelectModel(record.candidate.id)}
-            className={`m-2 block w-[calc(100%-1rem)] rounded-xl border p-3 text-left transition-colors hover:border-[#f0c365]/55 focus:outline-none focus:ring-2 focus:ring-[#f0c365]/40 last:mb-2 ${selectedFrameClass(isSelected)}`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-                <p className="mt-1 text-xs leading-5 text-[#9aa8ba]">{record.nextAction}</p>
-              </div>
-              <span className={`border px-2.5 py-1 font-mono text-[11px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
-                {statusLabel(record.statusTone)}
-              </span>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {(record.blockers.length ? record.blockers : ['promotion_review']).slice(0, 4).map((blocker) => (
-                <span key={blocker} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[11px] text-[#c0cad8]">
-                  {blocker}
-                </span>
-              ))}
-            </div>
-          </button>
-          )
-        }) : (
-          <div className="bg-[#0c1219] p-4 text-sm text-[#9aa8ba]">No active model-pool alerts.</div>
-        )}
-      </div>
-    </GrafanaPanel>
-  )
-}
-
-function GateInspectorPanel({
-  records,
-  selectedModelId,
-}: {
-  records: GrafanaModelRecord[]
-  selectedModelId?: string | null
-}) {
   const selected = records.find((record) => record.candidate.id === selectedModelId)
     ?? records.find((record) => record.blockers.length > 0)
     ?? records[0]
   if (!selected) return null
+
   const gates = [
     { label: 'Artifact', ready: selected.artifactOk, detail: selected.artifactVersion },
     { label: 'Evidence', ready: selected.evidenceOk, detail: selected.status },
@@ -641,28 +733,88 @@ function GateInspectorPanel({
     { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
     { label: 'Pointer', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
   ]
+  const selectedIncidents = [...selected.blockers, ...selected.missingEvidence]
 
   return (
-    <GrafanaPanel title="Gate inspector" kicker={`selected model: ${selected.candidate.id}`}>
-      <div className="bg-[#0c1219] p-4">
-        <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">Promotion readiness funnel</p>
-        <div className="mt-3 space-y-2">
-          {gates.map((gate, index) => (
-            <div key={gate.label} className="grid grid-cols-[28px_1fr_auto] items-center gap-2">
-              <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] font-mono text-[11px] text-[#a7b5c8]">{index + 1}</span>
-              <div className="min-w-0">
-                <p className="font-['Space_Grotesk'] text-[13px] text-[#f2ead8]">{gate.label}</p>
-                <p className="truncate text-[11px] text-[#90a0b8]">{gate.detail}</p>
-              </div>
-              <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
-                {gate.ready ? 'PASS' : 'WAIT'}
-              </span>
+    <GrafanaPanel title="Gate & incidents" kicker={`selected model: ${selected.candidate.id}`}>
+      <div className="grid gap-3 bg-[#0c1219] p-4">
+        <div className={`rounded-xl border p-3 ${grafanaBorderClass(selected.statusTone)} bg-[#111821]`}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-['Space_Grotesk'] text-[16px] font-semibold text-[#f2ead8]">{selected.candidate.id}</p>
+              <p className="mt-1 text-xs leading-5 text-[#9aa8ba]">{selected.family} / {selected.dataset?.window ?? 'model-specific'} / {selected.artifactVersion}</p>
             </div>
-          ))}
+            <span className={`border px-2.5 py-1 font-mono text-[11px] font-semibold ${grafanaCellClass(selected.statusTone)}`}>
+              {selected.status}
+            </span>
+          </div>
+          <div className="mt-3 border-t border-[#2d3a49] pt-3">
+            <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">next action</p>
+            <p className="mt-1 text-sm leading-6 text-[#d4deeb]">{selected.nextAction}</p>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1">
+            {(selectedIncidents.length ? selectedIncidents : ['no_blocker']).slice(0, 8).map((item) => (
+              <span key={item} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[11px] text-[#c0cad8]">
+                {item}
+              </span>
+            ))}
+          </div>
         </div>
-        <div className="mt-3 border-t border-[#2d3a49] pt-3">
-          <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">next action</p>
-          <p className="mt-1 text-sm leading-6 text-[#d4deeb]">{selected.nextAction}</p>
+
+        <div className="rounded-xl border border-[#263247] bg-[#0b1118] p-3">
+          <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">Promotion readiness funnel</p>
+          <div className="mt-3 space-y-2">
+            {gates.map((gate, index) => (
+              <div key={gate.label} className="grid grid-cols-[28px_1fr_auto] items-center gap-2">
+                <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] font-mono text-[11px] text-[#a7b5c8]">{index + 1}</span>
+                <div className="min-w-0">
+                  <p className="font-['Space_Grotesk'] text-[13px] text-[#f2ead8]">{gate.label}</p>
+                  <p className="truncate text-[11px] text-[#90a0b8]">{gate.detail}</p>
+                </div>
+                <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
+                  {gate.ready ? 'PASS' : 'WAIT'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#263247] bg-[#0b1118]">
+          <div className="flex items-center justify-between gap-2 border-b border-[#263247] px-3 py-2">
+            <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">Incidents queue</p>
+            <span className="font-mono text-[11px] text-[#c0cad8]">{alerts.length} rows</span>
+          </div>
+          <div className="max-h-[190px] overflow-y-auto p-2">
+            {alerts.length ? alerts.map((record) => {
+              const isSelected = selected.candidate.id === record.candidate.id
+              const chips = [...record.blockers, ...record.missingEvidence]
+              return (
+                <button
+                  key={record.candidate.id}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => onSelectModel(record.candidate.id)}
+                  className={`mb-2 block w-full rounded-xl border p-2.5 text-left transition-colors hover:border-[#f0c365]/55 focus:outline-none focus:ring-2 focus:ring-[#f0c365]/40 last:mb-0 ${selectedFrameClass(isSelected)}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-['Space_Grotesk'] text-[13px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+                    <span className={`border px-2 py-0.5 font-mono text-[10px] font-semibold ${grafanaCellClass(record.statusTone)}`}>
+                      {statusLabel(record.statusTone)}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {(chips.length ? chips : ['promotion_review']).slice(0, 3).map((chip) => (
+                      <span key={chip} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[10px] text-[#c0cad8]">
+                        {chip}
+                      </span>
+                    ))}
+                  </div>
+                </button>
+              )
+            }) : (
+              <div className="p-3 text-sm text-[#9aa8ba]">No active model-pool incidents.</div>
+            )}
+          </div>
         </div>
       </div>
     </GrafanaPanel>
@@ -679,9 +831,9 @@ function EvidenceTablePanel({
   onSelectModel: (modelId: string) => void
 }) {
   return (
-    <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, and promotion pressure">
+    <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, promotion pressure, and missing evidence">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
-        <table className="w-full min-w-[980px] border-separate border-spacing-y-2 text-left">
+        <table className="w-full min-w-[1080px] border-separate border-spacing-y-2 text-left">
           <thead className="font-mono text-[11px] uppercase tracking-[0.10em] text-[#90a0b8]">
             <tr>
               <th className="px-3 py-2 font-medium">Model</th>
@@ -689,13 +841,17 @@ function EvidenceTablePanel({
               <th className="px-3 py-2 font-medium">Artifact</th>
               <th className="px-3 py-2 font-medium">Dataset</th>
               <th className="px-3 py-2 font-medium">Pointer</th>
-              <th className="px-3 py-2 font-medium">OOS/Live state</th>
-              <th className="px-3 py-2 font-medium">Next action</th>
+              <th className="px-3 py-2 font-medium">Research state</th>
+              <th className="px-3 py-2 font-medium">Pressure</th>
+              <th className="px-3 py-2 font-medium">Missing evidence</th>
             </tr>
           </thead>
           <tbody>
             {records.map((record) => {
               const isSelected = selectedModelId === record.candidate.id
+              const pressureTone = record.blockers.length ? maxTone([promotionPressureTone(record.promotionRows), 'warn']) : promotionPressureTone(record.promotionRows)
+              const pressureLabel = record.promotionRows.length ? `${record.promotionRows.length} queued` : record.blockers.length ? 'blocked' : 'clear'
+              const missing = record.missingEvidence.length ? record.missingEvidence : record.blockers
               return (
               <tr
                 key={record.candidate.id}
@@ -728,7 +884,20 @@ function EvidenceTablePanel({
                     {record.status}
                   </span>
                 </td>
-                <td className="max-w-[320px] rounded-r-xl border-y border-r border-[#263247] px-3 py-3 text-xs leading-5 text-[#d4deeb]">{record.nextAction}</td>
+                <td className="border-y border-[#263247] px-3 py-3">
+                  <span className={`border px-2.5 py-1 font-mono text-[11px] ${grafanaCellClass(pressureTone)}`}>
+                    {pressureLabel}
+                  </span>
+                </td>
+                <td className="rounded-r-xl border-y border-r border-[#263247] px-3 py-3">
+                  <div className="flex max-w-[320px] flex-wrap gap-1">
+                    {(missing.length ? missing : ['complete']).slice(0, 4).map((item) => (
+                      <span key={item} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[10px] text-[#c0cad8]">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </td>
               </tr>
               )
             })}
@@ -834,14 +1003,11 @@ export default function ModelPoolNewFlowWorkbench({
             selectedModelId={selectedModelId}
             onSelectModel={setSelectedModelIdIntent}
           />
-          <div className="grid gap-4">
-            <AlertQueuePanel
-              records={grafanaRecords}
-              selectedModelId={selectedModelId}
-              onSelectModel={setSelectedModelIdIntent}
-            />
-            <GateInspectorPanel records={grafanaRecords} selectedModelId={selectedModelId} />
-          </div>
+          <GateAndIncidentsPanel
+            records={grafanaRecords}
+            selectedModelId={selectedModelId}
+            onSelectModel={setSelectedModelIdIntent}
+          />
         </div>
 
         <EvidenceTablePanel

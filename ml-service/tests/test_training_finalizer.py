@@ -4,6 +4,7 @@ from app.training_finalizer import (
     build_oos_artifact_path,
     combine_oos_rank_payloads,
     build_retrain_followup_payload,
+    build_suppressed_legacy_challenger_registrations,
     derive_oos_artifact_group,
     expected_oos_artifact_groups,
     missing_expected_oos_groups,
@@ -120,6 +121,29 @@ def test_reduce_training_group_results_merges_ic_and_candidate_models():
     assert reduced["circuit_breaker"] is False
     assert reduced["candidate_models"] == ["DLinear", "PatchTST", "XGBoost"]
     assert reduced["sequence_candidate_models"] == {"dlinear": "DLinear", "patchtst": "PatchTST"}
+
+
+def test_legacy_challenger_suppression_stays_outside_registry_candidates():
+    suppressed = build_suppressed_legacy_challenger_registrations(
+        register_challengers=True,
+        candidate_models=["DLinear", "XGBoost", "XGBoost"],
+        existing_registrations={"XGBoost": {"status": "registered"}},
+        candidate_version="v20260614010101",
+    )
+
+    assert suppressed == {
+        "DLinear": {
+            "status": "disabled",
+            "version": "v20260614010101",
+            "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+        }
+    }
+    assert build_suppressed_legacy_challenger_registrations(
+        register_challengers=False,
+        candidate_models=["DLinear"],
+        existing_registrations={},
+        candidate_version="v20260614010101",
+    ) == {}
 
 
 def test_reduce_training_group_results_records_partial_errors():

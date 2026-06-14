@@ -160,6 +160,30 @@ def reduce_training_group_results(
     }
 
 
+def build_suppressed_legacy_challenger_registrations(
+    *,
+    register_challengers: bool,
+    candidate_models: Iterable[str],
+    existing_registrations: dict | None,
+    candidate_version: str,
+) -> dict[str, dict]:
+    """Return disabled legacy registration notices outside registry candidates."""
+
+    if register_challengers is not True:
+        return {}
+    existing = set((existing_registrations or {}).keys())
+    suppressed: dict[str, dict] = {}
+    for model_name in sorted({str(name) for name in candidate_models if str(name)}):
+        if model_name in existing:
+            continue
+        suppressed[model_name] = {
+            "status": "disabled",
+            "version": candidate_version,
+            "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+        }
+    return suppressed
+
+
 def _child_model_names(partial: dict) -> list[str]:
     names = [
         name

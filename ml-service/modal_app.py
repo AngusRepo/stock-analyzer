@@ -395,6 +395,7 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     # Stage 2: Train production groups; retired FT endpoints remain fail-closed.
     from app.training_finalizer import (
+        build_suppressed_legacy_challenger_registrations,
         build_retrain_followup_payload,
         expected_oos_artifact_groups,
         merge_oos_rank_payloads,
@@ -568,17 +569,12 @@ def retrain_orchestrator(payload: dict) -> dict:
         )
 
         challenger_registrations = {}
-        suppressed_legacy_challenger_registrations = {}
-        if payload.get("register_challengers") is True:
-            candidate_models = set(reduced_train["candidate_models"])
-            for model_name in sorted(candidate_models):
-                if model_name in (tree_result.get("challenger_registrations") or {}):
-                    continue
-                suppressed_legacy_challenger_registrations[model_name] = {
-                    "status": "disabled",
-                    "version": candidate_version,
-                    "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
-                }
+        suppressed_legacy_challenger_registrations = build_suppressed_legacy_challenger_registrations(
+            register_challengers=payload.get("register_challengers") is True,
+            candidate_models=reduced_train["candidate_models"],
+            existing_registrations=tree_result.get("challenger_registrations") or {},
+            candidate_version=candidate_version,
+        )
 
         result["stages"]["train"] = {
             "status": summarize_training_stage_status(coverage),

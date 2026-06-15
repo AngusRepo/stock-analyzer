@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 
-MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v1"
+MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v2"
 
 MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "LightGBM": "tree",
@@ -25,6 +25,34 @@ MODEL_FAMILY_BY_NAME: dict[str, str] = {
 _RESEARCH_STAGE_NAMES = {"research", "research_benchmark", "benchmark", "model_upgrade"}
 _PROMOTION_STAGE_NAMES = {"promotion", "final_promotion", "champion_promotion"}
 _KNOWN_REGIMES = {"bull", "bear", "volatile", "sideways", "unknown"}
+
+_FAMILY_PBO_BASE: dict[str, float] = {
+    "tree": 0.50,
+    "tabular_neural": 0.46,
+    "graph": 0.44,
+    "learned_sequence": 0.43,
+    "foundation_sequence": 0.40,
+}
+
+_FAMILY_PBO_FLOOR: dict[str, float] = {
+    "tree": 0.22,
+    "tabular_neural": 0.20,
+    "graph": 0.18,
+    "learned_sequence": 0.18,
+    "foundation_sequence": 0.16,
+}
+
+_MODEL_PBO_COMPLEXITY_ADJUSTMENT: dict[str, float] = {
+    "LightGBM": 0.00,
+    "XGBoost": -0.01,
+    "ExtraTrees": -0.02,
+    "TabM": -0.035,
+    "GNN": -0.045,
+    "DLinear": -0.020,
+    "PatchTST": -0.055,
+    "iTransformer": -0.060,
+    "TimesFM": -0.040,
+}
 
 
 def _as_float(value: Any, default: float | None = None) -> float | None:
@@ -235,6 +263,7 @@ def _resolve_live_ic_policy(
 
 def _resolve_pbo_policy(
     *,
+    model_name: str,
     family: str,
     regime: str,
     stage: str,
@@ -250,17 +279,29 @@ def _resolve_pbo_policy(
             "max_pbo": None,
             "search_trials": trials,
         }
+    family_base = _FAMILY_PBO_BASE.get(family, 0.46)
+    family_floor = _FAMILY_PBO_FLOOR.get(family, 0.20)
+    model_adjustment = _MODEL_PBO_COMPLEXITY_ADJUSTMENT.get(model_name, 0.0)
+    model_base = _clamp(family_base + model_adjustment, family_floor, family_base)
     stage_penalty = 0.08 if stage == "promotion" else 0.0
     search_penalty = min(0.22, math.log2(max(2, trials)) * 0.035)
     regime_penalty = 0.03 if regime in {"bear", "volatile"} else 0.0
-    max_pbo = _clamp(0.50 - stage_penalty - search_penalty - regime_penalty, 0.20, 0.50)
+    max_pbo = _clamp(model_base - stage_penalty - search_penalty - regime_penalty, family_floor, model_base)
     return {
         "required": True,
-        "method": "cscv_rank_logit",
+        "method": "family_model_regime_cscv_rank_logit",
         "max_pbo": round(max_pbo, 6),
         "search_trials": trials,
         "selection_run": selection_run,
         "regime": regime,
+        "family": family,
+        "family_base": round(family_base, 6),
+        "family_floor": round(family_floor, 6),
+        "model_base": round(model_base, 6),
+        "model_complexity_adjustment": round(model_adjustment, 6),
+        "stage_penalty": round(stage_penalty, 6),
+        "search_penalty": round(search_penalty, 6),
+        "regime_penalty": round(regime_penalty, 6),
     }
 
 
@@ -403,6 +444,7 @@ def resolve_model_validation_policy(
             "policy_version": MODEL_VALIDATION_POLICY_VERSION,
         },
         "pbo": _resolve_pbo_policy(
+            model_name=model_name,
             family=resolved_family,
             regime=resolved_regime,
             stage=resolved_stage,

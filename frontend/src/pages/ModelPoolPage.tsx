@@ -416,6 +416,9 @@ export default function ModelPoolPage() {
               promotionQueue={modelPoolSnapshot!.promotionQueue}
               statusRows={modelPoolSnapshot!.statusRows}
               modelUpgradeStatusReady
+              promotionResult={promotionController.data}
+              finalComparePending={promotionController.isPending}
+              onDryRunFinalCompare={(artifactId) => promotionController.mutate({ artifactId, approved: false, confirm: false })}
             />
 
             <PromotionQueuePanelV2

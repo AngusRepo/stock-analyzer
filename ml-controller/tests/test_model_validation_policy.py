@@ -43,6 +43,34 @@ def test_pbo_policy_tightens_for_search_trials_and_volatile_regime():
     assert searched_volatile["pbo"]["max_pbo"] < baseline["pbo"]["max_pbo"]
 
 
+def test_pbo_policy_uses_family_and_model_complexity_priors():
+    common = {
+        "stage": "promotion",
+        "regime": "sideways",
+        "search_trials": 8,
+    }
+    lightgbm = resolve_model_validation_policy(model_name="LightGBM", **common)
+    xgboost = resolve_model_validation_policy(model_name="XGBoost", **common)
+    tabm = resolve_model_validation_policy(model_name="TabM", **common)
+    gnn = resolve_model_validation_policy(model_name="GNN", **common)
+    patchtst = resolve_model_validation_policy(model_name="PatchTST", **common)
+    itransformer = resolve_model_validation_policy(model_name="iTransformer", **common)
+
+    assert lightgbm["pbo"]["method"] == "family_model_regime_cscv_rank_logit"
+    assert lightgbm["pbo"]["max_pbo"] > xgboost["pbo"]["max_pbo"]
+    assert xgboost["pbo"]["max_pbo"] > tabm["pbo"]["max_pbo"]
+    assert tabm["pbo"]["max_pbo"] > gnn["pbo"]["max_pbo"]
+    assert patchtst["pbo"]["max_pbo"] > itransformer["pbo"]["max_pbo"]
+    assert len({
+        lightgbm["pbo"]["max_pbo"],
+        xgboost["pbo"]["max_pbo"],
+        tabm["pbo"]["max_pbo"],
+        gnn["pbo"]["max_pbo"],
+        patchtst["pbo"]["max_pbo"],
+        itransformer["pbo"]["max_pbo"],
+    }) >= 5
+
+
 def test_live_ic_min_rows_are_regime_adaptive():
     bull = resolve_model_validation_policy(
         model_name="XGBoost",

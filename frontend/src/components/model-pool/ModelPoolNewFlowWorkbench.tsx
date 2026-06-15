@@ -8,6 +8,7 @@ import {
 } from '@/lib/modelUpgradeTrack'
 import type {
   ModelArtifactPromotionQueueResponse,
+  ModelArtifactPromotionControllerResponse,
   ModelArtifactSelectionResponse,
   ModelChampionPointersResponse,
   ModelPoolLineageModel,
@@ -27,6 +28,9 @@ type ModelPoolNewFlowWorkbenchProps = {
   promotionQueue?: ModelArtifactPromotionQueueResponse
   statusRows?: ModelUpgradeResearchStatusRow[]
   modelUpgradeStatusReady?: boolean
+  promotionResult?: ModelArtifactPromotionControllerResponse | null
+  finalComparePending?: boolean
+  onDryRunFinalCompare?: (artifactId: string) => void
 }
 
 const RETIRED_MODELS = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
@@ -108,6 +112,16 @@ const MODEL_DATASET_REQUIREMENTS: Record<string, { window: string; shape: string
     note: 'Use 16k context only after data depth and cost evidence justify it.',
   },
 }
+
+const EVIDENCE_MATRIX_COLUMNS = [
+  { label: 'W-3', description: '三週前 weekly IC；看短期趨勢，不是升級門檻。' },
+  { label: 'W-2', description: '兩週前 weekly IC；用來觀察是否連續轉弱。' },
+  { label: 'W-1', description: '上週 weekly IC；反映最近一次已驗證週期。' },
+  { label: 'OOS IC', description: 'retrain/backtest artifact 的離線 out-of-sample rank IC。' },
+  { label: 'LIVE IC', description: 'daily verify 後的 rolling live rank IC；看上線後近期真實命中。' },
+  { label: 'PBO/CPCV', description: '防 overfit 與 purged CV/foundation validation；用模型專屬 policy。' },
+  { label: 'COMPARE', description: 'candidate vs current champion 的最終比較；dry-run 不切 pointer。' },
+] as const
 
 type SelectionModelRow = ModelArtifactSelectionResponse['models'][string]
 type SelectedArtifactRow = NonNullable<SelectionModelRow['monthly_release_candidate']>
@@ -567,7 +581,7 @@ function finalCompareCell(
   const ready = Boolean(finalComparedTo)
   return {
     value: ready ? 'READY' : 'WAIT',
-    detail: finalComparedTo ? `vs ${compactVersion(finalComparedTo, 14)}\n${metricDetail}` : `needs final compare\n${metricDetail}`,
+    detail: finalComparedTo ? `vs ${compactVersion(finalComparedTo, 14)}\n${metricDetail}` : `dry-run required\n${metricDetail}`,
     title: finalComparedTo
       ? `${candidateId}: final comparison completed against ${finalComparedTo}; ${metricDetail}`
       : `${candidateId}: final comparison against current champion is still pending; ${metricDetail}`,
@@ -609,8 +623,10 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
   const hasReleaseArtifact = Boolean(artifactDisplay)
   const hasChampionBaseline = Boolean(champion)
   const compareReady = hasCandidate && Boolean(finalComparedTo)
+  const artifactId = firstText(promotion?.artifact_id, candidateEvidenceArtifact?.artifact_id, record.selectedArtifact?.artifact_id)
 
   return {
+    artifactId,
     candidate: artifactDisplay ?? 'no monthly/weekly release artifact',
     champion: champion ?? 'champion baseline missing',
     finalComparedTo,
@@ -631,6 +647,41 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
       `final_compared_to=${finalComparedTo ?? 'pending'}`,
     ].join(' | '),
   }
+}
+
+function finalCompareResultFor(
+  result: ModelArtifactPromotionControllerResponse | null | undefined,
+  modelId: string,
+  artifactId?: string | null,
+) {
+  if (!result) return null
+  if (artifactId && result.artifact_id === artifactId) return result
+  if (result.model_name === modelId) return result
+  return null
+}
+
+function promotionResultMetric(result: ModelArtifactPromotionControllerResponse, keys: string[]): number | null {
+  const evidence = result.evidence ?? {}
+  const metrics = evidence.metrics && typeof evidence.metrics === 'object'
+    ? evidence.metrics as Record<string, unknown>
+    : evidence
+  for (const key of keys) {
+    const value = Number((metrics as Record<string, unknown>)[key])
+    if (Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function finalCompareResultDetail(result: ModelArtifactPromotionControllerResponse): string {
+  const candidateIc = promotionResultMetric(result, ['candidate_oos_ic', 'shadow_ic', 'shadowIc'])
+  const championIc = promotionResultMetric(result, ['champion_oos_ic', 'production_ic', 'productionIc'])
+  const delta = promotionResultMetric(result, ['oos_ic_delta', 'ic_delta', 'icDelta'])
+  return [
+    `decision=${result.decision ?? result.status}`,
+    `candidate=${formatMetric(candidateIc, 4)}`,
+    `champion=${formatMetric(championIc, 4)}`,
+    `delta=${formatMetric(delta, 4)}`,
+  ].join(' / ')
 }
 
 function researchStatusDiagnosis(record: GrafanaModelRecord) {
@@ -732,7 +783,7 @@ function buildEvidenceCells({
     {
       label: 'LIVE IC',
       value: compactNumber(liveIc),
-      detail: liveIc == null ? '尚無每日 verified IC' : '每日 rolling verified IC',
+      detail: liveIc == null ? undefined : 'rolling verified',
       title: liveIc == null
         ? `${candidateId}: daily rolling live IC is not available yet; this is not a shadow/challenger ownership gate.`
         : `${candidateId}: daily verify-v2/model-ic-tracker rolling live IC ${liveIc.toFixed(4)}; this is not a shadow/challenger ownership gate.`,
@@ -999,19 +1050,24 @@ function StateTimelinePanel({
   selectedModelId?: string | null
   onSelectModel: (modelId: string) => void
 }) {
-  const labels = records[0]?.history.map((cell) => cell.label) ?? ['W-3', 'W-2', 'W-1', 'OOS IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE']
+  const columns = EVIDENCE_MATRIX_COLUMNS
   return (
     <GrafanaPanel
       title="Evidence matrix"
-      kicker="weekly trend, monthly OOS evidence, daily rolling live IC, overfit guard, champion compare"
+      kicker="每欄下方先說明數據語意；格子內只保留該模型的狀態與數值"
       action={<span className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">values include gate thresholds</span>}
       className="min-h-[360px]"
     >
       <div className="overflow-x-auto">
-        <div className="min-w-[1060px]">
-          <div className="grid grid-cols-[152px_repeat(7,minmax(112px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">
-            <div>model</div>
-            {labels.map((label) => <div key={label} className="text-center">{label}</div>)}
+        <div className="min-w-[1240px]">
+          <div className="grid grid-cols-[152px_repeat(7,minmax(136px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-3 text-[#90a0b8]">
+            <div className="font-mono text-[12px] uppercase tracking-[0.08em]">model</div>
+            {columns.map((column) => (
+              <div key={column.label} className="px-1 text-center">
+                <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#b4c0d0]">{column.label}</p>
+                <p className="mt-1 text-[11px] leading-4 text-[#7f8ca3]">{column.description}</p>
+              </div>
+            ))}
           </div>
           <div className="divide-y divide-[#263247]">
             {records.map((record) => {
@@ -1022,7 +1078,7 @@ function StateTimelinePanel({
                 type="button"
                 aria-pressed={isSelected}
                 onClick={() => onSelectModel(record.candidate.id)}
-                className={`grid w-full grid-cols-[152px_repeat(7,minmax(112px,1fr))] items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
+                className={`grid w-full grid-cols-[152px_repeat(7,minmax(136px,1fr))] items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
               >
                 <div className="min-w-0">
                   <p className="truncate font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
@@ -1031,7 +1087,7 @@ function StateTimelinePanel({
                 {record.history.map((cell) => (
                   <div
                     key={`${record.candidate.id}-${cell.label}`}
-                    className={`min-h-[82px] border px-2 py-2 text-center font-mono text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`}
+                    className={`min-h-[86px] border px-2 py-2 text-center font-mono text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`}
                     title={cell.title}
                     aria-label={cell.title}
                   >
@@ -1052,15 +1108,25 @@ function StateTimelinePanel({
 function PromotionReadinessPanel({
   records,
   selectedModelId,
+  promotionResult,
+  finalComparePending = false,
+  onDryRunFinalCompare,
 }: {
   records: GrafanaModelRecord[]
   selectedModelId?: string | null
+  promotionResult?: ModelArtifactPromotionControllerResponse | null
+  finalComparePending?: boolean
+  onDryRunFinalCompare?: (artifactId: string) => void
 }) {
   const selected = records.find((record) => record.candidate.id === selectedModelId)
     ?? records.find((record) => record.blockers.length > 0)
     ?? records[0]
   if (!selected) return null
   const compare = artifactCompareSummary(selected)
+  const finalCompareResult = finalCompareResultFor(promotionResult, selected.candidate.id, compare.artifactId)
+  const finalComparedTo = firstText(compare.finalComparedTo, finalCompareResult?.final_compared_to)
+  const finalCompareReady = compare.compareReady || Boolean(finalComparedTo)
+  const canDryRunFinalCompare = Boolean(compare.artifactId && onDryRunFinalCompare)
   const diagnosis = researchStatusDiagnosis(selected)
 
   const gates = [
@@ -1068,7 +1134,7 @@ function PromotionReadinessPanel({
     { label: 'Artifact evidence', ready: selected.evidenceOk, detail: selected.status },
     { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'policy pending' },
     { label: 'Champion baseline', ready: compare.hasChampionBaseline, detail: compare.champion },
-    { label: 'Final compare', ready: compare.compareReady, detail: compare.finalComparedTo ?? 'pending candidate-vs-champion comparison' },
+    { label: 'Final compare', ready: finalCompareReady, detail: finalComparedTo ?? 'run dry-run candidate-vs-champion comparison' },
     { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
     { label: 'Current pointer baseline', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
   ]
@@ -1120,11 +1186,38 @@ function PromotionReadinessPanel({
             <div className="flex items-center justify-between gap-3 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
               <div className="min-w-0">
                 <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">final compare</p>
-                <p className="mt-1 truncate text-[13px] text-[#a7b5c8]">{compare.finalComparedTo ? `completed vs ${compare.finalComparedTo}` : 'waiting for promotion-controller comparison'}</p>
+                <p className="mt-1 truncate text-[13px] text-[#a7b5c8]">{finalComparedTo ? `completed vs ${finalComparedTo}` : 'dry-run compare not run yet'}</p>
               </div>
-              <span className={`shrink-0 border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(compare.tone)}`}>
-                {compare.compareReady ? 'READY' : 'WAIT'}
+              <span className={`shrink-0 border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(finalCompareReady ? 'ok' : compare.tone)}`}>
+                {finalCompareReady ? 'READY' : 'WAIT'}
               </span>
+            </div>
+            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">compare action</p>
+                  <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">只做 candidate vs current champion dry-run；不切 pointer、不升級 production。</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!canDryRunFinalCompare || finalComparePending}
+                  onClick={() => {
+                    if (compare.artifactId) onDryRunFinalCompare?.(compare.artifactId)
+                  }}
+                  className="rounded-lg border border-[#d6a85f]/40 bg-[#1b2430] px-3 py-2 font-mono text-[12px] font-semibold text-[#f0c365] transition-colors hover:border-[#f0c365]/70 disabled:cursor-not-allowed disabled:border-[#303947] disabled:text-[#6e7a8d]"
+                >
+                  {finalComparePending ? 'Running...' : 'Dry-run final compare'}
+                </button>
+              </div>
+              {finalCompareResult && (
+                <div className="mt-2 rounded-lg border border-[#303947] bg-[#0b1118] px-3 py-2">
+                  <p className="font-mono text-[12px] text-[#dce3ea]">{finalCompareResultDetail(finalCompareResult)}</p>
+                  {finalCompareResult.next_action && <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">next: {finalCompareResult.next_action}</p>}
+                  {(finalCompareResult.errors?.length ?? 0) > 0 && (
+                    <p className="mt-1 text-[12px] leading-5 text-rose-200">errors: {finalCompareResult.errors?.join(', ')}</p>
+                  )}
+                </div>
+              )}
             </div>
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
               <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">OOS IC delta</p>
@@ -1281,6 +1374,9 @@ export default function ModelPoolNewFlowWorkbench({
   promotionQueue,
   statusRows,
   modelUpgradeStatusReady = false,
+  promotionResult,
+  finalComparePending = false,
+  onDryRunFinalCompare,
 }: ModelPoolNewFlowWorkbenchProps) {
   const liveModels = useMemo(
     () => models.filter(([name]) => ACTIVE_ALPHA_MODELS.has(name) && !RETIRED_MODELS.has(name)),
@@ -1354,6 +1450,9 @@ export default function ModelPoolNewFlowWorkbench({
           <PromotionReadinessPanel
             records={grafanaRecords}
             selectedModelId={selectedModelId}
+            promotionResult={promotionResult}
+            finalComparePending={finalComparePending}
+            onDryRunFinalCompare={onDryRunFinalCompare}
           />
         </div>
 

@@ -134,6 +134,70 @@ def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
     assert written[0]["state"] == "offline_strong_pass"
 
 
+def test_retrain_followup_reconciles_champion_pointer_after_artifact_lifecycle_cutover(monkeypatch):
+    written: list[dict] = []
+    reconcile_calls: list[dict] = []
+
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
+    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
+    monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
+    monkeypatch.setattr(
+        followup_router,
+        "upsert_artifact_records",
+        lambda records: written.extend(records) or {
+            "attempted": len(records),
+            "written": len(records),
+            "errors": [],
+        },
+    )
+
+    def fake_reconcile(**kwargs):
+        reconcile_calls.append(kwargs)
+        return {
+            "attempted": True,
+            "status": "ok",
+            "written": 1,
+            "triggered_by": [row.get("artifact_id") for row in kwargs["artifact_records"]],
+        }
+
+    monkeypatch.setattr(followup_router, "_backfill_champion_pointers_after_cutover", fake_reconcile)
+
+    payload = followup_router.RetrainFollowupPayload(
+        run_id="monthly-artifact-cutover",
+        run_date="2026-06-15",
+        is_monthly=True,
+        candidate_version="v20260615052900",
+        status="completed",
+        stages={
+            "artifact_lifecycle": {
+                "results": {
+                    "GNN": {
+                        "status": "ok",
+                        "model": "GNN",
+                        "version": "v20260615052900",
+                        "artifact_path": "universal/gnn/v20260615052900.pt",
+                        "pool_update": {
+                            "new_version": "v20260615052900",
+                            "old_version": "v20260612165347",
+                            "artifact_path": "universal/gnn/v20260615052900.pt",
+                        },
+                    },
+                },
+            },
+        },
+    )
+
+    result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
+
+    assert written[0]["artifact_id"] == "GNN:v20260615052900:monthly_release"
+    assert written[0]["state"] == "production"
+    assert reconcile_calls
+    assert reconcile_calls[0]["reason"] == "retrain_followup_artifact_lifecycle:monthly-artifact-cutover"
+    assert result["champion_pointer_reconcile"]["attempted"] is True
+    assert result["champion_pointer_reconcile"]["status"] == "ok"
+
+
 def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
     written: list[dict] = []
 

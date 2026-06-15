@@ -99,6 +99,10 @@ export interface StrategyPortfolioMetricLoadResult {
     decision_log_row_count: number
     backtest_result_row_count: number
     metric_count: number
+    live_metric_count: number
+    known_strategy_count: number
+    missing_metric_count: number
+    metric_status_counts: Record<string, number>
     decision_overlap_metric_count: number
     backtest_metric_count: number
     regime: string | null
@@ -354,6 +358,10 @@ function emptyResult(
       decision_log_row_count: 0,
       backtest_result_row_count: 0,
       metric_count: 0,
+      live_metric_count: 0,
+      known_strategy_count: options.knownStrategyIds?.length ?? 0,
+      missing_metric_count: options.knownStrategyIds?.length ?? 0,
+      metric_status_counts: options.knownStrategyIds?.length ? { no_evidence: options.knownStrategyIds.length } : {},
       decision_overlap_metric_count: 0,
       backtest_metric_count: 0,
       regime,
@@ -538,6 +546,7 @@ export function rewardLedgerRowToStrategyPortfolioMetrics(
   const reliability = clamp(0.5 * (1 - sampleConfidence) + baseReliability * sampleConfidence, 0, 1)
 
   return {
+    metric_sample_count: samples,
     rolling_sharpe: round4(rollingSharpe),
     max_drawdown: round4(drawdown),
     recent_alpha: round4(recentAlpha),
@@ -750,6 +759,7 @@ export function buildStrategyPortfolioBacktestMetricOverrides(
         1,
       )
       const metrics: Partial<StrategyPortfolioMetrics> = {
+        metric_sample_count: totalTrades,
         rolling_sharpe: sharpe == null ? undefined : round4(sharpe),
         max_drawdown: round4(maxDrawdown),
         return_correlation: returnCorrelation,
@@ -782,6 +792,75 @@ function mergeDefinedMetrics(
     out[strategyId] = merged
   }
   return out
+}
+
+function annotateStrategyMetricStatuses(
+  liveMetrics: StrategyPortfolioMetricOverrides,
+  sources: {
+    ledger: StrategyPortfolioMetricOverrides
+    decision: StrategyPortfolioMetricOverrides
+    backtest: StrategyPortfolioMetricOverrides
+  },
+  knownStrategyIds: string[],
+): {
+  metrics: StrategyPortfolioMetricOverrides
+  statusCounts: Record<string, number>
+  liveMetricCount: number
+  knownStrategyCount: number
+  missingMetricCount: number
+} {
+  const strategyIds = [...new Set([
+    ...knownStrategyIds.map(cleanText).filter(Boolean),
+    ...Object.keys(liveMetrics),
+  ])]
+  const metrics: StrategyPortfolioMetricOverrides = {}
+  const statusCounts: Record<string, number> = {}
+  let missingMetricCount = 0
+
+  for (const strategyId of strategyIds) {
+    const hasLedger = Boolean(sources.ledger[strategyId])
+    const hasDecision = Boolean(sources.decision[strategyId])
+    const hasBacktest = Boolean(sources.backtest[strategyId])
+    const sourceList = [
+      ...(hasLedger ? ['strategy_reward_ledger'] : []),
+      ...(hasDecision ? ['strategy_decision_log'] : []),
+      ...(hasBacktest ? ['backtest_results'] : []),
+    ]
+    let status: string
+    if (hasLedger && hasBacktest) status = 'ready'
+    else if (hasLedger) status = 'reward_only'
+    else if (hasBacktest) status = 'backtest_only'
+    else if (hasDecision) status = 'decision_log_only'
+    else status = 'no_evidence'
+
+    if (status === 'no_evidence') missingMetricCount += 1
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1
+    const base = liveMetrics[strategyId] ?? {}
+    metrics[strategyId] = status === 'no_evidence'
+      ? {
+          strategy_metric_status: status as any,
+          metric_reason: 'known_strategy_without_reward_backtest_or_decision_log_evidence',
+          metric_sample_count: 0,
+          metric_sources: [],
+          reliability: 0.48,
+          prior_weight: 0.85,
+        }
+      : {
+          ...base,
+          strategy_metric_status: status as any,
+          metric_reason: sourceList.join('+'),
+          metric_sample_count: Math.max(0, Math.round(Number((base as any).metric_sample_count ?? 0) || 0)),
+          metric_sources: sourceList,
+        }
+  }
+
+  return {
+    metrics,
+    statusCounts,
+    liveMetricCount: Object.keys(liveMetrics).length,
+    knownStrategyCount: knownStrategyIds.length,
+    missingMetricCount,
+  }
 }
 
 export async function loadStrategyPortfolioMetricOverrides(
@@ -853,9 +932,15 @@ export async function loadStrategyPortfolioMetricOverrides(
   const ledgerMetrics = buildStrategyPortfolioMetricOverridesFromLedgerRows(ledgerRows, options)
   const decisionMetrics = buildStrategyPortfolioDecisionLogMetricOverrides(decisionRows)
   const backtestMetrics = buildStrategyPortfolioBacktestMetricOverrides(backtestRows, options)
-  const metrics = mergeDefinedMetrics(mergeDefinedMetrics(ledgerMetrics, decisionMetrics), backtestMetrics)
+  const liveMetrics = mergeDefinedMetrics(mergeDefinedMetrics(ledgerMetrics, decisionMetrics), backtestMetrics)
+  const annotated = annotateStrategyMetricStatuses(
+    liveMetrics,
+    { ledger: ledgerMetrics, decision: decisionMetrics, backtest: backtestMetrics },
+    (options.knownStrategyIds ?? []).map(cleanText).filter(Boolean),
+  )
+  const metrics = annotated.metrics
   const metricCount = Object.keys(metrics).length
-  const status = metricCount > 0 ? 'loaded' : 'empty'
+  const status = annotated.liveMetricCount > 0 ? 'loaded' : 'empty'
   return {
     version: STRATEGY_PORTFOLIO_METRICS_SOURCE_VERSION,
     source: 'strategy_reward_ledger+strategy_decision_log+backtest_results',
@@ -869,6 +954,10 @@ export async function loadStrategyPortfolioMetricOverrides(
       decision_log_row_count: decisionRows.length,
       backtest_result_row_count: backtestRows.length,
       metric_count: metricCount,
+      live_metric_count: annotated.liveMetricCount,
+      known_strategy_count: annotated.knownStrategyCount,
+      missing_metric_count: annotated.missingMetricCount,
+      metric_status_counts: annotated.statusCounts,
       decision_overlap_metric_count: Object.keys(decisionMetrics).length,
       backtest_metric_count: Object.keys(backtestMetrics).length,
       regime,

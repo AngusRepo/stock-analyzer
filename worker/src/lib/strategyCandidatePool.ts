@@ -99,6 +99,8 @@ export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   diversity_contribution?: number
   risk_adjusted_affinity?: number
   uncertainty?: number
+  runtime_teacher_evidence?: Record<string, number>
+  runtime_teacher_evidence_source?: string
   ml_teacher_labels?: Record<string, number>
   strategy_router_decision?: 'ml_slate' | 'observe_only' | 'research_only' | 'capacity_overflow'
   strategy_router_reason?: string
@@ -212,6 +214,20 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     strategy_matrix_coverage_ratio?: number
     strategy_matrix_matched_candidate_count?: number
     strategy_matrix_active_labeled_candidate_count?: number
+    min_route_score?: number
+    min_route_score_source?: string
+    route_score_distribution?: Record<string, number | null>
+    route_score_above_floor_count?: number
+    route_score_below_floor_count?: number
+    teacher_label_available_count?: number
+    teacher_label_missing_count?: number
+    teacher_label_contract?: string
+    runtime_teacher_evidence_policy?: string
+    runtime_teacher_evidence_available_count?: number
+    runtime_teacher_evidence_missing_count?: number
+    strategy_metric_status_counts?: Record<string, number>
+    strategy_metric_ready_count?: number
+    strategy_metric_no_evidence_count?: number
     strategy_similarity_evidence_source?: string
     strategy_similarity_algorithm_owner?: string
     strategy_similarity_medoid_algorithm?: string
@@ -976,6 +992,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
     strategyPortfolioMetricSource?: string
     strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
+    runtimeTeacherEvidence?: Record<string, Record<string, number>>
     policy?: StrategyCandidatePoolPolicy
   },
 ): Layer1StrategyBreadthPlan<T> {
@@ -1002,6 +1019,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     strategyWeights: options.strategyWeights,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
     strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
+    runtimeTeacherEvidence: options.runtimeTeacherEvidence,
   })
 
   const selectedSymbols = new Set(routerPlan.mlSlate.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
@@ -1050,6 +1068,20 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       strategy_matrix_coverage_ratio: routerPlan.telemetry.strategy_matrix_coverage_ratio,
       strategy_matrix_matched_candidate_count: routerPlan.telemetry.matched_candidates,
       strategy_matrix_active_labeled_candidate_count: routerPlan.telemetry.active_labeled_candidates,
+      min_route_score: routerPlan.telemetry.min_route_score,
+      min_route_score_source: routerPlan.telemetry.min_route_score_source,
+      route_score_distribution: routerPlan.telemetry.route_score_distribution,
+      route_score_above_floor_count: routerPlan.telemetry.route_score_above_floor_count,
+      route_score_below_floor_count: routerPlan.telemetry.route_score_below_floor_count,
+      teacher_label_available_count: routerPlan.telemetry.teacher_label_available_count,
+      teacher_label_missing_count: routerPlan.telemetry.teacher_label_missing_count,
+      teacher_label_contract: routerPlan.telemetry.teacher_label_contract,
+      runtime_teacher_evidence_policy: routerPlan.telemetry.runtime_teacher_evidence_policy,
+      runtime_teacher_evidence_available_count: routerPlan.telemetry.runtime_teacher_evidence_available_count,
+      runtime_teacher_evidence_missing_count: routerPlan.telemetry.runtime_teacher_evidence_missing_count,
+      strategy_metric_status_counts: routerPlan.telemetry.strategy_metric_status_counts,
+      strategy_metric_ready_count: routerPlan.telemetry.strategy_metric_ready_count,
+      strategy_metric_no_evidence_count: routerPlan.telemetry.strategy_metric_no_evidence_count,
       strategy_similarity_evidence_source: routerPlan.telemetry.strategy_similarity_evidence_source,
       strategy_similarity_algorithm_owner: routerPlan.telemetry.strategy_similarity_algorithm_owner,
       strategy_similarity_medoid_algorithm: routerPlan.telemetry.strategy_similarity_medoid_algorithm,

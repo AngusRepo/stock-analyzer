@@ -26,7 +26,7 @@ def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tu
     bins = calibration.get("bins") if isinstance(calibration, dict) else None
     min_samples = int(calibration.get("minSamples", 1) or 1) if isinstance(calibration, dict) else 1
     if isinstance(bins, list):
-        for row in bins:
+        for idx, row in enumerate(bins):
             if not isinstance(row, dict):
                 continue
             try:
@@ -38,10 +38,11 @@ def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tu
                 )
             except (TypeError, ValueError):
                 continue
-            upper_ok = avg_rank <= high if high >= 1.0 else avg_rank < high
+            upper_ok = avg_rank <= high if idx == len(bins) - 1 or high >= 1.0 else avg_rank < high
             if samples >= min_samples and avg_rank >= low and upper_ok:
                 return round(mean_return, 6), "calibrated_rank_bin", {
                     "forecast_calibration_method": calibration.get("method") or "empirical_rank_bins",
+                    "forecast_calibration_status": calibration.get("status") or "configured",
                     "forecast_calibration_source": calibration.get("source"),
                     "forecast_calibration_sample_count": calibration.get("sampleCount"),
                     "forecast_calibration_bin_samples": samples,
@@ -49,6 +50,12 @@ def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tu
                 }
     return None, "uncalibrated_rank_score", {
         "forecast_calibration_method": calibration.get("method") if isinstance(calibration, dict) else None,
+        "forecast_calibration_status": (
+            calibration.get("status") if isinstance(calibration, dict) and calibration
+            else (ev2_cfg or {}).get("expectedReturnCalibrationRuntime", {}).get("status")
+            if isinstance((ev2_cfg or {}).get("expectedReturnCalibrationRuntime"), dict)
+            else "missing"
+        ),
         "forecast_calibration_source": calibration.get("source") if isinstance(calibration, dict) else None,
         "forecast_calibration_sample_count": calibration.get("sampleCount") if isinstance(calibration, dict) else None,
     }

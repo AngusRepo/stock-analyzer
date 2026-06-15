@@ -24,7 +24,10 @@ from pydantic import BaseModel, Field
 
 from services import d1_client, retrain_lock
 from services.model_artifact_registry import (
+    backfill_champion_pointers_from_model_pool,
     build_artifact_records_from_retrain_followup,
+    is_production_artifact_model,
+    list_artifact_registry,
     upsert_artifact_records,
 )
 from services.foundation_forecast_evidence import (
@@ -207,6 +210,82 @@ async def _record_modal_telemetry(events: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+def _backfill_champion_pointers_after_cutover(
+    *,
+    artifact_records: list[dict[str, Any]],
+    reason: str,
+) -> dict[str, Any]:
+    """Mirror model_pool.json champions into D1 after artifact lifecycle cutover.
+
+    Artifact lifecycle can update the current serving owner in model_pool.json
+    before the registry pointer table is reconciled. Keep this idempotent and
+    scoped to callbacks that actually produced a production artifact row.
+    """
+    production_records = [
+        record
+        for record in artifact_records
+        if str(record.get("state") or "") == "production"
+        and is_production_artifact_model(str(record.get("model_name") or ""))
+    ]
+    if not production_records:
+        return {
+            "attempted": False,
+            "reason": "no_artifact_lifecycle_production_cutover",
+        }
+
+    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket_name:
+        return {
+            "attempted": True,
+            "status": "skipped",
+            "reason": "GCS_BUCKET_NAME missing",
+            "triggered_by": [record.get("artifact_id") for record in production_records],
+        }
+
+    try:
+        from google.cloud import storage
+
+        bucket = storage.Client().bucket(bucket_name)
+        blob = bucket.blob("universal/model_pool.json")
+        if not blob.exists():
+            return {
+                "attempted": True,
+                "status": "skipped",
+                "reason": "model_pool.json not found",
+                "triggered_by": [record.get("artifact_id") for record in production_records],
+            }
+
+        pool = json.loads(blob.download_as_text().lstrip("\ufeff"))
+        model_pool_versions = {
+            str(name): str(entry.get("version"))
+            for name, entry in (pool.get("models") or {}).items()
+            if isinstance(entry, dict)
+            and entry.get("version")
+            and is_production_artifact_model(str(name))
+        }
+        registry_rows = list_artifact_registry(limit=500)
+        result = backfill_champion_pointers_from_model_pool(
+            model_pool_versions=model_pool_versions,
+            registry_rows=registry_rows,
+            reason=reason,
+            create_missing_artifacts=True,
+        )
+        return {
+            **result,
+            "attempted": True,
+            "triggered_by": [record.get("artifact_id") for record in production_records],
+        }
+    except Exception as exc:  # noqa: BLE001 - retrain followup remains authoritative.
+        logger.warning("[RetrainFollowup] champion pointer reconcile failed: %s", exc)
+        return {
+            "attempted": True,
+            "status": "error",
+            "reason": reason,
+            "triggered_by": [record.get("artifact_id") for record in production_records],
+            "errors": [str(exc)],
+        }
+
+
 @router.post("/retrain/followup")
 async def retrain_followup(payload: RetrainFollowupPayload, request: Request) -> dict[str, Any]:
     _check_token(request)
@@ -317,6 +396,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
     write_status = "upserted" if changes > 0 else "unchanged"
     telemetry_status = await _record_modal_telemetry(payload.modal_telemetry)
     artifact_registry = {"attempted": 0, "written": 0, "errors": []}
+    artifact_records: list[dict[str, Any]] = []
     try:
         artifact_records = build_artifact_records_from_retrain_followup(payload)
         artifact_registry = upsert_artifact_records(artifact_records)
@@ -326,12 +406,17 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "written": 0,
             "errors": [str(exc)],
         }
+    champion_pointer_reconcile = _backfill_champion_pointers_after_cutover(
+        artifact_records=artifact_records,
+        reason=f"retrain_followup_artifact_lifecycle:{idem_key}",
+    )
     scheduler_callback = await _callback_worker_scheduler(payload)
     logger.info(
         f"[RetrainFollowup] {idem_key} status={payload.status} write={write_status} "
         f"gcs={payload.gcs_prefix} wid={payload.window_id} lock={payload.lock_key} "
         f"telemetry={telemetry_status['recorded']}/{len(payload.modal_telemetry or [])} "
         f"artifact_registry={artifact_registry['written']}/{artifact_registry['attempted']} "
+        f"champion_pointer_reconcile={champion_pointer_reconcile.get('status', champion_pointer_reconcile.get('reason'))} "
         f"scheduler_callback={scheduler_callback}"
     )
 
@@ -345,6 +430,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "modal_telemetry": telemetry_status,
         "foundation_evidence": foundation_evidence,
         "artifact_registry": artifact_registry,
+        "champion_pointer_reconcile": champion_pointer_reconcile,
         "scheduler_callback": scheduler_callback,
         "summary": {
             "run_id": payload.run_id,

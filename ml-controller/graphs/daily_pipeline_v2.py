@@ -28,6 +28,7 @@ from langgraph.types import RetryPolicy
 
 from services import d1_client, kv_client
 from services.ensemble_v2 import attach_ensemble_v2
+from services.expected_return_calibration import load_expected_return_calibration_report
 from services.payload_builder import (
     DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
     PredictPayload,
@@ -1997,10 +1998,31 @@ def _load_pool_and_ic():
             ml_pool_cfg = tcfg.get("mlPool", {}) or {}
             degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
             ev2_cfg = dict(tcfg.get("ensemble_v2", {}) or {})
-            if not ev2_cfg.get("expectedReturnCalibration"):
-                calibration = _load_expected_return_calibration()
+            if ev2_cfg.get("expectedReturnCalibration"):
+                configured = ev2_cfg.get("expectedReturnCalibration") or {}
+                ev2_cfg["expectedReturnCalibrationRuntime"] = {
+                    "status": "configured",
+                    "source": configured.get("source") if isinstance(configured, dict) else "trading_config",
+                    "sampleCount": configured.get("sampleCount") if isinstance(configured, dict) else None,
+                    "binCount": len(configured.get("bins") or []) if isinstance(configured, dict) else None,
+                }
+            else:
+                calibration_report = _load_expected_return_calibration_report()
+                calibration = calibration_report.get("calibration")
+                ev2_cfg["expectedReturnCalibrationRuntime"] = {
+                    key: value for key, value in calibration_report.items()
+                    if key != "calibration"
+                }
                 if calibration:
                     ev2_cfg["expectedReturnCalibration"] = calibration
+                logger.info(
+                    "[Pipeline V2] expected-return calibration %s "
+                    "(samples=%s rows=%s bins=%s)",
+                    calibration_report.get("status"),
+                    calibration_report.get("sampleCount"),
+                    calibration_report.get("rowCount"),
+                    calibration_report.get("binCount"),
+                )
         except Exception as _e:
             logger.debug(f"[Pipeline V2] trading:config merged lookup failed (using defaults): {_e}")
         return model_status, ic_weights, degraded_dampening, ev2_cfg, True, pool
@@ -2016,117 +2038,29 @@ def _load_expected_return_calibration(
     min_bin_samples: int = 8,
     max_bins: int = 8,
 ) -> dict[str, Any] | None:
-    """Build empirical avg_rank -> realized return bins from verified outcomes.
-
-    This deliberately fails closed when verified coverage is insufficient: a
-    rank score is not an expected return until production outcomes calibrate it.
-    """
-    try:
-        rows = d1_client.query(
-            """
-            SELECT forecast_data, actual_return_pct
-              FROM predictions
-             WHERE model_name = 'ensemble'
-               AND verified_at IS NOT NULL
-               AND actual_return_pct IS NOT NULL
-               AND forecast_data IS NOT NULL
-               AND date(prediction_date) >= date('now', ?)
-             ORDER BY prediction_date DESC
-             LIMIT 2000
-            """,
-            [f"-{max(1, int(lookback_days))} days"],
-        )
-    except Exception as exc:
-        logger.debug(f"[Pipeline V2] expected-return calibration query skipped: {exc}")
-        return None
-
-    samples: list[tuple[float, float]] = []
-    for row in rows or []:
-        try:
-            payload = json.loads(row.get("forecast_data") or "{}")
-            avg_rank = payload.get("ensemble_v2", {}).get("avg_rank")
-            actual = row.get("actual_return_pct")
-            if avg_rank is None or actual is None:
-                continue
-            avg_rank_f = float(avg_rank)
-            actual_f = float(actual)
-            if not (0.0 <= avg_rank_f <= 1.0):
-                continue
-            if not (-1.0 < actual_f < 1.0):
-                continue
-            samples.append((avg_rank_f, actual_f))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-
-    if len(samples) < min_samples:
-        return None
-
-    samples.sort(key=lambda item: item[0])
-    bin_count = max(1, min(max_bins, len(samples) // max(1, min_bin_samples)))
-    bins: list[dict[str, Any]] = []
-    for idx in range(bin_count):
-        start = round(idx * len(samples) / bin_count)
-        end = round((idx + 1) * len(samples) / bin_count)
-        subset = samples[start:end]
-        if len(subset) < min_bin_samples:
-            continue
-        returns = sorted(actual for _, actual in subset)
-        mean_return = sum(returns) / len(returns)
-        median_return = returns[len(returns) // 2]
-        bins.append({
-            "rankLow": round(subset[0][0], 6),
-            "rankHigh": round(subset[-1][0], 6),
-            "meanReturn": round(mean_return, 6),
-            "medianReturn": round(median_return, 6),
-            "samples": len(subset),
-        })
-
-    if not bins:
-        return None
-    bins = _monotonic_smooth_return_bins(bins)
-    return {
-        "source": "verified_ensemble_outcomes",
-        "method": "empirical_rank_bins_monotonic",
-        "lookbackDays": int(lookback_days),
-        "minSamples": int(min_bin_samples),
-        "sampleCount": len(samples),
-        "bins": bins,
-    }
+    return _load_expected_return_calibration_report(
+        lookback_days=lookback_days,
+        min_samples=min_samples,
+        min_bin_samples=min_bin_samples,
+        max_bins=max_bins,
+    ).get("calibration")
 
 
-def _monotonic_smooth_return_bins(bins: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pool adjacent return bins so higher rank never maps to lower return."""
-    blocks: list[dict[str, Any]] = []
-    for idx, row in enumerate(bins):
-        samples = max(1, int(row.get("samples") or 1))
-        mean_return = float(row.get("meanReturn") or 0.0)
-        blocks.append({
-            "weight": samples,
-            "sum": mean_return * samples,
-            "items": [idx],
-        })
-        while len(blocks) >= 2:
-            left = blocks[-2]
-            right = blocks[-1]
-            left_mean = left["sum"] / left["weight"]
-            right_mean = right["sum"] / right["weight"]
-            if left_mean <= right_mean:
-                break
-            merged = {
-                "weight": left["weight"] + right["weight"],
-                "sum": left["sum"] + right["sum"],
-                "items": left["items"] + right["items"],
-            }
-            blocks[-2:] = [merged]
-
-    smoothed = [dict(row) for row in bins]
-    for block in blocks:
-        block_mean = block["sum"] / block["weight"]
-        for idx in block["items"]:
-            smoothed[idx]["rawMeanReturn"] = smoothed[idx].get("meanReturn")
-            smoothed[idx]["meanReturn"] = round(block_mean, 6)
-            smoothed[idx]["calibration"] = "pava_monotonic"
-    return smoothed
+def _load_expected_return_calibration_report(
+    *,
+    lookback_days: int = 90,
+    min_samples: int = 30,
+    min_bin_samples: int = 8,
+    max_bins: int = 8,
+) -> dict[str, Any]:
+    """Build empirical avg_rank -> realized return calibration with explicit diagnostics."""
+    return load_expected_return_calibration_report(
+        d1_client.query,
+        lookback_days=lookback_days,
+        min_samples=min_samples,
+        min_bin_samples=min_bin_samples,
+        max_bins=max_bins,
+    )
 
 
 def _attach_ensemble_v2(

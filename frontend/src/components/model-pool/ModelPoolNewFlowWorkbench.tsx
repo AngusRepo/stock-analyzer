@@ -495,31 +495,11 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
   const pboPolicyMissing = pboRequired && pboMax == null
   const oosMeanReturn = firstFiniteNumber(evidence.pbo.oos_mean_return, evidence.metrics.pbo_oos_mean_return)
   const minOosMeanReturn = firstFiniteNumber(evidence.pboPolicy.min_oos_mean_return) ?? 0
-  const cpcvIc = firstFiniteNumber(
-    evidence.modelCpcv.oos_ic_mean,
-    evidence.modelCpcv.rank_ic,
-    evidence.modelCpcv.min_rank_ic,
-    evidence.metrics.model_cpcv_oos_ic,
-  )
-  const hasCpcvStats = [
-    cpcvIc,
-    firstFiniteNumber(evidence.modelCpcv.folds),
-    firstFiniteNumber(evidence.modelCpcv.coverage_mean, evidence.modelCpcv.coverage),
-    firstFiniteNumber(evidence.modelCpcv.positive_fold_ratio),
-  ].some((value) => value != null)
   const cpcvMinIc = firstFiniteNumber(
     evidence.cpcvPolicy.min_oos_ic_mean,
     evidence.cpcvPolicy.min_rank_ic,
     evidence.gateCpcvPolicy.min_oos_ic_mean,
   )
-  const cpcvFolds = firstFiniteNumber(evidence.modelCpcv.folds)
-  const cpcvMinFolds = firstFiniteNumber(evidence.cpcvPolicy.min_folds, evidence.gateCpcvPolicy.min_folds)
-  const coverage = firstFiniteNumber(evidence.modelCpcv.coverage_mean, evidence.modelCpcv.coverage)
-  const minCoverage = firstFiniteNumber(evidence.cpcvPolicy.min_coverage, evidence.gateCpcvPolicy.min_coverage)
-  const positiveFoldRatio = firstFiniteNumber(evidence.modelCpcv.positive_fold_ratio)
-  const minPositiveFoldRatio = firstFiniteNumber(evidence.cpcvPolicy.min_positive_fold_ratio, evidence.gateCpcvPolicy.min_positive_fold_ratio)
-  const directionAccuracy = firstFiniteNumber(evidence.modelCpcv.direction_accuracy)
-  const minDirectionAccuracy = firstFiniteNumber(evidence.cpcvPolicy.min_direction_accuracy)
   const decision = firstText(
     evidence.metrics.model_cpcv_decision,
     evidence.modelCpcv.decision,
@@ -540,30 +520,8 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
       : pboValue == null
         ? `PBO missing <${formatMetric(pboMax, 2)}`
         : `PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)}`
-  const cpcvDetail = cpcvMinIc == null
-    ? 'CPCV policy missing'
-    : cpcvIc == null
-      ? hasCpcvStats
-        ? `IC missing >=${formatMetric(cpcvMinIc, 3)}`
-        : 'CPCV detail missing'
-      : `IC ${formatMetric(cpcvIc, 3)}>=${formatMetric(cpcvMinIc, 3)}`
-  const foldCoverageDetail = hasCpcvStats
-    ? [
-        cpcvMinFolds == null ? null : `folds ${formatMetric(cpcvFolds, 0)}>=${formatMetric(cpcvMinFolds, 0)}`,
-        minCoverage == null ? null : `cov ${formatMetric(coverage, 3)}>=${formatMetric(minCoverage, 2)}`,
-      ].filter(Boolean).join(' / ')
-    : null
-  const stabilityDetail = hasCpcvStats
-    ? [
-        minPositiveFoldRatio == null ? null : `pos-fold ${formatMetric(positiveFoldRatio, 2)}>=${formatMetric(minPositiveFoldRatio, 2)}`,
-        minDirectionAccuracy == null ? null : `dir ${formatMetric(directionAccuracy, 3)}>=${formatMetric(minDirectionAccuracy, 2)}`,
-      ].filter(Boolean).join(' / ')
-    : null
   const detailParts = [
     pboDetail,
-    cpcvDetail,
-    foldCoverageDetail,
-    stabilityDetail,
   ].filter(Boolean)
   const titleParts = [
     `${candidateId}: PBO/CPCV ${decision ?? 'unavailable'}`,
@@ -571,11 +529,6 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
       ? pboNotApplicableTitle
       : `PBO=${formatMetric(pboValue, 3)} < ${formatMetric(pboMax, 2)}`,
     `PBO OOS return=${formatMetric(oosMeanReturn, 4)} >= ${formatMetric(minOosMeanReturn, 4)}`,
-    hasCpcvStats
-      ? `CPCV IC=${formatMetric(cpcvIc, 4)} >= ${formatMetric(cpcvMinIc, 4)}`
-      : 'CPCV detail not attached to this artifact evidence packet',
-    hasCpcvStats ? `folds=${formatMetric(cpcvFolds, 0)} >= ${formatMetric(cpcvMinFolds, 0)}` : null,
-    hasCpcvStats ? `coverage=${formatMetric(coverage, 3)} >= ${formatMetric(minCoverage, 2)}` : null,
   ].filter(Boolean)
   const tone = decision
     ? toneFromGate(decision)

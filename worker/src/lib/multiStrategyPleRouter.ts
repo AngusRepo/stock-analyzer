@@ -32,6 +32,10 @@ export const ACTIVE_9_ML_TEACHERS = [
 export type StrategyRouterDecision = 'ml_slate' | 'observe_only' | 'research_only' | 'capacity_overflow'
 
 export interface StrategyPortfolioMetrics {
+  strategy_metric_status?: 'ready' | 'reward_only' | 'backtest_only' | 'decision_log_only' | 'insufficient_samples' | 'research_only' | 'no_evidence'
+  metric_reason?: string
+  metric_sample_count?: number
+  metric_sources?: string[]
   rolling_sharpe: number
   max_drawdown: number
   recent_alpha: number
@@ -53,6 +57,9 @@ export interface StrategyPortfolioMetrics {
 export interface StrategyPortfolioPriorSnapshot {
   version: typeof FINLAB_PORTFOLIO_INTELLIGENCE_VERSION
   strategy_similarity_graph: StrategySimilarityGraphEvidence
+  strategy_metric_status: Record<string, string>
+  strategy_metric_reason: Record<string, string>
+  strategy_metric_sample_count: Record<string, number>
   strategy_prior_weight: Record<string, number>
   family_prior_weight: Partial<Record<StrategyFamilyId, number>>
   strategy_reliability: Record<string, number>
@@ -84,6 +91,11 @@ export interface MultiStrategyPleRouterComponents {
   risk_adjusted_affinity: number
   uncertainty: number
   teacher_alignment: number
+  teacher_alignment_contribution: number
+  teacher_label_count: number
+  teacher_alignment_missing: number
+  runtime_teacher_evidence_count: number
+  runtime_teacher_evidence_missing: number
   research_signal_count: number
 }
 
@@ -104,6 +116,8 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   diversity_contribution?: number
   risk_adjusted_affinity?: number
   uncertainty?: number
+  runtime_teacher_evidence?: Record<string, number>
+  runtime_teacher_evidence_source?: 'historical_verified_cache' | 'candidate_supplied_runtime_evidence' | 'missing_runtime_teacher_cache'
   ml_teacher_labels?: Record<string, number>
   strategy_router_decision?: StrategyRouterDecision
   strategy_router_reason?: string
@@ -158,10 +172,24 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     strategy_similarity_algorithm_owner?: string
     strategy_similarity_medoid_algorithm?: string
     strategy_similarity_degraded_reason?: string
+    strategy_metric_status_counts: Record<string, number>
+    strategy_metric_ready_count: number
+    strategy_metric_no_evidence_count: number
     ml_slate_count: number
     observe_only_count: number
     capacity_overflow_count: number
     capacity_policy: 'max_only_no_minimum'
+    min_route_score: number
+    min_route_score_source: 'config_explicit' | 'adaptive_route_score_distribution' | 'adaptive_no_active_scores'
+    route_score_distribution: Record<'p10' | 'p25' | 'p50' | 'p75' | 'p90', number | null>
+    route_score_above_floor_count: number
+    route_score_below_floor_count: number
+    teacher_label_available_count: number
+    teacher_label_missing_count: number
+    teacher_label_contract: 'training_teacher_labels_offline_runtime_teacher_evidence_optional'
+    runtime_teacher_evidence_policy: 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency'
+    runtime_teacher_evidence_available_count: number
+    runtime_teacher_evidence_missing_count: number
     strategy_usage: Record<string, number>
     family_usage: Partial<Record<StrategyFamilyId, number>>
   }
@@ -173,6 +201,8 @@ export interface MultiStrategyPleRoutingOptions {
   strategyWeights?: Record<string, number>
   strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
   strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
+  runtimeTeacherEvidence?: Record<string, Record<string, number>>
+  /** @deprecated Daily routing should pass runtimeTeacherEvidence; this alias is kept for backcompat/tests. */
   mlTeacherLabels?: Record<string, Record<string, number>>
   minRouteScore?: number
   strategySimilarityEdgeThreshold?: number | null
@@ -317,6 +347,45 @@ function average(values: number[], fallback = 0): number {
   return clean.reduce((sum, value) => sum + value, 0) / clean.length
 }
 
+function percentile(values: number[], q: number): number | null {
+  const clean = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b)
+  if (!clean.length) return null
+  const idx = Math.min(clean.length - 1, Math.max(0, Math.round((clean.length - 1) * clamp(q, 0, 1))))
+  return round3(clean[idx])
+}
+
+function routeScoreDistribution(values: number[]): Record<'p10' | 'p25' | 'p50' | 'p75' | 'p90', number | null> {
+  return {
+    p10: percentile(values, 0.10),
+    p25: percentile(values, 0.25),
+    p50: percentile(values, 0.50),
+    p75: percentile(values, 0.75),
+    p90: percentile(values, 0.90),
+  }
+}
+
+function resolveAdaptiveRouteFloor<T extends StrategyCandidatePoolCandidate>(
+  annotated: Array<T & MultiStrategyPleAnnotatedCandidate>,
+  options: MultiStrategyPleRoutingOptions,
+): { value: number; source: MultiStrategyPleRoutingPlan['telemetry']['min_route_score_source']; distribution: Record<'p10' | 'p25' | 'p50' | 'p75' | 'p90', number | null> } {
+  const explicit = finiteNumber(options.minRouteScore)
+  const scores = annotated
+    .filter((candidate) => (candidate.strategy_pool_ids ?? []).length > 0 && eligibleForMl(candidate))
+    .map((candidate) => finiteNumber(candidate.strategy_router_score))
+    .filter((score): score is number => score != null)
+  const distribution = routeScoreDistribution(scores)
+  if (explicit != null) {
+    return { value: round3(clamp(explicit, 0, 100)), source: 'config_explicit', distribution }
+  }
+  if (!scores.length) {
+    return { value: 20, source: 'adaptive_no_active_scores', distribution }
+  }
+  const p75 = distribution.p75 ?? 20
+  const p50 = distribution.p50 ?? p75
+  const adaptive = clamp((p75 * 0.65) + (p50 * 0.35), 10, 24)
+  return { value: round3(adaptive), source: 'adaptive_route_score_distribution', distribution }
+}
+
 function jaccard(a: Set<string>, b: Set<string>): number {
   if (!a.size && !b.size) return 0
   let intersection = 0
@@ -400,17 +469,25 @@ function parseNumberRecord(value: unknown): Record<string, number> {
   return out
 }
 
-function teacherLabelsForCandidate(
+function runtimeTeacherEvidenceForCandidate(
   candidate: StrategyCandidatePoolCandidate,
   options: MultiStrategyPleRoutingOptions,
-): Record<string, number> {
+): { labels: Record<string, number>; source: MultiStrategyPleAnnotatedCandidate['runtime_teacher_evidence_source'] } {
   const symbol = cleanText(candidate.symbol).toUpperCase()
-  const direct = options.mlTeacherLabels?.[symbol]
+  const runtime = options.runtimeTeacherEvidence?.[symbol]
+    ?? (candidate as unknown as { runtime_teacher_evidence?: unknown }).runtime_teacher_evidence
+  const direct = runtime
+    ?? options.mlTeacherLabels?.[symbol]
     ?? (candidate as unknown as { ml_teacher_labels?: unknown }).ml_teacher_labels
     ?? (candidate as unknown as { model_teacher_labels?: unknown }).model_teacher_labels
   const parsed = parseNumberRecord(direct)
-  if (Object.keys(parsed).length) return parsed
-  return {}
+  if (Object.keys(parsed).length) {
+    return {
+      labels: parsed,
+      source: runtime ? 'historical_verified_cache' : 'candidate_supplied_runtime_evidence',
+    }
+  }
+  return { labels: {}, source: 'missing_runtime_teacher_cache' }
 }
 
 function portfolioPriorForLabels(
@@ -454,6 +531,9 @@ function portfolioPriorForLabels(
   const strategySimilarityGraph = options.strategySimilarityGraphEvidence ?? localStrategySimilarityGraph
 
   const strategy_prior_weight: Record<string, number> = {}
+  const strategy_metric_status: Record<string, string> = {}
+  const strategy_metric_reason: Record<string, string> = {}
+  const strategy_metric_sample_count: Record<string, number> = {}
   const family_prior_weight: Partial<Record<StrategyFamilyId, number>> = {}
   const strategy_reliability: Record<string, number> = {}
   const strategy_crowding_score: Record<string, number> = {}
@@ -500,6 +580,9 @@ function portfolioPriorForLabels(
       live_backtest_divergence: round3(clamp(maxOverlap * 0.22 + supportRatio * 0.18, 0, 0.85)),
     }
     const rawOverride = overrides[strategyId]
+    const metricStatus = cleanText((rawOverride as Record<string, unknown> | undefined)?.strategy_metric_status) || (rawOverride ? 'ready' : 'derived_from_daily_strategy_matrix')
+    const metricReason = cleanText((rawOverride as Record<string, unknown> | undefined)?.metric_reason) || (rawOverride ? 'live_strategy_asset_metrics_loaded' : 'no_live_l125_metric_override')
+    const metricSampleCount = finiteNumber((rawOverride as Record<string, unknown> | undefined)?.metric_sample_count) ?? 0
     const baseMetrics = {
       rolling_sharpe: overrideNumber(rawOverride, 'rolling_sharpe', derived.rolling_sharpe),
       max_drawdown: overrideNumber(rawOverride, 'max_drawdown', derived.max_drawdown),
@@ -532,6 +615,12 @@ function portfolioPriorForLabels(
       diversification_value: diversificationValue,
     }))
     const metrics: StrategyPortfolioMetrics = {
+      strategy_metric_status: metricStatus as StrategyPortfolioMetrics['strategy_metric_status'],
+      metric_reason: metricReason,
+      metric_sample_count: Math.max(0, Math.round(metricSampleCount)),
+      metric_sources: Array.isArray((rawOverride as Record<string, unknown> | undefined)?.metric_sources)
+        ? ((rawOverride as Record<string, unknown>).metric_sources as unknown[]).map(cleanText).filter(Boolean)
+        : [],
       ...baseMetrics,
       reliability: round3(clamp(reliability, 0, 1)),
       crowding_score: round3(clamp(crowdingScore, 0, 1)),
@@ -539,6 +628,9 @@ function portfolioPriorForLabels(
       prior_weight: round3(clamp(priorWeight, 0.15, 1.8)),
     }
     strategy_metrics[strategyId] = metrics
+    strategy_metric_status[strategyId] = metricStatus
+    strategy_metric_reason[strategyId] = metricReason
+    strategy_metric_sample_count[strategyId] = metrics.metric_sample_count ?? 0
     strategy_prior_weight[strategyId] = metrics.prior_weight
     strategy_reliability[strategyId] = metrics.reliability
     strategy_crowding_score[strategyId] = metrics.crowding_score
@@ -562,6 +654,9 @@ function portfolioPriorForLabels(
   return {
     version: FINLAB_PORTFOLIO_INTELLIGENCE_VERSION,
     strategy_similarity_graph: strategySimilarityGraph,
+    strategy_metric_status,
+    strategy_metric_reason,
+    strategy_metric_sample_count,
     strategy_prior_weight,
     family_prior_weight,
     strategy_reliability,
@@ -682,11 +777,13 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   const avgDiversification = average(activeMetrics.map((metrics) => metrics.diversification_value), activeLabels.length ? 0.5 : 0)
   const crossFamilyBonus = Math.max(0, familyIds.length - 1) * 3
   const sameFamilyCrowdingPenalty = Math.max(0, activeLabels.length - familyIds.length) * 2
-  const teacherLabels = teacherLabelsForCandidate(state.candidate, options)
+  const teacherEvidence = runtimeTeacherEvidenceForCandidate(state.candidate, options)
+  const teacherLabels = teacherEvidence.labels
   const teacherValues = Object.values(teacherLabels).filter((value) => Number.isFinite(value))
   const teacherAlignment = teacherValues.length
     ? round3(clamp(average(teacherValues.map((value) => clamp(value, 0, 1))), 0, 1))
-    : 0.5
+    : 0
+  const teacherAlignmentContribution = teacherValues.length ? round3(teacherAlignment * 5) : 0
   const diversityContribution = round3(clamp(avgDiversification + Math.min(0.18, crossFamilyBonus / 40), 0, 1))
   const riskAdjustedAffinity = round3(clamp(
     scaledActiveSupport * (0.72 + avgReliability * 0.28) * (1 - avgCrowding * 0.22),
@@ -706,7 +803,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     riskAdjustedAffinity * 0.62
     + state.raw_quality * 0.2
     + diversityContribution * 8
-    + teacherAlignment * 5
+    + teacherAlignmentContribution
     - uncertainty * 5
     - sameFamilyCrowdingPenalty,
     0,
@@ -745,6 +842,10 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     diversity_contribution: diversityContribution,
     risk_adjusted_affinity: riskAdjustedAffinity,
     uncertainty,
+    runtime_teacher_evidence: teacherLabels,
+    runtime_teacher_evidence_source: teacherEvidence.source,
+    // Legacy funnel alias. Daily L1.5 treats this as runtime teacher evidence;
+    // offline PLE/Listwise training owns true training_teacher_labels.
     ml_teacher_labels: teacherLabels,
     strategy_router_decision: routerDecision,
     strategy_router_reason: routerReason,
@@ -762,6 +863,11 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
       risk_adjusted_affinity: riskAdjustedAffinity,
       uncertainty,
       teacher_alignment: teacherAlignment,
+      teacher_alignment_contribution: teacherAlignmentContribution,
+      teacher_label_count: teacherValues.length,
+      teacher_alignment_missing: teacherValues.length ? 0 : 1,
+      runtime_teacher_evidence_count: teacherValues.length,
+      runtime_teacher_evidence_missing: teacherValues.length ? 0 : 1,
       research_signal_count: researchLabels.length,
     },
     strategy_pool_score: routeScore,
@@ -795,7 +901,6 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   options: MultiStrategyPleRoutingOptions,
 ): MultiStrategyPleRoutingPlan<T> {
   const maxSlateSize = Math.max(0, Math.round(options.maxSlateSize))
-  const minRouteScore = finiteNumber(options.minRouteScore) ?? 20
   const states = buildCandidateLabelStates(candidates, specs, options)
   const strategyMatrixStrategyCount = states[0]?.labels.length
     ?? specs
@@ -806,6 +911,9 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   const strategyMatrixExpectedCellCount = strategyMatrixCandidateCount * strategyMatrixStrategyCount
   const strategyMatrixCellCount = states.reduce((sum, state) => sum + state.labels.length, 0)
   const prior = portfolioPriorForLabels(states, specs, options)
+  const provisional = states.map((state) => annotateCandidate(state, prior, maxSlateSize, 101, options))
+  const routeFloor = resolveAdaptiveRouteFloor(provisional, options)
+  const minRouteScore = routeFloor.value
   const annotated = states.map((state) => annotateCandidate(state, prior, maxSlateSize, minRouteScore, options))
   const routed = annotated
     .filter((candidate) => candidate.strategy_router_decision === 'ml_slate')
@@ -839,6 +947,14 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
     })
   const strategyUsage = countBy(mlSlate.flatMap((candidate) => candidate.strategy_pool_ids ?? []))
   const familyUsage = countBy(mlSlate.flatMap((candidate) => candidate.strategy_family_ids ?? []) as StrategyFamilyId[])
+  const metricStatusCounts = countBy(Object.values(prior.strategy_metric_status))
+  const routeScores = annotated
+    .filter((candidate) => (candidate.strategy_pool_ids ?? []).length > 0 && eligibleForMl(candidate))
+    .map((candidate) => finiteNumber(candidate.strategy_router_score))
+    .filter((score): score is number => score != null)
+  const routeScoreAboveFloorCount = routeScores.filter((score) => score >= minRouteScore).length
+  const teacherAvailableCount = annotated.filter((candidate) => (candidate.strategy_router_components?.teacher_label_count ?? 0) > 0).length
+  const runtimeTeacherAvailableCount = annotated.filter((candidate) => (candidate.strategy_router_components?.runtime_teacher_evidence_count ?? 0) > 0).length
 
   return {
     version: MULTI_STRATEGY_PLE_ROUTER_VERSION,
@@ -866,10 +982,28 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       strategy_similarity_algorithm_owner: prior.strategy_similarity_graph.algorithm_owner ?? 'unknown',
       strategy_similarity_medoid_algorithm: prior.strategy_similarity_graph.medoid_algorithm ?? 'none',
       strategy_similarity_degraded_reason: prior.strategy_similarity_graph.degraded_reason,
+      strategy_metric_status_counts: Object.fromEntries(Object.entries(metricStatusCounts).sort()),
+      strategy_metric_ready_count: Object.entries(prior.strategy_metric_status)
+        .filter(([, status]) => status === 'ready' || status === 'reward_only' || status === 'backtest_only' || status === 'decision_log_only')
+        .length,
+      strategy_metric_no_evidence_count: Object.entries(prior.strategy_metric_status)
+        .filter(([, status]) => status === 'no_evidence' || status === 'derived_from_daily_strategy_matrix')
+        .length,
       ml_slate_count: mlSlate.length,
       observe_only_count: observeOnly.length,
       capacity_overflow_count: observeOnly.filter((candidate) => candidate.strategy_router_decision === 'capacity_overflow').length,
       capacity_policy: 'max_only_no_minimum',
+      min_route_score: minRouteScore,
+      min_route_score_source: routeFloor.source,
+      route_score_distribution: routeFloor.distribution,
+      route_score_above_floor_count: routeScoreAboveFloorCount,
+      route_score_below_floor_count: Math.max(0, routeScores.length - routeScoreAboveFloorCount),
+      teacher_label_available_count: teacherAvailableCount,
+      teacher_label_missing_count: Math.max(0, annotated.length - teacherAvailableCount),
+      teacher_label_contract: 'training_teacher_labels_offline_runtime_teacher_evidence_optional',
+      runtime_teacher_evidence_policy: 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency',
+      runtime_teacher_evidence_available_count: runtimeTeacherAvailableCount,
+      runtime_teacher_evidence_missing_count: Math.max(0, annotated.length - runtimeTeacherAvailableCount),
       strategy_usage: Object.fromEntries(Object.entries(strategyUsage).sort()),
       family_usage: Object.fromEntries(Object.entries(familyUsage).sort()) as Partial<Record<StrategyFamilyId, number>>,
     },

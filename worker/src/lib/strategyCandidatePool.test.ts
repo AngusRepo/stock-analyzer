@@ -286,6 +286,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.telemetry.strategy_matrix_strategy_count === [broadSpec, nicheSpec].length, 'L1 label matrix strategy dimension must follow current strategy count')
   assert(plan.telemetry.strategy_matrix_cell_count === broadCandidates.length * [broadSpec, nicheSpec].length, 'L1 label matrix must cover runtime candidates x current strategies')
   assert(plan.telemetry.strategy_matrix_coverage_ratio === 1, 'L1 label matrix coverage must be complete')
+  assert(plan.telemetry.min_route_score_source === 'adaptive_route_score_distribution', 'L1.5 route floor should be adaptive by score distribution when config does not override it')
+  assert(plan.telemetry.strategy_metric_status_counts.derived_from_daily_strategy_matrix === 2, 'L1.25 must expose missing live strategy metrics as derived matrix evidence, not omit them')
   assert(plan.mlSlate.some((candidate) => candidate.symbol === '6115'), 'FinLab-style portfolio intelligence should let niche multi-family support survive broad crowded labels')
   const niche = plan.mlSlate.find((candidate) => candidate.symbol === '6115') as any
   assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
@@ -363,7 +365,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const plan = buildMultiStrategyPleRoutingPlan([weakCandidate, strongCandidate], [crowdedSpec, reliableSpec], {
     maxSlateSize: 2,
     regime: 'bull',
-    mlTeacherLabels: {
+    runtimeTeacherEvidence: {
       '7701': { LightGBM: 0.8, XGBoost: 0.75, ExtraTrees: 0.72, TabM: 0.7, GNN: 0.68, DLinear: 0.66, PatchTST: 0.64, iTransformer: 0.62, TimesFM: 0.6 },
     },
     strategyPortfolioMetrics: {
@@ -402,8 +404,16 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(reliable.strategy_hit_vector.crowded_low_sharpe_v1 === 0, 'L1 matrix must encode non-hit strategies as zero instead of omitting the column')
   assert(reliable.strategy_router_decision === 'ml_slate', 'reliable low-correlation support should enter formal L1.5 slate')
   assert(reliable.candidate_route_score > crowded.candidate_route_score, 'L1.25 reliability/diversification prior should outrank crowded low-sharpe support')
-  assert(reliable.ml_teacher_labels.LightGBM === 0.8, 'L1.5 should carry 9ML teacher labels as distillation labels')
+  assert(reliable.runtime_teacher_evidence.LightGBM === 0.8, 'L1.5 should carry optional historical runtime teacher evidence')
+  assert(reliable.runtime_teacher_evidence_source === 'historical_verified_cache', 'L1.5 runtime teacher evidence should expose historical verified cache source')
+  assert(reliable.ml_teacher_labels.LightGBM === 0.8, 'L1.5 should keep ml_teacher_labels only as legacy funnel alias')
+  assert(plan.telemetry.min_route_score_source === 'adaptive_route_score_distribution', 'L1.5 should not silently default to hardcoded 20 when minRouteScore is absent')
+  assert(plan.telemetry.teacher_label_available_count === 1, 'L1.5 telemetry should count candidates with teacher evidence')
+  assert(plan.telemetry.teacher_label_missing_count === 1, 'L1.5 telemetry should count candidates missing teacher evidence')
   assert(reliable.strategy_router_components.teacher_alignment > crowded.strategy_router_components.teacher_alignment, 'teacher labels should improve router evidence without replacing 9ML')
+  assert(crowded.strategy_router_components.teacher_alignment === 0, 'missing teacher labels must not receive neutral 0.5 alignment')
+  assert(crowded.strategy_router_components.teacher_alignment_contribution === 0, 'missing teacher labels must not add route-score contribution')
+  assert(crowded.strategy_router_components.teacher_alignment_missing === 1, 'missing teacher labels must be explicit telemetry')
   assert(reliable.strategy_portfolio_prior.strategy_reliability.reliable_low_corr_v1 > reliable.strategy_portfolio_prior.strategy_reliability.crowded_low_sharpe_v1, 'FinLab-style prior must expose strategy reliability spread')
   assert(reliable.strategy_portfolio_prior.strategy_cluster_crowding_score.reliable_low_corr_v1 != null, 'L1.25 prior must expose graph cluster crowding')
   assert(reliable.strategy_portfolio_prior.effective_strategy_count > 0, 'L1.25 prior must expose graph effective strategy count')

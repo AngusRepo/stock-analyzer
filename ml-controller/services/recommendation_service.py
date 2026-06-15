@@ -1453,7 +1453,8 @@ def filter_and_score_recommendations(
             "ma20": technical.get("ma20"),
             "_signal": eff_ml.get("signal"),
             "ml_confidence": eff_ml.get("confidence") or 0,
-            "ml_forecast_pct": eff_ml.get("forecast_pct") or 0,
+            "ml_forecast_pct": eff_ml.get("forecast_pct"),
+            "ml_forecast_pct_source": eff_ml.get("forecast_pct_source"),
             "ml_models_total": ml_models_total,
             "ml_models_up": ml_models_up,
             "ml_models_down": ml_models_down,
@@ -1490,7 +1491,8 @@ def filter_and_score_recommendations(
             "signal_raw": eff_ml.get("signal_raw"),
             "signal_source": eff_ml.get("signal_source"),
             "confidence": eff_ml.get("confidence"),
-            "ml_forecast_pct": eff_ml.get("forecast_pct") or 0.0,
+            "ml_forecast_pct": eff_ml.get("forecast_pct"),
+            "ml_forecast_pct_source": eff_ml.get("forecast_pct_source"),
             "ml_vote_summary": ml_vote_summary,
             "ml_vote_summary_text": ml_vote_text,
             "current_price": current_price,
@@ -1881,7 +1883,17 @@ def _row_expected_return(row: dict) -> float:
 
 def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
     for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
-        if key not in row or row.get(key) is None:
+        if key not in row:
+            continue
+        if row.get(key) is None:
+            source = str(row.get(f"{key}_source") or row.get("forecast_pct_source") or "").strip()
+            if key in ("ml_forecast_pct", "forecast_pct") and source in {
+                "missing",
+                "uncalibrated_rank_score",
+                "missing_calibrated_forecast_pct",
+                "no_positive_lifecycle_weight",
+            }:
+                return 0.0, f"{source}_no_expected_return"
             continue
         try:
             value = float(row.get(key))

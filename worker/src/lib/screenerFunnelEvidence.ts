@@ -532,7 +532,7 @@ function buildLayer15MultiStrategyRouterSummary(
   const strategyIds = arrayOfStrings(evidence.strategy_ids ?? evidence.strategy_pool_ids)
   const familyIds = arrayOfStrings(evidence.strategy_family_ids)
   const researchStrategyIds = arrayOfStrings(evidence.research_strategy_ids)
-  const teacherLabels = numberRecord(evidence.ml_teacher_labels ?? evidence.model_teacher_labels)
+  const teacherLabels = numberRecord(evidence.runtime_teacher_evidence ?? evidence.ml_teacher_labels ?? evidence.model_teacher_labels)
   const teacherModelIds = unionStrings(Object.keys(teacherLabels))
   const formalL2Queue = evidence.formal_l2_queue === true
     || evidence.strategy_router_decision === 'ml_slate'
@@ -570,7 +570,10 @@ function buildLayer15MultiStrategyRouterSummary(
     no_minimum_fill: true,
     is_topk_ranker: false,
     output_scope: 'candidate_route_score_ml_slate_eligibility_family_exposure_diversity_risk_uncertainty',
-    teacher_label_scope: 'strategy_priors_future_reward_risk_diversity_9ml_teacher_labels',
+    teacher_label_scope: 'training_teacher_labels_offline_runtime_teacher_evidence_optional',
+    runtime_teacher_evidence_policy: evidence.runtime_teacher_evidence_policy
+      ?? 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency',
+    runtime_teacher_evidence_source: evidence.runtime_teacher_evidence_source ?? null,
     expected_teacher_models: [...ACTIVE_9_ML_TEACHER_MODELS],
     expected_teacher_count: ACTIVE_9_ML_TEACHER_MODELS.length,
     teacher_models: teacherModelIds,

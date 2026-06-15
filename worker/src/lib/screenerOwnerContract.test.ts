@@ -29,6 +29,8 @@ const stocksRoute = fs.readFileSync('src/routes/stocks.ts', 'utf8')
 const otherRoute = fs.readFileSync('src/routes/other.ts', 'utf8')
 const screenerFunnelEvidence = fs.readFileSync('src/lib/screenerFunnelEvidence.ts', 'utf8')
 const recommendationContext = fs.readFileSync('src/lib/recommendationContext.ts', 'utf8')
+const multiStrategyPleRouter = fs.readFileSync('src/lib/multiStrategyPleRouter.ts', 'utf8')
+const runtimeTeacherEvidence = fs.readFileSync('src/lib/runtimeTeacherEvidence.ts', 'utf8')
 const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2.py', 'utf8')
 
 {
@@ -170,7 +172,8 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(screenerFunnelEvidence.includes('diversified_ml_slate_not_topk'), 'L1.5 router summary must stay diversified-slate based, not top-k')
   assert(screenerFunnelEvidence.includes('quality_floor_max_capacity_no_forced_fill'), 'L1.5 router summary must expose quality-floor max-capacity policy')
   assert(screenerFunnelEvidence.includes('candidate_route_score_ml_slate_eligibility_family_exposure_diversity_risk_uncertainty'), 'L1.5 router summary must expose router output scope')
-  assert(screenerFunnelEvidence.includes('strategy_priors_future_reward_risk_diversity_9ml_teacher_labels'), 'L1.5 router summary must preserve 9ML teacher-label scope')
+  assert(screenerFunnelEvidence.includes('training_teacher_labels_offline_runtime_teacher_evidence_optional'), 'L1.5 router summary must distinguish offline training labels from optional runtime teacher evidence')
+  assert(screenerFunnelEvidence.includes('previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency'), 'L1.5 runtime teacher evidence must not depend on same-day L2/L3')
   assert(screenerFunnelEvidence.includes('ACTIVE_9_ML_TEACHER_MODELS'), 'L1.5 router summary must keep the active 9ML teacher model contract visible')
   assert(screenerFunnelEvidence.includes('max_only_no_minimum_no_topup'), 'L1.5 router summary must expose max-only capacity with no garbage top-up')
   assert(screenerFunnelEvidence.includes('formal_ml_slate_no_minimum_fill'), 'L1.5 no-topup policy must scope to formal ML slate, not hide observe-only audit rows')
@@ -219,7 +222,17 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('strategy_family_affinity'), 'screener must persist L1 family affinity vectors into funnel evidence')
   assert(marketScreener.includes('strategy_weak_label_vector'), 'screener must persist L1 weak-label vectors into funnel evidence')
   assert(marketScreener.includes('finlab_portfolio_intelligence_version'), 'screener must persist L1.25 FinLab portfolio intelligence version into funnel evidence')
-  assert(marketScreener.includes('ml_teacher_labels'), 'screener must persist L1.5 9ML teacher labels into funnel evidence')
+  assert(marketScreener.includes("import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'"), 'screener must load runtime teacher evidence through the dedicated owner module')
+  assert(marketScreener.includes('const runtimeTeacherEvidence = await loadRuntimeTeacherEvidence'), 'daily L1.5 must load optional historical runtime teacher evidence before routing')
+  assert(marketScreener.includes('runtimeTeacherEvidence: runtimeTeacherEvidence.labels'), 'daily L1.5 must pass runtimeTeacherEvidence, not deprecated mlTeacherLabels')
+  assert(!marketScreener.includes('mlTeacherLabels:'), 'daily screener must not pass deprecated mlTeacherLabels as the formal router input')
+  assert(strategyCandidatePool.includes('runtimeTeacherEvidence?: Record<string, Record<string, number>>'), 'Layer1 breadth plan must accept runtimeTeacherEvidence as optional input')
+  assert(strategyCandidatePool.includes('runtimeTeacherEvidence: options.runtimeTeacherEvidence'), 'Layer1 breadth plan must forward runtimeTeacherEvidence into L1.5 router')
+  assert(multiStrategyPleRouter.includes('/** @deprecated Daily routing should pass runtimeTeacherEvidence'), 'router may keep mlTeacherLabels only as a deprecated compatibility alias')
+  assert(runtimeTeacherEvidence.includes('p.prediction_date < ?'), 'runtime teacher evidence must not read same-day L2/L3 rows')
+  assert(runtimeTeacherEvidence.includes('p.verified_at IS NOT NULL'), 'runtime teacher evidence must default to verified teacher cache only')
+  assert(marketScreener.includes('runtime_teacher_evidence'), 'screener must persist L1.5 runtime teacher evidence into funnel evidence')
+  assert(marketScreener.includes('ml_teacher_labels'), 'screener may keep ml_teacher_labels as legacy funnel alias')
 }
 
 {

@@ -180,15 +180,21 @@ async function main(): Promise<void> {
       regime: 'bull',
       marketSegment: 'all',
       minSamples: 5,
-      knownStrategyIds: ['ledger_strategy_v1', 'backtest_only_strategy_v1'],
+      knownStrategyIds: ['ledger_strategy_v1', 'backtest_only_strategy_v1', 'missing_strategy_v1'],
     })
     assert(result.status === 'loaded', 'D1 loader should report loaded when ledger rows produce metrics')
     assert(result.telemetry.source === 'strategy_reward_ledger+strategy_decision_log+backtest_results', 'loader telemetry should declare source tables')
     assert(result.telemetry.backtest_result_row_count === 1, 'loader telemetry should count backtest rows')
     assert(result.telemetry.backtest_metric_count === 1, 'loader telemetry should count mapped backtest strategy metrics')
-    assert(result.telemetry.metric_count === 2, 'loader telemetry should count merged strategy metric overrides')
+    assert(result.telemetry.metric_count === 3, 'loader telemetry should cover every known strategy, not only strategies with live evidence')
+    assert(result.telemetry.live_metric_count === 2, 'loader telemetry should separately count strategies with live metric evidence')
+    assert(result.telemetry.known_strategy_count === 3, 'loader telemetry should expose known strategy coverage denominator')
+    assert(result.telemetry.missing_metric_count === 1, 'loader telemetry should expose missing L1.25 metric coverage')
+    assert(result.telemetry.metric_status_counts.no_evidence === 1, 'known strategy without metric evidence should be explicit no_evidence')
     assert(result.metrics.ledger_strategy_v1 != null, 'loader should return metric override keyed by strategy id')
     assert(result.metrics.backtest_only_strategy_v1 != null, 'loader should include explicitly mapped backtest-only strategy metrics')
+    assert(result.metrics.missing_strategy_v1.strategy_metric_status === 'no_evidence', 'missing known strategy should be shrunk, not omitted from L1.25')
+    assert((result.metrics.missing_strategy_v1.reliability ?? 1) < 0.5, 'missing known strategy should receive conservative reliability shrinkage')
   }
 
   {

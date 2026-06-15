@@ -78,6 +78,8 @@ function assert(condition: unknown, message: string): void {
         diversity_contribution: 0.82,
         risk_adjusted_affinity: 76,
         uncertainty: 0.18,
+        runtime_teacher_evidence: { LightGBM: 0.8, GNN: 0.7, TimesFM: 0.62 },
+        runtime_teacher_evidence_source: 'historical_verified_cache',
         ml_teacher_labels: { LightGBM: 0.8, GNN: 0.7, TimesFM: 0.62 },
       }),
     },
@@ -204,7 +206,9 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.no_minimum_fill === true, 'Layer1.5 router must explicitly reject minimum fill')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.is_topk_ranker === false, 'Layer1.5 router must explicitly reject top-k ranker semantics')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.output_scope === 'candidate_route_score_ml_slate_eligibility_family_exposure_diversity_risk_uncertainty', 'Layer1.5 router must expose router output scope')
-  assert((summary?.evidence.layer15_multi_strategy_router as any)?.teacher_label_scope === 'strategy_priors_future_reward_risk_diversity_9ml_teacher_labels', 'Layer1.5 router must expose 9ML teacher-label scope')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.teacher_label_scope === 'training_teacher_labels_offline_runtime_teacher_evidence_optional', 'Layer1.5 router must expose offline training labels vs optional runtime teacher evidence scope')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.runtime_teacher_evidence_policy === 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency', 'Layer1.5 runtime teacher evidence must not depend on same-day L2/L3')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.runtime_teacher_evidence_source === 'historical_verified_cache', 'Layer1.5 should expose runtime teacher evidence source')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.expected_teacher_count === 9, 'Layer1.5 router must keep 9ML teacher-label contract')
   assert(((summary?.evidence.layer15_multi_strategy_router as any)?.expected_teacher_models ?? []).join(',') === 'LightGBM,XGBoost,ExtraTrees,TabM,GNN,DLinear,PatchTST,iTransformer,TimesFM', 'Layer1.5 expected teacher models must include L2/L3 9ML')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.teacher_label_count === 3, 'Layer1.5 router should count available teacher labels')

@@ -33,6 +33,8 @@ assert(workflows.includes("cadence: 'monthly'"), 'monthly optuna must pass a mon
 assert(followup.includes('/api/admin/scheduler-callback'), 'retrain followup must notify Worker scheduler callback')
 assert(followup.includes('"monthly-retrain"'), 'monthly retrain followup must callback task=monthly-retrain')
 assert(followup.includes('"retrain"'), 'non-monthly retrain followup must still callback task=retrain for compatibility')
+assert(followup.includes('champion_pointer_reconcile'), 'retrain followup must reconcile champion pointers after artifact lifecycle cutover')
+assert(followup.includes('_backfill_champion_pointers_after_cutover'), 'artifact lifecycle cutover must not require manual champion pointer backfill')
 assert(
   workflows.includes("artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer', 'TimesFM']") &&
     workflows.includes("train_model_groups: ['tree', 'dlinear', 'patchtst']") &&

@@ -37,6 +37,7 @@ worker/.tmp/
 _external/
 freqtrade/
 shioaji-proxy/
+ml-service/benchmark_results/
 infra/
 scripts/
 !ml-service/scripts/

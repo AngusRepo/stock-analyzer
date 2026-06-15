@@ -37,6 +37,7 @@ data/*
 !data/finlab_research/
 data/finlab_research/*
 !data/finlab_research/dagster_asset_graph.json
+ml-service/benchmark_results/
 .tmp/
 .wrangler/
 _external/

@@ -457,8 +457,27 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Bulk per-stock loaders — pull all active stocks in single queries
+# Bulk per-stock loaders — pull active stocks in D1-safe chunks
 # ─────────────────────────────────────────────────────────────────────────────
+
+D1_IN_CLAUSE_CHUNK_SIZE = 80
+
+
+def _dedupe_preserve_order(values: list) -> list:
+    seen = set()
+    out = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _d1_bind_chunks(values: list, size: int = D1_IN_CLAUSE_CHUNK_SIZE) -> list[list]:
+    items = _dedupe_preserve_order(values)
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
 
 def _bulk_load_prices(stock_ids: list[int], limit: int | None = None) -> dict[int, list[dict]]:
     """
@@ -473,15 +492,17 @@ def _bulk_load_prices(stock_ids: list[int], limit: int | None = None) -> dict[in
         return {}
     row_limit = daily_price_history_limit() if limit is None else max(1, int(limit))
     years = daily_price_lookback_years()
-    placeholders = ",".join("?" * len(stock_ids))
-    rows = d1_client.query(
-        f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
-        f"FROM stock_prices "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
-        f"ORDER BY stock_id ASC, date ASC",
-        list(stock_ids),
-        timeout=120.0,
-    )
+    rows: list[dict] = []
+    for chunk in _d1_bind_chunks(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        rows.extend(d1_client.query(
+            f"SELECT stock_id, date, open, high, low, close, volume, adj_close, avg_price "
+            f"FROM stock_prices "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
+            f"ORDER BY stock_id ASC, date ASC",
+            list(chunk),
+            timeout=120.0,
+        ))
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
     for r in rows:
         sid = r["stock_id"]
@@ -504,18 +525,20 @@ def _bulk_load_indicators(stock_ids: list[int], limit: int | None = None) -> dic
         return {}
     row_limit = daily_price_history_limit() if limit is None else max(1, int(limit))
     years = daily_price_lookback_years()
-    placeholders = ",".join("?" * len(stock_ids))
-    rows = d1_client.query(
-        f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
-        f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
-        f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
-        f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10 "
-        f"FROM technical_indicators "
-        f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
-        f"ORDER BY stock_id ASC, date ASC",
-        list(stock_ids),
-        timeout=120.0,
-    )
+    rows: list[dict] = []
+    for chunk in _d1_bind_chunks(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        rows.extend(d1_client.query(
+            f"SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, "
+            f"       macd_hist as macdHist, bb_upper, bb_lower, atr14, "
+            f"       plus_di14, minus_di14, adx14, parabolic_sar, cci20, "
+            f"       volume_weighted_rsi14, volume_momentum_divergence_13_27_10 "
+            f"FROM technical_indicators "
+            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-{years} years') "
+            f"ORDER BY stock_id ASC, date ASC",
+            list(chunk),
+            timeout=120.0,
+        ))
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
     for r in rows:
         sid = r["stock_id"]
@@ -551,18 +574,20 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
     """
     if not symbols:
         return {}
-    placeholders = ",".join("?" * len(symbols))
     grouped_by_date: dict[str, dict[str, dict]] = {s: {} for s in symbols}
 
-    rows = d1_client.query(
-        f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
-        f"       margin_balance, short_balance "
-        f"FROM chip_data "
-        f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year') "
-        f"ORDER BY symbol ASC, date ASC",
-        list(symbols),
-        timeout=60.0,
-    )
+    rows: list[dict] = []
+    for chunk in _d1_bind_chunks(symbols):
+        placeholders = ",".join("?" * len(chunk))
+        rows.extend(d1_client.query(
+            f"SELECT symbol, date, foreign_net, trust_net, dealer_net, "
+            f"       margin_balance, short_balance "
+            f"FROM chip_data "
+            f"WHERE symbol IN ({placeholders}) AND date >= date('now','-1 year') "
+            f"ORDER BY symbol ASC, date ASC",
+            list(chunk),
+            timeout=60.0,
+        ))
     for r in rows:
         sym = r["symbol"]
         if sym in grouped_by_date:
@@ -577,15 +602,18 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
             }
 
     try:
-        canonical_rows = d1_client.query(
-            f"SELECT stock_id AS symbol, date, market_segment, foreign_net, trust_net, dealer_net, "
-            f"       margin_balance, short_balance, source, as_of_date "
-            f"FROM canonical_chip_daily "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
-            f"ORDER BY stock_id ASC, date ASC",
-            list(symbols),
-            timeout=60.0,
-        )
+        canonical_rows: list[dict] = []
+        for chunk in _d1_bind_chunks(symbols):
+            placeholders = ",".join("?" * len(chunk))
+            canonical_rows.extend(d1_client.query(
+                f"SELECT stock_id AS symbol, date, market_segment, foreign_net, trust_net, dealer_net, "
+                f"       margin_balance, short_balance, source, as_of_date "
+                f"FROM canonical_chip_daily "
+                f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+                f"ORDER BY stock_id ASC, date ASC",
+                list(chunk),
+                timeout=60.0,
+            ))
         for r in canonical_rows:
             sym = r["symbol"]
             if sym not in grouped_by_date:
@@ -606,15 +634,18 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
         logger.debug("[payload_builder] canonical_chip_daily unavailable, using legacy chip_data fallback: %s", exc)
 
     try:
-        broker_rows = d1_client.query(
-            f"SELECT stock_id AS symbol, date, market_segment, net_shares, estimated_amount, "
-            f"       broker_count, concentration, source, as_of_date "
-            f"FROM canonical_broker_flow_daily "
-            f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
-            f"ORDER BY stock_id ASC, date ASC",
-            list(symbols),
-            timeout=60.0,
-        )
+        broker_rows: list[dict] = []
+        for chunk in _d1_bind_chunks(symbols):
+            placeholders = ",".join("?" * len(chunk))
+            broker_rows.extend(d1_client.query(
+                f"SELECT stock_id AS symbol, date, market_segment, net_shares, estimated_amount, "
+                f"       broker_count, concentration, source, as_of_date "
+                f"FROM canonical_broker_flow_daily "
+                f"WHERE stock_id IN ({placeholders}) AND date >= date('now','-1 year') "
+                f"ORDER BY stock_id ASC, date ASC",
+                list(chunk),
+                timeout=60.0,
+            ))
         for r in broker_rows:
             sym = r["symbol"]
             if sym not in grouped_by_date:
@@ -646,17 +677,19 @@ def _bulk_load_chips(symbols: list[str], limit: int = 200) -> dict[str, list[dic
 def _bulk_load_sentiment(stock_ids: list[int], limit: int = 90) -> dict[int, list[dict]]:
     if not stock_ids:
         return {}
-    placeholders = ",".join("?" * len(stock_ids))
-    rows = d1_client.query(
-        f"SELECT stock_id, date(published_at) as date, "
-        f"       AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score "
-        f"FROM news WHERE stock_id IN ({placeholders}) "
-        f"AND published_at >= date('now','-180 days') "
-        f"GROUP BY stock_id, date(published_at) "
-        f"ORDER BY stock_id ASC, date ASC",
-        list(stock_ids),
-        timeout=60.0,
-    )
+    rows: list[dict] = []
+    for chunk in _d1_bind_chunks(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        rows.extend(d1_client.query(
+            f"SELECT stock_id, date(published_at) as date, "
+            f"       AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score "
+            f"FROM news WHERE stock_id IN ({placeholders}) "
+            f"AND published_at >= date('now','-180 days') "
+            f"GROUP BY stock_id, date(published_at) "
+            f"ORDER BY stock_id ASC, date ASC",
+            list(chunk),
+            timeout=60.0,
+        ))
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
     for r in rows:
         sid = r["stock_id"]
@@ -677,16 +710,18 @@ def _bulk_load_accuracies(
     """
     if not stock_ids:
         return {}, {}
-    placeholders = ",".join("?" * len(stock_ids))
-    rows = d1_client.query(
-        f"SELECT stock_id, model_name, accuracy, profit_factor, expectancy, "
-        f"       avg_win_pct, avg_loss_pct, avg_trade_pnl_r, "
-        f"       hit_target_rate, hit_stop_rate "
-        f"FROM model_accuracy "
-        f"WHERE stock_id IN ({placeholders}) AND period='30d' AND total_count >= 5",
-        list(stock_ids),
-        timeout=60.0,
-    )
+    rows: list[dict] = []
+    for chunk in _d1_bind_chunks(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        rows.extend(d1_client.query(
+            f"SELECT stock_id, model_name, accuracy, profit_factor, expectancy, "
+            f"       avg_win_pct, avg_loss_pct, avg_trade_pnl_r, "
+            f"       hit_target_rate, hit_stop_rate "
+            f"FROM model_accuracy "
+            f"WHERE stock_id IN ({placeholders}) AND period='30d' AND total_count >= 5",
+            list(chunk),
+            timeout=60.0,
+        ))
     real_acc: dict[int, dict[str, float]] = {sid: {} for sid in stock_ids}
     model_stats: dict[int, dict[str, dict]] = {sid: {} for sid in stock_ids}
     for r in rows:
@@ -717,19 +752,20 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
     if not stock_ids:
         return {}
     out: dict[int, dict] = {sid: {} for sid in stock_ids}
-    placeholders = ",".join("?" * len(stock_ids))
-
     # margin: latest
-    margin_rows = d1_client.query(
-        f"SELECT m1.stock_id, m1.margin_balance, m1.short_ratio "
-        f"FROM margin_data m1 "
-        f"INNER JOIN ("
-        f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM margin_data WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
-        f") m2 ON m1.stock_id = m2.stock_id AND m1.date = m2.max_date",
-        list(stock_ids),
-        timeout=60.0,
-    )
+    margin_rows: list[dict] = []
+    for chunk in _d1_bind_chunks(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        margin_rows.extend(d1_client.query(
+            f"SELECT m1.stock_id, m1.margin_balance, m1.short_ratio "
+            f"FROM margin_data m1 "
+            f"INNER JOIN ("
+            f"  SELECT stock_id, MAX(date) as max_date "
+            f"  FROM margin_data WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+            f") m2 ON m1.stock_id = m2.stock_id AND m1.date = m2.max_date",
+            list(chunk),
+            timeout=60.0,
+        ))
     for r in margin_rows:
         sid = r["stock_id"]
         if sid in out:
@@ -740,32 +776,38 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
     # Skip for now; worker behavior is non-blocking (catch → null)
 
     # shareholding: latest retail_pct
-    sh_rows = d1_client.query(
-        f"SELECT s1.stock_id, s1.retail_pct "
-        f"FROM shareholding s1 "
-        f"INNER JOIN ("
-        f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM shareholding WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
-        f") s2 ON s1.stock_id = s2.stock_id AND s1.date = s2.max_date",
-        list(stock_ids),
-        timeout=60.0,
-    )
+    sh_rows: list[dict] = []
+    for chunk in _d1_bind_chunks(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        sh_rows.extend(d1_client.query(
+            f"SELECT s1.stock_id, s1.retail_pct "
+            f"FROM shareholding s1 "
+            f"INNER JOIN ("
+            f"  SELECT stock_id, MAX(date) as max_date "
+            f"  FROM shareholding WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+            f") s2 ON s1.stock_id = s2.stock_id AND s1.date = s2.max_date",
+            list(chunk),
+            timeout=60.0,
+        ))
     for r in sh_rows:
         sid = r["stock_id"]
         if sid in out:
             out[sid]["retail_pct"] = r.get("retail_pct")
 
     # monthly_revenue: latest revenue_yoy
-    rev_rows = d1_client.query(
-        f"SELECT r1.stock_id, r1.revenue_yoy "
-        f"FROM monthly_revenue r1 "
-        f"INNER JOIN ("
-        f"  SELECT stock_id, MAX(date) as max_date "
-        f"  FROM monthly_revenue WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
-        f") r2 ON r1.stock_id = r2.stock_id AND r1.date = r2.max_date",
-        list(stock_ids),
-        timeout=60.0,
-    )
+    rev_rows: list[dict] = []
+    for chunk in _d1_bind_chunks(stock_ids):
+        placeholders = ",".join("?" * len(chunk))
+        rev_rows.extend(d1_client.query(
+            f"SELECT r1.stock_id, r1.revenue_yoy "
+            f"FROM monthly_revenue r1 "
+            f"INNER JOIN ("
+            f"  SELECT stock_id, MAX(date) as max_date "
+            f"  FROM monthly_revenue WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+            f") r2 ON r1.stock_id = r2.stock_id AND r1.date = r2.max_date",
+            list(chunk),
+            timeout=60.0,
+        ))
     for r in rev_rows:
         sid = r["stock_id"]
         if sid in out:

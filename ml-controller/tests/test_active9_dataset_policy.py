@@ -51,3 +51,33 @@ def test_payload_builder_uses_policy_lookback_and_truncates_explicit_limit(monke
     assert captured["params"] == [1]
     assert [row["close"] for row in rows[1]] == [5, 6, 7]
 
+
+def test_payload_builder_chunks_d1_in_clause_loads(monkeypatch):
+    calls: list[list[int]] = []
+
+    def fake_query(sql, params, timeout=120.0):
+        calls.append(list(params))
+        assert sql.count("?") == len(params)
+        assert len(params) <= payload_builder.D1_IN_CLAUSE_CHUNK_SIZE
+        return [
+            {
+                "stock_id": sid,
+                "date": "2026-06-15",
+                "open": 1,
+                "high": 1,
+                "low": 1,
+                "close": sid,
+                "volume": 100,
+                "adj_close": sid,
+                "avg_price": sid,
+            }
+            for sid in params
+        ]
+
+    monkeypatch.setattr(payload_builder.d1_client, "query", fake_query)
+
+    rows = payload_builder._bulk_load_prices(list(range(1, 166)), limit=3)
+
+    assert [len(call) for call in calls] == [80, 80, 5]
+    assert len(rows) == 165
+    assert rows[165][0]["close"] == 165

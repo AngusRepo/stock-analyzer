@@ -534,7 +534,7 @@ def _artifact_record_from_registration(
         raw_registration = {"status": "unknown", "raw": raw_registration}
     evidence = _model_training_evidence(payload_dict, model_name)
     enriched_registration = {**evidence, **raw_registration}
-    if "model_cpcv" not in enriched_registration and evidence.get("model_cpcv") is not None:
+    if not isinstance(enriched_registration.get("model_cpcv"), dict) and isinstance(evidence.get("model_cpcv"), dict):
         enriched_registration["model_cpcv"] = evidence["model_cpcv"]
     record_version = str(raw_registration.get("version") or payload_dict.get("candidate_version"))
 

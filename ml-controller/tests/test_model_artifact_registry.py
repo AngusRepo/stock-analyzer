@@ -384,6 +384,58 @@ def test_lifecycle_registration_wins_when_train_and_lifecycle_share_artifact_id(
     assert offline["source"] == "artifact_lifecycle"
 
 
+def test_lifecycle_registration_preserves_train_stage_model_cpcv_when_lifecycle_omits_it():
+    payload = {
+        "run_id": "monthly-lifecycle-cpcv-merge",
+        "run_date": "2026-06-15",
+        "is_monthly": True,
+        "candidate_version": "v20260615052900",
+        "status": "completed",
+        "ic_summary": {"GNN": 0.059324},
+        "stages": {
+            "train": {
+                "ic_tracking": {
+                    "GNN": {
+                        "oos_ic": 0.059324,
+                        "model_cpcv": {
+                            "decision": "PASS",
+                            "failed_gates": [],
+                            "oos_ic_mean": 0.059324,
+                            "folds": 8,
+                        },
+                    },
+                },
+            },
+            "artifact_lifecycle": {
+                "results": {
+                    "GNN": {
+                        "status": "ok",
+                        "model": "GNN",
+                        "version": "v20260615052900",
+                        "artifact_path": "universal/gnn/v20260615052900.pt",
+                        "oos_ic": 0.059324,
+                        "pool_update": {
+                            "old_version": "v20260612165347",
+                            "new_version": "v20260615052900",
+                            "artifact_path": "universal/gnn/v20260615052900.pt",
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    row = {record["model_name"]: record for record in records}["GNN"]
+    offline = json.loads(row["offline_evidence_json"])
+    assert row["state"] == "production"
+    assert offline["source"] == "artifact_lifecycle"
+    assert offline["registration"]["model_cpcv"]["decision"] == "PASS"
+    assert offline["gate"]["metrics"]["model_cpcv_decision"] == "PASS"
+    assert "model_cpcv_missing_from_callback" not in offline["gate"]["warnings"]
+
+
 def test_followup_without_candidate_version_does_not_create_registry_records():
     records = registry.build_artifact_records_from_retrain_followup({
         "run_id": "legacy-run",

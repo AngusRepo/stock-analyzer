@@ -26,6 +26,7 @@ from .prep_lineage import (
 )
 from .research_benchmarks.common import cpcv_proxy_pbo, data_slice_report, direction_accuracy, load_sequence_dataset, rank_ic
 from .sequence_training import build_sequence_window_dataset
+from .model_validation import build_model_cpcv_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +465,13 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         pred_return.append((float(pred_by_id[uid]) - last_close) / max(last_close, 1e-9))
         actual_return.append((float(row["actual_last"]) - last_close) / max(last_close, 1e-9))
     folds = _fold_metrics(model_name, np.asarray(pred_return, dtype=float), np.asarray(actual_return, dtype=float))
+    model_cpcv = build_model_cpcv_evidence(
+        model=model_name,
+        fold_metrics=folds,
+        policy=payload.get("model_cpcv_policy") or None,
+        family="learned_sequence",
+        coverage_mode="sequence_window",
+    )
     oos_ic = rank_ic(np.asarray(pred_return, dtype=float), np.asarray(actual_return, dtype=float))
     metrics = {
         "oos_ic": round(float(oos_ic), 6),
@@ -472,6 +480,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "pbo": cpcv_proxy_pbo(folds),
         "oos_samples": int(len(pred_return)),
         "fold_metrics": folds,
+        "model_cpcv_decision": model_cpcv.get("decision"),
     }
 
     lineage_dates = []
@@ -518,6 +527,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "batch_size": batch_size,
         "seed": seed,
         "metrics": metrics,
+        "model_cpcv": model_cpcv,
         "oos_ic": metrics["oos_ic"],
         "direction_accuracy": metrics["direction_accuracy"],
         "sample_count": int(len(train_rows)),
@@ -551,6 +561,17 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "checksum": saved["checksum"],
         "metadata": saved["metadata"],
         "metrics": metrics,
+        "model_cpcv": model_cpcv,
+        "ic_tracking": {
+            model_name: {
+                "oos_ic": metrics["oos_ic"],
+                "oos_samples": metrics["oos_samples"],
+                "pbo": metrics["pbo"],
+                "passed": float(metrics["oos_ic"] or 0.0) > 0.0,
+                "source": "neuralforecast_sequence_oos",
+                "model_cpcv": model_cpcv,
+            },
+        },
         "oos_ic": metrics["oos_ic"],
         "train_samples": int(len(train_rows)),
         "validation_samples": int(len(pred_return)),

@@ -24,6 +24,7 @@ from .prep_lineage import (
     collect_prep_lineage,
     validate_prep_lineage_for_registration,
 )
+from .model_validation import build_model_cpcv_evidence
 
 MODEL_NAME = "GNN"
 DEFAULT_BATCH_COUNT = 5
@@ -209,8 +210,9 @@ def _evaluate(model, *, groups: list[np.ndarray], x: np.ndarray, y: np.ndarray, 
     all_pred: list[np.ndarray] = []
     all_y: list[np.ndarray] = []
     daily_ics: list[float] = []
+    fold_metrics: list[dict[str, Any]] = []
     with torch.no_grad():
-        for idx in groups:
+        for fold_idx, idx in enumerate(groups, start=1):
             edge_np = _feature_edge_index(x[idx], sectors[idx], top_k=top_k, threshold=threshold)
             xb = torch.tensor(x[idx], dtype=torch.float32, device=device)
             yb = y[idx]
@@ -218,7 +220,16 @@ def _evaluate(model, *, groups: list[np.ndarray], x: np.ndarray, y: np.ndarray, 
             pred = torch.sigmoid(model(xb, edge)).detach().cpu().numpy().reshape(-1)
             all_pred.append(pred)
             all_y.append(np.asarray(yb, dtype=np.float32).reshape(-1))
-            daily_ics.append(_spearman(pred, yb))
+            ic = _spearman(pred, yb)
+            daily_ics.append(ic)
+            fold_metrics.append({
+                "fold_id": f"graph_snapshot_{fold_idx}",
+                "oos_ic": ic,
+                "test_rows": int(len(idx)),
+                "coverage": 1.0 if len(idx) else 0.0,
+                "node_coverage": 1.0 if len(idx) else 0.0,
+                "edge_count": int(edge_np.shape[1]) if edge_np.ndim == 2 else 0,
+            })
     pred_all = np.concatenate(all_pred) if all_pred else np.asarray([], dtype=float)
     y_all = np.concatenate(all_y) if all_y else np.asarray([], dtype=float)
     return {
@@ -227,6 +238,7 @@ def _evaluate(model, *, groups: list[np.ndarray], x: np.ndarray, y: np.ndarray, 
         "daily_ic_count": len(daily_ics),
         "samples": int(len(y_all)),
         "pred_std": round(float(np.std(pred_all)), 6) if len(pred_all) else 0.0,
+        "fold_metrics": fold_metrics,
     }
 
 
@@ -435,6 +447,13 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         top_k=edge_top_k,
         threshold=edge_threshold,
     )
+    model_cpcv = build_model_cpcv_evidence(
+        model=MODEL_NAME,
+        fold_metrics=eval_metrics.get("fold_metrics") or [],
+        policy=payload.get("model_cpcv_policy") or None,
+        family="graph",
+        coverage_mode="graph_snapshot",
+    )
 
     trained_at = datetime.now(timezone.utc).isoformat()
     architecture = {
@@ -472,11 +491,13 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         },
         "metrics": {
             **eval_metrics,
+            "model_cpcv_decision": model_cpcv.get("decision"),
             "train_recent_daily_ic_mean": train_eval.get("daily_ic_mean"),
             "train_recent_samples": train_eval.get("samples"),
             "loss_last": train_losses[-1] if train_losses else None,
             "loss_first": train_losses[0] if train_losses else None,
         },
+        "model_cpcv": model_cpcv,
         "oos_ic": eval_metrics["oos_ic"],
         "daily_ic_count": eval_metrics["daily_ic_count"],
         "train_range": split_meta["train_range"],
@@ -529,6 +550,16 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "metadata_path": saved["metadata_path"],
         "checksum": saved["checksum"],
         "metrics": saved["metadata"]["metrics"],
+        "model_cpcv": saved["metadata"]["model_cpcv"],
+        "ic_tracking": {
+            MODEL_NAME: {
+                "oos_ic": saved["metadata"]["oos_ic"],
+                "oos_samples": saved["metadata"]["validation_sample_count"],
+                "passed": float(saved["metadata"]["oos_ic"] or 0.0) > 0.0,
+                "source": "graphsage_graph_snapshot_oos",
+                "model_cpcv": saved["metadata"]["model_cpcv"],
+            },
+        },
         "oos_ic": saved["metadata"]["oos_ic"],
         "daily_ic_count": saved["metadata"]["daily_ic_count"],
         "train_samples": int(len(train_idx)),

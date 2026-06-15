@@ -153,6 +153,11 @@ def train_patchtst(
             metadata=result["metadata"],
             reason=str(kwargs.get("promotion_reason") or "formal NeuralForecast PatchTST artifact retrain approved by Wei"),
         )
+    model_cpcv = (
+        result.get("model_cpcv")
+        or (result.get("metadata") or {}).get("model_cpcv")
+        or (result.get("metrics") or {}).get("model_cpcv")
+    )
     return {
         "metadata": result["metadata"],
         "ic_tracking": {
@@ -162,8 +167,10 @@ def train_patchtst(
                 "pbo": result["metrics"]["pbo"],
                 "passed": float(result["metrics"]["oos_ic"] or 0.0) > 0.0,
                 "source": "neuralforecast_sequence_oos",
+                "model_cpcv": model_cpcv,
             }
         },
+        "model_cpcv": model_cpcv,
         "saved": {
             "weights_path": result["artifact_path"],
             "metadata_path": result["metadata_path"],

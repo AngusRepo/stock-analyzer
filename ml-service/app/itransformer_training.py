@@ -114,7 +114,13 @@ def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
             metadata=result["metadata"],
             reason=str(payload.get("promotion_reason") or "formal NeuralForecast iTransformer artifact retrain approved by Wei"),
         )
+    model_cpcv = (
+        result.get("model_cpcv")
+        or (result.get("metadata") or {}).get("model_cpcv")
+        or (result.get("metrics") or {}).get("model_cpcv")
+    )
     return {
         **result,
+        "model_cpcv": model_cpcv,
         "pool_update": pool_update,
     }

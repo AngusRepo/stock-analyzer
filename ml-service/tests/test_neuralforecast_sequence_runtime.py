@@ -1,4 +1,7 @@
-from app.neuralforecast_sequence_runtime import _make_nf_model, _panel_train_eval_rows, default_seq_len_for_model
+import numpy as np
+
+from app.model_validation import build_model_cpcv_evidence
+from app.neuralforecast_sequence_runtime import _fold_metrics, _make_nf_model, _panel_train_eval_rows, default_seq_len_for_model
 
 
 def test_neuralforecast_sequence_defaults_follow_model_core_windows():
@@ -63,3 +66,20 @@ def test_neuralforecast_model_runtime_suppresses_known_trainer_warnings():
     assert model.trainer_kwargs["enable_model_summary"] is False
     assert model.trainer_kwargs["enable_progress_bar"] is False
     assert model.trainer_kwargs["logger"] is False
+
+
+def test_neuralforecast_fold_metrics_feed_model_cpcv_bundle():
+    pred = np.linspace(-0.05, 0.05, 120)
+    actual = pred + 0.001
+
+    folds = _fold_metrics("PatchTST", pred, actual)
+    evidence = build_model_cpcv_evidence(
+        model="PatchTST",
+        fold_metrics=folds,
+        family="learned_sequence",
+        coverage_mode="sequence_window",
+    )
+
+    assert evidence["schema_version"] == "model-cpcv-evidence-v1"
+    assert evidence["folds"] >= 4
+    assert evidence["oos_ic_mean"] > 0

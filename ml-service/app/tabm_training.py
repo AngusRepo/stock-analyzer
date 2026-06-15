@@ -18,6 +18,7 @@ from .prep_lineage import (
     collect_prep_lineage,
     validate_prep_lineage_for_registration,
 )
+from .model_validation import build_model_cpcv_evidence
 from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
 
 MODEL_NAME = "TabM"
@@ -140,6 +141,37 @@ def _predict_tabm_batches(model: Any, x: np.ndarray, *, batch_size: int, device)
             pred = torch.sigmoid(pred_raw).detach().cpu().numpy().reshape(-1)
             outputs.append(pred)
     return np.concatenate(outputs, axis=0) if outputs else np.array([], dtype=np.float32)
+
+
+def _date_fold_metrics(dates: np.ndarray, pred: np.ndarray, y_actual: np.ndarray) -> list[dict[str, Any]]:
+    dates = np.asarray(dates).astype(str).reshape(-1)
+    pred = np.asarray(pred, dtype=float).reshape(-1)
+    y_actual = np.asarray(y_actual, dtype=float).reshape(-1)
+    fold_metrics: list[dict[str, Any]] = []
+    for fold_id, date_value in enumerate(sorted({str(value) for value in dates if str(value)}), start=1):
+        idx = np.asarray([i for i, value in enumerate(dates) if str(value) == date_value], dtype=np.int64)
+        if len(idx) < 2:
+            continue
+        fold_metrics.append({
+            "fold_id": f"date_panel_{fold_id}",
+            "date": date_value,
+            "oos_ic": rank_ic(pred[idx], y_actual[idx]),
+            "direction_accuracy": direction_accuracy(pred[idx] - 0.5, y_actual[idx] - 0.5),
+            "test_rows": int(len(idx)),
+            "coverage": 1.0,
+            "date_coverage": 1.0,
+            "symbol_coverage": 1.0,
+            "fold_share": float(len(idx) / max(1, len(y_actual))),
+        })
+    if fold_metrics:
+        return fold_metrics
+    return [{
+        "fold_id": "date_panel_holdout",
+        "oos_ic": rank_ic(pred, y_actual),
+        "direction_accuracy": direction_accuracy(pred - 0.5, y_actual - 0.5),
+        "test_rows": int(len(y_actual)),
+        "coverage": 1.0 if len(y_actual) else 0.0,
+    }]
 
 
 def _save_artifact(*, bucket, model, version: str, metadata: dict) -> dict:
@@ -323,6 +355,14 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
 
     pred = _predict_tabm_batches(model, x[test_idx], batch_size=eval_batch_size, device=device)
     y_test = y[test_idx]
+    fold_metrics = _date_fold_metrics(dates[test_idx], pred, y_test)
+    model_cpcv = build_model_cpcv_evidence(
+        model=MODEL_NAME,
+        fold_metrics=fold_metrics,
+        policy=payload.get("model_cpcv_policy") or None,
+        family="tabular_neural",
+        coverage_mode="date_symbol_panel",
+    )
     metrics = {
         "oos_ic": round(_finite(rank_ic(pred, y_test)), 6),
         "direction_accuracy": round(_finite(direction_accuracy(pred - 0.5, y_test - 0.5)), 6),
@@ -330,6 +370,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "pred_std": round(float(np.std(pred)), 6),
         "loss_first": train_losses[0] if train_losses else None,
         "loss_last": train_losses[-1] if train_losses else None,
+        "model_cpcv_decision": model_cpcv.get("decision"),
     }
 
     trained_at = datetime.now(timezone.utc).isoformat()
@@ -357,6 +398,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "architecture": architecture,
         "output_transform": "sigmoid",
         "metrics": metrics,
+        "model_cpcv": model_cpcv,
         "oos_ic": metrics["oos_ic"],
         "direction_accuracy": metrics["direction_accuracy"],
         "train_range": split_meta["train_range"],
@@ -408,6 +450,16 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "metadata_path": saved["metadata_path"],
         "checksum": saved["checksum"],
         "metrics": saved["metadata"]["metrics"],
+        "model_cpcv": saved["metadata"]["model_cpcv"],
+        "ic_tracking": {
+            MODEL_NAME: {
+                "oos_ic": saved["metadata"]["oos_ic"],
+                "oos_samples": saved["metadata"]["validation_sample_count"],
+                "passed": float(saved["metadata"]["oos_ic"] or 0.0) > 0.0,
+                "source": "tabm_date_panel_oos",
+                "model_cpcv": saved["metadata"]["model_cpcv"],
+            },
+        },
         "oos_ic": saved["metadata"]["oos_ic"],
         "train_samples": int(len(train_fit_idx)),
         "validation_samples": int(len(test_idx)),

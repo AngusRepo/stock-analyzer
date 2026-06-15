@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import inspect
 
+import numpy as np
 from app import gnn_training, itransformer_training, patchtst_universal, tabm_training
 
 
@@ -224,3 +226,30 @@ def test_patchtst_model_pool_registration_updates_formal_slot_alias():
     assert slot["seq_len"] == 512
     assert slot["direct_prediction"] is False
     assert slot["vote_weight"] == 0.0
+
+
+def test_tabm_date_fold_metrics_builds_cpcv_ready_folds():
+    dates = np.asarray(["2026-01-01"] * 3 + ["2026-01-02"] * 3)
+    pred = np.asarray([0.1, 0.2, 0.3, 0.5, 0.4, 0.6])
+    actual = np.asarray([0.1, 0.25, 0.35, 0.45, 0.5, 0.55])
+
+    folds = tabm_training._date_fold_metrics(dates, pred, actual)
+
+    assert [fold["fold_id"] for fold in folds] == ["date_panel_1", "date_panel_2"]
+    assert all(fold["coverage"] == 1.0 for fold in folds)
+    assert all(fold["test_rows"] == 3 for fold in folds)
+
+
+def test_formal_artifact_trainers_return_model_cpcv_bundle_contract():
+    sources = {
+        "GNN": inspect.getsource(gnn_training.train_graphsage_universal),
+        "TabM": inspect.getsource(tabm_training.train_tabm_universal),
+        "PatchTST": inspect.getsource(patchtst_universal.train_patchtst),
+        "iTransformer": inspect.getsource(itransformer_training.train_itransformer_universal),
+    }
+
+    for source in sources.values():
+        assert "model_cpcv" in source
+    assert '"model_cpcv": saved["metadata"]["model_cpcv"]' in sources["GNN"]
+    assert '"model_cpcv": saved["metadata"]["model_cpcv"]' in sources["TabM"]
+    assert '"model_cpcv": model_cpcv' in sources["PatchTST"]

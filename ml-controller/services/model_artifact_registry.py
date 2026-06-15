@@ -1050,11 +1050,14 @@ _STATE_RANK = {
 _WEEKLY_SELECTED_STATES = {
     "offline_strong_pass",
     "candidate_selected",
-    "shadowing",
     "live_gate_passed",
     "approval_required",
     "approved",
 }
+
+
+def _legacy_shadow_selection_row(row: dict[str, Any]) -> bool:
+    return str(row.get("state") or "") == "shadowing"
 
 
 def _candidate_rank(row: dict[str, Any]) -> tuple[int, str]:
@@ -1535,14 +1538,16 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for model_name, items in grouped.items():
         monthly = [r for r in items if r.get("candidate_type") == "monthly_release"]
         weekly = [r for r in items if r.get("candidate_type") == "weekly_drift"]
-        best_monthly = max(monthly, key=_candidate_rank, default=None)
+        active_monthly = [r for r in monthly if not _legacy_shadow_selection_row(r)]
+        active_weekly = [r for r in weekly if not _legacy_shadow_selection_row(r)]
+        best_monthly = max(active_monthly, key=_candidate_rank, default=None)
         latest_monthly = max(monthly, key=_artifact_time_key, default=None)
         serving_release = max(
             [r for r in monthly if r.get("state") == "production"],
             key=_artifact_time_key,
             default=None,
         )
-        best_weekly = max(weekly, key=_candidate_rank, default=None)
+        best_weekly = max(active_weekly, key=_candidate_rank, default=None)
 
         selected_monthly = (
             best_monthly
@@ -1601,8 +1606,8 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "weekly_drift_candidate": weekly_context,
             },
             "policy": {
-                "monthly": "select best offline_passed or stronger artifact",
-                "weekly": "select only offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
+                "monthly": "select best non-legacy active-9 offline_passed or stronger artifact",
+                "weekly": "select only non-legacy offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
                 "serving_release_artifact": "latest monthly_release artifact already marked production; audit evidence only, not a candidate queue slot",
                 "live_shadow_slots": {
                     "monthly": 1,

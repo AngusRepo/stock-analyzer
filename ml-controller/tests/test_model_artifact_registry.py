@@ -618,7 +618,7 @@ def test_promotion_blockers_use_adaptive_pbo_policy():
     assert "pbo_threshold_missing" in codes
 
 
-def test_candidate_selection_keeps_shadowing_weekly_candidate_selected():
+def test_candidate_selection_keeps_legacy_shadowing_weekly_out_of_selected_slot():
     selection = registry.build_candidate_selection([
         {
             "artifact_id": "XGBoost:vW:weekly_drift",
@@ -629,7 +629,35 @@ def test_candidate_selection_keeps_shadowing_weekly_candidate_selected():
         },
     ])
 
-    assert selection["models"]["XGBoost"]["weekly_drift_candidate"]["artifact_id"] == "XGBoost:vW:weekly_drift"
+    model = selection["models"]["XGBoost"]
+    assert model["weekly_drift_candidate"] is None
+    assert "XGBoost:vW:weekly_drift" in model["archive_candidates"]
+
+
+def test_candidate_selection_prefers_new_active9_monthly_over_legacy_shadowing():
+    selection = registry.build_candidate_selection([
+        {
+            "artifact_id": "ExtraTrees:vOld:monthly_release",
+            "model_name": "ExtraTrees",
+            "candidate_type": "monthly_release",
+            "state": "shadowing",
+            "source_run_date": "2026-05-17",
+            "updated_at": "2026-05-18T00:00:00Z",
+        },
+        {
+            "artifact_id": "ExtraTrees:vNew:monthly_release",
+            "model_name": "ExtraTrees",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "source_run_date": "2026-06-15",
+            "updated_at": "2026-06-15T06:30:00Z",
+        },
+    ])
+
+    model = selection["models"]["ExtraTrees"]
+    assert model["monthly_release_candidate"]["artifact_id"] == "ExtraTrees:vNew:monthly_release"
+    assert model["latest_monthly_release_artifact"]["artifact_id"] == "ExtraTrees:vNew:monthly_release"
+    assert "ExtraTrees:vOld:monthly_release" in model["archive_candidates"]
 
 
 def test_build_artifact_records_enriches_cpcv_from_followup_train_stage():

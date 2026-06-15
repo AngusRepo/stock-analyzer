@@ -50,13 +50,13 @@ image = (
 
 # Secrets: GCS credentials plus Cloudflare D1/KV/API credentials.
 gcs_secret = modal.Secret.from_name("gcs-credentials")
+finlab_secret = modal.Secret.from_name("stockvision-finlab")
 
 # stockvision-cf can be created manually with:
 #   modal secret create stockvision-cf \
 #     CF_API_TOKEN=<cloudflare-api-token> \
 #     CF_ACCOUNT_ID=<cloudflare-account-id> \
 #     CF_D1_DB_ID=<cloudflare-d1-db-id> \
-#     FINLAB_API_KEY=<finlab-api-key> \
 #     STOCKVISION_AUTH_TOKEN=<stockvision-auth-token> \
 #     STOCKVISION_WORKER_URL=<stockvision-worker-url>
 # If the secret is missing, keep deploy importable but Optuna routes will fail.
@@ -79,7 +79,7 @@ runtime_env_secret = modal.Secret.from_dict({
 app = modal.App(
     name="stockvision-ml",
     image=image,
-    secrets=[gcs_secret, cf_secret, runtime_env_secret],
+    secrets=[gcs_secret, cf_secret, finlab_secret, runtime_env_secret],
 )
 
 # Shared container environment setup.
@@ -447,7 +447,11 @@ def retrain_orchestrator(payload: dict) -> dict:
         print(f"[Orchestrator] sequence series validation: {sequence_report}")
     candidate_version = payload.get("candidate_version") or datetime.now(timezone.utc).strftime("v%Y%m%d%H%M%S")
     base_train_payload = training_policy.to_base_train_payload(
-        {**payload, "batch_count": batch_count},
+        {
+            **payload,
+            "batch_count": batch_count,
+            "label_horizon_days": selection_params.get("label_horizon_days"),
+        },
         candidate_version=candidate_version,
     )
 
@@ -620,6 +624,10 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "batch_count": batch_count,
                     "output_model_version": candidate_version,
                     "promote_to_active": True,
+                    "run_date": run_date,
+                    "as_of_date": payload.get("as_of_date"),
+                    "max_prep_stale_days": payload.get("max_prep_stale_days"),
+                    "label_horizon_days": selection_params.get("label_horizon_days"),
                     "promotion_reason": (
                         f"formal artifact lifecycle target={model_name} "
                         f"run_id={run_id or candidate_version}"
@@ -2398,7 +2406,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
         result["status"] = status
         result["duration_ms"] = duration_ms
         return result
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         duration_ms = int((time.time() - started) * 1000)
         error = f"{type(exc).__name__}: {exc}"
         result = {

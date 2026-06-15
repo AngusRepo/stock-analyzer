@@ -25,6 +25,15 @@ def test_daily_pipeline_loads_latest_screener_seed_without_recommendation_inner_
     assert "LEFT JOIN daily_recommendations dr" in source
     assert "JOIN candidate_seed sfi" not in source
     assert "source=latest_screener_candidate_seed" in source
+    assert "strategy_pool_ml_queue" not in source
+    assert "sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'" in source
+
+
+def test_recommendation_service_seed_ownership_excludes_strategy_pool_audit_queue():
+    source = Path(__file__).resolve().parent.parent.joinpath("services", "recommendation_service.py").read_text(encoding="utf-8")
+
+    assert "strategy_pool_ml_queue" not in source
+    assert "sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'" in source
 
 
 def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():

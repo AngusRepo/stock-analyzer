@@ -27,6 +27,11 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _finite_or_none(value: Any) -> float | None:
+    parsed = _as_float(value, math.nan)
+    return parsed if math.isfinite(parsed) else None
+
+
 def _rank(values: list[float]) -> list[float]:
     indexed = sorted(enumerate(values), key=lambda item: item[1])
     ranks = [0.0] * len(values)
@@ -232,15 +237,30 @@ def build_foundation_forecast_validation_evidence(
     missing_outcomes: list[str] = []
     valid_predictions = 0
 
-    def _realized_for(symbol: str) -> float | None:
+    def _row_key(row: dict[str, Any]) -> str:
+        prediction_id = str(row.get("prediction_id") or row.get("id") or "").strip()
+        if prediction_id:
+            return f"id:{prediction_id}"
+        symbol = str(row.get("symbol") or "").strip()
+        prediction_date = str(row.get("prediction_date") or row.get("date") or "").strip()
+        if symbol and prediction_date:
+            return f"{symbol}|{prediction_date}"
+        return symbol
+
+    def _realized_for(prediction: dict[str, Any]) -> float | None:
+        symbol = str(prediction.get("symbol") or "").strip()
+        key = _row_key(prediction)
         if isinstance(realized_returns, dict):
-            value = realized_returns.get(symbol)
+            value = realized_returns.get(key)
+            if value is None:
+                value = realized_returns.get(symbol)
             if isinstance(value, dict):
                 value = value.get("forward_return", value.get("realized_return"))
             parsed = _as_float(value, math.nan)
             return parsed if math.isfinite(parsed) else None
         for row in realized_returns or []:
-            if str(row.get("symbol") or "") != symbol:
+            row_symbol = str(row.get("symbol") or "").strip()
+            if _row_key(row) != key and row_symbol != symbol:
                 continue
             parsed = _as_float(row.get("forward_return", row.get("realized_return")), math.nan)
             return parsed if math.isfinite(parsed) else None
@@ -252,7 +272,7 @@ def build_foundation_forecast_validation_evidence(
         if not symbol or not math.isfinite(forecast_pct) or pred.get("error"):
             continue
         valid_predictions += 1
-        realized = _realized_for(symbol)
+        realized = _realized_for(pred)
         if realized is None:
             missing_outcomes.append(symbol)
             continue
@@ -260,6 +280,8 @@ def build_foundation_forecast_validation_evidence(
         realized_direction = 1 if realized > 0 else -1 if realized < 0 else 0
         rows.append({
             "symbol": symbol,
+            "prediction_date": pred.get("prediction_date"),
+            "forecast_pct_source": pred.get("forecast_pct_source"),
             "forecast_pct": round(forecast_pct, 6),
             "realized_return": round(realized, 6),
             "direction_hit": bool(
@@ -267,8 +289,8 @@ def build_foundation_forecast_validation_evidence(
                 and realized_direction != 0
                 and predicted_direction == realized_direction
             ),
-            "up_prob": _as_float(pred.get("up_prob"), math.nan),
-            "confidence": _as_float(pred.get("confidence"), math.nan),
+            "up_prob": _finite_or_none(pred.get("up_prob")),
+            "confidence": _finite_or_none(pred.get("confidence")),
         })
 
     samples = len(rows)

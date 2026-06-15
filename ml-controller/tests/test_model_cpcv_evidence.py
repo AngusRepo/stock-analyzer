@@ -111,6 +111,18 @@ def test_foundation_forecast_validation_is_lifecycle_compatible_without_retrain(
     assert evidence["direction_accuracy"] == 1.0
 
 
+def test_foundation_forecast_validation_sample_rows_use_null_for_missing_probabilities():
+    evidence = build_foundation_forecast_validation_evidence(
+        model="TimesFM",
+        predictions=[{"symbol": "2330", "forecast_pct": 0.05}],
+        realized_returns={"2330": 0.06},
+        policy={"min_samples": 1},
+    )
+
+    assert evidence["sample_rows"][0]["up_prob"] is None
+    assert evidence["sample_rows"][0]["confidence"] is None
+
+
 def test_foundation_forecast_validation_fails_closed_without_verified_outcomes():
     evidence = build_foundation_forecast_validation_evidence(
         model="TimesFM",

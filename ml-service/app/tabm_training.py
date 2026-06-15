@@ -275,6 +275,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
             prep_lineage,
             as_of_date=payload.get("as_of_date") or payload.get("run_date"),
             max_stale_days=payload.get("max_prep_stale_days"),
+            label_horizon_days=payload.get("label_horizon_days"),
         )
         if promote_to_active
         and dataset.source.startswith("gs://")

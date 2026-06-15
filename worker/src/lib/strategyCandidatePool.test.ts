@@ -281,10 +281,15 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   })
   assert(plan.mlSlate.length <= 3, 'L1.5 router capacity is a maximum, not a minimum')
   assert(plan.telemetry.capacity_policy === 'max_only_no_minimum', 'L1.5 router must document no minimum top-up policy')
+  assert(plan.telemetry.strategy_matrix_candidate_count === broadCandidates.length, 'L1 label matrix candidate count must follow runtime L0 universe size')
+  assert(plan.telemetry.strategy_matrix_strategy_count === [broadSpec, nicheSpec].length, 'L1 label matrix strategy dimension must follow current strategy count')
+  assert(plan.telemetry.strategy_matrix_cell_count === broadCandidates.length * [broadSpec, nicheSpec].length, 'L1 label matrix must cover runtime candidates x current strategies')
+  assert(plan.telemetry.strategy_matrix_coverage_ratio === 1, 'L1 label matrix coverage must be complete')
   assert(plan.mlSlate.some((candidate) => candidate.symbol === '6115'), 'FinLab-style portfolio intelligence should let niche multi-family support survive broad crowded labels')
   const niche = plan.mlSlate.find((candidate) => candidate.symbol === '6115') as any
   assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
   assert((niche.strategy_family_ids ?? []).length === 2, 'niche candidate should retain cross-family strategy evidence')
+  assert(Object.keys(niche.strategy_hit_vector ?? {}).length === [broadSpec, nicheSpec].length, 'L1 labeler must expose full current-strategy matrix width')
   assert(niche.strategy_weak_label_vector?.broad_everything_v1 != null, 'L1 labeler must expose weak labels per strategy')
   assert(niche.strategy_hit_vector?.niche_quality_breakout_v1 === 1, 'L1 labeler must expose strategy hits per strategy')
   assert(niche.strategy_position_weight_vector?.niche_quality_breakout_v1 > 0, 'L1 labeler must expose position-weight style strategy attribution')
@@ -385,6 +390,11 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const reliable = annotated.find((candidate) => candidate.symbol === '7701') as any
   const crowded = annotated.find((candidate) => candidate.symbol === '7702') as any
   assert(reliable && crowded, 'router should annotate both candidates even when quality floor blocks one from formal slate')
+  assert(plan.telemetry.strategy_matrix_candidate_count === 2, 'L1 matrix candidate count must be runtime-derived')
+  assert(plan.telemetry.strategy_matrix_strategy_count === 2, 'L1 matrix strategy count must be runtime-derived')
+  assert(plan.telemetry.strategy_matrix_cell_count === 4, 'L1 matrix cell count must equal candidates x strategies')
+  assert(Object.keys(reliable.strategy_hit_vector ?? {}).length === 2, 'L1 matrix vector must include all current strategies')
+  assert(reliable.strategy_hit_vector.crowded_low_sharpe_v1 === 0, 'L1 matrix must encode non-hit strategies as zero instead of omitting the column')
   assert(reliable.strategy_router_decision === 'ml_slate', 'reliable low-correlation support should enter formal L1.5 slate')
   assert(reliable.candidate_route_score > crowded.candidate_route_score, 'L1.25 reliability/diversification prior should outrank crowded low-sharpe support')
   assert(reliable.ml_teacher_labels.LightGBM === 0.8, 'L1.5 should carry 9ML teacher labels as distillation labels')

@@ -493,9 +493,8 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
                     PARTITION BY sfi.symbol
                     ORDER BY
                         CASE sfi.stage
-                            WHEN 'layer2_coarse_ml_gate' THEN 0
-                            WHEN 'strategy_pool_ml_queue' THEN 1
-                            WHEN 'l1_candidate_seed_after_overlay' THEN 2
+                            WHEN 'l1_candidate_seed_after_overlay' THEN 0
+                            WHEN 'final_selection' THEN 1
                             ELSE 3
                         END,
                         COALESCE(sfi.rank, 999999)
@@ -503,8 +502,8 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
               FROM screener_funnel_items sfi
              WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
                AND (
-                    (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
-                 OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+                    sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'
+                 OR sfi.stage = 'final_selection' AND sfi.decision = 'selected'
                )
         ),
         scoring_seed AS (
@@ -623,7 +622,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     if not screener_recs:
         raise RuntimeError(
             "screener_recs_missing: daily pipeline requires latest screener "
-            "layer2_coarse_ml_gate/strategy_pool_ml_queue ownership before ML/recommendation; "
+            "L1.5 router-owned l1_candidate_seed_after_overlay before ML/recommendation; "
             "refusing watchlist fallback"
         )
     active_stocks = build_ml_universe([], screener_recs)

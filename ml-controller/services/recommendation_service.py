@@ -1870,6 +1870,11 @@ def _allocation_method(policy: dict) -> str:
 
 
 def _row_expected_return(row: dict) -> float:
+    value, _source = _row_expected_return_with_source(row)
+    return value
+
+
+def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
     for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
         if key not in row or row.get(key) is None:
             continue
@@ -1878,8 +1883,24 @@ def _row_expected_return(row: dict) -> float:
         except (TypeError, ValueError):
             value = 0.0
         if math.isfinite(value):
-            return value
-    return max(0.0, (float(row.get("score") or 0.0) - 50.0) / 5000.0)
+            return value, key
+    return max(0.0, (float(row.get("score") or 0.0) - 50.0) / 5000.0), "score_fallback"
+
+
+def _row_daily_risk_estimate(symbol: str, risk_history: dict[str, list[float]], daily_vol_floor: float = 0.01) -> float:
+    values: list[float] = []
+    for value in risk_history.get(symbol, []) or []:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            values.append(numeric)
+    if len(values) < 2:
+        return daily_vol_floor
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / max(len(values) - 1, 1)
+    return max(daily_vol_floor, math.sqrt(max(0.0, variance)))
 
 
 def _apply_sparse_tangent_buy_selection(
@@ -1933,14 +1954,45 @@ def _apply_sparse_tangent_buy_selection(
                 "controller": controller,
             }
 
-    allocation_candidates = [
-        {
-            "symbol": row.get("symbol"),
+    allocation_candidates: list[dict[str, Any]] = []
+    candidate_evidence_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in eligible_rows:
+        symbol = str(row.get("symbol") or "").strip()
+        expected_return, expected_return_source = _row_expected_return_with_source(row)
+        candidate = {
+            "symbol": symbol,
             "score": row.get("score"),
-            "expected_return": _row_expected_return(row),
+            "expected_return": expected_return,
+            "expected_return_source": expected_return_source,
         }
-        for row in eligible_rows
-    ]
+        allocation_candidates.append(candidate)
+        if symbol:
+            candidate_evidence_by_symbol[symbol] = {
+                "expected_return": expected_return,
+                "expected_return_source": expected_return_source,
+                "risk_estimate": _row_daily_risk_estimate(symbol, risk_history),
+                "risk_estimate_source": (
+                    "return_history_sample_std" if len(risk_history.get(symbol, []) or []) >= 2 else "daily_vol_floor"
+                ),
+            }
+    ranked_candidates = sorted(
+        [row for row in allocation_candidates if str(row.get("symbol") or "").strip()],
+        key=lambda row: float(row.get("score") or 0.0),
+        reverse=True,
+    )[:buy_signal_count]
+    allocation_rank_by_symbol = {
+        str(row.get("symbol") or "").strip(): idx + 1
+        for idx, row in enumerate(ranked_candidates)
+    }
+    ranked_symbols = set(allocation_rank_by_symbol)
+    positive_edge_count = sum(
+        1 for row in ranked_candidates
+        if max(0.0, float(row.get("expected_return") or 0.0)) > 0.0
+    )
+    return_history_candidate_symbols = sorted(
+        symbol for symbol in ranked_symbols
+        if risk_history.get(symbol)
+    )
     opb_packet: dict[str, Any] | None = None
     if controller == "OnlinePortfolioBandit":
         try:
@@ -1973,6 +2025,50 @@ def _apply_sparse_tangent_buy_selection(
     selected_symbols = set(weights)
     selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
     history_coverage = sum(1 for symbol in selected_symbols if risk_history.get(symbol))
+    sparse_diagnostics_base = {
+        "candidate_count": len(allocation_candidates),
+        "evaluated_candidate_count": len(ranked_candidates),
+        "allocation_capacity": buy_signal_count,
+        "positive_edge_count": positive_edge_count,
+        "selected_count": len(selected_symbols),
+        "zero_selection_allowed": True,
+        "capacity_policy": "maximum_capacity_not_minimum_fill",
+        "return_history_candidate_count": len(return_history_candidate_symbols),
+        "return_history_candidate_symbols": return_history_candidate_symbols,
+        "controller": controller,
+        "controller_packet_enabled": opb_packet is not None,
+    }
+
+    def _sparse_allocation_evidence(row: dict, *, selected: bool, weight: float | None = None) -> dict[str, Any]:
+        symbol = str(row.get("symbol") or "").strip()
+        evidence = candidate_evidence_by_symbol.get(symbol)
+        rank = allocation_rank_by_symbol.get(symbol)
+        expected_return = float((evidence or {}).get("expected_return") or 0.0)
+        positive_expected_edge = expected_return > 0.0
+        if selected:
+            selection_reason = "selected_positive_edge_sparse_weight"
+        elif symbol and symbol not in candidate_evidence_by_symbol:
+            selection_reason = "not_eligible_for_sparse_input"
+        elif rank is None:
+            selection_reason = "outside_sparse_capacity_rank"
+        elif not positive_expected_edge:
+            selection_reason = "no_positive_expected_edge"
+        else:
+            selection_reason = "zero_sparse_weight_after_inverse_risk"
+        return {
+            "eligible_for_sparse": symbol in candidate_evidence_by_symbol,
+            "allocation_rank": rank,
+            "expected_return": round(expected_return, 10),
+            "expected_return_source": (evidence or {}).get("expected_return_source"),
+            "positive_expected_edge": positive_expected_edge,
+            "risk_estimate": round(float((evidence or {}).get("risk_estimate") or 0.0), 10),
+            "risk_estimate_source": (evidence or {}).get("risk_estimate_source"),
+            "selection_reason": selection_reason,
+            "sparse_diagnostics": {
+                **sparse_diagnostics_base,
+                "allocation_weight": round(float(weight or 0.0), 8),
+            },
+        }
 
     for symbol, weight in weights.items():
         row = selected_by_symbol.get(symbol)
@@ -1998,6 +2094,7 @@ def _apply_sparse_tangent_buy_selection(
             "allocation_weight": round(float(weight), 8),
             "return_history_coverage": history_coverage,
             "return_history_symbols": sorted(symbol for symbol in selected_symbols if risk_history.get(symbol)),
+            **_sparse_allocation_evidence(row, selected=True, weight=float(weight)),
             "opb_controller": {
                 "enabled": opb_packet is not None,
                 "stage": opb_packet.get("stage") if opb_packet else None,
@@ -2017,11 +2114,17 @@ def _apply_sparse_tangent_buy_selection(
             continue
         alpha_allocation = row.get("alpha_allocation")
         if isinstance(alpha_allocation, dict) or id(row) in eligible_row_ids:
+            symbol = str(row.get("symbol") or "").strip()
             row["alpha_allocation"] = {
                 **(alpha_allocation if isinstance(alpha_allocation, dict) else {}),
                 **allocation_contract,
                 "selected": False,
                 "controller": controller,
+                **_sparse_allocation_evidence(
+                    row,
+                    selected=False,
+                    weight=float(weights.get(symbol, 0.0) or 0.0),
+                ),
             }
 
     logger.info(
@@ -2213,11 +2316,19 @@ def write_predictions_to_d1(
             if safe_model_score is None:
                 skipped_model_rows.append(model_name)
                 continue
+            signal_payload = _per_model_signal_payload(data, model_name)
             per_model_payload, replaced = _sanitize_non_finite(
                 {
                     "signal": raw_signal,
                     "rank_score": safe_model_score,
                     "source": "model_pool_stage2",
+                    "forecast_pct": signal_payload.get("forecast_pct"),
+                    "forecast_pct_source": (
+                        f"{signal_payload.get('source_key')}.forecast_pct"
+                        if signal_payload.get("forecast_pct") is not None
+                        else None
+                    ),
+                    "model_signal": signal_payload or None,
                     "stock_meta": _enrich_stock_meta_with_segment_policy(data.get("stock_meta")),
                 }
             )
@@ -2432,6 +2543,38 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     return out
 
 
+def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
+    source_key = {
+        "DLinear": "dlinear",
+        "PatchTST": "patchtst",
+        "iTransformer": "itransformer",
+        "TimesFM": "timesfm",
+    }.get(model_name)
+    if not source_key:
+        return {}
+    signal = pred.get(source_key)
+    if not isinstance(signal, dict):
+        return {}
+    payload: dict[str, Any] = {}
+    for key in (
+        "forecast_pct",
+        "forecast_price",
+        "direction",
+        "confidence",
+        "n_used",
+        "model_version",
+        "model_id",
+        "context_len",
+        "seq_len",
+        "artifact_path",
+    ):
+        if signal.get(key) is not None:
+            payload[key] = signal.get(key)
+    if payload:
+        payload["source_key"] = source_key
+    return payload
+
+
 def _build_per_model_insert_sql() -> str:
     """Same contract as INSERT_PREDICTIONS_SQL but accepts model_name as parameter."""
     return f"""
@@ -2468,8 +2611,8 @@ def _existing_recommendation_seed_stock_ids(recommendations: list[dict], run_dat
                 ON sfi.run_id = (SELECT run_id FROM latest_screener_run)
                AND sfi.symbol = dr.symbol
                AND (
-                    (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
-                 OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+                    (sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected')
+                 OR (sfi.stage = 'final_selection' AND sfi.decision = 'selected')
                )
              WHERE dr.date = ?
                AND dr.stock_id IN ({placeholders})
@@ -2541,8 +2684,8 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
              WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
                 AND sfi.symbol = dr.symbol
                 AND (
-                     (sfi.stage IN ('layer2_coarse_ml_gate', 'strategy_pool_ml_queue') AND sfi.decision = 'pass')
-                  OR (sfi.stage IN ('l1_candidate_seed_after_overlay', 'final_selection') AND sfi.decision = 'selected')
+                     (sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected')
+                  OR (sfi.stage = 'final_selection' AND sfi.decision = 'selected')
                 )
            )
         """,

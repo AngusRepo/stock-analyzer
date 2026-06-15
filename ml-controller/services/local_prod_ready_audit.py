@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,22 @@ def _check_text_contains(
     missing = [needle for needle in required if needle not in text]
     if missing:
         return _check(False, check_id, f"{detail}; missing={missing[:6]}")
+    return _check(True, check_id, detail)
+
+
+def _check_text_regex_absent(
+    root: Path,
+    rel_path: str,
+    pattern: str,
+    check_id: str,
+    detail: str,
+) -> dict[str, Any]:
+    try:
+        text = _read_text(root, rel_path)
+    except FileNotFoundError:
+        return _check(False, check_id, f"{detail}; missing_file={rel_path}")
+    if re.search(pattern, text):
+        return _check(False, check_id, f"{detail}; forbidden_pattern={pattern}")
     return _check(True, check_id, detail)
 
 
@@ -411,6 +428,118 @@ def _l4_execution_checks(root: Path) -> list[dict[str, Any]]:
             "roadmap:p2:l4_recommendation_context",
             "recommendation context exposes sparse final allocation evidence and controller provenance",
         ),
+        _check_text_contains(
+            root,
+            "ml-controller/services/recommendation_service.py",
+            (
+                "selection_reason",
+                "selected_positive_edge_sparse_weight",
+                "no_positive_expected_edge",
+                "zero_sparse_weight_after_inverse_risk",
+                "sparse_diagnostics",
+                "expected_return_source",
+                "risk_estimate_source",
+            ),
+            "roadmap:p2:l4_sparse_zero_selection_diagnostics",
+            "L4 sparse allocation writes per-candidate diagnostics for selected and zero-selection outcomes",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/recommendationContext.ts",
+            (
+                "selection_reason",
+                "sparse_diagnostics",
+                "expected_return_source",
+                "risk_estimate_source",
+                "positive_expected_edge",
+            ),
+            "roadmap:p2:l4_sparse_api_diagnostics",
+            "recommendation API exposes L4 sparse reason/edge/risk diagnostics",
+        ),
+    ]
+
+
+def _finlab_market_data_owner_checks(root: Path) -> list[dict[str, Any]]:
+    return [
+        _check_text_contains(
+            root,
+            "worker/src/lib/updateOrchestrator.ts",
+            (
+                "FinLab primary canonical ready",
+                "TWSE/TPEX supplemental refresh complete",
+                "source_role=supplemental_after_finlab_canonical",
+                "TWSE/TPEX supplemental fetch",
+            ),
+            "roadmap:p3:finlab_primary_twse_supplemental_owner",
+            "evening-chain market data logs keep FinLab canonical as primary and TWSE/TPEX as supplemental",
+        ),
+        _check_text_regex_absent(
+            root,
+            "worker/src/lib/updateOrchestrator.ts",
+            r"before legacy fallback \+ indicator queue",
+            "roadmap:p3:no_legacy_market_data_fallback_wording",
+            "evening-chain must not describe TWSE/TPEX supplemental refresh as legacy fallback",
+        ),
+    ]
+
+
+def _l15_l2_owner_boundary_checks(root: Path) -> list[dict[str, Any]]:
+    return [
+        _check_text_contains(
+            root,
+            "worker/src/lib/marketScreener.ts",
+            (
+                "stage: 'l15_ml_slate_queue'",
+                "worker_seed_only: true",
+                "downstream_owner: 'ml-controller'",
+                "downstream_stage: 'layer2_coarse_ml_gate'",
+            ),
+            "roadmap:p3:l15_ml_slate_queue_stage",
+            "Worker persists L1.5 ML slate queue as a pre-controller queue, not formal L2",
+        ),
+        _check_text_regex_absent(
+            root,
+            "worker/src/lib/marketScreener.ts",
+            r"\bstage:\s*['\"]layer2_coarse_ml_gate['\"]",
+            "roadmap:p3:worker_not_formal_l2_owner",
+            "Worker screener must not write formal layer2_coarse_ml_gate stage rows",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/screenerFunnelEvidence.ts",
+            (
+                "pickLastFormalLayer2Step",
+                "pickLastByStage(steps, 'l15_ml_slate_queue')",
+                "legacyLayer2Seed",
+                "layer15_ml_slate_queue",
+            ),
+            "roadmap:p3:l15_l2_evidence_summary",
+            "funnel evidence separates L1.5 slate queue from formal L2 while keeping legacy read compatibility",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/routes/other.ts",
+            ("'l15_ml_slate_queue'", "'layer2_coarse_ml_gate'"),
+            "roadmap:p3:daily_api_reads_l15_and_l2",
+            "daily recommendation API reads both L1.5 slate queue and formal L2 evidence",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/strategyLearning.ts",
+            (
+                "stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected'",
+                "stage = 'layer1_strategy_breadth_gate' AND decision = 'pass'",
+            ),
+            "roadmap:p3:strategy_learning_l1_source",
+            "strategy learning reads L1/L1.5 strategy evidence instead of L2 owner stages",
+        ),
+        _check_text_regex_absent(
+            root,
+            "worker/src/lib/strategyLearning.ts",
+            r"stage\s*=\s*['\"]layer2_coarse_ml_gate['\"]\s+AND\s+decision\s*=\s*['\"]pass['\"]",
+            "roadmap:p3:strategy_learning_not_l2_owner",
+            "strategy learning must not treat formal L2 pass rows as its primary strategy evidence source",
+        ),
     ]
 
 
@@ -481,6 +610,8 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         *_optuna_scheduler_checks(root),
         *_replay_and_promotion_checks(root),
         *_l4_execution_checks(root),
+        *_finlab_market_data_owner_checks(root),
+        *_l15_l2_owner_boundary_checks(root),
         *_observability_checks(root),
         *_replay_checks(root),
     ]

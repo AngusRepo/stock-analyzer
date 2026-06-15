@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -15,8 +16,7 @@ class _Request:
         self.headers = headers or {}
 
 
-@pytest.mark.asyncio
-async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
+def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     calls: list[dict] = []
     registry_records: list[dict] = []
 
@@ -67,7 +67,7 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
         ],
     )
 
-    result = await followup_router.retrain_followup(payload, _Request())
+    result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
 
     assert result["status"] == "completed"
     assert result["modal_telemetry"]["recorded"] == 3
@@ -88,8 +88,7 @@ async def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     assert registry_records == []
 
 
-@pytest.mark.asyncio
-async def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
+def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
     written: list[dict] = []
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
@@ -124,7 +123,7 @@ async def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
         },
     )
 
-    result = await followup_router.retrain_followup(payload, _Request())
+    result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
 
     assert result["artifact_registry"]["attempted"] == 1
     assert result["artifact_registry"]["written"] == 1
@@ -132,6 +131,63 @@ async def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
     assert written[0]["training_run_id"] == "training-run-v20260508"
     assert written[0]["training_manifest_path"] == "universal/manifests/training-run-v20260508.json"
     assert written[0]["state"] == "offline_strong_pass"
+
+
+def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
+    written: list[dict] = []
+
+    monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
+    monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: True)
+    monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
+    monkeypatch.setattr(
+        followup_router,
+        "attach_timesfm_foundation_evidence_to_followup_payload",
+        lambda payload: payload["stages"]["artifact_lifecycle"]["results"]["TimesFM"].update(
+            {
+                "oos_ic": 0.088,
+                "metrics": {"oos_ic": 0.088, "oos_samples": 80},
+                "model_cpcv": {"decision": "PASS", "failed_gates": []},
+                "foundation_forecast_validation": {"decision": "PASS", "oos_ic_mean": 0.088},
+            }
+        ) or {"attempted": True, "updated": True, "oos_ic": 0.088, "samples": 80},
+    )
+    monkeypatch.setattr(
+        followup_router,
+        "upsert_artifact_records",
+        lambda records: written.extend(records) or {
+            "attempted": len(records),
+            "written": len(records),
+            "errors": [],
+        },
+    )
+
+    payload = followup_router.RetrainFollowupPayload(
+        run_id="monthly-timesfm",
+        run_date="2026-06-14",
+        is_monthly=True,
+        candidate_version="v20260612T160113_timesfm25_ctx1024",
+        status="completed",
+        stages={
+            "artifact_lifecycle": {
+                "results": {
+                    "TimesFM": {
+                        "status": "ok",
+                        "model": "TimesFM",
+                        "version": "v20260612T160113_timesfm25_ctx1024",
+                        "artifact_path": "universal/timesfm/v20260612T160113_timesfm25_ctx1024.json",
+                        "artifact_type": "foundation_forecast_config",
+                    },
+                },
+            },
+        },
+    )
+
+    result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
+
+    assert result["foundation_evidence"]["updated"] is True
+    assert written[0]["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:monthly_release"
+    assert written[0]["offline_gate_decision"] in {"PASS", "STRONG_PASS"}
 
 
 def test_retrain_followup_accepts_modal_service_token(monkeypatch):
@@ -192,8 +248,7 @@ def test_non_monthly_retrain_followup_keeps_compat_task():
     assert callback["error"] == "artifact mismatch"
 
 
-@pytest.mark.asyncio
-async def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
+def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     written: list[dict] = []
     executed: list[tuple] = []
 
@@ -240,9 +295,11 @@ async def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: (_ for _ in ()).throw(AssertionError("must not release lock")))
     monkeypatch.setattr(followup_router, "_callback_worker_scheduler", lambda payload: (_ for _ in ()).throw(AssertionError("must not callback scheduler")))
 
-    result = await followup_router.retrain_followup_registry_backfill(
-        followup_router.RetrainFollowupRegistryBackfillRequest(run_id="run-backfill", dry_run=False),
-        _Request(),
+    result = asyncio.run(
+        followup_router.retrain_followup_registry_backfill(
+            followup_router.RetrainFollowupRegistryBackfillRequest(run_id="run-backfill", dry_run=False),
+            _Request(),
+        )
     )
 
     assert result["side_effects"]["webhook_log_updated"] is False

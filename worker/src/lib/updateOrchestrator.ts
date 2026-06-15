@@ -101,7 +101,7 @@ async function scheduleSourceReadinessRetry(
   })
   await logSchedulerResult(env.KV, 'evening-chain', {
     status: 'running',
-    summary: `waiting for same-day TWSE/TPEX source before indicator queue; ${summary}`,
+    summary: `waiting for same-day TWSE/TPEX supplemental source before indicator queue; ${summary}`,
     duration_ms: 0,
     run_date: runDate,
   })
@@ -198,9 +198,9 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   const twDate = resolveUpdateDate(runDate)
   const lockKey = `cron:bulk-fetch:${twDate}`
   if (!force && await env.KV.get(lockKey)) {
-    console.log(`[Cron] Bulk fetch already done today (${twDate}), skipping.`)
+    console.log(`[Cron] TWSE/TPEX supplemental fetch already done today (${twDate}), skipping.`)
     const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
-    return `bulk fetch skipped; ${ready.summary}`
+    return `TWSE/TPEX supplemental fetch skipped; ${ready.summary}; source_role=supplemental_after_finlab_canonical`
   }
 
   try {
@@ -210,18 +210,18 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
       bulkFetchAndStoreChipData(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
       bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
     ])
-    console.log(`[Cron] Bulk: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
+    console.log(`[Cron] TWSE/TPEX supplemental: ${priceCount} prices + ${chipCount} chips + ${marginCount} margins`)
     const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
     await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
-    return `${ready.summary}; fetched price=${priceCount} chip=${chipCount} margin=${marginCount}`
+    return `${ready.summary}; TWSE/TPEX supplemental fetched price=${priceCount} chip=${chipCount} margin=${marginCount}; source_role=supplemental_after_finlab_canonical`
   } catch (e) {
-    console.warn('[Cron] Bulk fetch failed:', e)
+    console.warn('[Cron] TWSE/TPEX supplemental fetch failed:', e)
     const message = e instanceof Error ? e.message : String(e)
     const sourceWaiting = isBulkPriceSourceNotReady(e)
     const status = sourceWaiting ? 'running' : 'error'
     const summary = sourceWaiting
-      ? `source waiting before bulk fetch can write same-day rows: ${message}`
+      ? `source waiting before TWSE/TPEX supplemental fetch can write same-day rows: ${message}`
       : message
     await logSchedulerResult(env.KV, 'update', {
       status,
@@ -233,8 +233,8 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     await logSchedulerResult(env.KV, 'evening-chain', {
       status,
       summary: sourceWaiting
-        ? `waiting for same-day TWSE/TPEX source before indicator queue: ${message}`
-        : `bulk fetch failed before indicator queue: ${message}`,
+        ? `waiting for same-day TWSE/TPEX supplemental source before indicator queue: ${message}`
+        : `TWSE/TPEX supplemental fetch failed before indicator queue: ${message}`,
       duration_ms: 0,
       error: sourceWaiting ? undefined : String(e),
       run_date: twDate,
@@ -561,13 +561,13 @@ async function continueAfterFinLabBackfill(
   }
   await logSchedulerResult(env.KV, 'update', {
     status: 'success',
-    summary: `market data update ready for ${twDate}; FinLab primary canonical ready; ${canonicalSummary}; ${bulkSummary}`,
+    summary: `market data update ready for ${twDate}; FinLab primary canonical ready; TWSE/TPEX supplemental refresh complete; ${canonicalSummary}; ${bulkSummary}`,
     duration_ms: 0,
     run_id: runId,
     run_date: twDate,
   })
   await runQueueUpdate(env, twDate, force)
-  return `${canonicalSummary}; ${bulkSummary}; indicator queue accepted`
+  return `${canonicalSummary}; TWSE/TPEX supplemental refresh complete; ${bulkSummary}; indicator queue accepted`
 }
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
@@ -587,7 +587,7 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     const continuation = await continueAfterFinLabBackfill(env, twDate, force)
     return `triggered evening-chain: ${continuation}`
   }
-  const summary = `FinLab canonical refresh triggered for ${twDate}; waiting for finlab-v4-backfill callback before legacy fallback + indicator queue`
+  const summary = `FinLab canonical refresh triggered for ${twDate}; waiting for finlab-v4-backfill callback before TWSE/TPEX supplemental refresh + indicator queue`
   await logSchedulerResult(env.KV, 'update', {
     status: 'triggered',
     summary,

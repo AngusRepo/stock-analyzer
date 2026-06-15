@@ -654,17 +654,19 @@ export async function listStrategyLearningCandidates(
                PARTITION BY symbol
                ORDER BY
                  CASE stage
-                   WHEN 'layer2_coarse_ml_gate' THEN 1
+                   WHEN 'l1_candidate_seed_after_overlay' THEN 1
                    WHEN 'layer1_strategy_breadth_gate' THEN 2
-                   ELSE 3
+                   WHEN 'final_selection' THEN 3
+                   ELSE 4
                  END,
                  COALESCE(rank, 999999) ASC
              ) AS row_rank
-        FROM screener_funnel_items
+       FROM screener_funnel_items
        WHERE run_id = (SELECT run_id FROM latest_run)
          AND (
-           (stage = 'layer2_coarse_ml_gate' AND decision = 'pass')
+           (stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected')
            OR (stage = 'layer1_strategy_breadth_gate' AND decision = 'pass')
+           OR (stage = 'final_selection' AND decision = 'selected')
          )
     )
     SELECT fc.symbol,

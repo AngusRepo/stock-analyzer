@@ -82,8 +82,10 @@ class UniversalTrainRequest(BaseModel):
     enable_model_cpcv: bool = True
     model_cpcv_policy: dict | None = None
     training_run_suffix: str | None = None
+    run_date: str | None = None
     as_of_date: str | None = None
     max_prep_stale_days: int | None = None
+    label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
 
 
@@ -1189,8 +1191,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     prep_freshness = (
         validate_prep_lineage_for_registration(
             prep_lineage,
-            as_of_date=req.as_of_date,
+            as_of_date=req.as_of_date or req.run_date,
             max_stale_days=req.max_prep_stale_days,
+            label_horizon_days=req.label_horizon_days,
         )
         if not walk_forward_mode
         and gcs_prefix == "universal"

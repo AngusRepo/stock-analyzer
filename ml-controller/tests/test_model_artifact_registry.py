@@ -57,6 +57,16 @@ def test_build_artifact_records_from_monthly_followup_strong_pass():
     assert row["artifact_path"] == "universal/xgboost/v20260508.joblib"
 
 
+def test_registry_json_io_sanitizes_non_finite_values():
+    loaded = registry._json_loads('{"sample_rows":[{"up_prob":NaN,"confidence":Infinity}]}')
+
+    assert loaded["sample_rows"] == [{"up_prob": None, "confidence": None}]
+    assert json.loads(registry._json_dumps({"x": float("nan"), "y": [float("-inf")]})) == {
+        "x": None,
+        "y": [None],
+    }
+
+
 def test_build_artifact_records_from_weekly_followup_failed_registration():
     payload = {
         "run_id": "weekly-202605w2",
@@ -82,6 +92,28 @@ def test_build_artifact_records_from_weekly_followup_failed_registration():
     assert row["candidate_type"] == "weekly_drift"
     assert row["state"] == "offline_failed"
     assert "artifact_registration_failed" in row["offline_gate_failed_gates"]
+
+
+def test_disabled_legacy_challenger_registration_does_not_create_artifact_row():
+    payload = {
+        "run_id": "monthly-legacy-suppressed",
+        "run_date": "2026-06-14",
+        "is_monthly": True,
+        "candidate_version": "v20260614010101",
+        "status": "completed",
+        "ic_summary": {"DLinear": 0.031},
+        "challenger_registrations": {
+            "DLinear": {
+                "status": "disabled",
+                "version": "v20260614010101",
+                "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert records == []
 
 
 def test_explicit_candidate_type_from_weekly_drift_payload_wins_over_monthly_flag():

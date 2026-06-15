@@ -24,12 +24,13 @@ function assert(condition: unknown, message: string): void {
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
   assert(
     source.includes('screener_funnel_items') &&
-      source.includes("stage = 'layer2_coarse_ml_gate'") &&
+      source.includes("stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected'") &&
       source.includes("stage = 'layer1_strategy_breadth_gate' AND decision = 'pass'") &&
+      source.includes("stage = 'final_selection' AND decision = 'selected'") &&
       source.includes('raw_signals') &&
       source.includes('funnel_candidates') &&
       source.includes('fc.evidence AS funnel_evidence'),
-    'strategy learning candidates must restore raw strategy evidence from the latest screener funnel, not Score V2-only recommendations',
+    'strategy learning candidates must restore raw L1/L1.5 strategy evidence from the latest screener funnel, not Score V2-only recommendations or L2 owner stages',
   )
   assert(
     source.includes('demoteStaleActiveDiscoveryStrategySpecs') &&

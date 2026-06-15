@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -511,6 +512,15 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert promoted[0]["signal"] == "BUY"
     assert promoted[0]["signal_raw"] == "HOLD"
     assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
+    allocation = promoted[0]["alpha_allocation"]
+    assert allocation["selection_reason"] == "selected_positive_edge_sparse_weight"
+    assert allocation["expected_return"] == 0.03
+    assert allocation["expected_return_source"] == "ml_forecast_pct"
+    assert allocation["positive_expected_edge"] is True
+    assert allocation["eligible_for_sparse"] is True
+    assert allocation["allocation_rank"] == 1
+    assert allocation["sparse_diagnostics"]["candidate_count"] == 1
+    assert allocation["sparse_diagnostics"]["selected_count"] == 1
 
 
 def test_sparse_tangent_allocation_blocks_negative_forecast():
@@ -671,6 +681,14 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
     assert all(allocation["allows_empty_portfolio"] is True for allocation in allocations)
     assert all(allocation["hard_minimum_fill"] is False for allocation in allocations)
     assert all(allocation["selection_policy"] == "positive_expected_edge_sparse_weights_no_forced_fill" for allocation in allocations)
+    assert all(allocation["selection_reason"] == "no_positive_expected_edge" for allocation in allocations)
+    assert all(allocation["expected_return"] == 0.0 for allocation in allocations)
+    assert all(allocation["positive_expected_edge"] is False for allocation in allocations)
+    assert all(allocation["sparse_diagnostics"]["candidate_count"] == 2 for allocation in allocations)
+    assert all(allocation["sparse_diagnostics"]["evaluated_candidate_count"] == 2 for allocation in allocations)
+    assert all(allocation["sparse_diagnostics"]["positive_edge_count"] == 0 for allocation in allocations)
+    assert all(allocation["sparse_diagnostics"]["selected_count"] == 0 for allocation in allocations)
+    assert all(allocation["sparse_diagnostics"]["zero_selection_allowed"] is True for allocation in allocations)
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
@@ -807,6 +825,54 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
     assert "prediction_date = ?" in stale_cleanup_sql
     assert stale_cleanup_params == [1, "2026-04-29"]
     assert written == 2
+
+
+def test_write_predictions_to_d1_preserves_timesfm_per_model_forecast_pct(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+
+    written = write_predictions_to_d1(
+        {
+            "2330": {
+                "signal": "HOLD",
+                "confidence": 0.31,
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "target1": 108.0,
+                "target2": 112.0,
+                "feature_version": "v2",
+                "ensemble_v2": {"signal": "HOLD", "signal_source": "ensemble_v2"},
+                "timesfm": {
+                    "forecast_pct": -0.0123,
+                    "confidence": 0.61,
+                    "n_used": 1024,
+                    "model_version": "v20260612T160113_timesfm25_ctx1024",
+                },
+            }
+        },
+        {"2330": 1},
+        run_date="2026-06-14",
+    )
+
+    timesfm_insert = [
+        params
+        for sql, params in captured["statements"]
+        if "model_name" in sql and len(params) > 1 and params[1] == "TimesFM"
+    ][0]
+    payload = json.loads(timesfm_insert[5])
+
+    assert written == 2
+    assert payload["rank_score"] < 0.5
+    assert payload["forecast_pct"] == -0.0123
+    assert payload["forecast_pct_source"] == "timesfm.forecast_pct"
+    assert payload["model_signal"]["n_used"] == 1024
 
 
 def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monkeypatch):

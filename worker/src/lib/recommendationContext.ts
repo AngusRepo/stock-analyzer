@@ -65,6 +65,15 @@ export interface SparseAllocationSummary {
   buy_signal_count: number | null
   return_history_coverage: number | null
   return_history_symbol_count: number | null
+  eligible_for_sparse: boolean | null
+  allocation_rank: number | null
+  expected_return: number | null
+  expected_return_source: string | null
+  positive_expected_edge: boolean | null
+  risk_estimate: number | null
+  risk_estimate_source: string | null
+  selection_reason: string | null
+  sparse_diagnostics: Record<string, unknown> | null
   opb_controller: Record<string, unknown> | null
 }
 
@@ -222,6 +231,11 @@ function boolFromUnknown(value: unknown): boolean {
   if (value === true || value === 1) return true
   if (typeof value === 'string') return value.trim().toLowerCase() === 'true' || value.trim() === '1'
   return false
+}
+
+function boolOrNull(value: unknown): boolean | null {
+  if (value === undefined || value === null) return null
+  return boolFromUnknown(value)
 }
 
 function cleanTextOrNull(value: unknown): string | null {
@@ -410,6 +424,9 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
   const opbController = allocation.opb_controller && typeof allocation.opb_controller === 'object'
     ? allocation.opb_controller as Record<string, unknown>
     : null
+  const sparseDiagnostics = allocation.sparse_diagnostics && typeof allocation.sparse_diagnostics === 'object'
+    ? allocation.sparse_diagnostics as Record<string, unknown>
+    : null
   const controller = cleanTextOrNull(allocation.controller)
     ?? cleanTextOrNull(opbController?.controller)
     ?? cleanTextOrNull(opbController?.policy_id)
@@ -439,6 +456,15 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
     buy_signal_count: finiteOrNull(allocation.buy_signal_count),
     return_history_coverage: finiteOrNull(allocation.return_history_coverage),
     return_history_symbol_count: returnHistorySymbols.length || null,
+    eligible_for_sparse: boolOrNull(allocation.eligible_for_sparse),
+    allocation_rank: finiteOrNull(allocation.allocation_rank),
+    expected_return: finiteOrNull(allocation.expected_return),
+    expected_return_source: cleanTextOrNull(allocation.expected_return_source),
+    positive_expected_edge: boolOrNull(allocation.positive_expected_edge),
+    risk_estimate: finiteOrNull(allocation.risk_estimate),
+    risk_estimate_source: cleanTextOrNull(allocation.risk_estimate_source),
+    selection_reason: cleanTextOrNull(allocation.selection_reason),
+    sparse_diagnostics: sparseDiagnostics,
     opb_controller: opbController,
   }
 }

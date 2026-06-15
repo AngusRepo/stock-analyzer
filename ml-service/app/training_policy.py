@@ -644,9 +644,21 @@ class UniversalTrainingPolicy:
     ) -> dict[str, float | int | str | bool]:
         payload = payload or {}
         model_cpcv_policy = payload.get("model_cpcv_policy") or {"family_adapters": {}}
-        return {
+        selection_params = payload.get("selection_params") if isinstance(payload.get("selection_params"), dict) else {}
+        label_horizon_days = _coerce_int(
+            payload.get("label_horizon_days") or selection_params.get("label_horizon_days"),
+            5,
+        )
+        base_payload = {
             "batch_count": _coerce_int(payload.get("batch_count"), 5),
             "output_model_version": candidate_version,
             "register_challengers": False,
             "model_cpcv_policy": model_cpcv_policy,
+            "label_horizon_days": label_horizon_days,
         }
+        for key in ("run_date", "as_of_date", "max_prep_stale_days"):
+            if payload.get(key) is not None:
+                base_payload[key] = payload[key]
+        if payload.get("disable_stale_prep_guard") is not None:
+            base_payload["disable_stale_prep_guard"] = bool(payload.get("disable_stale_prep_guard"))
+        return base_payload

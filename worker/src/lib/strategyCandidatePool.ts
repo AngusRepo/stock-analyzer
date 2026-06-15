@@ -204,6 +204,13 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     l15_router_ml_slate_count?: number
     l15_router_observe_only_count?: number
     l15_router_capacity_overflow_count?: number
+    strategy_matrix_candidate_count?: number
+    strategy_matrix_strategy_count?: number
+    strategy_matrix_cell_count?: number
+    strategy_matrix_expected_cell_count?: number
+    strategy_matrix_coverage_ratio?: number
+    strategy_matrix_matched_candidate_count?: number
+    strategy_matrix_active_labeled_candidate_count?: number
     strategy_portfolio_metric_source?: string
     strategy_portfolio_metric_count?: number
   }
@@ -1029,6 +1036,13 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       l15_router_ml_slate_count: routerPlan.telemetry.ml_slate_count,
       l15_router_observe_only_count: routerPlan.telemetry.observe_only_count,
       l15_router_capacity_overflow_count: routerPlan.telemetry.capacity_overflow_count,
+      strategy_matrix_candidate_count: routerPlan.telemetry.strategy_matrix_candidate_count,
+      strategy_matrix_strategy_count: routerPlan.telemetry.strategy_matrix_strategy_count,
+      strategy_matrix_cell_count: routerPlan.telemetry.strategy_matrix_cell_count,
+      strategy_matrix_expected_cell_count: routerPlan.telemetry.strategy_matrix_expected_cell_count,
+      strategy_matrix_coverage_ratio: routerPlan.telemetry.strategy_matrix_coverage_ratio,
+      strategy_matrix_matched_candidate_count: routerPlan.telemetry.matched_candidates,
+      strategy_matrix_active_labeled_candidate_count: routerPlan.telemetry.active_labeled_candidates,
       strategy_portfolio_metric_source: options.strategyPortfolioMetricSource,
       strategy_portfolio_metric_count: Object.keys(options.strategyPortfolioMetrics ?? {}).length,
     },

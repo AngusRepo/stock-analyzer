@@ -96,6 +96,48 @@ def test_validate_prep_lineage_blocks_stale_registration():
     assert "prep_timestamp_stale" in str(exc.value)
 
 
+def test_validate_prep_lineage_allows_forward_label_horizon_lag():
+    lineage = {
+        "prep_timestamp": "2026-06-14T17:04:00Z",
+        "date_max": "2026-06-11",
+        "rows": 100,
+        "feature_count": 106,
+        "prep_objects": 5,
+    }
+
+    report = validate_prep_lineage_for_registration(
+        lineage,
+        as_of_date="2026-06-15",
+        max_stale_days=3,
+        label_horizon_days=5,
+    )
+
+    assert report["status"] == "ok"
+    assert report["date_max_allowed_lag_days"] == 8
+    assert report["label_horizon_days"] == 5
+
+
+def test_validate_prep_lineage_still_blocks_stale_timestamp_with_horizon():
+    lineage = {
+        "prep_timestamp": "2026-06-01T17:04:00Z",
+        "date_max": "2026-06-11",
+        "rows": 100,
+        "feature_count": 106,
+        "prep_objects": 5,
+    }
+
+    with pytest.raises(RuntimeError) as exc:
+        validate_prep_lineage_for_registration(
+            lineage,
+            as_of_date="2026-06-15",
+            max_stale_days=3,
+            label_horizon_days=5,
+        )
+
+    assert "prep_date_max_stale" not in str(exc.value)
+    assert "prep_timestamp_stale" in str(exc.value)
+
+
 def test_attach_prep_lineage_aliases_keeps_existing_artifact_feature_count():
     metadata = {"feature_count": 45}
     lineage = {

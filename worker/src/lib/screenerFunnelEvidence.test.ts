@@ -80,7 +80,7 @@ function assert(condition: unknown, message: string): void {
       symbol: '2330',
       stage: 'layer2_coarse_ml_gate',
       decision: 'pass',
-      reason_code: 'coarse_ml_queue_seed_from_layer1_breadth',
+      reason_code: 'formal_l2_3ml_coarse_pass',
       rank: 6,
       score_after: 72,
       evidence: JSON.stringify({ coarse_ml_queue_size: 80, core_ml_shortlist_size: 35 }),
@@ -396,12 +396,12 @@ function assert(condition: unknown, message: string): void {
   const summaries = summarizeScreenerFunnelRows([
     {
       symbol: '2330',
-      stage: 'layer2_coarse_ml_gate',
+      stage: 'l15_ml_slate_queue',
       decision: 'observe',
-      reason_code: 'coarse_ml_queue_seed_from_layer1_breadth',
+      reason_code: 'ml_slate_queue_seed_from_l1_5_router',
       rank: 3,
       score_after: 70,
-      evidence: JSON.stringify({ worker_seed_only: true, layer_contract: 'ml-controller owns the actual pass' }),
+      evidence: JSON.stringify({ worker_seed_only: true, downstream_owner: 'ml-controller', downstream_stage: 'layer2_coarse_ml_gate' }),
     },
   ])
 
@@ -409,5 +409,6 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer2_3ml_coarse as any)?.worker_seed_only === true, 'worker seed should be explicit in the Layer2 3ML summary')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_pass === false, 'worker seed must not become a formal L2 pass')
   assert(!summary?.evidence.layer2_coarse_ml, 'worker seed must not be summarized as formal L2 coarse ML pass')
+  assert((summary?.evidence.layer15_ml_slate_queue as any)?.downstream_stage === 'layer2_coarse_ml_gate', 'L1.5 slate queue should expose the downstream L2 owner')
   assert((summary?.evidence.layer2_queue_seed as any)?.worker_seed_only === true, 'worker seed should stay visible as queue seed evidence')
 }

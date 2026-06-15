@@ -46,9 +46,16 @@ assert(
 )
 
 assert(
-  updateOrchestrator.includes('bulk fetch failed before indicator queue') &&
+  updateOrchestrator.includes('TWSE/TPEX supplemental fetch failed before indicator queue') &&
     updateOrchestrator.includes("logSchedulerResult(env.KV, 'evening-chain'"),
-  'bulk fetch failures must be visible in evening-chain scheduler logs before queue starts',
+  'TWSE/TPEX supplemental fetch failures must be visible in evening-chain scheduler logs before queue starts',
+)
+
+assert(
+  updateOrchestrator.includes('FinLab primary canonical ready') &&
+    updateOrchestrator.includes('source_role=supplemental_after_finlab_canonical') &&
+    !updateOrchestrator.includes('before legacy fallback + indicator queue'),
+  'FinLab canonical must remain primary while TWSE/TPEX refresh is documented as supplemental, not legacy owner fallback',
 )
 
 assert(

@@ -369,6 +369,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             prep_lineage,
             as_of_date=payload.get("as_of_date") or payload.get("run_date"),
             max_stale_days=payload.get("max_prep_stale_days"),
+            label_horizon_days=payload.get("label_horizon_days"),
         )
         if promote_to_active and gcs_prefix == "universal" and payload.get("disable_stale_prep_guard") is not True
         else {"status": "skipped"}

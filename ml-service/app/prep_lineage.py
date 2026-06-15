@@ -171,18 +171,21 @@ def validate_prep_lineage_for_registration(
     *,
     as_of_date: str | None = None,
     max_stale_days: int | None = None,
+    label_horizon_days: int | None = None,
     require_timestamp: bool = True,
 ) -> dict[str, Any]:
     """Fail closed before production registration if prep lineage is stale."""
 
     max_days = max_stale_days_from_env() if max_stale_days is None else max(0, int(max_stale_days))
+    horizon_days = max(0, int(label_horizon_days or 0))
+    date_max_allowed_lag_days = max_days + horizon_days
     as_of = _parse_date(as_of_date) or datetime.now(timezone.utc).date()
     errors: list[str] = []
 
     date_max = _parse_date(lineage.get("date_max"))
     if date_max is None:
         errors.append("prep_date_max_missing")
-    elif (as_of - date_max).days > max_days:
+    elif (as_of - date_max).days > date_max_allowed_lag_days:
         errors.append(f"prep_date_max_stale:{lineage.get('date_max')}")
 
     prep_timestamp = _parse_datetime_date(lineage.get("prep_timestamp"))
@@ -203,6 +206,8 @@ def validate_prep_lineage_for_registration(
         "status": "ok" if not errors else "error",
         "as_of_date": as_of.isoformat(),
         "max_stale_days": max_days,
+        "label_horizon_days": horizon_days,
+        "date_max_allowed_lag_days": date_max_allowed_lag_days,
         "errors": errors,
     }
     if errors:

@@ -158,6 +158,22 @@ const forecastData = {
     buy_signal_count: 8,
     return_history_coverage: 5,
     return_history_symbols: ['2330', '2454'],
+    eligible_for_sparse: true,
+    allocation_rank: 1,
+    expected_return: 0.0315,
+    expected_return_source: 'ml_forecast_pct',
+    positive_expected_edge: true,
+    risk_estimate: 0.0182,
+    risk_estimate_source: 'return_history_sample_std',
+    selection_reason: 'selected_positive_edge_sparse_weight',
+    sparse_diagnostics: {
+      candidate_count: 42,
+      evaluated_candidate_count: 8,
+      allocation_capacity: 8,
+      positive_edge_count: 6,
+      selected_count: 3,
+      zero_selection_allowed: true,
+    },
     opb_controller: {
       enabled: true,
       stage: 'L3_production_allocation_controller',
@@ -182,6 +198,15 @@ const forecastData = {
   assert(allocation?.selected === true, 'selected rows should remain visible')
   assert(allocation?.allocation_weight === 0.375, 'allocation weight should be normalized to a number')
   assert(allocation?.return_history_symbol_count === 2, 'return history symbol coverage should be compacted')
+  assert(allocation?.eligible_for_sparse === true, 'L4 sparse summary should expose candidate eligibility')
+  assert(allocation?.allocation_rank === 1, 'L4 sparse summary should expose sparse capacity rank')
+  assert(allocation?.expected_return === 0.0315, 'L4 sparse summary should expose expected edge')
+  assert(allocation?.expected_return_source === 'ml_forecast_pct', 'L4 sparse summary should expose expected edge source')
+  assert(allocation?.positive_expected_edge === true, 'L4 sparse summary should expose positive edge decision')
+  assert(allocation?.risk_estimate === 0.0182, 'L4 sparse summary should expose risk estimate')
+  assert(allocation?.risk_estimate_source === 'return_history_sample_std', 'L4 sparse summary should expose risk estimate source')
+  assert(allocation?.selection_reason === 'selected_positive_edge_sparse_weight', 'L4 sparse summary should expose selection reason')
+  assert((allocation?.sparse_diagnostics as any)?.candidate_count === 42, 'L4 sparse summary should expose allocation-level diagnostics')
   assert((allocation?.opb_controller as any)?.enabled === true, 'OPB controller evidence should stay visible')
 
   const defaultController = buildSparseAllocationSummary({

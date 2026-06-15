@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -51,18 +52,35 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True)
+    return json.dumps(
+        _json_safe(value if value is not None else {}),
+        ensure_ascii=False,
+        sort_keys=True,
+        allow_nan=False,
+    )
 
 
 def _json_loads(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
-        return value
+        return _json_safe(value)
     if not isinstance(value, str) or not value:
         return {}
     try:
         parsed = json.loads(value)
-        return parsed if isinstance(parsed, dict) else {}
+        return _json_safe(parsed) if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
         return {}
 
@@ -549,6 +567,17 @@ def _artifact_record_from_registration(
     }
 
 
+def _is_suppressed_legacy_challenger_registration(raw_registration: Any) -> bool:
+    if not isinstance(raw_registration, dict):
+        return False
+    status = str(raw_registration.get("status") or "").lower()
+    reason = str(raw_registration.get("reason") or "")
+    return (
+        status == "disabled"
+        and reason.startswith("legacy_model_pool_challenger_disabled")
+    )
+
+
 def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str, Any]]:
     payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     version = payload_dict.get("candidate_version")
@@ -570,6 +599,8 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     for model_name, raw_registration in registrations.items():
         model_name = str(model_name)
         if not is_production_artifact_model(model_name):
+            continue
+        if _is_suppressed_legacy_challenger_registration(raw_registration):
             continue
         record = _artifact_record_from_registration(
             payload_dict=payload_dict,
@@ -702,7 +733,7 @@ def list_artifact_registry(
             if not isinstance(raw, str):
                 continue
             try:
-                row[key] = json.loads(raw)
+                row[key] = _json_safe(json.loads(raw))
             except json.JSONDecodeError:
                 row[key] = raw
     for row in rows:
@@ -742,7 +773,7 @@ def list_champion_pointers(model_name: str | None = None) -> list[dict[str, Any]
         raw = row.get("promotion_evidence_json")
         if isinstance(raw, str):
             try:
-                row["promotion_evidence_json"] = json.loads(raw)
+                row["promotion_evidence_json"] = _json_safe(json.loads(raw))
             except json.JSONDecodeError:
                 row["promotion_evidence_json"] = raw
     return rows

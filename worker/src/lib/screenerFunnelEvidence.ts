@@ -239,8 +239,14 @@ function buildLayer1StrategyLabelerSummary(
   const researchStrategyIds = arrayOfStrings(evidence.research_strategy_ids)
   const familyIds = unionStrings(arrayOfStrings(evidence.strategy_family_ids), Object.keys(familyAffinity))
   const allStrategyIds = unionStrings(activeStrategyIds, researchStrategyIds, vectorStrategyIds)
+  const matrixStrategyCount = toNullableNumber(evidence.strategy_matrix_strategy_count)
+  const matrixCandidateCount = toNullableNumber(evidence.strategy_matrix_candidate_count ?? evidence.source_universe_count)
+  const matrixCellCount = toNullableNumber(evidence.strategy_matrix_cell_count)
+  const matrixExpectedCellCount = toNullableNumber(evidence.strategy_matrix_expected_cell_count)
   const hasLabelEvidence = Boolean(
     evidence.strategy_labeler_version
+    || matrixStrategyCount != null
+    || matrixCellCount != null
     || allStrategyIds.length
     || familyIds.length
     || hasRecord(evidence.strategy_affinity_vector)
@@ -259,6 +265,8 @@ function buildLayer1StrategyLabelerSummary(
     decision_policy: 'label_all_candidates_not_selector',
     selection_policy: 'no_topk_no_shrink_no_minimum_fill',
     label_scope: 'strategy_affinity_family_affinity_weak_labels',
+    matrix_contract: 'runtime_l0_universe_count_by_current_strategy_count',
+    matrix_policy: 'complete_strategy_dimension_with_zero_for_non_hits',
     next_layer_owner: 'layer15_multi_strategy_ple_router',
     strategy_labeler_version: evidence.strategy_labeler_version ?? null,
     source_universe_count: toNullableNumber(evidence.source_universe_count),
@@ -266,11 +274,18 @@ function buildLayer1StrategyLabelerSummary(
     reason_code: source.reason_code,
     rank: source.rank,
     score_after: toNullableNumber(source.score_after),
-    strategy_count: allStrategyIds.length,
+    strategy_count: matrixStrategyCount ?? allStrategyIds.length,
     active_strategy_count: activeStrategyIds.length,
     research_strategy_count: researchStrategyIds.length,
     family_count: familyIds.length,
     vector_strategy_count: vectorStrategyIds.length,
+    strategy_matrix_candidate_count: matrixCandidateCount,
+    strategy_matrix_strategy_count: matrixStrategyCount,
+    strategy_matrix_cell_count: matrixCellCount,
+    strategy_matrix_expected_cell_count: matrixExpectedCellCount,
+    strategy_matrix_coverage_ratio: normalizeScore01(evidence.strategy_matrix_coverage_ratio),
+    strategy_matrix_matched_candidate_count: toNullableNumber(evidence.strategy_matrix_matched_candidate_count),
+    strategy_matrix_active_labeled_candidate_count: toNullableNumber(evidence.strategy_matrix_active_labeled_candidate_count),
     strategy_ids: activeStrategyIds,
     research_strategy_ids: researchStrategyIds,
     family_ids: familyIds,
@@ -308,6 +323,7 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
   const activeStrategyIds = arrayOfStrings(evidence.strategy_ids ?? evidence.strategy_pool_ids)
   const familyIds = arrayOfStrings(evidence.strategy_family_ids)
   const metricCount = toNullableNumber(evidence.strategy_portfolio_metric_count)
+  const matrixStrategyCount = toNullableNumber(evidence.strategy_matrix_strategy_count)
   const backtestMetricCount = toNullableNumber(evidence.strategy_portfolio_backtest_metric_count)
   const backtestResultRowCount = toNullableNumber(evidence.strategy_portfolio_backtest_result_row_count)
   const hasPortfolioEvidence = Boolean(
@@ -339,7 +355,9 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
     portfolio_metric_count: metricCount,
     backtest_metric_count: backtestMetricCount,
     backtest_result_row_count: backtestResultRowCount,
-    strategy_count: activeStrategyIds.length,
+    strategy_count: matrixStrategyCount ?? metricCount ?? activeStrategyIds.length,
+    strategy_metric_count: metricCount,
+    strategy_matrix_strategy_count: matrixStrategyCount,
     family_count: familyIds.length,
     strategy_ids: activeStrategyIds,
     family_ids: familyIds,
@@ -578,7 +596,9 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   const candidateSeed = pickCandidateSeedStep(steps)
   const layer1 = pickLastByStage(steps, 'layer1_strategy_breadth_gate')
   const layer2 = pickLastFormalLayer2Step(steps)
-  const layer2Seed = pickLastByStage(steps, 'layer2_coarse_ml_gate')
+  const layer15SlateSeed = pickLastByStage(steps, 'l15_ml_slate_queue')
+  const legacyLayer2Seed = pickLastByStage(steps, 'layer2_coarse_ml_gate')
+  const layer2Seed = layer15SlateSeed ?? legacyLayer2Seed
   const layer3 = pickLastByStage(steps, 'layer3_formal_ml_gate')
   const universe = pickLastByStage(steps, 'universe')
   const layer2Summary = buildLayer2CoarseMlSummary(layer2, layer2Seed)
@@ -618,6 +638,7 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   if (layer15) evidence.layer15_multi_strategy_router = layer15
   if (layer2Summary) evidence.layer2_3ml_coarse = layer2Summary
   if (layer2) evidence.layer2_coarse_ml = { reason_code: layer2.reason_code, rank: layer2.rank, score_after: layer2.score_after, ...layer2.evidence }
+  if (layer15SlateSeed) evidence.layer15_ml_slate_queue = { reason_code: layer15SlateSeed.reason_code, rank: layer15SlateSeed.rank, score_after: layer15SlateSeed.score_after, ...layer15SlateSeed.evidence }
   if (!layer2 && layer2Seed) evidence.layer2_queue_seed = { reason_code: layer2Seed.reason_code, rank: layer2Seed.rank, score_after: layer2Seed.score_after, ...layer2Seed.evidence }
   if (layer3Summary) evidence.layer3_6ml_formal = layer3Summary
   if (layer3) evidence.layer3_formal_ml = { reason_code: layer3.reason_code, rank: layer3.rank, score_after: layer3.score_after, ...layer3.evidence }

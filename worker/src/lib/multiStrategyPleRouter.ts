@@ -135,7 +135,13 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
   telemetry: {
     strategy_count: number
     labeled_candidates: number
+    matched_candidates: number
     active_labeled_candidates: number
+    strategy_matrix_candidate_count: number
+    strategy_matrix_strategy_count: number
+    strategy_matrix_cell_count: number
+    strategy_matrix_expected_cell_count: number
+    strategy_matrix_coverage_ratio: number
     ml_slate_count: number
     observe_only_count: number
     capacity_overflow_count: number
@@ -223,18 +229,17 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
   const normalizedSpecs = specs
     .filter((spec) => spec.status !== 'retired')
     .map(normalizeStrategySpecGovernance)
+    .filter((spec) => validateStrategySpec(spec).ok)
 
   return candidates.map((candidate) => {
     const labels: StrategyLabel[] = []
     const rawQuality = rawSignalQuality(candidate)
     for (const spec of normalizedSpecs) {
-      const validation = validateStrategySpec(spec)
-      if (!validation.ok) continue
       const regimeWeight = specRegimeWeight(spec, options.regime)
-      if (regimeWeight <= 0) continue
-      const assessment = assessCandidateAgainstStrategySpecs(candidate, [spec])
-      if (!assessment.matches.length) continue
-
+      const assessment = regimeWeight > 0
+        ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+        : { matches: [] }
+      const matched = assessment.matches.length > 0
       const configuredWeight = finiteNumber(options.strategyWeights?.[spec.id]) ?? 1
       const productionOwner = specCanEnterMlSlate(spec)
       const statusMultiplier = productionOwner ? 1 : spec.status === 'candidate' ? 0.75 : spec.status === 'shadow' ? 0.55 : 0.3
@@ -246,16 +251,19 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         owner_type: spec.ownerType!,
         status: spec.status,
         production_owner: productionOwner,
-        affinity: round3(clamp(rawQuality * configuredWeight * regimeWeight * statusMultiplier, 0, 100)),
+        affinity: matched ? round3(clamp(rawQuality * configuredWeight * regimeWeight * statusMultiplier, 0, 100)) : 0,
         weak_label: 0,
-        strategy_hit: 1,
+        strategy_hit: matched ? 1 : 0,
         position_weight: 0,
         overlap: 0,
       })
     }
+    const matchedAffinityTotal = labels.reduce((sum, item) => sum + (item.strategy_hit > 0 ? item.affinity : 0), 0)
     for (const label of labels) {
       label.weak_label = round3(label.affinity / 100)
-      label.position_weight = round3(label.affinity / Math.max(1, labels.reduce((sum, item) => sum + item.affinity, 0)))
+      label.position_weight = label.strategy_hit > 0
+        ? round3(label.affinity / Math.max(1, matchedAffinityTotal))
+        : 0
     }
     return {
       candidate,
@@ -379,15 +387,22 @@ function portfolioPriorForLabels(
   specs: StrategySpec[],
   overrides: Record<string, Partial<StrategyPortfolioMetrics>> = {},
 ): StrategyPortfolioPriorSnapshot {
-  const strategyCounts = countBy(states.flatMap((state) => state.labels.map((label) => label.strategy_id)))
-  const familyCounts = countBy(states.flatMap((state) => state.labels.map((label) => label.family_id)))
+  const validSpecs = specs
+    .filter((spec) => spec.status !== 'retired')
+    .map(normalizeStrategySpecGovernance)
+    .filter((spec) => validateStrategySpec(spec).ok)
+  const hitLabels = states.flatMap((state) => state.labels.filter((label) => label.strategy_hit > 0 && label.affinity > 0))
+  const strategyCounts = countBy(hitLabels.map((label) => label.strategy_id))
+  const familyCounts = countBy(hitLabels.map((label) => label.family_id))
   const strategySymbols = new Map<string, Set<string>>()
   const labelsByStrategy = new Map<string, StrategyLabel[]>()
-  const specById = new Map(specs.map((spec) => [spec.id, normalizeStrategySpecGovernance(spec)]))
+  const specById = new Map(validSpecs.map((spec) => [spec.id, spec]))
   for (const state of states) {
     for (const label of state.labels) {
-      if (!strategySymbols.has(label.strategy_id)) strategySymbols.set(label.strategy_id, new Set())
-      strategySymbols.get(label.strategy_id)!.add(state.symbol)
+      if (label.strategy_hit > 0 && label.affinity > 0) {
+        if (!strategySymbols.has(label.strategy_id)) strategySymbols.set(label.strategy_id, new Set())
+        strategySymbols.get(label.strategy_id)!.add(state.symbol)
+      }
       const labels = labelsByStrategy.get(label.strategy_id) ?? []
       labels.push(label)
       labelsByStrategy.set(label.strategy_id, labels)
@@ -405,9 +420,11 @@ function portfolioPriorForLabels(
   const strategy_crowding: Record<string, number> = {}
   const family_crowding: Partial<Record<StrategyFamilyId, number>> = {}
 
-  for (const [strategyId, count] of Object.entries(strategyCounts)) {
+  for (const spec of validSpecs) {
+    const strategyId = spec.id
+    const count = strategyCounts[strategyId] ?? 0
     const labels = labelsByStrategy.get(strategyId) ?? []
-    const spec = specById.get(strategyId)
+    const positiveLabels = labels.filter((label) => label.strategy_hit > 0 && label.affinity > 0)
     const ownSymbols = strategySymbols.get(strategyId) ?? new Set()
     let maxOverlap = 0
     for (const [otherId, otherSymbols] of strategySymbols.entries()) {
@@ -419,7 +436,7 @@ function portfolioPriorForLabels(
     const universeCount = Math.max(1, states.length)
     const supportRatio = count / universeCount
     const familySupportRatio = familyCount / universeCount
-    const avgAffinity = average(labels.map((label) => label.affinity), 0) / 100
+    const avgAffinity = average(positiveLabels.map((label) => label.affinity), 0) / 100
     const poolQuota = finiteNumber(spec?.candidatePolicy?.poolQuota) ?? 12
     const rawTurnover = clamp(0.12 + supportRatio * 0.52 + (poolQuota / 20) * 0.18, 0, 1)
     const derived = {
@@ -475,9 +492,11 @@ function portfolioPriorForLabels(
     strategy_weights[strategyId] = metrics.prior_weight
     strategy_crowding[strategyId] = metrics.crowding_score
   }
-  for (const [familyId, count] of Object.entries(familyCounts) as Array<[StrategyFamilyId, number]>) {
+  const familyIds = uniqueTexts(validSpecs.map((spec) => spec.familyId)) as StrategyFamilyId[]
+  for (const familyId of familyIds) {
+    const count = familyCounts[familyId] ?? 0
     const familyStrategyMetrics = Object.entries(strategy_metrics)
-      .filter(([strategyId]) => labelsByStrategy.get(strategyId)?.[0]?.family_id === familyId)
+      .filter(([strategyId]) => specById.get(strategyId)?.familyId === familyId)
       .map(([, metrics]) => metrics)
     const crowding = round3(clamp(average(familyStrategyMetrics.map((metrics) => metrics.crowding_score), count / Math.max(1, states.length)), 0, 1))
     const prior = round3(clamp(average(familyStrategyMetrics.map((metrics) => metrics.prior_weight), 1) - crowding * 0.18, 0.15, 1.8))
@@ -508,8 +527,8 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   minRouteScore: number,
   options: MultiStrategyPleRoutingOptions,
 ): T & MultiStrategyPleAnnotatedCandidate {
-  const activeLabels = state.labels.filter((label) => label.production_owner)
-  const researchLabels = state.labels.filter((label) => !label.production_owner)
+  const activeLabels = state.labels.filter((label) => label.production_owner && label.strategy_hit > 0 && label.affinity > 0)
+  const researchLabels = state.labels.filter((label) => !label.production_owner && label.strategy_hit > 0 && label.affinity > 0)
   const familyIds = uniqueTexts(activeLabels.map((label) => label.family_id)) as StrategyFamilyId[]
   const activeStrategyIds = uniqueTexts(activeLabels.map((label) => label.strategy_id))
   const strategyAffinity = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.affinity]))
@@ -684,6 +703,14 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   const maxSlateSize = Math.max(0, Math.round(options.maxSlateSize))
   const minRouteScore = finiteNumber(options.minRouteScore) ?? 20
   const states = buildCandidateLabelStates(candidates, specs, options)
+  const strategyMatrixStrategyCount = states[0]?.labels.length
+    ?? specs
+      .filter((spec) => spec.status !== 'retired')
+      .map(normalizeStrategySpecGovernance)
+      .filter((spec) => validateStrategySpec(spec).ok).length
+  const strategyMatrixCandidateCount = states.length
+  const strategyMatrixExpectedCellCount = strategyMatrixCandidateCount * strategyMatrixStrategyCount
+  const strategyMatrixCellCount = states.reduce((sum, state) => sum + state.labels.length, 0)
   const prior = portfolioPriorForLabels(states, specs, options.strategyPortfolioMetrics)
   const annotated = states.map((state) => annotateCandidate(state, prior, maxSlateSize, minRouteScore, options))
   const routed = annotated
@@ -729,9 +756,15 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
     mlSlate,
     observeOnly,
     telemetry: {
-      strategy_count: specs.filter((spec) => spec.status !== 'retired').length,
-      labeled_candidates: states.filter((state) => state.labels.length > 0).length,
-      active_labeled_candidates: states.filter((state) => state.labels.some((label) => label.production_owner)).length,
+      strategy_count: strategyMatrixStrategyCount,
+      labeled_candidates: states.length,
+      matched_candidates: states.filter((state) => state.labels.some((label) => label.strategy_hit > 0 && label.affinity > 0)).length,
+      active_labeled_candidates: states.filter((state) => state.labels.some((label) => label.production_owner && label.strategy_hit > 0 && label.affinity > 0)).length,
+      strategy_matrix_candidate_count: strategyMatrixCandidateCount,
+      strategy_matrix_strategy_count: strategyMatrixStrategyCount,
+      strategy_matrix_cell_count: strategyMatrixCellCount,
+      strategy_matrix_expected_cell_count: strategyMatrixExpectedCellCount,
+      strategy_matrix_coverage_ratio: strategyMatrixExpectedCellCount > 0 ? round3(strategyMatrixCellCount / strategyMatrixExpectedCellCount) : 1,
       ml_slate_count: mlSlate.length,
       observe_only_count: observeOnly.length,
       capacity_overflow_count: observeOnly.filter((candidate) => candidate.strategy_router_decision === 'capacity_overflow').length,

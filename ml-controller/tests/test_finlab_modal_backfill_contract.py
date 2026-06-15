@@ -10,11 +10,15 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     finlab_router = (ROOT / "ml-controller" / "routers" / "finlab.py").read_text(encoding="utf-8")
 
     assert "def finlab_v4_backfill(payload: dict)" in modal_app
+    assert 'modal.Secret.from_name("stockvision-finlab")' in modal_app
+    assert "finlab_secret" in modal_app
+    assert "secrets=[gcs_secret, cf_secret, finlab_secret, runtime_env_secret]" in modal_app
     assert "tools import finlab_v4_remote_backfill" in modal_app
     assert "tools import finlab_macro_context_snapshot" in modal_app
     assert "macro_context_writeback" in modal_app
     assert "api/admin/scheduler-callback" in modal_app
     assert "controller_callback_url" in modal_app
+    assert "except (Exception, SystemExit) as exc" in modal_app
     assert "FINLAB_CONTROLLER_D1_QUERY_URL" in modal_app
     assert "X-Controller-Token" in modal_app
     assert "continue_evening_chain" in modal_app

@@ -89,6 +89,19 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "layer15_multi_strategy_router_summary_v1",
             "layer35_evidence_fusion_v1",
             "daily_strategy_portfolio_intelligence_health_v1",
+            "pickLastFormalLayer2Step",
+            "pickLastByStage(steps, 'l15_ml_slate_queue')",
+            "legacyLayer2Seed",
+            "layer15_ml_slate_queue",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/marketScreener.ts",
+        "\n".join([
+            "stage: 'l15_ml_slate_queue'",
+            "worker_seed_only: true",
+            "downstream_owner: 'ml-controller'",
+            "downstream_stage: 'layer2_coarse_ml_gate'",
         ]),
     )
     _write(
@@ -157,7 +170,11 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/lib/strategyLearning.ts",
-        "requires_wei_approval l3_requires_wei_approval status_must_enter_shadow_before_promotion",
+        "\n".join([
+            "requires_wei_approval l3_requires_wei_approval status_must_enter_shadow_before_promotion",
+            "stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected'",
+            "stage = 'layer1_strategy_breadth_gate' AND decision = 'pass'",
+        ]),
     )
     _write(
         tmp_path / "frontend/src/pages/StrategyLabPage.tsx",
@@ -181,11 +198,35 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/lib/recommendationContext.ts",
-        "sparse_tangent_inverse_risk_final_allocation DEFAULT_SPARSE_ALLOCATION_CONTROLLER = 'OnlinePortfolioBandit'",
+        "\n".join([
+            "sparse_tangent_inverse_risk_final_allocation DEFAULT_SPARSE_ALLOCATION_CONTROLLER = 'OnlinePortfolioBandit'",
+            "selection_reason sparse_diagnostics expected_return_source risk_estimate_source positive_expected_edge",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-controller/services/recommendation_service.py",
+        "\n".join([
+            "selection_reason",
+            "selected_positive_edge_sparse_weight",
+            "no_positive_expected_edge",
+            "zero_sparse_weight_after_inverse_risk",
+            "sparse_diagnostics",
+            "expected_return_source",
+            "risk_estimate_source",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/updateOrchestrator.ts",
+        "\n".join([
+            "FinLab primary canonical ready",
+            "TWSE/TPEX supplemental refresh complete",
+            "source_role=supplemental_after_finlab_canonical",
+            "TWSE/TPEX supplemental fetch",
+        ]),
     )
     _write(
         tmp_path / "worker/src/routes/other.ts",
-        "strategy_portfolio_intelligence_health",
+        "strategy_portfolio_intelligence_health 'l15_ml_slate_queue' 'layer2_coarse_ml_gate'",
     )
     for name in (
         "adaptive_meta_policy_replay_20260605_20260611.json",

@@ -660,6 +660,34 @@ def test_candidate_selection_prefers_new_active9_monthly_over_legacy_shadowing()
     assert "ExtraTrees:vOld:monthly_release" in model["archive_candidates"]
 
 
+def test_candidate_selection_does_not_fallback_to_old_monthly_when_latest_failed():
+    selection = registry.build_candidate_selection([
+        {
+            "artifact_id": "PatchTST:vOld:monthly_release",
+            "model_name": "PatchTST",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "source_run_date": "2026-06-06",
+            "updated_at": "2026-06-06T18:53:03Z",
+        },
+        {
+            "artifact_id": "PatchTST:vNew:monthly_release",
+            "model_name": "PatchTST",
+            "candidate_type": "monthly_release",
+            "state": "offline_failed",
+            "offline_gate_status": "failed",
+            "offline_gate_decision": "FAIL",
+            "source_run_date": "2026-06-15",
+            "updated_at": "2026-06-15T06:30:00Z",
+        },
+    ])
+
+    model = selection["models"]["PatchTST"]
+    assert model["monthly_release_candidate"] is None
+    assert model["latest_monthly_release_artifact"]["artifact_id"] == "PatchTST:vNew:monthly_release"
+    assert "PatchTST:vOld:monthly_release" in model["archive_candidates"]
+
+
 def test_build_artifact_records_enriches_cpcv_from_followup_train_stage():
     payload = {
         "run_id": "weekly-20260510",

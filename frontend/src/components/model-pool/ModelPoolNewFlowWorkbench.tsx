@@ -143,7 +143,7 @@ function selectionCandidate(row?: SelectionModelRow) {
 }
 
 function releaseArtifact(row?: SelectionModelRow) {
-  return selectionCandidate(row) ?? row?.latest_monthly_release_artifact ?? row?.serving_release_artifact ?? null
+  return row?.latest_monthly_release_artifact ?? selectionCandidate(row) ?? row?.serving_release_artifact ?? null
 }
 
 function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {

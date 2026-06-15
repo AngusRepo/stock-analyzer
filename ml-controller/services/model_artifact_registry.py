@@ -1538,10 +1538,10 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for model_name, items in grouped.items():
         monthly = [r for r in items if r.get("candidate_type") == "monthly_release"]
         weekly = [r for r in items if r.get("candidate_type") == "weekly_drift"]
-        active_monthly = [r for r in monthly if not _legacy_shadow_selection_row(r)]
         active_weekly = [r for r in weekly if not _legacy_shadow_selection_row(r)]
-        best_monthly = max(active_monthly, key=_candidate_rank, default=None)
         latest_monthly = max(monthly, key=_artifact_time_key, default=None)
+        latest_active_monthly = latest_monthly if latest_monthly and not _legacy_shadow_selection_row(latest_monthly) else None
+        best_monthly = latest_active_monthly
         serving_release = max(
             [r for r in monthly if r.get("state") == "production"],
             key=_artifact_time_key,
@@ -1606,7 +1606,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "weekly_drift_candidate": weekly_context,
             },
             "policy": {
-                "monthly": "select best non-legacy active-9 offline_passed or stronger artifact",
+                "monthly": "select latest non-legacy active-9 monthly artifact only if offline_passed or stronger",
                 "weekly": "select only non-legacy offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
                 "serving_release_artifact": "latest monthly_release artifact already marked production; audit evidence only, not a candidate queue slot",
                 "live_shadow_slots": {

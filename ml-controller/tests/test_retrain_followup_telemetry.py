@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -308,4 +309,7 @@ def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     assert result["artifact_registry"]["written"] == 1
     assert written[0]["artifact_id"] == "XGBoost:v20260510:weekly_drift"
     assert written[0]["state"] == "offline_strong_pass"
+    offline = json.loads(written[0]["offline_evidence_json"])
+    assert offline["gate"]["policy"]["family"] == "tree"
+    assert offline["gate"]["policy"]["pbo"]["max_pbo"] < 0.5
     assert executed == []

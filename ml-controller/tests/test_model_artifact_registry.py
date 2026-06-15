@@ -55,6 +55,9 @@ def test_build_artifact_records_from_monthly_followup_strong_pass():
     assert row["training_run_id"] == "tree-v20260508"
     assert row["training_manifest_path"] == "universal/manifests/tree-v20260508.json"
     assert row["artifact_path"] == "universal/xgboost/v20260508.joblib"
+    offline = json.loads(row["offline_evidence_json"])
+    assert offline["gate"]["policy"]["family"] == "tree"
+    assert offline["gate"]["policy"]["pbo"]["max_pbo"] < 0.5
 
 
 def test_registry_json_io_sanitizes_non_finite_values():
@@ -583,6 +586,27 @@ def test_offline_gate_uses_adaptive_oos_policy_metadata():
     assert gate["metrics"]["validation_policy_version"]
     assert gate["metrics"]["family"] == "tree"
     assert gate["metrics"]["regime"] == "volatile"
+    assert gate["policy"]["pbo"]["required"] is True
+    assert gate["policy"]["pbo"]["max_pbo"] < 0.5
+    assert gate["policy"]["cpcv"]["family"] == "tree"
+    assert gate["policy"]["live_ic"]["min_verified_rows"] > 0
+
+
+def test_offline_gate_embeds_foundation_sequence_policy():
+    gate = registry.evaluate_offline_gate(
+        model_name="TimesFM",
+        registration={
+            "status": "registered",
+            "metrics": {"samples": 423, "search_trials": 1},
+            "model_cpcv": {"decision": "PASS"},
+        },
+        ic_summary={"TimesFM": 0.01},
+    )
+
+    assert gate["policy"]["family"] == "foundation_sequence"
+    assert gate["policy"]["pbo"]["required"] is False
+    assert gate["policy"]["pbo"]["max_pbo"] is None
+    assert gate["policy"]["cpcv"]["owner"] == "foundation_forecast_validation"
 
 
 def test_promotion_blockers_use_adaptive_pbo_policy():

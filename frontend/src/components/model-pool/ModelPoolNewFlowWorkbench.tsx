@@ -118,10 +118,27 @@ function isServing(model?: ModelPoolLineageModel): boolean {
 }
 
 function toneFromStatus(status?: string | null): WorkstationTone {
-  if (status === 'syncing_evidence') return 'neutral'
-  if (status === 'active' || status === 'ready_for_review' || status === 'approved_for_patch' || status === 'pointer_ready') return 'ok'
-  if (status === 'degraded' || status === 'evaluation_pending' || status === 'needs_attention') return 'warn'
-  if (status === 'failed' || status === 'retired' || status === 'rejected') return 'error'
+  const normalized = String(status ?? '').toLowerCase()
+  if (!normalized || normalized === 'no_data') return 'neutral'
+  if (
+    normalized === 'active' ||
+    normalized === 'production' ||
+    normalized === 'registered' ||
+    normalized === 'ready_for_review' ||
+    normalized === 'approved_for_patch' ||
+    normalized === 'pointer_ready' ||
+    normalized === 'offline_strong_pass' ||
+    normalized === 'offline_passed' ||
+    normalized === 'live_gate_passed'
+  ) return 'ok'
+  if (
+    normalized === 'track_only' ||
+    normalized === 'not_applicable' ||
+    normalized === 'offline_passed_weak' ||
+    normalized === 'weak_pass'
+  ) return 'info'
+  if (normalized === 'degraded' || normalized === 'evaluation_pending' || normalized === 'needs_attention') return 'warn'
+  if (normalized.includes('failed') || normalized === 'retired' || normalized === 'rejected' || normalized.includes('blocked')) return 'error'
   return 'neutral'
 }
 
@@ -173,21 +190,18 @@ function artifactReady(model?: ModelPoolLineageModel, selectionRow?: SelectionMo
   return Boolean(artifact?.version || model?.version || model?.gcs_path || model?.artifact_uri)
 }
 
-function evidenceReady(statusRow?: ModelUpgradeResearchStatusRow, model?: ModelPoolLineageModel, statusFeedReady = true): boolean {
-  if (!statusFeedReady) return false
-  return (
-    statusRow?.registry_status === 'ready_for_review' ||
-    statusRow?.registry_status === 'approved_for_patch' ||
-    model?.status === 'active'
-  )
+function evidenceReady(model?: ModelPoolLineageModel, artifact?: SelectedArtifactRow | null): boolean {
+  return Boolean(artifact?.version || model?.version || model?.gcs_path || model?.artifact_uri)
 }
 
 function pointerReady(pointerRow?: ModelChampionPointersResponse['models'][string]): boolean {
   return pointerTone(pointerRow?.readiness) === 'ok'
 }
 
-function finalCompareReady(rows: PromotionQueueRow[], pointerRow?: ModelChampionPointersResponse['models'][string]): boolean {
-  return rows.some((row) => Boolean(row.final_compared_to)) || pointerReady(pointerRow)
+function finalCompareReady(rows: PromotionQueueRow[], selectedCandidate?: SelectedArtifactRow | null): boolean {
+  const hasCandidate = rows.some((row) => Boolean(row.candidate_version)) || Boolean(selectedCandidate?.version)
+  if (!hasCandidate) return false
+  return rows.some((row) => Boolean(row.final_compared_to)) || Boolean(selectedCandidate?.final_compared_to)
 }
 
 function approvalClear(rows: PromotionQueueRow[]): boolean {
@@ -369,27 +383,30 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   const gate = asRecord(offline.gate)
   const metrics = asRecord(gate.metrics)
   const registration = asRecord(offline.registration)
-  const modelCpcv = asRecord(registration.model_cpcv)
+  const gatePolicy = asRecord(gate.policy ?? offline.policy)
+  const gateCpcvPolicy = asRecord(gatePolicy.cpcv ?? gate.cpcv_policy ?? offline.cpcv_policy)
+  const gatePboPolicy = asRecord(gatePolicy.pbo ?? gate.pbo_policy ?? offline.pbo_policy)
+  const modelCpcv = asRecord(registration.model_cpcv ?? offline.model_cpcv)
   const validationPacket = asRecord(offline.validation_packet)
   const pbo = asRecord(offline.pbo ?? validationPacket.pbo)
   const icSummary = asRecord(offline.ic_summary)
-  const gatePolicy = asRecord(gate.policy)
-  const cpcvPolicy = asRecord(modelCpcv.policy)
-  const pboPolicy = asRecord(pbo.policy ?? gatePolicy)
+  const cpcvPolicy = asRecord(modelCpcv.policy ?? gateCpcvPolicy)
+  const pboPolicy = asRecord(pbo.policy ?? gatePboPolicy)
   return { offline, live, gate, metrics, registration, modelCpcv, pbo, icSummary, gatePolicy, cpcvPolicy, pboPolicy }
 }
 
 function liveGateCell(candidateId: string, liveStatus: string | null | undefined) {
   const raw = String(liveStatus ?? '').trim()
-  if (!raw) {
+  const normalized = raw.toLowerCase()
+  if (!raw || normalized === 'not_started' || normalized === 'not_applicable') {
     return {
-      value: 'N/A',
-      detail: 'no live rows',
-      title: `${candidateId}: live gate evidence unavailable`,
-      tone: 'neutral' as WorkstationTone,
+      value: 'N/R',
+      detail: 'no shadow gate',
+      title: `${candidateId}: active-9 does not use ML shadow/challenger ownership; live parity evidence is not required for this artifact state.`,
+      tone: 'info' as WorkstationTone,
     }
   }
-  if (raw.toLowerCase().includes('shadow')) {
+  if (normalized.includes('shadow')) {
     return {
       value: 'OBSERVE',
       detail: 'parity only',
@@ -407,15 +424,20 @@ function liveGateCell(candidateId: string, liveStatus: string | null | undefined
 
 function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedArtifactEvidence>) {
   const pboValue = firstFiniteNumber(evidence.metrics.pbo, evidence.pbo.pbo)
-  const pboMax = firstFiniteNumber(evidence.pboPolicy.max_pbo, evidence.gatePolicy.max_pbo) ?? 0.5
+  const pboMax = firstFiniteNumber(evidence.pboPolicy.max_pbo)
+  const pboRequiredRaw = evidence.pboPolicy.required
+  const pboRequired = typeof pboRequiredRaw === 'boolean'
+    ? pboRequiredRaw
+    : pboValue != null || pboMax != null
+  const pboPolicyMissing = pboRequired && pboMax == null
   const oosMeanReturn = firstFiniteNumber(evidence.pbo.oos_mean_return, evidence.metrics.pbo_oos_mean_return)
-  const minOosMeanReturn = firstFiniteNumber(evidence.pboPolicy.min_oos_mean_return, evidence.gatePolicy.min_oos_mean_return) ?? 0
+  const minOosMeanReturn = firstFiniteNumber(evidence.pboPolicy.min_oos_mean_return) ?? 0
   const cpcvIc = firstFiniteNumber(evidence.modelCpcv.oos_ic_mean, evidence.modelCpcv.rank_ic, evidence.metrics.model_cpcv_oos_ic)
-  const cpcvMinIc = firstFiniteNumber(evidence.cpcvPolicy.min_oos_ic_mean) ?? 0
+  const cpcvMinIc = firstFiniteNumber(evidence.cpcvPolicy.min_oos_ic_mean)
   const cpcvFolds = firstFiniteNumber(evidence.modelCpcv.folds)
-  const cpcvMinFolds = firstFiniteNumber(evidence.cpcvPolicy.min_folds) ?? 5
+  const cpcvMinFolds = firstFiniteNumber(evidence.cpcvPolicy.min_folds)
   const coverage = firstFiniteNumber(evidence.modelCpcv.coverage_mean)
-  const minCoverage = firstFiniteNumber(evidence.cpcvPolicy.min_coverage) ?? 0.6
+  const minCoverage = firstFiniteNumber(evidence.cpcvPolicy.min_coverage)
   const decision = firstText(
     evidence.metrics.model_cpcv_decision,
     evidence.modelCpcv.decision,
@@ -423,36 +445,63 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
     evidence.pbo.decision,
     evidence.pbo.status,
   )
+  const pboDetail = !pboRequired
+    ? 'PBO N/R'
+    : pboPolicyMissing
+      ? 'PBO policy missing'
+      : pboValue == null
+        ? `PBO missing <${formatMetric(pboMax, 2)}`
+        : `PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)}`
+  const cpcvDetail = cpcvMinIc == null
+    ? 'CPCV policy missing'
+    : cpcvIc == null
+      ? `IC missing >=${formatMetric(cpcvMinIc, 3)}`
+      : `IC ${formatMetric(cpcvIc, 3)}>=${formatMetric(cpcvMinIc, 3)}`
   const detailParts = [
-    pboValue == null ? `PBO<${formatMetric(pboMax, 2)}` : `PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)}`,
-    cpcvIc == null ? `IC>=${formatMetric(cpcvMinIc, 3)}` : `IC ${formatMetric(cpcvIc, 3)}>=${formatMetric(cpcvMinIc, 3)}`,
+    pboDetail,
+    cpcvDetail,
   ]
   const titleParts = [
     `${candidateId}: PBO/CPCV ${decision ?? 'unavailable'}`,
-    `PBO=${formatMetric(pboValue, 3)} < ${formatMetric(pboMax, 2)}`,
+    !pboRequired
+      ? `PBO not required: ${firstText(evidence.pboPolicy.reason, evidence.pboPolicy.method) ?? 'single official config or family policy'}`
+      : `PBO=${formatMetric(pboValue, 3)} < ${formatMetric(pboMax, 2)}`,
     `PBO OOS return=${formatMetric(oosMeanReturn, 4)} >= ${formatMetric(minOosMeanReturn, 4)}`,
     `CPCV IC=${formatMetric(cpcvIc, 4)} >= ${formatMetric(cpcvMinIc, 4)}`,
     `folds=${formatMetric(cpcvFolds, 0)} >= ${formatMetric(cpcvMinFolds, 0)}`,
     `coverage=${formatMetric(coverage, 3)} >= ${formatMetric(minCoverage, 2)}`,
   ]
+  const tone = decision
+    ? toneFromGate(decision)
+    : pboPolicyMissing || cpcvMinIc == null
+      ? 'warn'
+      : !pboRequired
+        ? 'info'
+        : 'neutral'
   return {
-    value: gateToken(decision),
+    value: decision ? gateToken(decision) : !pboRequired ? 'N/R' : 'N/A',
     detail: detailParts.join(' · '),
     title: titleParts.join(' | '),
-    tone: toneFromGate(decision),
+    tone,
   }
 }
 
-function finalCompareCell(candidateId: string, finalComparedTo: string | null, pointerOk: boolean) {
-  const ready = Boolean(finalComparedTo) || pointerOk
+function finalCompareCell(candidateId: string, finalComparedTo: string | null, hasCandidate: boolean) {
+  if (!hasCandidate) {
+    return {
+      value: 'N/R',
+      detail: 'no candidate',
+      title: `${candidateId}: no selected weekly/monthly candidate is waiting for champion comparison.`,
+      tone: 'info' as WorkstationTone,
+    }
+  }
+  const ready = Boolean(finalComparedTo)
   return {
     value: ready ? 'READY' : 'WAIT',
-    detail: finalComparedTo ? `vs ${compactVersion(finalComparedTo, 14)}` : pointerOk ? 'pointer synced' : 'needs compare',
+    detail: finalComparedTo ? `vs ${compactVersion(finalComparedTo, 14)}` : 'needs compare',
     title: finalComparedTo
       ? `${candidateId}: final comparison completed against ${finalComparedTo}`
-      : pointerOk
-        ? `${candidateId}: champion pointer is ready; final compare can use serving pointer baseline`
-        : `${candidateId}: final comparison against current champion is still pending`,
+      : `${candidateId}: final comparison against current champion is still pending`,
     tone: ready ? 'ok' as WorkstationTone : 'warn' as WorkstationTone,
   }
 }
@@ -507,18 +556,16 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
 }
 
 function researchStatusDiagnosis(record: GrafanaModelRecord) {
-  const status = record.status
   const statusRow = record.statusRow
+  const status = statusRow?.registry_status ?? 'track_only'
   const missing = uniqueTokens([
     ...(record.missingEvidence ?? []),
     ...(statusRow?.artifact_intent_missing_fields ?? []),
   ])
   const nextAction = statusRow?.next_action ?? record.nextAction
-  let rootCause = 'No blocking research issue reported.'
+  let rootCause = 'Active-9 artifact registry is the source of truth for this cockpit; Strategy Lab research status is diagnostic only.'
 
-  if (status === 'syncing_evidence') {
-    rootCause = 'The model-upgrade evidence feed is still loading, so the UI is not allowed to mark gates PASS yet.'
-  } else if (status === 'experiment_missing') {
+  if (status === 'experiment_missing') {
     rootCause = 'No matching Strategy Lab / research experiment is registered for this model lane.'
   } else if (status === 'evaluation_pending') {
     rootCause = 'A research experiment exists, but no completed evaluation run has been attached yet.'
@@ -551,14 +598,14 @@ function buildEvidenceCells({
   candidateId,
   model,
   artifact,
+  selectedCandidate,
   promotionRows,
-  pointerOk,
 }: {
   candidateId: string
   model?: ModelPoolLineageModel
   artifact?: SelectedArtifactRow | null
+  selectedCandidate?: SelectedArtifactRow | null
   promotionRows: PromotionQueueRow[]
-  pointerOk: boolean
 }): GrafanaModelRecord['history'] {
   const weekly = (model?.weekly_ic ?? []).slice(-3)
   const paddedWeekly = [
@@ -581,10 +628,10 @@ function buildEvidenceCells({
   const liveGate = liveGateCell(candidateId, liveStatus)
   const finalComparedTo = firstText(
     promotionRows[0]?.final_compared_to,
-    artifact?.final_compared_to,
-    pointerOk ? 'serving pointer' : null,
+    selectedCandidate?.final_compared_to,
   )
-  const finalCompare = finalCompareCell(candidateId, finalComparedTo, pointerOk)
+  const hasCandidate = Boolean(promotionRows[0]?.candidate_version || selectedCandidate?.version)
+  const finalCompare = finalCompareCell(candidateId, finalComparedTo, hasCandidate)
 
   return [
     ...(['W-3', 'W-2', 'W-1'] as const).map((label, index) => {
@@ -647,30 +694,26 @@ function buildGrafanaRecord({
   const artifact = selectionCandidate(selectionRow)
   const release = releaseArtifact(selectionRow)
   const artifactOk = artifactReady(model, selectionRow)
-  const evidenceOk = evidenceReady(statusRow, model, modelUpgradeStatusReady)
+  const evidenceOk = evidenceReady(model, release)
   const pointerOk = pointerReady(pointerRow)
   const queueTone = promotionPressureTone(promotionRows)
   const blockers = uniqueTokens([
     ...(!artifactOk ? ['artifact_missing'] : []),
-    ...(!modelUpgradeStatusReady ? ['evidence_status_syncing'] : []),
-    ...(modelUpgradeStatusReady && !evidenceOk ? ['evidence_not_ready'] : []),
     ...(!pointerOk ? ['champion_pointer_not_ready'] : []),
     ...promotionRows.flatMap((row) => (row.blockers ?? []).map((blocker) => (
       typeof blocker === 'string' ? blocker : blocker.code ?? blocker.label ?? 'promotion_blocker'
     ))),
   ])
-  const rawStatus = modelUpgradeStatusReady
-    ? statusRow?.registry_status ?? model?.status ?? 'no_data'
-    : 'syncing_evidence'
-  const statusTone = modelUpgradeStatusReady && blockers.length
+  const rawStatus = release?.state ?? model?.status ?? 'no_data'
+  const statusTone = blockers.length
     ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
-    : toneFromStatus(rawStatus)
+    : maxTone([toneFromStatus(rawStatus), queueTone])
   const history = buildEvidenceCells({
     candidateId: candidate.id,
     model,
     artifact: release,
+    selectedCandidate: artifact,
     promotionRows,
-    pointerOk,
   })
   const fleetTone = fleetToneFromMatrix(statusTone, blockers, history)
 
@@ -688,17 +731,19 @@ function buildGrafanaRecord({
     pointerRow,
     pointerTone: pointerTone(pointerRow?.readiness),
     promotionRows,
-    statusRow,
+    statusRow: modelUpgradeStatusReady ? statusRow : undefined,
     artifactOk,
     evidenceOk,
-    finalCompareOk: finalCompareReady(promotionRows, pointerRow),
+    finalCompareOk: finalCompareReady(promotionRows, artifact),
     approvalOk: approvalClear(promotionRows),
     pointerOk,
     blockers,
-    missingEvidence: uniqueTokens(statusRow?.missing_evidence ?? []),
-    nextAction: modelUpgradeStatusReady
-      ? promotionRows[0]?.next_action ?? pointerRow?.next_action ?? statusRow?.next_action ?? 'no action queued'
-      : 'Waiting for model-upgrade evidence status feed before rendering gate pass/fail.',
+    missingEvidence: [],
+    nextAction: promotionRows[0]?.next_action ?? pointerRow?.next_action ?? (
+      artifactOk
+        ? 'active-9 artifact registry evidence loaded; wait for a new candidate before final compare.'
+        : 'register or backfill the active-9 model artifact.'
+    ),
     history,
   }
 }
@@ -936,8 +981,8 @@ function PromotionReadinessPanel({
 
   const gates = [
     { label: 'Release artifact', ready: compare.hasReleaseArtifact, detail: compare.candidate },
-    { label: 'Research evidence', ready: selected.evidenceOk, detail: selected.status },
-    { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'PBO<0.50 / IC>=0' },
+    { label: 'Artifact evidence', ready: selected.evidenceOk, detail: selected.status },
+    { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'policy pending' },
     { label: 'Champion baseline', ready: compare.hasChampionBaseline, detail: compare.champion },
     { label: 'Final compare', ready: compare.compareReady, detail: compare.finalComparedTo ?? 'pending candidate-vs-champion comparison' },
     { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },

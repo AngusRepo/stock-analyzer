@@ -311,6 +311,7 @@ def evaluate_offline_gate(
         "decision": decision,
         "failed_gates": failed,
         "warnings": warnings,
+        "policy": policy_bundle,
         "metrics": {
             "oos_ic": ic_value,
             "validation_policy_version": policy_bundle["policy_version"],

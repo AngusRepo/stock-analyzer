@@ -397,6 +397,7 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   const gate = asRecord(offline.gate)
   const metrics = asRecord(gate.metrics)
   const registration = asRecord(offline.registration)
+  const registrationIcTracking = asRecord(registration.ic_tracking)
   const lifecycleResult = asRecord(registration.artifact_lifecycle_result)
   const foundationForecastValidation = asRecord(
     registration.foundation_forecast_validation
@@ -406,7 +407,13 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   const gatePolicy = asRecord(gate.policy ?? offline.policy)
   const gateCpcvPolicy = asRecord(gatePolicy.cpcv ?? gate.cpcv_policy ?? offline.cpcv_policy)
   const gatePboPolicy = asRecord(gatePolicy.pbo ?? gate.pbo_policy ?? offline.pbo_policy)
-  const modelCpcv = asRecord(registration.model_cpcv ?? offline.model_cpcv ?? foundationForecastValidation)
+  const modelCpcv = asRecord(
+    registration.model_cpcv
+      ?? registrationIcTracking.model_cpcv
+      ?? gate.model_cpcv
+      ?? offline.model_cpcv
+      ?? foundationForecastValidation,
+  )
   const validationPacket = asRecord(offline.validation_packet)
   const pbo = asRecord(offline.pbo ?? validationPacket.pbo)
   const icSummary = asRecord(offline.ic_summary)
@@ -418,6 +425,7 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
     gate,
     metrics,
     registration,
+    registrationIcTracking,
     lifecycleResult,
     foundationForecastValidation,
     modelCpcv,
@@ -493,6 +501,12 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
     evidence.modelCpcv.min_rank_ic,
     evidence.metrics.model_cpcv_oos_ic,
   )
+  const hasCpcvStats = [
+    cpcvIc,
+    firstFiniteNumber(evidence.modelCpcv.folds),
+    firstFiniteNumber(evidence.modelCpcv.coverage_mean, evidence.modelCpcv.coverage),
+    firstFiniteNumber(evidence.modelCpcv.positive_fold_ratio),
+  ].some((value) => value != null)
   const cpcvMinIc = firstFiniteNumber(
     evidence.cpcvPolicy.min_oos_ic_mean,
     evidence.cpcvPolicy.min_rank_ic,
@@ -513,8 +527,14 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
     evidence.pbo.decision,
     evidence.pbo.status,
   ) ?? (typeof evidence.modelCpcv.passed === 'boolean' ? (evidence.modelCpcv.passed ? 'PASS' : 'FAIL') : null)
+  const pboNotApplicableDetail = candidateId === 'TimesFM'
+    ? 'PBO 不適用：TimesFM 單一官方 config；改看 OOS/LIVE/coverage'
+    : 'PBO 不適用：單一官方 config；改看 OOS/LIVE/coverage'
+  const pboNotApplicableTitle = candidateId === 'TimesFM'
+    ? 'PBO 不適用：TimesFM 目前是單一官方 config，沒有多組候選挑 winner；改看 OOS/LIVE/coverage。'
+    : `PBO 不適用：${firstText(evidence.pboPolicy.reason, evidence.pboPolicy.method) ?? 'single official config or family policy'}`
   const pboDetail = !pboRequired
-    ? 'PBO N/R official config'
+    ? pboNotApplicableDetail
     : pboPolicyMissing
       ? 'PBO policy missing'
       : pboValue == null
@@ -523,16 +543,22 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
   const cpcvDetail = cpcvMinIc == null
     ? 'CPCV policy missing'
     : cpcvIc == null
-      ? `IC missing >=${formatMetric(cpcvMinIc, 3)}`
+      ? hasCpcvStats
+        ? `IC missing >=${formatMetric(cpcvMinIc, 3)}`
+        : 'CPCV detail missing'
       : `IC ${formatMetric(cpcvIc, 3)}>=${formatMetric(cpcvMinIc, 3)}`
-  const foldCoverageDetail = [
-    cpcvMinFolds == null ? null : `folds ${formatMetric(cpcvFolds, 0)}>=${formatMetric(cpcvMinFolds, 0)}`,
-    minCoverage == null ? null : `cov ${formatMetric(coverage, 3)}>=${formatMetric(minCoverage, 2)}`,
-  ].filter(Boolean).join(' / ')
-  const stabilityDetail = [
-    minPositiveFoldRatio == null ? null : `pos-fold ${formatMetric(positiveFoldRatio, 2)}>=${formatMetric(minPositiveFoldRatio, 2)}`,
-    minDirectionAccuracy == null ? null : `dir ${formatMetric(directionAccuracy, 3)}>=${formatMetric(minDirectionAccuracy, 2)}`,
-  ].filter(Boolean).join(' / ')
+  const foldCoverageDetail = hasCpcvStats
+    ? [
+        cpcvMinFolds == null ? null : `folds ${formatMetric(cpcvFolds, 0)}>=${formatMetric(cpcvMinFolds, 0)}`,
+        minCoverage == null ? null : `cov ${formatMetric(coverage, 3)}>=${formatMetric(minCoverage, 2)}`,
+      ].filter(Boolean).join(' / ')
+    : null
+  const stabilityDetail = hasCpcvStats
+    ? [
+        minPositiveFoldRatio == null ? null : `pos-fold ${formatMetric(positiveFoldRatio, 2)}>=${formatMetric(minPositiveFoldRatio, 2)}`,
+        minDirectionAccuracy == null ? null : `dir ${formatMetric(directionAccuracy, 3)}>=${formatMetric(minDirectionAccuracy, 2)}`,
+      ].filter(Boolean).join(' / ')
+    : null
   const detailParts = [
     pboDetail,
     cpcvDetail,
@@ -542,13 +568,15 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
   const titleParts = [
     `${candidateId}: PBO/CPCV ${decision ?? 'unavailable'}`,
     !pboRequired
-      ? `PBO not required: ${firstText(evidence.pboPolicy.reason, evidence.pboPolicy.method) ?? 'single official config or family policy'}`
+      ? pboNotApplicableTitle
       : `PBO=${formatMetric(pboValue, 3)} < ${formatMetric(pboMax, 2)}`,
     `PBO OOS return=${formatMetric(oosMeanReturn, 4)} >= ${formatMetric(minOosMeanReturn, 4)}`,
-    `CPCV IC=${formatMetric(cpcvIc, 4)} >= ${formatMetric(cpcvMinIc, 4)}`,
-    `folds=${formatMetric(cpcvFolds, 0)} >= ${formatMetric(cpcvMinFolds, 0)}`,
-    `coverage=${formatMetric(coverage, 3)} >= ${formatMetric(minCoverage, 2)}`,
-  ]
+    hasCpcvStats
+      ? `CPCV IC=${formatMetric(cpcvIc, 4)} >= ${formatMetric(cpcvMinIc, 4)}`
+      : 'CPCV detail not attached to this artifact evidence packet',
+    hasCpcvStats ? `folds=${formatMetric(cpcvFolds, 0)} >= ${formatMetric(cpcvMinFolds, 0)}` : null,
+    hasCpcvStats ? `coverage=${formatMetric(coverage, 3)} >= ${formatMetric(minCoverage, 2)}` : null,
+  ].filter(Boolean)
   const tone = decision
     ? toneFromGate(decision)
     : pboPolicyMissing || cpcvMinIc == null
@@ -747,6 +775,9 @@ function buildEvidenceCells({
   const oosIc = firstFiniteNumber(
     evidence.metrics.oos_ic,
     evidence.icSummary[candidateId],
+    evidence.modelCpcv.oos_ic_mean,
+    evidence.foundationForecastValidation.oos_ic_mean,
+    evidence.offline.oos_ic,
     model?.challenger?.artifact_evidence?.oos_ic,
   )
   const liveIc = firstFiniteNumber(model?.rolling_ic, model?.challenger?.rolling_ic)
@@ -783,7 +814,6 @@ function buildEvidenceCells({
     {
       label: 'LIVE IC',
       value: compactNumber(liveIc),
-      detail: liveIc == null ? undefined : 'rolling verified',
       title: liveIc == null
         ? `${candidateId}: daily rolling live IC is not available yet; this is not a shadow/challenger ownership gate.`
         : `${candidateId}: daily verify-v2/model-ic-tracker rolling live IC ${liveIc.toFixed(4)}; this is not a shadow/challenger ownership gate.`,
@@ -1125,8 +1155,9 @@ function PromotionReadinessPanel({
   const compare = artifactCompareSummary(selected)
   const finalCompareResult = finalCompareResultFor(promotionResult, selected.candidate.id, compare.artifactId)
   const finalComparedTo = firstText(compare.finalComparedTo, finalCompareResult?.final_compared_to)
-  const finalCompareReady = compare.compareReady || Boolean(finalComparedTo)
-  const canDryRunFinalCompare = Boolean(compare.artifactId && onDryRunFinalCompare)
+  const finalCompareApplies = compare.hasCandidate
+  const finalCompareReady = !finalCompareApplies || compare.compareReady || Boolean(finalComparedTo)
+  const canDryRunFinalCompare = Boolean(finalCompareApplies && compare.artifactId && onDryRunFinalCompare)
   const diagnosis = researchStatusDiagnosis(selected)
 
   const gates = [
@@ -1134,7 +1165,7 @@ function PromotionReadinessPanel({
     { label: 'Artifact evidence', ready: selected.evidenceOk, detail: selected.status },
     { label: 'PBO/CPCV', ready: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.tone === 'ok', detail: selected.history.find((cell) => cell.label === 'PBO/CPCV')?.detail ?? 'policy pending' },
     { label: 'Champion baseline', ready: compare.hasChampionBaseline, detail: compare.champion },
-    { label: 'Final compare', ready: finalCompareReady, detail: finalComparedTo ?? 'run dry-run candidate-vs-champion comparison' },
+    { label: 'Final compare', ready: finalCompareReady, detail: finalCompareApplies ? finalComparedTo ?? 'run dry-run candidate-vs-champion comparison' : 'N/R: no selected candidate' },
     { label: 'Approval', ready: selected.approvalOk, detail: selected.promotionRows.some((row) => row.approval_required) ? 'required' : 'clear' },
     { label: 'Current pointer baseline', ready: selected.pointerOk, detail: selected.pointerRow?.readiness ?? 'missing' },
   ]
@@ -1186,7 +1217,9 @@ function PromotionReadinessPanel({
             <div className="flex items-center justify-between gap-3 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
               <div className="min-w-0">
                 <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">final compare</p>
-                <p className="mt-1 truncate text-[13px] text-[#a7b5c8]">{finalComparedTo ? `completed vs ${finalComparedTo}` : 'dry-run compare not run yet'}</p>
+                <p className="mt-1 truncate text-[13px] text-[#a7b5c8]">
+                  {finalCompareApplies ? finalComparedTo ? `completed vs ${finalComparedTo}` : 'dry-run compare not run yet' : 'N/R: no selected candidate'}
+                </p>
               </div>
               <span className={`shrink-0 border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(finalCompareReady ? 'ok' : compare.tone)}`}>
                 {finalCompareReady ? 'READY' : 'WAIT'}
@@ -1196,7 +1229,9 @@ function PromotionReadinessPanel({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">compare action</p>
-                  <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">只做 candidate vs current champion dry-run；不切 pointer、不升級 production。</p>
+                  <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">
+                    {finalCompareApplies ? '只做 candidate vs current champion dry-run；不切 pointer、不升級 production。' : '目前沒有 selected candidate；current production artifact 不需要 final compare。'}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -1206,7 +1241,7 @@ function PromotionReadinessPanel({
                   }}
                   className="rounded-lg border border-[#d6a85f]/40 bg-[#1b2430] px-3 py-2 font-mono text-[12px] font-semibold text-[#f0c365] transition-colors hover:border-[#f0c365]/70 disabled:cursor-not-allowed disabled:border-[#303947] disabled:text-[#6e7a8d]"
                 >
-                  {finalComparePending ? 'Running...' : 'Dry-run final compare'}
+                  {!finalCompareApplies ? 'No candidate' : finalComparePending ? 'Running...' : 'Dry-run final compare'}
                 </button>
               </div>
               {finalCompareResult && (

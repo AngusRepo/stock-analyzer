@@ -181,8 +181,7 @@ function toneFromIc(value: number | null | undefined): WorkstationTone {
   if (value == null || !Number.isFinite(value)) return 'neutral'
   if (value > 0.02) return 'ok'
   if (value >= 0) return 'info'
-  if (value >= -0.02) return 'warn'
-  return 'error'
+  return 'warn'
 }
 
 function artifactReady(model?: ModelPoolLineageModel, selectionRow?: SelectionModelRow): boolean {
@@ -228,6 +227,7 @@ type GrafanaModelRecord = {
   approvalOk: boolean
   pointerOk: boolean
   releaseArtifact?: SelectedArtifactRow | null
+  servingArtifact?: SelectedArtifactRow | null
   blockers: string[]
   missingEvidence: string[]
   nextAction: string
@@ -255,7 +255,7 @@ function maxTone(tones: WorkstationTone[]): WorkstationTone {
 }
 
 function fleetToneFromMatrix(statusTone: WorkstationTone, blockers: string[], history: GrafanaModelRecord['history']): WorkstationTone {
-  const requiredGateLabels = new Set(['OOS IC', 'LIVE', 'PBO/CPCV', 'COMPARE'])
+  const requiredGateLabels = new Set(['OOS IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE'])
   const gateTones = history
     .filter((cell) => requiredGateLabels.has(cell.label))
     .map((cell) => (cell.tone === 'neutral' ? 'warn' : cell.tone))
@@ -383,16 +383,57 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   const gate = asRecord(offline.gate)
   const metrics = asRecord(gate.metrics)
   const registration = asRecord(offline.registration)
+  const lifecycleResult = asRecord(registration.artifact_lifecycle_result)
+  const foundationForecastValidation = asRecord(
+    registration.foundation_forecast_validation
+      ?? lifecycleResult.foundation_forecast_validation
+      ?? offline.foundation_forecast_validation,
+  )
   const gatePolicy = asRecord(gate.policy ?? offline.policy)
   const gateCpcvPolicy = asRecord(gatePolicy.cpcv ?? gate.cpcv_policy ?? offline.cpcv_policy)
   const gatePboPolicy = asRecord(gatePolicy.pbo ?? gate.pbo_policy ?? offline.pbo_policy)
-  const modelCpcv = asRecord(registration.model_cpcv ?? offline.model_cpcv)
+  const modelCpcv = asRecord(registration.model_cpcv ?? offline.model_cpcv ?? foundationForecastValidation)
   const validationPacket = asRecord(offline.validation_packet)
   const pbo = asRecord(offline.pbo ?? validationPacket.pbo)
   const icSummary = asRecord(offline.ic_summary)
   const cpcvPolicy = asRecord(modelCpcv.policy ?? gateCpcvPolicy)
   const pboPolicy = asRecord(pbo.policy ?? gatePboPolicy)
-  return { offline, live, gate, metrics, registration, modelCpcv, pbo, icSummary, gatePolicy, cpcvPolicy, pboPolicy }
+  return {
+    offline,
+    live,
+    gate,
+    metrics,
+    registration,
+    lifecycleResult,
+    foundationForecastValidation,
+    modelCpcv,
+    pbo,
+    icSummary,
+    gatePolicy,
+    gateCpcvPolicy,
+    gatePboPolicy,
+    cpcvPolicy,
+    pboPolicy,
+  }
+}
+
+function artifactOosIc(artifact: SelectedArtifactRow | null | undefined, candidateId: string): number | null {
+  if (!artifact) return null
+  const evidence = selectedArtifactEvidence(artifact)
+  return firstFiniteNumber(
+    evidence.metrics.oos_ic,
+    evidence.icSummary[candidateId],
+    evidence.modelCpcv.oos_ic_mean,
+    evidence.foundationForecastValidation.oos_ic_mean,
+  )
+}
+
+function compareMetricDetail(candidateOosIc: number | null, championOosIc: number | null): string {
+  if (candidateOosIc == null && championOosIc == null) return 'metric diff pending'
+  if (candidateOosIc == null) return `cand OOS missing / champ ${formatMetric(championOosIc, 3)}`
+  if (championOosIc == null) return `cand ${formatMetric(candidateOosIc, 3)} / champ OOS missing`
+  const delta = candidateOosIc - championOosIc
+  return `cand ${formatMetric(candidateOosIc, 3)} / champ ${formatMetric(championOosIc, 3)} / delta ${delta >= 0 ? '+' : ''}${formatMetric(delta, 3)}`
 }
 
 function liveGateCell(candidateId: string, liveStatus: string | null | undefined) {
@@ -432,21 +473,34 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
   const pboPolicyMissing = pboRequired && pboMax == null
   const oosMeanReturn = firstFiniteNumber(evidence.pbo.oos_mean_return, evidence.metrics.pbo_oos_mean_return)
   const minOosMeanReturn = firstFiniteNumber(evidence.pboPolicy.min_oos_mean_return) ?? 0
-  const cpcvIc = firstFiniteNumber(evidence.modelCpcv.oos_ic_mean, evidence.modelCpcv.rank_ic, evidence.metrics.model_cpcv_oos_ic)
-  const cpcvMinIc = firstFiniteNumber(evidence.cpcvPolicy.min_oos_ic_mean)
+  const cpcvIc = firstFiniteNumber(
+    evidence.modelCpcv.oos_ic_mean,
+    evidence.modelCpcv.rank_ic,
+    evidence.modelCpcv.min_rank_ic,
+    evidence.metrics.model_cpcv_oos_ic,
+  )
+  const cpcvMinIc = firstFiniteNumber(
+    evidence.cpcvPolicy.min_oos_ic_mean,
+    evidence.cpcvPolicy.min_rank_ic,
+    evidence.gateCpcvPolicy.min_oos_ic_mean,
+  )
   const cpcvFolds = firstFiniteNumber(evidence.modelCpcv.folds)
-  const cpcvMinFolds = firstFiniteNumber(evidence.cpcvPolicy.min_folds)
-  const coverage = firstFiniteNumber(evidence.modelCpcv.coverage_mean)
-  const minCoverage = firstFiniteNumber(evidence.cpcvPolicy.min_coverage)
+  const cpcvMinFolds = firstFiniteNumber(evidence.cpcvPolicy.min_folds, evidence.gateCpcvPolicy.min_folds)
+  const coverage = firstFiniteNumber(evidence.modelCpcv.coverage_mean, evidence.modelCpcv.coverage)
+  const minCoverage = firstFiniteNumber(evidence.cpcvPolicy.min_coverage, evidence.gateCpcvPolicy.min_coverage)
+  const positiveFoldRatio = firstFiniteNumber(evidence.modelCpcv.positive_fold_ratio)
+  const minPositiveFoldRatio = firstFiniteNumber(evidence.cpcvPolicy.min_positive_fold_ratio, evidence.gateCpcvPolicy.min_positive_fold_ratio)
+  const directionAccuracy = firstFiniteNumber(evidence.modelCpcv.direction_accuracy)
+  const minDirectionAccuracy = firstFiniteNumber(evidence.cpcvPolicy.min_direction_accuracy)
   const decision = firstText(
     evidence.metrics.model_cpcv_decision,
     evidence.modelCpcv.decision,
     evidence.pbo.go_live_verdict,
     evidence.pbo.decision,
     evidence.pbo.status,
-  )
+  ) ?? (typeof evidence.modelCpcv.passed === 'boolean' ? (evidence.modelCpcv.passed ? 'PASS' : 'FAIL') : null)
   const pboDetail = !pboRequired
-    ? 'PBO N/R'
+    ? 'PBO N/R official config'
     : pboPolicyMissing
       ? 'PBO policy missing'
       : pboValue == null
@@ -457,10 +511,20 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
     : cpcvIc == null
       ? `IC missing >=${formatMetric(cpcvMinIc, 3)}`
       : `IC ${formatMetric(cpcvIc, 3)}>=${formatMetric(cpcvMinIc, 3)}`
+  const foldCoverageDetail = [
+    cpcvMinFolds == null ? null : `folds ${formatMetric(cpcvFolds, 0)}>=${formatMetric(cpcvMinFolds, 0)}`,
+    minCoverage == null ? null : `cov ${formatMetric(coverage, 3)}>=${formatMetric(minCoverage, 2)}`,
+  ].filter(Boolean).join(' / ')
+  const stabilityDetail = [
+    minPositiveFoldRatio == null ? null : `pos-fold ${formatMetric(positiveFoldRatio, 2)}>=${formatMetric(minPositiveFoldRatio, 2)}`,
+    minDirectionAccuracy == null ? null : `dir ${formatMetric(directionAccuracy, 3)}>=${formatMetric(minDirectionAccuracy, 2)}`,
+  ].filter(Boolean).join(' / ')
   const detailParts = [
     pboDetail,
     cpcvDetail,
-  ]
+    foldCoverageDetail,
+    stabilityDetail,
+  ].filter(Boolean)
   const titleParts = [
     `${candidateId}: PBO/CPCV ${decision ?? 'unavailable'}`,
     !pboRequired
@@ -480,13 +544,18 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
         : 'neutral'
   return {
     value: decision ? gateToken(decision) : !pboRequired ? 'N/R' : 'N/A',
-    detail: detailParts.join(' · '),
+    detail: detailParts.join('\n'),
     title: titleParts.join(' | '),
     tone,
   }
 }
 
-function finalCompareCell(candidateId: string, finalComparedTo: string | null, hasCandidate: boolean) {
+function finalCompareCell(
+  candidateId: string,
+  finalComparedTo: string | null,
+  hasCandidate: boolean,
+  metricDetail: string,
+) {
   if (!hasCandidate) {
     return {
       value: 'N/R',
@@ -498,10 +567,10 @@ function finalCompareCell(candidateId: string, finalComparedTo: string | null, h
   const ready = Boolean(finalComparedTo)
   return {
     value: ready ? 'READY' : 'WAIT',
-    detail: finalComparedTo ? `vs ${compactVersion(finalComparedTo, 14)}` : 'needs compare',
+    detail: finalComparedTo ? `vs ${compactVersion(finalComparedTo, 14)}\n${metricDetail}` : `needs final compare\n${metricDetail}`,
     title: finalComparedTo
-      ? `${candidateId}: final comparison completed against ${finalComparedTo}`
-      : `${candidateId}: final comparison against current champion is still pending`,
+      ? `${candidateId}: final comparison completed against ${finalComparedTo}; ${metricDetail}`
+      : `${candidateId}: final comparison against current champion is still pending; ${metricDetail}`,
     tone: ready ? 'ok' as WorkstationTone : 'warn' as WorkstationTone,
   }
 }
@@ -514,6 +583,7 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
   )
   const releaseArtifactVersion = firstText(record.releaseArtifact?.version)
   const releaseIsServing = record.releaseArtifact?.state === 'production'
+  const servingVersion = firstText(record.servingArtifact?.version)
   const artifactDisplay = candidate ?? (
     releaseArtifactVersion
       ? `${releaseIsServing ? 'serving monthly release' : 'monthly release'} ${releaseArtifactVersion}`
@@ -521,15 +591,19 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
   )
   const champion = firstText(
     promotion?.current_champion_version,
-    promotion?.final_compared_to,
     promotion?.evaluation_baseline_version,
+    servingVersion,
     record.selectedArtifact?.final_compared_to,
-    record.releaseArtifact?.final_compared_to,
     record.selectedArtifact?.evaluation_baseline_version,
-    record.releaseArtifact?.evaluation_baseline_version,
     record.pointerRow?.serving_version,
     record.pointerRow?.d1_pointer_version,
   )
+  const candidateEvidenceArtifact = record.selectedArtifact ?? (
+    candidate && record.releaseArtifact?.version === candidate ? record.releaseArtifact : null
+  )
+  const candidateOosIc = artifactOosIc(candidateEvidenceArtifact, record.candidate.id)
+  const championOosIc = artifactOosIc(record.servingArtifact, record.candidate.id)
+  const metricDetail = compareMetricDetail(candidateOosIc, championOosIc)
   const finalComparedTo = firstText(promotion?.final_compared_to, record.selectedArtifact?.final_compared_to)
   const hasCandidate = Boolean(candidate)
   const hasReleaseArtifact = Boolean(artifactDisplay)
@@ -544,12 +618,16 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
     hasReleaseArtifact,
     hasChampionBaseline,
     compareReady,
+    candidateOosIc,
+    championOosIc,
+    metricDetail,
     tone: compareReady ? 'ok' as WorkstationTone : hasReleaseArtifact && hasChampionBaseline ? 'info' as WorkstationTone : 'warn' as WorkstationTone,
     title: [
       `${record.candidate.id}: weekly/monthly candidate artifact is compared against the current champion baseline before pointer migration.`,
       `artifact=${artifactDisplay ?? 'missing'}`,
       `candidate_gate=${candidate ?? 'none'}`,
       `current_champion=${champion ?? 'missing'}`,
+      metricDetail,
       `final_compared_to=${finalComparedTo ?? 'pending'}`,
     ].join(' | '),
   }
@@ -598,12 +676,14 @@ function buildEvidenceCells({
   candidateId,
   model,
   artifact,
+  servingArtifact,
   selectedCandidate,
   promotionRows,
 }: {
   candidateId: string
   model?: ModelPoolLineageModel
   artifact?: SelectedArtifactRow | null
+  servingArtifact?: SelectedArtifactRow | null
   selectedCandidate?: SelectedArtifactRow | null
   promotionRows: PromotionQueueRow[]
 }): GrafanaModelRecord['history'] {
@@ -617,21 +697,20 @@ function buildEvidenceCells({
     evidence.metrics.oos_ic,
     evidence.icSummary[candidateId],
     model?.challenger?.artifact_evidence?.oos_ic,
-    model?.rolling_ic,
   )
+  const liveIc = firstFiniteNumber(model?.rolling_ic, model?.challenger?.rolling_ic)
   const pboCpcv = pboCpcvCell(candidateId, evidence)
-  const liveStatus = firstText(
-    promotionRows[0]?.live_gate_status,
-    artifact?.live_gate_status,
-    evidence.live.status,
-  )
-  const liveGate = liveGateCell(candidateId, liveStatus)
   const finalComparedTo = firstText(
     promotionRows[0]?.final_compared_to,
     selectedCandidate?.final_compared_to,
   )
   const hasCandidate = Boolean(promotionRows[0]?.candidate_version || selectedCandidate?.version)
-  const finalCompare = finalCompareCell(candidateId, finalComparedTo, hasCandidate)
+  const finalCompare = finalCompareCell(
+    candidateId,
+    finalComparedTo,
+    hasCandidate,
+    compareMetricDetail(artifactOosIc(selectedCandidate ?? artifact, candidateId), artifactOosIc(servingArtifact, candidateId)),
+  )
 
   return [
     ...(['W-3', 'W-2', 'W-1'] as const).map((label, index) => {
@@ -651,11 +730,13 @@ function buildEvidenceCells({
       tone: toneFromIc(oosIc),
     },
     {
-      label: 'LIVE',
-      value: liveGate.value,
-      detail: liveGate.detail,
-      title: liveGate.title,
-      tone: liveGate.tone,
+      label: 'LIVE IC',
+      value: compactNumber(liveIc),
+      detail: liveIc == null ? '尚無每日 verified IC' : '每日 rolling verified IC',
+      title: liveIc == null
+        ? `${candidateId}: daily rolling live IC is not available yet; this is not a shadow/challenger ownership gate.`
+        : `${candidateId}: daily verify-v2/model-ic-tracker rolling live IC ${liveIc.toFixed(4)}; this is not a shadow/challenger ownership gate.`,
+      tone: toneFromIc(liveIc),
     },
     {
       label: 'PBO/CPCV',
@@ -693,6 +774,7 @@ function buildGrafanaRecord({
 }): GrafanaModelRecord {
   const artifact = selectionCandidate(selectionRow)
   const release = releaseArtifact(selectionRow)
+  const servingArtifact = selectionRow?.serving_release_artifact ?? null
   const artifactOk = artifactReady(model, selectionRow)
   const evidenceOk = evidenceReady(model, release)
   const pointerOk = pointerReady(pointerRow)
@@ -712,6 +794,7 @@ function buildGrafanaRecord({
     candidateId: candidate.id,
     model,
     artifact: release,
+    servingArtifact,
     selectedCandidate: artifact,
     promotionRows,
   })
@@ -727,6 +810,7 @@ function buildGrafanaRecord({
     artifactVersion: release?.version ?? model?.version ?? 'no artifact',
     selectedArtifact: artifact,
     releaseArtifact: release,
+    servingArtifact,
     dataset: MODEL_DATASET_REQUIREMENTS[candidate.id],
     pointerRow,
     pointerTone: pointerTone(pointerRow?.readiness),
@@ -915,11 +999,11 @@ function StateTimelinePanel({
   selectedModelId?: string | null
   onSelectModel: (modelId: string) => void
 }) {
-  const labels = records[0]?.history.map((cell) => cell.label) ?? ['W-3', 'W-2', 'W-1', 'OOS IC', 'LIVE', 'PBO/CPCV', 'COMPARE']
+  const labels = records[0]?.history.map((cell) => cell.label) ?? ['W-3', 'W-2', 'W-1', 'OOS IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE']
   return (
     <GrafanaPanel
       title="Evidence matrix"
-      kicker="weekly trend, OOS evidence, live parity, overfit guard, champion compare"
+      kicker="weekly trend, monthly OOS evidence, daily rolling live IC, overfit guard, champion compare"
       action={<span className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">values include gate thresholds</span>}
       className="min-h-[360px]"
     >
@@ -947,12 +1031,12 @@ function StateTimelinePanel({
                 {record.history.map((cell) => (
                   <div
                     key={`${record.candidate.id}-${cell.label}`}
-                    className={`min-h-[58px] border px-2 py-2 text-center font-mono text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`}
+                    className={`min-h-[82px] border px-2 py-2 text-center font-mono text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`}
                     title={cell.title}
                     aria-label={cell.title}
                   >
                     <span className="block">{cell.value}</span>
-                    {cell.detail && <span className="mt-0.5 block truncate text-[12px] font-medium opacity-80">{cell.detail}</span>}
+                    {cell.detail && <span className="mt-1 block whitespace-pre-line break-words text-[11px] font-medium leading-4 opacity-85">{cell.detail}</span>}
                   </div>
                 ))}
               </button>
@@ -1041,6 +1125,10 @@ function PromotionReadinessPanel({
               <span className={`shrink-0 border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(compare.tone)}`}>
                 {compare.compareReady ? 'READY' : 'WAIT'}
               </span>
+            </div>
+            <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
+              <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">OOS IC delta</p>
+              <p className="mt-1 font-mono text-[13px] font-semibold text-[#dce3ea]">{compare.metricDetail}</p>
             </div>
           </div>
         </div>
@@ -1147,6 +1235,7 @@ function EvidenceTablePanel({
                   <p className="mt-1 max-w-[260px] break-all font-mono text-[12px] leading-5 text-[#90a0b8]">
                     {compactVersion(compare.candidate, 18)} vs {compactVersion(compare.champion, 18)}
                   </p>
+                  <p className="mt-1 max-w-[260px] font-mono text-[12px] leading-5 text-[#dce3ea]">{compare.metricDetail}</p>
                 </td>
                 <td className="rounded-r-xl border-y border-r border-[#263247] px-3 py-3">
                   <div className="flex max-w-[320px] flex-wrap gap-1">

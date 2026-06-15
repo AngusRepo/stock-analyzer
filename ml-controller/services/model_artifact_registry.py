@@ -4,7 +4,7 @@ import json
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from services import d1_client
 from services.model_validation_policy import resolve_model_validation_policy
@@ -1221,6 +1221,134 @@ def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bo
     return number > 0
 
 
+def _preferred_evidence(source: Any, keys: list[str]) -> Any:
+    if not isinstance(source, dict):
+        return None
+    for key in keys:
+        value = _deep_get(source, {key})
+        if isinstance(value, dict):
+            return value
+    for key in keys:
+        value = _deep_get(source, {key})
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _first_metric(source: Any, *keys: str) -> float | None:
+    if not isinstance(source, dict):
+        return None
+    for key in keys:
+        value = _as_float(source.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _add_policy_metric_blocker(
+    add: Callable[[str, str, str, str], None],
+    *,
+    code: str,
+    label: str,
+    value: float | None,
+    threshold: float | None,
+    relation: str,
+    next_action: str,
+) -> None:
+    if threshold is None:
+        return
+    failed = value is None
+    if not failed and relation == ">=":
+        failed = value < threshold
+    if not failed and relation == "<=":
+        failed = value > threshold
+    if failed:
+        observed = "missing" if value is None else f"{value:.6g}"
+        add(
+            code,
+            label,
+            f"{next_action} observed={observed} required {relation} {threshold:.6g}.",
+            "blocker",
+        )
+
+
+def _add_cpcv_policy_blockers(
+    add: Callable[[str, str, str, str], None],
+    *,
+    evidence: Any,
+    policy: dict[str, Any],
+    prefix: str = "cpcv",
+) -> None:
+    if not isinstance(evidence, dict):
+        return
+
+    evidence_policy = evidence.get("policy") if isinstance(evidence.get("policy"), dict) else {}
+    merged_policy = {**policy, **evidence_policy}
+    _add_policy_metric_blocker(
+        add,
+        code=f"{prefix}_oos_ic_below_policy",
+        label="CPCV rank IC is below policy",
+        value=_first_metric(evidence, "oos_ic_mean", "rank_ic", "min_rank_ic"),
+        threshold=_first_metric(merged_policy, "min_oos_ic_mean", "min_rank_ic"),
+        relation=">=",
+        next_action="Rerun or inspect family-specific CPCV/foundation validation with enough signal.",
+    )
+    _add_policy_metric_blocker(
+        add,
+        code=f"{prefix}_fold_count_below_policy",
+        label="CPCV fold count is below policy",
+        value=_first_metric(evidence, "folds"),
+        threshold=_first_metric(merged_policy, "min_folds"),
+        relation=">=",
+        next_action="Generate enough purged CPCV folds for this model family.",
+    )
+    _add_policy_metric_blocker(
+        add,
+        code=f"{prefix}_test_rows_below_policy",
+        label="CPCV test rows are below policy",
+        value=_first_metric(evidence, "min_test_rows", "samples"),
+        threshold=_first_metric(merged_policy, "min_test_rows", "min_samples"),
+        relation=">=",
+        next_action="Attach CPCV/foundation evidence with enough verified test rows.",
+    )
+    _add_policy_metric_blocker(
+        add,
+        code=f"{prefix}_coverage_below_policy",
+        label="CPCV coverage is below policy",
+        value=_first_metric(evidence, "coverage_mean", "coverage"),
+        threshold=_first_metric(merged_policy, "min_coverage"),
+        relation=">=",
+        next_action="Increase fold/outcome coverage before promotion.",
+    )
+    _add_policy_metric_blocker(
+        add,
+        code=f"{prefix}_positive_fold_ratio_below_policy",
+        label="Positive fold ratio is below policy",
+        value=_first_metric(evidence, "positive_fold_ratio"),
+        threshold=_first_metric(merged_policy, "min_positive_fold_ratio"),
+        relation=">=",
+        next_action="Reject or retrain until CPCV signal is stable across folds.",
+    )
+    _add_policy_metric_blocker(
+        add,
+        code=f"{prefix}_ic_std_above_policy",
+        label="CPCV IC instability is above policy",
+        value=_first_metric(evidence, "oos_ic_std"),
+        threshold=_first_metric(merged_policy, "max_oos_ic_std"),
+        relation="<=",
+        next_action="Reduce unstable fold dispersion before promotion.",
+    )
+    _add_policy_metric_blocker(
+        add,
+        code=f"{prefix}_direction_accuracy_below_policy",
+        label="Foundation forecast direction accuracy is below policy",
+        value=_first_metric(evidence, "direction_accuracy"),
+        threshold=_first_metric(merged_policy, "min_direction_accuracy"),
+        relation=">=",
+        next_action="Keep TimesFM as evidence-only until forecast/outcome validation improves.",
+    )
+
+
 def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | None = None) -> list[dict[str, Any]]:
     """Return promotion blockers with machine codes and human-action text.
 
@@ -1280,9 +1408,9 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
     required_samples = max(evidence_min_samples, policy_min_samples)
     if shadow_samples is None or shadow_samples < required_samples:
         add(
-            "shadow_sample_window_too_short",
-            "Shadow sample window is too short",
-            f"Collect at least {int(required_samples)} verified shadow rows under the active family/regime policy.",
+            "candidate_sample_window_too_short",
+            "Candidate verified sample window is too short",
+            f"Collect at least {int(required_samples)} verified candidate rows under the active family/regime policy.",
         )
     if production_samples is None or production_samples < required_samples:
         add(
@@ -1305,10 +1433,10 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Rerun or inspect offline gate evidence: OOS IC, segment coverage, and artifact metadata.",
         )
 
-    cpcv = _deep_get(offline, {"model_cpcv_decision", "cpcv_decision", "cpcv", "model_cpcv"})
-    forecast_validation = _deep_get(
+    cpcv = _preferred_evidence(offline, ["model_cpcv", "cpcv", "cpcv_decision", "model_cpcv_decision"])
+    forecast_validation = _preferred_evidence(
         offline,
-        {"forecast_validation", "foundation_forecast_validation", "last_artifact_evidence"},
+        ["foundation_forecast_validation", "forecast_validation", "last_artifact_evidence"],
     )
     cpcv_owner = str(policy_bundle["cpcv"].get("owner") or "family_specific_cpcv")
     if cpcv_owner == "foundation_forecast_validation":
@@ -1318,11 +1446,25 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
                 "Missing foundation forecast validation evidence",
                 "Attach TimesFM forecast/outcome validation evidence for the selected context before final comparison.",
             )
+        else:
+            _add_cpcv_policy_blockers(
+                add,
+                evidence=forecast_validation if _truthy_gate_value(forecast_validation) else cpcv,
+                policy=policy_bundle["cpcv"],
+                prefix="foundation",
+            )
     elif not _truthy_gate_value(cpcv):
         add(
             "cpcv_pbo_missing",
             "Missing CPCV evidence",
             "Attach family-specific CPCV evidence so rolling live IC is not treated as a one-window artifact.",
+        )
+    else:
+        _add_cpcv_policy_blockers(
+            add,
+            evidence=cpcv,
+            policy=policy_bundle["cpcv"],
+            prefix="cpcv",
         )
 
     pbo = _deep_get(offline, {"pbo", "pbo_score", "probability_of_backtest_overfitting"})
@@ -1663,7 +1805,7 @@ def _live_gate_decision(
             "live_gate_status": "shadowing_not_enough_data",
             "promotion_decision": "not_evaluated",
             "approval_state": "not_required",
-            "reason": "Selected candidate has not accumulated enough verified shadow rows.",
+            "reason": "Selected artifact challenger has not accumulated enough verified candidate rows.",
             "metrics": {
                 "shadow_model_name": shadow_name,
                 "shadow_ic": shadow_ic,
@@ -1930,7 +2072,7 @@ def build_promotion_queue(
             "offline_gate_decision": offline_decision,
             "live_gate_status": live_status,
             "evaluation_baseline_version": row.get("evaluation_baseline_version"),
-            "final_compared_to": row.get("final_compared_to") or champion_version,
+            "final_compared_to": row.get("final_compared_to"),
             "current_champion_version": champion_version,
             "promotion_decision": decision,
             "approval_required": approval_required,

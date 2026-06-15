@@ -624,7 +624,15 @@ def test_promotion_blockers_use_adaptive_pbo_policy():
     }
     offline = {
         "gate": {"decision": "STRONG_PASS"},
-        "model_cpcv_decision": "PASS",
+        "model_cpcv": {
+            "decision": "PASS",
+            "folds": 6,
+            "min_test_rows": 180,
+            "oos_ic_mean": 0.08,
+            "oos_ic_std": 0.04,
+            "positive_fold_ratio": 0.83,
+            "coverage_mean": 0.92,
+        },
         "pbo": {"pbo": 0.35, "method": "cscv_rank_logit"},
         "deflated_sharpe": {"decision": "PASS", "value": 1.2},
         "monte_carlo": {"decision": "PASS", "mdd_95th": 0.12},
@@ -640,6 +648,87 @@ def test_promotion_blockers_use_adaptive_pbo_policy():
     codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
 
     assert "pbo_threshold_missing" in codes
+
+
+def test_promotion_blockers_enforce_cpcv_policy_metrics():
+    row = {
+        "artifact_id": "PatchTST:vNew:monthly_release",
+        "model_name": "PatchTST",
+        "candidate_type": "monthly_release",
+        "state": "live_gate_passed",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "passed",
+        "live_evidence_json": (
+            '{"decision":{"metrics":{"shadow_samples":250,'
+            '"production_samples":250,"min_samples":50}}}'
+        ),
+        "offline_evidence_json": json.dumps({
+            "gate": {"decision": "STRONG_PASS"},
+            "model_cpcv": {
+                "decision": "PASS",
+                "folds": 6,
+                "min_test_rows": 180,
+                "oos_ic_mean": 0.05,
+                "oos_ic_std": 0.04,
+                "positive_fold_ratio": 0.83,
+                "coverage_mean": 0.25,
+            },
+            "pbo": {"pbo": 0.25, "method": "cscv_rank_logit"},
+            "deflated_sharpe": {"decision": "PASS", "value": 1.2},
+            "monte_carlo": {"decision": "PASS", "mdd_95th": 0.12},
+        }),
+    }
+
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+
+    assert "pbo_threshold_missing" not in codes
+    assert "cpcv_coverage_below_policy" in codes
+
+
+def test_promotion_blockers_enforce_timesfm_foundation_validation_policy():
+    foundation = {
+        "decision": "PASS",
+        "folds": 1,
+        "samples": 150,
+        "oos_ic_mean": 0.03,
+        "coverage_mean": 1.0,
+        "positive_fold_ratio": 1.0,
+        "oos_ic_std": 0.0,
+        "direction_accuracy": 0.40,
+        "policy": {
+            "min_samples": 30,
+            "min_rank_ic": 0.0,
+            "min_coverage": 0.60,
+            "min_direction_accuracy": 0.52,
+        },
+    }
+    row = {
+        "artifact_id": "TimesFM:v20260615_timesfm25:monthly_release",
+        "model_name": "TimesFM",
+        "candidate_type": "monthly_release",
+        "state": "live_gate_passed",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "passed",
+        "live_evidence_json": (
+            '{"decision":{"metrics":{"shadow_samples":250,'
+            '"production_samples":250,"min_samples":50}}}'
+        ),
+        "offline_evidence_json": json.dumps({
+            "gate": {"decision": "STRONG_PASS"},
+            "registration": {
+                "artifact_lifecycle_result": {
+                    "foundation_forecast_validation": foundation,
+                },
+            },
+            "deflated_sharpe": {"decision": "PASS", "value": 1.2},
+            "monte_carlo": {"decision": "PASS", "mdd_95th": 0.12},
+        }),
+    }
+
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+
+    assert "pbo_threshold_missing" not in codes
+    assert "foundation_direction_accuracy_below_policy" in codes
 
 
 def test_candidate_selection_keeps_legacy_shadowing_weekly_out_of_selected_slot():
@@ -1022,7 +1111,8 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift():
 
     by_model = {row["model_name"]: row for row in queue["queue"]}
     assert by_model["XGBoost"]["promotion_decision"] == "approval_required"
-    assert by_model["XGBoost"]["final_compared_to"] == "vOld"
+    assert by_model["XGBoost"]["final_compared_to"] is None
+    assert by_model["XGBoost"]["current_champion_version"] == "vOld"
     assert by_model["LightGBM"]["promotion_decision"] == "auto_promote_candidate"
 
 

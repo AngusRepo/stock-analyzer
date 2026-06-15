@@ -5,7 +5,7 @@ numpy==1.26.4
 polars>=1.0.0
 # training data processing remains Polars + NumPy.
 pandas[pyarrow]>=2.2.0
-finlab==2.0.7
+finlab==2.0.13
 # Tree models, hmmlearn, and SHAP share the scikit-learn runtime.
 scikit-learn==1.9.0
 # L1.25 strategy similarity evidence runs in Modal/Python, not Worker TS.

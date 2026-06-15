@@ -24,6 +24,7 @@ def test_active_9_runtime_dependencies_are_tightly_pinned_to_reviewed_versions()
         "tabm==0.0.3",
         "timesfm[torch]==2.0.1",
         "optuna==4.9.0",
+        "finlab==2.0.13",
     ]
     for pin in expected_pins:
         assert pin in requirements
@@ -40,6 +41,7 @@ def test_active_9_runtime_dependencies_are_tightly_pinned_to_reviewed_versions()
         "timesfm[torch]==1.3.0",
         "timesfm[torch]==2.0.0",
         "optuna>=",
+        "finlab==2.0.7",
     ]
     for spec in drifting_specs:
         assert spec not in requirements

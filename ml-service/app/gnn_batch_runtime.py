@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import io
 import json
 import logging
+import time
 from typing import Any, Iterable
 
 import numpy as np
@@ -21,6 +22,15 @@ MODEL_NAME = "GNN"
 DEFAULT_CORRELATION_LOOKBACK = 60
 DEFAULT_CORRELATION_THRESHOLD = 0.35
 DEFAULT_TOP_K = 8
+DEFAULT_MULTI_SIMILARITY_THRESHOLD_QUANTILE = 0.9
+DEFAULT_MULTI_SIMILARITY_SOURCE_WEIGHTS = {
+    "return_correlation": 0.45,
+    "feature_similarity": 0.25,
+    "strategy_co_hit": 0.15,
+    "sector_factor_similarity": 0.08,
+    "finlab_chip_flow_similarity": 0.05,
+    "regime_co_movement": 0.02,
+}
 
 _ARTIFACT_CACHE: dict[tuple[str, str], "GraphSAGEArtifact"] = {}
 
@@ -206,6 +216,7 @@ def build_correlation_edge_index(
             "n_edges": 0,
             "threshold": float(threshold),
             "top_k": int(top_k),
+            "edge_source": "price_correlation_v1",
         }
 
     corr = np.corrcoef(returns_matrix)
@@ -234,6 +245,7 @@ def build_correlation_edge_index(
             "n_edges": 0,
             "threshold": float(threshold),
             "top_k": int(top_k),
+            "edge_source": "price_correlation_v1",
         }
 
     edge_index = np.asarray(sorted(edges), dtype=np.int64).T
@@ -242,6 +254,346 @@ def build_correlation_edge_index(
         "n_edges": int(edge_index.shape[1]),
         "threshold": float(threshold),
         "top_k": int(top_k),
+        "edge_source": "price_correlation_v1",
+    }
+
+
+def _empty_multi_similarity_source_coverage() -> dict[str, bool]:
+    return {
+        "return_correlation": False,
+        "feature_similarity": False,
+        "strategy_co_hit": False,
+        "sector_factor_similarity": False,
+        "finlab_chip_flow_similarity": False,
+        "regime_co_movement": False,
+    }
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(out):
+        return None
+    return out
+
+
+def _numeric_record_matrix(
+    records: list[dict[str, Any]],
+    *,
+    record_key: str,
+    fields: tuple[str, ...],
+    n_nodes: int,
+) -> np.ndarray | None:
+    rows: list[list[float]] = []
+    has_value = False
+    for record in records[:n_nodes]:
+        source = record.get(record_key) if isinstance(record, dict) else None
+        source = source if isinstance(source, dict) else {}
+        row: list[float] = []
+        for field in fields:
+            value = _safe_float(source.get(field))
+            if value is not None:
+                has_value = True
+            row.append(float(value) if value is not None else 0.0)
+        rows.append(row)
+    if len(rows) != n_nodes or not fields or not has_value:
+        return None
+    return np.asarray(rows, dtype=np.float32)
+
+
+def _strategy_vector_matrix(records: list[dict[str, Any]], n_nodes: int) -> np.ndarray | None:
+    vector_fields = {
+        "strategy_hit_vector": 1.0,
+        "strategy_affinity_vector": 0.01,
+        "family_affinity_vector": 0.01,
+        "strategy_weak_label_vector": 1.0,
+        "strategy_position_weight_vector": 1.0,
+        "strategy_overlap_vector": -1.0,
+    }
+    keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records[:n_nodes]:
+        if not isinstance(record, dict):
+            continue
+        for field in vector_fields:
+            values = record.get(field)
+            if not isinstance(values, dict):
+                continue
+            for key in values:
+                pair = (field, str(key))
+                if pair not in seen:
+                    seen.add(pair)
+                    keys.append(pair)
+    if not keys:
+        return None
+
+    matrix = np.zeros((n_nodes, len(keys)), dtype=np.float32)
+    has_value = False
+    for row_idx, record in enumerate(records[:n_nodes]):
+        if not isinstance(record, dict):
+            continue
+        for col_idx, (field, key) in enumerate(keys):
+            values = record.get(field)
+            raw = values.get(key) if isinstance(values, dict) else None
+            value = _safe_float(raw)
+            if value is None:
+                continue
+            has_value = True
+            matrix[row_idx, col_idx] = float(value) * float(vector_fields[field])
+    return matrix if has_value else None
+
+
+def _has_cross_sectional_signal(matrix: np.ndarray | None) -> bool:
+    if matrix is None or matrix.ndim != 2 or matrix.shape[0] <= 1 or matrix.shape[1] == 0:
+        return False
+    if not np.isfinite(matrix).any():
+        return False
+    finite = np.nan_to_num(matrix.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    return bool(np.max(np.abs(finite)) > 0.0 and np.max(np.std(finite, axis=0)) > 1e-9)
+
+
+def _cosine_similarity_matrix(matrix: np.ndarray | None) -> np.ndarray | None:
+    if not _has_cross_sectional_signal(matrix):
+        return None
+    values = np.nan_to_num(np.asarray(matrix, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    norms = np.linalg.norm(values, axis=1, keepdims=True)
+    normalized = values / np.maximum(norms, 1e-9)
+    cosine = np.matmul(normalized, normalized.T)
+    cosine = np.nan_to_num(cosine, nan=0.0, posinf=0.0, neginf=0.0)
+    np.fill_diagonal(cosine, 0.0)
+    return np.maximum(0.0, cosine).astype(np.float32)
+
+
+def _same_category_similarity(records: list[dict[str, Any]], *, field: str, n_nodes: int) -> np.ndarray | None:
+    labels = [
+        str((record.get("sector_factor") or {}).get(field) or "").strip().lower()
+        if isinstance(record, dict)
+        else ""
+        for record in records[:n_nodes]
+    ]
+    if len(labels) != n_nodes or len({label for label in labels if label}) <= 1:
+        return None
+    matrix = np.zeros((n_nodes, n_nodes), dtype=np.float32)
+    for i in range(n_nodes):
+        if not labels[i]:
+            continue
+        for j in range(i + 1, n_nodes):
+            if labels[i] and labels[i] == labels[j]:
+                matrix[i, j] = 1.0
+                matrix[j, i] = 1.0
+    return matrix if np.max(matrix) > 0.0 else None
+
+
+def _add_similarity(
+    scores: np.ndarray,
+    similarity: np.ndarray | None,
+    *,
+    weight: float,
+) -> bool:
+    if similarity is None or similarity.shape != scores.shape:
+        return False
+    signal = np.nan_to_num(similarity.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    np.fill_diagonal(signal, 0.0)
+    if not np.any(signal > 0.0):
+        return False
+    scores += signal * float(max(0.0, weight))
+    return True
+
+
+def _multi_similarity_report_base(
+    *,
+    n_nodes: int,
+    t0: float,
+    source_coverage: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    return {
+        "edge_source": "multi_similarity_graph_v1",
+        "production_edge_replaces": "price_correlation_v1",
+        "allowed_use": "production_gnn_edge_context",
+        "production_edge_active": True,
+        "selector": False,
+        "top_k": None,
+        "n_nodes": int(n_nodes),
+        "edge_count": 0,
+        "component_count": int(n_nodes),
+        "avg_degree": 0.0,
+        "runtime_delta_ms": round((time.perf_counter() - t0) * 1000, 4),
+        "source_coverage": source_coverage or _empty_multi_similarity_source_coverage(),
+    }
+
+
+def build_multi_similarity_edge_index(
+    returns_matrix: np.ndarray,
+    node_features: np.ndarray,
+    *,
+    threshold_quantile: float = DEFAULT_MULTI_SIMILARITY_THRESHOLD_QUANTILE,
+    context_records: list[dict[str, Any]] | None = None,
+    source_weights: dict[str, Any] | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Build production GraphSAGE edges from multi-source similarity.
+
+    This replaces price_correlation_v1 as the production GNN edge source.
+    It remains graph-context evidence only: no selector, no BUY, no top-k.
+    """
+
+    t0 = time.perf_counter()
+    n_nodes = int(returns_matrix.shape[0])
+    weights = {}
+    for key, default in DEFAULT_MULTI_SIMILARITY_SOURCE_WEIGHTS.items():
+        configured = _safe_float((source_weights or {}).get(key))
+        weights[key] = float(configured if configured is not None else default)
+    source_coverage = _empty_multi_similarity_source_coverage()
+    if n_nodes <= 1:
+        return np.zeros((2, 0), dtype=np.int64), _multi_similarity_report_base(
+            n_nodes=n_nodes,
+            t0=t0,
+            source_coverage=source_coverage,
+        )
+
+    scores = np.zeros((n_nodes, n_nodes), dtype=np.float32)
+    context = list(context_records or [])
+
+    if returns_matrix.size and returns_matrix.shape[0] == n_nodes:
+        corr = np.corrcoef(returns_matrix)
+        corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+        np.fill_diagonal(corr, 0.0)
+        source_coverage["return_correlation"] = _add_similarity(
+            scores,
+            np.abs(corr).astype(np.float32),
+            weight=weights["return_correlation"],
+        )
+
+    features = np.asarray(node_features, dtype=np.float32)
+    if features.ndim == 2 and features.shape[0] == n_nodes and features.shape[1] > 0:
+        source_coverage["feature_similarity"] = _add_similarity(
+            scores,
+            _cosine_similarity_matrix(features),
+            weight=weights["feature_similarity"],
+        )
+
+    if context and len(context) == n_nodes:
+        source_coverage["strategy_co_hit"] = _add_similarity(
+            scores,
+            _cosine_similarity_matrix(_strategy_vector_matrix(context, n_nodes)),
+            weight=weights["strategy_co_hit"],
+        )
+        sector_numeric = _numeric_record_matrix(
+            context,
+            record_key="sector_factor",
+            fields=(
+                "sector_encoded",
+                "market_cap_bucket",
+                "avg_volume_bucket",
+                "sector_peer_return_1d",
+                "sector_peer_return_5d",
+                "stock_vs_sector",
+            ),
+            n_nodes=n_nodes,
+        )
+        sector_similarity = _cosine_similarity_matrix(sector_numeric)
+        category_similarity = _same_category_similarity(context, field="sector_key", n_nodes=n_nodes)
+        if category_similarity is not None:
+            sector_similarity = (
+                np.maximum(sector_similarity, category_similarity)
+                if sector_similarity is not None
+                else category_similarity
+            )
+        source_coverage["sector_factor_similarity"] = _add_similarity(
+            scores,
+            sector_similarity,
+            weight=weights["sector_factor_similarity"],
+        )
+        source_coverage["finlab_chip_flow_similarity"] = _add_similarity(
+            scores,
+            _cosine_similarity_matrix(_numeric_record_matrix(
+                context,
+                record_key="finlab_chip_flow",
+                fields=(
+                    "foreign_net",
+                    "trust_net",
+                    "dealer_net",
+                    "institutional_net",
+                    "margin_balance",
+                    "short_balance",
+                ),
+                n_nodes=n_nodes,
+            )),
+            weight=weights["finlab_chip_flow_similarity"],
+        )
+        source_coverage["regime_co_movement"] = _add_similarity(
+            scores,
+            _cosine_similarity_matrix(_numeric_record_matrix(
+                context,
+                record_key="regime",
+                fields=(
+                    "risk_score",
+                    "risk_level",
+                    "us_sox_return",
+                    "us_gspc_return",
+                    "us_vix",
+                    "advance_ratio",
+                    "bull_alignment_pct",
+                    "revenue_yoy",
+                    "margin_balance",
+                    "short_ratio",
+                    "retail_pct",
+                ),
+                n_nodes=n_nodes,
+            )),
+            weight=weights["regime_co_movement"],
+        )
+
+    pair_scores = [
+        float(scores[i, j])
+        for i in range(n_nodes)
+        for j in range(i + 1, n_nodes)
+        if np.isfinite(scores[i, j]) and scores[i, j] > 0.0
+    ]
+    if pair_scores:
+        q = min(1.0, max(0.0, float(threshold_quantile)))
+        threshold = float(np.quantile(np.asarray(pair_scores, dtype=np.float32), q))
+        threshold = max(0.35, min(0.95, threshold))
+    else:
+        threshold = 1.0
+
+    import networkx as nx
+
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n_nodes))
+    undirected_edges: set[tuple[int, int]] = set()
+    for i in range(n_nodes):
+        for j in range(i + 1, n_nodes):
+            if float(scores[i, j]) >= threshold:
+                undirected_edges.add((i, j))
+    graph.add_edges_from(undirected_edges)
+    component_count = nx.number_connected_components(graph)
+    directed_edges = {(left, right) for left, right in undirected_edges}
+    directed_edges.update((right, left) for left, right in undirected_edges)
+    edge_count = len(directed_edges)
+
+    edge_index = (
+        np.asarray(sorted(directed_edges), dtype=np.int64).T
+        if directed_edges
+        else np.zeros((2, 0), dtype=np.int64)
+    )
+    return edge_index, {
+        "edge_source": "multi_similarity_graph_v1",
+        "production_edge_replaces": "price_correlation_v1",
+        "allowed_use": "production_gnn_edge_context",
+        "production_edge_active": True,
+        "selector": False,
+        "top_k": None,
+        "n_nodes": int(n_nodes),
+        "edge_count": int(edge_count),
+        "component_count": int(component_count),
+        "avg_degree": round(float(edge_count) / max(1, n_nodes), 6),
+        "edge_threshold": round(float(threshold), 6),
+        "edge_threshold_source": "adaptive_quantile" if pair_scores else "adaptive_empty",
+        "runtime_delta_ms": round((time.perf_counter() - t0) * 1000, 4),
+        "source_coverage": source_coverage,
+        "source_weights": weights,
     }
 
 
@@ -281,26 +633,33 @@ def predict_graphsage_scores(
     *,
     node_features: np.ndarray,
     price_series: list[Iterable[Any]],
+    context_records: list[dict[str, Any]] | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Run GraphSAGE over a full batch and return one rank score per node."""
 
     metadata = artifact.metadata or {}
     graph_cfg = metadata.get("graph_context") if isinstance(metadata.get("graph_context"), dict) else {}
     lookback = int(graph_cfg.get("correlation_lookback") or DEFAULT_CORRELATION_LOOKBACK)
-    threshold = float(graph_cfg.get("correlation_threshold") or DEFAULT_CORRELATION_THRESHOLD)
-    top_k = int(graph_cfg.get("top_k") or DEFAULT_TOP_K)
+    threshold_quantile = float(
+        graph_cfg.get("multi_similarity_threshold_quantile")
+        or graph_cfg.get("threshold_quantile")
+        or DEFAULT_MULTI_SIMILARITY_THRESHOLD_QUANTILE
+    )
+    source_weights = graph_cfg.get("source_weights") if isinstance(graph_cfg.get("source_weights"), dict) else None
 
     returns = [_returns_from_prices(series, lookback) for series in price_series]
     returns_matrix = _pad_returns(returns)
-    edge_index_np, graph_report = build_correlation_edge_index(
-        returns_matrix,
-        threshold=threshold,
-        top_k=top_k,
-    )
 
     import torch
 
     standardized = _standardize_node_features(node_features, metadata)
+    edge_index_np, graph_report = build_multi_similarity_edge_index(
+        returns_matrix,
+        standardized,
+        threshold_quantile=threshold_quantile,
+        context_records=context_records,
+        source_weights=source_weights,
+    )
     x = torch.tensor(standardized, dtype=torch.float32)
     edge_index = torch.tensor(edge_index_np, dtype=torch.long)
     with torch.no_grad():
@@ -311,4 +670,5 @@ def predict_graphsage_scores(
         "artifact_path": artifact.source_path,
         "version": artifact.version,
         "runtime": "graphsage_batch_context",
+        "edge_source": "multi_similarity_graph_v1",
     }

@@ -67,6 +67,7 @@ import polars as pl
 from services import d1_client
 from services.dataset_snapshots import latest_dataset_snapshot
 from services.research_data_access import ResearchDataMode, resolve_research_data_access
+from services.similarity_evidence import similarity_components, symbol_cluster_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -875,7 +876,7 @@ def _date_diff(d1: str, d2: str) -> int:
 #   - No news/PTT/Anue buzz (external, non-replayable)
 #   - No F-Score / financials (quarterly cadence, Sprint 6b candidate)
 #   - No ADX / liquidity-tier filter (optional add in 6a.1b if needed)
-#   - No correlation dedup (implement in 6a.2 entry simulator instead)
+#   - Correlation dedup lives in the entry simulator, after candidate generation
 #   - No 處置股 filter (external TWSE API, non-replayable)
 #   - No industry RRG bonus (complex multi-day sector_flow calc; future 6a.1c)
 #   - No DelistingMonitor (handled by point-in-time universe in data loader)
@@ -2482,6 +2483,164 @@ def _get_atr14(dataset: BacktestDataset, symbol: str, date: str) -> Optional[flo
     return None
 
 
+def _finite_float(value: object, default: float | None = None) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _bool_config(value: object, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    return default
+
+
+def _return_history_from_dataset(
+    dataset: BacktestDataset,
+    symbols: list[str],
+    decision_date: str,
+    *,
+    lookback_days: int,
+) -> dict[str, list[float]]:
+    history: dict[str, list[float]] = {}
+    for symbol in symbols:
+        clean_symbol = str(symbol or "").strip()
+        if not clean_symbol:
+            continue
+        prices_np = dataset.get_price_history_np(clean_symbol, decision_date, lookback_days + 1)
+        closes: list[float] = []
+        if prices_np and int(prices_np.get("n") or 0) >= 3:
+            closes = [
+                float(value)
+                for value in np.asarray(prices_np.get("close"), dtype=float).tolist()
+                if math.isfinite(float(value)) and float(value) > 0
+            ]
+        else:
+            frame = dataset.get_price_history(clean_symbol, decision_date, lookback_days + 1)
+            if frame is not None and not frame.is_empty() and "close" in frame.columns:
+                closes = [
+                    float(value)
+                    for value in frame.get_column("close").to_list()
+                    if value is not None and math.isfinite(float(value)) and float(value) > 0
+                ]
+        returns: list[float] = []
+        for idx in range(1, len(closes)):
+            prev = closes[idx - 1]
+            if prev > 0:
+                returns.append((closes[idx] / prev) - 1.0)
+        if len(returns) >= 3:
+            history[clean_symbol] = returns
+    return history
+
+
+def _correlation_dedup_skip(
+    dataset: BacktestDataset,
+    cand: Candidate,
+    account: AccountState,
+    filled_entry_symbols: set[str],
+    decision_date: str,
+    pos: PositionSizeParams,
+    correlation_dedup_cfg: Optional[dict],
+) -> tuple[str, str] | None:
+    cfg = correlation_dedup_cfg if isinstance(correlation_dedup_cfg, dict) else {}
+    if not _bool_config(cfg.get("enabled"), default=True):
+        return None
+
+    existing_symbols = [
+        symbol for symbol in [*account.positions.keys(), *sorted(filled_entry_symbols)]
+        if symbol != cand.symbol
+    ]
+    if not existing_symbols:
+        return None
+
+    lookback_days = int(_finite_float(cfg.get("lookbackDays") or cfg.get("lookback_days"), 60) or 60)
+    lookback_days = max(10, min(252, lookback_days))
+    edge_threshold = _finite_float(cfg.get("edgeThreshold") or cfg.get("edge_threshold"), None)
+    threshold_quantile = _finite_float(
+        cfg.get("thresholdQuantile") or cfg.get("threshold_quantile"),
+        0.9,
+    ) or 0.9
+    symbols = [*existing_symbols, cand.symbol]
+    return_history = _return_history_from_dataset(
+        dataset,
+        symbols,
+        decision_date,
+        lookback_days=lookback_days,
+    )
+    if cand.symbol not in return_history or len(return_history) < 2:
+        return None
+
+    evidence = similarity_components(
+        symbols,
+        return_history,
+        edge_threshold=edge_threshold,
+        threshold_quantile=threshold_quantile,
+    )
+    cluster = symbol_cluster_evidence(cand.symbol, evidence)
+    cluster_id = cluster.get("cluster_id")
+    if not cluster_id:
+        return None
+    cluster_symbols = {
+        symbol
+        for item in evidence.get("clusters") or []
+        if item.get("cluster_id") == cluster_id
+        for symbol in item.get("symbols") or []
+    }
+    existing_in_cluster = sorted(symbol for symbol in existing_symbols if symbol in cluster_symbols)
+    if not existing_in_cluster:
+        return None
+
+    max_cluster_positions = _finite_float(
+        cfg.get("maxClusterPositions") or cfg.get("max_cluster_positions"),
+        None,
+    )
+    if max_cluster_positions is not None and len(existing_in_cluster) >= int(max_cluster_positions):
+        return (
+            "skipped_correlation_cluster",
+            (
+                f"cluster {cluster_id} already has {len(existing_in_cluster)} positions "
+                f">= maxClusterPositions {int(max_cluster_positions)}; "
+                f"existing={','.join(existing_in_cluster)} method={evidence.get('method')}"
+            ),
+        )
+
+    max_cluster_share = _finite_float(
+        cfg.get("maxClusterPositionShare") or cfg.get("max_cluster_position_share"),
+        None,
+    )
+    if max_cluster_share is not None:
+        next_share = (len(existing_in_cluster) + 1) / max(1, int(pos.max_positions))
+        if next_share > max_cluster_share:
+            return (
+                "skipped_correlation_cluster",
+                (
+                    f"cluster {cluster_id} position share {next_share:.2f} "
+                    f"> maxClusterPositionShare {max_cluster_share:.2f}; "
+                    f"existing={','.join(existing_in_cluster)} method={evidence.get('method')}"
+                ),
+            )
+
+    return (
+        "skipped_high_pairwise_correlation",
+        (
+            f"cluster {cluster_id} pairwise_corr_max={float(cluster.get('pairwise_corr_max') or 0.0):.4f} "
+            f">= edge_threshold={float(evidence.get('edge_threshold') or 0.0):.4f} "
+            f"source={evidence.get('edge_threshold_source')} existing={','.join(existing_in_cluster)}"
+        ),
+    )
+
+
 def _synth_stop_target(
     entry: float, atr14: float, sl_mult: float, tp_mult: float
 ) -> tuple[float, float, float]:
@@ -2545,6 +2704,7 @@ def simulate_entries_for_date(
     prev_night_drop: Optional[float] = None,
     pf_30d: Optional[float] = None,
     pf_90d: Optional[float] = None,
+    correlation_dedup_cfg: Optional[dict] = None,
 ) -> list[EntryAttempt]:
     """
     Given screener output for date T, try to open positions on T+1.
@@ -2570,6 +2730,7 @@ def simulate_entries_for_date(
     buy_candidates = [c for c in candidates if c.has_buy_signal == 1]
     if not buy_candidates:
         return attempts
+    filled_entry_symbols: set[str] = set()
 
     # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
     # Only apply when Mode B is active (ml_predictions cache present) AND
@@ -2717,6 +2878,24 @@ def simulate_entries_for_date(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                 status="skipped_industry", adjusted_entry=cand.close,
                 reason=f"industry {cand.industry} already has 2 positions",
+            ))
+            continue
+
+        correlation_skip = _correlation_dedup_skip(
+            dataset=dataset,
+            cand=cand,
+            account=account,
+            filled_entry_symbols=filled_entry_symbols,
+            decision_date=decision_date,
+            pos=pos,
+            correlation_dedup_cfg=correlation_dedup_cfg,
+        )
+        if correlation_skip is not None:
+            status, reason = correlation_skip
+            attempts.append(EntryAttempt(
+                symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
+                status=status, adjusted_entry=cand.close,
+                reason=reason,
             ))
             continue
 
@@ -2974,6 +3153,7 @@ def simulate_entries_for_date(
             sl_mult=eff_sl_mult,
             highest_since_entry=fill_price,
         )
+        filled_entry_symbols.add(cand.symbol)
         industry_count[cand.industry] = industry_count.get(cand.industry, 0) + 1
 
         attempts.append(EntryAttempt(
@@ -3584,7 +3764,7 @@ MODE_A_DEVIATIONS: list[str] = [
     "#6 No ADX / liquidity tier filter (optimistic)",
     "#7 ml_confidence=0.5 placeholder (slightly pessimistic Kelly)",
     "#8 signal_tier=0.35 HOLD placeholder (neutral)",
-    "#9 No correlation dedup (optimistic — portfolio Sharpe inflated)",
+    "#9 Correlation dedup uses daily close-return graph, not intraday tick correlation (neutral/conservative)",
     "#10 DebateVerdict treated as APPROVE (optimistic)",
     "#11 ml_stop/target synthesized from ATR × sltp (neutral — this is the search target)",
     "#12 Limit fill simplified to low<=limit (pessimistic — no polling)",
@@ -4409,6 +4589,10 @@ def replay_period(
                 pf_90d=(
                     compute_profit_factor(all_trades, day, window_days=90, min_trades=10)
                     if mode == "B" and circuit_cfg_b is not None else None
+                ),
+                correlation_dedup_cfg=(
+                    (params or {}).get("correlationDedup")
+                    or (params or {}).get("correlation_dedup")
                 ),
             )
             all_attempts.extend(attempts)

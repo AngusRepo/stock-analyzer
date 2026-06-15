@@ -8,6 +8,10 @@ pandas[pyarrow]>=2.2.0
 finlab==2.0.7
 # Tree models, hmmlearn, and SHAP share the scikit-learn runtime.
 scikit-learn==1.9.0
+# L1.25 strategy similarity evidence runs in Modal/Python, not Worker TS.
+# NetworkX owns graph components; sklearn-extra owns official KMedoids/PAM.
+networkx==3.6.1
+scikit-learn-extra==0.3.0
 xgboost==3.2.0
 statsmodels==0.14.4
 httpx==0.27.2

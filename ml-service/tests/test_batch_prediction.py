@@ -224,14 +224,28 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
         assert model_name != "GNN"
         return None, {}
 
-    def fake_graphsage_scores(artifact_arg, *, node_features, price_series):
+    def fake_graphsage_scores(artifact_arg, *, node_features, price_series, context_records=None):
         observed["artifact"] = artifact_arg
         observed["node_shape"] = node_features.shape
         observed["series_count"] = len(price_series)
+        observed["context_records"] = context_records
         return np.array([0.22, 0.78], dtype=np.float32), {
             "runtime": "graphsage_batch_context",
             "n_nodes": 2,
-            "n_edges": 2,
+            "edge_count": 2,
+            "edge_source": "multi_similarity_graph_v1",
+            "production_edge_replaces": "price_correlation_v1",
+            "allowed_use": "production_gnn_edge_context",
+            "production_edge_active": True,
+            "selector": False,
+            "source_coverage": {
+                "return_correlation": True,
+                "feature_similarity": True,
+                "strategy_co_hit": True,
+                "sector_factor_similarity": True,
+                "finlab_chip_flow_similarity": True,
+                "regime_co_movement": True,
+            },
         }
 
     monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
@@ -239,19 +253,60 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
     monkeypatch.setattr(gnn_batch_runtime, "load_graphsage_artifact", lambda pool=None: artifact)
     monkeypatch.setattr(gnn_batch_runtime, "predict_graphsage_scores", fake_graphsage_scores)
 
-    result = batch_prediction.predict_gnn_graphsage_batch([
-        _predict_payload("2330", 2330, 100.0),
-        _predict_payload("2317", 2317, 80.0),
-    ])
+    payload_2330 = _predict_payload("2330", 2330, 100.0)
+    payload_2330.update({
+        "stock_meta": {
+            "sector": "semiconductor",
+            "sector_encoded": 1,
+            "market_cap_bucket": 3,
+            "avg_volume_bucket": 3,
+            "sector_peer_return_5d": 0.02,
+            "stock_vs_sector": 0.01,
+        },
+        "chips": [{"foreign_net": 1200, "trust_net": 100, "dealer_net": 20}],
+        "market_env": {"risk_score": 0.4, "retail_pct": 0.1},
+        "strategy_hit_vector": {"trend": 1, "value": 0},
+        "strategy_affinity_vector": {"trend": 90, "value": 10},
+        "family_affinity_vector": {"momentum": 80},
+    })
+    payload_2317 = _predict_payload("2317", 2317, 80.0)
+    payload_2317.update({
+        "stock_meta": {
+            "sector": "electronics",
+            "sector_encoded": 2,
+            "market_cap_bucket": 3,
+            "avg_volume_bucket": 3,
+            "sector_peer_return_5d": 0.01,
+            "stock_vs_sector": -0.01,
+        },
+        "chips": [{"foreign_net": -500, "trust_net": -50, "dealer_net": -10}],
+        "market_env": {"risk_score": 0.7, "retail_pct": 0.4},
+        "strategy_hit_vector": {"trend": 0, "value": 1},
+        "strategy_affinity_vector": {"trend": 10, "value": 88},
+        "family_affinity_vector": {"value": 85},
+    })
+
+    result = batch_prediction.predict_gnn_graphsage_batch([payload_2330, payload_2317])
 
     assert observed["artifact"] is artifact
     assert observed["node_shape"][0] == 2
     assert observed["series_count"] == 2
+    assert len(observed["context_records"]) == 2
+    assert observed["context_records"][0]["strategy_hit_vector"] == {"trend": 1.0, "value": 0.0}
+    assert observed["context_records"][0]["family_affinity_vector"] == {"momentum": 80.0}
+    assert observed["context_records"][0]["sector_factor"]["sector_key"] == "semiconductor"
+    assert observed["context_records"][0]["finlab_chip_flow"]["institutional_net"] == pytest.approx(1320.0)
+    assert observed["context_records"][1]["regime"]["retail_pct"] == pytest.approx(0.4)
     assert result["n_input"] == 2
     assert result["n_success"] == 2
     assert result["results"][0]["rank_score"] == pytest.approx(0.22)
     assert result["results"][1]["rank_score"] == pytest.approx(0.78)
     assert result["results"][0]["graph_context"]["runtime"] == "graphsage_batch_context"
+    assert result["results"][0]["graph_context"]["edge_source"] == "multi_similarity_graph_v1"
+    assert result["results"][0]["graph_context"]["production_edge_active"] is True
+    assert result["results"][0]["graph_context"]["allowed_use"] == "production_gnn_edge_context"
+    assert result["results"][0]["graph_context"]["selector"] is False
+    assert "shadow_edge_experiment" not in result["results"][0]["graph_context"]
 
 
 def test_gnn_graphsage_batch_predict_reports_error_summary(monkeypatch):

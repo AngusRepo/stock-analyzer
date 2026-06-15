@@ -41,6 +41,11 @@ export interface StrategyPortfolioIntelligenceHealth {
   portfolio_metric_status: string
   portfolio_metric_status_counts: Record<string, number>
   portfolio_metric_sources: string[]
+  strategy_similarity_evidence_status_counts: Record<string, number>
+  strategy_similarity_sources: string[]
+  strategy_similarity_algorithm_owners: string[]
+  strategy_similarity_medoid_algorithms: string[]
+  strategy_similarity_degraded_count: number
   metric_count_max: number | null
   metric_count_sum: number
   backtest_metric_count_max: number | null
@@ -326,10 +331,19 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
   const matrixStrategyCount = toNullableNumber(evidence.strategy_matrix_strategy_count)
   const backtestMetricCount = toNullableNumber(evidence.strategy_portfolio_backtest_metric_count)
   const backtestResultRowCount = toNullableNumber(evidence.strategy_portfolio_backtest_result_row_count)
+  const strategySimilarityEvidenceStatus = String(evidence.strategy_similarity_evidence_status ?? '').trim() || null
+  const strategySimilarityEvidenceSource = String(evidence.strategy_similarity_evidence_source ?? '').trim() || null
+  const strategySimilarityAlgorithmOwner = String(evidence.strategy_similarity_algorithm_owner ?? '').trim() || null
+  const strategySimilarityMedoidAlgorithm = String(evidence.strategy_similarity_medoid_algorithm ?? '').trim() || null
+  const strategySimilarityDegradedReason = String(evidence.strategy_similarity_degraded_reason ?? '').trim() || null
   const hasPortfolioEvidence = Boolean(
     evidence.finlab_portfolio_intelligence_version
     || evidence.strategy_portfolio_metric_source
     || evidence.strategy_portfolio_metric_status
+    || strategySimilarityEvidenceStatus
+    || strategySimilarityEvidenceSource
+    || strategySimilarityAlgorithmOwner
+    || strategySimilarityMedoidAlgorithm
     || metricCount != null
     || backtestMetricCount != null
     || strategyPriorWeight != null
@@ -355,6 +369,12 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
     portfolio_metric_count: metricCount,
     backtest_metric_count: backtestMetricCount,
     backtest_result_row_count: backtestResultRowCount,
+    strategy_similarity_evidence_status: strategySimilarityEvidenceStatus,
+    strategy_similarity_evidence_source: strategySimilarityEvidenceSource,
+    strategy_similarity_algorithm_owner: strategySimilarityAlgorithmOwner,
+    strategy_similarity_medoid_algorithm: strategySimilarityMedoidAlgorithm,
+    strategy_similarity_degraded_reason: strategySimilarityDegradedReason,
+    strategy_similarity_scope: 'strategy_supported_symbols_graph_evidence_not_stock_selector',
     strategy_count: matrixStrategyCount ?? metricCount ?? activeStrategyIds.length,
     strategy_metric_count: metricCount,
     strategy_matrix_strategy_count: matrixStrategyCount,
@@ -764,16 +784,30 @@ export function summarizeStrategyPortfolioIntelligenceHealth(
     .map(layer125PortfolioSummaryFromFunnel)
     .filter((portfolio): portfolio is Record<string, unknown> => Boolean(portfolio))
   const statusCounts: Record<string, number> = {}
+  const similarityStatusCounts: Record<string, number> = {}
   const sources = new Set<string>()
+  const similaritySources = new Set<string>()
+  const similarityOwners = new Set<string>()
+  const similarityMedoidAlgorithms = new Set<string>()
   const metricCounts: Array<number | null> = []
   const backtestMetricCounts: Array<number | null> = []
   const backtestResultRowCounts: Array<number | null> = []
+  let similarityDegradedCount = 0
 
   for (const portfolio of portfolios) {
     const status = String(portfolio.portfolio_metric_status ?? 'unknown').trim() || 'unknown'
     incrementCount(statusCounts, status)
     const source = String(portfolio.portfolio_metric_source ?? '').trim()
     if (source) sources.add(source)
+    const similarityStatus = String(portfolio.strategy_similarity_evidence_status ?? 'unknown').trim() || 'unknown'
+    incrementCount(similarityStatusCounts, similarityStatus)
+    const similaritySource = String(portfolio.strategy_similarity_evidence_source ?? '').trim()
+    if (similaritySource) similaritySources.add(similaritySource)
+    const similarityOwner = String(portfolio.strategy_similarity_algorithm_owner ?? '').trim()
+    if (similarityOwner) similarityOwners.add(similarityOwner)
+    const similarityMedoid = String(portfolio.strategy_similarity_medoid_algorithm ?? '').trim()
+    if (similarityMedoid) similarityMedoidAlgorithms.add(similarityMedoid)
+    if (String(portfolio.strategy_similarity_degraded_reason ?? '').trim()) similarityDegradedCount += 1
     metricCounts.push(toNullableNumber(portfolio.portfolio_metric_count))
     backtestMetricCounts.push(toNullableNumber(portfolio.backtest_metric_count))
     backtestResultRowCounts.push(toNullableNumber(portfolio.backtest_result_row_count))
@@ -800,6 +834,11 @@ export function summarizeStrategyPortfolioIntelligenceHealth(
     portfolio_metric_status: status,
     portfolio_metric_status_counts: statusCounts,
     portfolio_metric_sources: [...sources].sort(),
+    strategy_similarity_evidence_status_counts: similarityStatusCounts,
+    strategy_similarity_sources: [...similaritySources].sort(),
+    strategy_similarity_algorithm_owners: [...similarityOwners].sort(),
+    strategy_similarity_medoid_algorithms: [...similarityMedoidAlgorithms].sort(),
+    strategy_similarity_degraded_count: similarityDegradedCount,
     metric_count_max: metricCountMax,
     metric_count_sum: Math.round(metricCounts.reduce((sum, value) => sum + (value ?? 0), 0)),
     backtest_metric_count_max: maxNullable(backtestMetricCounts),

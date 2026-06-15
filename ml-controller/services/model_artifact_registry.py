@@ -488,6 +488,38 @@ def _lifecycle_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[str
     return registrations
 
 
+def _train_stage_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    version = payload_dict.get("candidate_version")
+    if not version:
+        return {}
+    version = str(version)
+    stages = _nested_dict(payload_dict.get("stages"))
+    train = _nested_dict(stages.get("train"))
+    ic_tracking = _nested_dict(train.get("ic_tracking"))
+    registrations: dict[str, dict[str, Any]] = {}
+    for model_name, raw_metrics in ic_tracking.items():
+        model_name = str(model_name)
+        if not is_production_artifact_model(model_name):
+            continue
+        metrics = _nested_dict(raw_metrics)
+        model_cpcv = metrics.get("model_cpcv") if isinstance(metrics.get("model_cpcv"), dict) else None
+        oos_ic = metrics.get("oos_ic") if metrics.get("oos_ic") is not None else metrics.get("ic")
+        registrations[model_name] = {
+            "status": "registered" if payload_dict.get("status") == "completed" else "error",
+            "version": version,
+            "gcs_path": model_artifact_path(model_name, version),
+            "metadata_path": model_metadata_path(model_name, version),
+            "oos_ic": oos_ic,
+            "metrics": metrics,
+            "model_cpcv": model_cpcv,
+            "training_run_id": payload_dict.get("run_id") or payload_dict.get("trained_at"),
+            "training_manifest_path": payload_dict.get("training_manifest_path"),
+            "evaluation_baseline_version": None,
+            "registration_source": "train_stage_ic_tracking",
+        }
+    return registrations
+
+
 def _artifact_record_from_registration(
     *,
     payload_dict: dict[str, Any],
@@ -582,9 +614,11 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
     version = payload_dict.get("candidate_version")
     registrations = payload_dict.get("challenger_registrations") or {}
+    train_stage_registrations = _train_stage_registrations(payload_dict)
     lifecycle_registrations = _lifecycle_registrations(payload_dict)
     if not version or (
         (not isinstance(registrations, dict) or not registrations)
+        and not train_stage_registrations
         and not lifecycle_registrations
     ):
         return []
@@ -595,6 +629,17 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     )
     now = _now_iso()
     out_by_id: dict[str, dict[str, Any]] = {}
+
+    for model_name, raw_registration in train_stage_registrations.items():
+        record = _artifact_record_from_registration(
+            payload_dict=payload_dict,
+            model_name=model_name,
+            raw_registration=raw_registration,
+            candidate_type=candidate_type,
+            now=now,
+            source="train_stage",
+        )
+        out_by_id[record["artifact_id"]] = record
 
     for model_name, raw_registration in registrations.items():
         model_name = str(model_name)

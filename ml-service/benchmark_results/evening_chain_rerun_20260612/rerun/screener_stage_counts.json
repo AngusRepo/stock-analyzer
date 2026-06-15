@@ -1,0 +1,120 @@
+[
+  {
+    "results": [
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "buzz_evidence",
+        "decision": "observe",
+        "cnt": 46
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "diversity_cooldown",
+        "decision": "observe",
+        "cnt": 18
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "final_selection",
+        "decision": "observe",
+        "cnt": 21
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "l1_candidate_seed_after_overlay",
+        "decision": "selected",
+        "cnt": 21
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer1_raw_signal_observe",
+        "decision": "observe",
+        "cnt": 40
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "observe",
+        "cnt": 99
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "pass",
+        "cnt": 21
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer2_coarse_ml_gate",
+        "decision": "observe",
+        "cnt": 42
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "drop",
+        "cnt": 17
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "pass",
+        "cnt": 40
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "rrg_overlay",
+        "decision": "observe",
+        "cnt": 120
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "scoring",
+        "decision": "pass",
+        "cnt": 506
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "strategy_pool_ml_queue",
+        "decision": "pass",
+        "cnt": 71
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "strategy_pool_research_only",
+        "decision": "observe",
+        "cnt": 9
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "universe",
+        "decision": "drop",
+        "cnt": 1472
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "universe",
+        "decision": "pass",
+        "cnt": 506
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.864
+      },
+      "duration": 0.864,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2042171392,
+      "rows_read": 3065,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

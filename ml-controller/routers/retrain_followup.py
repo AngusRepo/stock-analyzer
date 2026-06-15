@@ -240,7 +240,10 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
     if payload.lock_key:
         lock_release["attempted"] = True
         try:
-            retrain_lock.release(payload.lock_key)
+            retrain_lock.release(
+                payload.lock_key,
+                expected_metadata={"run_id": payload.run_id} if payload.run_id else None,
+            )
             lock_release["released"] = True
             downstream_notes = "lock_released"
         except Exception as e:

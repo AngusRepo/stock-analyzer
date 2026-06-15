@@ -41,6 +41,19 @@ def _coerce_float(value: Any, default: float) -> float:
         return default
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
 def _env_str_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -655,6 +668,7 @@ class UniversalTrainingPolicy:
             "register_challengers": False,
             "model_cpcv_policy": model_cpcv_policy,
             "label_horizon_days": label_horizon_days,
+            "tree_model_split": _coerce_bool(payload.get("tree_model_split"), True),
         }
         for key in ("run_date", "as_of_date", "max_prep_stale_days"):
             if payload.get(key) is not None:

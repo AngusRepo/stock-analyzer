@@ -811,8 +811,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             eval_metric="rmse",
             random_state=42,
             verbosity=0,
-            n_jobs=-1,
+            n_jobs=2,
         )
+        print(f"[TrainUniversal] XGBoost fit starting rows={len(X_train)} features={len(feature_names)}")
         xgb.fit(X_train, y_train)
         preds = xgb.predict(X_test)
         ic = _oos_ic(preds, y_test)
@@ -824,6 +825,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         results["XGBoost"] = {"skipped": True}
     except Exception as exc:
         results["XGBoost"] = {"error": str(exc)}
+        print(f"[TrainUniversal] XGBoost failed: {exc}")
 
 
     try:
@@ -839,8 +841,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             max_features="sqrt",
             bootstrap=True,
             random_state=42,
-            n_jobs=-1,
+            n_jobs=2,
         )
+        print(f"[TrainUniversal] ExtraTrees fit starting rows={len(X_train)} features={len(feature_names)}")
         et.fit(X_train, y_train)
         preds = et.predict(X_test)
         ic = _oos_ic(preds, y_test)
@@ -852,6 +855,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         results["ExtraTrees"] = {"skipped": True}
     except Exception as exc:
         results["ExtraTrees"] = {"error": str(exc)}
+        print(f"[TrainUniversal] ExtraTrees failed: {exc}")
 
     try:
         if not _should_train("LightGBM"):
@@ -869,8 +873,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             min_child_samples=20,
             random_state=42,
             verbose=-1,
-            n_jobs=-1,
+            n_jobs=2,
+            force_col_wise=True,
         )
+        print(f"[TrainUniversal] LightGBM fit starting rows={len(X_train)} features={len(feature_names)}")
         lgbm.fit(X_train, y_train)
         preds = lgbm.predict(X_test)
         ic = _oos_ic(preds, y_test)
@@ -882,6 +888,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         results["LightGBM"] = {"skipped": True}
     except Exception as exc:
         results["LightGBM"] = {"error": str(exc)}
+        print(f"[TrainUniversal] LightGBM failed: {exc}")
 
 
     can_update_active_stacker = (
@@ -967,7 +974,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         eval_metric="rmse",
                         random_state=42,
                         verbosity=0,
-                        n_jobs=-1,
+                        n_jobs=2,
                     )
                 elif model_name == "ExtraTrees":
                     from sklearn.ensemble import ExtraTreesRegressor
@@ -980,7 +987,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         max_features="sqrt",
                         bootstrap=True,
                         random_state=42,
-                        n_jobs=-1,
+                        n_jobs=2,
                     )
                 elif model_name == "LightGBM":
                     import lightgbm as lgb
@@ -996,7 +1003,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         min_child_samples=20,
                         random_state=42,
                         verbose=-1,
-                        n_jobs=-1,
+                        n_jobs=2,
+                        force_col_wise=True,
                     )
                 else:
                     raise ValueError(f"Unsupported CPCV model family: {model_name}")
@@ -1006,6 +1014,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             for model_name in TREE_MODEL_NAMES:
                 if model_name not in trained_models:
                     continue
+                print(f"[TrainUniversal] {model_name} CPCV starting")
                 evidence = evaluate_model_cpcv_rank_ic(
                     model=model_name,
                     X=X,

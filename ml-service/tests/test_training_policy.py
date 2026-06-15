@@ -287,6 +287,7 @@ def test_universal_training_policy_keeps_current_defaults():
         "register_challengers": False,
         "model_cpcv_policy": {"family_adapters": {}},
         "label_horizon_days": 5,
+        "tree_model_split": True,
     }
 
 

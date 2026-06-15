@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 
-from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab
+from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, strategy_similarity
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -110,6 +110,7 @@ app.include_router(meta_learning.router, dependencies=[Depends(verify_token)])
 app.include_router(paper_challenger.router, dependencies=[Depends(verify_token)])
 app.include_router(breeze2.router, dependencies=[Depends(verify_token)])
 app.include_router(finlab.router, dependencies=[Depends(verify_token)])
+app.include_router(strategy_similarity.router, dependencies=[Depends(verify_token)])
 # 2026-04-07 Phase 1.6: optuna routes 從 Modal 移到 Cloud Run
 if optuna_router:
     app.include_router(optuna_router.router, dependencies=[Depends(verify_token)])
@@ -152,6 +153,44 @@ def _warmup_payload(symbol: str, stock_id: int) -> dict:
     }
 
 
+def _strategy_similarity_warmup_payload() -> dict:
+    return {
+        "edge_threshold": 0.1,
+        "strategies": [
+            {"strategy_id": "warmup_strategy_a", "family_id": "warmup", "symbols": ["2330", "2317", "2454"]},
+            {"strategy_id": "warmup_strategy_b", "family_id": "warmup", "symbols": ["2330", "2317", "2308"]},
+            {"strategy_id": "warmup_strategy_c", "family_id": "warmup", "symbols": ["3037", "2344", "2408"]},
+        ],
+    }
+
+
+def _summarize_strategy_similarity_warmup_result(result) -> dict:
+    if not isinstance(result, dict):
+        return {
+            "status": "degraded",
+            "error": "invalid_strategy_similarity_evidence_result",
+        }
+
+    preflight = result.get("kmedoids_pam_preflight")
+    preflight_status = result.get("kmedoids_pam_preflight_status")
+    if isinstance(preflight, dict) and preflight.get("status"):
+        preflight_status = preflight.get("status")
+
+    is_official_modal = result.get("algorithm_owner") == "ml-service-modal-python"
+    is_computed = result.get("status") == "computed"
+    is_pam_ready = preflight_status == "pass"
+    return {
+        "status": "ok" if is_computed and is_official_modal and is_pam_ready else "degraded",
+        "n_input": result.get("strategy_count"),
+        "component_count": result.get("component_count"),
+        "edge_count": result.get("edge_count"),
+        "algorithm_owner": result.get("algorithm_owner"),
+        "medoid_algorithm": result.get("medoid_algorithm"),
+        "kmedoids_pam_preflight_status": preflight_status,
+        "error": result.get("reason") or result.get("error"),
+    }
+
+
 @app.post("/warmup", dependencies=[Depends(verify_token)])
 async def warmup():
     """Prewarm Modal hot-path inference functions before the daily pipeline."""
@@ -164,12 +203,18 @@ async def warmup():
         "predict_batch_v2": modal_client.batch_predict(payloads),
         "gnn_graphsage_universal_predict": modal_client.gnn_graphsage_batch_predict(payloads),
         "timesfm_universal_predict": modal_client.timesfm_batch_predict(series),
+        "strategy_similarity_evidence": modal_client.strategy_similarity_evidence(_strategy_similarity_warmup_payload()),
     }
     results = {}
     for name, awaitable in targets.items():
         try:
             started = asyncio.get_running_loop().time()
             result = await asyncio.wait_for(awaitable, timeout=90.0)
+            if name == "strategy_similarity_evidence":
+                summary = _summarize_strategy_similarity_warmup_result(result)
+                summary["elapsed_sec"] = round(asyncio.get_running_loop().time() - started, 3)
+                results[name] = summary
+                continue
             results[name] = {
                 "status": "ok" if not (isinstance(result, dict) and result.get("error")) else "degraded",
                 "elapsed_sec": round(asyncio.get_running_loop().time() - started, 3),

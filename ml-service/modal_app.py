@@ -467,7 +467,11 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     train_group_specs = {
         "tree": {
-            "spawn": lambda p: train_tree_models.spawn(p),
+            "spawn": lambda p: (
+                train_tree_models_split_parent.spawn(p)
+                if _tree_model_split_enabled(p)
+                else train_tree_models.spawn(p)
+            ),
             "payload": lambda: build_group_train_payload(base_train_payload, "tree"),
             "mergeable": training_group_feature_policy("tree").mergeable_oos,
             "models": models_for_training_group("tree"),
@@ -1142,6 +1146,22 @@ def predict_l2_tree_batch(payload: dict) -> dict:
 
 
 @app.function(
+    cpu=1,
+    memory=2048,
+    timeout=300,
+    min_containers=0,
+    scaledown_window=900,
+    max_containers=2,
+)
+def strategy_similarity_evidence(payload: dict) -> dict:
+    """L1.25 strategy similarity graph evidence owned by Modal/Python."""
+    _setup_env()
+    from app.strategy_similarity_evidence import build_strategy_similarity_evidence
+
+    return build_strategy_similarity_evidence(payload or {})
+
+
+@app.function(
     cpu=2,
     memory=8192,
     timeout=900,
@@ -1298,6 +1318,47 @@ def train_tree_model(payload: dict) -> dict:
             "type": "tree_model",
             "tree_split_model": payload.get("tree_split_model"),
         }
+
+
+@app.function(
+    cpu=1,
+    memory=1024,
+    timeout=1800,
+    scaledown_window=60,
+    max_containers=2,
+)
+def train_tree_models_split_parent(payload: dict) -> dict:
+    """Low-memory reducer for split tree retrain children."""
+    _setup_env()
+    from app.training_finalizer import reduce_tree_model_child_results
+    from app.training_policy import build_tree_model_child_payloads
+    try:
+        child_payloads = build_tree_model_child_payloads(payload)
+        print(
+            "[TrainTreeSplitParent] spawning children="
+            f"{list(child_payloads.keys())} version={payload.get('output_model_version')}"
+        )
+        handles = {
+            model_name: train_tree_model.spawn(child_payload)
+            for model_name, child_payload in child_payloads.items()
+        }
+        child_results = {
+            model_name: handle.get()
+            for model_name, handle in handles.items()
+        }
+        combined_artifact, artifact_error = _combine_tree_child_oos_artifacts(child_results, payload)
+        reduced = reduce_tree_model_child_results(
+            child_results,
+            combined_oos_artifact=combined_artifact,
+            oos_artifact_error=artifact_error,
+        )
+        print(
+            "[TrainTreeSplitParent] reduced children="
+            f"{list(child_results.keys())} error={reduced.get('error')}"
+        )
+        return reduced
+    except Exception as e:
+        return {"error": str(e), "type": "tree_models_split_parent"}
 
 
 @app.function(
@@ -1779,9 +1840,14 @@ def train_dlinear_universal(payload: dict) -> dict:
     try:
         import torch
         device = payload.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+        sequence_records = payload.get("sequence_records") or []
+        print(
+            f"[DLinearTrain] starting series={len(sequence_records)} "
+            f"seq_len={payload.get('seq_len', 512)} device={device}"
+        )
         result = train_dlinear(
             series_close=payload.get("series_close") or [],
-            sequence_records=payload.get("sequence_records") or None,
+            sequence_records=sequence_records or None,
             seq_len=payload.get("seq_len", 512),
             pred_len=payload.get("pred_len", 5),
             kernel=payload.get("kernel", 25),
@@ -1798,6 +1864,10 @@ def train_dlinear_universal(payload: dict) -> dict:
         result["metadata"]["version"] = version
         result["metadata"]["model_pool_version"] = version
         saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
+        print(
+            f"[DLinearTrain] done version={version} "
+            f"oos_ic={result.get('ic_tracking', {}).get('DLinear', {}).get('oos_ic')}"
+        )
         return {
             "saved": saved,
             "metadata": result["metadata"],
@@ -1808,6 +1878,7 @@ def train_dlinear_universal(payload: dict) -> dict:
         }
     except Exception as e:
         import traceback
+        print(f"[DLinearTrain] failed: {e}")
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_dlinear_universal"}
 
 

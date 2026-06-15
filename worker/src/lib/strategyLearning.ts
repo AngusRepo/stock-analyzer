@@ -1321,12 +1321,15 @@ export async function buildStrategyLearningSummary(
 export async function runStrategyLearningClosure(
   db: D1Database,
   date: string,
+  options: { persistPolicy?: boolean } = {},
 ): Promise<string> {
   await ensureStrategyLearningTables(db)
   const seeded = await seedDefaultStrategySpecRegistry(db)
   const decisions = await materializeStrategyDecisionLog(db, { date, dryRun: false })
   const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
-  const policy = await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
+  const policy = options.persistPolicy === false
+    ? null
+    : await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
   return [
     `seeded=${seeded.seeded}`,
     `spec_source=${decisions.spec_source}`,
@@ -1334,7 +1337,7 @@ export async function runStrategyLearningClosure(
     `decision_rows=${decisions.persisted_rows}`,
     `reward_source_rows=${rewards.source_rows}`,
     `reward_rows=${rewards.persisted_rows}`,
-    `policy=${policy.policy_state.status}`,
-    `policy_eligible=${policy.policy_state.evidence.eligible_strategy_count}`,
+    `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
+    `policy_eligible=${policy ? policy.policy_state.evidence.eligible_strategy_count : 'n/a'}`,
   ].join(' ')
 }

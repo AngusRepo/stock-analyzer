@@ -29,6 +29,24 @@ PROMOTION_REQUIRED_GATES = [
     "decision_engine_review",
 ]
 
+SIMILARITY_EVIDENCE_CANDIDATE_TYPES = {
+    "similarity_evidence",
+    "clustering_evidence",
+    "graph_similarity_evidence",
+    "strategy_similarity_evidence",
+}
+
+SIMILARITY_PROMOTION_REQUIRED_GATES = [
+    "no_new_selector",
+    "no_hardcoded_cluster_count",
+    "no_topk_fallback",
+    "l15_pairwise_corr_not_worse",
+    "l2_l3_quality_not_down",
+    "l4_cluster_concentration_down",
+    "backtest_sharpe_bias_fixed",
+    "evening_chain_runtime_acceptable",
+]
+
 PAPER_ACTIVE_REQUIRED_GATES = [
     "backtest_reality",
     "walk_forward",
@@ -70,6 +88,53 @@ def _gate(name: str, evidence: dict[str, Any]) -> dict[str, Any]:
         "passed": passed,
         "evidence": evidence.get(name),
     }
+
+
+def _numeric_gate(
+    name: str,
+    evidence: dict[str, Any],
+    predicate,
+) -> dict[str, Any]:
+    raw = evidence.get(name)
+    if isinstance(raw, dict):
+        if raw.get("passed") is not None or raw.get("gate_pass") is not None:
+            return {
+                "name": name,
+                "passed": bool(raw.get("passed") or raw.get("gate_pass")),
+                "evidence": raw,
+            }
+        raw = raw.get("value")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return {
+            "name": name,
+            "passed": False,
+            "evidence": evidence.get(name),
+        }
+    return {
+        "name": name,
+        "passed": bool(predicate(value)),
+        "evidence": evidence.get(name),
+    }
+
+
+def _similarity_promotion_gates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _gate("no_new_selector", evidence),
+        _gate("no_hardcoded_cluster_count", evidence),
+        _gate("no_topk_fallback", evidence),
+        _numeric_gate("l15_pairwise_corr_not_worse", evidence, lambda value: value <= 0),
+        _numeric_gate("l2_l3_quality_not_down", evidence, lambda value: value >= 0),
+        _numeric_gate("l4_cluster_concentration_down", evidence, lambda value: value <= 0),
+        _gate("backtest_sharpe_bias_fixed", evidence),
+        _gate("evening_chain_runtime_acceptable", evidence),
+    ]
+
+
+def validate_similarity_evidence_promotion(evidence: dict[str, Any]) -> list[str]:
+    gates = _similarity_promotion_gates(evidence)
+    return [gate["name"] for gate in gates if not gate["passed"]]
 
 
 def _permissions(**overrides: bool) -> dict[str, bool]:
@@ -129,6 +194,7 @@ def build_v4_promotion_packet(
     generated_at: str,
 ) -> dict[str, Any]:
     lane = str(candidate.get("lane") or "").strip().upper()
+    candidate_type = str(candidate.get("candidate_type") or "").strip()
     requested_runtime = str(candidate.get("requested_runtime") or "").strip()
     cleaning_gates = [_gate(name, evidence) for name in CLEANING_REQUIRED_GATES]
     promotion_gates = [_gate(name, evidence) for name in PROMOTION_REQUIRED_GATES]
@@ -138,7 +204,14 @@ def build_v4_promotion_packet(
     promotion_failed = [gate["name"] for gate in promotion_gates if not gate["passed"]]
     paper_active_failed = [gate["name"] for gate in paper_active_gates if not gate["passed"]]
     paper_primary_failed = [gate["name"] for gate in paper_primary_gates if not gate["passed"]]
-    all_gates = cleaning_gates + promotion_gates
+    similarity_gates: list[dict[str, Any]] = []
+    if candidate_type in SIMILARITY_EVIDENCE_CANDIDATE_TYPES:
+        similarity_gates = _similarity_promotion_gates(evidence)
+        promotion_failed = [
+            *promotion_failed,
+            *[gate["name"] for gate in similarity_gates if not gate["passed"]],
+        ]
+    all_gates = cleaning_gates + promotion_gates + similarity_gates
 
     if requested_runtime in FORBIDDEN_RUNTIMES:
         return _decision_packet(

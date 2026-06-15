@@ -38,6 +38,8 @@ REQUIRED_SCHEDULER_JOBS = (
 
 REQUIRED_RUNTIME_PINS = (
     "scikit-learn==1.9.0",
+    "networkx==3.6.1",
+    "scikit-learn-extra==0.3.0",
     "xgboost==3.2.0",
     "lightgbm==4.6.0",
     "torch==2.12.0",
@@ -46,6 +48,12 @@ REQUIRED_RUNTIME_PINS = (
     "tabm==0.0.3",
     "timesfm[torch]==2.0.1",
     "optuna==4.9.0",
+)
+
+REQUIRED_CONTROLLER_RUNTIME_PINS = (
+    "optuna==4.9.0",
+    "scikit-learn==1.9.0",
+    "networkx==3.6.1",
 )
 
 REQUIRED_WORKER_RUNTIME_PINS = {
@@ -115,6 +123,16 @@ def _check_text_regex_absent(
     return _check(True, check_id, detail)
 
 
+def _check_file_absent(
+    root: Path,
+    rel_path: str,
+    check_id: str,
+    detail: str,
+) -> dict[str, Any]:
+    path = root.joinpath(rel_path)
+    return _check(not path.exists(), check_id, detail if not path.exists() else f"{detail}; legacy_file={rel_path}")
+
+
 def _scheduler_checks(root: Path) -> list[dict[str, Any]]:
     manifest = _load_json(root, "infra/gcp-scheduler-jobs.json")
     jobs = {str(job.get("id")) for job in manifest.get("jobs") or []}
@@ -127,14 +145,28 @@ def _scheduler_checks(root: Path) -> list[dict[str, Any]]:
 def _runtime_pin_checks(root: Path) -> list[dict[str, Any]]:
     requirements = _read_text(root, "ml-service/requirements.txt")
     controller_requirements = _read_text(root, "ml-controller/requirements.txt")
+    ml_service_dockerfile = _read_text(root, "ml-service/Dockerfile")
     checks = [
         _check(pin in requirements, f"runtime_pin:{pin}", "reviewed official/stable runtime pin is present")
         for pin in REQUIRED_RUNTIME_PINS
     ]
     checks.append(_check(
-        "optuna==4.9.0" in controller_requirements,
-        "controller_runtime_pin:optuna==4.9.0",
-        "controller Optuna/GA route dependency is pinned to reviewed official/stable version",
+        "FROM python:3.11-slim" in ml_service_dockerfile and "FROM python:3.12-slim" not in ml_service_dockerfile,
+        "runtime_image:ml_service_python311_sklearn_extra_wheel",
+        "ml-service runtime is Python 3.11 so official sklearn-extra KMedoids/PAM resolves from a manylinux wheel",
+    ))
+    checks.extend([
+        _check(
+            pin in controller_requirements,
+            f"controller_runtime_pin:{pin}",
+            "controller dependency is pinned to reviewed official/stable version",
+        )
+        for pin in REQUIRED_CONTROLLER_RUNTIME_PINS
+    ])
+    checks.append(_check(
+        "scikit-learn-extra" not in controller_requirements,
+        "controller_runtime_owner:no_sklearn_extra_hard_pin",
+        "KMedoids/PAM official dependency is owned by ml-service/Modal, not ml-controller proxy runtime",
     ))
     return checks
 
@@ -442,6 +474,222 @@ def _l4_execution_checks(root: Path) -> list[dict[str, Any]]:
             ),
             "roadmap:p2:l4_sparse_zero_selection_diagnostics",
             "L4 sparse allocation writes per-candidate diagnostics for selected and zero-selection outcomes",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/services/similarity_evidence.py",
+            (
+                "SIMILARITY_EVIDENCE_VERSION",
+                "networkx",
+                "LedoitWolf",
+                "evidence_only",
+                "hdbscan_research_audit",
+                "sklearn.cluster.HDBSCAN",
+                "outlier_score",
+                "cluster_stability",
+                "research_shadow_only",
+            ),
+            "roadmap:v4:shared_similarity_evidence",
+            "Shared controller similarity evidence uses official graph/covariance/HDBSCAN surfaces without becoming a selector",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/services/recommendation_service.py",
+            (
+                "cluster_id",
+                "cluster_exposure",
+                "max_cluster_weight",
+                "covariance_method",
+                "cluster_penalty_applied",
+            ),
+            "roadmap:v4:l4_cluster_covariance_evidence",
+            "L4 sparse allocation persists cluster exposure and LedoitWolf covariance evidence",
+        ),
+        _check_text_contains(
+            root,
+            "ml-service/app/strategy_similarity_evidence.py",
+            (
+                "STRATEGY_SIMILARITY_EVIDENCE_VERSION",
+                "ml-service-modal-python",
+                "networkx.Graph+networkx.connected_components",
+                "sklearn_extra.cluster.KMedoids",
+                "method=\"pam\"",
+                "kmedoids_pam_preflight_status",
+                "global_k_hardcoded",
+                "production_selector",
+                "self_implemented_algorithm",
+            ),
+            "roadmap:v4:l125_modal_strategy_similarity_owner",
+            "L1.25 strategy similarity graph is owned by Modal/Python with official NetworkX and sklearn-extra PAM evidence",
+        ),
+        _check_text_contains(
+            root,
+            "ml-service/modal_app.py",
+            (
+                "def strategy_similarity_evidence",
+                "build_strategy_similarity_evidence",
+                "L1.25 strategy similarity graph evidence owned by Modal/Python",
+            ),
+            "roadmap:v4:l125_modal_function_surface",
+            "Modal app exposes the L1.25 strategy similarity evidence function",
+        ),
+        _check_text_contains(
+            root,
+            "ml-service/app/gnn_batch_runtime.py",
+            (
+                "build_multi_similarity_edge_index",
+                "\"edge_source\": \"multi_similarity_graph_v1\"",
+                "\"production_edge_replaces\": \"price_correlation_v1\"",
+                "\"allowed_use\": \"production_gnn_edge_context\"",
+                "\"production_edge_active\": True",
+                "\"selector\": False",
+                "import networkx as nx",
+                "strategy_co_hit",
+                "sector_factor_similarity",
+                "finlab_chip_flow_similarity",
+                "regime_co_movement",
+                "threshold_quantile=threshold_quantile",
+                "context_records=context_records",
+            ),
+            "roadmap:v4:gnn_multi_similarity_edge_production",
+            "GNN production GraphSAGE uses NetworkX multi-source similarity graph edges without becoming a selector",
+        ),
+        _check_text_contains(
+            root,
+            "ml-service/app/batch_prediction.py",
+            (
+                "_build_gnn_similarity_context_record",
+                "strategy_hit_vector",
+                "family_affinity_vector",
+                "sector_factor",
+                "finlab_chip_flow",
+                "context_records=context_records",
+                "runtime_options[\"gnn_batch_context\"] = graph_report",
+            ),
+            "roadmap:v4:gnn_batch_context_source_wiring",
+            "GNN batch prediction passes existing strategy/sector/chip/regime context into the production edge builder",
+        ),
+        _check_text_regex_absent(
+            root,
+            "ml-service/app/gnn_batch_runtime.py",
+            r"shadow_edge_experiment|multi_similarity_graph_shadow|shadow_telemetry_only",
+            "roadmap:v4:gnn_no_shadow_edge_path",
+            "GNN multi-similarity edge integration must not remain a shadow-only path",
+        ),
+        _check_file_absent(
+            root,
+            "ml-service/app/gnn_shadow.py",
+            "roadmap:v4:gnn_legacy_shadow_wrapper_removed",
+            "Legacy GNN shadow wrapper must be removed after production multi-source edge promotion",
+        ),
+        _check_file_absent(
+            root,
+            "ml-service/app/gnn_model.py",
+            "roadmap:v4:gnn_legacy_numpy_shadow_model_removed",
+            "Legacy numpy-only shadow GNN model must be removed after GraphSAGE production owner is active",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/routers/strategy_similarity.py",
+            (
+                "prefix=\"/l125\"",
+                "/strategy_similarity_evidence",
+                "modal_client.strategy_similarity_evidence",
+                "/hdbscan_research_audit",
+                "mutation_allowed",
+                "production_decision_path",
+                "research_shadow_only",
+                "fail closed",
+            ),
+            "roadmap:v4:l125_controller_modal_proxy",
+            "L1.25 strategy similarity route proxies to Modal and exposes HDBSCAN only as research/shadow evidence",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/main.py",
+            (
+                "_strategy_similarity_warmup_payload",
+                "\"strategy_similarity_evidence\": modal_client.strategy_similarity_evidence",
+                "kmedoids_pam_preflight_status",
+                "ml-service-modal-python",
+            ),
+            "roadmap:v4:l125_modal_warmup_preflight",
+            "Controller warmup exercises Modal L1.25 strategy similarity evidence and reports official PAM preflight status",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/adminTriggerWorkerDomainTasks.ts",
+            (
+                "summarizeMlControllerWarmupTargets",
+                "strategy_similarity_evidence",
+                "kmedoids_pam_preflight_status",
+                "ML Controller warmup ${targets.ok ? 'ok' : 'degraded'}",
+            ),
+            "roadmap:v4:l125_worker_warmup_fail_visible",
+            "Worker admin warmup reports degraded when any controller warmup target, including L1.25 PAM preflight, is degraded",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/marketScreener.ts",
+            (
+                "buildStrategySimilarityEvidencePayload",
+                "'/l125/strategy_similarity_evidence'",
+                "coerceModalStrategySimilarityGraphEvidence",
+                "strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence",
+                "strategy_similarity_evidence_status",
+            ),
+            "roadmap:v4:l125_worker_modal_wiring",
+            "Worker production screener calls controller/Modal for L1.25 strategy similarity evidence before routing",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/strategyPortfolioMetrics.ts",
+            (
+                "kmedoids_pam_preflight_status",
+                "cleanText(record.status) !== 'computed'",
+                "cleanText(preflight.status) !== 'pass'",
+                "record.self_implemented_algorithm !== false",
+            ),
+            "roadmap:v4:l125_modal_evidence_strict_coercion",
+            "Worker rejects Modal L1.25 strategy similarity evidence unless official PAM preflight passed",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/screenerFunnelEvidence.ts",
+            (
+                "strategy_similarity_evidence_status",
+                "strategy_similarity_evidence_source",
+                "strategy_similarity_algorithm_owner",
+                "strategy_similarity_medoid_algorithm",
+                "strategy_similarity_degraded_count",
+            ),
+            "roadmap:v4:l125_similarity_observability",
+            "Daily funnel summaries expose L1.25 Modal strategy similarity source/status/algorithm evidence",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/multiStrategyPleRouter.ts",
+            (
+                "strategy_similarity_graph",
+                "strategy_cluster_crowding_score",
+                "strategy_cluster_uniqueness_score",
+                "effective_strategy_count",
+            ),
+            "roadmap:v4:l125_worker_consumes_strategy_similarity_fields",
+            "Worker L1.25/L1.5 surface consumes strategy similarity fields but is not the formal algorithm owner",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/services/promotion_gate_contract.py",
+            (
+                "SIMILARITY_PROMOTION_REQUIRED_GATES",
+                "no_new_selector",
+                "no_hardcoded_cluster_count",
+                "no_topk_fallback",
+                "l15_pairwise_corr_not_worse",
+            ),
+            "roadmap:v4:similarity_promotion_gate",
+            "Similarity/clustering evidence has explicit production promotion gates",
         ),
         _check_text_contains(
             root,

@@ -1,0 +1,6 @@
+﻿{
+    "started_utc":  "2026-06-14T15:50:41.4360633Z",
+    "completed_utc":  "2026-06-14T15:50:45.4929054Z",
+    "status_code":  200,
+    "content":  "{\"success\":true,\"message\":\"evening-chain å·è¡æå\",\"triggered_at\":\"2026-06-14T15:50:49.019Z\",\"result\":\"triggered evening-chain: triggered finlab-v4-backfill run_id=finlab-v4-3y-20260612-1781452245910 function_call_id=fc-01KV3D83SH4BZNJDG1YJX9JGVA callback expected; awaiting FinLab canonical callback\"}"
+}

@@ -9,6 +9,10 @@ import {
 } from './strategySpec'
 import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig'
 import type { StrategyCandidatePoolCandidate, StrategyQueueDecision } from './strategyCandidatePool'
+import {
+  buildStrategySimilarityGraphEvidence,
+  type StrategySimilarityGraphEvidence,
+} from './strategyPortfolioMetrics'
 
 export const STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'finlab-portfolio-intelligence-v1'
@@ -48,6 +52,7 @@ export interface StrategyPortfolioMetrics {
 
 export interface StrategyPortfolioPriorSnapshot {
   version: typeof FINLAB_PORTFOLIO_INTELLIGENCE_VERSION
+  strategy_similarity_graph: StrategySimilarityGraphEvidence
   strategy_prior_weight: Record<string, number>
   family_prior_weight: Partial<Record<StrategyFamilyId, number>>
   strategy_reliability: Record<string, number>
@@ -58,6 +63,10 @@ export interface StrategyPortfolioPriorSnapshot {
   family_weights: Partial<Record<StrategyFamilyId, number>>
   strategy_crowding: Record<string, number>
   family_crowding: Partial<Record<StrategyFamilyId, number>>
+  strategy_cluster_id: Record<string, string>
+  strategy_cluster_crowding_score: Record<string, number>
+  strategy_cluster_uniqueness_score: Record<string, number>
+  effective_strategy_count: number
 }
 
 export interface MultiStrategyPleRouterComponents {
@@ -142,6 +151,13 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     strategy_matrix_cell_count: number
     strategy_matrix_expected_cell_count: number
     strategy_matrix_coverage_ratio: number
+    strategy_similarity_component_count: number
+    strategy_similarity_effective_strategy_count: number
+    strategy_similarity_edge_count: number
+    strategy_similarity_evidence_source?: string
+    strategy_similarity_algorithm_owner?: string
+    strategy_similarity_medoid_algorithm?: string
+    strategy_similarity_degraded_reason?: string
     ml_slate_count: number
     observe_only_count: number
     capacity_overflow_count: number
@@ -156,8 +172,23 @@ export interface MultiStrategyPleRoutingOptions {
   regime?: AlphaFrameworkRegime | string | null
   strategyWeights?: Record<string, number>
   strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
+  strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
   mlTeacherLabels?: Record<string, Record<string, number>>
   minRouteScore?: number
+  strategySimilarityEdgeThreshold?: number | null
+  strategySimilarityThresholdQuantile?: number | null
+}
+
+export interface StrategySimilarityEvidencePayload {
+  input_scope: 'strategy_affinity_matrix_or_strategy_supported_symbols'
+  strategies: Array<{
+    strategy_id: string
+    family_id?: string | null
+    symbols: string[]
+  }>
+  edge_threshold?: number | null
+  threshold_quantile?: number | null
+  random_state: number
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -385,8 +416,9 @@ function teacherLabelsForCandidate(
 function portfolioPriorForLabels(
   states: CandidateLabelState<StrategyCandidatePoolCandidate>[],
   specs: StrategySpec[],
-  overrides: Record<string, Partial<StrategyPortfolioMetrics>> = {},
+  options: MultiStrategyPleRoutingOptions,
 ): StrategyPortfolioPriorSnapshot {
+  const overrides = options.strategyPortfolioMetrics ?? {}
   const validSpecs = specs
     .filter((spec) => spec.status !== 'retired')
     .map(normalizeStrategySpecGovernance)
@@ -408,6 +440,18 @@ function portfolioPriorForLabels(
       labelsByStrategy.set(label.strategy_id, labels)
     }
   }
+  const localStrategySimilarityGraph = buildStrategySimilarityGraphEvidence(
+    validSpecs.map((spec) => ({
+      strategy_id: spec.id,
+      family_id: spec.familyId,
+      symbols: [...(strategySymbols.get(spec.id) ?? new Set<string>())],
+    })),
+    {
+      edgeThreshold: options.strategySimilarityEdgeThreshold,
+      thresholdQuantile: options.strategySimilarityThresholdQuantile,
+    },
+  )
+  const strategySimilarityGraph = options.strategySimilarityGraphEvidence ?? localStrategySimilarityGraph
 
   const strategy_prior_weight: Record<string, number> = {}
   const family_prior_weight: Partial<Record<StrategyFamilyId, number>> = {}
@@ -439,6 +483,8 @@ function portfolioPriorForLabels(
     const avgAffinity = average(positiveLabels.map((label) => label.affinity), 0) / 100
     const poolQuota = finiteNumber(spec?.candidatePolicy?.poolQuota) ?? 12
     const rawTurnover = clamp(0.12 + supportRatio * 0.52 + (poolQuota / 20) * 0.18, 0, 1)
+    const graphCrowding = strategySimilarityGraph.strategy_cluster_crowding_score[strategyId] ?? 0
+    const graphUniqueness = strategySimilarityGraph.strategy_cluster_uniqueness_score[strategyId] ?? 1
     const derived = {
       rolling_sharpe: round3(clamp((avgAffinity - 0.5) * 4, -1.2, 2.2)),
       max_drawdown: round3(clamp(0.08 + supportRatio * 0.38 + maxOverlap * 0.2, 0.03, 0.75)),
@@ -446,10 +492,10 @@ function portfolioPriorForLabels(
       return_correlation: round3(clamp(maxOverlap * 0.72 + familySupportRatio * 0.28, 0, 1)),
       holding_overlap: round3(clamp(maxOverlap, 0, 1)),
       turnover: round3(rawTurnover),
-      factor_crowding: round3(clamp(familySupportRatio * 0.75 + supportRatio * 0.25, 0, 1)),
+      factor_crowding: round3(clamp(familySupportRatio * 0.52 + supportRatio * 0.18 + graphCrowding * 0.3, 0, 1)),
       ic: round3(clamp((avgAffinity - 0.5) * 0.42, -0.25, 0.3)),
       rank_ic: round3(clamp((avgAffinity - 0.5) * 0.48, -0.28, 0.35)),
-      shapley_contribution: round3(clamp(avgAffinity / Math.sqrt(Math.max(1, familyCount)), 0, 1)),
+      shapley_contribution: round3(clamp((avgAffinity / Math.sqrt(Math.max(1, familyCount))) * (0.75 + graphUniqueness * 0.25), 0, 1)),
       regime_performance: round3(clamp((avgAffinity - 0.5) * 0.24, -0.2, 0.24)),
       live_backtest_divergence: round3(clamp(maxOverlap * 0.22 + supportRatio * 0.18, 0, 0.85)),
     }
@@ -469,8 +515,16 @@ function portfolioPriorForLabels(
       live_backtest_divergence: overrideNumber(rawOverride, 'live_backtest_divergence', derived.live_backtest_divergence),
     }
     const reliability = overrideNumber(rawOverride, 'reliability', computeReliability(baseMetrics))
-    const crowdingScore = overrideNumber(rawOverride, 'crowding_score', computeCrowdingScore(baseMetrics))
-    const diversificationValue = overrideNumber(rawOverride, 'diversification_value', computeDiversificationValue(baseMetrics))
+    const crowdingScore = overrideNumber(
+      rawOverride,
+      'crowding_score',
+      round3(clamp(computeCrowdingScore(baseMetrics) * 0.78 + graphCrowding * 0.22, 0, 1)),
+    )
+    const diversificationValue = overrideNumber(
+      rawOverride,
+      'diversification_value',
+      round3(clamp(computeDiversificationValue(baseMetrics) * 0.78 + graphUniqueness * 0.22, 0, 1)),
+    )
     const priorWeight = overrideNumber(rawOverride, 'prior_weight', computePriorWeight({
       ...baseMetrics,
       reliability,
@@ -507,6 +561,7 @@ function portfolioPriorForLabels(
 
   return {
     version: FINLAB_PORTFOLIO_INTELLIGENCE_VERSION,
+    strategy_similarity_graph: strategySimilarityGraph,
     strategy_prior_weight,
     family_prior_weight,
     strategy_reliability,
@@ -517,6 +572,45 @@ function portfolioPriorForLabels(
     family_weights,
     strategy_crowding,
     family_crowding,
+    strategy_cluster_id: strategySimilarityGraph.strategy_cluster_id,
+    strategy_cluster_crowding_score: strategySimilarityGraph.strategy_cluster_crowding_score,
+    strategy_cluster_uniqueness_score: strategySimilarityGraph.strategy_cluster_uniqueness_score,
+    effective_strategy_count: strategySimilarityGraph.effective_strategy_count,
+  }
+}
+
+export function buildStrategySimilarityEvidencePayload<T extends StrategyCandidatePoolCandidate>(
+  candidates: T[],
+  specs: StrategySpec[],
+  options: Pick<
+    MultiStrategyPleRoutingOptions,
+    'regime' | 'strategyWeights' | 'strategySimilarityEdgeThreshold' | 'strategySimilarityThresholdQuantile'
+  > = {},
+): StrategySimilarityEvidencePayload {
+  const states = buildCandidateLabelStates(candidates, specs, { maxSlateSize: 0, ...options })
+  const validSpecs = specs
+    .filter((spec) => spec.status !== 'retired')
+    .map(normalizeStrategySpecGovernance)
+    .filter((spec) => validateStrategySpec(spec).ok)
+  const strategySymbols = new Map<string, Set<string>>()
+  for (const state of states) {
+    for (const label of state.labels) {
+      if (label.strategy_hit > 0 && label.affinity > 0) {
+        if (!strategySymbols.has(label.strategy_id)) strategySymbols.set(label.strategy_id, new Set())
+        strategySymbols.get(label.strategy_id)!.add(state.symbol)
+      }
+    }
+  }
+  return {
+    input_scope: 'strategy_affinity_matrix_or_strategy_supported_symbols',
+    edge_threshold: options.strategySimilarityEdgeThreshold ?? null,
+    threshold_quantile: options.strategySimilarityThresholdQuantile ?? null,
+    random_state: 0,
+    strategies: validSpecs.map((spec) => ({
+      strategy_id: spec.id,
+      family_id: spec.familyId,
+      symbols: [...(strategySymbols.get(spec.id) ?? new Set<string>())].sort(),
+    })),
   }
 }
 
@@ -711,7 +805,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   const strategyMatrixCandidateCount = states.length
   const strategyMatrixExpectedCellCount = strategyMatrixCandidateCount * strategyMatrixStrategyCount
   const strategyMatrixCellCount = states.reduce((sum, state) => sum + state.labels.length, 0)
-  const prior = portfolioPriorForLabels(states, specs, options.strategyPortfolioMetrics)
+  const prior = portfolioPriorForLabels(states, specs, options)
   const annotated = states.map((state) => annotateCandidate(state, prior, maxSlateSize, minRouteScore, options))
   const routed = annotated
     .filter((candidate) => candidate.strategy_router_decision === 'ml_slate')
@@ -765,6 +859,13 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       strategy_matrix_cell_count: strategyMatrixCellCount,
       strategy_matrix_expected_cell_count: strategyMatrixExpectedCellCount,
       strategy_matrix_coverage_ratio: strategyMatrixExpectedCellCount > 0 ? round3(strategyMatrixCellCount / strategyMatrixExpectedCellCount) : 1,
+      strategy_similarity_component_count: prior.strategy_similarity_graph.component_count,
+      strategy_similarity_effective_strategy_count: prior.strategy_similarity_graph.effective_strategy_count,
+      strategy_similarity_edge_count: prior.strategy_similarity_graph.edge_count,
+      strategy_similarity_evidence_source: prior.strategy_similarity_graph.source ?? 'unknown',
+      strategy_similarity_algorithm_owner: prior.strategy_similarity_graph.algorithm_owner ?? 'unknown',
+      strategy_similarity_medoid_algorithm: prior.strategy_similarity_graph.medoid_algorithm ?? 'none',
+      strategy_similarity_degraded_reason: prior.strategy_similarity_graph.degraded_reason,
       ml_slate_count: mlSlate.length,
       observe_only_count: observeOnly.length,
       capacity_overflow_count: observeOnly.filter((candidate) => candidate.strategy_router_decision === 'capacity_overflow').length,

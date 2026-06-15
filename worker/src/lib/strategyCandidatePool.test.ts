@@ -9,7 +9,8 @@ import {
   resolveStrategyCapacityBudget,
   type StrategyCandidatePoolCandidate,
 } from './strategyCandidatePool'
-import { ACTIVE_9_ML_TEACHERS, buildMultiStrategyPleRoutingPlan } from './multiStrategyPleRouter'
+import { ACTIVE_9_ML_TEACHERS, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
+import { coerceModalStrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -297,6 +298,10 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(niche.diversity_contribution != null && niche.risk_adjusted_affinity != null && niche.uncertainty != null, 'L1.5 router must expose diversity/risk/uncertainty outputs')
   assert(niche.strategy_router_components?.strategy_crowding_score != null, 'L1.25 FinLab-style prior must feed router crowding components')
   assert(niche.strategy_portfolio_prior?.strategy_metrics?.niche_quality_breakout_v1?.prior_weight != null, 'L1.25 prior must expose strategy-as-asset metrics')
+  assert(plan.telemetry.strategy_similarity_component_count >= 1, 'L1.25 graph evidence must expose natural strategy components')
+  assert(plan.telemetry.strategy_similarity_effective_strategy_count > 0, 'L1.25 graph evidence must expose effective strategy count')
+  assert(niche.strategy_portfolio_prior?.strategy_similarity_graph?.evidence_only === true, 'strategy similarity graph must remain evidence-only')
+  assert(!('selected' in (niche.strategy_portfolio_prior?.strategy_similarity_graph ?? {})), 'strategy similarity graph must not become a selector')
 }
 
 {
@@ -400,6 +405,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(reliable.ml_teacher_labels.LightGBM === 0.8, 'L1.5 should carry 9ML teacher labels as distillation labels')
   assert(reliable.strategy_router_components.teacher_alignment > crowded.strategy_router_components.teacher_alignment, 'teacher labels should improve router evidence without replacing 9ML')
   assert(reliable.strategy_portfolio_prior.strategy_reliability.reliable_low_corr_v1 > reliable.strategy_portfolio_prior.strategy_reliability.crowded_low_sharpe_v1, 'FinLab-style prior must expose strategy reliability spread')
+  assert(reliable.strategy_portfolio_prior.strategy_cluster_crowding_score.reliable_low_corr_v1 != null, 'L1.25 prior must expose graph cluster crowding')
+  assert(reliable.strategy_portfolio_prior.effective_strategy_count > 0, 'L1.25 prior must expose graph effective strategy count')
 }
 
 {
@@ -700,4 +707,101 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(topUp.strategy_pool_fallback_source === 'raw_signal_top_up', 'raw signal top-up source should be explicit outside strategy ids')
   assert(topUp.strategy_pool_decision === 'research_only_queue', 'raw signal top-up must not enter formal production ML queue')
   assert(plan.coarseQueue.length === 0, 'empty strategy pools must not fill formal L2 queue with raw-signal observe candidates')
+}
+
+{
+  const modalCandidate = {
+    ...candidates[0],
+    symbol: '9966',
+    raw_signals: rawSignalPayload({
+      closeAboveMa20Pct: 0.05,
+      volumeExpansion20: 1.5,
+      return20d: 0.08,
+    }),
+  }
+  const modalSpec = {
+    id: 'active_modal_similarity_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Active Modal similarity',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    familyId: 'TREND_RECLAIM_CONTINUATION' as const,
+    variantId: 'active_modal_similarity_v1',
+    ownerType: 'strategy' as const,
+    promotionStatus: 'production' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Modal/Python strategy similarity evidence should be injectable into L1.25.',
+    thresholds: { minPrice: 10, minCloseAboveMa20Pct: 0.01, minVolumeExpansion20: 1.1 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const payload = buildStrategySimilarityEvidencePayload([modalCandidate], [modalSpec], { regime: 'bull' })
+  assert(payload.strategies.length === 1, 'strategy similarity payload should be derived from L0/L1 labels, not a fixed strategy count')
+  assert(payload.strategies[0].symbols.includes('9966'), 'strategy similarity payload must carry supported symbols into Modal')
+
+  const injectedEvidence = coerceModalStrategySimilarityGraphEvidence({
+    schema_version: 'strategy-similarity-evidence-v1',
+    status: 'computed',
+    version: 'strategy-similarity-graph-v1',
+    source: 'modal_python',
+    algorithm_owner: 'ml-service-modal-python',
+    graph_algorithm: 'networkx.Graph+networkx.connected_components',
+    method: 'networkx_connected_components_jaccard_overlap',
+    medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
+    evidence_only: true,
+    global_k_hardcoded: false,
+    production_selector: false,
+    self_implemented_algorithm: false,
+    kmedoids_pam_preflight_status: 'pass',
+    kmedoids_pam_preflight: {
+      status: 'pass',
+      algorithm: 'sklearn_extra.cluster.KMedoids',
+      method: 'pam',
+      self_implemented_fallback: false,
+    },
+    strategy_count: 1,
+    edge_count: 0,
+    component_count: 1,
+    effective_strategy_count: 1,
+    edge_threshold: 1,
+    edge_threshold_source: 'adaptive_empty',
+    strategy_cluster_id: { active_modal_similarity_v1: 'sc000' },
+    strategy_cluster_size: { active_modal_similarity_v1: 1 },
+    strategy_cluster_crowding_score: { active_modal_similarity_v1: 0 },
+    strategy_cluster_uniqueness_score: { active_modal_similarity_v1: 1 },
+    medoid_strategy_by_cluster: { sc000: 'active_modal_similarity_v1' },
+  })
+  assert(injectedEvidence, 'Modal strategy similarity evidence should coerce to the router contract')
+  const plan = buildLayer1StrategyBreadthPlan([modalCandidate], [modalSpec], {
+    targetSize: 4,
+    coarseMlQueueSize: 2,
+    regime: 'bull',
+    strategySimilarityGraphEvidence: injectedEvidence,
+  })
+  assert(plan.telemetry.strategy_similarity_evidence_source === 'modal_python', 'L1.25 must expose Modal/Python as the strategy similarity source')
+  assert(plan.telemetry.strategy_similarity_algorithm_owner === 'ml-service-modal-python', 'L1.25 must not report Worker as the formal graph owner')
+  assert(plan.telemetry.strategy_similarity_medoid_algorithm === "sklearn_extra.cluster.KMedoids(method='pam')", 'official PAM medoid evidence should be visible')
+}
+
+{
+  const blockedEvidence = coerceModalStrategySimilarityGraphEvidence({
+    schema_version: 'strategy-similarity-evidence-v1',
+    status: 'blocked',
+    version: 'strategy-similarity-graph-v1',
+    source: 'modal_python',
+    algorithm_owner: 'ml-service-modal-python',
+    method: 'networkx_connected_components_jaccard_overlap',
+    medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
+    evidence_only: true,
+    global_k_hardcoded: false,
+    production_selector: false,
+    self_implemented_algorithm: false,
+    kmedoids_pam_preflight_status: 'blocked',
+    kmedoids_pam_preflight: { status: 'blocked', self_implemented_fallback: false },
+    strategy_count: 1,
+    strategy_cluster_id: { blocked_strategy: 'sc000' },
+  })
+  assert(blockedEvidence === null, 'blocked official PAM preflight must not be accepted as formal Modal L1.25 evidence')
 }

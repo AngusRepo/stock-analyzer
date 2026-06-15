@@ -66,6 +66,11 @@ function assert(condition: unknown, message: string): void {
         strategy_portfolio_metric_count: 11,
         strategy_portfolio_backtest_metric_count: 4,
         strategy_portfolio_backtest_result_row_count: 7,
+        strategy_similarity_evidence_status: 'modal_python',
+        strategy_similarity_evidence_source: 'modal_python',
+        strategy_similarity_algorithm_owner: 'ml-service-modal-python',
+        strategy_similarity_medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
+        strategy_similarity_degraded_reason: null,
         candidate_route_score: 79,
         ml_slate_eligibility: 0.79,
         source_universe_count: 486,
@@ -178,6 +183,10 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.portfolio_metric_status === 'ready', 'Layer1.25 metric readiness must remain visible')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.portfolio_metric_count === 11, 'Layer1.25 metric count must remain visible')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.backtest_metric_count === 4, 'Layer1.25 backtest metric count must remain visible')
+  assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.strategy_similarity_evidence_status === 'modal_python', 'Layer1.25 should expose Modal strategy similarity status')
+  assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.strategy_similarity_algorithm_owner === 'ml-service-modal-python', 'Layer1.25 strategy similarity owner must be Modal/Python')
+  assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.strategy_similarity_medoid_algorithm === "sklearn_extra.cluster.KMedoids(method='pam')", 'Layer1.25 should expose official PAM medoid evidence')
+  assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.strategy_similarity_scope === 'strategy_supported_symbols_graph_evidence_not_stock_selector', 'Layer1.25 similarity evidence must not become a stock selector')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.strategy_prior_weight === 1.2, 'Layer1.25 strategy prior should remain unnormalized')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.family_prior_weight === 1.05, 'Layer1.25 family prior should remain unnormalized')
   assert((summary?.evidence.layer125_finlab_portfolio_intelligence as any)?.strategy_reliability === 0.74, 'Layer1.25 reliability should be normalized')
@@ -254,6 +263,10 @@ function assert(condition: unknown, message: string): void {
         strategy_portfolio_metric_count: 11,
         strategy_portfolio_backtest_metric_count: 4,
         strategy_portfolio_backtest_result_row_count: 3,
+        strategy_similarity_evidence_status: 'modal_python',
+        strategy_similarity_evidence_source: 'modal_python',
+        strategy_similarity_algorithm_owner: 'ml-service-modal-python',
+        strategy_similarity_medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
         strategy_router_components: {
           strategy_prior_weight: 1.2,
           family_prior_weight: 1.05,
@@ -274,6 +287,10 @@ function assert(condition: unknown, message: string): void {
         strategy_portfolio_metric_status: 'ready',
         strategy_portfolio_metric_count: 9,
         strategy_portfolio_backtest_metric_count: 2,
+        strategy_similarity_evidence_status: 'unavailable_degraded',
+        strategy_similarity_evidence_source: 'worker_local_degraded',
+        strategy_similarity_algorithm_owner: 'worker-local-degraded-helper',
+        strategy_similarity_degraded_reason: 'controller_unavailable',
       }),
     },
   ])
@@ -289,6 +306,12 @@ function assert(condition: unknown, message: string): void {
   assert(health.metric_count_max === 11, 'daily L1.25 health should expose maximum strategy metric coverage')
   assert(health.metric_count_sum === 20, 'daily L1.25 health should expose aggregate strategy metric coverage')
   assert(health.backtest_metric_count_max === 4, 'daily L1.25 health should expose backtest metric coverage')
+  assert(health.strategy_similarity_evidence_status_counts.modal_python === 1, 'daily L1.25 health should count Modal strategy similarity evidence')
+  assert(health.strategy_similarity_evidence_status_counts.unavailable_degraded === 1, 'daily L1.25 health should count degraded strategy similarity evidence')
+  assert(health.strategy_similarity_sources.includes('modal_python'), 'daily L1.25 health should expose Modal strategy similarity source')
+  assert(health.strategy_similarity_algorithm_owners.includes('ml-service-modal-python'), 'daily L1.25 health should expose Modal/Python similarity owner')
+  assert(health.strategy_similarity_medoid_algorithms.includes("sklearn_extra.cluster.KMedoids(method='pam')"), 'daily L1.25 health should expose official PAM medoid algorithm')
+  assert(health.strategy_similarity_degraded_count === 1, 'daily L1.25 health should count degraded similarity evidence rows')
   assert(health.used_live_strategy_asset_metrics === true, 'ready non-empty L1.25 metrics should be marked live')
   assert(health.no_stock_selection === true && health.no_topk === true, 'daily L1.25 health must preserve non-selector contract flags')
 

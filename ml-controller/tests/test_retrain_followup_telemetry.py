@@ -25,7 +25,7 @@ def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
     monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
-    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: True)
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", fake_record_modal_call)
     monkeypatch.setattr(
         followup_router,
@@ -93,7 +93,7 @@ def test_retrain_followup_writes_artifact_registry_records(monkeypatch):
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
     monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
-    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: True)
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
     monkeypatch.setattr(
         followup_router,
@@ -138,7 +138,7 @@ def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
     monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
-    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: True)
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
     monkeypatch.setattr(
         followup_router,
@@ -292,7 +292,7 @@ def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
         },
     )
     monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: executed.append(args))
-    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key: (_ for _ in ()).throw(AssertionError("must not release lock")))
+    monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: (_ for _ in ()).throw(AssertionError("must not release lock")))
     monkeypatch.setattr(followup_router, "_callback_worker_scheduler", lambda payload: (_ for _ in ()).throw(AssertionError("must not callback scheduler")))
 
     result = asyncio.run(

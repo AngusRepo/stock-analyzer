@@ -11,6 +11,11 @@ import math
 import statistics
 from typing import Any
 
+from services.similarity_evidence import (
+    apply_cluster_exposure_cap,
+    ledoit_wolf_covariance,
+    similarity_components,
+)
 
 def _to_float(value: object, default: float = 0.0) -> float:
     try:
@@ -190,31 +195,126 @@ def allocate_sparse_tangent(
     max_weight: float = 0.55,
     daily_vol_floor: float = 0.01,
 ) -> dict[str, float]:
+    return allocate_sparse_tangent_with_evidence(
+        candidates,
+        return_history,
+        top_k=top_k,
+        max_weight=max_weight,
+        daily_vol_floor=daily_vol_floor,
+    )["weights"]
+
+
+def allocate_sparse_tangent_with_evidence(
+    candidates: list[dict[str, Any]],
+    return_history: dict[str, list[float]],
+    *,
+    top_k: int,
+    max_weight: float = 0.55,
+    max_cluster_weight: float | None = None,
+    daily_vol_floor: float = 0.01,
+    cluster_edge_threshold: float | None = None,
+    cluster_threshold_quantile: float = 0.9,
+) -> dict[str, Any]:
     """Long-only sparse tangent weights over the current candidate set.
 
     Expected return comes from candidate expected_return/predicted_return when
-    available. Risk uses the realized return covariance matrix with diagonal
-    regularization. If covariance evidence is unavailable but positive edge
-    exists, fall back to a diagonal variance-floor matrix instead of reverting
-    to rank-topK. If positive edge is missing, return empty weights and keep
-    cash.
+    available. Risk uses LedoitWolf covariance shrinkage when return history is
+    complete. If covariance evidence is unavailable but positive edge exists,
+    keep the existing diagonal variance-floor risk path instead of reverting to
+    rank-topK. If positive edge is missing, return empty weights and keep cash.
     """
     selected = _ranked_candidates(candidates, top_k)
     symbols = [_symbol(row) for row in selected]
     expected_returns = [max(0.0, _expected_return(row)) for row in selected]
+    empty_evidence = {
+        "weights": {},
+        "similarity_evidence": similarity_components(
+            symbols,
+            return_history,
+            weights={},
+            edge_threshold=cluster_edge_threshold,
+            threshold_quantile=cluster_threshold_quantile,
+            daily_vol_floor=daily_vol_floor,
+        ) if symbols else {
+            "schema_version": "similarity-evidence-v1",
+            "evidence_only": True,
+            "method": "networkx_connected_components_abs_correlation",
+            "node_count": 0,
+            "edge_count": 0,
+            "component_count": 0,
+            "effective_independent_count": 0.0,
+            "pairwise_corr_max": 0.0,
+            "edge_threshold": 1.0,
+            "edge_threshold_source": "empty_universe",
+            "covariance_method": "empty_universe",
+            "covariance_shrinkage": None,
+            "observation_count": 0,
+            "clusters": [],
+            "symbol_cluster": {},
+        },
+        "cluster_penalty_applied": False,
+        "max_cluster_weight": max_cluster_weight if max_cluster_weight is not None else max_weight,
+        "unallocated_cash_weight": 1.0,
+    }
     if not any(value > 0 for value in expected_returns):
-        return {}
+        return empty_evidence
     var_floor = max(1e-8, daily_vol_floor * daily_vol_floor)
-    matrix = _aligned_return_matrix(symbols, return_history)
-    covariance = (
-        _sample_covariance_matrix(matrix, var_floor)
-        if matrix
-        else _diagonal_covariance_matrix(len(symbols), var_floor)
+    covariance_packet = ledoit_wolf_covariance(
+        symbols,
+        return_history,
+        daily_vol_floor=daily_vol_floor,
     )
+    covariance = covariance_packet.get("covariance") or _diagonal_covariance_matrix(len(symbols), var_floor)
     raw = _long_only_tangent_raw(symbols, expected_returns, covariance)
     if not any(value > 0 for value in raw.values()):
-        return {}
-    return _cap_and_renormalize(raw, max_weight=max_weight)
+        return {
+            **empty_evidence,
+            "similarity_evidence": similarity_components(
+                symbols,
+                return_history,
+                weights={},
+                edge_threshold=cluster_edge_threshold,
+                threshold_quantile=cluster_threshold_quantile,
+                daily_vol_floor=daily_vol_floor,
+            ),
+            "unallocated_cash_weight": 1.0,
+        }
+    weights = _cap_and_renormalize(raw, max_weight=max_weight)
+    similarity = similarity_components(
+        symbols,
+        return_history,
+        weights=weights,
+        edge_threshold=cluster_edge_threshold,
+        threshold_quantile=cluster_threshold_quantile,
+        daily_vol_floor=daily_vol_floor,
+    )
+    capped_weights, cluster_penalty_applied = apply_cluster_exposure_cap(
+        weights,
+        similarity,
+        max_cluster_weight=max_cluster_weight if max_cluster_weight is not None else max_weight,
+    )
+    if cluster_penalty_applied:
+        similarity = similarity_components(
+            symbols,
+            return_history,
+            weights=capped_weights,
+            edge_threshold=cluster_edge_threshold,
+            threshold_quantile=cluster_threshold_quantile,
+            daily_vol_floor=daily_vol_floor,
+        )
+    unallocated_cash_weight = round(max(0.0, 1.0 - sum(capped_weights.values())), 10)
+    return {
+        "weights": capped_weights,
+        "similarity_evidence": {
+            **similarity,
+            "covariance_method": covariance_packet.get("covariance_method") or similarity.get("covariance_method"),
+            "covariance_shrinkage": covariance_packet.get("covariance_shrinkage"),
+            "observation_count": covariance_packet.get("observation_count"),
+        },
+        "cluster_penalty_applied": cluster_penalty_applied,
+        "max_cluster_weight": max_cluster_weight if max_cluster_weight is not None else max_weight,
+        "unallocated_cash_weight": unallocated_cash_weight,
+    }
 
 
 def portfolio_returns(weights: dict[str, float], return_history: dict[str, list[float]]) -> list[float]:

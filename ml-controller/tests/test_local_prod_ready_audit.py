@@ -31,6 +31,8 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         tmp_path / "ml-service/requirements.txt",
         "\n".join([
             "scikit-learn==1.9.0",
+            "networkx==3.6.1",
+            "scikit-learn-extra==0.3.0",
             "xgboost==3.2.0",
             "lightgbm==4.6.0",
             "torch==2.12.0",
@@ -41,7 +43,15 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "optuna==4.9.0",
         ]),
     )
-    _write(tmp_path / "ml-controller/requirements.txt", "optuna==4.9.0")
+    _write(tmp_path / "ml-service/Dockerfile", "FROM python:3.11-slim\n")
+    _write(
+        tmp_path / "ml-controller/requirements.txt",
+        "\n".join([
+            "optuna==4.9.0",
+            "scikit-learn==1.9.0",
+            "networkx==3.6.1",
+        ]),
+    )
     _write(
         tmp_path / "worker/package.json",
         json.dumps({
@@ -213,7 +223,142 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "sparse_diagnostics",
             "expected_return_source",
             "risk_estimate_source",
+            "cluster_id",
+            "cluster_exposure",
+            "max_cluster_weight",
+            "covariance_method",
+            "cluster_penalty_applied",
         ]),
+    )
+    _write(
+        tmp_path / "ml-controller/services/similarity_evidence.py",
+        "SIMILARITY_EVIDENCE_VERSION networkx LedoitWolf evidence_only hdbscan_research_audit sklearn.cluster.HDBSCAN outlier_score cluster_stability research_shadow_only",
+    )
+    _write(
+        tmp_path / "ml-service/app/strategy_similarity_evidence.py",
+        "\n".join([
+            "STRATEGY_SIMILARITY_EVIDENCE_VERSION",
+            "ml-service-modal-python",
+            "networkx.Graph+networkx.connected_components",
+            "sklearn_extra.cluster.KMedoids",
+            "method=\"pam\"",
+            "kmedoids_pam_preflight_status",
+            "global_k_hardcoded",
+            "production_selector",
+            "self_implemented_algorithm",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/modal_app.py",
+        "def strategy_similarity_evidence(payload):\n    from app.strategy_similarity_evidence import build_strategy_similarity_evidence\n    \"\"\"L1.25 strategy similarity graph evidence owned by Modal/Python.\"\"\"\n",
+    )
+    _write(
+        tmp_path / "ml-service/app/gnn_batch_runtime.py",
+        "\n".join([
+            "build_multi_similarity_edge_index",
+            '"edge_source": "multi_similarity_graph_v1"',
+            '"production_edge_replaces": "price_correlation_v1"',
+            '"allowed_use": "production_gnn_edge_context"',
+            '"production_edge_active": True',
+            '"selector": False',
+            "import networkx as nx",
+            "strategy_co_hit",
+            "sector_factor_similarity",
+            "finlab_chip_flow_similarity",
+            "regime_co_movement",
+            "threshold_quantile=threshold_quantile",
+            "context_records=context_records",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/app/batch_prediction.py",
+        "\n".join([
+            "_build_gnn_similarity_context_record",
+            "strategy_hit_vector",
+            "family_affinity_vector",
+            "sector_factor",
+            "finlab_chip_flow",
+            "context_records=context_records",
+            "runtime_options[\"gnn_batch_context\"] = graph_report",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-controller/routers/strategy_similarity.py",
+        'router = APIRouter(prefix="/l125")\n"/strategy_similarity_evidence"\nmodal_client.strategy_similarity_evidence\n"/hdbscan_research_audit"\nmutation_allowed\nproduction_decision_path\nresearch_shadow_only\n# fail closed\n',
+    )
+    _write(
+        tmp_path / "ml-controller/main.py",
+        "\n".join([
+            "_strategy_similarity_warmup_payload",
+            '"strategy_similarity_evidence": modal_client.strategy_similarity_evidence',
+            "kmedoids_pam_preflight_status",
+            "ml-service-modal-python",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/adminTriggerWorkerDomainTasks.ts",
+        "\n".join([
+            "summarizeMlControllerWarmupTargets",
+            "strategy_similarity_evidence",
+            "kmedoids_pam_preflight_status",
+            "ML Controller warmup ${targets.ok ? 'ok' : 'degraded'}",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/marketScreener.ts",
+        "\n".join([
+            "stage: 'l15_ml_slate_queue'",
+            "worker_seed_only: true",
+            "downstream_owner: 'ml-controller'",
+            "downstream_stage: 'layer2_coarse_ml_gate'",
+            "buildStrategySimilarityEvidencePayload",
+            "'/l125/strategy_similarity_evidence'",
+            "coerceModalStrategySimilarityGraphEvidence",
+            "strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence",
+            "strategy_similarity_evidence_status",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/strategyPortfolioMetrics.ts",
+        "\n".join([
+            "kmedoids_pam_preflight_status",
+            "cleanText(record.status) !== 'computed'",
+            "cleanText(preflight.status) !== 'pass'",
+            "record.self_implemented_algorithm !== false",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/screenerFunnelEvidence.ts",
+        "\n".join([
+            "const L2_COARSE_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees']",
+            "const L3_FORMAL_MODELS = ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']",
+            "const ACTIVE_9_ML_TEACHER_MODELS = [...L2_COARSE_MODELS, ...L3_FORMAL_MODELS]",
+            "layer2_3ml_coarse_summary_v1 layer3_6ml_formal_summary_v1",
+            "three_ml_coarse_screen_not_final_ranker six_ml_formal_family_vote_not_topk",
+            "expected_teacher_count teacher_label_scope",
+            "layer1_strategy_labeler_summary_v1",
+            "layer125_finlab_portfolio_intelligence_summary_v1",
+            "layer15_multi_strategy_router_summary_v1",
+            "layer35_evidence_fusion_v1",
+            "daily_strategy_portfolio_intelligence_health_v1",
+            "pickLastFormalLayer2Step",
+            "pickLastByStage(steps, 'l15_ml_slate_queue')",
+            "legacyLayer2Seed",
+            "layer15_ml_slate_queue",
+            "strategy_similarity_evidence_status",
+            "strategy_similarity_evidence_source",
+            "strategy_similarity_algorithm_owner",
+            "strategy_similarity_medoid_algorithm",
+            "strategy_similarity_degraded_count",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/multiStrategyPleRouter.ts",
+        "strategy_similarity_graph strategy_cluster_crowding_score strategy_cluster_uniqueness_score effective_strategy_count",
+    )
+    _write(
+        tmp_path / "ml-controller/services/promotion_gate_contract.py",
+        "SIMILARITY_PROMOTION_REQUIRED_GATES no_new_selector no_hardcoded_cluster_count no_topk_fallback l15_pairwise_corr_not_worse",
     )
     _write(
         tmp_path / "worker/src/lib/updateOrchestrator.ts",

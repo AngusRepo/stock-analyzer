@@ -29,6 +29,15 @@ class PredictRequest(BaseModel):
     lifecycle_weights: dict[str, float] = {}
     weak_features: list[str] = []
     stock_meta: dict = {}
+    strategy_affinity_vector: dict[str, float] | None = None
+    family_affinity_vector: dict[str, float] | None = None
+    strategy_weak_label_vector: dict[str, float] | None = None
+    strategy_hit_vector: dict[str, float] | None = None
+    strategy_position_weight_vector: dict[str, float] | None = None
+    strategy_overlap_vector: dict[str, float] | None = None
+    strategy_similarity_graph: dict | None = None
+    candidate_route_score: float | None = None
+    ml_slate_eligibility: float | None = None
     use_optuna: bool = False
     night_session: NightSessionData | None = None
     context: str = "scheduled_daily"

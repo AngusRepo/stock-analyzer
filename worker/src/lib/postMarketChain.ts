@@ -157,7 +157,11 @@ async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): P
 
 async function runStrategyLearningClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
   const { runStrategyLearningClosure } = await import('./strategyLearning')
-  return runStrategyLearningClosure(env.DB, ctx.runDate ?? new Date().toISOString().slice(0, 10))
+  return runStrategyLearningClosure(
+    env.DB,
+    ctx.runDate ?? new Date().toISOString().slice(0, 10),
+    { persistPolicy: isCurrentBusinessDate(ctx.runDate) },
+  )
 }
 
 async function logChainSummary(

@@ -29,6 +29,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "predict_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "predict_batch_v2": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "predict_l2_tree_batch": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
+    "strategy_similarity_evidence": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "gnn_graphsage_universal_predict": {"cpu": 2.0, "memory_mb": 8192, "gpu": None},
     "train_gnn_graphsage_universal": {"cpu": 4.0, "memory_mb": 16384, "gpu": "L4"},
     "train_tabm_universal": {"cpu": 4.0, "memory_mb": 16384, "gpu": "L4"},
@@ -733,6 +734,14 @@ def _spawn_wf_tree_window(payload: dict):
     return fn.spawn(payload)
 
 
+async def _modal_strategy_similarity_evidence(payload: dict) -> dict:
+    return await _modal_remote_call(
+        "strategy_similarity_evidence",
+        payload or {},
+        source="modal_strategy_similarity_evidence",
+    )
+
+
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal helpers
 async def _modal_dlinear_universal_predict(payload: dict) -> dict:
     return await _modal_remote_call("dlinear_universal_predict", payload)
@@ -1122,6 +1131,14 @@ async def l2_tree_batch_predict(payloads: list[dict]) -> list[dict]:
         logger.info(f"[ml_client] HTTP parallel predict/l2-tree ? {len(payloads)} ??{_ML_SERVICE_URL}")
         return await _http_batch("/predict/l2-tree", payloads, concurrency=20)
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
+
+async def strategy_similarity_evidence(payload: dict) -> dict:
+    """L1.25 strategy similarity graph evidence from Modal/Python only."""
+    if _USE_MODAL:
+        logger.info("[ml_client] Modal.remote strategy_similarity_evidence")
+        return await _modal_strategy_similarity_evidence(payload or {})
+    raise RuntimeError("MODAL_TOKEN_ID is required for L1.25 strategy_similarity_evidence")
 
 
 async def batch_predict(payloads: list[dict]) -> list[dict]:

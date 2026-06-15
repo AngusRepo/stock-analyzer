@@ -4,6 +4,45 @@ export const STRATEGY_PORTFOLIO_METRICS_SOURCE_VERSION = 'strategy-portfolio-met
 
 export type StrategyPortfolioMetricOverrides = Record<string, Partial<StrategyPortfolioMetrics>>
 
+export interface StrategySimilarityGraphInput {
+  strategy_id: string
+  family_id?: string | null
+  symbols: string[]
+}
+
+export interface StrategySimilarityGraphOptions {
+  edgeThreshold?: number | null
+  thresholdQuantile?: number | null
+}
+
+export interface StrategySimilarityGraphEvidence {
+  version: 'strategy-similarity-graph-v1'
+  evidence_only: true
+  status?: string
+  method: 'connected_components_jaccard_overlap' | 'networkx_connected_components_jaccard_overlap'
+  source?: 'modal_python' | 'worker_local_degraded'
+  schema_version?: string
+  algorithm_owner?: string
+  graph_algorithm?: string
+  medoid_algorithm?: string
+  medoid_scope?: string
+  kmedoids_pam_preflight_status?: string
+  global_k_hardcoded?: boolean
+  production_selector?: boolean
+  degraded_reason?: string
+  strategy_count: number
+  edge_count: number
+  component_count: number
+  effective_strategy_count: number
+  edge_threshold: number
+  edge_threshold_source: 'config_explicit' | 'adaptive_quantile' | 'adaptive_empty'
+  strategy_cluster_id: Record<string, string>
+  strategy_cluster_size: Record<string, number>
+  strategy_cluster_crowding_score: Record<string, number>
+  strategy_cluster_uniqueness_score: Record<string, number>
+  medoid_strategy_by_cluster?: Record<string, string | null>
+}
+
 export interface StrategyRewardLedgerMetricRow {
   strategy_id: string
   strategy_version: string
@@ -117,6 +156,108 @@ function firstNumber(record: Record<string, unknown>, keys: string[]): number | 
     if (value != null) return value
   }
   return null
+}
+
+function numberRecord(raw: unknown, defaultValue = 0): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>)
+      .map(([key, value]) => [cleanText(key), finiteNumber(value) ?? defaultValue] as const)
+      .filter(([key]) => Boolean(key)),
+  )
+}
+
+function stringRecord(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>)
+      .map(([key, value]) => [cleanText(key), cleanText(value)] as const)
+      .filter(([key, value]) => Boolean(key) && Boolean(value)),
+  )
+}
+
+function nullableStringRecord(raw: unknown): Record<string, string | null> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>)
+      .map(([key, value]) => [cleanText(key), value == null ? null : cleanText(value)] as const)
+      .filter(([key]) => Boolean(key)),
+  )
+}
+
+function clusterSizesFromComponents(raw: unknown, strategyClusterId: Record<string, string>): Record<string, number> {
+  const clusterSizes: Record<string, number> = {}
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const record = item as Record<string, unknown>
+      const clusterId = cleanText(record.cluster_id)
+      const size = Math.max(0, Math.round(finiteNumber(record.cluster_size) ?? 0))
+      if (clusterId && size > 0) clusterSizes[clusterId] = size
+    }
+  }
+  return Object.fromEntries(
+    Object.entries(strategyClusterId)
+      .map(([strategyId, clusterId]) => [strategyId, clusterSizes[clusterId] ?? 1] as const),
+  )
+}
+
+export function coerceModalStrategySimilarityGraphEvidence(raw: unknown): StrategySimilarityGraphEvidence | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const preflight = record.kmedoids_pam_preflight && typeof record.kmedoids_pam_preflight === 'object' && !Array.isArray(record.kmedoids_pam_preflight)
+    ? record.kmedoids_pam_preflight as Record<string, unknown>
+    : {}
+  if (cleanText(record.source) !== 'modal_python') return null
+  if (cleanText(record.algorithm_owner) !== 'ml-service-modal-python') return null
+  if (cleanText(record.status) !== 'computed') return null
+  if (cleanText(record.medoid_algorithm) !== "sklearn_extra.cluster.KMedoids(method='pam')") return null
+  if (cleanText(record.kmedoids_pam_preflight_status) !== 'pass') return null
+  if (cleanText(preflight.status) !== 'pass') return null
+  if (record.global_k_hardcoded !== false) return null
+  if (record.production_selector !== false) return null
+  if (record.self_implemented_algorithm !== false) return null
+  const strategyClusterId = stringRecord(record.strategy_cluster_id)
+  const strategyCount = Math.max(0, Math.round(finiteNumber(record.strategy_count) ?? Object.keys(strategyClusterId).length))
+  if (!strategyCount || !Object.keys(strategyClusterId).length) return null
+
+  const rawSize = numberRecord(record.strategy_cluster_size, 1)
+  const strategyClusterSize = Object.keys(rawSize).length
+    ? rawSize
+    : clusterSizesFromComponents(record.components, strategyClusterId)
+  const source = cleanText(record.source) === 'modal_python' ? 'modal_python' : 'worker_local_degraded'
+  const method = cleanText(record.method) === 'networkx_connected_components_jaccard_overlap'
+    ? 'networkx_connected_components_jaccard_overlap'
+    : 'connected_components_jaccard_overlap'
+  const edgeThresholdSource = cleanText(record.edge_threshold_source)
+  return {
+    version: 'strategy-similarity-graph-v1',
+    evidence_only: true,
+    status: cleanText(record.status) || undefined,
+    method,
+    source,
+    schema_version: cleanText(record.schema_version) || undefined,
+    algorithm_owner: cleanText(record.algorithm_owner) || undefined,
+    graph_algorithm: cleanText(record.graph_algorithm) || undefined,
+    medoid_algorithm: cleanText(record.medoid_algorithm) || undefined,
+    medoid_scope: cleanText(record.medoid_scope) || undefined,
+    kmedoids_pam_preflight_status: cleanText(record.kmedoids_pam_preflight_status) || undefined,
+    global_k_hardcoded: false,
+    production_selector: false,
+    strategy_count: strategyCount,
+    edge_count: Math.max(0, Math.round(finiteNumber(record.edge_count) ?? 0)),
+    component_count: Math.max(0, Math.round(finiteNumber(record.component_count) ?? 0)),
+    effective_strategy_count: round4(finiteNumber(record.effective_strategy_count) ?? strategyCount),
+    edge_threshold: round4(finiteNumber(record.edge_threshold) ?? 1),
+    edge_threshold_source: edgeThresholdSource === 'config_explicit' || edgeThresholdSource === 'adaptive_quantile'
+      ? edgeThresholdSource
+      : 'adaptive_empty',
+    strategy_cluster_id: strategyClusterId,
+    strategy_cluster_size: strategyClusterSize,
+    strategy_cluster_crowding_score: numberRecord(record.strategy_cluster_crowding_score, 0),
+    strategy_cluster_uniqueness_score: numberRecord(record.strategy_cluster_uniqueness_score, 1),
+    medoid_strategy_by_cluster: nullableStringRecord(record.medoid_strategy_by_cluster),
+  }
 }
 
 function collectStringValues(raw: unknown): string[] {
@@ -244,6 +385,123 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 function setDistance(a: Set<string>, b: Set<string>): number {
   if (!a.size && !b.size) return 0
   return 1 - jaccard(a, b)
+}
+
+function adaptiveGraphThreshold(values: number[], options: StrategySimilarityGraphOptions = {}): {
+  threshold: number
+  source: StrategySimilarityGraphEvidence['edge_threshold_source']
+} {
+  const explicit = finiteNumber(options.edgeThreshold)
+  if (explicit != null) return { threshold: round4(clamp(explicit, 0, 1)), source: 'config_explicit' }
+  const clean = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b)
+  if (!clean.length) return { threshold: 1, source: 'adaptive_empty' }
+  const q = clamp(finiteNumber(options.thresholdQuantile) ?? 0.9, 0, 1)
+  const index = Math.min(clean.length - 1, Math.max(0, Math.ceil(q * clean.length) - 1))
+  return { threshold: round4(clamp(clean[index], 0.65, 0.95)), source: 'adaptive_quantile' }
+}
+
+function effectiveCountFromSizes(sizes: number[]): number {
+  const total = sizes.reduce((sum, value) => sum + value, 0)
+  if (total <= 0) return 0
+  const hhi = sizes.reduce((sum, value) => sum + (value / total) ** 2, 0)
+  return round4(1 / Math.max(1e-9, hhi))
+}
+
+export function buildStrategySimilarityGraphEvidence(
+  inputs: StrategySimilarityGraphInput[],
+  options: StrategySimilarityGraphOptions = {},
+): StrategySimilarityGraphEvidence {
+  const strategies = inputs
+    .map((input) => ({
+      strategy_id: cleanText(input.strategy_id),
+      symbols: new Set((input.symbols ?? []).map((symbol) => cleanText(symbol).toUpperCase()).filter(Boolean)),
+    }))
+    .filter((input) => input.strategy_id)
+  const strategyIds = strategies.map((input) => input.strategy_id)
+  const symbolSets = new Map(strategies.map((input) => [input.strategy_id, input.symbols]))
+  const overlaps: Array<{ left: string; right: string; overlap: number }> = []
+  for (let left = 0; left < strategyIds.length; left += 1) {
+    for (let right = left + 1; right < strategyIds.length; right += 1) {
+      overlaps.push({
+        left: strategyIds[left],
+        right: strategyIds[right],
+        overlap: jaccard(symbolSets.get(strategyIds[left]) ?? new Set(), symbolSets.get(strategyIds[right]) ?? new Set()),
+      })
+    }
+  }
+  const threshold = adaptiveGraphThreshold(overlaps.map((item) => item.overlap), options)
+  const adjacency = new Map<string, Set<string>>()
+  for (const strategyId of strategyIds) adjacency.set(strategyId, new Set())
+  for (const edge of overlaps) {
+    if (edge.overlap >= threshold.threshold) {
+      adjacency.get(edge.left)?.add(edge.right)
+      adjacency.get(edge.right)?.add(edge.left)
+    }
+  }
+
+  const visited = new Set<string>()
+  const components: string[][] = []
+  for (const strategyId of strategyIds) {
+    if (visited.has(strategyId)) continue
+    const queue = [strategyId]
+    const component: string[] = []
+    visited.add(strategyId)
+    while (queue.length) {
+      const current = queue.shift()!
+      component.push(current)
+      for (const next of adjacency.get(current) ?? []) {
+        if (visited.has(next)) continue
+        visited.add(next)
+        queue.push(next)
+      }
+    }
+    components.push(component.sort())
+  }
+  components.sort((a, b) => a[0].localeCompare(b[0]))
+
+  const strategy_cluster_id: Record<string, string> = {}
+  const strategy_cluster_size: Record<string, number> = {}
+  const strategy_cluster_crowding_score: Record<string, number> = {}
+  const strategy_cluster_uniqueness_score: Record<string, number> = {}
+  for (const [index, component] of components.entries()) {
+    const clusterId = `g${index.toString().padStart(3, '0')}`
+    const internalOverlaps = overlaps
+      .filter((edge) => component.includes(edge.left) && component.includes(edge.right))
+      .map((edge) => edge.overlap)
+    const avgOverlap = internalOverlaps.length
+      ? internalOverlaps.reduce((sum, value) => sum + value, 0) / internalOverlaps.length
+      : 0
+    const sizePressure = component.length / Math.max(1, strategyIds.length)
+    const crowding = round4(clamp(avgOverlap * 0.65 + sizePressure * 0.35, 0, 1))
+    const uniqueness = round4(clamp(1 - crowding, 0, 1))
+    for (const strategyId of component) {
+      strategy_cluster_id[strategyId] = clusterId
+      strategy_cluster_size[strategyId] = component.length
+      strategy_cluster_crowding_score[strategyId] = crowding
+      strategy_cluster_uniqueness_score[strategyId] = uniqueness
+    }
+  }
+
+  return {
+    version: 'strategy-similarity-graph-v1',
+    evidence_only: true,
+    method: 'connected_components_jaccard_overlap',
+    source: 'worker_local_degraded',
+    algorithm_owner: 'worker-local-degraded-helper',
+    degraded_reason: 'modal_python_strategy_similarity_evidence_not_injected',
+    global_k_hardcoded: false,
+    production_selector: false,
+    strategy_count: strategyIds.length,
+    edge_count: overlaps.filter((edge) => edge.overlap >= threshold.threshold).length,
+    component_count: components.length,
+    effective_strategy_count: effectiveCountFromSizes(components.map((component) => component.length)),
+    edge_threshold: threshold.threshold,
+    edge_threshold_source: threshold.source,
+    strategy_cluster_id,
+    strategy_cluster_size,
+    strategy_cluster_crowding_score,
+    strategy_cluster_uniqueness_score,
+  }
 }
 
 export function rewardLedgerRowToStrategyPortfolioMetrics(

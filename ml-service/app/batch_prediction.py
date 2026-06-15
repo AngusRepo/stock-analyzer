@@ -156,6 +156,138 @@ def _clip_rank(value: Any) -> float:
     return float(np.clip(float(value), 0.0, 1.0))
 
 
+def _dict_or_empty(value: Any) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _safe_context_float(value: Any) -> float | None:
+    if isinstance(value, str):
+        mapped = {
+            "low": 0.25,
+            "normal": 0.40,
+            "medium": 0.50,
+            "moderate": 0.50,
+            "high": 0.75,
+            "extreme": 1.0,
+        }.get(value.strip().lower())
+        if mapped is not None:
+            return mapped
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(out):
+        return None
+    return out
+
+
+def _numeric_context(source: dict, fields: tuple[str, ...]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for field in fields:
+        value = _safe_context_float(source.get(field))
+        if value is not None:
+            out[field] = value
+    return out
+
+
+def _first_context_record(req: Any, field: str, runtime_options: dict, stock_meta: dict) -> dict:
+    for source in (
+        getattr(req, field, None),
+        runtime_options.get(field),
+        stock_meta.get(field),
+    ):
+        if isinstance(source, dict) and source:
+            return dict(source)
+    return {}
+
+
+def _latest_chip_flow_record(chips: Any) -> dict[str, float]:
+    if not isinstance(chips, list):
+        return {}
+    aliases = {
+        "foreign_net": ("foreign_net", "foreign_buy_sell", "foreign_investor_net"),
+        "trust_net": ("trust_net", "investment_trust_net"),
+        "dealer_net": ("dealer_net", "dealer_buy_sell"),
+        "margin_balance": ("margin_balance", "margin"),
+        "short_balance": ("short_balance", "short"),
+    }
+    out: dict[str, float] = {}
+    for row in reversed(chips):
+        if not isinstance(row, dict):
+            continue
+        for target, keys in aliases.items():
+            if target in out:
+                continue
+            for key in keys:
+                value = _safe_context_float(row.get(key))
+                if value is not None:
+                    out[target] = value
+                    break
+        if len(out) == len(aliases):
+            break
+    institutional_parts = [
+        out.get("foreign_net"),
+        out.get("trust_net"),
+        out.get("dealer_net"),
+    ]
+    if any(value is not None for value in institutional_parts):
+        out["institutional_net"] = float(sum(value or 0.0 for value in institutional_parts))
+    return out
+
+
+def _build_gnn_similarity_context_record(req: Any) -> dict[str, Any]:
+    runtime_options = _dict_or_empty(getattr(req, "runtime_options", None))
+    stock_meta = _dict_or_empty(getattr(req, "stock_meta", None))
+    market_env = _dict_or_empty(getattr(req, "market_env", None))
+    sector_key = (
+        stock_meta.get("sector")
+        or stock_meta.get("sector_name")
+        or stock_meta.get("industry")
+        or stock_meta.get("industry_name")
+        or stock_meta.get("market_segment")
+    )
+    return {
+        "symbol": str(getattr(req, "symbol", "") or ""),
+        "strategy_affinity_vector": _first_context_record(req, "strategy_affinity_vector", runtime_options, stock_meta),
+        "family_affinity_vector": _first_context_record(req, "family_affinity_vector", runtime_options, stock_meta),
+        "strategy_weak_label_vector": _first_context_record(req, "strategy_weak_label_vector", runtime_options, stock_meta),
+        "strategy_hit_vector": _first_context_record(req, "strategy_hit_vector", runtime_options, stock_meta),
+        "strategy_position_weight_vector": _first_context_record(req, "strategy_position_weight_vector", runtime_options, stock_meta),
+        "strategy_overlap_vector": _first_context_record(req, "strategy_overlap_vector", runtime_options, stock_meta),
+        "sector_factor": {
+            **_numeric_context(
+                stock_meta,
+                (
+                    "sector_encoded",
+                    "market_cap_bucket",
+                    "avg_volume_bucket",
+                    "sector_peer_return_1d",
+                    "sector_peer_return_5d",
+                    "stock_vs_sector",
+                ),
+            ),
+            "sector_key": str(sector_key or ""),
+        },
+        "finlab_chip_flow": _latest_chip_flow_record(getattr(req, "chips", None)),
+        "regime": _numeric_context(
+            market_env,
+            (
+                "risk_score",
+                "risk_level",
+                "us_sox_return",
+                "us_gspc_return",
+                "us_vix",
+                "advance_ratio",
+                "bull_alignment_pct",
+                "revenue_yoy",
+                "margin_balance",
+                "short_ratio",
+                "retail_pct",
+            ),
+        ),
+    }
+
+
 def _record_feature_score(
     ctx: _FeatureBatchContext,
     model_name: str,
@@ -239,10 +371,12 @@ def _apply_gnn_batch_context_predictions(
 
         node_features = np.vstack([row for _ctx, row in rows])
         price_series = [getattr(ctx.req, "prices", []) or [] for ctx, _row in rows]
+        context_records = [_build_gnn_similarity_context_record(ctx.req) for ctx, _row in rows]
         scores, graph_report = predict_graphsage_scores(
             artifact,
             node_features=node_features,
             price_series=price_series,
+            context_records=context_records,
         )
         for (ctx, _row), score in zip(rows, scores):
             _record_feature_score(ctx, "GNN", score)

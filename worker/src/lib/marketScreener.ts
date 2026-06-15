@@ -18,12 +18,14 @@ import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateShape } from './breeze2Runtime'
+import { controllerPostJson } from './controllerClient'
 import { loadTradingRestrictionSet } from './tradingRestrictions'
 import { isEtfPatternSymbol } from './boardTradability'
 import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
 import { buildPriceActionStructure } from './priceActionStructure'
-import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION } from './multiStrategyPleRouter'
+import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidencePayload, type StrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
+import { coerceModalStrategySimilarityGraphEvidence, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 import {
   buildFinLabTaxonomyThemeSignals,
   refreshStockThemeFeaturesFromSignals,
@@ -81,6 +83,61 @@ function resolveScreenerRunDate(runDate?: string | null): string {
     throw new Error(`Invalid screener run date: ${value}; expected YYYY-MM-DD`)
   }
   return value
+}
+
+type L125StrategySimilarityEvidenceLoad = {
+  status: 'modal_python' | 'unavailable_degraded' | 'invalid_degraded' | 'empty_degraded'
+  evidence: StrategySimilarityGraphEvidence | null
+  error?: string
+  payload_strategy_count: number
+}
+
+async function loadL125StrategySimilarityGraphEvidence(
+  env: Bindings,
+  payload: StrategySimilarityEvidencePayload,
+): Promise<L125StrategySimilarityEvidenceLoad> {
+  const payloadStrategyCount = payload.strategies.length
+  if (!payloadStrategyCount) {
+    return {
+      status: 'empty_degraded',
+      evidence: null,
+      payload_strategy_count: payloadStrategyCount,
+      error: 'no_strategy_similarity_payload_strategies',
+    }
+  }
+  if (!env.ML_CONTROLLER_URL) {
+    return {
+      status: 'unavailable_degraded',
+      evidence: null,
+      payload_strategy_count: payloadStrategyCount,
+      error: 'ML_CONTROLLER_URL not set',
+    }
+  }
+  try {
+    const raw = await controllerPostJson<Record<string, unknown>>(
+      env,
+      '/l125/strategy_similarity_evidence',
+      payload,
+      120_000,
+    )
+    const evidence = coerceModalStrategySimilarityGraphEvidence(raw)
+    if (!evidence || evidence.source !== 'modal_python') {
+      return {
+        status: 'invalid_degraded',
+        evidence: null,
+        payload_strategy_count: payloadStrategyCount,
+        error: 'invalid_modal_strategy_similarity_evidence_contract',
+      }
+    }
+    return { status: 'modal_python', evidence, payload_strategy_count: payloadStrategyCount }
+  } catch (error) {
+    return {
+      status: 'unavailable_degraded',
+      evidence: null,
+      payload_strategy_count: payloadStrategyCount,
+      error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+    }
+  }
 }
 
 function chunkArray<T>(items: T[], size: number): T[][] {
@@ -1932,6 +1989,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       minSamples: 5,
       knownStrategyIds: specs.map((spec: any) => String(spec.id || '').trim()).filter(Boolean),
     })
+    const strategySimilarityPayload = buildStrategySimilarityEvidencePayload(
+      strategySourceUniverse as any,
+      specs,
+      {
+        regime: currentRegime,
+        strategyWeights: policyState?.strategy_weights ?? undefined,
+      },
+    )
+    const strategySimilarityEvidence = await loadL125StrategySimilarityGraphEvidence(env, strategySimilarityPayload)
     const layer1BreadthPlan = buildLayer1StrategyBreadthPlan(
       strategySourceUniverse as any,
       specs,
@@ -1942,6 +2008,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategyWeights: policyState?.strategy_weights ?? undefined,
         strategyPortfolioMetrics: strategyPortfolioMetrics.metrics,
         strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
+        strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence,
       },
     )
     strategySelectionPlan = layer1BreadthPlan.selection
@@ -1973,6 +2040,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_matrix_coverage_ratio: layer1BreadthPlan.telemetry.strategy_matrix_coverage_ratio ?? null,
       strategy_matrix_matched_candidate_count: layer1BreadthPlan.telemetry.strategy_matrix_matched_candidate_count ?? null,
       strategy_matrix_active_labeled_candidate_count: layer1BreadthPlan.telemetry.strategy_matrix_active_labeled_candidate_count ?? null,
+      strategy_similarity_evidence_status: strategySimilarityEvidence.status,
+      strategy_similarity_evidence_source: layer1BreadthPlan.telemetry.strategy_similarity_evidence_source ?? null,
+      strategy_similarity_algorithm_owner: layer1BreadthPlan.telemetry.strategy_similarity_algorithm_owner ?? null,
+      strategy_similarity_medoid_algorithm: layer1BreadthPlan.telemetry.strategy_similarity_medoid_algorithm ?? null,
+      strategy_similarity_degraded_reason: layer1BreadthPlan.telemetry.strategy_similarity_degraded_reason ?? strategySimilarityEvidence.error ?? null,
+      strategy_similarity_payload_strategy_count: strategySimilarityEvidence.payload_strategy_count,
       strategy_portfolio_metrics: strategyPortfolioMetrics.telemetry,
       pool_status: strategySelectionPlan.pools.map((pool: any) => ({
         strategy_id: pool.strategy_id,
@@ -1989,7 +2062,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `coarse_seed=${layer2CoarseQueueSeed.length} keep_ratio=${screenerPolicy.sizing.coarseMlKeepRatio} core_ml=${maxCandidates} ` +
       `research_only=${strategySelectionPlan.researchOnlyQueue.length} overflow=${strategySelectionPlan.telemetry.overflow_count} ` +
       `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode} ` +
-      `l125_metrics=${strategyPortfolioMetrics.telemetry.status}:${strategyPortfolioMetrics.telemetry.metric_count}`,
+      `l125_metrics=${strategyPortfolioMetrics.telemetry.status}:${strategyPortfolioMetrics.telemetry.metric_count} ` +
+      `l125_similarity=${strategySimilarityEvidence.status}:${layer1BreadthPlan.telemetry.strategy_similarity_evidence_source ?? 'unknown'}`,
     )
     layer1BreadthPool.forEach((candidate, index) => {
       const isObserveTopUp = String((candidate as any).strategy_pool_fallback_source ?? '') === 'raw_signal_top_up'
@@ -2028,6 +2102,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_matrix_coverage_ratio: layer1BreadthPlan.telemetry.strategy_matrix_coverage_ratio ?? null,
           strategy_matrix_matched_candidate_count: layer1BreadthPlan.telemetry.strategy_matrix_matched_candidate_count ?? null,
           strategy_matrix_active_labeled_candidate_count: layer1BreadthPlan.telemetry.strategy_matrix_active_labeled_candidate_count ?? null,
+          strategy_similarity_evidence_status: strategySimilarityEvidence.status,
+          strategy_similarity_evidence_source: layer1BreadthPlan.telemetry.strategy_similarity_evidence_source ?? null,
+          strategy_similarity_algorithm_owner: layer1BreadthPlan.telemetry.strategy_similarity_algorithm_owner ?? null,
+          strategy_similarity_medoid_algorithm: layer1BreadthPlan.telemetry.strategy_similarity_medoid_algorithm ?? null,
+          strategy_similarity_degraded_reason: layer1BreadthPlan.telemetry.strategy_similarity_degraded_reason ?? strategySimilarityEvidence.error ?? null,
           candidate_route_score: (candidate as any).candidate_route_score ?? null,
           ml_slate_eligibility: (candidate as any).ml_slate_eligibility ?? null,
           family_exposure: (candidate as any).family_exposure ?? null,

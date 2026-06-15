@@ -43,7 +43,12 @@ from services.alpha_framework import (
 from services.active9_dataset_policy import gnn_return_history_lookback
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
-from services.portfolio_allocation import allocate_sparse_tangent
+from services.portfolio_allocation import allocate_sparse_tangent_with_evidence
+from services.similarity_evidence import (
+    apply_cluster_exposure_cap,
+    similarity_components,
+    symbol_cluster_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1915,6 +1920,27 @@ def _apply_sparse_tangent_buy_selection(
     buy_signal_count = int(allocation.get("buy_signal_count") or 3)
     buy_signal_count = max(1, min(30, buy_signal_count))
     risk_history = return_history or {}
+    def _allocation_float(keys: list[str], default: float | None) -> float | None:
+        for key in keys:
+            raw = allocation.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return value
+        return default
+
+    max_weight = float(_allocation_float(["max_weight", "maxWeight"], 0.55) or 0.55)
+    cluster_edge_threshold = _allocation_float(["cluster_edge_threshold", "clusterEdgeThreshold"], None)
+    cluster_threshold_quantile = float(
+        _allocation_float(["cluster_threshold_quantile", "clusterThresholdQuantile"], 0.9) or 0.9
+    )
+    max_cluster_weight = float(
+        _allocation_float(["max_cluster_weight", "maxClusterWeight"], max_weight) or max_weight
+    )
     allocation_contract = {
         "engine": "sparse_tangent_inverse_risk",
         "allocation_method": "sparse_tangent_inverse_risk_final_allocation",
@@ -1994,6 +2020,7 @@ def _apply_sparse_tangent_buy_selection(
         if risk_history.get(symbol)
     )
     opb_packet: dict[str, Any] | None = None
+    allocation_result: dict[str, Any] = {}
     if controller == "OnlinePortfolioBandit":
         try:
             from services.online_portfolio_bandit import build_online_portfolio_bandit_l2_packet
@@ -2016,15 +2043,57 @@ def _apply_sparse_tangent_buy_selection(
     if not weights:
         # `buy_signal_count` is a max candidate capacity. Sparse tangent can
         # legally return empty/fewer weights when expected edge is not positive.
-        weights = allocate_sparse_tangent(
+        allocation_result = allocate_sparse_tangent_with_evidence(
             allocation_candidates,
             risk_history,
             top_k=buy_signal_count,
-            max_weight=float(allocation.get("max_weight") or allocation.get("maxWeight") or 0.55),
+            max_weight=max_weight,
+            max_cluster_weight=max_cluster_weight,
+            cluster_edge_threshold=cluster_edge_threshold,
+            cluster_threshold_quantile=cluster_threshold_quantile,
         )
+        weights = dict(allocation_result.get("weights") or {})
+    else:
+        opb_similarity_symbols = sorted({
+            *[str(row.get("symbol") or "").strip() for row in ranked_candidates],
+            *[str(symbol or "").strip() for symbol in weights],
+        })
+        opb_similarity = similarity_components(
+            opb_similarity_symbols,
+            risk_history,
+            weights=weights,
+            edge_threshold=cluster_edge_threshold,
+            threshold_quantile=cluster_threshold_quantile,
+        )
+        weights, cluster_penalty_applied = apply_cluster_exposure_cap(
+            weights,
+            opb_similarity,
+            max_cluster_weight=max_cluster_weight,
+        )
+        if cluster_penalty_applied:
+            opb_similarity = similarity_components(
+                opb_similarity_symbols,
+                risk_history,
+                weights=weights,
+                edge_threshold=cluster_edge_threshold,
+                threshold_quantile=cluster_threshold_quantile,
+            )
+        allocation_result = {
+            "weights": weights,
+            "similarity_evidence": opb_similarity,
+            "cluster_penalty_applied": cluster_penalty_applied,
+            "max_cluster_weight": max_cluster_weight,
+            "unallocated_cash_weight": round(max(0.0, 1.0 - sum(float(value or 0.0) for value in weights.values())), 10),
+        }
     selected_symbols = set(weights)
     selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
     history_coverage = sum(1 for symbol in selected_symbols if risk_history.get(symbol))
+    similarity_evidence = allocation_result.get("similarity_evidence") or {}
+    cluster_penalty_applied = bool(allocation_result.get("cluster_penalty_applied"))
+    cluster_evidence_by_symbol = {
+        symbol: symbol_cluster_evidence(symbol, similarity_evidence)
+        for symbol in candidate_evidence_by_symbol
+    }
     sparse_diagnostics_base = {
         "candidate_count": len(allocation_candidates),
         "evaluated_candidate_count": len(ranked_candidates),
@@ -2037,6 +2106,16 @@ def _apply_sparse_tangent_buy_selection(
         "return_history_candidate_symbols": return_history_candidate_symbols,
         "controller": controller,
         "controller_packet_enabled": opb_packet is not None,
+        "covariance_method": similarity_evidence.get("covariance_method"),
+        "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),
+        "cluster_penalty_applied": cluster_penalty_applied,
+        "max_cluster_weight": max_cluster_weight,
+        "unallocated_cash_weight": allocation_result.get("unallocated_cash_weight"),
+        "similarity_component_count": similarity_evidence.get("component_count"),
+        "effective_independent_count": similarity_evidence.get("effective_independent_count"),
+        "pairwise_corr_max": similarity_evidence.get("pairwise_corr_max"),
+        "cluster_edge_threshold": similarity_evidence.get("edge_threshold"),
+        "cluster_edge_threshold_source": similarity_evidence.get("edge_threshold_source"),
     }
 
     def _sparse_allocation_evidence(row: dict, *, selected: bool, weight: float | None = None) -> dict[str, Any]:
@@ -2055,6 +2134,7 @@ def _apply_sparse_tangent_buy_selection(
             selection_reason = "no_positive_expected_edge"
         else:
             selection_reason = "zero_sparse_weight_after_inverse_risk"
+        cluster_evidence = cluster_evidence_by_symbol.get(symbol) or {}
         return {
             "eligible_for_sparse": symbol in candidate_evidence_by_symbol,
             "allocation_rank": rank,
@@ -2064,6 +2144,15 @@ def _apply_sparse_tangent_buy_selection(
             "risk_estimate": round(float((evidence or {}).get("risk_estimate") or 0.0), 10),
             "risk_estimate_source": (evidence or {}).get("risk_estimate_source"),
             "selection_reason": selection_reason,
+            "cluster_id": cluster_evidence.get("cluster_id"),
+            "cluster_size": cluster_evidence.get("cluster_size"),
+            "cluster_exposure": cluster_evidence.get("cluster_exposure"),
+            "cluster_pairwise_corr_max": cluster_evidence.get("pairwise_corr_max"),
+            "max_cluster_weight": max_cluster_weight,
+            "pairwise_corr_max": similarity_evidence.get("pairwise_corr_max"),
+            "covariance_method": similarity_evidence.get("covariance_method"),
+            "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),
+            "cluster_penalty_applied": cluster_penalty_applied,
             "sparse_diagnostics": {
                 **sparse_diagnostics_base,
                 "allocation_weight": round(float(weight or 0.0), 8),

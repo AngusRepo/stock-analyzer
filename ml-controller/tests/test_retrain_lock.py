@@ -176,6 +176,39 @@ class TestRelease:
         r = retrain_lock.acquire("test:cache_purge", ttl_seconds=600)
         assert r.acquired is True
 
+    def test_release_with_metadata_mismatch_preserves_blob(self, fake_bucket):
+        retrain_lock.acquire(
+            "test:owner_guard",
+            ttl_seconds=600,
+            metadata={"run_id": "new-run"},
+        )
+        retrain_lock._clear_local_cache()
+
+        ok = retrain_lock.release(
+            "test:owner_guard",
+            expected_metadata={"run_id": "old-run"},
+        )
+
+        assert ok is False
+        info = retrain_lock.inspect("test:owner_guard")
+        assert info is not None
+        assert info["metadata"]["run_id"] == "new-run"
+
+    def test_release_with_matching_metadata_clears_blob(self, fake_bucket):
+        retrain_lock.acquire(
+            "test:owner_guard_match",
+            ttl_seconds=600,
+            metadata={"run_id": "same-run"},
+        )
+
+        ok = retrain_lock.release(
+            "test:owner_guard_match",
+            expected_metadata={"run_id": "same-run"},
+        )
+
+        assert ok is True
+        assert retrain_lock.inspect("test:owner_guard_match") is None
+
 
 # ─── inspect() behavior ───────────────────────────────────────────────────
 

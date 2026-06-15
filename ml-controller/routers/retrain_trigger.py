@@ -621,7 +621,7 @@ async def trigger_universal_retrain(
         [req.limit],
     )
     if not stock_rows:
-        retrain_lock.release(lock_key)
+        retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(
             run_id,
             status="prep_failed",
@@ -832,7 +832,7 @@ async def trigger_universal_retrain(
         })
 
     if len(per_stock_payloads) < 10:
-        retrain_lock.release(lock_key)
+        retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(
             run_id,
             status="prep_failed",
@@ -972,7 +972,7 @@ async def trigger_universal_retrain(
     if total_rows < 10000:
         # Abort before orchestrator spawn → release lock so next retry can run.
         logger.warning(f"[retrain/universal] Aborting: total_rows={total_rows} < 10000; releasing lock")
-        retrain_lock.release(lock_key)
+        retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(
             run_id,
             status="prep_failed",
@@ -1046,7 +1046,7 @@ async def trigger_universal_retrain(
         # Orchestrator dispatch failed — release lock so the next cron retry
         # is not blocked by our aborted attempt (matches pre-GCS behavior).
         logger.error(f"[retrain/universal] orchestrator dispatch failed: {orch_err}; releasing lock")
-        retrain_lock.release(lock_key)
+        retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(
             run_id,
             status="dispatch_failed",

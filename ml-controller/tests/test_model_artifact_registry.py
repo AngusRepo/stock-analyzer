@@ -214,6 +214,71 @@ def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets
     assert offline["production_cutover_source"] == "artifact_lifecycle"
 
 
+def test_build_artifact_records_from_no_challenger_active9_train_stage():
+    payload = {
+        "run_id": "universal-20260615T124432-3f2c0c79",
+        "run_date": "2026-06-15",
+        "is_monthly": True,
+        "candidate_version": "v20260615052900",
+        "status": "completed",
+        "challenger_registrations": {},
+        "ic_summary": {
+            "LightGBM": 0.0488,
+            "XGBoost": 0.0566,
+            "ExtraTrees": 0.125,
+            "DLinear": 0.0227,
+        },
+        "stages": {
+            "train": {
+                "status": "ok",
+                "ic_tracking": {
+                    "LightGBM": {
+                        "oos_ic": 0.0488,
+                        "model_cpcv": {"decision": "PASS", "failed_gates": [], "oos_ic_mean": 0.144895},
+                    },
+                    "XGBoost": {
+                        "oos_ic": 0.0566,
+                        "model_cpcv": {"decision": "PASS", "failed_gates": [], "oos_ic_mean": 0.148316},
+                    },
+                    "ExtraTrees": {
+                        "oos_ic": 0.125,
+                        "model_cpcv": {"decision": "PASS", "failed_gates": [], "oos_ic_mean": 0.113319},
+                    },
+                    "DLinear": {
+                        "oos_ic": 0.0227,
+                        "oos_samples": 233590,
+                        "source": "sequence_oos",
+                    },
+                    "StackingRank": {"oos_ic": 0.1175},
+                },
+            },
+            "artifact_lifecycle": {
+                "results": {
+                    "GNN": {
+                        "status": "ok",
+                        "model": "GNN",
+                        "version": "v20260615052900",
+                        "artifact_path": "universal/gnn/v20260615052900.pt",
+                        "oos_ic": 0.059324,
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    by_model = {row["model_name"]: row for row in records}
+    assert set(by_model) == {"LightGBM", "XGBoost", "ExtraTrees", "DLinear", "GNN"}
+    assert by_model["LightGBM"]["artifact_path"] == "universal/lightgbm/v20260615052900.joblib"
+    assert by_model["XGBoost"]["metadata_path"] == "universal/xgboost/metadata_v20260615052900.json"
+    assert by_model["ExtraTrees"]["offline_gate_decision"] == "STRONG_PASS"
+    assert by_model["DLinear"]["artifact_path"] == "universal/dlinear/v20260615052900.pt"
+    assert by_model["GNN"]["state"] == "offline_passed_weak"
+    offline = json.loads(by_model["LightGBM"]["offline_evidence_json"])
+    assert offline["source"] == "train_stage"
+
+
 def test_timesfm_lifecycle_evidence_is_registered_instead_of_missing_oos_warning():
     payload = {
         "run_id": "timesfm25-oos-backfill",

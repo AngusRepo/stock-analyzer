@@ -96,6 +96,10 @@ assert(
   'Strategy learning must run for historical reruns so strategy_decision_log can materialize replay-date family evidence',
 )
 assert(
+  postMarketChain.includes('persistPolicy: isCurrentBusinessDate(ctx.runDate)'),
+  'historical strategy-learning reruns must not refresh live strategy_policy_state before root-chain closure',
+)
+assert(
   postMarketChain.includes('runPaperActivePostmarketPromotion'),
   'post-verify chain must include paper-active postmarket promotion closure',
 )

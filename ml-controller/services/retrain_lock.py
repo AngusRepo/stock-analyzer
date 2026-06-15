@@ -243,6 +243,7 @@ def acquire(
 
 def release(
     lock_key: str,
+    expected_metadata: Optional[dict] = None,
     bucket_name: str = DEFAULT_BUCKET,
 ) -> bool:
     """
@@ -250,17 +251,39 @@ def release(
     Non-fatal on any error. Returns True if the blob was removed or was
     already absent, False on hard error.
     """
-    _LOCAL_LOCKS.pop(lock_key, None)
     bucket = _get_bucket(bucket_name)
     if bucket is None:
+        _LOCAL_LOCKS.pop(lock_key, None)
         return True
     try:
         blob = bucket.blob(f"{LOCK_PREFIX}{lock_key}.json")
+        if expected_metadata:
+            if not blob.exists():
+                _LOCAL_LOCKS.pop(lock_key, None)
+                return True
+            existing = _LockRecord.from_json(blob.download_as_text())
+            mismatches = {
+                str(key): {
+                    "expected": str(value),
+                    "actual": str(existing.metadata.get(key)),
+                }
+                for key, value in expected_metadata.items()
+                if str(existing.metadata.get(key)) != str(value)
+            }
+            if mismatches:
+                logger.warning(
+                    "[retrain_lock] release skipped for %s due metadata mismatch: %s",
+                    lock_key,
+                    mismatches,
+                )
+                return False
         blob.delete()
+        _LOCAL_LOCKS.pop(lock_key, None)
     except Exception as e:
         # 404 is fine (already released); anything else is logged
         msg = str(e)
         if "404" in msg or "Not Found" in msg or "No such object" in msg:
+            _LOCAL_LOCKS.pop(lock_key, None)
             return True
         logger.warning(f"[retrain_lock] release failed for {lock_key}: {e}")
         return False

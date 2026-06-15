@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.promotion_gate_contract import (  # noqa: E402
     PROMOTION_GATE_SCHEMA_VERSION,
     build_v4_promotion_packet,
+    validate_similarity_evidence_promotion,
     validate_v4_promotion_packet,
 )
 
@@ -217,3 +218,65 @@ def test_validator_blocks_forged_runtime_authority():
         "direct_alpha_production_effect_not_allowed",
         "can_write_order_not_allowed",
     ]
+
+
+def test_similarity_evidence_requires_v4_promotion_gates_before_review():
+    evidence = _promotion_evidence(
+        no_new_selector=True,
+        no_hardcoded_cluster_count=True,
+        no_topk_fallback=True,
+        l15_pairwise_corr_not_worse=-0.08,
+        l2_l3_quality_not_down=0.01,
+        l4_cluster_concentration_down=-0.12,
+        backtest_sharpe_bias_fixed=True,
+        evening_chain_runtime_acceptable=True,
+    )
+    packet = build_v4_promotion_packet(
+        _base_candidate(
+            candidate_id="networkx-ledoitwolf-similarity-evidence",
+            candidate_type="similarity_evidence",
+            requested_runtime="production_feature",
+        ),
+        evidence,
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    assert packet["decision"] == "ALLOW_PROMOTION_REVIEW"
+    assert packet["production_effect"] == "review_only"
+    assert validate_similarity_evidence_promotion(evidence) == []
+    assert validate_v4_promotion_packet(packet) == []
+
+
+def test_similarity_evidence_blocks_selector_or_topk_regression():
+    evidence = _promotion_evidence(
+        no_new_selector=False,
+        no_hardcoded_cluster_count=False,
+        no_topk_fallback=False,
+        l15_pairwise_corr_not_worse=0.03,
+        l2_l3_quality_not_down=-0.02,
+        l4_cluster_concentration_down=0.11,
+        backtest_sharpe_bias_fixed=False,
+        evening_chain_runtime_acceptable=True,
+    )
+    packet = build_v4_promotion_packet(
+        _base_candidate(
+            candidate_id="bad-clustering-selector",
+            candidate_type="similarity_evidence",
+            requested_runtime="production_feature",
+        ),
+        evidence,
+        generated_at="2026-06-15T00:00:00Z",
+    )
+
+    assert packet["decision"] == "BLOCK"
+    assert packet["allowed_runtime"] == "feature_lake_shadow"
+    assert packet["failed_gates"] == [
+        "no_new_selector",
+        "no_hardcoded_cluster_count",
+        "no_topk_fallback",
+        "l15_pairwise_corr_not_worse",
+        "l2_l3_quality_not_down",
+        "l4_cluster_concentration_down",
+        "backtest_sharpe_bias_fixed",
+    ]
+    assert validate_v4_promotion_packet(packet) == []

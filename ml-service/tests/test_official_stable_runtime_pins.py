@@ -12,6 +12,8 @@ def test_active_9_runtime_dependencies_are_tightly_pinned_to_reviewed_versions()
 
     expected_pins = [
         "scikit-learn==1.9.0",
+        "networkx==3.6.1",
+        "scikit-learn-extra==0.3.0",
         # XGBoost 3.2.0 is intentionally accepted for runtime bug/perf fixes
         # even though the local 2026-06-11 replay showed slightly weaker IC.
         "xgboost==3.2.0",
@@ -28,6 +30,8 @@ def test_active_9_runtime_dependencies_are_tightly_pinned_to_reviewed_versions()
 
     drifting_specs = [
         "xgboost==2.1.1",
+        "networkx>=",
+        "scikit-learn-extra>=",
         "lightgbm>=",
         "torch==2.8.0",
         "torch-geometric>=",
@@ -50,5 +54,6 @@ def test_cloud_run_image_uses_python_runtime_compatible_with_stable_pins():
         .read_text(encoding="utf-8", errors="ignore")
     )
 
-    assert "FROM python:3.12-slim" in dockerfile
+    assert "FROM python:3.11-slim" in dockerfile
+    assert "FROM python:3.12-slim" not in dockerfile
     assert "FROM python:3.10-slim" not in dockerfile

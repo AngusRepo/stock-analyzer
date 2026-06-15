@@ -14,6 +14,7 @@ import {
 import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
 import { buildMultiStrategyPleRoutingPlan, type StrategyPortfolioMetrics } from './multiStrategyPleRouter'
+import type { StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 
 export const STRATEGY_CANDIDATE_POOL_VERSION = 'strategy-candidate-pool-v1'
 
@@ -211,6 +212,10 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     strategy_matrix_coverage_ratio?: number
     strategy_matrix_matched_candidate_count?: number
     strategy_matrix_active_labeled_candidate_count?: number
+    strategy_similarity_evidence_source?: string
+    strategy_similarity_algorithm_owner?: string
+    strategy_similarity_medoid_algorithm?: string
+    strategy_similarity_degraded_reason?: string
     strategy_portfolio_metric_source?: string
     strategy_portfolio_metric_count?: number
   }
@@ -970,6 +975,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     strategyWeights?: Record<string, number>
     strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
     strategyPortfolioMetricSource?: string
+    strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
     policy?: StrategyCandidatePoolPolicy
   },
 ): Layer1StrategyBreadthPlan<T> {
@@ -995,6 +1001,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     regime: options.regime,
     strategyWeights: options.strategyWeights,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+    strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
   })
 
   const selectedSymbols = new Set(routerPlan.mlSlate.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
@@ -1043,6 +1050,10 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       strategy_matrix_coverage_ratio: routerPlan.telemetry.strategy_matrix_coverage_ratio,
       strategy_matrix_matched_candidate_count: routerPlan.telemetry.matched_candidates,
       strategy_matrix_active_labeled_candidate_count: routerPlan.telemetry.active_labeled_candidates,
+      strategy_similarity_evidence_source: routerPlan.telemetry.strategy_similarity_evidence_source,
+      strategy_similarity_algorithm_owner: routerPlan.telemetry.strategy_similarity_algorithm_owner,
+      strategy_similarity_medoid_algorithm: routerPlan.telemetry.strategy_similarity_medoid_algorithm,
+      strategy_similarity_degraded_reason: routerPlan.telemetry.strategy_similarity_degraded_reason,
       strategy_portfolio_metric_source: options.strategyPortfolioMetricSource,
       strategy_portfolio_metric_count: Object.keys(options.strategyPortfolioMetrics ?? {}).length,
     },

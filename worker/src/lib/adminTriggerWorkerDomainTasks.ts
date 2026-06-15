@@ -5,6 +5,11 @@ import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from '.
 
 const RESCORE_CRONS = new Set(['0 2 * * 1-5', '0 3 * * 1-5', '0 4 * * 1-5', '30 4 * * 1-5'])
 
+type WarmupSummary = {
+  ok: boolean
+  summary: string
+}
+
 function inferIntradayRescoreCron(rawCron?: string | null): string {
   if (rawCron && RESCORE_CRONS.has(rawCron)) return rawCron
   const now = new Date()
@@ -15,6 +20,46 @@ function inferIntradayRescoreCron(rawCron?: string | null): string {
   if (hour === 4 && minute >= 25) return '30 4 * * 1-5'
   if (hour === 4) return '0 4 * * 1-5'
   return 'manual'
+}
+
+function warmupTargetStatus(name: string, value: unknown): string {
+  const record = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+  const status = typeof record.status === 'string' && record.status.trim()
+    ? record.status.trim()
+    : 'unknown'
+  const details: string[] = []
+  if (name === 'strategy_similarity_evidence') {
+    const pam = typeof record.kmedoids_pam_preflight_status === 'string' && record.kmedoids_pam_preflight_status.trim()
+      ? record.kmedoids_pam_preflight_status.trim()
+      : ''
+    const owner = typeof record.algorithm_owner === 'string' && record.algorithm_owner.trim()
+      ? record.algorithm_owner.trim()
+      : ''
+    if (pam) details.push(`pam=${pam}`)
+    if (owner) details.push(`owner=${owner}`)
+  }
+  return `${name}=${status}${details.length ? `(${details.join(',')})` : ''}`
+}
+
+export function summarizeMlControllerWarmupTargets(body: unknown): WarmupSummary {
+  const targets = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, unknown>).targets
+    : null
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
+    return { ok: false, summary: 'targets=unknown' }
+  }
+
+  const entries = Object.entries(targets)
+  if (!entries.length) return { ok: false, summary: 'targets=empty' }
+
+  const summary = entries.map(([name, value]) => warmupTargetStatus(name, value)).join(' ')
+  const ok = entries.every(([, value]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    return (value as Record<string, unknown>).status === 'ok'
+  })
+  return { ok, summary }
 }
 
 async function runMlControllerWarmup(env: any): Promise<string> {
@@ -28,10 +73,8 @@ async function runMlControllerWarmup(env: any): Promise<string> {
   }).catch(() => null)
   if (warmup?.ok) {
     const body = await warmup.json().catch(() => ({})) as any
-    const targets = body?.targets && typeof body.targets === 'object'
-      ? Object.entries(body.targets).map(([name, value]: [string, any]) => `${name}=${value?.status ?? 'unknown'}`).join(' ')
-      : 'targets=unknown'
-    return `ML Controller warmup ok ${targets}`
+    const targets = summarizeMlControllerWarmupTargets(body)
+    return `ML Controller warmup ${targets.ok ? 'ok' : 'degraded'} ${targets.summary}`
   }
 
   const res = await fetch(`${env.ML_CONTROLLER_URL}/health`, {

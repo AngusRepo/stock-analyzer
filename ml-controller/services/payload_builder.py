@@ -133,6 +133,15 @@ class PredictPayload:
     lifecycle_weights: dict[str, float] = field(default_factory=dict)
     barrier_params: dict = field(default_factory=dict)
     stock_meta: dict = field(default_factory=dict)  # Universal Model: sector/cap/volume/cross-sectional
+    strategy_affinity_vector: dict[str, float] = field(default_factory=dict)
+    family_affinity_vector: dict[str, float] = field(default_factory=dict)
+    strategy_weak_label_vector: dict[str, float] = field(default_factory=dict)
+    strategy_hit_vector: dict[str, float] = field(default_factory=dict)
+    strategy_position_weight_vector: dict[str, float] = field(default_factory=dict)
+    strategy_overlap_vector: dict[str, float] = field(default_factory=dict)
+    strategy_similarity_graph: dict = field(default_factory=dict)
+    candidate_route_score: float | None = None
+    ml_slate_eligibility: float | None = None
     runtime_options: dict = field(default_factory=dict)
 
 

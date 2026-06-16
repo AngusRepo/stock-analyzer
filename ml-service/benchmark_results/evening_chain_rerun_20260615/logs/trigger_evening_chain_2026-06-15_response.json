@@ -1,0 +1,6 @@
+﻿{
+    "success":  true,
+    "message":  "evening-chain å·è¡æå",
+    "triggered_at":  "2026-06-15T18:06:15.818Z",
+    "result":  "triggered evening-chain: triggered finlab-v4-backfill run_id=finlab-v4-3y-20260615-1781546771293 function_call_id=fc-01KV67CTBZND7BKK9B1HZWMFM8 callback expected; awaiting FinLab canonical callback"
+}

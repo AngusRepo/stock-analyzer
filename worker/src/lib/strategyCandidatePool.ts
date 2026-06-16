@@ -231,6 +231,8 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     strategy_similarity_evidence_source?: string
     strategy_similarity_algorithm_owner?: string
     strategy_similarity_medoid_algorithm?: string
+    strategy_similarity_blocked_reason?: string
+    /** @deprecated Read historical funnel rows only. New runtime writes blocked_reason. */
     strategy_similarity_degraded_reason?: string
     strategy_portfolio_metric_source?: string
     strategy_portfolio_metric_count?: number
@@ -1085,7 +1087,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       strategy_similarity_evidence_source: routerPlan.telemetry.strategy_similarity_evidence_source,
       strategy_similarity_algorithm_owner: routerPlan.telemetry.strategy_similarity_algorithm_owner,
       strategy_similarity_medoid_algorithm: routerPlan.telemetry.strategy_similarity_medoid_algorithm,
-      strategy_similarity_degraded_reason: routerPlan.telemetry.strategy_similarity_degraded_reason,
+      strategy_similarity_blocked_reason: routerPlan.telemetry.strategy_similarity_blocked_reason,
       strategy_portfolio_metric_source: options.strategyPortfolioMetricSource,
       strategy_portfolio_metric_count: Object.keys(options.strategyPortfolioMetrics ?? {}).length,
     },

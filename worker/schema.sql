@@ -619,6 +619,7 @@ CREATE TABLE IF NOT EXISTS strategy_spec_registry (
   supported_regimes_json   TEXT NOT NULL DEFAULT '[]',
   thesis                   TEXT NOT NULL,
   thresholds_json          TEXT NOT NULL DEFAULT '{}',
+  candidate_policy_json    TEXT NOT NULL DEFAULT '{}',
   risk_notes_json          TEXT NOT NULL DEFAULT '[]',
   source_refs_json         TEXT NOT NULL DEFAULT '[]',
   created_by               TEXT NOT NULL DEFAULT 'p5_strategy_governance',

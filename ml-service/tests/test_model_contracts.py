@@ -80,3 +80,29 @@ def test_retired_alpha_predictor_stubs_are_removed():
 
     for name in ("run_catboost", "run_chronos", "run_ft_transformer"):
         assert not hasattr(models, name)
+
+
+def test_prediction_runtime_blocks_degraded_model_predictions():
+    from app.prediction_runtime import _model_prediction_block_reason
+
+    degraded = types.SimpleNamespace(degraded=True, fallback_reason="insufficient_data")
+    assert _model_prediction_block_reason(degraded) == "insufficient_data"
+
+    clean = types.SimpleNamespace(degraded=False, forecast_pct=0.03)
+    assert _model_prediction_block_reason(clean) is None
+
+
+def test_degraded_model_pool_status_defaults_to_low_weight():
+    from app.ensemble import merge_with_time_series
+    from app.model_pool import compute_weight
+
+    pool = {"models": {"LightGBM": {"status": "degraded"}}}
+    assert compute_weight("LightGBM", 0.5, pool=pool) == 0.05
+
+    _merged, weights = merge_with_time_series(
+        {"LightGBM": 0.8},
+        {},
+        ic_weights={"LightGBM": 0.5},
+        model_status={"LightGBM": "degraded"},
+    )
+    assert weights["LightGBM"] == 0.05

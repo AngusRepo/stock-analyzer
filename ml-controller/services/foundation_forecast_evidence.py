@@ -45,18 +45,11 @@ def _first_float(*values: Any) -> tuple[float | None, str | None]:
 def _forecast_from_payload(payload: dict[str, Any]) -> tuple[float | None, str | None]:
     signal = payload.get("model_signal") if isinstance(payload.get("model_signal"), dict) else {}
     nested_timesfm = payload.get("timesfm") if isinstance(payload.get("timesfm"), dict) else {}
-    forecast_pct, source = _first_float(
+    return _first_float(
         ("forecast_data.forecast_pct", payload.get("forecast_pct")),
         ("forecast_data.model_signal.forecast_pct", signal.get("forecast_pct")),
         ("forecast_data.timesfm.forecast_pct", nested_timesfm.get("forecast_pct")),
     )
-    if forecast_pct is not None:
-        return forecast_pct, source
-
-    rank_score = _as_float(payload.get("rank_score"))
-    if rank_score is None:
-        return None, None
-    return rank_score - 0.5, "forecast_data.rank_score_centered"
 
 
 def _prediction_from_d1_row(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:

@@ -16,6 +16,7 @@ from .neuralforecast_sequence_runtime import (
     neuralforecast_batch_predict,
     train_neuralforecast_sequence_artifact,
 )
+from .training_promotion_policy import resolve_training_promotion_intent
 
 MODEL_NAME = "PatchTST"
 GCS_WEIGHTS_PREFIX = MODEL_CONFIG[MODEL_NAME]["gcs_prefix"]
@@ -126,6 +127,7 @@ def train_patchtst(
         {"symbol": f"series_{idx}", "close": close, "dates": []}
         for idx, close in enumerate(series_close or [])
     ]
+    promote_to_active, promotion_reason = resolve_training_promotion_intent(kwargs, model_name=MODEL_NAME)
     result = train_neuralforecast_sequence_artifact(
         {
             **kwargs,
@@ -137,12 +139,13 @@ def train_patchtst(
             "max_steps": int(kwargs.get("max_steps") or n_epochs),
             "batch_size": batch_size,
             "oos_ratio": val_ratio,
-            "promote_to_active": bool(kwargs.get("promote_to_active", False)),
+            "promote_to_active": promote_to_active,
         },
         model_name=MODEL_NAME,
     )
     pool_update = None
-    if bool(kwargs.get("promote_to_active", False)):
+    if promote_to_active:
+        assert promotion_reason is not None
         bucket = _get_bucket()
         if bucket is None:
             raise RuntimeError("GCS bucket not available")
@@ -151,7 +154,7 @@ def train_patchtst(
             version=result["version"],
             artifact_path=result["artifact_path"],
             metadata=result["metadata"],
-            reason=str(kwargs.get("promotion_reason") or "formal NeuralForecast PatchTST artifact retrain approved by Wei"),
+            reason=promotion_reason,
         )
     model_cpcv = (
         result.get("model_cpcv")

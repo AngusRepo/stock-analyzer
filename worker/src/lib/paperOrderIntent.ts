@@ -81,7 +81,7 @@ export async function acquirePaperBuyIntent(
     return { acquired: recovered, intentKey, fallback: false, recovered, reason: recovered ? 'recovered' : existing?.status ?? 'duplicate' }
   } catch (error) {
     if (!isMissingTableError(error)) throw error
-    return { acquired: true, intentKey, fallback: true }
+    return { acquired: false, intentKey, fallback: false, reason: 'paper_order_intents_missing' }
   }
 }
 
@@ -99,6 +99,7 @@ export async function completePaperBuyIntent(
         WHERE intent_key=?`,
     ).bind(status, orderId ?? null, errorMessage ?? null, intentKey).run()
   } catch (error) {
-    if (!isMissingTableError(error)) throw error
+    if (isMissingTableError(error)) throw new Error('paper_order_intents_missing')
+    throw error
   }
 }

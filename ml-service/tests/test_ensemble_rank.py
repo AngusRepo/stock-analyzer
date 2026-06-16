@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
 
-def test_rank_to_signal_uses_equal_weight_when_ic_is_cold_start():
+
+def test_rank_to_signal_blocks_equal_weight_when_ic_is_cold_start():
     from app.ensemble import rank_to_signal
 
     result = rank_to_signal(
@@ -12,9 +14,9 @@ def test_rank_to_signal_uses_equal_weight_when_ic_is_cold_start():
         buy_threshold=0.70,
     )
 
-    assert result.signal == "BUY"
-    assert result.direction == "up"
-    assert result.forecast_pct > 0
+    assert result.signal == "NO_SIGNAL"
+    assert result.direction == "neutral"
+    assert result.forecast_pct == 0.0
 
 
 def test_rank_to_signal_stays_neutral_when_all_observed_ic_is_negative():
@@ -79,6 +81,17 @@ def test_load_ic_weights_uses_model_pool_only(monkeypatch):
     assert weights["LightGBM"] == 0.015
     assert 0.017 < weights["ExtraTrees"] < 0.018
     assert "CatBoost" not in weights
+
+
+def test_load_ic_weights_requires_model_pool(monkeypatch):
+    from app import ensemble
+
+    monkeypatch.setattr("app.model_pool.load_pool", lambda: None)
+    ensemble._IC_WEIGHTS_CACHE = None
+    ensemble._IC_WEIGHTS_CACHE_LOADED_AT = 0.0
+
+    with pytest.raises(ensemble.LifecycleWeightsUnavailable):
+        ensemble.load_ic_weights()
 
 
 def test_load_ic_weights_prefers_market_segment_ic(monkeypatch):

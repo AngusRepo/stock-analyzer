@@ -1,0 +1,63 @@
+[
+  {
+    "results": [
+      {
+        "run_id": "finlab-v4-3y-20260612-1781272801915",
+        "generated_at": "2026-06-12T14:00:08.168621+00:00",
+        "lookback_years": 3,
+        "dataset_count": 11,
+        "finlab_rows": 5581912,
+        "gap_fill_rows": 9,
+        "value_conflicts": 0,
+        "checksum": "sha256:558ab67118c9dc1007196b534838bdb3b3a88a2dbb727eb2a02795d5a2aa08df",
+        "status": "ready",
+        "metadata_json": "{\"artifact_root\": \"/tmp/finlab_remote_backfill/finlab-v4-3y-20260612-1781272801915\", \"mode\": \"remote_summary_writeback_full_artifacts\"}",
+        "created_at": "2026-06-12 14:07:47"
+      },
+      {
+        "run_id": "finlab-v4-3y-20260612-1781452245910",
+        "generated_at": "2026-06-14T15:50:50.811780+00:00",
+        "lookback_years": 3,
+        "dataset_count": 11,
+        "finlab_rows": 5563470,
+        "gap_fill_rows": 9,
+        "value_conflicts": 0,
+        "checksum": "sha256:97981208a56bc3316aaedf21f68c4825938bf50ea390643211d319c1158c6171",
+        "status": "ready",
+        "metadata_json": "{\"artifact_root\": \"/tmp/finlab_remote_backfill/finlab-v4-3y-20260612-1781452245910\", \"mode\": \"remote_summary_writeback_full_artifacts\"}",
+        "created_at": "2026-06-14 15:55:56"
+      },
+      {
+        "run_id": "finlab-v4-3y-20260612-1781491702795",
+        "generated_at": "2026-06-15T02:48:28.411711+00:00",
+        "lookback_years": 3,
+        "dataset_count": 11,
+        "finlab_rows": 5556201,
+        "gap_fill_rows": 9,
+        "value_conflicts": 0,
+        "checksum": "sha256:af27c181fd743ad68f64a1b847fd6a3fee5749edb8ec04985dabf1e03bd1c263",
+        "status": "ready",
+        "metadata_json": "{\"artifact_root\": \"/tmp/finlab_remote_backfill/finlab-v4-3y-20260612-1781491702795\", \"mode\": \"remote_summary_writeback_full_artifacts\"}",
+        "created_at": "2026-06-15 02:52:41"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.3573
+      },
+      "duration": 0.3573,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2044510208,
+      "rows_read": 65,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

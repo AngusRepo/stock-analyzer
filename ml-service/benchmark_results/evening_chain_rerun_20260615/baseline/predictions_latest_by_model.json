@@ -1,0 +1,72 @@
+﻿[
+    {
+        "model_name":  "DLinear",
+        "rows":  18,
+        "stock_ids":  18,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.49423136101422827
+    },
+    {
+        "model_name":  "ExtraTrees",
+        "rows":  24,
+        "stock_ids":  24,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.4973441666666667
+    },
+    {
+        "model_name":  "GNN",
+        "rows":  18,
+        "stock_ids":  18,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.47121381925212014
+    },
+    {
+        "model_name":  "LightGBM",
+        "rows":  24,
+        "stock_ids":  24,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.43991766666666665
+    },
+    {
+        "model_name":  "PatchTST",
+        "rows":  18,
+        "stock_ids":  18,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.22470595286199702
+    },
+    {
+        "model_name":  "TabM",
+        "rows":  18,
+        "stock_ids":  18,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.206924
+    },
+    {
+        "model_name":  "TimesFM",
+        "rows":  18,
+        "stock_ids":  18,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.47853836413741835
+    },
+    {
+        "model_name":  "XGBoost",
+        "rows":  24,
+        "stock_ids":  24,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.4460045416666667
+    },
+    {
+        "model_name":  "ensemble",
+        "rows":  24,
+        "stock_ids":  24,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.5501083333333333
+    },
+    {
+        "model_name":  "iTransformer",
+        "rows":  18,
+        "stock_ids":  18,
+        "buy_rows":  0,
+        "avg_direction_accuracy":  0.22470595286199702
+    }
+]

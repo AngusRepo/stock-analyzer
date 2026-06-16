@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.ensemble_v2 import attach_ensemble_v2  # noqa: E402
 
 
-def test_ensemble_v2_uses_equal_weight_when_ic_is_cold_start():
+def test_ensemble_v2_blocks_equal_weight_when_ic_is_cold_start_by_default():
     pred = {
         "rank_scores": {
             "XGBoost": 0.74,
@@ -26,11 +26,50 @@ def test_ensemble_v2_uses_equal_weight_when_ic_is_cold_start():
     )
 
     ev2 = pred["ensemble_v2"]
+    assert ev2["reason"] == "no_positive_lifecycle_weight"
+    assert ev2["weight_total"] == 0.0
+    assert ev2["signal"] == "HOLD"
+    assert ev2["contributing_models"] == []
+
+
+def test_ensemble_v2_uses_equal_weight_only_when_explicitly_enabled():
+    pred = {
+        "rank_scores": {
+            "XGBoost": 0.74,
+            "LightGBM": 0.70,
+            "ExtraTrees": 0.66,
+        }
+    }
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"XGBoost": "active", "LightGBM": "active", "ExtraTrees": "active"},
+        ic_weights={"XGBoost": 0.0, "LightGBM": 0.0, "ExtraTrees": 0.0},
+        degraded_dampening=1.0,
+        ev2_cfg={"buyThreshold": 0.70, "allowColdStartEqualWeight": True},
+    )
+
+    ev2 = pred["ensemble_v2"]
     assert ev2["reason"] == "cold_start_equal_weight"
     assert ev2["weight_total"] == 3.0
-    assert ev2["avg_rank"] > 0.69
     assert ev2["signal"] == "BUY"
-    assert ev2["contributing_models"] == ["ExtraTrees", "LightGBM", "XGBoost"]
+
+
+def test_ensemble_v2_missing_lifecycle_status_stays_zero_weight_even_with_cold_start():
+    pred = {"rank_scores": {"XGBoost": 0.95}}
+
+    attach_ensemble_v2(
+        pred,
+        model_status={},
+        ic_weights={"XGBoost": 0.0},
+        degraded_dampening=1.0,
+        ev2_cfg={"allowColdStartEqualWeight": True},
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["reason"] == "no_positive_lifecycle_weight"
+    assert ev2["weights"] == {"XGBoost": 0.0}
+    assert ev2["contributing_models"] == []
 
 
 def test_ensemble_v2_keeps_no_positive_weight_when_ic_is_negative():

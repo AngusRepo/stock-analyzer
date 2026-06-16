@@ -1,0 +1,349 @@
+﻿{
+    "apiVersion":  "run.googleapis.com/v1",
+    "kind":  "Execution",
+    "metadata":  {
+                     "annotations":  {
+                                         "run.googleapis.com/client-name":  "gcloud",
+                                         "run.googleapis.com/client-version":  "561.0.0",
+                                         "run.googleapis.com/creator":  "530028717113-compute@developer.gserviceaccount.com",
+                                         "run.googleapis.com/execution-environment":  "gen2",
+                                         "run.googleapis.com/lastModifier":  "530028717113-compute@developer.gserviceaccount.com",
+                                         "run.googleapis.com/operation-id":  "957fa7d9-ffe4-410c-b6f9-4c325eb39233"
+                                     },
+                     "creationTimestamp":  "2026-06-15T18:31:59.208146Z",
+                     "generation":  1,
+                     "labels":  {
+                                    "client.knative.dev/nonce":  "cap_pac_ham",
+                                    "cloud.googleapis.com/location":  "asia-east1",
+                                    "run.googleapis.com/job":  "pipeline-v2",
+                                    "run.googleapis.com/jobGeneration":  "278",
+                                    "run.googleapis.com/jobResourceVersion":  "1781548252775658",
+                                    "run.googleapis.com/jobUid":  "f6cefde1-28d0-4aa1-8403-389b31fb6dca"
+                                },
+                     "name":  "pipeline-v2-l6vvl",
+                     "namespace":  "530028717113",
+                     "ownerReferences":  [
+                                             {
+                                                 "apiVersion":  "serving.knative.dev/v1",
+                                                 "blockOwnerDeletion":  true,
+                                                 "controller":  true,
+                                                 "kind":  "Job",
+                                                 "name":  "pipeline-v2",
+                                                 "uid":  "f6cefde1-28d0-4aa1-8403-389b31fb6dca"
+                                             }
+                                         ],
+                     "resourceVersion":  "AAZUTwupa/Y",
+                     "selfLink":  "/apis/run.googleapis.com/v1/namespaces/530028717113/executions/pipeline-v2-l6vvl",
+                     "uid":  "195a3ba7-37bb-4480-859a-58d3956ed740"
+                 },
+    "spec":  {
+                 "parallelism":  1,
+                 "taskCount":  1,
+                 "template":  {
+                                  "spec":  {
+                                               "containers":  [
+                                                                  {
+                                                                      "args":  [
+                                                                                   "-m",
+                                                                                   "pipeline_job_main"
+                                                                               ],
+                                                                      "command":  [
+                                                                                      "python"
+                                                                                  ],
+                                                                      "env":  [
+                                                                                  {
+                                                                                      "name":  "ML_SERVICE_URL",
+                                                                                      "value":  "https://wayne60619--stockvision-ml-fastapi-app.modal.run"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "GITHUB_REPO_VAULT",
+                                                                                      "value":  "AngusRepo/Angus-brain"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "GITHUB_REPO_MAIN",
+                                                                                      "value":  "AngusRepo/stock-analyzer"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "CF_ACCOUNT_ID",
+                                                                                      "value":  "619a83ac9f20847d9e2f2920823b727d"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "CF_D1_DB_ID",
+                                                                                      "value":  "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "CF_KV_NAMESPACE_ID",
+                                                                                      "value":  "39dcebcf5b6848c98f269ef9a48dc3f8"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "STOCKVISION_WORKER_URL",
+                                                                                      "value":  "https://stockvision-worker.angus-solo-dev.workers.dev"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "GCS_BUCKET_NAME",
+                                                                                      "value":  "stockvision-models"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "RETRAIN_LOCK_BUCKET",
+                                                                                      "value":  "stockvision-models"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "GCP_PROJECT_ID",
+                                                                                      "value":  "gen-lang-client-0602998820"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "GCP_REGION",
+                                                                                      "value":  "asia-east1"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "PIPELINE_JOB_NAME",
+                                                                                      "value":  "pipeline-v2"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "VERIFY_JOB_NAME",
+                                                                                      "value":  "verify-v2"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "OPTUNA_JOB_NAME",
+                                                                                      "value":  "optuna-research-sweep"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "FINLAB_API_KEY",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "finlab-api-key"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "CF_API_TOKEN",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-cf-api-token"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "STOCKVISION_AUTH_TOKEN",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-stockvision-auth-token"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "MODAL_TOKEN_ID",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-modal-token-id"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "MODAL_TOKEN_SECRET",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-modal-token-secret"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "ENVIRONMENT",
+                                                                                      "value":  "production"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "FINLAB_JOB_NAME",
+                                                                                      "value":  "finlab-v4-backfill"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "ML_CONTROLLER_SECRET",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-ml-controller-secret"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "FINLAB_BACKFILL_EXECUTOR",
+                                                                                      "value":  "modal"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "FINLAB_EXECUTION_LOOP_ENABLED",
+                                                                                      "value":  "true"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "SHIOAJI_CERT_PATH",
+                                                                                      "value":  "/secrets/shioaji/cert.pfx"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "SHIOAJI_API_KEY",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-finlab-exec-shioaji-api-key"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "SHIOAJI_SECRET_KEY",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-finlab-exec-shioaji-secret-key"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "SHIOAJI_ACCOUNT_ID",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-finlab-exec-shioaji-account-id"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "SHIOAJI_CERT_PERSON_ID",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-finlab-exec-shioaji-cert-person-id"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "SHIOAJI_CERT_PASSWORD",
+                                                                                      "valueFrom":  {
+                                                                                                        "secretKeyRef":  {
+                                                                                                                             "key":  "latest",
+                                                                                                                             "name":  "stockvision-finlab-exec-shioaji-cert-password"
+                                                                                                                         }
+                                                                                                    }
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "PIPELINE_STATE_SPACE_OVERLAY_MODE",
+                                                                                      "value":  "shadow"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS",
+                                                                                      "value":  "120"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "MODAL_PREDICT_BATCH_SIZE_CANDIDATES",
+                                                                                      "value":  "80|120|160"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE",
+                                                                                      "value":  "auto"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "TIMESFM_MIN_SEQUENCE_COVERAGE",
+                                                                                      "value":  "0.80"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "TIMESFM_MIN_SEQUENCE_POINTS",
+                                                                                      "value":  "50"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "ML_CONTROLLER_PUBLIC_URL",
+                                                                                      "value":  "https://ml-controller-530028717113.asia-east1.run.app"
+                                                                                  },
+                                                                                  {
+                                                                                      "name":  "PIPELINE_RUN_DATE",
+                                                                                      "value":  "2026-06-15"
+                                                                                  }
+                                                                              ],
+                                                                      "image":  "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:f225c798df26987b4fbad7fed2f8cc01f17c06890b496ba0e9975d3207e265d8",
+                                                                      "resources":  {
+                                                                                        "limits":  {
+                                                                                                       "cpu":  "4",
+                                                                                                       "memory":  "4Gi"
+                                                                                                   }
+                                                                                    },
+                                                                      "volumeMounts":  [
+                                                                                           {
+                                                                                               "mountPath":  "/secrets/shioaji",
+                                                                                               "name":  "stockvision-finlab-exec-shioaji-cert-pfx-bec-col"
+                                                                                           }
+                                                                                       ]
+                                                                  }
+                                                              ],
+                                               "maxRetries":  0,
+                                               "serviceAccountName":  "530028717113-compute@developer.gserviceaccount.com",
+                                               "timeoutSeconds":  "1800",
+                                               "volumes":  [
+                                                               {
+                                                                   "name":  "stockvision-finlab-exec-shioaji-cert-pfx-wun-fib",
+                                                                   "secret":  {
+                                                                                  "items":  [
+                                                                                                {
+                                                                                                    "key":  "latest",
+                                                                                                    "path":  "cert.pfx"
+                                                                                                }
+                                                                                            ],
+                                                                                  "secretName":  "stockvision-finlab-exec-shioaji-cert-pfx"
+                                                                              }
+                                                               },
+                                                               {
+                                                                   "name":  "stockvision-finlab-exec-shioaji-cert-pfx-bec-col",
+                                                                   "secret":  {
+                                                                                  "items":  [
+                                                                                                {
+                                                                                                    "key":  "latest",
+                                                                                                    "path":  "cert.pfx"
+                                                                                                }
+                                                                                            ],
+                                                                                  "secretName":  "stockvision-finlab-exec-shioaji-cert-pfx"
+                                                                              }
+                                                               }
+                                                           ]
+                                           }
+                              }
+             },
+    "status":  {
+                   "conditions":  [
+                                      {
+                                          "lastTransitionTime":  "2026-06-15T18:32:04.823862Z",
+                                          "message":  "Waiting for execution to complete.",
+                                          "status":  "Unknown",
+                                          "type":  "Completed"
+                                      },
+                                      {
+                                          "lastTransitionTime":  "2026-06-15T18:32:00.237673Z",
+                                          "message":  "Provisioned imported containers.",
+                                          "status":  "True",
+                                          "type":  "ResourcesAvailable"
+                                      },
+                                      {
+                                          "lastTransitionTime":  "2026-06-15T18:32:03.919389Z",
+                                          "message":  "Started deployed execution in 3.68s.",
+                                          "status":  "True",
+                                          "type":  "Started"
+                                      },
+                                      {
+                                          "lastTransitionTime":  "2026-06-15T18:31:59.921101Z",
+                                          "message":  "Imported container image.",
+                                          "status":  "True",
+                                          "type":  "ContainerReady"
+                                      },
+                                      {
+                                          "lastTransitionTime":  "2026-06-15T18:32:15.066102Z",
+                                          "message":  "System will retry after 01:00 from lastTransitionTime for polling interval",
+                                          "reason":  "WaitingForOperation",
+                                          "severity":  "Info",
+                                          "status":  "True",
+                                          "type":  "Retry"
+                                      }
+                                  ],
+                   "logUri":  "https://console.cloud.google.com/logs/viewer?project=gen-lang-client-0602998820\u0026advancedFilter=resource.type%3D%22cloud_run_job%22%0Aresource.labels.job_name%3D%22pipeline-v2%22%0Aresource.labels.location%3D%22asia-east1%22%0Alabels.%22run.googleapis.com/execution_name%22%3D%22pipeline-v2-l6vvl%22",
+                   "observedGeneration":  1,
+                   "runningCount":  1,
+                   "startTime":  "2026-06-15T18:32:01.715853Z"
+               }
+}

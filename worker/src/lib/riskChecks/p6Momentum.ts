@@ -5,6 +5,7 @@
  * 2026-04-21 R1 extract from paper.ts L6.
  */
 import type { LegacyLayerDeps, LegacyLayerResult, MomentumZone } from '../riskTypes'
+import { failClosedRiskCheck } from './failClosed'
 
 export async function checkP6Momentum(
   db: D1Database,
@@ -32,7 +33,7 @@ export async function checkP6Momentum(
       reason: `動能擁擠 ${zone}（rank ${((zoneInfo.percentile_rank ?? 0) * 100).toFixed(0)}%）`,
     }
   } catch (e) {
-    console.warn('[CircuitBreaker] Layer6 check failed (non-fatal):', e)
-    return null
+    console.error('[CircuitBreaker] Layer6 check failed; fail closed:', e)
+    return failClosedRiskCheck('P6', e, deps)
   }
 }

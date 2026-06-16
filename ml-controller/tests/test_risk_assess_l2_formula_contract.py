@@ -13,6 +13,8 @@ from routers.risk import (  # noqa: E402
     TradingData,
     post_risk_assess,
 )
+import pytest  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 
 def test_risk_assess_consumes_worker_l2_formula():
@@ -89,3 +91,16 @@ def test_risk_assess_confidence_hook_uses_active_9_only():
     assert hook["ignored_non_active_models"] == ["CatBoost"]
     assert params["threshold_components"]["inputs"]["model_quality"] == 0.70
     assert "CatBoost" not in params["pf_quality_mult"]
+
+
+def test_risk_assess_requires_worker_l2_formula_contract():
+    with pytest.raises(HTTPException, match="L2_formula"):
+        post_risk_assess(
+            RiskAssessRequest(
+                date="2026-06-08",
+                market=MarketData(risk_score=50, risk_level="yellow"),
+                accuracy=AccuracyData(global_30d=0.55),
+                trading=TradingData(losses_5d=0, total_5d=0),
+                adaptive_config=AdaptiveConfigData(),
+            )
+        )

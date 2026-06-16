@@ -1,0 +1,625 @@
+﻿[
+    {
+        "symbol":  "2425",
+        "name":  "承啟",
+        "matched_strategy_count":  3,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_industry_theme_電腦及週邊設備,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.3499999999999999
+    },
+    {
+        "symbol":  "3019",
+        "name":  "亞光",
+        "matched_strategy_count":  3,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_industry_theme_電腦及週邊設備,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.3499999999999999
+    },
+    {
+        "symbol":  "3022",
+        "name":  "威強電",
+        "matched_strategy_count":  3,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_industry_theme_電腦及週邊設備,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.3499999999999999
+    },
+    {
+        "symbol":  "3059",
+        "name":  "華晶科",
+        "matched_strategy_count":  3,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_industry_theme_電腦及週邊設備,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.3499999999999999
+    },
+    {
+        "symbol":  "3213",
+        "name":  "茂訊",
+        "matched_strategy_count":  3,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_industry_theme_電腦及週邊設備,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.3499999999999999
+    },
+    {
+        "symbol":  "6166",
+        "name":  "凌華",
+        "matched_strategy_count":  3,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_industry_theme_電腦及週邊設備,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.3499999999999999
+    },
+    {
+        "symbol":  "6668",
+        "name":  "中揚光",
+        "matched_strategy_count":  3,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_industry_theme_電腦及週邊設備,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.3499999999999999
+    },
+    {
+        "symbol":  "1307",
+        "name":  "三芳",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "1319",
+        "name":  "東陽",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "1342",
+        "name":  "八貫",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "1560",
+        "name":  "中砂",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "1723",
+        "name":  "中碳",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "1808",
+        "name":  "潤隆",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "1904",
+        "name":  "正隆",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2103",
+        "name":  "台橡",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2241",
+        "name":  "艾姆勒",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2379",
+        "name":  "瑞昱",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2412",
+        "name":  "中華電",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2428",
+        "name":  "興勤",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2442",
+        "name":  "新美齊",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2461",
+        "name":  "光群雷",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2462",
+        "name":  "良得電",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2497",
+        "name":  "怡利電",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2501",
+        "name":  "國建",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2520",
+        "name":  "冠德",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2542",
+        "name":  "興富發",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2597",
+        "name":  "潤弘",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2609",
+        "name":  "陽明",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2634",
+        "name":  "漢翔",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2637",
+        "name":  "慧洋-KY",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2820",
+        "name":  "華票",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2838",
+        "name":  "聯邦銀",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "2884",
+        "name":  "玉山金",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3003",
+        "name":  "健和興",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3034",
+        "name":  "聯詠",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3044",
+        "name":  "健鼎",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3045",
+        "name":  "台灣大",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3152",
+        "name":  "璟德",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3322",
+        "name":  "建舜電",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3576",
+        "name":  "聯合再生",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3596",
+        "name":  "智易",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "3691",
+        "name":  "碩禾",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4147",
+        "name":  "中裕",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4306",
+        "name":  "炎洲",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4534",
+        "name":  "慶騰",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4551",
+        "name":  "智伸科",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4721",
+        "name":  "美琪瑪",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4739",
+        "name":  "康普",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4904",
+        "name":  "遠傳",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4938",
+        "name":  "和碩",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4952",
+        "name":  "凌通",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "4976",
+        "name":  "佳凌",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5347",
+        "name":  "世界",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5410",
+        "name":  "國眾",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5434",
+        "name":  "崇越",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5471",
+        "name":  "松翰",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5483",
+        "name":  "中美晶",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5498",
+        "name":  "凱崴",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5508",
+        "name":  "永信建",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5522",
+        "name":  "遠雄",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5534",
+        "name":  "長虹",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "5607",
+        "name":  "遠雄港",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6104",
+        "name":  "創惟",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6126",
+        "name":  "信音",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6153",
+        "name":  "嘉聯益",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6156",
+        "name":  "松上",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6189",
+        "name":  "豐藝",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6191",
+        "name":  "精成科",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6202",
+        "name":  "盛群",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6244",
+        "name":  "茂迪",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6259",
+        "name":  "百徽",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6278",
+        "name":  "台表科",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6443",
+        "name":  "元晶",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6693",
+        "name":  "廣閎科",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6757",
+        "name":  "台灣虎航-創",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6763",
+        "name":  "綠界科技",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6788",
+        "name":  "華景電",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "6901",
+        "name":  "鑽石投資",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "7749",
+        "name":  "意騰-KY",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "8121",
+        "name":  "越峰",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "8163",
+        "name":  "達方",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "8215",
+        "name":  "明基材",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "8227",
+        "name":  "巨有科技",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "8422",
+        "name":  "可寧衛",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "9136",
+        "name":  "巨騰-DR",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "9910",
+        "name":  "豐泰",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "9914",
+        "name":  "美利達",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "9939",
+        "name":  "宏全",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    },
+    {
+        "symbol":  "9941",
+        "name":  "裕融",
+        "matched_strategy_count":  2,
+        "matched_strategies":  "finlab_ai_skill_discovery_v1,finlab_ai_skill_official_台股總體經濟etf",
+        "avg_match_score":  0.35
+    }
+]

@@ -100,8 +100,8 @@ export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Pr
         await env.KV.delete('market:risk:latest:v4-context')
         console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
       }
-    } catch (e) {
-      console.error('[ML V2] Market risk failed (non-blocking):', e)
+    } catch (e: any) {
+      throw new Error(`market risk unavailable; pipeline blocked: ${e?.message ?? e}`)
     }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }

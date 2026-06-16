@@ -8,6 +8,7 @@ from typing import Any
 
 from .neuralforecast_sequence_runtime import train_neuralforecast_sequence_artifact
 from .model_store import _get_bucket
+from .training_promotion_policy import resolve_training_promotion_intent
 
 MODEL_NAME = "iTransformer"
 STALE_PROMOTION_FIELDS = (
@@ -99,11 +100,12 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
 
 def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
     payload = dict(payload or {})
-    promote_to_active = bool(payload.get("promote_to_active", True))
+    promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
     payload["promote_to_active"] = promote_to_active
     result = train_neuralforecast_sequence_artifact(payload, model_name=MODEL_NAME)
     pool_update = None
     if promote_to_active:
+        assert promotion_reason is not None
         bucket = _get_bucket()
         if bucket is None:
             raise RuntimeError("GCS bucket not available")
@@ -112,7 +114,7 @@ def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
             version=result["version"],
             artifact_path=result["artifact_path"],
             metadata=result["metadata"],
-            reason=str(payload.get("promotion_reason") or "formal NeuralForecast iTransformer artifact retrain approved by Wei"),
+            reason=promotion_reason,
         )
     model_cpcv = (
         result.get("model_cpcv")

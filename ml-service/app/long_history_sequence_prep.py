@@ -29,6 +29,14 @@ LANE_MARKET_TYPE = {
 }
 
 
+class SequenceSourceMissingError(RuntimeError):
+    """Raised when a requested long-history source artifact is absent."""
+
+
+class SequenceSourceInvalidError(RuntimeError):
+    """Raised when a source artifact exists but cannot satisfy the sequence contract."""
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -61,8 +69,9 @@ def _read_parquet_source(
     if source_artifact_root:
         path = Path(source_artifact_root) / rel
         if not path.exists():
-            return pl.DataFrame(), str(path)
-        return pl.read_parquet(path), str(path)
+            raise SequenceSourceMissingError(f"missing source parquet: {path}")
+        source_uri = str(path)
+        return _validate_close_source(pl.read_parquet(path), source_uri), source_uri
 
     if not source_gcs_prefix:
         raise ValueError("source_artifact_root or source_gcs_prefix is required")
@@ -73,8 +82,20 @@ def _read_parquet_source(
     key = f"{object_prefix.strip().rstrip('/')}/{rel}"
     blob = bucket.blob(key)
     if not blob.exists():
-        return pl.DataFrame(), f"gs://{bucket_name or '*'}/{key}"
-    return pl.read_parquet(io.BytesIO(blob.download_as_bytes())), f"gs://{bucket_name or '*'}/{key}"
+        raise SequenceSourceMissingError(f"missing source parquet: gs://{bucket_name or '*'}/{key}")
+    source_uri = f"gs://{bucket_name or '*'}/{key}"
+    return _validate_close_source(pl.read_parquet(io.BytesIO(blob.download_as_bytes())), source_uri), source_uri
+
+
+def _validate_close_source(frame: pl.DataFrame, source_uri: str) -> pl.DataFrame:
+    if frame.is_empty():
+        raise SequenceSourceInvalidError(f"empty source parquet: {source_uri}")
+    if "date" not in frame.columns:
+        raise SequenceSourceInvalidError(f"source parquet missing date column: {source_uri}")
+    value_columns = [column for column in frame.columns if column != "date"]
+    if not value_columns:
+        raise SequenceSourceInvalidError(f"source parquet has no symbol columns: {source_uri}")
+    return frame
 
 
 def _parse_source_gcs_prefixes(payload: dict[str, Any]) -> list[str]:
@@ -90,7 +111,7 @@ def _parse_source_gcs_prefixes(payload: dict[str, Any]) -> list[str]:
 def _combine_wide_close_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
     valid = [frame for frame in frames if not frame.is_empty() and "date" in frame.columns]
     if not valid:
-        return pl.DataFrame()
+        raise SequenceSourceInvalidError("no valid source frames to combine")
 
     normalized: list[pl.DataFrame] = []
     for frame in valid:

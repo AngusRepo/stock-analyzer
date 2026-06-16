@@ -1,5 +1,4 @@
 import {
-  DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
   type StrategyCandidateInput,
   type StrategySpec,
@@ -15,7 +14,7 @@ export interface StrategyAnnotatedCandidate extends StrategyCandidateInput {
 
 export function annotateCandidateWithStrategySpecs<T extends StrategyCandidateInput>(
   candidate: T,
-  specs: StrategySpec[] = DEFAULT_STRATEGY_SPECS,
+  specs: StrategySpec[],
 ): T & StrategyAnnotatedCandidate {
   assertOwnerCanOwn('screener', 'candidate_discovery')
   assertOwnerCanOwn('strategy', 'strategy_spec')
@@ -39,7 +38,7 @@ export function annotateCandidateWithStrategySpecs<T extends StrategyCandidateIn
 
 export function annotateCandidatesWithStrategySpecs<T extends StrategyCandidateInput>(
   candidates: T[],
-  specs: StrategySpec[] = DEFAULT_STRATEGY_SPECS,
+  specs: StrategySpec[],
 ): Array<T & StrategyAnnotatedCandidate> {
   return candidates.map((candidate) => annotateCandidateWithStrategySpecs(candidate, specs))
 }

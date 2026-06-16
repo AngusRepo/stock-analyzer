@@ -1,0 +1,17 @@
+{
+    "task":  "finlab-v4-backfill",
+    "status":  "success",
+    "run_date":  "2026-06-12",
+    "run_id":  "finlab-v4-skip-force-20260612-v4-1781515011282",
+    "summary":  "V4 rerun forced downstream: skip FinLab fetch; reuse existing 2026-06-12 FinLab canonical data; bypass downstream locks for evening-chain rerun",
+    "duration_ms":  0,
+    "continue_evening_chain":  true,
+    "force":  true,
+    "metadata":  {
+                     "v4_rerun":  true,
+                     "skip_finlab_fetch":  true,
+                     "force_downstream":  true,
+                     "source":  "codex_v4_evening_chain_rerun",
+                     "note":  "Do not call FinLab backfill; force only bypasses downstream update/queue locks."
+                 }
+}

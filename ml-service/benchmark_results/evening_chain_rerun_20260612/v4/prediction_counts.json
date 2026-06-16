@@ -1,0 +1,136 @@
+[
+  {
+    "results": [
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "DLinear",
+        "trade_signal": "hold",
+        "cnt": 15,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "ExtraTrees",
+        "trade_signal": "hold",
+        "cnt": 19,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "ExtraTrees",
+        "trade_signal": "sell",
+        "cnt": 1,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "GNN",
+        "trade_signal": "hold",
+        "cnt": 15,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "LightGBM",
+        "trade_signal": "hold",
+        "cnt": 19,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "LightGBM",
+        "trade_signal": "sell",
+        "cnt": 1,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "PatchTST",
+        "trade_signal": "hold",
+        "cnt": 15,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "TabM",
+        "trade_signal": "hold",
+        "cnt": 15,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "TimesFM",
+        "trade_signal": "hold",
+        "cnt": 15,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "XGBoost",
+        "trade_signal": "hold",
+        "cnt": 19,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "XGBoost",
+        "trade_signal": "sell",
+        "cnt": 1,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "ensemble",
+        "trade_signal": "hold",
+        "cnt": 19,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "ensemble",
+        "trade_signal": "sell",
+        "cnt": 1,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      },
+      {
+        "prediction_date": "2026-06-12",
+        "model_name": "iTransformer",
+        "trade_signal": "hold",
+        "cnt": 15,
+        "first_generated_at": "2026-06-15 09:28:31",
+        "last_generated_at": "2026-06-15 09:28:31"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.2131
+      },
+      "duration": 1.2131,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2050125824,
+      "rows_read": 354,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

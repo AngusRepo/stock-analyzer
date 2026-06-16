@@ -36,6 +36,10 @@ WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 _jobs_client = CloudRunJobsClient()
 
 
+class CallbackWorkerError(RuntimeError):
+    pass
+
+
 # ─── Worker callback helpers (imported by pipeline_job_main too) ─────────────
 #
 # These two functions are kept in this router module because:
@@ -48,34 +52,30 @@ _jobs_client = CloudRunJobsClient()
 async def _callback_worker(
     payload: dict, client: httpx.AsyncClient | None = None
 ) -> None:
-    """POST to Worker /api/admin/scheduler-callback. Best-effort; never raises."""
+    """POST to Worker /api/admin/scheduler-callback and fail if closure is not durable."""
     if not WORKER_URL:
-        logger.warning(
-            "[Pipeline callback] STOCKVISION_WORKER_URL missing; skip callback for task=%s",
-            payload.get("task"),
+        raise CallbackWorkerError(
+            f"STOCKVISION_WORKER_URL missing; cannot close scheduler callback for task={payload.get('task')}"
         )
-        return
+    if not WORKER_AUTH:
+        raise CallbackWorkerError(
+            f"STOCKVISION_AUTH_TOKEN missing; cannot close scheduler callback for task={payload.get('task')}"
+        )
     url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
-    headers = {"Content-Type": "application/json"}
-    if WORKER_AUTH:
-        headers["Authorization"] = f"Bearer {WORKER_AUTH}"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {WORKER_AUTH}"}
 
     async def _post(c: httpx.AsyncClient) -> None:
         try:
             resp = await c.post(url, headers=headers, json=payload)
             if resp.status_code != 200:
-                logger.warning(
-                    "[Pipeline callback] Worker returned %d for task=%s: %s",
-                    resp.status_code,
-                    payload.get("task"),
-                    resp.text[:200],
+                raise CallbackWorkerError(
+                    f"Worker scheduler callback failed task={payload.get('task')} "
+                    f"HTTP {resp.status_code}: {resp.text[:200]}"
                 )
+        except CallbackWorkerError:
+            raise
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[Pipeline callback] Worker unreachable (task=%s): %s",
-                payload.get("task"),
-                e,
-            )
+            raise CallbackWorkerError(f"Worker scheduler callback unreachable task={payload.get('task')}: {e}") from e
 
     if client is not None:
         await _post(client)

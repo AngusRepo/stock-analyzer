@@ -823,6 +823,151 @@ def _observability_checks(root: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _finlab_l0_p0_p9_closure_checks(root: Path) -> list[dict[str, Any]]:
+    return [
+        _check_text_contains(
+            root,
+            "worker/src/lib/marketScreener.ts",
+            (
+                "buildL0RawSignalCoverageAudit",
+                "l0RawSignalCoverageAudit",
+                "fundamental_loader_error",
+                "rawCoverage",
+                "canonicalCoverageBaseline",
+                "listed_otc_finlab_broker_transactions:not_materialized",
+            ),
+            "finlab_p0:l0_raw_signal_coverage_audit",
+            "P0/P9: L0 writes raw_signal coverage audit and explicitly marks missing listed broker materialization",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/marketScreener.ts",
+            (
+                "ORDER BY stock_id, available_date DESC, period DESC",
+                "telemetry.canonicalErrors.push",
+                "telemetry.revenueErrors.push",
+                "finlab.fundamental_features",
+                "finlab.monthly_revenue",
+            ),
+            "finlab_p1:fundamental_loader_non_silent_bulk",
+            "P1/P3: L0 fundamental loader scans latest non-null rows and reports errors without silent fallback",
+        ),
+        _check_text_contains(
+            root,
+            "tools/finlab_v4_remote_backfill.py",
+            (
+                "lane=\"broker_flow_diversity\"",
+                "kind=\"broker_aggregate\"",
+                "normalize_broker_transactions_daily",
+                "broker_transactions",
+                "finlab.broker_transactions",
+            ),
+            "finlab_p2:broker_transactions_raw_materialization",
+            "P2: remote backfill normalizes listed/OTC FinLab broker_transactions into broker_flow_diversity",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/services/finlab_canonical_materializer.py",
+            (
+                "build_listed_broker_flow_rows",
+                "raw\" / lane / \"broker_daily.parquet",
+                "finlab.broker_transactions",
+                "canonical_broker_flow_daily",
+            ),
+            "finlab_p2:broker_transactions_canonical_materialization",
+            "P2: canonical materializer writes listed/OTC broker flow rows into canonical_broker_flow_daily",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/screenerMarketData.ts",
+            (
+                "CanonicalScreenerPrice",
+                "CanonicalScreenerChip",
+                "@deprecated Use CanonicalScreenerPrice",
+                "@deprecated Use CanonicalScreenerChip",
+                "'broker_flow'",
+            ),
+            "finlab_p3:canonical_screener_adapter_boundary",
+            "P3: Worker screener exposes canonical adapter types and keeps old FM names as aliases only",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/marketScreener.ts",
+            (
+                "finlab_style_cs_sector_rank_zscore_winsor_sector_neutral_v2",
+                "zScoreKey",
+                "winsorizedKey",
+                "sectorNeutralRankKey",
+                "finlabInverseVolatilityWeight",
+                "finlabIndustryCapWeight",
+                "finlabTurnoverControlWeight",
+            ),
+            "finlab_p4:factor_normalization_evidence",
+            "P4: L0/L1 writes FinLab-style rank/z-score/winsor/sector-neutral/allocation evidence without selecting stocks",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/strategyPortfolioMetrics.ts",
+            (
+                "factor_return",
+                "factorReturn",
+                "centrality",
+                "factor_centrality",
+                "graph_centrality",
+                "shapley_contribution",
+                "rank_ic",
+            ),
+            "finlab_p5:l125_factor_analysis_metrics",
+            "P5: L1.25 strategy metrics include factor return, centrality, RankIC, and Shapley evidence",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/multiStrategyPleRouter.ts",
+            (
+                "strategy_prior_weight",
+                "family_prior_weight",
+                "strategy_reliability",
+                "strategy_crowding_score",
+                "strategy_diversification_value",
+                "factor_return",
+                "centrality",
+            ),
+            "finlab_p6:l125_portfolio_intelligence_priors",
+            "P6: L1.25 emits strategy/family priors, reliability, crowding, diversification, and factor-analysis evidence",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/multiStrategyPleRouter.ts",
+            (
+                "training_teacher_labels_offline_runtime_teacher_evidence_optional",
+                "previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency",
+                "missing_runtime_teacher_cache",
+                "historical_verified_cache",
+            ),
+            "finlab_p7:teacher_label_runtime_contract",
+            "P7: daily routing uses verified runtime teacher cache only and does not require same-day L2/L3",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/services/recommendation_service.py",
+            (
+                "single_name_weight",
+                "single_name_weight_limit",
+                "drawdown_state",
+                "live_backtest_divergence",
+                "turnover_pressure",
+            ),
+            "finlab_p8:l4_risk_checklist_evidence",
+            "P8: L4 sparse allocation records FinLab-style risk checklist evidence without becoming a selector",
+        ),
+        _check(
+            root.joinpath("ml-service/benchmark_results/evening_chain_rerun_20260615/report_20260615_v1_vs_rerun.md").exists(),
+            "finlab_p9:rerun_report_artifact_present",
+            "P9: 2026-06-15 L0-L4 comparison report artifact is present for local audit",
+        ),
+    ]
+
+
 def _replay_checks(root: Path) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for rel_path in REPLAY_EVIDENCE_FILES:
@@ -859,6 +1004,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         *_replay_and_promotion_checks(root),
         *_l4_execution_checks(root),
         *_finlab_market_data_owner_checks(root),
+        *_finlab_l0_p0_p9_closure_checks(root),
         *_l15_l2_owner_boundary_checks(root),
         *_observability_checks(root),
         *_replay_checks(root),
@@ -878,6 +1024,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
             "p2_promotion_governance",
             "p2_legacy_cleanup",
             "p3_model_pool_ui_observability",
+            "finlab_p0_p9_l0_l125_l15_l4_raw_signal_portfolio_intelligence_closure",
         ],
         "local_closure": "done" if local_done else "blocked",
         "local_prod_ready": "done" if local_done else "blocked",

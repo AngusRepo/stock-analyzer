@@ -28,10 +28,8 @@ REQUIRED_SECTIONS = (
 )
 
 
-# Minimal controller-side safety defaults. The preferred path is still the
-# Worker admin endpoint, which returns the full Worker DEFAULT_TRADING_CONFIG
-# merged with KV. These defaults only prevent local/offline paths from silently
-# losing required sections.
+# Minimal controller-side defaults for explicit offline/research use only. The
+# Worker admin endpoint is the production source for merged trading:config.
 DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
     "ensemble_v2": {
         "strongBuyThreshold": 0.85,
@@ -127,6 +125,10 @@ class TradingConfigLoadResult:
     contract: TradingConfigContract
 
 
+class TradingConfigUnavailable(RuntimeError):
+    pass
+
+
 def _is_mapping(value: Any) -> bool:
     return isinstance(value, dict)
 
@@ -171,6 +173,7 @@ def load_merged_trading_config_with_contract(
     *,
     prefer_worker: bool = True,
     timeout: float = 10.0,
+    allow_offline_defaults: bool = False,
 ) -> TradingConfigLoadResult:
     raw: dict[str, Any] | None = None
     raw_error: str | None = None
@@ -184,10 +187,22 @@ def load_merged_trading_config_with_contract(
     raw_present = isinstance(raw, dict)
 
     if prefer_worker:
-        worker_cfg = load_active_trading_config(timeout=timeout)
+        try:
+            worker_cfg = load_active_trading_config(timeout=timeout, allow_offline=allow_offline_defaults)
+        except Exception as exc:
+            if not allow_offline_defaults:
+                raise TradingConfigUnavailable(
+                    f"Worker trading:config source unavailable: {type(exc).__name__}: {exc}"
+                ) from exc
+            worker_cfg = {}
+            raw_error = raw_error or str(exc)
         if isinstance(worker_cfg, dict) and worker_cfg:
             merged = _normalize_required_aliases(worker_cfg)
             final_missing = _missing_required_sections(merged)
+            if final_missing and not allow_offline_defaults:
+                raise TradingConfigUnavailable(
+                    f"Worker trading:config missing required sections: {','.join(final_missing)}"
+                )
             return TradingConfigLoadResult(
                 config=_with_required_defaults(merged),
                 contract=TradingConfigContract(
@@ -199,12 +214,34 @@ def load_merged_trading_config_with_contract(
                     error=raw_error,
                 ),
             )
+        if not allow_offline_defaults:
+            raise TradingConfigUnavailable("Worker trading:config returned empty config")
+
+    if raw_present and not raw_missing and not raw_error:
+        return TradingConfigLoadResult(
+            config=_normalize_required_aliases(raw or {}),
+            contract=TradingConfigContract(
+                source="direct_kv_config",
+                raw_present=True,
+                degraded=False,
+                missing_sections=[],
+                defaulted_sections=[],
+            ),
+        )
+
+    if not allow_offline_defaults:
+        reason = raw_error or (
+            f"raw trading:config missing required sections: {','.join(raw_missing)}"
+            if raw_present
+            else "raw trading:config missing"
+        )
+        raise TradingConfigUnavailable(f"Trading config unavailable and offline defaults disabled: {reason}")
 
     merged = _with_required_defaults(raw or {})
     return TradingConfigLoadResult(
         config=merged,
         contract=TradingConfigContract(
-            source="direct_kv_merged_required_defaults" if raw_present else "required_defaults_only",
+            source="offline_direct_kv_merged_required_defaults" if raw_present else "offline_required_defaults_only",
             raw_present=raw_present,
             degraded=True,
             missing_sections=raw_missing,
@@ -215,8 +252,17 @@ def load_merged_trading_config_with_contract(
     )
 
 
-def load_merged_trading_config(*, prefer_worker: bool = True, timeout: float = 10.0) -> dict[str, Any]:
-    return load_merged_trading_config_with_contract(prefer_worker=prefer_worker, timeout=timeout).config
+def load_merged_trading_config(
+    *,
+    prefer_worker: bool = True,
+    timeout: float = 10.0,
+    allow_offline_defaults: bool = False,
+) -> dict[str, Any]:
+    return load_merged_trading_config_with_contract(
+        prefer_worker=prefer_worker,
+        timeout=timeout,
+        allow_offline_defaults=allow_offline_defaults,
+    ).config
 
 
 def build_trading_config_contract_report(config: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -389,8 +389,7 @@ def test_write_predictions_to_d1_persists_state_space_overlay_context(monkeypatc
     overlays = payload["state_space_overlays"]
     assert overlays["schema_version"] == "state-space-overlays-v1"
     assert overlays["kalman_filter"]["forecast_pct"] == 0.012
-    assert overlays["markov_switching"]["direction"] == "down"
-    assert overlays["markov_switching"]["fallback_reason"] == "svd_not_converged"
+    assert "markov_switching" not in overlays
     assert "MarkovSwitching" not in [
         param
         for _sql, params in captured["statements"]

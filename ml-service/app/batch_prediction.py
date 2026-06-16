@@ -76,10 +76,20 @@ def _is_real_runtime(request_cls: Any, predict_fn: Any) -> bool:
     )
 
 
-def _load_model_pool() -> dict | None:
-    from .model_pool import load_pool
+class ModelPoolUnavailable(RuntimeError):
+    """Raised when model_pool.json cannot be loaded for batch governance."""
 
-    return load_pool()
+
+def _load_model_pool() -> dict:
+    from .model_pool import load_pool
+    from .prediction_runtime import _require_model_pool_contract
+
+    pool = load_pool()
+    try:
+        _require_model_pool_contract(pool, stage="batch_predict")
+    except Exception as exc:
+        raise ModelPoolUnavailable(f"model_pool.json unavailable for batch model governance: {exc}") from exc
+    return pool
 
 
 def _get_pool_shadow_challenger_path(model_name: str, pool: dict | None) -> str | None:
@@ -341,7 +351,7 @@ def _apply_artifact_batch_predictions(
             except Exception as row_exc:  # noqa: BLE001
                 _record_feature_error(
                     ctx,
-                    f"{model_name}: {prefix}{type(batch_exc).__name__}: {batch_exc}; row fallback: {row_exc}",
+                    f"{model_name}: {prefix}{type(batch_exc).__name__}: {batch_exc}; row retry failed: {row_exc}",
                     challenger=challenger,
                 )
 
@@ -351,7 +361,12 @@ def _apply_gnn_batch_context_predictions(
     pool: dict | None,
     model_status: dict[str, str],
 ) -> None:
-    status = model_status.get("GNN", "active")
+    try:
+        status = _require_model_status(model_status, "GNN")
+    except ModelPoolUnavailable as exc:
+        for ctx in contexts:
+            _record_feature_error(ctx, f"GNN: {exc}")
+        return
     if status in ("retired", "challenger"):
         for ctx in contexts:
             _record_feature_error(ctx, f"GNN: skipped by model_pool status={status}")
@@ -394,7 +409,12 @@ def _apply_tabm_torch_batch_predictions(
     pool: dict | None,
     model_status: dict[str, str],
 ) -> None:
-    status = model_status.get("TabM", "active")
+    try:
+        status = _require_model_status(model_status, "TabM")
+    except ModelPoolUnavailable as exc:
+        for ctx in contexts:
+            _record_feature_error(ctx, f"TabM: {exc}")
+        return
     if status in ("retired", "challenger"):
         for ctx in contexts:
             _record_feature_error(ctx, f"TabM: skipped by model_pool status={status}")
@@ -440,14 +460,16 @@ def _summarize_result_errors(results: list[dict | None], *, limit: int = 5) -> d
 
 
 def _model_pool_status(pool: dict | None) -> dict[str, str]:
-    from .prediction_runtime import _MODEL_NAMES_V2
+    from .prediction_runtime import _MODEL_NAMES_V2, _require_model_pool_contract
 
-    pool_models = (pool or {}).get("models", {}) if pool else {}
-    formal_slots = (pool or {}).get("formal_layer3_slots", {}) if pool else {}
+    pool_models, formal_slots = _require_model_pool_contract(pool, stage="batch_model_pool_status")
 
     def resolve(name: str) -> str:
         if isinstance(pool_models.get(name), dict):
-            return str((pool_models.get(name) or {}).get("status") or "active")
+            status = str((pool_models.get(name) or {}).get("status") or "").strip()
+            if not status:
+                raise ModelPoolUnavailable(f"model_pool status missing for {name}")
+            return status
         slot = formal_slots.get(name) if isinstance(formal_slots, dict) else None
         if isinstance(slot, dict):
             slot_status = str(slot.get("status") or "").strip()
@@ -459,9 +481,16 @@ def _model_pool_status(pool: dict | None) -> dict[str, str]:
             if direct_prediction and slot_status in {"production_adapter_active", "active"}:
                 return "retired"
             return "retired"
-        return "active"
+        raise ModelPoolUnavailable(f"model_pool status missing for {name}")
 
     return {name: resolve(name) for name in _MODEL_NAMES_V2}
+
+
+def _require_model_status(model_status: dict[str, str], model_name: str) -> str:
+    status = str((model_status or {}).get(model_name) or "").strip()
+    if not status:
+        raise ModelPoolUnavailable(f"model_pool status missing for {model_name}")
+    return status
 
 
 _L2_TREE_MODEL_NAMES = ("LightGBM", "XGBoost", "ExtraTrees")
@@ -521,7 +550,12 @@ def predict_l2_tree_batch(payloads: list[dict]) -> dict:
         pool = _load_model_pool()
         model_status = _model_pool_status(pool)
         for model_name in _L2_TREE_MODEL_NAMES:
-            status = model_status.get(model_name, "active")
+            try:
+                status = _require_model_status(model_status, model_name)
+            except ModelPoolUnavailable as exc:
+                for ctx in contexts:
+                    _record_feature_error(ctx, f"{model_name}: {exc}")
+                continue
             if status in ("retired", "challenger"):
                 for ctx in contexts:
                     _record_feature_error(ctx, f"{model_name}: skipped by model_pool status={status}")
@@ -626,7 +660,12 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
         if model_name == "TabM":
             _apply_tabm_torch_batch_predictions(contexts, pool, model_status)
             continue
-        status = model_status.get(model_name, "active")
+        try:
+            status = _require_model_status(model_status, model_name)
+        except ModelPoolUnavailable as exc:
+            for ctx in contexts:
+                _record_feature_error(ctx, f"{model_name}: {exc}")
+            continue
         if status in ("retired", "challenger"):
             for ctx in contexts:
                 _record_feature_error(ctx, f"{model_name}: skipped by model_pool status={status}")
@@ -822,7 +861,7 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
 
     try:
         model_status = _model_pool_status(pool)
-        if model_status.get("TabM", "active") not in {"retired", "challenger"}:
+        if _require_model_status(model_status, "TabM") not in {"retired", "challenger"}:
             tabm_attempted = 1
             from .tabm_batch_runtime import load_tabm_artifact
 
@@ -865,7 +904,7 @@ def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
                 for req, overrides in zip(valid_requests, overrides_by_request)
             ]
         except Exception:
-            # The serial owner remains the correctness fallback for unexpected
+            # The serial owner remains the correctness retry path for unexpected
             # artifact/schema drift. Per-symbol error wrapping still applies.
             valid_requests = [requests_by_position[idx] for idx in valid_positions]
 

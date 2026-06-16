@@ -41,6 +41,7 @@ import {
 } from '../lib/marketRegimeFactorPacket'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
+import { getAdaptiveParamsForRegime } from '../lib/adaptiveConfig'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -479,6 +480,10 @@ ml.post('/predict/:stockId', async (c) => {
     risk_score:      marketRiskRow.risk_score,
     twii_bias_20d:   marketRiskRow.twii_bias_20d ?? 0,
   } : null
+  const [tradingConfig, adaptiveParams] = await Promise.all([
+    getTradingConfig(c.env.KV),
+    getAdaptiveParamsForRegime(c.env.KV),
+  ])
 
   const payload = {
     stock_id:         stockId,
@@ -488,6 +493,8 @@ ml.post('/predict/:stockId', async (c) => {
     chips:            (chips.results ?? []).slice().reverse(),
     sentiment_scores: (news.results ?? []).slice().reverse(),
     horizon:          14,
+    trading_config:   tradingConfig,
+    adaptive_params:  adaptiveParams,
     real_accuracies:  realAccuracies,   // ✅ 動態準確率加權
     market_env:       marketEnv,        // ✅ HMM Regime + LinUCB context
     // model_stats（profit_factor / expectancy）目前 D1 無此欄位，保留空物件

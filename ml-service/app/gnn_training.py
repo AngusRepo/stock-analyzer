@@ -25,6 +25,7 @@ from .prep_lineage import (
     validate_prep_lineage_for_registration,
 )
 from .model_validation import build_model_cpcv_evidence
+from .training_promotion_policy import resolve_training_promotion_intent
 
 MODEL_NAME = "GNN"
 DEFAULT_BATCH_COUNT = 5
@@ -359,7 +360,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         if payload.get("standardization_clip") is not None
         else DEFAULT_STANDARDIZATION_CLIP
     )
-    promote_to_active = bool(payload.get("promote_to_active", True))
+    promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
 
     x_raw, y, dates, sectors, io_report = _load_npz_batches(bucket, gcs_prefix=gcs_prefix, batch_count=batch_count)
     feature_names = _load_feature_names(bucket, gcs_prefix=gcs_prefix, n_features=x_raw.shape[1])
@@ -531,17 +532,16 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         },
     }, prep_lineage)
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
-    pool_update = (
-        _update_model_pool_active(
+    pool_update = None
+    if promote_to_active:
+        assert promotion_reason is not None
+        pool_update = _update_model_pool_active(
             bucket,
             version=version,
             artifact_path=saved["artifact_path"],
             metadata=saved["metadata"],
-            reason=str(payload.get("promotion_reason") or "formal GraphSAGE artifact retrain approved by Wei"),
+            reason=promotion_reason,
         )
-        if promote_to_active
-        else None
-    )
     return {
         "status": "ok",
         "model": MODEL_NAME,

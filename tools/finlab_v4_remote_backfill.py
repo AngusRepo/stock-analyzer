@@ -54,6 +54,11 @@ CORE_SPECS = [
         },
     ),
     DatasetSpec(
+        lane="broker_flow_diversity",
+        kind="broker_aggregate",
+        keys={"broker_transactions": "broker_transactions"},
+    ),
+    DatasetSpec(
         lane="institutional_amount_summary",
         kind="wide_fields",
         keys={
@@ -382,6 +387,7 @@ def d1_counts(start: str) -> dict[str, int]:
         "canonical_chip_daily": "SELECT COUNT(*) AS n FROM canonical_chip_daily WHERE date >= ?",
         "canonical_institutional_amount_daily": "SELECT COUNT(*) AS n FROM canonical_institutional_amount_daily WHERE date >= ?",
         "canonical_revenue_monthly": "SELECT COUNT(*) AS n FROM canonical_revenue_monthly WHERE revenue_month >= ?",
+        "canonical_broker_flow_daily": "SELECT COUNT(*) AS n FROM canonical_broker_flow_daily WHERE date >= ?",
     }
     counts: dict[str, int] = {}
     for key, sql in queries.items():
@@ -395,6 +401,8 @@ def stockvision_count_for_lane(counts: dict[str, int], lane: str) -> int:
         return counts.get("daily_price", 0)
     if lane in {"chip_diversity", "emerging_chip_diversity"}:
         return counts.get("chip_diversity", 0)
+    if lane == "broker_flow_diversity":
+        return counts.get("canonical_broker_flow_daily", 0)
     if lane == "institutional_amount_summary":
         return counts.get("canonical_institutional_amount_daily", 0)
     if lane in {"revenue", "emerging_revenue_diversity"}:
@@ -455,6 +463,86 @@ def _source_url(value: Any, fallback: str) -> str:
     return fallback
 
 
+def _first_existing_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+    columns = [str(col) for col in frame.columns]
+    lowered = {col.lower(): col for col in columns}
+    for candidate in candidates:
+        direct = lowered.get(candidate.lower())
+        if direct:
+            return direct
+    for col in columns:
+        text = col.lower()
+        if any(candidate.lower() in text for candidate in candidates):
+            return col
+    return None
+
+
+def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.DataFrame:
+    """Normalize FinLab broker_transactions into daily symbol broker-flow evidence."""
+    if frame.empty:
+        return pd.DataFrame()
+    date_col = _first_existing_column(frame, ("date", "日期", "trade_date"))
+    stock_col = _first_existing_column(frame, ("stock_id", "symbol", "股票代號", "證券代號"))
+    broker_col = _first_existing_column(frame, ("broker", "broker_code", "securities_broker", "分點", "券商", "證券商"))
+    buy_col = _first_existing_column(frame, ("buy_shares", "buy_volume", "buy_qty", "buy", "買進股數", "買進張數"))
+    sell_col = _first_existing_column(frame, ("sell_shares", "sell_volume", "sell_qty", "sell", "賣出股數", "賣出張數"))
+    if not date_col or not stock_col or not buy_col or not sell_col:
+        missing = {
+            "date": not bool(date_col),
+            "stock_id": not bool(stock_col),
+            "buy_shares": not bool(buy_col),
+            "sell_shares": not bool(sell_col),
+        }
+        print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
+        return pd.DataFrame()
+
+    out = frame.copy()
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce")
+    out = out[out["date"] >= pd.Timestamp(start)]
+    out["stock_id"] = [
+        _clean_symbol(row.get(stock_col), row)
+        for row in out.to_dict(orient="records")
+    ]
+    out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
+    out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
+    out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
+    out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
+    out = out[(out["stock_id"] != "") & out["date"].notna()]
+    if out.empty:
+        return pd.DataFrame()
+
+    broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
+        broker_buy_shares=("buy_shares_raw", "sum"),
+        broker_sell_shares=("sell_shares_raw", "sum"),
+        broker_net=("broker_net", "sum"),
+    ).reset_index()
+    broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
+    dominant = (
+        broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
+        .groupby(["date", "stock_id"], observed=True)
+        .head(1)[["date", "stock_id", "broker_code", "broker_net", "abs_broker_net"]]
+        .rename(columns={
+            "broker_code": "dominant_broker_code",
+            "broker_net": "dominant_net_shares",
+            "abs_broker_net": "dominant_abs_net_shares",
+        })
+    )
+    pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
+        gross_imbalance_shares=("abs_broker_net", "sum"),
+        directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum())),
+    ).reset_index()
+    grouped = out.groupby(["date", "stock_id"], observed=True).agg(
+        buy_shares=("buy_shares_raw", "sum"),
+        sell_shares=("sell_shares_raw", "sum"),
+        broker_count=("broker_code", "nunique"),
+    ).reset_index()
+    grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    return grouped
+
+
 def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from finlab import data, login
 
@@ -495,6 +583,27 @@ def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]
             latest = utc_now()
             schema_fields = [str(col) for col in frame.columns]
             artifacts.append({"field": next(iter(spec.keys)), "api_key": next(iter(spec.keys.values())), "path": str(path), "shape": list(frame.shape)})
+        elif spec.kind == "broker_aggregate":
+            frame = pd.DataFrame(data.get("broker_transactions"))
+            grouped = normalize_broker_transactions_daily(frame, start)
+            path = lane_dir / "broker_daily.parquet"
+            write_parquet(path, grouped)
+            finlab_rows = int(len(grouped))
+            latest = str(grouped["date"].max().date()) if len(grouped) and "date" in grouped.columns else None
+            schema_fields = [
+                "buy_shares",
+                "sell_shares",
+                "buy_sell_net",
+                "broker_count",
+                "dominant_broker_code",
+                "dominant_net_shares",
+                "dominant_abs_net_shares",
+                "gross_imbalance_shares",
+                "directional_broker_count",
+                "source",
+                "market_segment",
+            ]
+            artifacts.append({"field": "broker_daily", "api_key": "broker_transactions", "path": str(path), "shape": list(grouped.shape)})
         elif spec.kind == "rotc_broker_aggregate":
             frame = pd.DataFrame(data.get("rotc_broker_transactions"))
             frame["date"] = pd.to_datetime(frame["date"], errors="coerce")

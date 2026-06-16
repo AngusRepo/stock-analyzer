@@ -86,8 +86,8 @@ assert(
   'morning setup must name the previous trading day as sourceRecoDate to separate source recommendations from pending date',
 )
 assert(
-  /WHERE dr\.date = \?[\s\S]*\.bind\(\s*sourceRecoDate,\s*sourceRecoDate,\s*cb\.buyConfThreshold,\s*candidateLimit\s*\)/.test(pendingBuyOrchestrator),
-  'morning setup must bind sourceRecoDate for daily_recommendations.date instead of pendingDate',
+  /WHERE dr\.date = \?[\s\S]*\.bind\(\s*sourceRecoDate,\s*sourceRecoDate,\s*pendingBuyLimit,?\s*\)/.test(pendingBuyOrchestrator),
+  'morning setup must bind sourceRecoDate for daily_recommendations.date and prediction_date instead of pendingDate',
 )
 assert(
   !/\.bind\(\s*prevDay,\s*pendingDate,\s*cb\.buyConfThreshold,\s*candidateLimit\s*\)/.test(pendingBuyOrchestrator),

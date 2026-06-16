@@ -26,7 +26,7 @@ async def test_verify_pipeline_runs_discrete_graph_nodes(monkeypatch):
 
     async def _noop_arf(items):
         calls.append("arf_feedback")
-        return [{"status": "ok"} for _ in items]
+        return [{"results": {"arf": {"updated": True}}} for _ in items]
 
     monkeypatch.setattr(
         verify_pipeline.verify_service,
@@ -89,6 +89,21 @@ async def test_verify_pipeline_runs_discrete_graph_nodes(monkeypatch):
     assert state["model_accuracy_groups"] == 2
     assert state["trade_performance_groups"] == 3
     assert state["arf_updated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_verify_pipeline_marks_arf_feedback_errors(monkeypatch):
+    async def _failed_arf(items):
+        return [{"error": "HTTP 500"} for _ in items]
+
+    monkeypatch.setattr(verify_pipeline, "batch_update_arf", _failed_arf)
+
+    result = await verify_pipeline.node_arf_feedback({
+        "arf_feedback_items": [{"symbol": "2330", "arf_features": [0.1]}],
+    })
+
+    assert result["arf_updated"] == 0
+    assert result["errors"][0].startswith("arf_feedback failed:")
 
 
 @pytest.mark.asyncio

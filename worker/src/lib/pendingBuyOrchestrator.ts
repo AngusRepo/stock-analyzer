@@ -518,8 +518,6 @@ async function persistPendingBuys(
   pendingBuys: PendingBuy[],
   meta?: Record<string, unknown>,
 ): Promise<void> {
-  const pendingKey = `paper:pending_buys:${tradeDate}`
-  const pendingMetaKey = `paper:pending_buys_meta:${tradeDate}`
   await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate: typeof meta?.prev_day === 'string' ? String(meta.prev_day) : null,
@@ -532,24 +530,7 @@ async function persistPendingBuys(
     errorMessage: typeof meta?.reason === 'string' ? String(meta.reason) : null,
     pendingBuys,
     meta,
-  }).catch(async (persistError) => {
-    console.warn('[PendingBuyOrchestrator] D1 persist failed, fallback to KV:', persistError)
-    await env.KV.put(pendingKey, JSON.stringify(pendingBuys), { expirationTtl: 86400 })
-    if (!meta) return
-    await env.KV.put(
-      pendingMetaKey,
-      JSON.stringify({ updated_at: new Date().toISOString(), ...meta }),
-      { expirationTtl: 86400 },
-    )
   })
-  await env.KV.put(pendingKey, JSON.stringify(pendingBuys), { expirationTtl: 86400 })
-  if (meta) {
-    await env.KV.put(
-      pendingMetaKey,
-      JSON.stringify({ updated_at: new Date().toISOString(), ...meta }),
-      { expirationTtl: 86400 },
-    )
-  }
   if (pendingBuys.length > 0) {
     await recordPendingBuyPaperAttribution(env, pendingBuys, {
       tradeDate,

@@ -213,7 +213,7 @@ export default function ModelPoolHealthChart({ models, queue, weakIc, sampleGaps
       title="Production alpha slots evidence surface"
       meta={
         <div className="grid grid-cols-3 gap-2 text-[11px]">
-          <DecisionPacketCell title="serving" value={visibleModels.length} detail={`${degradedCount} degraded still vote`} tone={degradedCount ? 'warn' : 'ok'} />
+          <DecisionPacketCell title="serving" value={visibleModels.length} detail={`${degradedCount} degraded low-weight`} tone={degradedCount ? 'warn' : 'ok'} />
           <DecisionPacketCell title="non-serving" value={retiredCount} detail={`${shadowOrResearchCount} shadow or research`} tone="neutral" />
           <DecisionPacketCell title="quality" value={`IC ${weakIc}`} detail={`sample gaps ${sampleGaps}`} tone={weakIc || sampleGaps ? 'warn' : 'ok'} />
         </div>

@@ -77,6 +77,10 @@ assert(
   'all automatic sell execution paths must require executable best bid',
 )
 assert(
+  !readFileSync('src/lib/paperTradeMath.ts', 'utf8').includes('last_price_fallback_market_sell'),
+  'shared market-sell policy must not synthesize executable sell fills from last/current price',
+)
+assert(
   intradayData.includes('/orderbook/${symbol}') && intradayData.includes('enrichMissingOrderbookQuotes'),
   'broker snapshots missing bid/ask must be enriched from Shioaji orderbook before execution',
 )

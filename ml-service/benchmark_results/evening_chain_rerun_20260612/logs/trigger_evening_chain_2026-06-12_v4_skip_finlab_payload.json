@@ -1,0 +1,16 @@
+{
+    "task":  "finlab-v4-backfill",
+    "status":  "success",
+    "run_date":  "2026-06-12",
+    "run_id":  "finlab-v4-skip-20260612-v4-1781514503788",
+    "summary":  "V4 rerun: skip FinLab fetch; reuse existing 2026-06-12 FinLab canonical data and continue evening-chain downstream only",
+    "duration_ms":  0,
+    "continue_evening_chain":  true,
+    "force":  false,
+    "metadata":  {
+                     "v4_rerun":  true,
+                     "skip_finlab_fetch":  true,
+                     "source":  "codex_v4_evening_chain_rerun",
+                     "note":  "Do not call FinLab backfill; start from existing canonical data readiness."
+                 }
+}

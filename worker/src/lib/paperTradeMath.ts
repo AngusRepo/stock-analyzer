@@ -223,10 +223,10 @@ export function resolveMarketSellFill(input: MarketSellFillInput): MarketSellFil
   }
 
   const bestBid = input.bestBid == null ? null : Number(input.bestBid)
-  if (input.requireBestBid && (bestBid == null || !Number.isFinite(bestBid) || bestBid <= 0)) {
+  if (bestBid == null || !Number.isFinite(bestBid) || bestBid <= 0) {
     return { fillable: false, reason: 'missing_best_bid' }
   }
-  const referencePrice = bestBid != null && Number.isFinite(bestBid) && bestBid > 0 ? bestBid : currentPrice
+  const referencePrice = bestBid
   const fillPrice = snapToTwPriceTick(applySlippage(referencePrice, 'sell', input.slippageTicks ?? 1), 'floor')
   if (low != null && Number.isFinite(low) && fillPrice < low) {
     return {
@@ -243,7 +243,7 @@ export function resolveMarketSellFill(input: MarketSellFillInput): MarketSellFil
   return {
     fillable: true,
     fillPrice,
-    reason: bestBid != null && Number.isFinite(bestBid) && bestBid > 0 ? 'broker_bid_market_sell' : 'last_price_fallback_market_sell',
+    reason: 'broker_bid_market_sell',
   }
 }
 

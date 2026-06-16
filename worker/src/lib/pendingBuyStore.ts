@@ -636,7 +636,7 @@ export async function replacePendingBuyState(
 
     const insertedRunId = Number(runRow?.id ?? 0)
     runId = Number.isFinite(insertedRunId) && insertedRunId > 0 ? insertedRunId : null
-    if (!runId && pendingBuys.length > 0) {
+    if (!runId) {
       throw new Error(`pending_buy_runs insert did not return id for ${params.tradeDate}`)
     }
     const withDebateTurns = runId != null ? await hasDebateTurnsColumn(env.DB) : false
@@ -711,7 +711,7 @@ export async function replacePendingBuyState(
       }
     }
   } catch (error) {
-    if (!isMissingTableError(error)) throw error
+    throw error
   }
 
   const meta = runId != null ? { ...baseMeta, run_id: runId } : baseMeta

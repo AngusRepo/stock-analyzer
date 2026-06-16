@@ -46,7 +46,7 @@ adminSimulationRoutes.post('/api/admin/test/score-multi-factor', async (c) => {
   const body = await c.req.json<any>().catch(() => null)
   if (!body || !Array.isArray(body.prices) || body.marketReturn5d == null) {
     return c.json({
-      error: 'Body must be { prices: FMStockPrice[], chips?: [{date,foreign,trust}], marketReturn5d, cfg? }',
+      error: 'Body must be { prices: CanonicalScreenerPrice[], chips?: [{date,foreign,trust}], marketReturn5d, cfg? }',
     }, 400)
   }
 

@@ -300,8 +300,11 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(niche.diversity_contribution != null && niche.risk_adjusted_affinity != null && niche.uncertainty != null, 'L1.5 router must expose diversity/risk/uncertainty outputs')
   assert(niche.strategy_router_components?.strategy_crowding_score != null, 'L1.25 FinLab-style prior must feed router crowding components')
   assert(niche.strategy_portfolio_prior?.strategy_metrics?.niche_quality_breakout_v1?.prior_weight != null, 'L1.25 prior must expose strategy-as-asset metrics')
-  assert(plan.telemetry.strategy_similarity_component_count >= 1, 'L1.25 graph evidence must expose natural strategy components')
-  assert(plan.telemetry.strategy_similarity_effective_strategy_count > 0, 'L1.25 graph evidence must expose effective strategy count')
+  assert(plan.telemetry.strategy_similarity_evidence_source === 'missing', 'L1.25 must not synthesize Worker-local graph evidence when Modal evidence is absent')
+  assert(plan.telemetry.strategy_similarity_algorithm_owner === 'not_computed', 'missing L1.25 graph evidence must not claim a Worker algorithm owner')
+  assert(plan.telemetry.strategy_similarity_component_count === 0, 'missing L1.25 graph evidence must not expose synthetic strategy components')
+  assert(plan.telemetry.strategy_similarity_effective_strategy_count === 0, 'missing L1.25 graph evidence must not expose synthetic effective strategy count')
+  assert(plan.telemetry.strategy_similarity_blocked_reason === 'modal_python_strategy_similarity_evidence_missing', 'missing Modal L1.25 evidence must be explicit')
   assert(niche.strategy_portfolio_prior?.strategy_similarity_graph?.evidence_only === true, 'strategy similarity graph must remain evidence-only')
   assert(!('selected' in (niche.strategy_portfolio_prior?.strategy_similarity_graph ?? {})), 'strategy similarity graph must not become a selector')
 }
@@ -415,13 +418,16 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(crowded.strategy_router_components.teacher_alignment_contribution === 0, 'missing teacher labels must not add route-score contribution')
   assert(crowded.strategy_router_components.teacher_alignment_missing === 1, 'missing teacher labels must be explicit telemetry')
   assert(reliable.strategy_portfolio_prior.strategy_reliability.reliable_low_corr_v1 > reliable.strategy_portfolio_prior.strategy_reliability.crowded_low_sharpe_v1, 'FinLab-style prior must expose strategy reliability spread')
-  assert(reliable.strategy_portfolio_prior.strategy_cluster_crowding_score.reliable_low_corr_v1 != null, 'L1.25 prior must expose graph cluster crowding')
-  assert(reliable.strategy_portfolio_prior.effective_strategy_count > 0, 'L1.25 prior must expose graph effective strategy count')
+  assert(Object.keys(reliable.strategy_portfolio_prior.strategy_cluster_crowding_score ?? {}).length === 0, 'missing Modal L1.25 evidence must not expose synthetic graph cluster crowding')
+  assert(reliable.strategy_portfolio_prior.effective_strategy_count === 0, 'missing Modal L1.25 evidence must not expose synthetic graph effective strategy count')
 }
 
 {
   const pools = buildStrategyCandidatePools(candidates, DEFAULT_STRATEGY_SPECS, { regime: 'bull' })
-  assert(pools.length === DEFAULT_STRATEGY_SPECS.length, 'planner should create one pool per non-retired strategy')
+  assert(
+    pools.length === DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status !== 'retired').length,
+    'planner should create one pool per non-retired strategy',
+  )
   assert(pools.some((pool) => pool.candidates.length > 0), 'at least one strategy should propose candidates before global merge')
   assert(pools.every((pool) => pool.quota >= 8 && pool.quota <= 20), 'strategy pool quota should be bounded to 8-20')
 }
@@ -590,14 +596,9 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 {
   const finlabDiscovery = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_discovery_v1')
   assert(finlabDiscovery, 'FinLab AI Skill discovery spec should exist')
+  assert(finlabDiscovery?.status === 'retired', 'FinLab AI Skill discovery lane should be retired from daily runtime')
   const pools = buildStrategyCandidatePools(candidates.slice(0, 20), [finlabDiscovery!], { regime: 'bull' })
-  const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 8 }))
-  assert(selection.mlQueue.length === 0, 'FinLab AI Skill discovery lane must not enter ML queue directly')
-  assert(selection.researchOnlyQueue.length > 0, 'FinLab AI Skill discovery lane should preserve research candidates')
-  assert(
-    selection.researchOnlyQueue.every((candidate) => candidate.strategy_pool_reason === 'strategy_research_discovery_lane_only'),
-    'FinLab AI Skill candidates should explain research-discovery routing',
-  )
+  assert(pools.length === 0, 'retired FinLab AI Skill discovery lane must not create runtime strategy pools')
 }
 
 {

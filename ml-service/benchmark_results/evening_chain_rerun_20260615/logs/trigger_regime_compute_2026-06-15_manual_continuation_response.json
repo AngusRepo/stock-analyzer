@@ -1,0 +1,196 @@
+﻿{
+    "regime_label_en":  "bull_market",
+    "raw_regime_label_en":  "bull_market",
+    "regime_index":  0,
+    "hmm_state":  2,
+    "label_zh":  "ä½æ³¢åçå¸",
+    "regime_surface":  {
+
+                       },
+    "regime_evidence":  {
+                            "schema_version":  "regime-evidence-v1",
+                            "raw_label":  "bull_market",
+                            "effective_label":  "bull_market",
+                            "evidence":  {
+                                             "price_trend":  {
+                                                                 "status":  "available",
+                                                                 "stance":  "neutral",
+                                                                 "metrics":  {
+                                                                                 "twii_return_1d":  0.0,
+                                                                                 "twii_return_5d":  0.0,
+                                                                                 "twii_bias_20d":  0.0,
+                                                                                 "negative_sessions_5d":  2
+                                                                             },
+                                                                 "reason":  "trend_mixed"
+                                                             },
+                                             "breadth":  {
+                                                             "status":  "available",
+                                                             "stance":  "bearish",
+                                                             "metrics":  {
+                                                                             "advance_ratio":  0.23852514983688644,
+                                                                             "bull_alignment_pct":  1.0,
+                                                                             "adl_trend_numeric":  0.0,
+                                                                             "limit_down_pct":  0.0022
+                                                                         },
+                                                             "reason":  "breadth_deterioration"
+                                                         },
+                                             "atr_vturn":  {
+                                                               "status":  "derived",
+                                                               "stance":  "neutral",
+                                                               "metrics":  {
+                                                                               "twii_return_1d":  0.0,
+                                                                               "realized_vol_10d":  0.022968360460643218,
+                                                                               "us_vix":  17.68000030517578
+                                                                           },
+                                                               "reason":  "no_vturn_signal"
+                                                           },
+                                             "leverage":  {
+                                                              "status":  "missing",
+                                                              "stance":  "neutral",
+                                                              "metrics":  {
+
+                                                                          },
+                                                              "reason":  "leverage_missing"
+                                                          },
+                                             "valuation":  {
+                                                               "status":  "missing",
+                                                               "stance":  "neutral",
+                                                               "metrics":  {
+
+                                                                           },
+                                                               "reason":  "valuation_missing"
+                                                           },
+                                             "macro_liquidity":  {
+                                                                     "status":  "available",
+                                                                     "stance":  "neutral",
+                                                                     "metrics":  {
+                                                                                     "m1b_yoy":  8.25,
+                                                                                     "business_indicator_score":  0.5714285714285714
+                                                                                 },
+                                                                     "reason":  "macro_liquidity_mixed"
+                                                                 },
+                                             "tw_business_indicators":  {
+                                                                            "status":  "available",
+                                                                            "stance":  "bullish",
+                                                                            "metrics":  {
+                                                                                            "signal":  39.0,
+                                                                                            "leading_index":  126.1492844818476,
+                                                                                            "coincident_index":  134.3630318762324
+                                                                                        },
+                                                                            "reason":  "business_cycle_expansion",
+                                                                            "signal":  39.0,
+                                                                            "leading_index":  126.1492844818476,
+                                                                            "coincident_index":  134.3630318762324,
+                                                                            "date":  "2026-04-27",
+                                                                            "source":  "finlab.tw_business_indicators"
+                                                                        },
+                                             "global_risk":  {
+                                                                 "status":  "available",
+                                                                 "stance":  "bullish",
+                                                                 "metrics":  {
+                                                                                 "us_vix":  17.68000030517578,
+                                                                                 "us_gspc_return":  0.005025513873057041,
+                                                                                 "us_sox_return":  0.015186592380902246,
+                                                                                 "us_hy_spread_chg":  -0.020000000000000018
+                                                                             },
+                                                                 "reason":  "global_risk_on"
+                                                             }
+                                         },
+                            "support_counts":  {
+                                                   "bearish":  1,
+                                                   "bullish":  2,
+                                                   "available":  6,
+                                                   "missing":  2
+                                               },
+                            "missing_dimensions":  [
+                                                       "leverage",
+                                                       "valuation"
+                                                   ],
+                            "transition_guard":  {
+                                                     "status":  "not_required",
+                                                     "reason":  "non_bear_transition",
+                                                     "min_bearish_dimensions":  3,
+                                                     "requires":  [
+                                                                      "price_trend",
+                                                                      "breadth_or_global_risk",
+                                                                      "volatility_or_leverage"
+                                                                  ]
+                                                 },
+                            "monitors":  {
+                                             "lppls_weekly_bubble":  {
+                                                                         "status":  "available",
+                                                                         "score":  0.3023,
+                                                                         "warning_threshold":  0.7,
+                                                                         "decision_effect":  "context_only",
+                                                                         "method":  "lppls_weekly_proxy_v1",
+                                                                         "signals":  {
+                                                                                         "daily_rows":  352,
+                                                                                         "weekly_rows":  70,
+                                                                                         "momentum_8w":  0.156059,
+                                                                                         "acceleration_4w":  -0.019736,
+                                                                                         "positive_weeks_8w":  4,
+                                                                                         "drawdown_8w":  -0.055345
+                                                                                     }
+                                                                     },
+                                             "hawkes_contagion":  {
+                                                                      "status":  "available",
+                                                                      "score":  0.2103,
+                                                                      "warning_threshold":  0.7,
+                                                                      "decision_effect":  "context_only",
+                                                                      "method":  "hawkes_exponential_decay_proxy_v1",
+                                                                      "signals":  {
+                                                                                      "daily_rows":  352,
+                                                                                      "shock_count_10d":  2,
+                                                                                      "decayed_intensity":  0.773884,
+                                                                                      "intensity_score":  0.128981,
+                                                                                      "cluster_score":  0.4
+                                                                                  }
+                                                                  }
+                                         },
+                            "decision_policy":  "bear_market_requires_cross_evidence_confirmation"
+                        },
+    "transition_guard":  {
+                             "status":  "not_required",
+                             "reason":  "non_bear_transition",
+                             "min_bearish_dimensions":  3,
+                             "requires":  [
+                                              "price_trend",
+                                              "breadth_or_global_risk",
+                                              "volatility_or_leverage"
+                                          ]
+                         },
+    "monitors":  {
+                     "lppls_weekly_bubble":  {
+                                                 "status":  "available",
+                                                 "score":  0.3023,
+                                                 "warning_threshold":  0.7,
+                                                 "decision_effect":  "context_only",
+                                                 "method":  "lppls_weekly_proxy_v1",
+                                                 "signals":  {
+                                                                 "daily_rows":  352,
+                                                                 "weekly_rows":  70,
+                                                                 "momentum_8w":  0.156059,
+                                                                 "acceleration_4w":  -0.019736,
+                                                                 "positive_weeks_8w":  4,
+                                                                 "drawdown_8w":  -0.055345
+                                                             }
+                                             },
+                     "hawkes_contagion":  {
+                                              "status":  "available",
+                                              "score":  0.2103,
+                                              "warning_threshold":  0.7,
+                                              "decision_effect":  "context_only",
+                                              "method":  "hawkes_exponential_decay_proxy_v1",
+                                              "signals":  {
+                                                              "daily_rows":  352,
+                                                              "shock_count_10d":  2,
+                                                              "decayed_intensity":  0.773884,
+                                                              "intensity_score":  0.128981,
+                                                              "cluster_score":  0.4
+                                                          }
+                                          }
+                 },
+    "kv_push_ok":  true,
+    "computed_at":  "2026-06-16T02:17:48.990720+08:00",
+    "run_date":  "2026-06-15"
+}

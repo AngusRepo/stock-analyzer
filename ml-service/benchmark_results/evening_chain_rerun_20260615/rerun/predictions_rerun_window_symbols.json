@@ -1,0 +1,842 @@
+﻿[
+    {
+        "symbol":  "1210",
+        "name":  "大成",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1307",
+        "name":  "三芳",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1319",
+        "name":  "東陽",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1342",
+        "name":  "八貫",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1532",
+        "name":  "勤美",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1560",
+        "name":  "中砂",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1618",
+        "name":  "合機",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1709",
+        "name":  "和益",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1723",
+        "name":  "中碳",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1808",
+        "name":  "潤隆",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "1904",
+        "name":  "正隆",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2006",
+        "name":  "東和鋼鐵",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2030",
+        "name":  "彰源",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2103",
+        "name":  "台橡",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2241",
+        "name":  "艾姆勒",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2347",
+        "name":  "聯強",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2379",
+        "name":  "瑞昱",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2412",
+        "name":  "中華電",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2425",
+        "name":  "承啟",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2428",
+        "name":  "興勤",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2442",
+        "name":  "新美齊",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2461",
+        "name":  "光群雷",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2462",
+        "name":  "良得電",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2476",
+        "name":  "鉅祥",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2497",
+        "name":  "怡利電",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2501",
+        "name":  "國建",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2520",
+        "name":  "冠德",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2542",
+        "name":  "興富發",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2597",
+        "name":  "潤弘",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2603",
+        "name":  "長榮",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2609",
+        "name":  "陽明",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2634",
+        "name":  "漢翔",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2637",
+        "name":  "慧洋-KY",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2645",
+        "name":  "長榮航太",
+        "model_count":  8,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2820",
+        "name":  "華票",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2834",
+        "name":  "臺企銀",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2838",
+        "name":  "聯邦銀",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2884",
+        "name":  "玉山金",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2889",
+        "name":  "國票金",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2890",
+        "name":  "永豐金",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "2903",
+        "name":  "遠百",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3003",
+        "name":  "健和興",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3019",
+        "name":  "亞光",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3022",
+        "name":  "威強電",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3034",
+        "name":  "聯詠",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3044",
+        "name":  "健鼎",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3045",
+        "name":  "台灣大",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3059",
+        "name":  "華晶科",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3071",
+        "name":  "協禧",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3152",
+        "name":  "璟德",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3213",
+        "name":  "茂訊",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3293",
+        "name":  "鈊象",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3322",
+        "name":  "建舜電",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3390",
+        "name":  "旭軟",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3402",
+        "name":  "漢科",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3504",
+        "name":  "揚明光",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3576",
+        "name":  "聯合再生",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3596",
+        "name":  "智易",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "3691",
+        "name":  "碩禾",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4147",
+        "name":  "中裕",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4306",
+        "name":  "炎洲",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4534",
+        "name":  "慶騰",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4551",
+        "name":  "智伸科",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4721",
+        "name":  "美琪瑪",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4739",
+        "name":  "康普",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4904",
+        "name":  "遠傳",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4938",
+        "name":  "和碩",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4952",
+        "name":  "凌通",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "4976",
+        "name":  "佳凌",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5347",
+        "name":  "世界",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5410",
+        "name":  "國眾",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5434",
+        "name":  "崇越",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5471",
+        "name":  "松翰",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5483",
+        "name":  "中美晶",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5498",
+        "name":  "凱崴",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5508",
+        "name":  "永信建",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5522",
+        "name":  "遠雄",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5534",
+        "name":  "長虹",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5607",
+        "name":  "遠雄港",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5871",
+        "name":  "中租-KY",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "5876",
+        "name":  "上海商銀",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6104",
+        "name":  "創惟",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6112",
+        "name":  "邁達特",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6126",
+        "name":  "信音",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6153",
+        "name":  "嘉聯益",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6156",
+        "name":  "松上",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6166",
+        "name":  "凌華",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6177",
+        "name":  "達麗",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6189",
+        "name":  "豐藝",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6191",
+        "name":  "精成科",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6202",
+        "name":  "盛群",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6244",
+        "name":  "茂迪",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6259",
+        "name":  "百徽",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6278",
+        "name":  "台表科",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6414",
+        "name":  "樺漢",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6443",
+        "name":  "元晶",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6477",
+        "name":  "安集",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6668",
+        "name":  "中揚光",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6693",
+        "name":  "廣閎科",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6757",
+        "name":  "台灣虎航-創",
+        "model_count":  8,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6763",
+        "name":  "綠界科技",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6768",
+        "name":  "志強-KY",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6788",
+        "name":  "華景電",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6862",
+        "name":  "三集瑞-KY",
+        "model_count":  7,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,TabM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "6901",
+        "name":  "鑽石投資",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "7749",
+        "name":  "意騰-KY",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "7777",
+        "name":  "能率亞洲",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "7780",
+        "name":  "大研生醫*",
+        "model_count":  7,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,TabM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "8121",
+        "name":  "越峰",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "8163",
+        "name":  "達方",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "8215",
+        "name":  "明基材",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "8227",
+        "name":  "巨有科技",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "8422",
+        "name":  "可寧衛",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "9136",
+        "name":  "巨騰-DR",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "9910",
+        "name":  "豐泰",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "9914",
+        "name":  "美利達",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "9939",
+        "name":  "宏全",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "9941",
+        "name":  "裕融",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "9945",
+        "name":  "潤泰新",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0
+    },
+    {
+        "symbol":  "9946",
+        "name":  "三發地產",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0
+    }
+]

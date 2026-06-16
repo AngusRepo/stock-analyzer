@@ -232,7 +232,7 @@ export async function writeMomentumSnapshot(
 
 /**
  * Read the most recent zone from DB (for consumers like circuit breakers).
- * Returns GREEN default if table empty or query fails.
+ * Empty table is neutral; query failures are surfaced to the caller.
  */
 export async function readCurrentZone(
   db: D1Database,
@@ -253,15 +253,15 @@ export async function readCurrentZone(
     const z: MomentumZone = (rawZone === 'RED' || rawZone === 'YELLOW') ? rawZone : 'GREEN'
     return { zone: z, date: row.date, percentile_rank: row.percentile_rank ?? null }
   } catch (e) {
-    console.warn('[MomentumZone] readCurrentZone failed:', e)
-    return { zone: 'GREEN', date: null, percentile_rank: null }
+    console.error('[MomentumZone] readCurrentZone failed:', e)
+    throw e
   }
 }
 
 // ── Aggregation from price history (used by screener) ──────────────────────
 
 /**
- * Flexible bar shape: accepts both {high, low} and {max, min} (FMStockPrice)
+ * Flexible bar shape: accepts both {high, low} and {max, min} canonical screener bars.
  * so the aggregator works with any of our internal price types.
  */
 interface PriceBar {

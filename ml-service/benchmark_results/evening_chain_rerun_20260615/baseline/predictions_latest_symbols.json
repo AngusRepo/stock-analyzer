@@ -1,0 +1,194 @@
+﻿[
+    {
+        "symbol":  "1319",
+        "name":  "東陽",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "1560",
+        "name":  "中砂",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "1723",
+        "name":  "中碳",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "1815",
+        "name":  "富喬",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "1904",
+        "name":  "正隆",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "2379",
+        "name":  "瑞昱",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "2412",
+        "name":  "中華電",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "2476",
+        "name":  "鉅祥",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "3321",
+        "name":  "同泰",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "3576",
+        "name":  "聯合再生",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "3702",
+        "name":  "大聯大",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "4721",
+        "name":  "美琪瑪",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "4904",
+        "name":  "遠傳",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "5347",
+        "name":  "世界",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "5434",
+        "name":  "崇越",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "5471",
+        "name":  "松翰",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "5483",
+        "name":  "中美晶",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "6121",
+        "name":  "新普",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "6202",
+        "name":  "盛群",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "6244",
+        "name":  "茂迪",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "6278",
+        "name":  "台表科",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "6443",
+        "name":  "元晶",
+        "model_count":  10,
+        "models":  "DLinear,ExtraTrees,GNN,LightGBM,PatchTST,TabM,TimesFM,XGBoost,ensemble,iTransformer",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "6525",
+        "name":  "捷敏-KY",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    },
+    {
+        "symbol":  "8227",
+        "name":  "巨有科技",
+        "model_count":  4,
+        "models":  "ExtraTrees,LightGBM,XGBoost,ensemble",
+        "buy_votes":  0,
+        "avg_predicted_price":  null
+    }
+]

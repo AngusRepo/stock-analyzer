@@ -1,0 +1,407 @@
+﻿[
+    {
+        "strategy_id":  "finlab_ai_skill_discovery_v1",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  89,
+        "matched_rows":  89,
+        "matched_symbols":  89,
+        "avg_match_score":  0.35
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_official_台股總體經濟etf",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  89,
+        "matched_rows":  89,
+        "matched_symbols":  89,
+        "avg_match_score":  0.35
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_industry_theme_電腦及週邊設備",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  89,
+        "matched_rows":  7,
+        "matched_symbols":  7,
+        "avg_match_score":  0.35
+    },
+    {
+        "strategy_id":  "breakout_vol_expansion_seed_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "breakout_vol_expansion",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "defensive_accumulation_seed_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_broker_accumulation_reclaim_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_chip_accumulation_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_industry_其他證券",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_official_三頻率rsi策略",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_official_財報指標20大",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_official_高殖利率烏龜",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_quality_trend_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "trend_following",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_quality_value_reacceleration_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_foreign_investors_shareholding_",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_institutional_investors_trading",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融券買進_219933",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融券賣出_0eae7a",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融資今日餘額_646e",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融資前日餘額_725f",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融資現金償還_5003",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融資買進_a75f97",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融資賣出_e38a21",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_chip_margin_transactions_融資限額_768c81",
+        "strategy_status":  "research",
+        "alpha_bucket":  "defensive_accumulation",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_monthly_revenue_上月營收_73f",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_monthly_revenue_前期比較增減_b",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_monthly_revenue_去年同月增減_d",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_monthly_revenue_去年當月營收_1",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_monthly_revenue_去年累計營收_4",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_monthly_revenue_當月營收_535",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_monthly_revenue_當月累計營收_0",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_fundamental_rotc_monthly_revenue_當月營",
+        "strategy_status":  "research",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_technical_etl_lending_fee_volume_2f4",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_technical_futures_price_成交量_f97b72d5",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_technical_ipo_no_limit_買進成交量_8a431d3",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_technical_ipo_no_limit_賣出成交量_a3efc67",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_technical_margin_trading_adjustment_",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_technical_tw_taifex_option_instituti",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_raw_factor_finlab_ai_factor_technical_world_index_volume_c622dc3",
+        "strategy_status":  "research",
+        "alpha_bucket":  "trend_following",
+        "rows":  88,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_revenue_revision_breakout_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "breakout_vol_expansion",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_reversion_value_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_rsi_volume_reclaim_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "trend_following",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_sector_rotation_core_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "trend_following",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_smc_structure_reclaim_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "mean_reversion",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "finlab_ai_skill_volume_breakout_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "breakout_vol_expansion",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    },
+    {
+        "strategy_id":  "trend_following_seed_v1",
+        "strategy_status":  "active",
+        "alpha_bucket":  "trend_following",
+        "rows":  89,
+        "matched_rows":  0,
+        "matched_symbols":  0,
+        "avg_match_score":  null
+    }
+]

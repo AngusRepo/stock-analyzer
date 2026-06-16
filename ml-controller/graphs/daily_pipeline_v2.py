@@ -42,6 +42,10 @@ from services.active9_dataset_policy import (
     daily_sequence_target_points,
 )
 from services.modal_client import batch_predict
+from services.model_lifecycle_policy import (
+    DEFAULT_DEGRADED_DAMPENING,
+    resolve_degraded_dampening,
+)
 from services.model_score_quality import drop_degenerate_rank_scores
 from services.market_regime_state import resolve_market_regime_contract
 from services.prediction_dispersion import build_prediction_dispersion_report
@@ -87,6 +91,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
 ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
 RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
+MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
+MODEL_POOL_SERVING_STATUSES = {"active", "degraded"}
 
 D1_RETRY_DELAYS_SECONDS = (3.0, 8.0, 15.0)
 D1_RETRYABLE_MARKERS = (
@@ -95,6 +101,45 @@ D1_RETRYABLE_MARKERS = (
     "Requests queued for too long",
     "Too Many Requests",
 )
+
+
+def _require_model_pool_status(entry: dict[str, Any], model_name: str, stage: str) -> str:
+    status = str((entry or {}).get("status") or "").strip()
+    if status not in MODEL_POOL_ALLOWED_STATUSES:
+        raise RuntimeError(f"model_pool_contract:{stage}:invalid lifecycle status for {model_name}: {status or '<missing>'}")
+    return status
+
+
+def _require_serving_model_version(entry: dict[str, Any], model_name: str, stage: str) -> str:
+    version = str((entry or {}).get("version") or "").strip()
+    if not version:
+        raise RuntimeError(f"model_pool_contract:{stage}:serving model {model_name} missing version")
+    return version
+
+
+def _require_loaded_model_status(model_status: dict[str, str], model_name: str, stage: str) -> str:
+    status = str((model_status or {}).get(model_name) or "").strip()
+    if status not in MODEL_POOL_ALLOWED_STATUSES:
+        raise RuntimeError(f"model_pool_contract:{stage}:missing/invalid loaded status for {model_name}: {status or '<missing>'}")
+    return status
+
+
+def _is_loaded_serving_model(model_status: dict[str, str], model_name: str, stage: str) -> bool:
+    return _require_loaded_model_status(model_status, model_name, stage) in MODEL_POOL_SERVING_STATUSES
+
+
+def _is_optional_loaded_serving_model(model_status: dict[str, str], model_name: str, stage: str) -> bool:
+    status = str((model_status or {}).get(model_name) or "retired").strip()
+    if status not in MODEL_POOL_ALLOWED_STATUSES:
+        raise RuntimeError(f"model_pool_contract:{stage}:invalid optional loaded status for {model_name}: {status}")
+    return status in MODEL_POOL_SERVING_STATUSES
+
+
+def _require_loaded_serving_version(active_versions: dict[str, str], model_name: str, stage: str) -> str:
+    version = str((active_versions or {}).get(model_name) or "").strip()
+    if not version:
+        raise RuntimeError(f"model_pool_contract:{stage}:serving model {model_name} missing loaded version")
+    return version
 
 
 def _daily_recommendation_select(alias: str = "dr") -> str:
@@ -158,6 +203,24 @@ def _state_space_shadow_callback_config() -> tuple[str | None, str | None]:
     if not worker_url or not token:
         return None, None
     return f"{worker_url}/api/internal/state-space-shadow/callback", token
+
+
+def _state_space_overlay_block_reason(row: dict[str, Any]) -> str | None:
+    """Return why a state-space overlay row must stay out of prediction payloads."""
+    if row.get("error"):
+        return str(row.get("error") or "state_space_overlay_error")
+    fallback_reason = row.get("fallback_reason")
+    if row.get("degraded") or fallback_reason:
+        return str(fallback_reason or "degraded_state_space_overlay")
+    return None
+
+
+def _require_trading_config_contract(cfg_result: Any, stage: str) -> None:
+    contract = getattr(cfg_result, "contract", None)
+    if not getattr(contract, "degraded", False):
+        return
+    detail = contract.to_dict() if hasattr(contract, "to_dict") else {"degraded": True}
+    raise RuntimeError(f"trading_config_contract_degraded:{stage}:{detail}")
 
 
 def _modal_batch_result_summary(raw: Any) -> dict:
@@ -238,28 +301,29 @@ def _timesfm_artifact_sequence_contract_points(pool: dict | None) -> int | None:
     if not gcs_path and version:
         gcs_path = f"universal/timesfm/{version}.json"
     if not gcs_path:
-        return None
+        raise RuntimeError("TimesFM active model missing gcs_path/version for sequence contract")
     try:
         from google.cloud import storage
 
         bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
         if not bucket_name:
-            return None
+            raise RuntimeError("GCS_BUCKET_NAME not set for TimesFM sequence contract")
         blob = storage.Client().bucket(bucket_name).blob(gcs_path)
         if not blob.exists():
-            return None
+            raise RuntimeError(f"TimesFM sequence contract artifact missing: {gcs_path}")
         config = json.loads(blob.download_as_text().lstrip("\ufeff"))
         seq_len = int(config.get("seq_len") or 0)
-        return seq_len if seq_len > 0 else None
-    except Exception as exc:  # noqa: BLE001 - gate falls back to policy default.
-        logger.debug("[Pipeline V2] TimesFM artifact sequence contract lookup failed: %s", exc)
-        return None
+        if seq_len <= 0:
+            raise RuntimeError(f"TimesFM sequence contract artifact has invalid seq_len: {gcs_path}")
+        return seq_len
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"TimesFM artifact sequence contract lookup failed: {exc}") from exc
 
 
 def _timesfm_sequence_contract_points(pool: dict | None = None) -> int:
     raw = os.environ.get("TIMESFM_SEQUENCE_CONTRACT_POINTS")
     if raw is None or not str(raw).strip():
-        return _timesfm_artifact_sequence_contract_points(pool) or DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS
+        return _timesfm_artifact_sequence_contract_points(pool)
     value = int(str(raw).strip())
     if value <= 0:
         raise ValueError("TIMESFM_SEQUENCE_CONTRACT_POINTS must be positive")
@@ -709,13 +773,25 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         base_sequence_series,
         target_points=daily_sequence_target_points(),
     )
+    sequence_contract_points = daily_sequence_target_points()
+    sequence_model_series, sequence_model_excluded = _sequence_contract_subset(
+        sequence_series,
+        min_points=sequence_contract_points,
+    )
+    sequence_dataset_meta = {
+        **sequence_dataset_meta,
+        "sequence_model_contract_points": sequence_contract_points,
+        "sequence_model_usable": len(sequence_model_series),
+        "sequence_model_excluded_count": len(sequence_model_excluded),
+        "sequence_model_excluded_symbols": sequence_model_excluded[:20],
+    }
 
     # Parallel: alpha predictors + state overlays.
     # Kalman/Markov are state overlays only; they do not enter alpha challenger.
     model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
     (
         serving_model_status,
-        serving_ic_universe,
+        _serving_ic_universe,
         serving_degraded_dampening,
         serving_ev2_cfg,
         serving_used_pool,
@@ -726,6 +802,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
+
+    def _sequence_model_skip_reason(model_name: str) -> str:
+        if not _is_loaded_serving_model(model_status, model_name, "ml_predict_task_plan"):
+            return f"{model_name} retired by model_pool"
+        return f"{model_name} sequence contract unmet"
 
     stage_timings: dict[str, dict[str, Any]] = {}
 
@@ -752,24 +833,39 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     feat_task = batch_predict(payloads)
     gnn_task = (
-        modal_client.gnn_graphsage_batch_predict(payloads, version=active_versions.get("GNN", "v1"))
-        if model_status.get("GNN") in ("active", "degraded")
+        modal_client.gnn_graphsage_batch_predict(
+            payloads,
+            version=_require_loaded_serving_version(active_versions, "GNN", "ml_predict_task_plan"),
+        )
+        if _is_loaded_serving_model(model_status, "GNN", "ml_predict_task_plan")
         else _skip_batch("GNN retired by model_pool")
     )
     dlinear_task = (
-        modal_client.dlinear_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("DLinear", "v1"))
-        if model_status.get("DLinear", "active") in ("active", "degraded")
-        else _skip_batch("DLinear retired by model_pool")
+        modal_client.dlinear_batch_predict(
+            sequence_model_series,
+            horizon_used=5,
+            version=_require_loaded_serving_version(active_versions, "DLinear", "ml_predict_task_plan"),
+        )
+        if _is_loaded_serving_model(model_status, "DLinear", "ml_predict_task_plan") and sequence_model_series
+        else _skip_batch(_sequence_model_skip_reason("DLinear"))
     )
     patchtst_task = (
-        modal_client.patchtst_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("PatchTST", "v1"))
-        if model_status.get("PatchTST", "active") in ("active", "degraded")
-        else _skip_batch("PatchTST retired by model_pool")
+        modal_client.patchtst_batch_predict(
+            sequence_model_series,
+            horizon_used=5,
+            version=_require_loaded_serving_version(active_versions, "PatchTST", "ml_predict_task_plan"),
+        )
+        if _is_loaded_serving_model(model_status, "PatchTST", "ml_predict_task_plan") and sequence_model_series
+        else _skip_batch(_sequence_model_skip_reason("PatchTST"))
     )
     itransformer_task = (
-        modal_client.itransformer_batch_predict(sequence_series, horizon_used=5, version=active_versions.get("iTransformer", "v1"))
-        if model_status.get("iTransformer", "active") in ("active", "degraded")
-        else _skip_batch("iTransformer retired by model_pool")
+        modal_client.itransformer_batch_predict(
+            sequence_model_series,
+            horizon_used=5,
+            version=_require_loaded_serving_version(active_versions, "iTransformer", "ml_predict_task_plan"),
+        )
+        if _is_loaded_serving_model(model_status, "iTransformer", "ml_predict_task_plan") and sequence_model_series
+        else _skip_batch(_sequence_model_skip_reason("iTransformer"))
     )
     timesfm_allowed, timesfm_gate = _timesfm_sync_gate(
         model_status=model_status,
@@ -785,7 +881,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         modal_client.timesfm_batch_predict(
             timesfm_sequence_series,
             horizon_used=5,
-            version=active_versions.get("TimesFM", "v1"),
+            version=_require_loaded_serving_version(active_versions, "TimesFM", "ml_predict_task_plan"),
             sequence_contract_points=timesfm_gate.get("sequence_contract_points"),
         )
         if timesfm_allowed
@@ -794,9 +890,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     logger.info("[Pipeline V2] TimesFM serving gate: %s", timesfm_gate)
     state_space_mode = _state_space_overlay_mode()
     state_space_models = {
-        model_name: active_versions.get(model_name, "v1")
+        model_name: _require_loaded_serving_version(active_versions, model_name, "ml_predict_task_plan")
         for model_name in ("KalmanFilter", "MarkovSwitching")
-        if model_status.get(model_name, "active") in ("active", "degraded")
+        if _is_optional_loaded_serving_model(model_status, model_name, "ml_predict_task_plan")
     }
 
     async def _shadow_state_space_overlays() -> dict:
@@ -915,9 +1011,14 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         logger.debug("[Pipeline V2] Modal wait telemetry write skipped: %s", exc)
 
 
+    def _active_required_model(model_name: str, series: list[dict]) -> bool:
+        return _is_loaded_serving_model(model_status, model_name, "ml_predict_result_required") and bool(series)
+
     gnn_map: dict[str, dict] = {}
     if isinstance(gnn_raw, BaseException):
-        logger.warning(f"[Pipeline V2] GNN GraphSAGE batch failed entirely: {gnn_raw} - skipping GNN layer")
+        if _active_required_model("GNN", payloads):
+            raise RuntimeError(f"GNN active model batch failed entirely: {gnn_raw}") from gnn_raw
+        logger.warning(f"[Pipeline V2] GNN GraphSAGE batch failed entirely: {gnn_raw}")
     elif isinstance(gnn_raw, dict) and not gnn_raw.get("error"):
         for gr in gnn_raw.get("results") or []:
             sym = gr.get("symbol")
@@ -926,16 +1027,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if gnn_map:
             logger.info("[Pipeline V2] GNN GraphSAGE full-universe: %s/%s succeeded", len(gnn_map), len(payloads))
         else:
+            if _active_required_model("GNN", payloads):
+                raise RuntimeError(f"GNN active model returned zero usable predictions; summary={gnn_result_summary}")
             logger.warning("[Pipeline V2] GNN GraphSAGE full-universe: 0 succeeded summary=%s", gnn_result_summary)
     elif isinstance(gnn_raw, dict) and gnn_raw.get("results") == []:
+        if _active_required_model("GNN", payloads):
+            raise RuntimeError(f"GNN active model skipped unexpectedly: {gnn_raw.get('error')}")
         logger.debug(f"[Pipeline V2] GNN skipped: {gnn_raw.get('error')}")
     else:
+        if _active_required_model("GNN", payloads):
+            raise RuntimeError(f"GNN active model returned invalid payload: {gnn_raw}")
         logger.warning(f"[Pipeline V2] GNN batch returned error: {gnn_raw}")
 
     # Guard against DLinear total failure (Stage 0.2 ??may have no trained weights yet)
     dlinear_map: dict[str, dict] = {}
     if isinstance(dlinear_raw, BaseException):
-        logger.warning(f"[Pipeline V2] DLinear batch failed entirely: {dlinear_raw} ??skipping DLinear layer")
+        if _active_required_model("DLinear", sequence_model_series):
+            raise RuntimeError(f"DLinear active model batch failed entirely: {dlinear_raw}") from dlinear_raw
+        logger.warning(f"[Pipeline V2] DLinear batch failed entirely: {dlinear_raw}")
     elif isinstance(dlinear_raw, dict) and not dlinear_raw.get("error"):
         for dr in dlinear_raw.get("results") or []:
             sym = dr.get("symbol")
@@ -946,16 +1055,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series)} succeeded"
             )
         else:
+            if _active_required_model("DLinear", sequence_model_series):
+                raise RuntimeError("DLinear active model returned zero usable predictions")
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(dlinear_raw, dict) and dlinear_raw.get("results") == []:
+        if _active_required_model("DLinear", sequence_model_series):
+            raise RuntimeError(f"DLinear active model skipped unexpectedly: {dlinear_raw.get('error')}")
         logger.debug(f"[Pipeline V2] DLinear skipped: {dlinear_raw.get('error')}")
     else:
+        if _active_required_model("DLinear", sequence_model_series):
+            raise RuntimeError(f"DLinear active model returned invalid payload: {dlinear_raw}")
         logger.warning(f"[Pipeline V2] DLinear batch returned error: {dlinear_raw}")
 
     # Guard against PatchTST total failure (Stage 0.3 ??may have no trained weights yet)
     patchtst_map: dict[str, dict] = {}
     if isinstance(patchtst_raw, BaseException):
-        logger.warning(f"[Pipeline V2] PatchTST batch failed entirely: {patchtst_raw} ??skipping PatchTST layer")
+        if _active_required_model("PatchTST", sequence_model_series):
+            raise RuntimeError(f"PatchTST active model batch failed entirely: {patchtst_raw}") from patchtst_raw
+        logger.warning(f"[Pipeline V2] PatchTST batch failed entirely: {patchtst_raw}")
     elif isinstance(patchtst_raw, dict) and not patchtst_raw.get("error"):
         for pr in patchtst_raw.get("results") or []:
             sym = pr.get("symbol")
@@ -966,15 +1083,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series)} succeeded"
             )
         else:
+            if _active_required_model("PatchTST", sequence_model_series):
+                raise RuntimeError("PatchTST active model returned zero usable predictions")
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(patchtst_raw, dict) and patchtst_raw.get("results") == []:
+        if _active_required_model("PatchTST", sequence_model_series):
+            raise RuntimeError(f"PatchTST active model skipped unexpectedly: {patchtst_raw.get('error')}")
         logger.debug(f"[Pipeline V2] PatchTST skipped: {patchtst_raw.get('error')}")
     else:
+        if _active_required_model("PatchTST", sequence_model_series):
+            raise RuntimeError(f"PatchTST active model returned invalid payload: {patchtst_raw}")
         logger.warning(f"[Pipeline V2] PatchTST batch returned error: {patchtst_raw}")
 
     def _drain_ts_result(raw, name: str, series: list[dict]) -> dict[str, dict]:
         out: dict[str, dict] = {}
+        required = timesfm_allowed if name == "TimesFM" else _active_required_model(name, series)
         if isinstance(raw, BaseException):
+            if required:
+                raise RuntimeError(f"{name} active model batch failed entirely: {raw}") from raw
             logger.warning(f"[Pipeline V2] {name} batch failed entirely: {raw}")
             return out
         if isinstance(raw, dict) and not raw.get("error"):
@@ -984,9 +1110,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                     out[sym] = row
             summary = _modal_batch_result_summary(raw)
             error_summary = summary.get("error_summary")
-            if len(out) == 0 and series and name == "TimesFM":
+            if len(out) == 0 and series and required:
                 raise RuntimeError(
-                    "TimesFM active model returned zero usable predictions; "
+                    f"{name} active model returned zero usable predictions; "
                     f"contract_error_summary={error_summary or 'none'}"
                 )
             if error_summary:
@@ -1000,8 +1126,12 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             else:
                 logger.info(f"[Pipeline V2] {name}: {len(out)}/{len(series)} succeeded")
         elif isinstance(raw, dict) and raw.get("results") == []:
+            if required:
+                raise RuntimeError(f"{name} active model skipped unexpectedly: {raw.get('error')}")
             logger.debug(f"[Pipeline V2] {name} skipped: {raw.get('error')}")
         else:
+            if required:
+                raise RuntimeError(f"{name} active model returned invalid payload: {raw}")
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
 
@@ -1013,20 +1143,20 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             logger.warning(f"[Pipeline V2] {name} batch failed: {raw}")
             return out
         if isinstance(raw, dict) and not raw.get("error"):
-            fallback_count = 0
-            fallback_reasons: dict[str, int] = {}
+            blocked_count = 0
+            blocked_reasons: dict[str, int] = {}
             for r in raw.get("results") or []:
                 sym = r.get("symbol")
                 if sym and not r.get("error"):
+                    block_reason = _state_space_overlay_block_reason(r)
+                    if block_reason:
+                        blocked_count += 1
+                        blocked_reasons[block_reason] = blocked_reasons.get(block_reason, 0) + 1
+                        continue
                     out[sym] = r
-                    reason = r.get("fallback_reason")
-                    if r.get("degraded") or reason:
-                        fallback_count += 1
-                        if reason:
-                            fallback_reasons[str(reason)] = fallback_reasons.get(str(reason), 0) + 1
-            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(sequence_series)} succeeded fallback={fallback_count}"
-            if fallback_count:
-                logger.warning(f"{log_msg} reasons={fallback_reasons}")
+            log_msg = f"[Pipeline V2] {name}: {len(out)}/{len(sequence_series)} usable blocked={blocked_count}"
+            if blocked_count:
+                logger.warning(f"{log_msg} reasons={blocked_reasons}")
             else:
                 logger.info(log_msg)
         elif isinstance(raw, dict) and raw.get("results") == []:
@@ -1080,74 +1210,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if sym in markov_map:
             row["markov_switching"] = markov_map[sym]
 
-    def _last_close(payload: dict) -> float:
-        prices = payload.get("prices") or []
-        if prices:
-            return float(prices[-1].get("close") or prices[-1].get("adj_close") or 0.0)
-        return 0.0
-
-    def _signal_from_forecast(forecast_pct: float) -> str:
-        if forecast_pct >= 0.03:
-            return "STRONG_BUY"
-        if forecast_pct >= 0.01:
-            return "BUY"
-        if forecast_pct <= -0.03:
-            return "STRONG_SELL"
-        if forecast_pct <= -0.01:
-            return "SELL"
-        return "HOLD"
-
-    def _build_alt_only_prediction(sym: str, payload: dict, feature_error: str | None) -> dict | None:
-        sources = [
-            ("DLinear", dlinear_map.get(sym)),
-            ("PatchTST", patchtst_map.get(sym)),
-            ("iTransformer", itransformer_map.get(sym)),
-            ("TimesFM", timesfm_map.get(sym)),
-        ]
-        usable = [(name, row) for name, row in sources if row and row.get("forecast_pct") is not None]
-        if not usable:
-            return None
-
-        forecasts = [float(row["forecast_pct"]) for _, row in usable]
-        forecast_pct = sum(forecasts) / len(forecasts)
-        confidence_values = [
-            float(row.get("confidence"))
-            for _, row in usable
-            if row.get("confidence") is not None
-        ]
-        confidence = (
-            sum(confidence_values) / len(confidence_values)
-            if confidence_values
-            else min(0.75, 0.5 + abs(forecast_pct) * 4.0)
-        )
-        current_price = _last_close(payload)
-        atr = current_price * 0.02 if current_price > 0 else 0.0
-        upside = max(0.01, forecast_pct)
-        downside = max(0.03, abs(forecast_pct) * 0.75)
-
-        return {
-            "stock_id": payload.get("stock_id", 0),
-            "symbol": sym,
-            "current_price": current_price,
-            "signal": _signal_from_forecast(forecast_pct),
-            "direction": "up" if forecast_pct > 0 else "down" if forecast_pct < 0 else "neutral",
-            "confidence": round(max(0.0, min(1.0, confidence)), 4),
-            "consensus": len(usable),
-            "forecast_pct": round(forecast_pct, 6),
-            "forecast_range": [round(min(forecasts), 6), round(max(forecasts), 6)],
-            "signal_strength": round(abs(forecast_pct), 6),
-            "reasoning": "Feature-model fallback: alternate alpha time-series models available",
-            "entry_price": round(current_price, 2) if current_price > 0 else None,
-            "stop_loss": round(current_price * (1 - downside), 2) if current_price > 0 else None,
-            "target1": round(current_price * (1 + max(0.03, upside)), 2) if current_price > 0 else None,
-            "target2": round(current_price * (1 + max(0.06, upside * 1.8)), 2) if current_price > 0 else None,
-            "models": [name for name, _ in usable],
-            "features_used": [],
-            "feature_version": "alternate_only_fallback",
-            "rank_scores": {},
-            "model_errors": [feature_error] if feature_error else None,
-        }
-
     feature_by_symbol: dict[str, dict] = {}
     feature_errors_by_symbol: dict[str, str] = {}
     for row in results:
@@ -1160,17 +1222,15 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         feature_by_symbol[sym] = row
 
     pred_map: dict[str, dict] = {}
-    alt_fallback_count = 0
+    feature_missing_count = 0
     for payload in payloads:
         sym = payload.get("symbol") if isinstance(payload, dict) else None
         if not sym:
             continue
         row = feature_by_symbol.get(sym)
         if row is None:
-            row = _build_alt_only_prediction(sym, payload, feature_errors_by_symbol.get(sym))
-            if row is None:
-                continue
-            alt_fallback_count += 1
+            feature_missing_count += 1
+            continue
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
         _attach_alt_sources(row, sym)
@@ -1199,8 +1259,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"gnn={sum(1 for v in pred_map.values() if 'gnn' in v)}, "
         f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
         f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
-        f"alt_fallback={alt_fallback_count}, "
-        f"pool_versions={'ok' if pool_versions_loaded else 'fallback'}, "
+        f"feature_missing_no_fallback={feature_missing_count}, "
+        f"pool_versions={'ok' if pool_versions_loaded else 'missing'}, "
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
@@ -1209,7 +1269,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # Short-sample negative IC no longer hard-zeros a model; confirmed negative
     # IC plus failed validation still fail-closed.
     model_status = serving_model_status
-    ic_universe = serving_ic_universe
     degraded_dampening = serving_degraded_dampening
     ev2_cfg = serving_ev2_cfg
     used_pool = serving_used_pool
@@ -1218,12 +1277,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         for sym, r in pred_map.items():
             try:
                 serving_ic = _build_serving_ic_bundle(pool, _prediction_market_segment(r), ev2_cfg)
-                if not serving_ic["weights"] and ic_universe:
-                    serving_ic = {
-                        "scope": _prediction_market_segment(r) or "GLOBAL",
-                        "weights": dict(ic_universe),
-                        "diagnostics": {},
-                    }
                 _attach_ensemble_v2(
                     r,
                     model_status,
@@ -1357,9 +1410,8 @@ async def node_l2_core_gate(state: PipelineStateV2) -> dict:
     from services.trading_config_loader import load_merged_trading_config_with_contract
 
     cfg_result = load_merged_trading_config_with_contract()
+    _require_trading_config_contract(cfg_result, "l2_core_gate")
     trading_cfg = cfg_result.config
-    if cfg_result.contract.degraded:
-        logger.warning("[Pipeline V2] trading:config degraded in l2_core_gate: %s", cfg_result.contract.to_dict())
 
     screener_sizing = resolve_controller_screener_sizing(
         trading_cfg,
@@ -1448,40 +1500,35 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
     """Load active/challenger versions for batch predictors.
 
     Returns (status_by_model, active_version_by_model, challenger_version_by_model, used_pool).
-    Missing pool falls back to v1 active behavior.
+    model_pool.json is required so model activation and artifact versions have a
+    single source of truth.
     """
     import json as _json
     import os
 
-    active_defaults = {
-        "DLinear": "v1",
-        "PatchTST": "v1",
-        "iTransformer": "v1",
-        "TimesFM": "v1",
-        "KalmanFilter": "v1",
-        "MarkovSwitching": "v1",
-    }
     try:
         from google.cloud import storage
 
         bucket_name = os.getenv("GCS_BUCKET_NAME")
         if not bucket_name:
-            return {}, active_defaults, {}, False
+            raise RuntimeError("GCS_BUCKET_NAME not set for model_pool version load")
         blob = storage.Client().bucket(bucket_name).blob("universal/model_pool.json")
         if not blob.exists():
-            return {}, active_defaults, {}, False
+            raise RuntimeError("universal/model_pool.json missing")
 
         pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
+        _require_model_pool_active9_contract(pool, "model_pool_versions")
         status: dict[str, str] = {}
-        active_versions = dict(active_defaults)
+        active_versions: dict[str, str] = {}
         challenger_versions: dict[str, str] = {}
         for name, entry in (pool.get("models") or {}).items():
             if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
                 logger.warning("[Pipeline V2] Ignoring legacy/non-active-9 model_pool entry: %s", name)
                 continue
-            status[name] = entry.get("status", "active")
-            if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
-                active_versions[name] = entry["version"]
+            lifecycle_status = _require_model_pool_status(entry, name, "model_pool_versions")
+            status[name] = lifecycle_status
+            if lifecycle_status in MODEL_POOL_SERVING_STATUSES:
+                active_versions[name] = _require_serving_model_version(entry, name, "model_pool_versions")
             challenger = entry.get("challenger") or {}
             if challenger.get("version"):
                 challenger_versions[name] = challenger["version"]
@@ -1499,13 +1546,37 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
             elif name not in status:
                 status[name] = "retired"
         for name, entry in (pool.get("state_overlays") or {}).items():
-            status[name] = entry.get("status", "active")
-            if entry.get("status", "active") in ("active", "degraded") and entry.get("version"):
-                active_versions[name] = entry["version"]
+            lifecycle_status = _require_model_pool_status(entry, name, "model_pool_versions")
+            status[name] = lifecycle_status
+            if lifecycle_status in MODEL_POOL_SERVING_STATUSES:
+                active_versions[name] = _require_serving_model_version(entry, name, "model_pool_versions")
         return status, active_versions, challenger_versions, True
     except Exception as e:
-        logger.warning(f"[Pipeline V2] model_pool version load failed: {e}")
-        return {}, active_defaults, {}, False
+        raise RuntimeError(f"model_pool version load failed: {e}") from e
+
+
+def _require_model_pool_active9_contract(pool: dict, stage: str) -> None:
+    models = pool.get("models") if isinstance(pool, dict) else None
+    if not isinstance(models, dict):
+        raise RuntimeError(f"model_pool_contract:{stage}:models must be an object")
+    missing = [
+        name
+        for name in ACTIVE_ALPHA_MODELS
+        if not isinstance(models.get(name), dict)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"model_pool_contract:{stage}:missing active-9 model entries: {', '.join(missing)}"
+        )
+    invalid = [
+        f"{name}={models[name].get('status')}"
+        for name in ACTIVE_ALPHA_MODELS
+        if str(models[name].get("status") or "").strip() not in MODEL_POOL_ALLOWED_STATUSES
+    ]
+    if invalid:
+        raise RuntimeError(
+            f"model_pool_contract:{stage}:invalid lifecycle status: {', '.join(invalid)}"
+        )
 
 
 def _normalize_market_segment(segment: Any) -> str | None:
@@ -1656,7 +1727,7 @@ def _ic_weighting_policy(ev2_cfg: dict | None = None) -> dict[str, Any]:
         "prior_strength": float(raw.get("priorStrength", 20.0) or 20.0),
         "min_samples_for_hard_zero": int(raw.get("minSamplesForHardZero", 40) or 40),
         "uncertain_negative_floor": float(raw.get("uncertainNegativeFloor", raw.get("pooledSegmentFloor", 0.0025)) or 0.0025),
-        "pooled_segment_fallback_enabled": bool(raw.get("pooledSegmentFallbackEnabled", True)),
+        "pooled_segment_fallback_enabled": bool(raw.get("pooledSegmentFallbackEnabled", False)),
         "pooled_segment_floor": float(raw.get("pooledSegmentFloor", 0.0025) or 0.0025),
         "pooled_segment_fallback_multiplier": float(raw.get("pooledSegmentFallbackMultiplier", 0.25) or 0.25),
         "pooled_segment_cap": float(raw.get("pooledSegmentCap", 0.015) or 0.015),
@@ -1922,10 +1993,8 @@ def _load_pool_and_ic():
       - model_status: per-model "active"/"degraded"/"challenger"/"retired"
       - ic_weights: from model_pool.json rolling_ic/ic_4w_avg/latest weekly_ic
       - degraded_dampening: from trading:config.mlPool.degradedDampening
-      - ev2_cfg: from trading:config.ensemble_v2 ??thresholds + Top-K override
-        config (#B Option 1 2026-04-21 fix for "bot no-buy" mystery). Empty
-        dict when KV absent ??_attach_ensemble_v2 + top-K loop fall back to
-        hardcoded defaults matching ml-service ensemble.rank_to_signal.
+      - ev2_cfg: from trading:config.ensemble_v2 thresholds + Top-K override
+        config (#B Option 1 2026-04-21 fix for "bot no-buy" mystery).
     """
     import json as _json
     import os
@@ -1933,20 +2002,20 @@ def _load_pool_and_ic():
         from google.cloud import storage
         bucket_name = os.getenv("GCS_BUCKET_NAME")
         if not bucket_name:
-            logger.warning("[Pipeline V2] GCS_BUCKET_NAME not set; skip model pool / IC load")
-            return {}, {}, 1.0, {}, False, {}
+            raise RuntimeError("GCS_BUCKET_NAME not set for model_pool / IC load")
         bucket = storage.Client().bucket(bucket_name)
         pool_blob = bucket.blob("universal/model_pool.json")
         if not pool_blob.exists():
-            return {}, {}, 1.0, {}, False, {}
+            raise RuntimeError("universal/model_pool.json missing")
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+        _require_model_pool_active9_contract(pool, "load_pool_and_ic")
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}
         for name, entry in pool.get("models", {}).items():
             if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
                 logger.warning("[Pipeline V2] Ignoring legacy/non-active-9 model_pool IC entry: %s", name)
                 continue
-            model_status[name] = entry.get("status", "active")
+            model_status[name] = _require_model_pool_status(entry, name, "load_pool_and_ic")
             last_status = str(entry.get("last_ic_status") or "").strip()
             last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()
             has_fresh_diagnostics = bool(last_status or last_root_cause)
@@ -1987,16 +2056,14 @@ def _load_pool_and_ic():
         # IC weights have exactly one owner: model_pool.json. Missing IC stays
         # missing so lifecycle diagnostics can explain the root cause.
         # KV-driven degraded dampening + ensemble_v2 thresholds / Top-K cfg
-        degraded_dampening = 1.0
+        degraded_dampening = DEFAULT_DEGRADED_DAMPENING
         ev2_cfg: dict = {}
         try:
             from services.trading_config_loader import load_merged_trading_config_with_contract
             cfg_result = load_merged_trading_config_with_contract()
+            _require_trading_config_contract(cfg_result, "load_pool_and_ic")
             tcfg = cfg_result.config
-            if cfg_result.contract.degraded:
-                logger.warning("[Pipeline V2] trading:config degraded: %s", cfg_result.contract.to_dict())
-            ml_pool_cfg = tcfg.get("mlPool", {}) or {}
-            degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
+            degraded_dampening = resolve_degraded_dampening(tcfg)
             ev2_cfg = dict(tcfg.get("ensemble_v2", {}) or {})
             if ev2_cfg.get("expectedReturnCalibration"):
                 configured = ev2_cfg.get("expectedReturnCalibration") or {}
@@ -2024,11 +2091,10 @@ def _load_pool_and_ic():
                     calibration_report.get("binCount"),
                 )
         except Exception as _e:
-            logger.debug(f"[Pipeline V2] trading:config merged lookup failed (using defaults): {_e}")
+            raise RuntimeError(f"trading:config contract unavailable for ensemble_v2 attach: {_e}") from _e
         return model_status, ic_weights, degraded_dampening, ev2_cfg, True, pool
     except Exception as e:
-        logger.warning(f"[Pipeline V2] _load_pool_and_ic failed: {e}")
-        return {}, {}, 1.0, {}, False, {}
+        raise RuntimeError(f"_load_pool_and_ic failed: {e}") from e
 
 
 def _load_expected_return_calibration(
@@ -2256,9 +2322,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
 
     from services.trading_config_loader import load_merged_trading_config_with_contract
     cfg_result = load_merged_trading_config_with_contract()
+    _require_trading_config_contract(cfg_result, "recommend")
     trading_cfg = cfg_result.config
-    if cfg_result.contract.degraded:
-        logger.warning("[Pipeline V2] trading:config degraded in recommend: %s", cfg_result.contract.to_dict())
     alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
     screener_recs = state["screener_recs"]
     if not screener_recs:

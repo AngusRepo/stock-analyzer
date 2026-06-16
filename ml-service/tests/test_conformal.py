@@ -104,3 +104,25 @@ def test_conformal_save_and_load_prefers_gcs(monkeypatch):
 
     assert "meta/conformal_state.json" in uploads
     assert loaded.residuals == pytest.approx([0.01])
+
+
+def test_conformal_state_is_artifact_required(monkeypatch):
+    from app import conformal
+
+    monkeypatch.setattr(conformal, "_load_conformal_gcs", lambda: None)
+
+    with pytest.raises(FileNotFoundError, match="Conformal state missing in GCS"):
+        conformal.load_conformal()
+
+    fresh = conformal.load_conformal(allow_fresh=True)
+    assert isinstance(fresh, conformal.ConformalCalibrator)
+    assert fresh.residuals == []
+
+
+def test_conformal_save_requires_gcs(monkeypatch, tmp_path):
+    from app import conformal
+
+    monkeypatch.setattr(conformal, "_save_conformal_gcs", lambda _cal: False)
+
+    with pytest.raises(RuntimeError, match="Conformal GCS save failed"):
+        conformal.save_conformal(conformal.ConformalCalibrator(), path=str(tmp_path))

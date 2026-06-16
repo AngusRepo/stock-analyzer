@@ -31,7 +31,7 @@ Worker 呼叫格式：
   }
 """
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Any, Optional
 
@@ -76,6 +76,11 @@ class RiskAssessRequest(BaseModel):
 
 @router.post("/risk-assess")
 def post_risk_assess(req: RiskAssessRequest):
+    if not req.adaptive_config.L2_formula:
+        raise HTTPException(
+            status_code=422,
+            detail="adaptive_config.L2_formula is required; controller fallback defaults are disabled on /risk-assess",
+        )
     params = compute_adaptive_params(
         risk_score=req.market.risk_score,
         risk_level=req.market.risk_level,

@@ -6,6 +6,7 @@
  */
 import type { TradingConfig } from '../tradingConfig'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
+import { failClosedRiskCheck } from './failClosed'
 
 export async function checkP7Streak(
   db: D1Database,
@@ -39,7 +40,7 @@ export async function checkP7Streak(
       reason: `近 5 筆預測 ${wrongCount} 次錯誤（急性降載）`,
     }
   } catch (e) {
-    console.warn('[CircuitBreaker] Layer7 check failed (non-fatal):', e)
-    return null
+    console.error('[CircuitBreaker] Layer7 check failed; fail closed:', e)
+    return failClosedRiskCheck('P7', e, deps)
   }
 }

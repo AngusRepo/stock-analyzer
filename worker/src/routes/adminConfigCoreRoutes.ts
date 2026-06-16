@@ -80,7 +80,15 @@ adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
   if (authError) return authError
 
   const { getTradingConfig, setTradingConfig, buildChampionTradingConfig } = await import('../lib/tradingConfig')
-  const current = await getTradingConfig(c.env.KV)
+  let current: Awaited<ReturnType<typeof getTradingConfig>>
+  try {
+    current = await getTradingConfig(c.env.KV)
+  } catch (error: any) {
+    return c.json({
+      error: 'Current trading config unavailable; refusing to push defaults over an unverified source',
+      detail: error?.message ?? String(error),
+    }, 409)
+  }
   const filled = buildChampionTradingConfig(current as any)
 
   await setTradingConfig(c.env.KV, filled as any, { source: 'admin_push_defaults' })

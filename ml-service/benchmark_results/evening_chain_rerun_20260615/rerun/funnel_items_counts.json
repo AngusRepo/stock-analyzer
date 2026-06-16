@@ -1,0 +1,252 @@
+﻿[
+    {
+        "stage":  "buzz_evidence",
+        "decision":  "observe",
+        "reason_code":  "weighted_keyword_evidence",
+        "rows":  41,
+        "symbols":  41,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  30.153658536585365
+    },
+    {
+        "stage":  "diversity_cooldown",
+        "decision":  "observe",
+        "reason_code":  "new_money_boost",
+        "rows":  8,
+        "symbols":  8,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  30.15
+    },
+    {
+        "stage":  "final_selection",
+        "decision":  "observe",
+        "reason_code":  "selected_for_l1_breadth_seed",
+        "rows":  120,
+        "symbols":  120,
+        "min_rank":  1,
+        "max_rank":  120,
+        "avg_score_after":  26.621666666666666
+    },
+    {
+        "stage":  "l15_ml_slate_queue",
+        "decision":  "observe",
+        "reason_code":  "ml_slate_queue_seed_from_l1_5_router",
+        "rows":  240,
+        "symbols":  120,
+        "min_rank":  1,
+        "max_rank":  120,
+        "avg_score_after":  27.61916666666667
+    },
+    {
+        "stage":  "l1_candidate_seed_after_overlay",
+        "decision":  "selected",
+        "reason_code":  "selected_for_l1_breadth_seed",
+        "rows":  120,
+        "symbols":  120,
+        "min_rank":  1,
+        "max_rank":  120,
+        "avg_score_after":  26.621666666666666
+    },
+    {
+        "stage":  "layer1_strategy_breadth_gate",
+        "decision":  "pass",
+        "reason_code":  "l15_ple_router_selected_by_strategy_portfolio_evidence",
+        "rows":  120,
+        "symbols":  120,
+        "min_rank":  1,
+        "max_rank":  120,
+        "avg_score_after":  28.616666666666667
+    },
+    {
+        "stage":  "layer3_formal_ml_gate",
+        "decision":  "drop",
+        "reason_code":  "formal_family_rank_not_selected",
+        "rows":  50,
+        "symbols":  50,
+        "min_rank":  14,
+        "max_rank":  90,
+        "avg_score_after":  0.46915886
+    },
+    {
+        "stage":  "layer3_formal_ml_gate",
+        "decision":  "pass",
+        "reason_code":  "formal_family_rank_pass",
+        "rows":  40,
+        "symbols":  40,
+        "min_rank":  1,
+        "max_rank":  40,
+        "avg_score_after":  0.55122805
+    },
+    {
+        "stage":  "rrg_overlay",
+        "decision":  "observe",
+        "reason_code":  "rrg_overlay_improving_tailwind",
+        "rows":  24,
+        "symbols":  24,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  28.895833333333332
+    },
+    {
+        "stage":  "rrg_overlay",
+        "decision":  "observe",
+        "reason_code":  "rrg_overlay_lagging_risk",
+        "rows":  96,
+        "symbols":  96,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  24.296875
+    },
+    {
+        "stage":  "scoring",
+        "decision":  "pass",
+        "reason_code":  "base_score_computed",
+        "rows":  516,
+        "symbols":  516,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  18.102906976744187
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Scan raw OHLCV structure for liquidity sweep, BOS/CHOCH and displacement evidence before ML ranking.",
+        "rows":  12,
+        "symbols":  12,
+        "min_rank":  27,
+        "max_rank":  48,
+        "avg_score_after":  73.18866666666666
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Select price bases that show volume-confirmed breakout pressure before heavy ML ranking.",
+        "rows":  12,
+        "symbols":  12,
+        "min_rank":  1,
+        "max_rank":  14,
+        "avg_score_after":  79.88375
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Select stocks with constructive chip flow and tolerable technical structure for defensive accumulation.",
+        "rows":  4,
+        "symbols":  4,
+        "min_rank":  10,
+        "max_rank":  16,
+        "avg_score_after":  78.6055
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use FinLab raw institution flow and broker concentration evidence to widen L1 with accumulation candidates that old high-score ranking misses.",
+        "rows":  2,
+        "symbols":  2,
+        "min_rank":  17,
+        "max_rank":  18,
+        "avg_score_after":  77.9805
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use canonical sector_flow stock detail plus RRG-style relative strength to admit leading theme core stocks into L1.",
+        "rows":  15,
+        "symbols":  15,
+        "min_rank":  21,
+        "max_rank":  50,
+        "avg_score_after":  75.13753333333334
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use mined RSI reclaim and volume expansion structure to catch early trend repair before old aggregate scores become high.",
+        "rows":  16,
+        "symbols":  16,
+        "min_rank":  33,
+        "max_rank":  63,
+        "avg_score_after":  66.9694375
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use raw price, moving-average and volume-expansion evidence to add breakout candidates before L2 coarse ML.",
+        "rows":  2,
+        "symbols":  2,
+        "min_rank":  19,
+        "max_rank":  20,
+        "avg_score_after":  77.52850000000001
+    },
+    {
+        "stage":  "strategy_pool_research_only",
+        "decision":  "observe",
+        "reason_code":  "strategy_research_discovery_lane_only",
+        "rows":  10,
+        "symbols":  10,
+        "min_rank":  1,
+        "max_rank":  10,
+        "avg_score_after":  54.4688
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "avg_volume_below_min",
+        "rows":  863,
+        "symbols":  863,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "price_out_of_range",
+        "rows":  242,
+        "symbols":  242,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "restricted_attention_or_punished",
+        "rows":  355,
+        "symbols":  355,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "turnover_below_min",
+        "rows":  1,
+        "symbols":  1,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "zero_volume",
+        "rows":  2,
+        "symbols":  2,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "pass",
+        "reason_code":  "hard_filters_passed",
+        "rows":  516,
+        "symbols":  516,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    }
+]

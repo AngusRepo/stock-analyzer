@@ -1,5 +1,4 @@
 import {
-  DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
   validateStrategySpec,
   type StrategyCandidateInput,
@@ -16,7 +15,7 @@ export interface StrategyLabDryRunResult {
   matchRate: number
 }
 
-export function listStrategySpecs(specs: StrategySpec[] = DEFAULT_STRATEGY_SPECS): StrategySpec[] {
+export function listStrategySpecs(specs: StrategySpec[]): StrategySpec[] {
   assertOwnerCanOwn('strategy', 'strategy_spec')
   return specs.map((spec) => ({ ...spec, riskNotes: [...spec.riskNotes], supportedRegimes: [...spec.supportedRegimes] }))
 }

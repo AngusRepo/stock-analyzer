@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services import verify_service
+from services.arf_feedback_contract import validate_arf_feedback_results
 from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 from services.modal_client import batch_update_arf
 
@@ -196,6 +197,13 @@ async def post_verify(req: VerifyRequest):
             results = await batch_update_arf(arf_payloads)
         except Exception as e:  # noqa: BLE001
             logger.error("[verify] ARF batch update failed: %s", e)
+            raise HTTPException(status_code=502, detail=f"ARF batch update failed: {e}") from e
+        feedback_errors = validate_arf_feedback_results(arf_payloads, results)
+        if feedback_errors:
+            raise HTTPException(
+                status_code=502,
+                detail=f"ARF batch update incomplete: {'; '.join(feedback_errors[:5])}",
+            )
 
     non_neutral = [v for v in req.verifications if v.predicted_direction != "neutral"]
     correct = sum(1 for v in non_neutral if v.predicted_direction == v.actual_direction)

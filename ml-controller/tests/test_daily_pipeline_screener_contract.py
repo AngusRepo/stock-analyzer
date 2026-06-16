@@ -4,8 +4,24 @@ import asyncio
 from pathlib import Path
 
 import sys
+import types
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def _install_daily_pipeline_import_stubs():
+    graph_mod = types.ModuleType("langgraph.graph")
+    graph_mod.END = object()
+    graph_mod.StateGraph = object
+    types_mod = types.ModuleType("langgraph.types")
+    types_mod.RetryPolicy = object
+    sys.modules.setdefault("langgraph.graph", graph_mod)
+    sys.modules.setdefault("langgraph.types", types_mod)
+    httpx_mod = types.ModuleType("httpx")
+    httpx_mod.AsyncClient = object
+    sys.modules.setdefault("httpx", httpx_mod)
 
 
 def test_daily_pipeline_refuses_watchlist_screener_fallback():
@@ -70,6 +86,7 @@ def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():
 
 
 def test_l2_l3_targets_are_proportional_to_upstream_counts():
+    _install_daily_pipeline_import_stubs()
     from graphs.daily_pipeline_v2 import (  # noqa: E402
         _resolve_coarse_ml_gate_target,
         _resolve_core_family_rank_target,
@@ -86,6 +103,7 @@ def test_l2_l3_targets_are_proportional_to_upstream_counts():
 
 
 def test_l2_core_gate_selects_by_tree_rank_only():
+    _install_daily_pipeline_import_stubs()
     from graphs.daily_pipeline_v2 import _attach_l2_core_ml_gate  # noqa: E402
 
     predictions = {
@@ -108,7 +126,41 @@ def test_l2_core_gate_selects_by_tree_rank_only():
     assert summary["scored_count"] == 2
 
 
+def test_l2_core_gate_does_not_fallback_to_score_rank_when_gate_evidence_missing():
+    from services.recommendation_service import apply_core_ml_gate  # noqa: E402
+
+    recommendations = [
+        {"symbol": "2330", "score": 99.0},
+        {"symbol": "2317", "score": 98.0},
+    ]
+
+    assert apply_core_ml_gate(recommendations, {}, fallback_size=1) == []
+    assert apply_core_ml_gate(
+        recommendations,
+        {"2330": {"core_ml_gate": {"selected": False, "rank": 1, "target_size": 1}}},
+        fallback_size=1,
+    ) == []
+
+
+def test_core_family_rank_does_not_fallback_to_score_rank_when_family_evidence_missing():
+    from services.recommendation_service import apply_core_family_rank  # noqa: E402
+
+    recommendations = [
+        {"symbol": "2330", "score": 99.0},
+        {"symbol": "2317", "score": 98.0},
+    ]
+
+    assert apply_core_family_rank(
+        recommendations,
+        {},
+        target_size=1,
+        strict=False,
+        require_lifecycle_weights=True,
+    ) == []
+
+
 def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypatch):
+    _install_daily_pipeline_import_stubs()
     from graphs import daily_pipeline_v2  # noqa: E402
 
     observed_payload_symbols = []
@@ -183,3 +235,50 @@ def test_daily_pipeline_does_not_inject_gnn_controller_adapter():
 
     assert "correlation_graph_rank_v1" not in source
     assert "_build_gnn_graph_adapter_scores" not in source
+
+
+def test_daily_pipeline_does_not_create_alternate_only_prediction_fallback():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    assert "alternate_only_fallback" not in source
+    assert "Feature-model fallback" not in source
+    assert "feature_missing_no_fallback" in source
+
+
+def test_daily_pipeline_blocks_degraded_state_space_overlay_rows():
+    _install_daily_pipeline_import_stubs()
+    from graphs.daily_pipeline_v2 import _state_space_overlay_block_reason  # noqa: E402
+
+    assert _state_space_overlay_block_reason({
+        "symbol": "2330",
+        "degraded": True,
+        "fallback_reason": "svd_not_converged",
+    }) == "svd_not_converged"
+    assert _state_space_overlay_block_reason({
+        "symbol": "2317",
+        "degraded": True,
+    }) == "degraded_state_space_overlay"
+    assert _state_space_overlay_block_reason({
+        "symbol": "2454",
+        "degraded": False,
+        "forecast_pct": 0.01,
+    }) is None
+
+
+def test_daily_pipeline_fails_closed_on_degraded_trading_config_contract():
+    _install_daily_pipeline_import_stubs()
+    from graphs.daily_pipeline_v2 import _require_trading_config_contract  # noqa: E402
+
+    ok = types.SimpleNamespace(
+        contract=types.SimpleNamespace(degraded=False, to_dict=lambda: {"degraded": False})
+    )
+    _require_trading_config_contract(ok, "recommend")
+
+    degraded = types.SimpleNamespace(
+        contract=types.SimpleNamespace(
+            degraded=True,
+            to_dict=lambda: {"degraded": True, "missing_sections": ["L2_formula"]},
+        )
+    )
+    with pytest.raises(RuntimeError, match="trading_config_contract_degraded:recommend"):
+        _require_trading_config_contract(degraded, "recommend")

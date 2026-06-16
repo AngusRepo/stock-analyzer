@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "ml-controller"))
 from services.finlab_canonical_materializer import (
     build_d1_upsert_statements,
     build_emerging_broker_rows,
+    build_listed_broker_flow_rows,
     build_taxonomy_rows,
     materialize_finlab_canonical_outputs,
     normalize_symbol,
@@ -86,6 +87,47 @@ def test_emerging_broker_rows_materialize_canonical_chip_and_lineage() -> None:
     assert broker_6682["gross_imbalance_shares"] == 14000.0
     assert broker_6682["broker_count"] == 9
     assert broker_6682["concentration"] > 0
+
+
+def test_listed_broker_transactions_materialize_canonical_broker_flow() -> None:
+    root = _root("listed_broker_rows")
+    _write(
+        root / "raw" / "broker_flow_diversity" / "broker_daily.parquet",
+        pl.DataFrame(
+            {
+                "date": ["2026-06-15", "2026-06-15"],
+                "stock_id": ["2330", "2317"],
+                "buy_shares": [16000.0, 4000.0],
+                "sell_shares": [7000.0, 9000.0],
+                "buy_sell_net": [9000.0, -5000.0],
+                "dominant_net_shares": [6000.0, -4200.0],
+                "gross_imbalance_shares": [11000.0, 7600.0],
+                "broker_count": [11, 5],
+                "source": ["finlab.broker_transactions", "finlab.broker_transactions"],
+                "market_segment": ["LISTED_OTC", "LISTED_OTC"],
+            }
+        ),
+    )
+    _write(
+        root / "raw" / "daily_price" / "close.parquet",
+        pl.DataFrame({"date": ["2026-06-15"], "2330": [100.0], "2317": [50.0]}),
+    )
+
+    rows = build_listed_broker_flow_rows(
+        root,
+        run_id="finlab-v4-test",
+        generated_at="2026-06-16T00:00:00+00:00",
+        start_date="2026-06-15",
+        end_date="2026-06-15",
+    )
+
+    row_2330 = next(row for row in rows if row["stock_id"] == "2330")
+    assert row_2330["market_segment"] == "LISTED_OTC"
+    assert row_2330["source"] == "finlab.broker_transactions"
+    assert row_2330["net_shares"] == 6000.0
+    assert row_2330["estimated_amount"] == 600000.0
+    assert row_2330["broker_count"] == 11
+    assert row_2330["concentration"] > 0
 
 
 def test_taxonomy_rows_build_four_layer_finlab_tags() -> None:

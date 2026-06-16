@@ -1,5 +1,6 @@
 import { summarizeSellOrderLosses } from '../paperOrderAccounting'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
+import { failClosedRiskCheck } from './failClosed'
 
 const ACCOUNT_ID = 1
 
@@ -30,7 +31,7 @@ export async function checkP5Losses(
       ...defaults,
     }
   } catch (e) {
-    console.warn('[CircuitBreaker] Layer5 check failed (non-fatal):', e)
-    return null
+    console.error('[CircuitBreaker] Layer5 check failed; fail closed:', e)
+    return failClosedRiskCheck('P5', e, deps)
   }
 }

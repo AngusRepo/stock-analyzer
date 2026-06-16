@@ -9,6 +9,7 @@ _SRC_KEY_MODEL = (
     ("itransformer", "iTransformer"),
     ("timesfm", "TimesFM"),
 )
+_MODEL_STATUS_ALLOWED = {"active", "degraded", "challenger", "retired"}
 
 
 def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
@@ -79,6 +80,11 @@ def _compute_lifecycle_weight(status: str, ic_value: float, degraded_dampening: 
     return base
 
 
+def _weight_status(model_status: dict, model_name: str) -> str:
+    status = str((model_status or {}).get(model_name) or "retired").strip()
+    return status if status in _MODEL_STATUS_ALLOWED else "retired"
+
+
 def _has_observed_ic(merged: dict[str, float], ic_weights: dict) -> bool:
     for name in merged:
         try:
@@ -117,7 +123,7 @@ def attach_ensemble_v2(
     observed_ic_models = set((ev2_cfg or {}).get("observedIcModels") or [])
     weights = {
         name: _compute_lifecycle_weight(
-            model_status.get(name, "active"),
+            _weight_status(model_status, name),
             ic_weights.get(name, 0.0),
             degraded_dampening,
         )
@@ -126,9 +132,10 @@ def attach_ensemble_v2(
     weight_total = sum(weights.values())
 
     if weight_total <= 0:
-        if not (_has_observed_ic(merged, ic_weights) or (set(merged) & observed_ic_models)):
+        allow_cold_start = bool((ev2_cfg or {}).get("allowColdStartEqualWeight", False))
+        if allow_cold_start and not (_has_observed_ic(merged, ic_weights) or (set(merged) & observed_ic_models)):
             weights = {
-                name: _cold_start_weight(model_status.get(name, "active"), degraded_dampening)
+                name: _cold_start_weight(_weight_status(model_status, name), degraded_dampening)
                 for name in merged
             }
             weight_total = sum(weights.values())

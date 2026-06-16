@@ -94,7 +94,9 @@ function fakeDb(input: {
     evidence_json: JSON.stringify({
       return_correlation: 0.12,
       holding_overlap: 0.08,
+      factor_return: 0.021,
       factor_crowding: 0.1,
+      centrality: 0.22,
       live_backtest_divergence: 0.04,
     }),
   }))
@@ -103,6 +105,8 @@ function fakeDb(input: {
   assert((metrics.reliability ?? 0) > 0.5, 'sample-backed positive ledger should raise reliability')
   assert(metrics.return_correlation === 0.12, 'evidence_json should pass through return correlation')
   assert(metrics.holding_overlap === 0.08, 'evidence_json should pass through holding overlap')
+  assert(metrics.factor_return === 0.021, 'evidence_json should pass through FinLab factor return')
+  assert(metrics.centrality === 0.22, 'evidence_json should pass through graph/factor centrality')
 }
 
 {
@@ -165,6 +169,7 @@ function fakeDb(input: {
   assert(overrides.trend_a_v1.holding_overlap === 0.6667, 'decision log should compute strategy holding overlap by symbol Jaccard')
   assert(overrides.trend_a_v1.turnover === 0.6667, 'decision log should compute day-to-day strategy turnover')
   assert((overrides.trend_a_v1.factor_crowding ?? 0) > (overrides.quality_c_v1.factor_crowding ?? 1), 'same-bucket overlap should raise factor crowding')
+  assert((overrides.trend_a_v1.centrality ?? 0) > 0, 'decision log should compute centrality-like crowding evidence')
 }
 
 async function main(): Promise<void> {

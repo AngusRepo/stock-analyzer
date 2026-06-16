@@ -1,11 +1,69 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import inspect
 
 import numpy as np
 import pytest
 
 from app import batch_prediction
+
+_ACTIVE_MODEL_NAMES = (
+    "LightGBM",
+    "XGBoost",
+    "ExtraTrees",
+    "TabM",
+    "GNN",
+    "DLinear",
+    "PatchTST",
+    "iTransformer",
+    "TimesFM",
+)
+
+
+def _full_model_pool(
+    status_by_model: dict[str, str] | None = None,
+    *,
+    shadow_models: dict | None = None,
+    formal_layer3_slots: dict | None = None,
+) -> dict:
+    statuses = status_by_model or {}
+    return {
+        "models": {
+            name: {
+                "status": statuses.get(name, "retired"),
+                "version": "v1",
+                "gcs_path": f"universal/{name.lower()}/v1",
+            }
+            for name in _ACTIVE_MODEL_NAMES
+        },
+        "shadow_models": shadow_models or {},
+        "formal_layer3_slots": formal_layer3_slots or {},
+    }
+
+
+def test_batch_model_pool_loader_requires_governance_source(monkeypatch):
+    monkeypatch.setattr("app.model_pool.load_pool", lambda: None)
+
+    with pytest.raises(batch_prediction.ModelPoolUnavailable):
+        batch_prediction._load_model_pool()
+
+
+def test_batch_model_pool_loader_requires_all_active9_entries(monkeypatch):
+    monkeypatch.setattr("app.model_pool.load_pool", lambda: {"models": {"XGBoost": {"status": "active"}}})
+
+    with pytest.raises(batch_prediction.ModelPoolUnavailable, match="missing model_pool.models entries"):
+        batch_prediction._load_model_pool()
+
+
+def test_batch_prediction_lifecycle_status_does_not_default_missing_to_active():
+    source = inspect.getsource(batch_prediction)
+
+    assert 'model_status.get("GNN", "active")' not in source
+    assert 'model_status.get("TabM", "active")' not in source
+    assert 'model_status.get(model_name, "active")' not in source
+    assert 'get("status") or "active"' not in source
+    assert "_require_model_status" in source
 
 
 def test_predict_stock_v2_batch_preserves_order_and_wraps_failures(monkeypatch):
@@ -128,6 +186,29 @@ def _predict_payload(symbol: str, stock_id: int, base_price: float = 100.0) -> d
             "embedded_state_space": False,
             "owner": "daily_pipeline_v2.batch_predict",
         },
+        "trading_config": {
+            "ensemble_v2": {
+                "strongBuyThreshold": 0.85,
+                "buyThreshold": 0.70,
+                "sellThreshold": 0.30,
+                "strongSellThreshold": 0.15,
+            },
+            "mlPool": {
+                "degradedDampening": 0.1,
+            },
+        },
+        "adaptive_params": {
+            "confidence_delta": 0.0,
+            "provenance": {
+                "owner": "ml-controller",
+                "source": "test",
+                "schema_version": "adaptive-params-v2",
+                "update_frequency": "daily_after_verify",
+                "computed_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "fallback": False,
+            },
+        },
     }
 
 
@@ -150,7 +231,7 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
             return fake_model, {"feature_names": [], "feature_medians": {}}
         return None, {}
 
-    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: None)
+    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: _full_model_pool({"XGBoost": "active"}))
     monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
 
     requests = [
@@ -179,7 +260,11 @@ def test_l2_tree_batch_predict_uses_only_tree_models(monkeypatch):
             return FakeModel(), {"feature_names": [], "feature_medians": {}}
         raise AssertionError(f"unexpected L2 model load: {model_name}")
 
-    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: None)
+    monkeypatch.setattr(
+        batch_prediction,
+        "_load_model_pool",
+        lambda: _full_model_pool({"LightGBM": "active", "XGBoost": "active", "ExtraTrees": "active"}),
+    )
     monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
 
     batch = batch_prediction.predict_l2_tree_batch([
@@ -199,19 +284,8 @@ def test_l2_tree_batch_predict_uses_only_tree_models(monkeypatch):
 def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
     from app import gnn_batch_runtime
 
-    pool = {
-        "models": {
-            "LightGBM": {"status": "retired"},
-            "XGBoost": {"status": "retired"},
-            "ExtraTrees": {"status": "retired"},
-            "TabM": {"status": "retired"},
-            "GNN": {
-                "status": "active",
-                "version": "v1",
-                "gcs_path": "universal/gnn/v1.pt",
-            },
-        }
-    }
+    pool = _full_model_pool({"GNN": "active"})
+    pool["models"]["GNN"].update({"version": "v1", "gcs_path": "universal/gnn/v1.pt"})
     artifact = gnn_batch_runtime.GraphSAGEArtifact(
         model=object(),
         metadata={"feature_names": [], "graph_context": {"correlation_lookback": 60}},
@@ -263,7 +337,7 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
             "sector_peer_return_5d": 0.02,
             "stock_vs_sector": 0.01,
         },
-        "chips": [{"foreign_net": 1200, "trust_net": 100, "dealer_net": 20}],
+        "chips": [{"date": "2026-03-11", "foreign_net": 1200, "trust_net": 100, "dealer_net": 20}],
         "market_env": {"risk_score": 0.4, "retail_pct": 0.1},
         "strategy_hit_vector": {"trend": 1, "value": 0},
         "strategy_affinity_vector": {"trend": 90, "value": 10},
@@ -279,7 +353,7 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
             "sector_peer_return_5d": 0.01,
             "stock_vs_sector": -0.01,
         },
-        "chips": [{"foreign_net": -500, "trust_net": -50, "dealer_net": -10}],
+        "chips": [{"date": "2026-03-11", "foreign_net": -500, "trust_net": -50, "dealer_net": -10}],
         "market_env": {"risk_score": 0.7, "retail_pct": 0.4},
         "strategy_hit_vector": {"trend": 0, "value": 1},
         "strategy_affinity_vector": {"trend": 10, "value": 88},
@@ -312,19 +386,8 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
 def test_gnn_graphsage_batch_predict_reports_error_summary(monkeypatch):
     from app import gnn_batch_runtime
 
-    pool = {
-        "models": {
-            "LightGBM": {"status": "retired"},
-            "XGBoost": {"status": "retired"},
-            "ExtraTrees": {"status": "retired"},
-            "TabM": {"status": "retired"},
-            "GNN": {
-                "status": "active",
-                "version": "v1",
-                "gcs_path": "universal/gnn/v1.pt",
-            },
-        }
-    }
+    pool = _full_model_pool({"GNN": "active"})
+    pool["models"]["GNN"].update({"version": "v1", "gcs_path": "universal/gnn/v1.pt"})
 
     monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
     monkeypatch.setattr(gnn_batch_runtime, "load_graphsage_artifact", lambda pool=None: (_ for _ in ()).throw(RuntimeError("bad artifact")))
@@ -345,19 +408,8 @@ def test_tabm_batch_overrides_use_torch_artifact_runtime(monkeypatch):
     from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
     from app.schemas import PredictRequest
 
-    pool = {
-        "models": {
-            "LightGBM": {"status": "retired"},
-            "XGBoost": {"status": "retired"},
-            "ExtraTrees": {"status": "retired"},
-            "TabM": {
-                "status": "active",
-                "version": "v1",
-                "gcs_path": "universal/tabm/v1.pt",
-            },
-            "GNN": {"status": "retired"},
-        }
-    }
+    pool = _full_model_pool({"TabM": "active"})
+    pool["models"]["TabM"].update({"version": "v1", "gcs_path": "universal/tabm/v1.pt"})
     artifact = tabm_batch_runtime.TabMArtifact(
         model=object(),
         metadata={"feature_names": [], "feature_medians": {}},
@@ -393,16 +445,15 @@ def test_tabm_batch_overrides_use_torch_artifact_runtime(monkeypatch):
 
 
 def test_formal_slot_without_model_artifact_is_not_active():
-    pool = {
-        "models": {},
-        "formal_layer3_slots": {
+    pool = _full_model_pool(
+        formal_layer3_slots={
             "GNN": {
                 "status": "production_adapter_active",
                 "direct_prediction": True,
                 "vote_weight": 0.1,
             }
         },
-    }
+    )
 
     assert batch_prediction._model_pool_status(pool)["GNN"] == "retired"
 
@@ -421,16 +472,15 @@ def test_shadow_challenger_batch_overrides_vectorize_residual_mlp(monkeypatch):
             return FakeModel(), {"feature_names": [], "feature_medians": {}}
         return None, {}
 
-    pool = {
-        "models": {},
-        "shadow_models": {
+    pool = _full_model_pool(
+        shadow_models={
             "ResidualMLP": {
                 "status": "challenger",
                 "version": "v1",
                 "gcs_path": "experimental_shadow/residualmlp/v1.joblib",
             },
         },
-    }
+    )
     monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
     monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
 
@@ -497,7 +547,7 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         raise AssertionError("serial model load should be skipped")
 
     monkeypatch.setattr(model_store, "load_model", fail_load_model)
-    monkeypatch.setattr(model_pool, "load_pool", lambda: None)
+    monkeypatch.setattr(model_pool, "load_pool", lambda: _full_model_pool({"XGBoost": "active"}))
     monkeypatch.setattr(ensemble, "load_ic_weights", lambda market_segment=None: {"XGBoost": 1.0})
     monkeypatch.setattr(stacking, "load_meta_learner", lambda stock_id: None)
 
@@ -517,3 +567,45 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
     assert "LightGBM: not found in GCS" in result["model_errors"]
     assert _BATCH_FEATURE_RANK_SCORES_KEY not in result["runtime_options"]
     assert result["runtime_options"]["owner"] == "daily_pipeline_v2.batch_predict"
+
+
+def test_predict_stock_v2_requires_model_pool_contract(monkeypatch):
+    from app import ensemble, model_pool, model_store, prediction_runtime, stacking
+    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
+    from app.schemas import PredictRequest
+
+    monkeypatch.setattr(model_store, "load_model", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("model load should not run")))
+    monkeypatch.setattr(model_pool, "load_pool", lambda: {"models": {"XGBoost": {"status": "active"}}})
+    monkeypatch.setattr(ensemble, "load_ic_weights", lambda market_segment=None: {"XGBoost": 1.0})
+    monkeypatch.setattr(stacking, "load_meta_learner", lambda stock_id: None)
+
+    payload = _predict_payload("2330", 2330, 100.0)
+    payload["runtime_options"] = {
+        **payload["runtime_options"],
+        _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.82},
+    }
+
+    with pytest.raises(prediction_runtime.ModelPoolContractError, match="missing model_pool.models entries"):
+        prediction_runtime.predict_stock_v2(PredictRequest(**payload))
+
+
+def test_predict_stock_v2_requires_runtime_config_contract(monkeypatch):
+    from app import ensemble, model_pool, model_store, stacking
+    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
+    from app import prediction_runtime
+    from app.schemas import PredictRequest
+
+    monkeypatch.setattr(model_store, "load_model", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("model load should not run")))
+    monkeypatch.setattr(model_pool, "load_pool", lambda: _full_model_pool({"XGBoost": "active"}))
+    monkeypatch.setattr(ensemble, "load_ic_weights", lambda market_segment=None: {"XGBoost": 1.0})
+    monkeypatch.setattr(stacking, "load_meta_learner", lambda stock_id: None)
+
+    payload = _predict_payload("2330", 2330, 100.0)
+    payload["runtime_options"] = {
+        **payload["runtime_options"],
+        _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.82},
+    }
+    payload.pop("trading_config")
+
+    with pytest.raises(ValueError, match="missing trading_config.ensemble_v2"):
+        prediction_runtime.predict_stock_v2(PredictRequest(**payload))

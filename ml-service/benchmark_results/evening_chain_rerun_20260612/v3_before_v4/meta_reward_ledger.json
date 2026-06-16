@@ -1,0 +1,420 @@
+[
+  {
+    "results": [
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:breakout_vol_expansion",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 954,
+        "reward_sum": 0.031562,
+        "reward_mean": 0.000033,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":954,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1049\",\"1088\",\"1177\",\"1183\",\"1191\",\"1244\",\"1379\",\"1599\",\"1626\",\"1637\",\"1737\",\"1989\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:defensive_accumulation",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 294,
+        "reward_sum": 0.120728,
+        "reward_mean": 0.000411,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":294,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1186\",\"1210\",\"1467\",\"1559\",\"1674\",\"1706\",\"1734\",\"1951\",\"1971\",\"2449\",\"2725\",\"2776\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:trend_following",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 3752,
+        "reward_sum": -0.052535,
+        "reward_mean": -0.000014,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":3752,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1007\",\"1014\",\"1020\",\"1022\",\"1028\",\"1031\",\"1049\",\"1055\",\"1090\",\"1094\",\"1119\",\"1156\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "lane:emerging_watchlist",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 1676,
+        "reward_sum": -0.12163,
+        "reward_mean": -0.000073,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":1676,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1156\",\"1177\",\"1183\",\"1186\",\"1191\",\"1193\",\"1306\",\"1307\",\"1319\",\"1333\",\"1491\",\"1559\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "lane:tradable",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 3324,
+        "reward_sum": 0.221385,
+        "reward_mean": 0.000067,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":3324,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1007\",\"1014\",\"1020\",\"1022\",\"1028\",\"1031\",\"1049\",\"1055\",\"1088\",\"1090\",\"1094\",\"1119\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:EMERGING",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 1676,
+        "reward_sum": -0.12163,
+        "reward_mean": -0.000073,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":1676,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1156\",\"1177\",\"1183\",\"1186\",\"1191\",\"1193\",\"1306\",\"1307\",\"1319\",\"1333\",\"1491\",\"1559\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:OTC",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 873,
+        "reward_sum": 0.190951,
+        "reward_mean": 0.000219,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":873,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1014\",\"1020\",\"1049\",\"1055\",\"1088\",\"1094\",\"1119\",\"1210\",\"1217\",\"1244\",\"1303\",\"1377\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:listed",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 2451,
+        "reward_sum": 0.030434,
+        "reward_mean": 0.000012,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":2451,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1007\",\"1022\",\"1028\",\"1031\",\"1090\",\"1249\",\"1379\",\"1414\",\"1460\",\"1467\",\"1472\",\"1500\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "signal:buy",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 162,
+        "reward_sum": 0.021088,
+        "reward_mean": 0.00013,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":162,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1007\",\"1049\",\"2101\",\"2274\",\"2551\",\"2646\",\"2794\",\"3139\",\"647\",\"813\",\"926\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "signal:non_buy",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1",
+        "samples": 4838,
+        "reward_sum": 0.078667,
+        "reward_mean": 0.000016,
+        "last_reward_at": "2026-05-13",
+        "updated_at": "2026-05-14T17:35:01.855Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":4838,\"date_start\":\"2026-05-06\",\"date_end\":\"2026-05-13\",\"sample_symbols_preview\":[\"1014\",\"1020\",\"1022\",\"1028\",\"1031\",\"1049\",\"1055\",\"1088\",\"1090\",\"1094\",\"1119\",\"1156\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "lane:emerging_watchlist",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 1588,
+        "reward_sum": 0.280106,
+        "reward_mean": 0.000176,
+        "last_reward_at": "2026-05-20",
+        "updated_at": "2026-05-22T14:59:53.126Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":1588,\"date_start\":\"2026-05-14\",\"date_end\":\"2026-05-20\",\"sample_symbols_preview\":[\"1158\",\"1177\",\"1183\",\"1186\",\"1191\",\"1193\",\"1196\",\"1274\",\"1293\",\"1307\",\"1333\",\"1347\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:EMERGING",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 1588,
+        "reward_sum": 0.280106,
+        "reward_mean": 0.000176,
+        "last_reward_at": "2026-05-20",
+        "updated_at": "2026-05-22T14:59:53.126Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":1588,\"date_start\":\"2026-05-14\",\"date_end\":\"2026-05-20\",\"sample_symbols_preview\":[\"1158\",\"1177\",\"1183\",\"1186\",\"1191\",\"1193\",\"1196\",\"1274\",\"1293\",\"1307\",\"1333\",\"1347\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "lane:tradable",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 3810,
+        "reward_sum": 0.106985,
+        "reward_mean": 0.000028,
+        "last_reward_at": "2026-06-03",
+        "updated_at": "2026-06-04T14:15:00.236Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":3810,\"date_start\":\"2026-05-21\",\"date_end\":\"2026-06-03\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1028\",\"1048\",\"1049\",\"1055\",\"1061\",\"1066\",\"1088\",\"1112\",\"1125\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:OTC",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 915,
+        "reward_sum": 0.078759,
+        "reward_mean": 0.000086,
+        "last_reward_at": "2026-06-03",
+        "updated_at": "2026-06-04T14:15:00.236Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":915,\"date_start\":\"2026-05-21\",\"date_end\":\"2026-06-03\",\"sample_symbols_preview\":[\"1014\",\"1015\",\"1049\",\"1055\",\"1061\",\"1088\",\"1135\",\"1144\",\"1145\",\"1203\",\"1355\",\"1377\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:listed",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 2895,
+        "reward_sum": 0.028226,
+        "reward_mean": 0.00001,
+        "last_reward_at": "2026-06-03",
+        "updated_at": "2026-06-04T14:15:00.236Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":2895,\"date_start\":\"2026-05-21\",\"date_end\":\"2026-06-03\",\"sample_symbols_preview\":[\"1\",\"1028\",\"1048\",\"1066\",\"1112\",\"1125\",\"1128\",\"1142\",\"12\",\"1212\",\"1304\",\"135\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "signal:non_buy",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 4729,
+        "reward_sum": 0.002011,
+        "reward_mean": 0,
+        "last_reward_at": "2026-06-03",
+        "updated_at": "2026-06-04T14:15:00.236Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":4729,\"date_start\":\"2026-05-21\",\"date_end\":\"2026-06-03\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1016\",\"1028\",\"1046\",\"1048\",\"1049\",\"1055\",\"1060\",\"1061\",\"1066\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:trend_following",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 2948,
+        "reward_sum": -0.082635,
+        "reward_mean": -0.000028,
+        "last_reward_at": "2026-06-04",
+        "updated_at": "2026-06-05T14:10:36.512Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":2948,\"date_start\":\"2026-05-22\",\"date_end\":\"2026-06-04\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1049\",\"1061\",\"1066\",\"1112\",\"1125\",\"1128\",\"1135\",\"1144\",\"1145\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:breakout_vol_expansion",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 916,
+        "reward_sum": -0.001348,
+        "reward_mean": -0.000001,
+        "last_reward_at": "2026-06-09",
+        "updated_at": "2026-06-10T14:28:47.042Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":916,\"date_start\":\"2026-05-25\",\"date_end\":\"2026-06-09\",\"sample_symbols_preview\":[\"1028\",\"1048\",\"1049\",\"1055\",\"1088\",\"1135\",\"1212\",\"1355\",\"1535\",\"1574\",\"1725\",\"20\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:defensive_accumulation",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 1746,
+        "reward_sum": 0.037032,
+        "reward_mean": 0.000021,
+        "last_reward_at": "2026-06-09",
+        "updated_at": "2026-06-10T14:28:47.042Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":1746,\"date_start\":\"2026-05-25\",\"date_end\":\"2026-06-09\",\"sample_symbols_preview\":[\"1\",\"1015\",\"1028\",\"1055\",\"1089\",\"1135\",\"1142\",\"1144\",\"1183\",\"12\",\"1203\",\"1260\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "lane:tradable",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1",
+        "samples": 4524,
+        "reward_sum": 0.017704,
+        "reward_mean": 0.000004,
+        "last_reward_at": "2026-06-09",
+        "updated_at": "2026-06-10T14:28:47.042Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":4524,\"date_start\":\"2026-05-25\",\"date_end\":\"2026-06-09\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1028\",\"1048\",\"1049\",\"1055\",\"1061\",\"1066\",\"1088\",\"1089\",\"1112\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:OTC",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1",
+        "samples": 969,
+        "reward_sum": -0.003677,
+        "reward_mean": -0.000004,
+        "last_reward_at": "2026-06-09",
+        "updated_at": "2026-06-10T14:28:47.042Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":969,\"date_start\":\"2026-05-25\",\"date_end\":\"2026-06-09\",\"sample_symbols_preview\":[\"1014\",\"1015\",\"1049\",\"1055\",\"1061\",\"1088\",\"1130\",\"1135\",\"1144\",\"1145\",\"1203\",\"1217\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:listed",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1",
+        "samples": 3555,
+        "reward_sum": 0.021381,
+        "reward_mean": 0.000006,
+        "last_reward_at": "2026-06-09",
+        "updated_at": "2026-06-10T14:28:47.042Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":3555,\"date_start\":\"2026-05-25\",\"date_end\":\"2026-06-09\",\"sample_symbols_preview\":[\"1\",\"1028\",\"1048\",\"1066\",\"1089\",\"1112\",\"1125\",\"1142\",\"12\",\"1212\",\"1304\",\"135\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "signal:buy",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 360,
+        "reward_sum": 0.004779,
+        "reward_mean": 0.000013,
+        "last_reward_at": "2026-06-09",
+        "updated_at": "2026-06-10T14:28:47.042Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":360,\"date_start\":\"2026-05-25\",\"date_end\":\"2026-06-09\",\"sample_symbols_preview\":[\"1145\",\"16\",\"1990\",\"2000\",\"2218\",\"2233\",\"2291\",\"2328\",\"2377\",\"2412\",\"2839\",\"2955\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "signal:non_buy",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1",
+        "samples": 4640,
+        "reward_sum": -0.01329,
+        "reward_mean": -0.000003,
+        "last_reward_at": "2026-06-09",
+        "updated_at": "2026-06-10T14:28:47.042Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":4640,\"date_start\":\"2026-05-25\",\"date_end\":\"2026-06-09\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1016\",\"1028\",\"1046\",\"1048\",\"1049\",\"1055\",\"1060\",\"1061\",\"1066\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:breakout_vol_expansion",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 814,
+        "reward_sum": -0.004949,
+        "reward_mean": -0.000006,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":814,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"1028\",\"1048\",\"1049\",\"1055\",\"1088\",\"1135\",\"1212\",\"1355\",\"1535\",\"1725\",\"20\",\"2022\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:defensive_accumulation",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 2190,
+        "reward_sum": 0.05503,
+        "reward_mean": 0.000025,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":2190,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"1\",\"1015\",\"1028\",\"1055\",\"1089\",\"1117\",\"1130\",\"1135\",\"1142\",\"1144\",\"12\",\"1203\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:mean_reversion",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 130,
+        "reward_sum": 0.016528,
+        "reward_mean": 0.000127,
+        "last_reward_at": "2026-06-01",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":130,\"date_start\":\"2026-05-27\",\"date_end\":\"2026-06-01\",\"sample_symbols_preview\":[\"1016\",\"1046\",\"1060\",\"1061\",\"1304\",\"2464\",\"2476\",\"250\",\"2839\",\"2876\",\"3053\",\"3178\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:trend_following",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 1237,
+        "reward_sum": 0.02642,
+        "reward_mean": 0.000021,
+        "last_reward_at": "2026-06-03",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":1237,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-03\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1049\",\"1066\",\"1112\",\"1125\",\"1135\",\"1144\",\"1145\",\"135\",\"1355\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "alpha_bucket:unknown",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1",
+        "samples": 629,
+        "reward_sum": -0.019736,
+        "reward_mean": -0.000031,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":629,\"date_start\":\"2026-06-08\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"1028\",\"1066\",\"1079\",\"1090\",\"1112\",\"1130\",\"12\",\"1217\",\"1320\",\"1427\",\"1463\",\"147\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "lane:emerging_watchlist",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 140,
+        "reward_sum": 0.008088,
+        "reward_mean": 0.000058,
+        "last_reward_at": "2026-05-28",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":140,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-05-28\",\"sample_symbols_preview\":[\"1016\",\"1046\",\"1060\",\"1365\",\"1366\",\"1593\",\"1960\",\"250\",\"2773\",\"3073\",\"939\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "lane:tradable",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 4860,
+        "reward_sum": 0.065205,
+        "reward_mean": 0.000013,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":4860,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1028\",\"1048\",\"1049\",\"1055\",\"1061\",\"1066\",\"1079\",\"1088\",\"1089\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:EMERGING",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1",
+        "samples": 140,
+        "reward_sum": 0.008088,
+        "reward_mean": 0.000058,
+        "last_reward_at": "2026-05-28",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":140,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-05-28\",\"sample_symbols_preview\":[\"1016\",\"1046\",\"1060\",\"1365\",\"1366\",\"1593\",\"1960\",\"250\",\"2773\",\"3073\",\"939\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:OTC",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 1005,
+        "reward_sum": 0.010945,
+        "reward_mean": 0.000011,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":1005,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"1014\",\"1015\",\"1049\",\"1055\",\"1061\",\"1088\",\"1117\",\"1130\",\"1135\",\"1144\",\"1145\",\"1203\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "market_segment:listed",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 3855,
+        "reward_sum": 0.05426,
+        "reward_mean": 0.000014,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":3855,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"1\",\"1028\",\"1048\",\"1066\",\"1079\",\"1089\",\"1090\",\"1112\",\"1125\",\"1142\",\"12\",\"1212\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "signal:buy",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 378,
+        "reward_sum": 0.009519,
+        "reward_mean": 0.000025,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":378,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"16\",\"1990\",\"2000\",\"2233\",\"2291\",\"2328\",\"2377\",\"2412\",\"2839\",\"2955\",\"3013\",\"3083\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"sector_heat\",\"volatility\"]}"
+      },
+      {
+        "policy_id": "LinUCB",
+        "arm_id": "signal:non_buy",
+        "context_hash": "meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1",
+        "samples": 4622,
+        "reward_sum": 0.063774,
+        "reward_mean": 0.000014,
+        "last_reward_at": "2026-06-11",
+        "updated_at": "2026-06-12T14:47:06.442Z",
+        "evidence_json": "{\"version\":\"linucb-reward-ledger-v1\",\"reward_source\":\"trade_pnl_pct_or_actual_return_pct\",\"source_rows\":4622,\"date_start\":\"2026-05-26\",\"date_end\":\"2026-06-11\",\"sample_symbols_preview\":[\"1\",\"1014\",\"1015\",\"1016\",\"1028\",\"1046\",\"1048\",\"1049\",\"1055\",\"1060\",\"1061\",\"1066\"],\"context_hash\":\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\",\"context_hashes\":[\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,1\",\"meta-context-v2:0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.75,0.5,0.5,1\"],\"missing_context_features\":[\"coverage\",\"data_quality\",\"fill_quality\",\"liquidity\",\"market_breadth\",\"market_risk\",\"model_ic\",\"prediction_dispersion\",\"regime\",\"sector_heat\",\"volatility\"]}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.3012
+      },
+      "duration": 2.3012,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2044510208,
+      "rows_read": 72,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

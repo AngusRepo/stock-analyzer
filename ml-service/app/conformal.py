@@ -205,14 +205,27 @@ def _save_conformal_gcs(calibrator: ConformalCalibrator) -> bool:
         return False
 
 
-def load_conformal(path: str | None = None) -> ConformalCalibrator:
-    """Load Conformal calibrator. GCS is authoritative; local storage is fallback."""
-    return _load_conformal_gcs() or ConformalCalibrator.load(path)
+def load_conformal(path: str | None = None, *, allow_fresh: bool = False) -> ConformalCalibrator:
+    """Load Conformal calibrator from GCS.
+
+    Online update paths must use the default artifact-required behavior so a
+    missing durable residual set cannot be replaced by a fresh calibrator.
+    Prediction paths may pass allow_fresh=True to get a transparent, uncalibrated
+    no-op calibrator without saving it.
+    """
+    loaded = _load_conformal_gcs()
+    if loaded is not None:
+        return loaded
+    if allow_fresh:
+        return ConformalCalibrator()
+    raise FileNotFoundError(f"Conformal state missing in GCS: {GCS_STATE_KEY}")
 
 
 def save_conformal(calibrator: ConformalCalibrator, path: str | None = None) -> dict:
-    """Persist Conformal calibrator to GCS and local fallback."""
+    """Persist Conformal calibrator to GCS and mirror locally for diagnostics."""
     gcs_saved = _save_conformal_gcs(calibrator)
+    if not gcs_saved:
+        raise RuntimeError("Conformal GCS save failed")
     calibrator.save(path)
     return {
         "gcs_saved": gcs_saved,

@@ -514,6 +514,11 @@ def _no_signal(current_price: float, atr: float, reason: str) -> EnsembleResult:
 # 2.0 Rank → Signal 翻譯層
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+class LifecycleWeightsUnavailable(RuntimeError):
+    """Raised when lifecycle IC weights cannot be loaded from model_pool.json."""
+
+
 def load_ic_weights(market_segment: str | None = None) -> dict[str, float]:
     """Load serving IC weights from model_pool.json only."""
     global _IC_WEIGHTS_CACHE, _IC_WEIGHTS_CACHE_LOADED_AT
@@ -525,18 +530,21 @@ def load_ic_weights(market_segment: str | None = None) -> dict[str, float]:
         from .model_pool import load_pool
         weights_by_segment: dict[str, dict[str, float]] = {}
         pool = load_pool()
-        if pool:
-            for key in ("GLOBAL", "LISTED", "OTC", "EMERGING"):
-                weights_by_segment[key] = _extract_model_pool_ic(
-                    pool,
-                    market_segment=None if key == "GLOBAL" else key,
-                )
+        if not isinstance(pool, dict) or not isinstance(pool.get("models"), dict):
+            raise LifecycleWeightsUnavailable("model_pool.json unavailable for lifecycle IC weights")
+        for key in ("GLOBAL", "LISTED", "OTC", "EMERGING"):
+            weights_by_segment[key] = _extract_model_pool_ic(
+                pool,
+                market_segment=None if key == "GLOBAL" else key,
+            )
 
         _IC_WEIGHTS_CACHE = dict(weights_by_segment)
         _IC_WEIGHTS_CACHE_LOADED_AT = time.time()
         return dict(weights_by_segment.get(segment, {}))
-    except Exception:
-        return {}
+    except LifecycleWeightsUnavailable:
+        raise
+    except Exception as exc:
+        raise LifecycleWeightsUnavailable(f"lifecycle IC weight load failed: {exc}") from exc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -569,7 +577,7 @@ def merge_with_time_series(
     time_series_signals: dict[str, dict],
     ic_weights: dict[str, float] | None = None,
     model_status: dict[str, str] | None = None,
-    degraded_dampening: float = 1.0,
+    degraded_dampening: float = 0.1,
     forecast_to_rank_scale: float = 12.0,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """Combine tabular/graph rank scores with time-series forecasts.
@@ -577,7 +585,7 @@ def merge_with_time_series(
     2026-04-19 R1+R3 hybrid (replaces hardcoded lifecycle multipliers 0/0.1/1.0):
       weight = max(0, ic) × status_filter × dampening_if_degraded
         active:     max(0, ic)
-        degraded:   max(0, ic) × degraded_dampening (default 1.0 = pure IC)
+        degraded:   max(0, ic) × degraded_dampening (default 0.1)
         challenger: 0  (shadow)
         retired:    0  (excluded)
 
@@ -585,11 +593,11 @@ def merge_with_time_series(
       feature_rank_scores: {name: rank 0~1} from tree/TabM/GNN models
       time_series_signals: {name: {forecast_pct, ...}} for DLinear/PatchTST/iTransformer/TimesFM
         (key absent or value None → that model contributes nothing)
-      ic_weights: {name: IC} (Grinold-Kahn). None → uniform 1.0 (no IC available).
+      ic_weights: {name: IC} (Grinold-Kahn). Missing IC contributes zero.
       model_status: {name: "active"|"degraded"|"challenger"|"retired"} from
         model_pool.json. None → all "active" (no ML_POOL applied).
       degraded_dampening: extra multiplier on degraded models.
-        Default 1.0 (= pure IC, R3 industry standard).
+        Default 0.1 so degraded models remain diagnostic and low-weight.
         KV-driven via trading:config.mlPool.degradedDampening.
         Future: Optuna-searchable post #31 backtest Mode B.
       forecast_to_rank_scale: sigmoid sharpness for time-series → rank.
@@ -611,25 +619,11 @@ def merge_with_time_series(
         if sf == 0.0:
             weights[name] = 0.0
             continue
-        ic_w = max(0.0, (ic_weights or {}).get(name, 0.0)) if ic_weights else 1.0
+        ic_w = max(0.0, (ic_weights or {}).get(name, 0.0))
         if status == "degraded":
             ic_w *= float(degraded_dampening)
         weights[name] = ic_w
     return merged, weights
-
-
-def weighted_average_rank(rank_scores: dict[str, float], weights: dict[str, float]) -> float:
-    """Standard weighted average. Falls back to plain mean if all weights ≤ 0."""
-    weight_total = 0.0
-    weighted_sum = 0.0
-    for name, score in rank_scores.items():
-        w = max(0.0, weights.get(name, 0.0))
-        weighted_sum += score * w
-        weight_total += w
-    if weight_total <= 0:
-        scores = list(rank_scores.values())
-        return float(np.mean(scores)) if scores else 0.5
-    return weighted_sum / weight_total
 
 
 def rank_to_signal(
@@ -650,7 +644,7 @@ def rank_to_signal(
         current_price: latest close
         atr: ATR for stop/target calculation
         ic_weights: {model_name: IC} — IC-weighted avg (Grinold-Kahn).
-                    None → fallback to equal weight.
+                    Missing or all-zero IC blocks signal generation.
         top_n: cross-sectional top N filter (applied by caller, not here)
         strong_buy_threshold: rank above this → STRONG_BUY
         buy_threshold: rank above this → BUY
@@ -678,12 +672,12 @@ def rank_to_signal(
             weight_total += w
         if weight_total > 0:
             avg_rank = weighted_sum / weight_total
-        elif not has_observed_ic:
-            avg_rank = float(np.mean(list(rank_scores.values())))
-        else:
+        elif has_observed_ic:
             avg_rank = 0.5
+        else:
+            return _no_signal(current_price, atr, "No observed lifecycle IC weight")
     else:
-        avg_rank = float(np.mean(list(rank_scores.values())))
+        return _no_signal(current_price, atr, "Missing lifecycle IC weights")
     avg_rank = float(np.clip(avg_rank, 0.0, 1.0))
     scores = list(rank_scores.values())
     rank_std = float(np.std(scores)) if len(scores) > 1 else 0.0

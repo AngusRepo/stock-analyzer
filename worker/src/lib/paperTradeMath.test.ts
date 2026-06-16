@@ -175,6 +175,6 @@ function assert(condition: unknown, message: string): void {
     intradayHigh: 305,
     slippageTicks: 1,
   })
-  assert(!fill.fillable, 'market sell should fail closed if fallback slippage implies impossible intraday price')
-  assert(fill.reason.startsWith('fill_below_intraday_low'), 'impossible fallback sell should explain low boundary')
+  assert(!fill.fillable, 'market sell should fail closed when executable bid is missing')
+  assert(fill.reason === 'missing_best_bid', 'missing bid must not fall back to last/current price')
 }

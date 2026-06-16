@@ -1,9 +1,7 @@
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
 
-// Types originally from finmind.ts. FinMind fetcher is retired; screener keeps
-// this normalized shape internally for scoring parity.
-export interface FMStockPrice {
+export interface CanonicalScreenerPrice {
   date: string
   stock_id: string
   Trading_Volume: number
@@ -16,7 +14,7 @@ export interface FMStockPrice {
   Trading_turnover: number
 }
 
-export interface FMChip {
+export interface CanonicalScreenerChip {
   date: string
   stock_id: string
   name: string
@@ -28,6 +26,12 @@ export interface FMChip {
   estimated_amount?: number | null
   concentration?: number | null
 }
+
+/** @deprecated Use CanonicalScreenerPrice. The FinMind fetcher is retired. */
+export type FMStockPrice = CanonicalScreenerPrice
+
+/** @deprecated Use CanonicalScreenerChip. The FinMind fetcher is retired. */
+export type FMChip = CanonicalScreenerChip
 
 export interface CanonicalChipRow {
   stock_id: string
@@ -72,7 +76,7 @@ export function isAutoTradablePriceRow(row: {
   return classifyBoard(row).eligibleForPendingBuy
 }
 
-function toFmPrice(row: ScreenerPriceRow, researchOnly = false): FMStockPrice | null {
+function toCanonicalScreenerPrice(row: ScreenerPriceRow, researchOnly = false): CanonicalScreenerPrice | null {
   if (!row.close || row.close <= 0) return null
   const synthetic = row.close
   return {
@@ -90,13 +94,13 @@ function toFmPrice(row: ScreenerPriceRow, researchOnly = false): FMStockPrice | 
 }
 
 export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
-  allPrices: FMStockPrice[]
-  emergingResearchPrices: FMStockPrice[]
+  allPrices: CanonicalScreenerPrice[]
+  emergingResearchPrices: CanonicalScreenerPrice[]
   tpexSymbols: Set<string>
   laneCounts: { tradable: number; emerging_watchlist: number; research_only: number }
 } {
-  const allPrices: FMStockPrice[] = []
-  const emergingResearchPrices: FMStockPrice[] = []
+  const allPrices: CanonicalScreenerPrice[] = []
+  const emergingResearchPrices: CanonicalScreenerPrice[] = []
   const tpexSymbols = new Set<string>()
   const laneCounts = { tradable: 0, emerging_watchlist: 0, research_only: 0 }
   const rowsBySymbol = new Map<string, ScreenerPriceRow[]>()
@@ -115,7 +119,7 @@ export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
     const board = classifyBoard(latest)
     if (board.recommendationLane === 'tradable') {
       for (const row of symbolRows) {
-        const price = toFmPrice(row)
+        const price = toCanonicalScreenerPrice(row)
         if (price) allPrices.push(price)
       }
       laneCounts.tradable += 1
@@ -124,7 +128,7 @@ export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
     }
     if (board.recommendationLane === 'emerging_watchlist') {
       for (const row of symbolRows) {
-        const price = toFmPrice(row, true)
+        const price = toCanonicalScreenerPrice(row, true)
         if (price) emergingResearchPrices.push(price)
       }
       laneCounts.emerging_watchlist += 1
@@ -160,9 +164,10 @@ function netToChip(row: {
   date: string
   market_segment?: string | null
   source?: string | null
-}, role: string, net: number | null | undefined, extras: Partial<FMChip> = {}): FMChip | null {
+}, role: string, net: number | null | undefined, extras: Partial<CanonicalScreenerChip> = {}, options: { preserveZeroNet?: boolean } = {}): CanonicalScreenerChip | null {
   const value = Number(net ?? 0)
-  if (!Number.isFinite(value) || value === 0) return null
+  const hasMetadata = extras.broker_count != null || extras.estimated_amount != null || extras.concentration != null
+  if (!Number.isFinite(value) || (value === 0 && !options.preserveZeroNet && !hasMetadata)) return null
   return {
     date: row.date,
     stock_id: row.stock_id,
@@ -175,15 +180,15 @@ function netToChip(row: {
   }
 }
 
-export function chipIdentity(chip: FMChip): string {
+export function chipIdentity(chip: CanonicalScreenerChip): string {
   return `${chip.stock_id}|${chip.date}|${chip.name}`
 }
 
 export function canonicalChipRowsToFmChips(
   rows: CanonicalChipRow[],
   brokerRows: CanonicalBrokerFlowRow[] = [],
-): FMChip[] {
-  const chips: FMChip[] = []
+): CanonicalScreenerChip[] {
+  const chips: CanonicalScreenerChip[] = []
   for (const row of rows) {
     const foreign = netToChip(row, 'foreign', row.foreign_net)
     const trust = netToChip(row, 'trust', row.trust_net)
@@ -193,19 +198,19 @@ export function canonicalChipRowsToFmChips(
     if (dealer) chips.push(dealer)
   }
   for (const row of brokerRows) {
-    const broker = netToChip(row, 'broker_proxy', row.net_shares, {
+    const broker = netToChip(row, 'broker_flow', row.net_shares, {
       broker_count: row.broker_count ?? null,
       estimated_amount: row.estimated_amount ?? null,
       concentration: row.concentration ?? null,
-    })
+    }, { preserveZeroNet: true })
     if (broker) chips.push(broker)
   }
   return chips
 }
 
-export function mergeCanonicalFirstChips(canonical: FMChip[], fallback: FMChip[]): FMChip[] {
+export function mergeCanonicalFirstChips(canonical: CanonicalScreenerChip[], fallback: CanonicalScreenerChip[]): CanonicalScreenerChip[] {
   const seen = new Set<string>()
-  const merged: FMChip[] = []
+  const merged: CanonicalScreenerChip[] = []
   for (const chip of canonical) {
     const key = chipIdentity(chip)
     if (seen.has(key)) continue
@@ -226,8 +231,8 @@ async function loadCanonicalChipsFromD1(
   maxAllowedDate: string,
   chipLookback: number,
   chipDays: number,
-): Promise<{ chips: FMChip[]; sourceSummary: Record<string, number> }> {
-  const chips: FMChip[] = []
+): Promise<{ chips: CanonicalScreenerChip[]; sourceSummary: Record<string, number> }> {
+  const chips: CanonicalScreenerChip[] = []
   const sourceSummary: Record<string, number> = {}
 
   try {
@@ -288,9 +293,9 @@ export async function loadMarketDataFromD1(
   chipDays: number = 5,
   asOfDate?: string,
 ): Promise<{
-  allPrices: FMStockPrice[]
-  emergingResearchPrices: FMStockPrice[]
-  allChips: FMChip[]
+  allPrices: CanonicalScreenerPrice[]
+  emergingResearchPrices: CanonicalScreenerPrice[]
+  allChips: CanonicalScreenerChip[]
   tpexSymbols: Set<string>
   laneCounts: { tradable: number; emerging_watchlist: number; research_only: number }
   chipSourceSummary: Record<string, number>
@@ -396,7 +401,7 @@ export async function loadMarketDataFromD1(
     chipLookback,
     chipDays,
   )
-  const fallbackChips: FMChip[] = []
+  const fallbackChips: CanonicalScreenerChip[] = []
   if (chipDates.length) {
     const minChipDate = chipDates[0]
     const maxChipDate = chipDates[chipDates.length - 1]

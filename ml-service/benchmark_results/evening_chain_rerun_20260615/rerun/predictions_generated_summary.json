@@ -1,0 +1,23 @@
+﻿[
+    {
+        "generated_at":  "2026-06-15 18:36:31",
+        "rows":  206,
+        "stock_ids":  23,
+        "models":  10,
+        "buy_rows":  0
+    },
+    {
+        "generated_at":  "2026-06-15 18:36:30",
+        "rows":  404,
+        "stock_ids":  49,
+        "models":  10,
+        "buy_rows":  0
+    },
+    {
+        "generated_at":  "2026-06-15 18:36:29",
+        "rows":  400,
+        "stock_ids":  50,
+        "models":  10,
+        "buy_rows":  0
+    }
+]

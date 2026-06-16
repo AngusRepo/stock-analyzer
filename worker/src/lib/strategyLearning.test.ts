@@ -5,13 +5,132 @@ import {
   buildStrategyDecisionRows,
   buildStrategyRewardLedgerRows,
   evaluateStrategyPromotionGate,
+  listStrategySpecsForLearning,
   registryRowToStrategySpec,
+  seedDefaultStrategySpecRegistry,
   strategySpecToRegistryRow,
+  type StrategySpecRegistryRow,
   type StrategyLearningSummary,
 } from './strategyLearning'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+class FakeStrategyRegistryStatement {
+  constructor(
+    private readonly db: FakeStrategyRegistryD1,
+    private readonly sql: string,
+    private readonly args: unknown[] = [],
+  ) {}
+
+  bind(...args: unknown[]): FakeStrategyRegistryStatement {
+    return new FakeStrategyRegistryStatement(this.db, this.sql, args)
+  }
+
+  async run(): Promise<{ meta: { changes: number } }> {
+    const sql = this.sql
+    if (sql.includes('INSERT INTO strategy_spec_registry')) {
+      const row = this.db.rowFromInsertArgs(this.args)
+      this.db.rows.set(`${row.strategy_id}:${row.version}`, row)
+      return { meta: { changes: 1 } }
+    }
+    if (sql.includes('WHERE strategy_id=?')) {
+      const [updatedAt, strategyId] = this.args
+      let changes = 0
+      for (const row of this.db.rows.values()) {
+        if (row.strategy_id === strategyId && row.status !== 'retired') {
+          row.status = 'retired'
+          row.owner_type = 'retired'
+          row.promotion_status = 'retired'
+          row.updated_at = String(updatedAt)
+          changes += 1
+        }
+      }
+      return { meta: { changes } }
+    }
+    if (sql.includes('strategy_id NOT IN')) {
+      const [updatedAt, ...approvedIds] = this.args.map(String)
+      const approved = new Set(approvedIds)
+      let changes = 0
+      for (const row of this.db.rows.values()) {
+        const sourceRefs = JSON.parse(row.source_refs_json || '[]') as string[]
+        const generated =
+          row.strategy_id.startsWith('finlab_ai_skill_')
+          || row.created_by === 'finlab_ai_skill_discovery_v1'
+          || sourceRefs.some((ref) => String(ref).includes('finlab_ai_skill'))
+        if (row.status !== 'retired' && !approved.has(row.strategy_id) && generated) {
+          row.status = 'retired'
+          row.owner_type = 'retired'
+          row.promotion_status = 'retired'
+          row.updated_at = String(updatedAt)
+          changes += 1
+        }
+      }
+      return { meta: { changes } }
+    }
+    return { meta: { changes: 0 } }
+  }
+
+  async all<T>(): Promise<{ results: T[] }> {
+    if (this.sql.includes('FROM strategy_spec_registry')) {
+      return { results: [...this.db.rows.values()] as T[] }
+    }
+    return { results: [] }
+  }
+}
+
+class FakeStrategyRegistryD1 {
+  readonly rows = new Map<string, StrategySpecRegistryRow>()
+
+  prepare(sql: string): FakeStrategyRegistryStatement {
+    return new FakeStrategyRegistryStatement(this, sql)
+  }
+
+  rowFromInsertArgs(args: unknown[]): StrategySpecRegistryRow {
+    const [
+      strategy_id,
+      version,
+      name,
+      status,
+      owner,
+      alpha_bucket,
+      family_id,
+      variant_id,
+      owner_type,
+      promotion_status,
+      supported_regimes_json,
+      thesis,
+      thresholds_json,
+      candidate_policy_json,
+      risk_notes_json,
+      source_refs_json,
+      created_by,
+      created_at,
+      updated_at,
+    ] = args
+    return {
+      strategy_id: String(strategy_id),
+      version: String(version),
+      name: String(name),
+      status: status as StrategySpecRegistryRow['status'],
+      owner: owner as StrategySpecRegistryRow['owner'],
+      alpha_bucket: String(alpha_bucket),
+      family_id: family_id as StrategySpecRegistryRow['family_id'],
+      variant_id: String(variant_id),
+      owner_type: owner_type as StrategySpecRegistryRow['owner_type'],
+      promotion_status: promotion_status as StrategySpecRegistryRow['promotion_status'],
+      supported_regimes_json: String(supported_regimes_json),
+      thesis: String(thesis),
+      thresholds_json: String(thresholds_json),
+      candidate_policy_json: String(candidate_policy_json),
+      risk_notes_json: String(risk_notes_json),
+      source_refs_json: String(source_refs_json),
+      created_by: String(created_by),
+      created_at: String(created_at),
+      updated_at: String(updated_at),
+    }
+  }
 }
 
 {
@@ -24,23 +143,91 @@ function assert(condition: unknown, message: string): void {
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
   assert(
     source.includes('screener_funnel_items') &&
-      source.includes("stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected'") &&
+      source.includes("stage = 'scoring' AND decision = 'pass'") &&
       source.includes("stage = 'layer1_strategy_breadth_gate' AND decision = 'pass'") &&
       source.includes("stage = 'final_selection' AND decision = 'selected'") &&
       source.includes('raw_signals') &&
       source.includes('funnel_candidates') &&
       source.includes('fc.evidence AS funnel_evidence'),
-    'strategy learning candidates must restore raw L1/L1.5 strategy evidence from the latest screener funnel, not Score V2-only recommendations or L2 owner stages',
+    'strategy learning candidates must restore raw L0 scoring/pass strategy evidence from the latest screener funnel, not Score V2-only recommendations or L2 owner stages',
   )
   assert(
-    source.includes('demoteStaleActiveDiscoveryStrategySpecs') &&
-      source.includes("SET status='research'") &&
+    source.includes('retireGeneratedDiscoveryStrategySpecs') &&
+      source.includes("SET status='retired'") &&
       source.includes("strategy_id NOT IN (${placeholders})") &&
       source.includes("source_refs_json LIKE '%finlab_ai_skill%'") &&
       source.includes('demoted_stale_active'),
-    'strategy registry seeding must demote stale FinLab AI discovery active rows that are not source-approved production specs',
+    'strategy registry seeding must retire stale generated FinLab AI discovery rows that are not source-approved production specs',
+  )
+  assert(
+    !source.includes('default_fallback') &&
+      !source.includes('DEFAULT_STRATEGY_SPECS.filter((spec) => !registryKeys.has') &&
+      source.includes('strategy_spec_registry_empty_seed_required') &&
+      source.includes('strategy_spec_registry_no_runtime_specs_seed_required') &&
+      source.includes('strategy_spec_registry_contains_stale_generated_rows_seed_required') &&
+      source.includes('strategy_spec_registry_contains_stale_runtime_rows_seed_required') &&
+      source.includes('candidate_policy_json'),
+    'runtime strategy specs must come from D1 registry only; code defaults are seed manifests, not silent screener fallback',
   )
 }
+
+{
+  const activeSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
+  assert(activeSpecs.length === 25, 'production default strategy set should keep 13 active + 6 research consolidated + 6 AlphaBuilders strategies')
+  assert(activeSpecs.filter((spec) => spec.id.startsWith('research_consolidated_')).length === 6, '62 research strategies should be represented by six consolidated production strategies')
+  assert(activeSpecs.filter((spec) => spec.id.startsWith('alphabuilders_multifactor_')).length === 6, 'AlphaBuilders multifactor additions should contribute six production strategies')
+  assert(activeSpecs.some((spec) => spec.id === 'trend_following_seed_v1'), 'existing active strategies must stay active')
+  assert(!activeSpecs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'daily factor/strategy discovery lane must not remain active')
+}
+
+async function runStrategyRegistrySeedContractTest(): Promise<void> {
+  const fakeDb = new FakeStrategyRegistryD1()
+  fakeDb.rows.set('finlab_ai_skill_generated_duplicate_v1:strategy-spec-v1', {
+    strategy_id: 'finlab_ai_skill_generated_duplicate_v1',
+    version: 'strategy-spec-v1',
+    name: 'Generated duplicate',
+    status: 'research',
+    owner: 'strategy',
+    alpha_bucket: 'trend_following',
+    family_id: 'TREND_RECLAIM_CONTINUATION',
+    variant_id: 'finlab_ai_skill_generated_duplicate_v1',
+    owner_type: 'strategy',
+    promotion_status: 'production',
+    supported_regimes_json: '["bull"]',
+    thesis: 'Stale generated discovery row should not remain a runtime strategy.',
+    thresholds_json: '{}',
+    candidate_policy_json: '{}',
+    risk_notes_json: '[]',
+    source_refs_json: '["finlab_ai_skill_discovery_v1"]',
+    created_by: 'finlab_ai_skill_discovery_v1',
+    created_at: '2026-06-03T00:00:00.000Z',
+    updated_at: '2026-06-03T00:00:00.000Z',
+  })
+
+  let staleGuardTriggered = false
+  try {
+    await listStrategySpecsForLearning(fakeDb as unknown as D1Database)
+  } catch (error) {
+    staleGuardTriggered = String(error).includes('strategy_spec_registry_contains_stale_generated_rows_seed_required')
+  }
+  assert(staleGuardTriggered, 'runtime reader must fail closed when stale generated discovery rows remain in D1')
+
+  const seedReport = await seedDefaultStrategySpecRegistry(fakeDb as unknown as D1Database, {
+    nowIso: '2026-06-16T00:00:00.000Z',
+  })
+  const { specs, registryRowCount, activeCount } = await listStrategySpecsForLearning(fakeDb as unknown as D1Database)
+  assert(seedReport.seeded === DEFAULT_STRATEGY_SPECS.length, 'seed should write the full source-approved registry manifest')
+  assert(seedReport.demoted_stale_active === 1, 'seed should retire stale generated discovery rows outside the approved active set')
+  assert(registryRowCount === DEFAULT_STRATEGY_SPECS.length + 1, 'registry should preserve retired history while exposing clean runtime specs')
+  assert(specs.length === 25, 'runtime reader should expose exactly 25 non-retired strategies after clean seed')
+  assert(activeCount === 25, 'runtime reader active count should be 25 after clean seed')
+  assert(specs.every((spec) => spec.candidatePolicy && Object.keys(spec.candidatePolicy).length > 0), 'every runtime strategy must carry candidate policy from D1')
+  assert(!specs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'retired discovery lane must not be visible to runtime reader')
+}
+
+runStrategyRegistrySeedContractTest().catch((error) => {
+  throw error
+})
 
 {
   const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
@@ -53,13 +240,13 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'finlab_ai_skill_rsi_volume_reclaim_v1')
-  assert(spec != null, 'RSI volume reclaim default spec should exist')
+  const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'alphabuilders_multifactor_trend_reclaim_v1')
+  assert(spec != null, 'AlphaBuilders trend reclaim default spec should exist')
   const registryRow = strategySpecToRegistryRow(spec!, '2026-06-03T00:00:00.000Z')
   const restored = registryRowToStrategySpec(registryRow)
   assert(
     restored.familyId === 'TREND_RECLAIM_CONTINUATION',
-    'registry conversion must preserve default family governance instead of re-inferring volume reclaim as volatility',
+    'registry conversion must preserve default family governance for AlphaBuilders trend reclaim',
   )
   assert(restored.ownerType === 'strategy', 'registry conversion must preserve production ownerType for default active specs')
   assert(restored.variantId === spec!.variantId, 'registry conversion must preserve variantId for default active specs')
@@ -74,9 +261,9 @@ function assert(condition: unknown, message: string): void {
     sourceRefs: ['codex_seed_2026_05_22'],
   })
   const restored = registryRowToStrategySpec(staleLegacyRow)
-  assert(restored.status === 'active', 'stale legacy default registry row must not override newer active default spec')
-  assert(restored.thresholds.minSeedScore == null, 'stale legacy default registry row must not keep Score V2 seed threshold')
-  assert(restored.thresholds.minCloseAboveMa20Pct === 0, 'stale legacy default registry row should restore raw active threshold')
+  assert(restored.status === 'shadow', 'registry conversion must preserve D1 status instead of silently restoring code default')
+  assert(restored.thresholds.minSeedScore === 58, 'registry conversion must expose stale Score V2 thresholds so runtime seed guard can fail closed')
+  assert(restored.candidatePolicy?.poolQuota === DEFAULT_STRATEGY_SPECS[0].candidatePolicy?.poolQuota, 'registry conversion should preserve candidate policy stored in D1 row')
 }
 
 {

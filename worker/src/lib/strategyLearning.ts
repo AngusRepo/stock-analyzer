@@ -30,6 +30,7 @@ export interface StrategySpecRegistryRow {
   supported_regimes_json: string
   thesis: string
   thresholds_json: string
+  candidate_policy_json?: string
   risk_notes_json: string
   source_refs_json: string
   created_by: string
@@ -150,7 +151,7 @@ export interface StrategyAdaptivePolicyState {
 export interface StrategyLearningSummary {
   version: string
   date: string
-  spec_source: 'registry' | 'default_fallback'
+  spec_source: 'registry'
   specs: Array<StrategySpec & {
     learning: {
       decisions: number
@@ -168,7 +169,10 @@ export interface StrategyLearningSummary {
 }
 
 export const STRATEGY_POLICY_ID = 'strategy-adaptive-shadow-v1'
-const LEGACY_RETIRED_STRATEGY_SPEC_IDS = ['finlab_ai_skill_shadow_v1']
+const LEGACY_RETIRED_STRATEGY_SPEC_IDS = [
+  'finlab_ai_skill_shadow_v1',
+  'finlab_ai_skill_discovery_v1',
+]
 
 const PROMOTION_MIN_DECISIONS = 30
 const PROMOTION_MIN_MATCH_RATE = 0.02
@@ -202,6 +206,7 @@ const SCHEMA_DDL = [
     supported_regimes_json TEXT NOT NULL DEFAULT '[]',
     thesis TEXT NOT NULL,
     thresholds_json TEXT NOT NULL DEFAULT '{}',
+    candidate_policy_json TEXT NOT NULL DEFAULT '{}',
     risk_notes_json TEXT NOT NULL DEFAULT '[]',
     source_refs_json TEXT NOT NULL DEFAULT '[]',
     created_by TEXT NOT NULL DEFAULT 'p5_strategy_governance',
@@ -291,6 +296,14 @@ function cleanToken(value: unknown): string {
   return String(value ?? '').trim()
 }
 
+function firstCleanToken(...values: unknown[]): string | null {
+  for (const value of values) {
+    const text = cleanToken(value)
+    if (text) return text
+  }
+  return null
+}
+
 function finiteNumber(value: unknown): number | null {
   if (value == null || value === '') return null
   const n = Number(value)
@@ -318,6 +331,7 @@ async function ensureStrategyRegistryGovernanceColumns(db: D1Database): Promise<
     `ALTER TABLE strategy_spec_registry ADD COLUMN variant_id TEXT NOT NULL DEFAULT ''`,
     `ALTER TABLE strategy_spec_registry ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'strategy'`,
     `ALTER TABLE strategy_spec_registry ADD COLUMN promotion_status TEXT NOT NULL DEFAULT 'production'`,
+    `ALTER TABLE strategy_spec_registry ADD COLUMN candidate_policy_json TEXT NOT NULL DEFAULT '{}'`,
     `CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_family
       ON strategy_spec_registry(family_id, status)`,
   ]
@@ -353,6 +367,7 @@ export function strategySpecToRegistryRow(
     supported_regimes_json: safeJson(normalized.supportedRegimes),
     thesis: normalized.thesis,
     thresholds_json: safeJson(normalized.thresholds),
+    candidate_policy_json: safeJson(normalized.candidatePolicy ?? {}),
     risk_notes_json: safeJson(normalized.riskNotes),
     source_refs_json: safeJson(options.sourceRefs ?? ['default_strategy_specs', normalized.createdBy]),
     created_by: options.createdBy ?? 'p5_strategy_governance',
@@ -361,34 +376,9 @@ export function strategySpecToRegistryRow(
   }
 }
 
-function candidatePolicyForRegistryRow(row: StrategySpecRegistryRow, defaultSpec?: StrategySpec): StrategySpecCandidatePolicy | undefined {
-  if (defaultSpec?.candidatePolicy) return defaultSpec.candidatePolicy
-  const sourceRefs = parseJson(row.source_refs_json, []) as string[]
-  const isFinLabAiSkillSpec = row.strategy_id.startsWith('finlab_ai_skill_')
-    || row.created_by === 'finlab_ai_skill_discovery_v1'
-    || sourceRefs.includes('finlab_ai_skill_discovery_v1')
-  if (row.status === 'research') {
-    return {
-      poolQuota: 8,
-      costBudget: 10,
-      evidenceRequirements: ['strategy_hypothesis', 'research_reward'],
-      maxMlShare: 0,
-    }
-  }
-  if (isFinLabAiSkillSpec) {
-    return {
-      poolQuota: 8,
-      costBudget: 10,
-      evidenceRequirements: [
-        'finlab_ai_skill',
-        'finlab_taxonomy',
-        'raw_factor_mining',
-        'raw_technical_indicator_mining',
-        'strategy_hypothesis',
-        'research_reward',
-      ],
-    }
-  }
+function candidatePolicyForRegistryRow(row: StrategySpecRegistryRow): StrategySpecCandidatePolicy | undefined {
+  const policy = parseJson<StrategySpecCandidatePolicy | null>(row.candidate_policy_json, null)
+  if (policy && typeof policy === 'object' && Object.keys(policy).length > 0) return policy
   return undefined
 }
 
@@ -399,17 +389,24 @@ function hasLegacyScoreThresholds(thresholds: StrategySpec['thresholds']): boole
     || thresholds.minMomentumScore != null
 }
 
-function shouldPreferDefaultSpecOverRegistry(row: StrategySpecRegistryRow, defaultSpec: StrategySpec | undefined): boolean {
-  if (!defaultSpec) return false
-  const registryThresholds = parseJson(row.thresholds_json, {}) as StrategySpec['thresholds']
-  if (!hasLegacyScoreThresholds(registryThresholds)) return false
-  if (hasLegacyScoreThresholds(defaultSpec.thresholds)) return false
-  return defaultSpec.status === 'active'
+function registryRowSourceRefs(row: StrategySpecRegistryRow): string[] {
+  return parseJson(row.source_refs_json, []) as string[]
+}
+
+function isGeneratedDiscoveryRegistryRow(row: StrategySpecRegistryRow): boolean {
+  const sourceRefs = registryRowSourceRefs(row)
+  return row.strategy_id.startsWith('finlab_ai_skill_')
+    || row.created_by === 'finlab_ai_skill_discovery_v1'
+    || sourceRefs.includes('finlab_ai_skill_discovery_v1')
+    || sourceRefs.some((ref) => String(ref).includes('finlab_ai_skill'))
+}
+
+function hasRuntimeCandidatePolicy(row: StrategySpecRegistryRow): boolean {
+  const policy = parseJson<Record<string, unknown>>(row.candidate_policy_json, {})
+  return Boolean(policy && typeof policy === 'object' && Object.keys(policy).length > 0)
 }
 
 export function registryRowToStrategySpec(row: StrategySpecRegistryRow): StrategySpec {
-  const defaultSpec = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === row.strategy_id)
-  if (shouldPreferDefaultSpecOverRegistry(row, defaultSpec)) return { ...defaultSpec!, thresholds: { ...defaultSpec!.thresholds } }
   return normalizeStrategySpecGovernance({
     id: row.strategy_id,
     version: row.version,
@@ -417,14 +414,14 @@ export function registryRowToStrategySpec(row: StrategySpecRegistryRow): Strateg
     status: row.status,
     owner: 'strategy',
     alphaBucket: row.alpha_bucket as StrategySpec['alphaBucket'],
-    familyId: row.family_id ?? defaultSpec?.familyId,
-    variantId: row.variant_id || defaultSpec?.variantId || row.strategy_id,
-    ownerType: row.owner_type ?? defaultSpec?.ownerType,
-    promotionStatus: row.promotion_status ?? defaultSpec?.promotionStatus,
+    familyId: row.family_id,
+    variantId: row.variant_id || row.strategy_id,
+    ownerType: row.owner_type,
+    promotionStatus: row.promotion_status,
     supportedRegimes: parseJson(row.supported_regimes_json, []) as StrategySpec['supportedRegimes'],
     thesis: row.thesis,
     thresholds: parseJson(row.thresholds_json, {}),
-    candidatePolicy: candidatePolicyForRegistryRow(row, defaultSpec),
+    candidatePolicy: candidatePolicyForRegistryRow(row),
     riskNotes: parseJson(row.risk_notes_json, []),
     createdBy: 'p5_strategy_governance',
   })
@@ -450,10 +447,10 @@ export async function seedDefaultStrategySpecRegistry(
       INSERT INTO strategy_spec_registry (
         strategy_id, version, name, status, owner, alpha_bucket,
         family_id, variant_id, owner_type, promotion_status,
-        supported_regimes_json, thesis, thresholds_json, risk_notes_json,
+        supported_regimes_json, thesis, thresholds_json, candidate_policy_json, risk_notes_json,
         source_refs_json, created_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(strategy_id, version) DO UPDATE SET
         name=excluded.name,
         status=excluded.status,
@@ -465,6 +462,7 @@ export async function seedDefaultStrategySpecRegistry(
         supported_regimes_json=excluded.supported_regimes_json,
         thesis=excluded.thesis,
         thresholds_json=excluded.thresholds_json,
+        candidate_policy_json=excluded.candidate_policy_json,
         risk_notes_json=excluded.risk_notes_json,
         source_refs_json=excluded.source_refs_json,
         updated_at=excluded.updated_at
@@ -482,6 +480,7 @@ export async function seedDefaultStrategySpecRegistry(
       row.supported_regimes_json,
       row.thesis,
       row.thresholds_json,
+      row.candidate_policy_json ?? '{}',
       row.risk_notes_json,
       row.source_refs_json,
       row.created_by,
@@ -494,34 +493,36 @@ export async function seedDefaultStrategySpecRegistry(
     await db.prepare(`
       UPDATE strategy_spec_registry
          SET status='retired',
+             owner_type='retired',
+             promotion_status='retired',
              updated_at=?
        WHERE strategy_id=?
          AND status != 'retired'
     `).bind(nowIso, legacyId).run()
   }
-  const demotedStaleActive = await demoteStaleActiveDiscoveryStrategySpecs(db, nowIso)
+  const demotedStaleActive = await retireGeneratedDiscoveryStrategySpecs(db, nowIso)
   return { seeded, skipped_invalid: skippedInvalid, demoted_stale_active: demotedStaleActive }
 }
 
-export async function demoteStaleActiveDiscoveryStrategySpecs(
+export async function retireGeneratedDiscoveryStrategySpecs(
   db: D1Database,
   nowIso = new Date().toISOString(),
 ): Promise<number> {
   const approvedActiveIds = DEFAULT_STRATEGY_SPECS
     .filter((spec) => spec.status === 'active')
     .map((spec) => spec.id)
-  if (!approvedActiveIds.length) return 0
-
-  const placeholders = approvedActiveIds.map(() => '?').join(', ')
+  const placeholders = approvedActiveIds.length ? approvedActiveIds.map(() => '?').join(', ') : "''"
   const result = await db.prepare(`
     UPDATE strategy_spec_registry
-       SET status='research',
+       SET status='retired',
+           owner_type='retired',
+           promotion_status='retired',
            updated_at=?
-     WHERE status='active'
-       AND strategy_id LIKE 'finlab_ai_skill_%'
+     WHERE status != 'retired'
        AND strategy_id NOT IN (${placeholders})
        AND (
-         created_by='finlab_ai_skill_discovery_v1'
+         strategy_id LIKE 'finlab_ai_skill_%'
+         OR created_by='finlab_ai_skill_discovery_v1'
          OR source_refs_json LIKE '%finlab_ai_skill_discovery_v1%'
          OR source_refs_json LIKE '%finlab_ai_skill%'
        )
@@ -529,40 +530,62 @@ export async function demoteStaleActiveDiscoveryStrategySpecs(
   return Number((result as { meta?: { changes?: number } })?.meta?.changes ?? 0)
 }
 
+export const demoteStaleActiveDiscoveryStrategySpecs = retireGeneratedDiscoveryStrategySpecs
+
 export async function listStrategySpecsForLearning(
   db: D1Database,
-): Promise<{ specs: StrategySpec[]; source: 'registry' | 'default_fallback' }> {
+): Promise<{ specs: StrategySpec[]; source: 'registry'; registryRowCount: number; activeCount: number }> {
   assertOwnerCanOwn('strategy', 'strategy_spec')
-  try {
-    await ensureStrategyLearningTables(db)
-    const { results } = await db.prepare(`
-      SELECT strategy_id, version, name, status, owner, alpha_bucket,
-             family_id, variant_id, owner_type, promotion_status,
-             supported_regimes_json, thesis, thresholds_json, risk_notes_json,
-             source_refs_json, created_by, created_at, updated_at
-        FROM strategy_spec_registry
-       WHERE status IN ('research','shadow','candidate','active','retired')
-       ORDER BY CASE status
-          WHEN 'active' THEN 0
-          WHEN 'candidate' THEN 1
-          WHEN 'shadow' THEN 2
-          WHEN 'research' THEN 3
-          ELSE 4
-        END, strategy_id ASC
-    `).all<StrategySpecRegistryRow>()
-    const specs = (results ?? []).map(registryRowToStrategySpec)
-    if (specs.length > 0) {
-      const registryKeys = new Set(specs.map((spec) => `${spec.id}:${spec.version}`))
-      const merged = [
-        ...specs,
-        ...DEFAULT_STRATEGY_SPECS.filter((spec) => !registryKeys.has(`${spec.id}:${spec.version}`)),
-      ].filter((spec) => spec.status !== 'retired')
-      return { specs: merged, source: 'registry' }
-    }
-  } catch {
-    return { specs: DEFAULT_STRATEGY_SPECS, source: 'default_fallback' }
+  await ensureStrategyLearningTables(db)
+  const { results } = await db.prepare(`
+    SELECT strategy_id, version, name, status, owner, alpha_bucket,
+           family_id, variant_id, owner_type, promotion_status,
+           supported_regimes_json, thesis, thresholds_json, candidate_policy_json, risk_notes_json,
+           source_refs_json, created_by, created_at, updated_at
+      FROM strategy_spec_registry
+     WHERE status IN ('research','shadow','candidate','active','retired')
+     ORDER BY CASE status
+        WHEN 'active' THEN 0
+        WHEN 'candidate' THEN 1
+        WHEN 'shadow' THEN 2
+        WHEN 'research' THEN 3
+        ELSE 4
+      END, strategy_id ASC
+  `).all<StrategySpecRegistryRow>()
+  const registryRows = results ?? []
+  const approvedRuntimeIds = new Set(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status !== 'retired').map((spec) => spec.id))
+  const staleGeneratedRows = registryRows.filter((row) =>
+    row.status !== 'retired'
+    && !approvedRuntimeIds.has(row.strategy_id)
+    && isGeneratedDiscoveryRegistryRow(row)
+  )
+  if (staleGeneratedRows.length > 0) {
+    throw new Error(`strategy_spec_registry_contains_stale_generated_rows_seed_required:${staleGeneratedRows.slice(0, 5).map((row) => row.strategy_id).join(',')}`)
   }
-  return { specs: DEFAULT_STRATEGY_SPECS, source: 'default_fallback' }
+  const staleRuntimeRows = registryRows.filter((row) =>
+    row.status !== 'retired'
+    && (
+      hasLegacyScoreThresholds(parseJson(row.thresholds_json, {}) as StrategySpec['thresholds'])
+      || !hasRuntimeCandidatePolicy(row)
+    )
+  )
+  if (staleRuntimeRows.length > 0) {
+    throw new Error(`strategy_spec_registry_contains_stale_runtime_rows_seed_required:${staleRuntimeRows.slice(0, 5).map((row) => row.strategy_id).join(',')}`)
+  }
+  const registrySpecs = registryRows.map(registryRowToStrategySpec)
+  if (registrySpecs.length === 0) {
+    throw new Error('strategy_spec_registry_empty_seed_required')
+  }
+  const specs = registrySpecs.filter((spec) => spec.status !== 'retired')
+  if (specs.length === 0) {
+    throw new Error('strategy_spec_registry_no_runtime_specs_seed_required')
+  }
+  return {
+    specs,
+    source: 'registry',
+    registryRowCount: registrySpecs.length,
+    activeCount: specs.filter((spec) => spec.status === 'active').length,
+  }
 }
 
 function matchScore(candidate: StrategyCandidateInput, matched: boolean): number | null {
@@ -654,9 +677,10 @@ export async function listStrategyLearningCandidates(
                PARTITION BY symbol
                ORDER BY
                  CASE stage
-                   WHEN 'l1_candidate_seed_after_overlay' THEN 1
+                   WHEN 'scoring' THEN 1
                    WHEN 'layer1_strategy_breadth_gate' THEN 2
-                   WHEN 'final_selection' THEN 3
+                   WHEN 'l1_candidate_seed_after_overlay' THEN 3
+                   WHEN 'final_selection' THEN 4
                    ELSE 4
                  END,
                  COALESCE(rank, 999999) ASC
@@ -664,8 +688,9 @@ export async function listStrategyLearningCandidates(
        FROM screener_funnel_items
        WHERE run_id = (SELECT run_id FROM latest_run)
          AND (
-           (stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected')
+           (stage = 'scoring' AND decision = 'pass')
            OR (stage = 'layer1_strategy_breadth_gate' AND decision = 'pass')
+           OR (stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected')
            OR (stage = 'final_selection' AND decision = 'selected')
          )
     )
@@ -704,11 +729,16 @@ export async function listStrategyLearningCandidates(
       ? evidence.raw_signals
       : row.raw_signals
     const currentPrice = row.current_price ?? finiteNumber((rawSignals as any)?.close)
+    const taxonomy = evidence && typeof evidence.taxonomy === 'object' && !Array.isArray(evidence.taxonomy)
+      ? evidence.taxonomy as Record<string, unknown>
+      : {}
     return {
       ...row,
+      sector: firstCleanToken(row.sector, taxonomy.industryTheme, taxonomy.industry),
+      industry: firstCleanToken(row.industry, taxonomy.industry, taxonomy.subindustry),
       current_price: currentPrice,
       raw_signals: rawSignals ?? null,
-      score_v2: row.score_v2 ?? score_components,
+      score_v2: row.score_v2 ?? score_components ?? evidence.score_components,
     }
   })
 }
@@ -755,7 +785,7 @@ export async function materializeStrategyDecisionLog(
   success: boolean
   mode: 'dry_run' | 'persisted'
   date: string
-  spec_source: 'registry' | 'default_fallback'
+  spec_source: 'registry'
   candidate_count: number
   decision_rows: number
   persisted_rows: number

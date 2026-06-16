@@ -24,6 +24,10 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     '/paper/pending-buys response must include the execution policy beside state and pendingBuys',
   )
   assert(
+    paperRoute.includes('loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: false })'),
+    '/paper/pending-buys must read exact-date pending snapshots instead of stale recent fallback',
+  )
+  assert(
     paperRoute.includes('watch_fallback_allowed: false') &&
       paperRoute.includes('ml_watch_rows_executable: false') &&
       paperRoute.includes('raw_recommendation_rows_executable: false') &&

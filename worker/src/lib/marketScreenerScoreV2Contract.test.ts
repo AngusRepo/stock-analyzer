@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { scoreMultiFactor } from './marketScreener'
-import type { FMStockPrice } from './screenerMarketData'
+import type { CanonicalScreenerPrice } from './screenerMarketData'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const prices: FMStockPrice[] = Array.from({ length: 30 }, (_, index) => {
+const prices: CanonicalScreenerPrice[] = Array.from({ length: 30 }, (_, index) => {
   const close = 100 + index
   return {
     date: `2026-04-${String(index + 1).padStart(2, '0')}`,

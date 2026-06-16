@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 import sys
 import types
@@ -16,8 +17,7 @@ sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
 from routers import pipeline
 
 
-@pytest.mark.asyncio
-async def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
+def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
     payloads = []
 
     async def fake_callback_worker(payload, client=None):
@@ -25,13 +25,15 @@ async def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
 
     monkeypatch.setattr(pipeline, "_callback_worker", fake_callback_worker)
 
-    await pipeline._emit_subtask_callbacks(
-        "pipeline-v2-test",
-        {"metrics": {"predictions_written": 10, "prediction_symbols": 2, "prediction_output_models": 5, "recommendations_updated": 2}},
-        "success",
-        None,
-        1234,
-        run_date="2026-05-04",
+    asyncio.run(
+        pipeline._emit_subtask_callbacks(
+            "pipeline-v2-test",
+            {"metrics": {"predictions_written": 10, "prediction_symbols": 2, "prediction_output_models": 5, "recommendations_updated": 2}},
+            "success",
+            None,
+            1234,
+            run_date="2026-05-04",
+        )
     )
 
     assert {payload["task"] for payload in payloads} == {"ml-predict", "recommendation"}
@@ -52,3 +54,29 @@ def test_pipeline_terminal_callback_has_longer_timeout():
 
     assert 'timeout_s = 60.0 if payload.get("task") == "pipeline" else 15.0' in source
     assert "httpx.AsyncClient(timeout=timeout_s)" in source
+    assert "CallbackWorkerError" in source
+    assert "cannot close scheduler callback" in source
+
+
+def test_pipeline_callback_requires_worker_auth(monkeypatch):
+    monkeypatch.setattr(pipeline, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(pipeline, "WORKER_AUTH", "")
+
+    with pytest.raises(pipeline.CallbackWorkerError, match="STOCKVISION_AUTH_TOKEN missing"):
+        asyncio.run(pipeline._callback_worker({"task": "pipeline", "status": "success"}))
+
+
+def test_pipeline_callback_http_failure_raises(monkeypatch):
+    class FakeResponse:
+        status_code = 500
+        text = "worker failed"
+
+    class FakeClient:
+        async def post(self, url, headers=None, json=None):
+            return FakeResponse()
+
+    monkeypatch.setattr(pipeline, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(pipeline, "WORKER_AUTH", "service-token")
+
+    with pytest.raises(pipeline.CallbackWorkerError, match="HTTP 500"):
+        asyncio.run(pipeline._callback_worker({"task": "pipeline", "status": "success"}, client=FakeClient()))

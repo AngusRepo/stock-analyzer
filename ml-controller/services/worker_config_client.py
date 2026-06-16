@@ -57,10 +57,12 @@ async def worker_fetch(
     return data if isinstance(data, dict) else {}
 
 
-def load_active_trading_config(timeout: float = 10.0) -> dict[str, Any]:
-    """Best-effort active trading config loader for offline-tolerant jobs."""
+def load_active_trading_config(timeout: float = 10.0, *, allow_offline: bool = False) -> dict[str, Any]:
+    """Load Worker-merged trading config from the production source of truth."""
     if not os.environ.get(WORKER_AUTH_TOKEN_ENV):
-        return {}
+        if allow_offline:
+            return {}
+        raise RuntimeError(f"{WORKER_AUTH_TOKEN_ENV} not set")
     try:
         import httpx
 
@@ -70,10 +72,16 @@ def load_active_trading_config(timeout: float = 10.0) -> dict[str, Any]:
             timeout=timeout,
         )
         if response.status_code != 200:
-            logger.warning("[worker_config_client] config fetch failed: HTTP %s", response.status_code)
-            return {}
+            raise WorkerConfigClientError(
+                response.status_code,
+                f"Worker config fetch failed: HTTP {response.status_code}: {response.text[:200]}",
+            )
         data = response.json()
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            raise WorkerConfigClientError(response.status_code, "Worker config response was not a JSON object")
+        return data
     except Exception as exc:  # pragma: no cover - defensive network fallback
-        logger.warning("[worker_config_client] config fetch failed: %s", exc)
-        return {}
+        if allow_offline:
+            logger.warning("[worker_config_client] config fetch failed; offline mode enabled: %s", exc)
+            return {}
+        raise

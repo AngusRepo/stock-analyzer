@@ -228,6 +228,11 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "max_cluster_weight",
             "covariance_method",
             "cluster_penalty_applied",
+            "single_name_weight",
+            "single_name_weight_limit",
+            "drawdown_state",
+            "live_backtest_divergence",
+            "turnover_pressure",
         ]),
     )
     _write(
@@ -316,6 +321,24 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "coerceModalStrategySimilarityGraphEvidence",
             "strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence",
             "strategy_similarity_evidence_status",
+            "buildL0RawSignalCoverageAudit",
+            "l0RawSignalCoverageAudit",
+            "fundamental_loader_error",
+            "rawCoverage",
+            "canonicalCoverageBaseline",
+            "listed_otc_finlab_broker_transactions:not_materialized",
+            "ORDER BY stock_id, available_date DESC, period DESC",
+            "telemetry.canonicalErrors.push",
+            "telemetry.revenueErrors.push",
+            "finlab.fundamental_features",
+            "finlab.monthly_revenue",
+            "finlab_style_cs_sector_rank_zscore_winsor_sector_neutral_v2",
+            "zScoreKey",
+            "winsorizedKey",
+            "sectorNeutralRankKey",
+            "finlabInverseVolatilityWeight",
+            "finlabIndustryCapWeight",
+            "finlabTurnoverControlWeight",
         ]),
     )
     _write(
@@ -325,6 +348,13 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "cleanText(record.status) !== 'computed'",
             "cleanText(preflight.status) !== 'pass'",
             "record.self_implemented_algorithm !== false",
+            "factor_return",
+            "factorReturn",
+            "centrality",
+            "factor_centrality",
+            "graph_centrality",
+            "shapley_contribution",
+            "rank_ic",
         ]),
     )
     _write(
@@ -354,7 +384,12 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/lib/multiStrategyPleRouter.ts",
-        "strategy_similarity_graph strategy_cluster_crowding_score strategy_cluster_uniqueness_score effective_strategy_count",
+        "strategy_similarity_graph strategy_cluster_crowding_score strategy_cluster_uniqueness_score effective_strategy_count "
+        "strategy_prior_weight family_prior_weight strategy_reliability strategy_crowding_score "
+        "strategy_diversification_value factor_return centrality "
+        "training_teacher_labels_offline_runtime_teacher_evidence_optional "
+        "previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency "
+        "missing_runtime_teacher_cache historical_verified_cache",
     )
     _write(
         tmp_path / "ml-controller/services/promotion_gate_contract.py",
@@ -372,6 +407,39 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write(
         tmp_path / "worker/src/routes/other.ts",
         "strategy_portfolio_intelligence_health 'l15_ml_slate_queue' 'layer2_coarse_ml_gate'",
+    )
+    _write(
+        tmp_path / "tools/finlab_v4_remote_backfill.py",
+        "\n".join([
+            "lane=\"broker_flow_diversity\"",
+            "kind=\"broker_aggregate\"",
+            "normalize_broker_transactions_daily",
+            "broker_transactions",
+            "finlab.broker_transactions",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-controller/services/finlab_canonical_materializer.py",
+        "\n".join([
+            "build_listed_broker_flow_rows",
+            '"raw" / lane / "broker_daily.parquet"',
+            "finlab.broker_transactions",
+            "canonical_broker_flow_daily",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/screenerMarketData.ts",
+        "\n".join([
+            "CanonicalScreenerPrice",
+            "CanonicalScreenerChip",
+            "@deprecated Use CanonicalScreenerPrice",
+            "@deprecated Use CanonicalScreenerChip",
+            "'broker_flow'",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/benchmark_results/evening_chain_rerun_20260615/report_20260615_v1_vs_rerun.md",
+        "# 2026-06-15 V1 vs rerun\n",
     )
     for name in (
         "adaptive_meta_policy_replay_20260605_20260611.json",

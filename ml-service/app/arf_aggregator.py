@@ -186,37 +186,30 @@ class ARFAggregator:
 # ── 持久化 ────────────────────────────────────────────────────────────────────
 
 def save_arf(arf: ARFAggregator, dir_path: str = ARF_STATE_DIR) -> str:
-    """存檔：本地 + GCS 持久化"""
+    """Persist ARF state to GCS and mirror locally for diagnostics."""
     os.makedirs(dir_path, exist_ok=True)
     path = os.path.join(dir_path, ARF_STATE_FILE)
     with open(path, "wb") as f:
         pickle.dump(arf, f, protocol=pickle.HIGHEST_PROTOCOL)
-    # #3 GCS 持久化
-    _save_arf_gcs(arf)
+    if not _save_arf_gcs(arf):
+        raise RuntimeError("ARF GCS save failed")
     return path
 
 
-def load_arf(dir_path: str = ARF_STATE_DIR) -> ARFAggregator:
-    """GCS 優先 → 本地 fallback → 全新 ARF"""
-    # #3 先嘗試 GCS
+def load_arf(dir_path: str = ARF_STATE_DIR, *, allow_fresh: bool = False) -> ARFAggregator:
+    """Load ARF state from GCS.
+
+    Online update paths must use the default artifact-required behavior so a
+    missing durable state cannot be replaced by a fresh model. Prediction paths
+    may pass allow_fresh=True to get a no-op, not-warmed-up ARF for transparent
+    correction without saving it.
+    """
     gcs_arf = _load_arf_gcs()
     if gcs_arf is not None:
         return gcs_arf
-    # 本地 fallback
-    path = os.path.join(dir_path, ARF_STATE_FILE)
-    if not os.path.exists(path):
+    if allow_fresh:
         return ARFAggregator()
-    try:
-        with open(path, "rb") as f:
-            arf = pickle.load(f)
-        if not isinstance(arf, ARFAggregator):
-            return ARFAggregator()
-        if not arf._available:
-            arf._try_init()
-        return arf
-    except Exception as e:
-        print(f"[ARF] load failed ({e}), starting fresh")
-        return ARFAggregator()
+    raise FileNotFoundError("ARF state missing in GCS: meta/arf_state.pkl")
 
 
 def _save_arf_gcs(arf: ARFAggregator) -> bool:

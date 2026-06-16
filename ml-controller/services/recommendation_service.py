@@ -188,7 +188,12 @@ def _state_space_overlay_payload(data: dict) -> dict[str, Any] | None:
         ("markov_switching", "markov_switching"),
     ):
         value = data.get(source_key)
-        if isinstance(value, dict):
+        if (
+            isinstance(value, dict)
+            and not value.get("error")
+            and not value.get("degraded")
+            and not value.get("fallback_reason")
+        ):
             overlays[output_key] = value
     if not overlays:
         return None
@@ -301,14 +306,12 @@ def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | No
 
 def _is_use_ensemble_v2() -> bool:
     """Read trading:config.mlPool.useEnsembleV2 (default True). KV override."""
-    try:
-        from services.trading_config_loader import load_merged_trading_config
-        tcfg = load_merged_trading_config()
-        ml_pool_cfg = tcfg.get("mlPool", {}) or {}
-        v = ml_pool_cfg.get("useEnsembleV2")
-        return True if v is None else bool(v)
-    except Exception:
-        return True
+    from services.trading_config_loader import load_merged_trading_config
+
+    tcfg = load_merged_trading_config()
+    ml_pool_cfg = tcfg.get("mlPool", {}) or {}
+    v = ml_pool_cfg.get("useEnsembleV2")
+    return True if v is None else bool(v)
 
 
 def _sorted_payload_rows(payload: dict, key: str) -> list[dict]:
@@ -1624,10 +1627,7 @@ def apply_core_ml_gate(
             rank = 999_999
         selected_ranks[str(symbol)] = rank
     if not selected_ranks:
-        if fallback_size is None:
-            return recommendations
-        safe_size = max(1, min(80, int(fallback_size)))
-        return sorted(recommendations, key=lambda row: float(row.get("score") or 0.0), reverse=True)[:safe_size]
+        return []
 
     gated = [
         row for row in recommendations
@@ -1860,7 +1860,7 @@ def apply_core_family_rank(
             f"{len(insufficient)}/{len(recommendations)} rows lack production family breadth"
         )
     if not ranked_rows:
-        return sorted(recommendations, key=lambda row: float(row.get("score") or 0.0), reverse=True)[:safe_target]
+        return []
 
     ranked_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
     selected = [row for _, _, row in ranked_rows[:safe_target]]
@@ -1901,7 +1901,7 @@ def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
             value = 0.0
         if math.isfinite(value):
             return value, key
-    return max(0.0, (float(row.get("score") or 0.0) - 50.0) / 5000.0), "score_fallback"
+    return 0.0, "missing_expected_return_no_allocation_edge"
 
 
 def _row_daily_risk_estimate(symbol: str, risk_history: dict[str, list[float]], daily_vol_floor: float = 0.01) -> float:
@@ -2130,11 +2130,39 @@ def _apply_sparse_tangent_buy_selection(
         "cluster_edge_threshold_source": similarity_evidence.get("edge_threshold_source"),
     }
 
+    def _float_from_row(row: dict, keys: tuple[str, ...]) -> float | None:
+        for key in keys:
+            value = row.get(key)
+            if value is None and isinstance(row.get("score_components"), dict):
+                value = row["score_components"].get(key)
+            if value is None:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number):
+                return number
+        return None
+
+    def _drawdown_state(risk_estimate: float, live_backtest_divergence: float | None) -> str:
+        if live_backtest_divergence is not None and live_backtest_divergence >= 0.35:
+            return "live_backtest_divergence_elevated"
+        if risk_estimate >= 0.12:
+            return "drawdown_risk_elevated"
+        if risk_estimate > 0:
+            return "normal"
+        return "unknown"
+
     def _sparse_allocation_evidence(row: dict, *, selected: bool, weight: float | None = None) -> dict[str, Any]:
         symbol = str(row.get("symbol") or "").strip()
         evidence = candidate_evidence_by_symbol.get(symbol)
         rank = allocation_rank_by_symbol.get(symbol)
         expected_return = float((evidence or {}).get("expected_return") or 0.0)
+        risk_estimate = float((evidence or {}).get("risk_estimate") or 0.0)
+        single_name_weight = round(float(weight or 0.0), 8)
+        live_backtest_divergence = _float_from_row(row, ("live_backtest_divergence", "live_vs_backtest_divergence"))
+        turnover_pressure = _float_from_row(row, ("turnover_pressure", "turnover", "expected_turnover"))
         positive_expected_edge = expected_return > 0.0
         if selected:
             selection_reason = "selected_positive_edge_sparse_weight"
@@ -2153,8 +2181,13 @@ def _apply_sparse_tangent_buy_selection(
             "expected_return": round(expected_return, 10),
             "expected_return_source": (evidence or {}).get("expected_return_source"),
             "positive_expected_edge": positive_expected_edge,
-            "risk_estimate": round(float((evidence or {}).get("risk_estimate") or 0.0), 10),
+            "risk_estimate": round(risk_estimate, 10),
             "risk_estimate_source": (evidence or {}).get("risk_estimate_source"),
+            "single_name_weight": single_name_weight,
+            "single_name_weight_limit": max_weight,
+            "drawdown_state": _drawdown_state(risk_estimate, live_backtest_divergence),
+            "live_backtest_divergence": None if live_backtest_divergence is None else round(live_backtest_divergence, 6),
+            "turnover_pressure": None if turnover_pressure is None else round(turnover_pressure, 6),
             "selection_reason": selection_reason,
             "cluster_id": cluster_evidence.get("cluster_id"),
             "cluster_size": cluster_evidence.get("cluster_size"),
@@ -2167,7 +2200,7 @@ def _apply_sparse_tangent_buy_selection(
             "cluster_penalty_applied": cluster_penalty_applied,
             "sparse_diagnostics": {
                 **sparse_diagnostics_base,
-                "allocation_weight": round(float(weight or 0.0), 8),
+                "allocation_weight": single_name_weight,
             },
         }
 

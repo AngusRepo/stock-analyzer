@@ -4,23 +4,12 @@ export const STRATEGY_PORTFOLIO_METRICS_SOURCE_VERSION = 'strategy-portfolio-met
 
 export type StrategyPortfolioMetricOverrides = Record<string, Partial<StrategyPortfolioMetrics>>
 
-export interface StrategySimilarityGraphInput {
-  strategy_id: string
-  family_id?: string | null
-  symbols: string[]
-}
-
-export interface StrategySimilarityGraphOptions {
-  edgeThreshold?: number | null
-  thresholdQuantile?: number | null
-}
-
 export interface StrategySimilarityGraphEvidence {
   version: 'strategy-similarity-graph-v1'
   evidence_only: true
   status?: string
-  method: 'connected_components_jaccard_overlap' | 'networkx_connected_components_jaccard_overlap'
-  source?: 'modal_python' | 'worker_local_degraded'
+  method: 'connected_components_jaccard_overlap' | 'networkx_connected_components_jaccard_overlap' | 'not_computed'
+  source?: 'modal_python' | 'missing'
   schema_version?: string
   algorithm_owner?: string
   graph_algorithm?: string
@@ -29,6 +18,7 @@ export interface StrategySimilarityGraphEvidence {
   kmedoids_pam_preflight_status?: string
   global_k_hardcoded?: boolean
   production_selector?: boolean
+  blocked_reason?: string
   degraded_reason?: string
   strategy_count: number
   edge_count: number
@@ -229,7 +219,7 @@ export function coerceModalStrategySimilarityGraphEvidence(raw: unknown): Strate
   const strategyClusterSize = Object.keys(rawSize).length
     ? rawSize
     : clusterSizesFromComponents(record.components, strategyClusterId)
-  const source = cleanText(record.source) === 'modal_python' ? 'modal_python' : 'worker_local_degraded'
+  const source = 'modal_python'
   const method = cleanText(record.method) === 'networkx_connected_components_jaccard_overlap'
     ? 'networkx_connected_components_jaccard_overlap'
     : 'connected_components_jaccard_overlap'
@@ -395,120 +385,36 @@ function setDistance(a: Set<string>, b: Set<string>): number {
   return 1 - jaccard(a, b)
 }
 
-function adaptiveGraphThreshold(values: number[], options: StrategySimilarityGraphOptions = {}): {
-  threshold: number
-  source: StrategySimilarityGraphEvidence['edge_threshold_source']
-} {
-  const explicit = finiteNumber(options.edgeThreshold)
-  if (explicit != null) return { threshold: round4(clamp(explicit, 0, 1)), source: 'config_explicit' }
-  const clean = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b)
-  if (!clean.length) return { threshold: 1, source: 'adaptive_empty' }
-  const q = clamp(finiteNumber(options.thresholdQuantile) ?? 0.9, 0, 1)
-  const index = Math.min(clean.length - 1, Math.max(0, Math.ceil(q * clean.length) - 1))
-  return { threshold: round4(clamp(clean[index], 0.65, 0.95)), source: 'adaptive_quantile' }
-}
-
-function effectiveCountFromSizes(sizes: number[]): number {
-  const total = sizes.reduce((sum, value) => sum + value, 0)
-  if (total <= 0) return 0
-  const hhi = sizes.reduce((sum, value) => sum + (value / total) ** 2, 0)
-  return round4(1 / Math.max(1e-9, hhi))
-}
-
-export function buildStrategySimilarityGraphEvidence(
-  inputs: StrategySimilarityGraphInput[],
-  options: StrategySimilarityGraphOptions = {},
+export function buildMissingStrategySimilarityGraphEvidence(
+  strategyIds: string[],
+  reason = 'modal_python_strategy_similarity_evidence_missing',
 ): StrategySimilarityGraphEvidence {
-  const strategies = inputs
-    .map((input) => ({
-      strategy_id: cleanText(input.strategy_id),
-      symbols: new Set((input.symbols ?? []).map((symbol) => cleanText(symbol).toUpperCase()).filter(Boolean)),
-    }))
-    .filter((input) => input.strategy_id)
-  const strategyIds = strategies.map((input) => input.strategy_id)
-  const symbolSets = new Map(strategies.map((input) => [input.strategy_id, input.symbols]))
-  const overlaps: Array<{ left: string; right: string; overlap: number }> = []
-  for (let left = 0; left < strategyIds.length; left += 1) {
-    for (let right = left + 1; right < strategyIds.length; right += 1) {
-      overlaps.push({
-        left: strategyIds[left],
-        right: strategyIds[right],
-        overlap: jaccard(symbolSets.get(strategyIds[left]) ?? new Set(), symbolSets.get(strategyIds[right]) ?? new Set()),
-      })
-    }
-  }
-  const threshold = adaptiveGraphThreshold(overlaps.map((item) => item.overlap), options)
-  const adjacency = new Map<string, Set<string>>()
-  for (const strategyId of strategyIds) adjacency.set(strategyId, new Set())
-  for (const edge of overlaps) {
-    if (edge.overlap >= threshold.threshold) {
-      adjacency.get(edge.left)?.add(edge.right)
-      adjacency.get(edge.right)?.add(edge.left)
-    }
-  }
-
-  const visited = new Set<string>()
-  const components: string[][] = []
-  for (const strategyId of strategyIds) {
-    if (visited.has(strategyId)) continue
-    const queue = [strategyId]
-    const component: string[] = []
-    visited.add(strategyId)
-    while (queue.length) {
-      const current = queue.shift()!
-      component.push(current)
-      for (const next of adjacency.get(current) ?? []) {
-        if (visited.has(next)) continue
-        visited.add(next)
-        queue.push(next)
-      }
-    }
-    components.push(component.sort())
-  }
-  components.sort((a, b) => a[0].localeCompare(b[0]))
-
-  const strategy_cluster_id: Record<string, string> = {}
-  const strategy_cluster_size: Record<string, number> = {}
-  const strategy_cluster_crowding_score: Record<string, number> = {}
-  const strategy_cluster_uniqueness_score: Record<string, number> = {}
-  for (const [index, component] of components.entries()) {
-    const clusterId = `g${index.toString().padStart(3, '0')}`
-    const internalOverlaps = overlaps
-      .filter((edge) => component.includes(edge.left) && component.includes(edge.right))
-      .map((edge) => edge.overlap)
-    const avgOverlap = internalOverlaps.length
-      ? internalOverlaps.reduce((sum, value) => sum + value, 0) / internalOverlaps.length
-      : 0
-    const sizePressure = component.length / Math.max(1, strategyIds.length)
-    const crowding = round4(clamp(avgOverlap * 0.65 + sizePressure * 0.35, 0, 1))
-    const uniqueness = round4(clamp(1 - crowding, 0, 1))
-    for (const strategyId of component) {
-      strategy_cluster_id[strategyId] = clusterId
-      strategy_cluster_size[strategyId] = component.length
-      strategy_cluster_crowding_score[strategyId] = crowding
-      strategy_cluster_uniqueness_score[strategyId] = uniqueness
-    }
-  }
-
+  const ids = [...new Set(strategyIds.map(cleanText).filter(Boolean))]
   return {
     version: 'strategy-similarity-graph-v1',
     evidence_only: true,
-    method: 'connected_components_jaccard_overlap',
-    source: 'worker_local_degraded',
-    algorithm_owner: 'worker-local-degraded-helper',
-    degraded_reason: 'modal_python_strategy_similarity_evidence_not_injected',
+    status: 'missing',
+    method: 'not_computed',
+    source: 'missing',
+    algorithm_owner: 'not_computed',
+    graph_algorithm: 'not_computed',
+    medoid_algorithm: 'not_computed',
+    medoid_scope: 'not_computed',
+    kmedoids_pam_preflight_status: 'not_run',
     global_k_hardcoded: false,
     production_selector: false,
-    strategy_count: strategyIds.length,
-    edge_count: overlaps.filter((edge) => edge.overlap >= threshold.threshold).length,
-    component_count: components.length,
-    effective_strategy_count: effectiveCountFromSizes(components.map((component) => component.length)),
-    edge_threshold: threshold.threshold,
-    edge_threshold_source: threshold.source,
-    strategy_cluster_id,
-    strategy_cluster_size,
-    strategy_cluster_crowding_score,
-    strategy_cluster_uniqueness_score,
+    blocked_reason: reason,
+    strategy_count: ids.length,
+    edge_count: 0,
+    component_count: 0,
+    effective_strategy_count: 0,
+    edge_threshold: 1,
+    edge_threshold_source: 'adaptive_empty',
+    strategy_cluster_id: {},
+    strategy_cluster_size: {},
+    strategy_cluster_crowding_score: {},
+    strategy_cluster_uniqueness_score: {},
+    medoid_strategy_by_cluster: {},
   }
 }
 
@@ -532,6 +438,9 @@ export function rewardLedgerRowToStrategyPortfolioMetrics(
     ?? clamp((hitRate - 0.5) * 0.35 + avgReturn * 2.5, -0.3, 0.35)
   const rankIc = firstNumber(evidence, ['rank_ic', 'rankIC'])
     ?? clamp((hitRate - 0.5) * 0.42 + avgReturn * 2, -0.3, 0.35)
+  const factorReturn = firstNumber(evidence, ['factor_return', 'factorReturn', 'factor_alpha', 'factor_return_pct'])
+    ?? clamp(avgReturn, -0.2, 0.2)
+  const centrality = firstNumber(evidence, ['centrality', 'factor_centrality', 'graph_centrality'])
   const regimePerformance = firstNumber(evidence, ['regime_performance', 'regime_alpha'])
     ?? clamp((hitRate - 0.5) * 0.28 + avgReturn * 2.2, -0.25, 0.3)
   const baseReliability = clamp(
@@ -553,7 +462,9 @@ export function rewardLedgerRowToStrategyPortfolioMetrics(
     return_correlation: firstNumber(evidence, ['return_correlation', 'correlation']) ?? undefined,
     holding_overlap: firstNumber(evidence, ['holding_overlap', 'overlap']) ?? undefined,
     turnover: firstNumber(evidence, ['turnover', 'strategy_turnover']) ?? undefined,
+    factor_return: round4(factorReturn),
     factor_crowding: firstNumber(evidence, ['factor_crowding', 'crowding']) ?? undefined,
+    centrality: centrality == null ? undefined : round4(clamp(centrality, 0, 1)),
     ic: round4(ic),
     rank_ic: round4(rankIc),
     shapley_contribution: round4(firstNumber(evidence, ['shapley_contribution', 'shapley']) ?? clamp(rewardSum / Math.max(1, samples), -0.2, 0.4)),
@@ -641,11 +552,13 @@ export function buildStrategyPortfolioDecisionLogMetricOverrides(
     const bucketShare = symbols.size / Math.max(1, bucketSymbols.size)
     const sameBucketOverlap = sameBucketCount ? sameBucketOverlapSum / sameBucketCount : 0
     const factorCrowding = clamp(bucketShare * 0.45 + sameBucketOverlap * 0.55, 0, 1)
+    const centrality = clamp(maxOverlap * 0.6 + sameBucketOverlap * 0.4, 0, 1)
 
     out[strategyId] = {
       holding_overlap: round4(maxOverlap),
       turnover: round4(turnover),
       factor_crowding: round4(factorCrowding),
+      centrality: round4(centrality),
     }
   }
   return out

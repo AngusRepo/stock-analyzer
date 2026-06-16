@@ -1,0 +1,10 @@
+﻿{
+    "rows":  48,
+    "symbols":  48,
+    "buy_rows":  0,
+    "eligible_for_ml_rows":  48,
+    "pending_buy_eligible_rows":  24,
+    "sparse_selected_rows":  0,
+    "min_created_at":  "2026-06-15 14:27:00",
+    "max_created_at":  "2026-06-15 14:27:00"
+}

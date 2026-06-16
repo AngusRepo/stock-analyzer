@@ -6,6 +6,7 @@ def test_rank_to_signal_uses_symmetric_bearish_confidence():
         {"XGBoost": 0.12, "DLinear": 0.14, "LightGBM": 0.16, "ExtraTrees": 0.18},
         current_price=100.0,
         atr=2.0,
+        ic_weights={"XGBoost": 0.1, "DLinear": 0.1, "LightGBM": 0.1, "ExtraTrees": 0.1},
     )
 
     assert result.signal == "STRONG_SELL"

@@ -35,6 +35,7 @@ assert(modelChart.includes('HistogramSeries'), 'ModelPoolHealthChart should rend
 assert(modelChart.includes('createSeriesMarkers'), 'ModelPoolHealthChart should render lifecycle markers')
 assert(modelChart.includes('ML Pool Visual Workbench'), 'ModelPoolHealthChart empty state should still render a visible visual workbench')
 assert(modelChart.includes("model.status === 'active' || model.status === 'degraded'"), 'ModelPoolHealthChart should include degraded production slots as serving alpha models')
+assert(!modelChart.includes('degraded still vote'), 'ModelPoolHealthChart should not imply degraded slots vote at full strength')
 assert(modelChart.includes('Production alpha slots evidence surface'), 'ModelPoolHealthChart title should describe serving alpha slots, not active-only lineage')
 
 const strategyChart = fs.readFileSync(strategyChartPath, 'utf8')

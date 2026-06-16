@@ -411,6 +411,84 @@ def build_emerging_broker_rows(
     return _rows(chip, limit), _rows(broker_flow, limit)
 
 
+def build_listed_broker_flow_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    lane = "broker_flow_diversity"
+    broker = _read_parquet(artifact_root / "raw" / lane / "broker_daily.parquet")
+    if broker.is_empty():
+        return []
+    broker = _filter_dates(broker, start_date=start_date, end_date=end_date)
+    if broker.is_empty():
+        return []
+
+    close = _wide_field_to_long(
+        artifact_root / "raw" / "daily_price" / "close.parquet",
+        "close",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    net_source = "dominant_net_shares" if "dominant_net_shares" in broker.columns else "buy_sell_net"
+    gross_source = "gross_imbalance_shares" if "gross_imbalance_shares" in broker.columns else None
+    broker = broker.with_columns(
+        pl.col("stock_id").map_elements(normalize_symbol, return_dtype=pl.Utf8).alias("stock_id"),
+        _date_expr("date").alias("date"),
+        pl.col("buy_shares").cast(pl.Float64, strict=False),
+        pl.col("sell_shares").cast(pl.Float64, strict=False),
+        pl.col(net_source).cast(pl.Float64, strict=False).alias("net_shares"),
+        pl.col(net_source).cast(pl.Float64, strict=False).alias("dominant_net_shares"),
+        (
+            pl.col(gross_source).cast(pl.Float64, strict=False)
+            if gross_source
+            else (pl.col("buy_shares").cast(pl.Float64, strict=False).fill_null(0) + pl.col("sell_shares").cast(pl.Float64, strict=False).fill_null(0))
+        ).alias("gross_imbalance_shares"),
+        pl.col("broker_count").cast(pl.Int64, strict=False),
+    )
+    if not close.is_empty():
+        broker = broker.join(close.select(["stock_id", "date", "close"]), on=["stock_id", "date"], how="left")
+    else:
+        broker = broker.with_columns(pl.lit(None).cast(pl.Float64).alias("close"))
+    lineage = _lineage(
+        run_id,
+        lane,
+        ["buy_shares", "sell_shares", "net_shares", "dominant_net_shares", "gross_imbalance_shares", "broker_count"],
+        artifact_root,
+    )
+    broker = broker.with_columns(
+        (pl.col("net_shares") * pl.col("close")).alias("estimated_amount"),
+        (
+            pl.col("net_shares").abs()
+            / (pl.col("buy_shares").fill_null(0).abs() + pl.col("sell_shares").fill_null(0).abs()).clip(1, None)
+        ).alias("concentration"),
+        pl.lit("LISTED_OTC").alias("market_segment"),
+        pl.lit("finlab.broker_transactions").alias("source"),
+        pl.lit(lineage).alias("lineage_json"),
+        pl.lit(generated_at[:10]).alias("as_of_date"),
+    ).select([
+        "stock_id",
+        "date",
+        "market_segment",
+        "buy_shares",
+        "sell_shares",
+        "net_shares",
+        "dominant_net_shares",
+        "gross_imbalance_shares",
+        "estimated_amount",
+        "broker_count",
+        "concentration",
+        "source",
+        "lineage_json",
+        "as_of_date",
+    ])
+    return _rows(broker, limit)
+
+
 def build_revenue_rows(
     artifact_root: Path,
     *,
@@ -642,8 +720,16 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_institutional_amount_daily") else []
+    listed_broker_flow = build_listed_broker_flow_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_broker_flow_daily") else []
     if wants("canonical_chip_daily") or wants("canonical_broker_flow_daily"):
-        emerging_chip, broker_flow = build_emerging_broker_rows(
+        emerging_chip, emerging_broker_flow = build_emerging_broker_rows(
             root,
             run_id=rid,
             generated_at=timestamp,
@@ -654,9 +740,10 @@ def materialize_finlab_canonical_outputs(
         if not wants("canonical_chip_daily"):
             emerging_chip = []
         if not wants("canonical_broker_flow_daily"):
-            broker_flow = []
+            emerging_broker_flow = []
     else:
-        emerging_chip, broker_flow = [], []
+        emerging_chip, emerging_broker_flow = [], []
+    broker_flow = listed_broker_flow + emerging_broker_flow
     listed_revenue = build_revenue_rows(
         root,
         run_id=rid,

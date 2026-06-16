@@ -98,7 +98,15 @@ def test_cloud_run_payload_builder_resolves_regime_adaptive_params(monkeypatch):
                         "screener": {"ml_shortlist_delta": 8},
                     }
                 },
-                "provenance": {"source": "risk-assess"},
+                "provenance": {
+                    "owner": "ml-controller",
+                    "source": "risk-assess",
+                    "schema_version": "adaptive-params-v2",
+                    "update_frequency": "daily_after_verify",
+                    "computed_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "fallback": False,
+                },
             }
         if key == "ml:regime:meta":
             return {"label": "volatile"}
@@ -113,3 +121,19 @@ def test_cloud_run_payload_builder_resolves_regime_adaptive_params(monkeypatch):
     assert params["bandit_max_mult"] == 1.5
     assert params["screener"]["ml_shortlist_delta"] == 8
     assert params["provenance"]["regime"] == "volatile"
+
+
+def test_cloud_run_payload_builder_rejects_adaptive_params_without_provenance(monkeypatch):
+    def fake_get_json(key, default=None, timeout=30.0):
+        if key == "ml:adaptive_params":
+            return {"confidence_delta": 0.01}
+        return default
+
+    monkeypatch.setattr(payload_builder.kv_client, "get_json", fake_get_json)
+
+    try:
+        payload_builder.load_effective_adaptive_params()
+    except RuntimeError as exc:
+        assert "missing provenance" in str(exc)
+    else:
+        raise AssertionError("adaptive params without provenance must fail closed")

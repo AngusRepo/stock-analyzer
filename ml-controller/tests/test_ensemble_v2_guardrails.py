@@ -1,6 +1,40 @@
 from __future__ import annotations
 
+import pytest
+
 from services.ensemble_v2 import attach_ensemble_v2
+
+
+def _full_trading_config() -> dict:
+    return {
+        "ensemble_v2": {"buyThreshold": 0.70},
+        "alphaFramework": {"quality": {"minSamples": 30}},
+        "ranking": {"enabled": True, "topK": 3},
+        "signal": {"buySignalScore": 0.52},
+        "sltp": {"slMultBase": 2.0},
+        "L2_formula": {"confidence_risk_mult": 0.15},
+        "mlPool": {"degradedDampening": 0.1},
+    }
+
+
+def _full_model_pool(overrides: dict[str, dict] | None = None) -> dict:
+    models = {
+        name: {"status": "retired", "version": "v1"}
+        for name in (
+            "LightGBM",
+            "XGBoost",
+            "ExtraTrees",
+            "TabM",
+            "GNN",
+            "DLinear",
+            "PatchTST",
+            "iTransformer",
+            "TimesFM",
+        )
+    }
+    for name, patch in (overrides or {}).items():
+        models[name] = {**models[name], **patch}
+    return {"models": models}
 
 
 def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
@@ -88,6 +122,19 @@ def test_daily_pipeline_wrapper_no_longer_contains_legacy_plain_mean_body():
     assert "weight_total > 0" not in body
 
 
+def test_daily_pipeline_model_pool_lifecycle_does_not_default_missing_status_or_version_to_active():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "graphs" / "daily_pipeline_v2.py"
+    text = source.read_text(encoding="utf-8")
+
+    assert 'model_status.get(model_name, "active")' not in text
+    assert 'entry.get("status", "active")' not in text
+    assert 'active_versions.get("DLinear", "v1")' not in text
+    assert "active_defaults" not in text
+    assert "_require_loaded_serving_version" in text
+
+
 def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypatch):
     import sys
     import types
@@ -120,12 +167,10 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
 
     from graphs import daily_pipeline_v2
 
-    pool = {
-        "models": {
-            "XGBoost": {"status": "active", "rolling_ic": 0.037, "ic_4w_avg": 0.031, "weekly_ic": [0.02, 0.031]},
-            "ExtraTrees": {"status": "degraded", "weekly_ic": [0.012]},
-        }
-    }
+    pool = _full_model_pool({
+        "XGBoost": {"status": "active", "rolling_ic": 0.037, "ic_4w_avg": 0.031, "weekly_ic": [0.02, 0.031]},
+        "ExtraTrees": {"status": "degraded", "weekly_ic": [0.012]},
+    })
 
     class Blob:
         def __init__(self, payload):
@@ -154,14 +199,18 @@ def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypat
     monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
     monkeypatch.setattr(google_storage_mod, "Client", lambda: Client())
     monkeypatch.setattr(daily_pipeline_v2.kv_client, "get_json", lambda *_, **__: {})
+    from services import trading_config_loader
+    monkeypatch.setattr(trading_config_loader, "get_raw_trading_config", lambda: _full_trading_config())
+    monkeypatch.setattr(trading_config_loader, "load_active_trading_config", lambda timeout=10.0, allow_offline=False: _full_trading_config())
 
     status, ic_weights, degraded, cfg, used_pool, pool_snapshot = daily_pipeline_v2._load_pool_and_ic()
 
     assert used_pool is True
-    assert status == {"XGBoost": "active", "ExtraTrees": "degraded"}
+    assert status["XGBoost"] == "active"
+    assert status["ExtraTrees"] == "degraded"
     assert ic_weights["XGBoost"] == 0.037
     assert ic_weights["ExtraTrees"] == 0.012
-    assert degraded == 1.0
+    assert degraded == 0.1
     assert cfg["buyThreshold"] == 0.7
     assert pool_snapshot["models"]["XGBoost"]["rolling_ic"] == 0.037
 
@@ -198,28 +247,26 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
 
     from graphs import daily_pipeline_v2
 
-    pool = {
-        "models": {
-            "TabM": {
-                "status": "active",
-                "rolling_ic": 0.12,
-                "last_ic_status": "insufficient_samples",
-                "last_ic_root_cause": "verification_missing",
-            },
-            "DLinear": {
-                "status": "active",
-                "rolling_ic": -0.06,
-                "last_ic_status": "insufficient_samples",
-                "last_ic_root_cause": "verification_missing",
-            },
-            "PatchTST": {
-                "status": "active",
-                "rolling_ic": 0.07,
-                "last_ic_status": "computed",
-                "last_ic_root_cause": "ok",
-            },
-        }
-    }
+    pool = _full_model_pool({
+        "TabM": {
+            "status": "active",
+            "rolling_ic": 0.12,
+            "last_ic_status": "insufficient_samples",
+            "last_ic_root_cause": "verification_missing",
+        },
+        "DLinear": {
+            "status": "active",
+            "rolling_ic": -0.06,
+            "last_ic_status": "insufficient_samples",
+            "last_ic_root_cause": "verification_missing",
+        },
+        "PatchTST": {
+            "status": "active",
+            "rolling_ic": 0.07,
+            "last_ic_status": "computed",
+            "last_ic_root_cause": "ok",
+        },
+    })
 
     class Blob:
         def exists(self):
@@ -241,6 +288,9 @@ def test_daily_pipeline_ignores_stale_ic_when_latest_run_not_computed(monkeypatc
     monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
     monkeypatch.setattr(google_storage_mod, "Client", lambda: Client())
     monkeypatch.setattr(daily_pipeline_v2.kv_client, "get_json", lambda *_, **__: {})
+    from services import trading_config_loader
+    monkeypatch.setattr(trading_config_loader, "get_raw_trading_config", lambda: _full_trading_config())
+    monkeypatch.setattr(trading_config_loader, "load_active_trading_config", lambda timeout=10.0, allow_offline=False: _full_trading_config())
 
     status, ic_weights, *_ = daily_pipeline_v2._load_pool_and_ic()
 
@@ -311,6 +361,86 @@ def _import_daily_pipeline_with_stubs(monkeypatch):
     from graphs import daily_pipeline_v2
 
     return daily_pipeline_v2
+
+
+def test_daily_pipeline_model_pool_versions_require_gcs_bucket(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    monkeypatch.delenv("GCS_BUCKET_NAME", raising=False)
+
+    with pytest.raises(RuntimeError, match="GCS_BUCKET_NAME not set"):
+        daily_pipeline_v2._load_model_pool_versions()
+
+
+def test_daily_pipeline_pool_and_ic_requires_model_pool_blob(monkeypatch):
+    import sys
+    import types
+
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+
+    class Blob:
+        def exists(self):
+            return False
+
+    class Bucket:
+        def blob(self, _path):
+            return Blob()
+
+    class Client:
+        def bucket(self, _name):
+            return Bucket()
+
+    google_storage_mod.Client = lambda: Client()
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+
+    with pytest.raises(RuntimeError, match="universal/model_pool.json missing"):
+        daily_pipeline_v2._load_pool_and_ic()
+
+
+def test_daily_pipeline_pool_and_ic_requires_active9_model_entries(monkeypatch):
+    import json
+    import sys
+    import types
+
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps({"models": {"XGBoost": {"status": "active", "version": "v1"}}})
+
+    class Bucket:
+        def blob(self, _path):
+            return Blob()
+
+    class Client:
+        def bucket(self, _name):
+            return Bucket()
+
+    google_storage_mod.Client = lambda: Client()
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+
+    with pytest.raises(RuntimeError, match="missing active-9 model entries"):
+        daily_pipeline_v2._load_pool_and_ic()
 
 
 def test_daily_pipeline_uses_lane_ic_before_global_ic(monkeypatch):
@@ -444,7 +574,7 @@ def test_daily_pipeline_uncertain_negative_segment_gets_exploration_floor(monkey
     assert bundle["diagnostics"]["XGBoost"]["ic_shrinkage"]["sample_count"] < 40
 
 
-def test_daily_pipeline_uses_pooled_floor_when_segment_ic_is_negative_but_global_evidence_is_positive(monkeypatch):
+def test_daily_pipeline_blocks_confirmed_negative_segment_ic_without_pooled_fallback(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
     pool = {
         "models": {
@@ -459,6 +589,66 @@ def test_daily_pipeline_uses_pooled_floor_when_segment_ic_is_negative_but_global
     }
 
     bundle = daily_pipeline_v2._build_serving_ic_bundle(pool, "EMERGING")
+
+    assert bundle["weights"]["DLinear"] == 0.0
+    assert bundle["diagnostics"]["DLinear"]["ic_shrinkage"]["reason"] == "negative_ic_confirmed"
+    assert "pooled_floor_weight" not in bundle["diagnostics"]["DLinear"]["ic_shrinkage"]
+
+
+def test_daily_pipeline_empty_segment_weights_do_not_cold_start_or_global_fallback(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    pred = {
+        "stock_meta": {"market_segment": "EMERGING"},
+        "rank_scores": {"DLinear": 0.95},
+    }
+    pool = {
+        "models": {
+            "DLinear": {
+                "status": "active",
+                "rolling_ic": 0.034,
+                "last_ic_sample_count": 132,
+                "last_ic_by_segment": {"EMERGING": {"ic": -0.089, "n_samples": 74}},
+                "model_cpcv": {"decision": "PASS", "pbo": 0.10},
+            },
+        }
+    }
+    import inspect
+    source = inspect.getsource(daily_pipeline_v2)
+
+    assert 'if not serving_ic["weights"] and ic_universe' not in source
+    daily_pipeline_v2._attach_ensemble_v2(
+        pred,
+        {"DLinear": "active"},
+        daily_pipeline_v2._build_serving_ic_bundle(pool, "EMERGING"),
+        0.1,
+        {},
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["reason"] == "no_positive_lifecycle_weight"
+    assert ev2["weight_total"] == 0.0
+    assert ev2["signal"] == "HOLD"
+
+
+def test_daily_pipeline_uses_pooled_floor_only_when_explicitly_enabled(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    pool = {
+        "models": {
+            "DLinear": {
+                "status": "active",
+                "rolling_ic": 0.034,
+                "last_ic_sample_count": 132,
+                "last_ic_by_segment": {"EMERGING": {"ic": -0.089, "n_samples": 74}},
+                "model_cpcv": {"decision": "PASS", "pbo": 0.10},
+            },
+        }
+    }
+
+    bundle = daily_pipeline_v2._build_serving_ic_bundle(
+        pool,
+        "EMERGING",
+        {"icWeighting": {"pooledSegmentFallbackEnabled": True}},
+    )
 
     assert bundle["weights"]["DLinear"] > 0
     assert bundle["diagnostics"]["DLinear"]["ic_shrinkage"]["reason"] == "pooled_segment_floor"

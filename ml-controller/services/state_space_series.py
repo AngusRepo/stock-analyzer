@@ -169,9 +169,9 @@ def enrich_state_space_series_with_long_history(
     symbols = {str(row.get("symbol") or "").strip() for row in base if row.get("symbol")}
     try:
         long_map = load_long_history_sequence_map(symbols=symbols, prefix=prefix)
-    except Exception as exc:  # noqa: BLE001 - enrichment must not break serving.
+    except Exception as exc:  # noqa: BLE001 - caller still enforces sequence length.
         meta.update({
-            "status": "fallback_payload_only",
+            "status": "payload_prices_only",
             "error": f"{type(exc).__name__}: {exc}",
             "output_series": len(base),
         })
@@ -200,7 +200,7 @@ def enrich_state_space_series_with_long_history(
 
     meta.update({
         "status": "ok",
-        "source": "gcs_long_history_with_payload_fallback",
+        "source": "gcs_long_history_or_payload_prices",
         "prefix": (prefix or long_history_sequence_prefix()).strip().rstrip("/"),
         "output_series": len(enriched),
         "enriched_series": enriched_count,

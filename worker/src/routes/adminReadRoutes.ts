@@ -269,29 +269,24 @@ adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
   const limit = Math.max(1, Math.min(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 200))
   let candidates = body.candidates ?? []
 
+  let candidateSource = 'request_body'
+  const { listStrategySpecsForLearning, listStrategyLearningCandidates } = await import('../lib/strategyLearning')
+  const { dryRunStrategySpec, listStrategySpecs } = await import('../lib/strategyLab')
+  const { specs, source: specSource } = await listStrategySpecsForLearning(c.env.DB)
   if (!candidates.length) {
-    const { results } = await c.env.DB.prepare(`
-      SELECT symbol, name, sector, industry, score, chip_score, tech_score,
-             ml_score, score_components,
-             COALESCE(momentum_score, 0) AS momentum_score,
-             current_price
-      FROM daily_recommendations
-      WHERE date = ?
-      ORDER BY rank ASC, score DESC
-      LIMIT ?
-    `).bind(date, limit).all<Record<string, unknown>>()
-    candidates = results ?? []
+    candidates = await listStrategyLearningCandidates(c.env.DB, date, limit) as unknown as Array<Record<string, unknown>>
+    candidateSource = 'screener_funnel_scoring_pass'
   }
-
-  const { listStrategySpecs, dryRunStrategySpec } = await import('../lib/strategyLab')
-  const specs = listStrategySpecs()
+  const runtimeSpecs = listStrategySpecs(specs)
   return c.json({
     success: true,
     mode: 'dry_run',
     date,
-    source: body.candidates?.length ? 'request_body' : 'daily_recommendations',
+    source: candidateSource,
+    spec_source: specSource,
     candidate_count: candidates.length,
-    results: specs.map((spec) => dryRunStrategySpec(spec, candidates as any)),
+    strategy_count: runtimeSpecs.length,
+    results: runtimeSpecs.map((spec) => dryRunStrategySpec(spec, candidates as any)),
   })
 })
 

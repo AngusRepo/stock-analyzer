@@ -1,0 +1,1 @@
+{"status":"triggered","run_id":"pv2-1781515560-33cc067e","date":"2026-06-12","execution_id":"pipeline-v2-7k7qq","execution_name":"projects/gen-lang-client-0602998820/locations/asia-east1/jobs/pipeline-v2/executions/pipeline-v2-7k7qq","note":"Pipeline running as Cloud Run Job; scheduler:run:pipeline will be overwritten on completion via /api/admin/scheduler-callback."}

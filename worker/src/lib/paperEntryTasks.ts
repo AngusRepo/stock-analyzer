@@ -1724,8 +1724,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     const intent = await acquirePaperBuyIntent(env, today, pending.symbol)
     if (!intent.acquired) {
-      console.log(`[Intraday] ${pending.symbol}: duplicate buy intent, skip`)
-      recordExecutionEvent(pending.symbol, 'skipped', 'duplicate_buy_intent')
+      const intentReason = intent.reason ?? 'duplicate_buy_intent'
+      console.log(`[Intraday] ${pending.symbol}: buy intent unavailable, skip reason=${intentReason}`)
+      recordExecutionEvent(pending.symbol, 'skipped', intentReason)
       stateChanged = true
       continue
     }

@@ -1,6 +1,8 @@
 import {
   canonicalChipRowsToFmChips,
   chipIdentity,
+  type CanonicalScreenerChip,
+  type CanonicalScreenerPrice,
   mergeCanonicalFirstChips,
 } from './screenerMarketData'
 
@@ -31,12 +33,37 @@ const canonical = canonicalChipRowsToFmChips(
       concentration: 0.6,
       source: 'finlab.rotc_broker_transactions',
     },
+    {
+      stock_id: '9999',
+      date: '2026-05-15',
+      market_segment: 'EMERGING',
+      net_shares: 0,
+      estimated_amount: 0,
+      broker_count: 4,
+      concentration: 0.4,
+      source: 'finlab.rotc_broker_transactions',
+    },
   ],
 )
 
-assert(canonical.length === 4, 'canonical rows should convert institutional and ROTC broker flow into FMChip rows')
-assert(canonical.some(row => row.name === 'broker_proxy' && row.stock_id === '6682'), 'ROTC broker flow must become broker_proxy chip input')
-assert(canonical.find(row => row.name === 'broker_proxy')?.broker_count === 9, 'broker_count should be preserved for watch points')
+assert(canonical.length === 5, 'canonical rows should convert institutional and ROTC broker flow into canonical chip rows')
+const canonicalChip: CanonicalScreenerChip = canonical[0]
+const canonicalPrice: CanonicalScreenerPrice = {
+  date: '2026-05-15',
+  stock_id: '2330',
+  Trading_Volume: 1000,
+  Trading_money: 100000,
+  open: 100,
+  max: 101,
+  min: 99,
+  close: 100,
+  spread: 0,
+  Trading_turnover: 0,
+}
+assert(canonicalChip.stock_id === '2330' && canonicalPrice.stock_id === '2330', 'screener should expose canonical adapter types, with FM aliases kept only for backward compatibility')
+assert(canonical.some(row => row.name === 'broker_flow' && row.stock_id === '6682'), 'ROTC broker flow must become broker_flow chip input')
+assert(canonical.find(row => row.name === 'broker_flow' && row.stock_id === '6682')?.broker_count === 9, 'broker_count should be preserved for watch points')
+assert(canonical.find(row => row.name === 'broker_flow' && row.stock_id === '9999')?.concentration === 0.4, 'zero-net broker rows should preserve metadata evidence')
 
 const fallback = [
   { date: '2026-05-15', stock_id: '2330', name: 'foreign', buy: 1, sell: 0, source: 'legacy.chip_data' },

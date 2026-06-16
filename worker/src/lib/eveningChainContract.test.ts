@@ -94,6 +94,11 @@ assert(
   mlPipelineTrigger.includes('active execution') && mlPipelineTrigger.includes('return `LOCKED active execution'),
   'ml-controller 409 active execution must be treated as LOCKED/triggered, not a false evening-chain error',
 )
+assert(
+  mlPipelineTrigger.includes('market risk unavailable; pipeline blocked') &&
+    !mlPipelineTrigger.includes('Market risk failed (non-blocking)'),
+  'pipeline trigger must fail closed when market risk cannot be computed',
+)
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 assert(

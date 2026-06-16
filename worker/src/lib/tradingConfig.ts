@@ -1001,12 +1001,21 @@ export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> 
   // In-memory cache（同一個 Worker isolate 內有效）
   if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached
 
+  let raw: Partial<TradingConfig> | null
   try {
-    const raw = await kv.get(KV_KEY, 'json') as Partial<TradingConfig> | null
-    _cached = buildChampionTradingConfig(raw)
-  } catch {
-    _cached = buildChampionTradingConfig(null)
+    raw = await kv.get(KV_KEY, 'json') as Partial<TradingConfig> | null
+  } catch (error: any) {
+    throw new Error(`trading:config read failed: ${error?.message ?? error}`)
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('trading:config missing; runtime config defaults are disabled')
+  }
+  const merged = buildChampionTradingConfig(raw)
+  const errors = validateTradingConfig(merged)
+  if (errors.length > 0) {
+    throw new Error(`trading:config validation failed: ${errors.join('; ')}`)
+  }
+  _cached = merged
   _cachedAt = Date.now()
   return _cached
 }
@@ -1017,7 +1026,7 @@ export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> 
  *   a content-addressed snapshot is written to `trading:config:snapshot:<ISO>:<hash8>`
  *   and indexed at `trading:config:snapshot_index`. No-op writes (identical
  *   hash to previous config) skip snapshot to avoid noise. Snapshot failures
- *   are best-effort — main config write always succeeds (AWS CloudTrail pattern).
+ *   block the main config write so config changes remain auditable.
  */
 export async function setTradingConfig(
   kv: KVNamespace,
@@ -1041,8 +1050,7 @@ export async function setTradingConfig(
       })
     }
   } catch (e: any) {
-    // Best-effort：snapshot 失敗不影響 main write（業界 audit fail-open 標準）
-    console.warn(`[tradingConfig] snapshot failed (non-blocking): ${e?.message ?? e}`)
+    throw new Error(`trading:config snapshot failed; main config write blocked: ${e?.message ?? e}`)
   }
 
   // Main write — 永遠跑，與 snapshot 成敗無關

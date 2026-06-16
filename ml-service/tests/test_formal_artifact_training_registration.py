@@ -5,6 +5,8 @@ import inspect
 
 import numpy as np
 from app import gnn_training, itransformer_training, patchtst_universal, tabm_training
+from app.neuralforecast_sequence_runtime import train_neuralforecast_sequence_artifact
+from app.training_promotion_policy import resolve_training_promotion_intent
 
 
 class _FakeBlob:
@@ -253,3 +255,40 @@ def test_formal_artifact_trainers_return_model_cpcv_bundle_contract():
     assert '"model_cpcv": saved["metadata"]["model_cpcv"]' in sources["GNN"]
     assert '"model_cpcv": saved["metadata"]["model_cpcv"]' in sources["TabM"]
     assert '"model_cpcv": model_cpcv' in sources["PatchTST"]
+
+
+def test_training_promotion_intent_is_explicit():
+    assert resolve_training_promotion_intent({}, model_name="GNN") == (False, None)
+    assert resolve_training_promotion_intent({"promote_to_active": False}, model_name="GNN") == (False, None)
+    assert resolve_training_promotion_intent(
+        {"promote_to_active": True, "promotion_reason": "approved lifecycle test"},
+        model_name="GNN",
+    ) == (True, "approved lifecycle test")
+
+    for payload in (
+        {"promote_to_active": True},
+        {"promote_to_active": "true", "promotion_reason": "string true is ambiguous"},
+    ):
+        try:
+            resolve_training_promotion_intent(payload, model_name="GNN")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("promotion intent must reject missing reason or non-boolean values")
+
+
+def test_formal_artifact_trainers_do_not_default_to_active_promotion():
+    sources = {
+        "GNN": inspect.getsource(gnn_training.train_graphsage_universal),
+        "TabM": inspect.getsource(tabm_training.train_tabm_universal),
+        "PatchTST": inspect.getsource(patchtst_universal.train_patchtst),
+        "iTransformer": inspect.getsource(itransformer_training.train_itransformer_universal),
+        "NeuralForecastSequence": inspect.getsource(train_neuralforecast_sequence_artifact),
+    }
+
+    for source in sources.values():
+        assert 'payload.get("promote_to_active", True)' not in source
+        assert 'bool(payload.get("promote_to_active", False))' not in source
+        assert 'bool(kwargs.get("promote_to_active", False))' not in source
+        assert "approved by Wei" not in source
+        assert "resolve_training_promotion_intent" in source

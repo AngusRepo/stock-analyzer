@@ -45,6 +45,8 @@ export interface StrategyPortfolioIntelligenceHealth {
   strategy_similarity_sources: string[]
   strategy_similarity_algorithm_owners: string[]
   strategy_similarity_medoid_algorithms: string[]
+  strategy_similarity_blocked_count: number
+  /** @deprecated Historical rows before blocked_reason was introduced. */
   strategy_similarity_degraded_count: number
   metric_count_max: number | null
   metric_count_sum: number
@@ -335,7 +337,9 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
   const strategySimilarityEvidenceSource = String(evidence.strategy_similarity_evidence_source ?? '').trim() || null
   const strategySimilarityAlgorithmOwner = String(evidence.strategy_similarity_algorithm_owner ?? '').trim() || null
   const strategySimilarityMedoidAlgorithm = String(evidence.strategy_similarity_medoid_algorithm ?? '').trim() || null
-  const strategySimilarityDegradedReason = String(evidence.strategy_similarity_degraded_reason ?? '').trim() || null
+  const strategySimilarityBlockedReason = String(
+    evidence.strategy_similarity_blocked_reason ?? evidence.strategy_similarity_degraded_reason ?? '',
+  ).trim() || null
   const hasPortfolioEvidence = Boolean(
     evidence.finlab_portfolio_intelligence_version
     || evidence.strategy_portfolio_metric_source
@@ -373,7 +377,7 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
     strategy_similarity_evidence_source: strategySimilarityEvidenceSource,
     strategy_similarity_algorithm_owner: strategySimilarityAlgorithmOwner,
     strategy_similarity_medoid_algorithm: strategySimilarityMedoidAlgorithm,
-    strategy_similarity_degraded_reason: strategySimilarityDegradedReason,
+    strategy_similarity_blocked_reason: strategySimilarityBlockedReason,
     strategy_similarity_scope: 'strategy_supported_symbols_graph_evidence_not_stock_selector',
     strategy_count: matrixStrategyCount ?? metricCount ?? activeStrategyIds.length,
     strategy_metric_count: metricCount,
@@ -394,7 +398,9 @@ function buildLayer125FinLabPortfolioIntelligenceSummary(
       'return_correlation',
       'holding_overlap',
       'turnover',
+      'factor_return',
       'factor_crowding',
+      'centrality',
       'ic',
       'rank_ic',
       'shapley_contribution',
@@ -795,6 +801,7 @@ export function summarizeStrategyPortfolioIntelligenceHealth(
   const metricCounts: Array<number | null> = []
   const backtestMetricCounts: Array<number | null> = []
   const backtestResultRowCounts: Array<number | null> = []
+  let similarityBlockedCount = 0
   let similarityDegradedCount = 0
 
   for (const portfolio of portfolios) {
@@ -810,7 +817,8 @@ export function summarizeStrategyPortfolioIntelligenceHealth(
     if (similarityOwner) similarityOwners.add(similarityOwner)
     const similarityMedoid = String(portfolio.strategy_similarity_medoid_algorithm ?? '').trim()
     if (similarityMedoid) similarityMedoidAlgorithms.add(similarityMedoid)
-    if (String(portfolio.strategy_similarity_degraded_reason ?? '').trim()) similarityDegradedCount += 1
+    if (String(portfolio.strategy_similarity_blocked_reason ?? '').trim()) similarityBlockedCount += 1
+    else if (String(portfolio.strategy_similarity_degraded_reason ?? '').trim()) similarityDegradedCount += 1
     metricCounts.push(toNullableNumber(portfolio.portfolio_metric_count))
     backtestMetricCounts.push(toNullableNumber(portfolio.backtest_metric_count))
     backtestResultRowCounts.push(toNullableNumber(portfolio.backtest_result_row_count))
@@ -841,6 +849,7 @@ export function summarizeStrategyPortfolioIntelligenceHealth(
     strategy_similarity_sources: [...similaritySources].sort(),
     strategy_similarity_algorithm_owners: [...similarityOwners].sort(),
     strategy_similarity_medoid_algorithms: [...similarityMedoidAlgorithms].sort(),
+    strategy_similarity_blocked_count: similarityBlockedCount,
     strategy_similarity_degraded_count: similarityDegradedCount,
     metric_count_max: metricCountMax,
     metric_count_sum: Math.round(metricCounts.reduce((sum, value) => sum + (value ?? 0), 0)),

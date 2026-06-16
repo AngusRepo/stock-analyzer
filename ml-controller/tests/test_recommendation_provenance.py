@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
+from services import trading_config_loader  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation,
     build_reason,
@@ -19,6 +20,16 @@ from services.recommendation_service import (  # noqa: E402
     update_recommendations_in_d1,
     write_predictions_to_d1,
 )
+
+
+def test_ensemble_v2_toggle_does_not_hide_trading_config_failure(monkeypatch):
+    def fail_config():
+        raise trading_config_loader.TradingConfigUnavailable("worker config unavailable")
+
+    monkeypatch.setattr(trading_config_loader, "load_merged_trading_config", fail_config)
+
+    with pytest.raises(trading_config_loader.TradingConfigUnavailable):
+        recommendation_service._is_use_ensemble_v2()
 
 
 def _score_components(
@@ -684,11 +695,43 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
     assert all(allocation["selection_reason"] == "no_positive_expected_edge" for allocation in allocations)
     assert all(allocation["expected_return"] == 0.0 for allocation in allocations)
     assert all(allocation["positive_expected_edge"] is False for allocation in allocations)
+    assert all("single_name_weight" in allocation for allocation in allocations)
+    assert all("single_name_weight_limit" in allocation for allocation in allocations)
+    assert all("drawdown_state" in allocation for allocation in allocations)
+    assert all("live_backtest_divergence" in allocation for allocation in allocations)
+    assert all("turnover_pressure" in allocation for allocation in allocations)
     assert all(allocation["sparse_diagnostics"]["candidate_count"] == 2 for allocation in allocations)
     assert all(allocation["sparse_diagnostics"]["evaluated_candidate_count"] == 2 for allocation in allocations)
     assert all(allocation["sparse_diagnostics"]["positive_edge_count"] == 0 for allocation in allocations)
     assert all(allocation["sparse_diagnostics"]["selected_count"] == 0 for allocation in allocations)
     assert all(allocation["sparse_diagnostics"]["zero_selection_allowed"] is True for allocation in allocations)
+
+
+def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
+    rows = [{
+        "symbol": "2330",
+        "chip_score": 24.0,
+        "tech_score": 22.0,
+        "confidence": 0.82,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 96.0,
+        "score_components": _score_components(final_score=96.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "HOLD"
+    assert promoted[0].get("sparse_tangent_selected") is not True
+    assert allocation["expected_return"] == 0.0
+    assert allocation["expected_return_source"] == "missing_expected_return_no_allocation_edge"
+    assert allocation["positive_expected_edge"] is False
+    assert allocation["selection_reason"] == "no_positive_expected_edge"
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):

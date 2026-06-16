@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import sys
 import types
 
@@ -38,6 +39,12 @@ def test_update_arf_uses_return_pct_not_pnl_r_for_profitability(monkeypatch):
         def update(self, arm_idx, ctx, reward):
             bandit_rewards.append((f"arm:{arm_idx}", reward))
 
+        def total_observations(self):
+            return 1
+
+        def is_warmed_up(self):
+            return False
+
     monkeypatch.setattr(prediction_runtime, "load_arf", lambda *args, **kwargs: FakeARF())
     monkeypatch.setattr(prediction_runtime, "save_arf", lambda *args, **kwargs: None)
     monkeypatch.setattr(linucb_bandit, "load_bandit", lambda *args, **kwargs: FakeBandit())
@@ -48,6 +55,14 @@ def test_update_arf_uses_return_pct_not_pnl_r_for_profitability(monkeypatch):
         bandit_rewards.append((kwargs["model_name"], kwargs["reward"]))
 
     monkeypatch.setattr(linucb_bandit, "linucb_update", _capture_linucb_update)
+    import app.conformal as conformal
+
+    class FakeConformal:
+        def update(self, forecast_pct, actual_pct, anomaly_score=0.0):
+            pass
+
+    monkeypatch.setattr(conformal, "load_conformal", lambda *args, **kwargs: FakeConformal())
+    monkeypatch.setattr(conformal, "save_conformal", lambda *args, **kwargs: {"gcs_saved": True})
 
     from app.arf_aggregator import FEATURE_DIM
 
@@ -115,3 +130,23 @@ def test_update_arf_updates_conformal_residuals(monkeypatch):
 
     assert result["results"]["conformal"]["updated"] is True
     assert updates == [(0.015, 0.021)]
+
+
+def test_update_arf_propagates_required_state_errors(monkeypatch):
+    from app import prediction_runtime
+    from app.arf_aggregator import FEATURE_DIM
+
+    monkeypatch.setattr(
+        prediction_runtime,
+        "load_arf",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing arf state")),
+    )
+
+    req = prediction_runtime.ARFUpdateRequest(
+        arf_features=[0.1] * FEATURE_DIM,
+        actual_up=True,
+        actual_return_pct=0.021,
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing arf state"):
+        prediction_runtime.update_arf(req)

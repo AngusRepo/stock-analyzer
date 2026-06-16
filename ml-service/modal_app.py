@@ -667,25 +667,38 @@ def retrain_orchestrator(payload: dict) -> dict:
                 if not config_blob.exists():
                     raise RuntimeError(f"TimesFM config artifact missing in GCS: {gcs_path}")
 
-                def _load_json_blob(path: str) -> dict:
+                def _load_json_blob(path: str, *, required: bool) -> dict:
                     if not path:
+                        if required:
+                            raise RuntimeError("TimesFM required JSON artifact path is empty")
                         return {}
                     blob = bucket.blob(path)
                     if not blob.exists():
+                        if required:
+                            raise RuntimeError(f"TimesFM required JSON artifact missing in GCS: {path}")
                         return {}
                     try:
                         loaded = json.loads(blob.download_as_text())
-                    except Exception:
+                    except Exception as exc:
+                        if required:
+                            raise RuntimeError(f"TimesFM JSON artifact invalid: {path}: {exc}") from exc
                         return {}
-                    return loaded if isinstance(loaded, dict) else {}
+                    if not isinstance(loaded, dict):
+                        if required:
+                            raise RuntimeError(f"TimesFM JSON artifact is not an object: {path}")
+                        return {}
+                    return loaded
 
-                config = _load_json_blob(gcs_path)
-                metadata_path = (
+                config = _load_json_blob(gcs_path, required=True)
+                explicit_metadata_path = (
                     str(entry.get("metadata_path") or "").strip()
                     or str(config.get("metadata_path") or "").strip()
+                )
+                metadata_path = (
+                    explicit_metadata_path
                     or f"universal/timesfm/metadata_{version}.json"
                 )
-                metadata = _load_json_blob(metadata_path)
+                metadata = _load_json_blob(metadata_path, required=bool(explicit_metadata_path))
                 evidence = {}
                 for candidate in (
                     config.get("last_artifact_evidence"),
@@ -696,6 +709,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                     if isinstance(candidate, dict) and (candidate.get("oos_ic") is not None or candidate.get("after_oos_ic") is not None):
                         evidence = dict(candidate)
                         break
+                if not evidence:
+                    raise RuntimeError("TimesFM artifact evidence missing: expected oos_ic or after_oos_ic")
                 oos_ic = evidence.get("oos_ic") if evidence.get("oos_ic") is not None else evidence.get("after_oos_ic")
                 model_cpcv = (
                     evidence.get("model_cpcv")
@@ -1553,9 +1568,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         }
 
         # Step 0: per-window feature selection prevents future leakage in the tree path.
-        # Tree training waits for this pool.
-        # On FS error, fallback to running tree without pool (skip_feature_pool=True)
-        # so the run does not abort entirely.
+        # Tree training requires this pool for the same window.
         fs_ok = False
         try:
             fs_payload = {
@@ -1578,7 +1591,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     pool_summary = [None] * (fs_result.get("tree_active_count") or 0)
                 result["fs_tree_active_count"] = len(pool_summary)
             else:
-                print(f"[WF-Orchestrator] w{wid} FS failed: {fs_result.get('error')} -> tree will fallback to skip_feature_pool")
+                print(f"[WF-Orchestrator] w{wid} FS failed: {fs_result.get('error')} -> tree blocked")
         except Exception as e:
             print(f"[WF-Orchestrator] w{wid} FS crashed: {e}")
             result["fs_result"] = {"error": str(e)}
@@ -1609,15 +1622,18 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         need_tree = any(m in models for m in ["XGBoost", "ExtraTrees", "LightGBM"])
         tasks = []
         if need_tree:
-            tree_payload = dict(train_payload)
             if fs_ok:
+                tree_payload = dict(train_payload)
                 # explicit per-window pool path; train_wf_tree_window also defaults
                 # to walk_forward/w{id}/feature_pool.json so this is belt-and-suspenders
                 tree_payload["feature_pool_path"] = f"{gcs_prefix}/feature_pool.json"
+                tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
             else:
-                # If FS failed, do not use a stale global pool that can leak across windows.
-                tree_payload["skip_feature_pool"] = True
-            tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
+                result["tree_result"] = {
+                    "error": "feature_selection_required",
+                    "reason": "per-window feature selection failed or produced no valid pool",
+                    "fs_result": result.get("fs_result"),
+                }
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):

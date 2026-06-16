@@ -29,7 +29,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
-  const productionSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active' || spec.id === 'finlab_ai_skill_discovery_v1')
+  const productionSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
   for (const spec of productionSpecs) {
     for (const key of legacyScoreThresholdKeys) {
       assert(spec.thresholds[key] == null, `${spec.id} must not use legacy Score V2 threshold ${key} in L1 strategy specs`)
@@ -39,7 +39,9 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 
 {
   const finlabDiscovery = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_discovery_v1')
-  assert(finlabDiscovery?.status === 'research', 'FinLab AI Skill should be an active research discovery lane')
+  assert(finlabDiscovery?.status === 'retired', 'FinLab AI Skill discovery lane should be retired from daily runtime')
+  assert(finlabDiscovery?.ownerType === 'retired', 'retired discovery lane should not own runtime strategy decisions')
+  assert(finlabDiscovery?.promotionStatus === 'retired', 'retired discovery lane should not be promotable without an explicit new spec')
   assert(finlabDiscovery?.candidatePolicy?.maxMlShare === 0, 'FinLab AI Skill discovery lane must not enter ML queue directly')
   assert(
     finlabDiscovery?.candidatePolicy?.evidenceRequirements?.includes('strategy_hypothesis'),
@@ -63,16 +65,17 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
-  const activeBucketCounts = DEFAULT_STRATEGY_SPECS
-    .filter((spec) => spec.status === 'active')
-    .reduce<Record<string, number>>((counts, spec) => {
-      counts[spec.alphaBucket] = (counts[spec.alphaBucket] ?? 0) + 1
-      return counts
-    }, {})
+  const activeSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
+  assert(activeSpecs.length === 25, 'clean runtime manifest should expose exactly 25 active strategies before D1 seeding')
   assert(
-    Object.values(activeBucketCounts).every((count) => count <= 4),
-    'source-approved active strategy specs must stay curated by alpha bucket; discovery duplicates should remain research until promotion',
+    activeSpecs.filter((spec) => spec.id.startsWith('research_consolidated_')).length === 6,
+    'research strategies should be consolidated into 6 active non-duplicate families',
   )
+  assert(
+    activeSpecs.filter((spec) => spec.id.startsWith('alphabuilders_multifactor_')).length === 6,
+    'AlphaBuilders multifactor additions should contribute 6 active specs',
+  )
+  assert(!activeSpecs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'daily factor/strategy discovery lane must not remain active')
 }
 
 {
@@ -361,7 +364,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   const weak = annotateCandidateWithStrategySpecs({
     symbol: '9999',
     current_price: 20,
-  })
+  }, DEFAULT_STRATEGY_SPECS)
   assert(
     weak.strategy_matches?.every((match) => match.status !== 'active'),
     'weak seed should not match active production strategy specs',
@@ -390,7 +393,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
-  const specs = listStrategySpecs()
+  const specs = listStrategySpecs(DEFAULT_STRATEGY_SPECS)
   const result = dryRunStrategySpec(specs[0], [
     {
       symbol: '2330',

@@ -20,6 +20,7 @@ from .prep_lineage import (
 )
 from .model_validation import build_model_cpcv_evidence
 from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
+from .training_promotion_policy import resolve_training_promotion_intent
 
 MODEL_NAME = "TabM"
 DEFAULT_BATCH_COUNT = 5
@@ -282,7 +283,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         if payload.get("standardization_clip") is not None
         else DEFAULT_STANDARDIZATION_CLIP
     )
-    promote_to_active = bool(payload.get("promote_to_active", True))
+    promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset = load_tabular_dataset(payload)
@@ -431,17 +432,16 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "market_lanes": sorted({str(value) for value in sectors.tolist()})[:20],
     }, prep_lineage)
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
-    pool_update = (
-        _update_model_pool_active(
+    pool_update = None
+    if promote_to_active:
+        assert promotion_reason is not None
+        pool_update = _update_model_pool_active(
             bucket,
             version=version,
             artifact_path=saved["artifact_path"],
             metadata=saved["metadata"],
-            reason=str(payload.get("promotion_reason") or "formal TabM artifact retrain approved by Wei"),
+            reason=promotion_reason,
         )
-        if promote_to_active
-        else None
-    )
     return {
         "status": "ok",
         "model": MODEL_NAME,

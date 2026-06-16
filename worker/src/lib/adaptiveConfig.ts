@@ -354,15 +354,23 @@ export function resolveAdaptiveParamsForRegime(
 
 export async function getAdaptiveParams(kv: KVNamespace): Promise<AdaptiveParams> {
   if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached
+  let raw: AdaptiveParams | null
   try {
-    const raw = await kv.get(KV_KEY, 'json') as AdaptiveParams | null
-    _cached = normalizeAdaptiveParams(raw ?? DEFAULT_ADAPTIVE_PARAMS, {
-      source: raw ? raw.provenance?.source ?? 'unknown' : 'fallback',
-      fallback: !raw || !raw.provenance,
-    })
-  } catch {
-    _cached = normalizeAdaptiveParams(DEFAULT_ADAPTIVE_PARAMS, { source: 'fallback', fallback: true })
+    raw = await kv.get(KV_KEY, 'json') as AdaptiveParams | null
+  } catch (error: any) {
+    throw new Error(`adaptive params read failed: ${error?.message ?? error}`)
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`adaptive params missing: ${KV_KEY}`)
+  }
+  const normalized = normalizeAdaptiveParams(raw, {
+    source: raw.provenance?.source ?? 'unknown',
+    fallback: !raw.provenance,
+  })
+  if (normalized.provenance.fallback === true) {
+    throw new Error(`adaptive params fallback/legacy provenance: source=${normalized.provenance.source}`)
+  }
+  _cached = normalized
   _cachedAt = Date.now()
   return _cached
 }

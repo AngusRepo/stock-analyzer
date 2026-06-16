@@ -6,6 +6,8 @@ import types
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 graph_mod = types.ModuleType("langgraph.graph")
 graph_mod.END = "__END__"
 
@@ -85,6 +87,24 @@ def _feature_prediction(symbol: str = "2330") -> dict:
     }
 
 
+def _active9_status(overrides: dict[str, str] | None = None) -> dict[str, str]:
+    status = {
+        "LightGBM": "retired",
+        "XGBoost": "retired",
+        "ExtraTrees": "retired",
+        "TabM": "retired",
+        "GNN": "retired",
+        "DLinear": "retired",
+        "PatchTST": "retired",
+        "iTransformer": "retired",
+        "TimesFM": "retired",
+        "KalmanFilter": "retired",
+        "MarkovSwitching": "retired",
+    }
+    status.update(overrides or {})
+    return status
+
+
 def _patch_common(monkeypatch, *, state_space_result: dict | None = None, state_space_fn=None):
     async def fake_batch_predict(payloads):
         return [_feature_prediction(payload["symbol"]) for payload in payloads]
@@ -106,14 +126,7 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None, state_
         daily_pipeline_v2,
         "_load_model_pool_versions",
         lambda: (
-            {
-                "DLinear": "retired",
-                "PatchTST": "retired",
-                "iTransformer": "retired",
-                "TimesFM": "retired",
-                "KalmanFilter": "active",
-                "MarkovSwitching": "active",
-            },
+            _active9_status({"KalmanFilter": "active", "MarkovSwitching": "active"}),
             {"KalmanFilter": "v1", "MarkovSwitching": "v1"},
             {},
             True,
@@ -238,15 +251,7 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
         daily_pipeline_v2,
         "_load_model_pool_versions",
         lambda: (
-            {
-                "GNN": "active",
-                "DLinear": "retired",
-                "PatchTST": "retired",
-                "iTransformer": "retired",
-                "TimesFM": "retired",
-                "KalmanFilter": "retired",
-                "MarkovSwitching": "retired",
-            },
+            _active9_status({"GNN": "active"}),
             {"GNN": "v1"},
             {},
             True,
@@ -262,6 +267,7 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
 
 
 def test_timesfm_gate_requires_coverage_but_observes_non_positive_effective_ic(monkeypatch):
+    monkeypatch.setenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", "128")
     series = [{"symbol": "2330", "prices": list(range(260))}]
     pool = {"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04, "last_ic_sample_count": 50}}}
 
@@ -321,8 +327,20 @@ def test_timesfm_gate_requires_coverage_but_observes_non_positive_effective_ic(m
     ]
 
 
-def test_timesfm_gate_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypatch):
+def test_timesfm_gate_requires_artifact_sequence_contract_when_active(monkeypatch):
     monkeypatch.delenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", raising=False)
+
+    with pytest.raises(RuntimeError, match="TimesFM active model missing gcs_path/version"):
+        daily_pipeline_v2._timesfm_sync_gate(
+            model_status={"TimesFM": "active"},
+            pool={"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04}}},
+            ev2_cfg={},
+            sequence_series=[],
+        )
+
+
+def test_timesfm_gate_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypatch):
+    monkeypatch.setenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", "128")
     series = [{"symbol": "2330", "prices": list(range(128))}]
     pool = {
         "models": {
@@ -375,15 +393,7 @@ def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
         daily_pipeline_v2,
         "_load_model_pool_versions",
         lambda: (
-            {
-                "GNN": "retired",
-                "DLinear": "retired",
-                "PatchTST": "retired",
-                "iTransformer": "retired",
-                "TimesFM": "active",
-                "KalmanFilter": "retired",
-                "MarkovSwitching": "retired",
-            },
+            _active9_status({"TimesFM": "active"}),
             {"TimesFM": "v1"},
             {},
             True,
@@ -416,3 +426,45 @@ def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
     assert gate["allowed"] is True
     assert gate["coverage"]["usable"] == 1
     assert gate["coverage"]["excluded_count"] == 1
+
+
+def test_sequence_family_models_use_sequence_contract_subset(monkeypatch):
+    monkeypatch.setenv("PIPELINE_STATE_SPACE_OVERLAY_MODE", "disabled")
+    calls = []
+
+    async def fake_dlinear(series_list, *_args, **_kwargs):
+        calls.append([row["symbol"] for row in series_list])
+        return {
+            "results": [
+                {"symbol": row["symbol"], "forecast_pct": 0.02, "confidence": 0.63}
+                for row in series_list
+            ],
+        }
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(modal_client, "dlinear_batch_predict", fake_dlinear)
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "_load_model_pool_versions",
+        lambda: (
+            _active9_status({"DLinear": "active"}),
+            {"DLinear": "v1"},
+            {},
+            True,
+        ),
+    )
+
+    result = _run(daily_pipeline_v2.node_ml_predict({
+        "payloads": [
+            _payload("2330", price_count=1030),
+            _payload("2317", price_count=20),
+        ]
+    }))
+
+    assert calls == [["2330"]]
+    assert "dlinear" in result["predictions"]["2330"]
+    assert "dlinear" not in result["predictions"]["2317"]
+    sequence_meta = result["modal_wait_telemetry"]["sequence_dataset"]
+    assert sequence_meta["sequence_model_contract_points"] == 1024
+    assert sequence_meta["sequence_model_usable"] == 1
+    assert sequence_meta["sequence_model_excluded_count"] == 1

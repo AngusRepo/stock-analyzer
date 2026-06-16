@@ -59,6 +59,13 @@ class ARFUpdateRequest(BaseModel):
 FRICTION_COST_PCT = 0.00585
 
 
+def _model_prediction_block_reason(prediction: Any) -> str | None:
+    fallback_reason = getattr(prediction, "fallback_reason", None)
+    if bool(getattr(prediction, "degraded", False)) or fallback_reason:
+        return str(fallback_reason or "degraded_model_prediction")
+    return None
+
+
 def _actual_return_pct(req: ARFUpdateRequest) -> float:
     if req.actual_return_pct is not None:
         return float(req.actual_return_pct)
@@ -75,89 +82,80 @@ def update_arf(req: ARFUpdateRequest) -> dict:
     actual_return_pct = _actual_return_pct(req)
     net_profitable = actual_return_pct > FRICTION_COST_PCT
 
-    try:
-        arf = load_arf(ARF_STATE_DIR)
-        arf.update(features, net_profitable)
-        save_arf(arf, ARF_STATE_DIR)
-        results["arf"] = {
-            "updated": True,
-            "n_trained": arf.n_trained,
-            "is_warmed_up": arf.is_warmed_up(),
-        }
-    except Exception as e:
-        results["arf"] = {"updated": False, "error": str(e)}
+    arf = load_arf(ARF_STATE_DIR)
+    arf.update(features, net_profitable)
+    save_arf(arf, ARF_STATE_DIR)
+    results["arf"] = {
+        "updated": True,
+        "n_trained": arf.n_trained,
+        "is_warmed_up": arf.is_warmed_up(),
+    }
 
     if req.model_name:
-        try:
-            from .linucb_bandit import (
-                DONOTHING_ARM_IDX,
-                build_context,
-                linucb_update,
-                load_bandit,
-                save_bandit,
-            )
+        from .linucb_bandit import (
+            DONOTHING_ARM_IDX,
+            build_context,
+            linucb_update,
+            load_bandit,
+            save_bandit,
+        )
 
-            bandit = load_bandit("/tmp/linucb_bandit")
-            raw_reward = (
-                float(
-                    np.clip(
-                        actual_return_pct / max(abs(req.forecast_pct), 0.005),
-                        0.0,
-                        1.0,
-                    )
+        bandit = load_bandit("/tmp/linucb_bandit")
+        raw_reward = (
+            float(
+                np.clip(
+                    actual_return_pct / max(abs(req.forecast_pct), 0.005),
+                    0.0,
+                    1.0,
                 )
-                if net_profitable
-                else 0.0
             )
-            linucb_update(
-                hmm_regime=req.hmm_regime,
-                garch_vol=req.garch_vol,
-                current_price=req.current_price,
-                market_risk_score=req.market_risk_score,
-                model_name=req.model_name,
-                reward=raw_reward,
-                bandit=bandit,
-            )
+            if net_profitable
+            else 0.0
+        )
+        linucb_update(
+            hmm_regime=req.hmm_regime,
+            garch_vol=req.garch_vol,
+            current_price=req.current_price,
+            market_risk_score=req.market_risk_score,
+            model_name=req.model_name,
+            reward=raw_reward,
+            bandit=bandit,
+        )
 
-            donothing_reward = 1.0 if actual_return_pct < -FRICTION_COST_PCT else 0.0
-            ctx = build_context(
-                req.hmm_regime,
-                req.garch_vol,
-                req.current_price,
-                req.market_risk_score,
-            )
-            bandit.update(DONOTHING_ARM_IDX, ctx, donothing_reward)
-            save_bandit(bandit, "/tmp/linucb_bandit")
+        donothing_reward = 1.0 if actual_return_pct < -FRICTION_COST_PCT else 0.0
+        ctx = build_context(
+            req.hmm_regime,
+            req.garch_vol,
+            req.current_price,
+            req.market_risk_score,
+        )
+        bandit.update(DONOTHING_ARM_IDX, ctx, donothing_reward)
+        save_bandit(bandit, "/tmp/linucb_bandit")
 
-            results["linucb"] = {
-                "updated": True,
-                "model_name": req.model_name,
-                "donothing_reward": donothing_reward,
-                "total_observations": bandit.total_observations(),
-                "is_warmed_up": bandit.is_warmed_up(),
-            }
-        except Exception as e:
-            results["linucb"] = {"updated": False, "error": str(e)}
+        results["linucb"] = {
+            "updated": True,
+            "model_name": req.model_name,
+            "donothing_reward": donothing_reward,
+            "total_observations": bandit.total_observations(),
+            "is_warmed_up": bandit.is_warmed_up(),
+        }
 
-    try:
-        if req.forecast_pct:
-            from . import conformal as _conformal
+    if req.forecast_pct:
+        from . import conformal as _conformal
 
-            conformal = _conformal.load_conformal()
-            conformal.update(req.forecast_pct, actual_return_pct)
-            saved = _conformal.save_conformal(conformal)
-            results["conformal"] = {
-                "updated": True,
-                "n_residuals": len(getattr(conformal, "residuals", [])),
-                **saved,
-            }
-        else:
-            results["conformal"] = {
-                "updated": False,
-                "reason": "missing forecast_pct",
-            }
-    except Exception as e:
-        results["conformal"] = {"updated": False, "error": str(e)}
+        conformal = _conformal.load_conformal()
+        conformal.update(req.forecast_pct, actual_return_pct)
+        saved = _conformal.save_conformal(conformal)
+        results["conformal"] = {
+            "updated": True,
+            "n_residuals": len(getattr(conformal, "residuals", [])),
+            **saved,
+        }
+    else:
+        results["conformal"] = {
+            "updated": False,
+            "reason": "missing forecast_pct",
+        }
 
     results["ft_online"] = {
         "updated": False,
@@ -336,7 +334,7 @@ def predict_stock(req: PredictRequest) -> dict:
     except Exception as e:
         print(f"[LinUCB] failed: {e}")
 
-    arf = load_arf(ARF_STATE_DIR)
+    arf = load_arf(ARF_STATE_DIR, allow_fresh=True)
     predictions = []
 
     price_model_fns = [
@@ -351,7 +349,12 @@ def predict_stock(req: PredictRequest) -> dict:
         for future in as_completed(futures):
             name = futures[future]
             try:
-                predictions.append(future.result())
+                pred = future.result()
+                block_reason = _model_prediction_block_reason(pred)
+                if block_reason:
+                    print(f"[{name}] excluded from vote: {block_reason}")
+                    continue
+                predictions.append(pred)
             except Exception as e:
                 print(f"[{name}] failed: {e}")
 
@@ -367,7 +370,12 @@ def predict_stock(req: PredictRequest) -> dict:
             for future in as_completed(futures):
                 name = futures[future]
                 try:
-                    predictions.append(future.result())
+                    pred = future.result()
+                    block_reason = _model_prediction_block_reason(pred)
+                    if block_reason:
+                        print(f"[{name}] excluded from vote: {block_reason}")
+                        continue
+                    predictions.append(pred)
                 except Exception as e:
                     print(f"[{name}] failed: {e}")
 
@@ -402,7 +410,7 @@ def predict_stock(req: PredictRequest) -> dict:
     try:
         from .conformal import apply_conformal_calibration, load_conformal
 
-        conformal = load_conformal()
+        conformal = load_conformal(allow_fresh=True)
         cal_conf, conformal_info = apply_conformal_calibration(
             conformal,
             forecast_pct=result.forecast_pct,
@@ -494,6 +502,37 @@ _BATCH_RUNTIME_OPTION_KEYS = {
     _BATCH_CHALLENGER_RANK_SCORES_KEY,
     _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
 }
+_MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
+
+
+class ModelPoolContractError(RuntimeError):
+    """Raised when model_pool.json is incomplete for v2 serving."""
+
+
+def _require_model_pool_contract(pool: Any, *, stage: str = "predict_v2") -> tuple[dict, dict]:
+    if not isinstance(pool, dict) or not isinstance(pool.get("models"), dict):
+        raise ModelPoolContractError(f"{stage}: model_pool.json unavailable")
+    pool_models = pool.get("models") or {}
+    missing = [
+        name
+        for name in _MODEL_NAMES_V2
+        if not isinstance(pool_models.get(name), dict)
+    ]
+    if missing:
+        raise ModelPoolContractError(
+            f"{stage}: missing model_pool.models entries: {', '.join(missing)}"
+        )
+    invalid = [
+        f"{name}={pool_models[name].get('status')}"
+        for name in _MODEL_NAMES_V2
+        if str(pool_models[name].get("status") or "").strip() not in _MODEL_POOL_ALLOWED_STATUSES
+    ]
+    if invalid:
+        raise ModelPoolContractError(
+            f"{stage}: invalid model_pool lifecycle status: {', '.join(invalid)}"
+        )
+    formal_slots = pool.get("formal_layer3_slots") if isinstance(pool.get("formal_layer3_slots"), dict) else {}
+    return pool_models, formal_slots
 
 
 def _normalize_market_segment_for_serving(req: PredictRequest) -> str | None:
@@ -544,6 +583,23 @@ def _rank_signal_thresholds(trading_config: dict | None, adaptive_params: dict |
     }
 
 
+def _require_predict_v2_config_contract(req: PredictRequest) -> None:
+    trading_config = req.trading_config
+    if not isinstance(trading_config, dict) or not isinstance(trading_config.get("ensemble_v2"), dict):
+        raise ValueError("predict_v2_config_contract: missing trading_config.ensemble_v2")
+    if not isinstance(trading_config.get("mlPool"), dict):
+        raise ValueError("predict_v2_config_contract: missing trading_config.mlPool")
+
+    adaptive_params = req.adaptive_params
+    if not isinstance(adaptive_params, dict) or not adaptive_params:
+        raise ValueError("predict_v2_config_contract: missing adaptive_params")
+    provenance = adaptive_params.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ValueError("predict_v2_config_contract: missing adaptive_params.provenance")
+    if provenance.get("fallback") is True:
+        raise ValueError("predict_v2_config_contract: adaptive_params fallback provenance is not allowed")
+
+
 def predict_stock_v2(req: PredictRequest) -> dict:
     """2.0 predict: universal regression models + IC-weighted rank ensemble."""
     from .ensemble import load_ic_weights, merge_with_time_series, rank_to_signal
@@ -552,6 +608,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
 
     if len(req.prices) < 60:
         raise ValueError("至少需要 60 筆價格資料")
+    _require_predict_v2_config_contract(req)
 
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
     df = build_feature_matrix(
@@ -575,13 +632,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     x_latest = x[-1].reshape(1, -1)
     market_segment = _normalize_market_segment_for_serving(req)
     ic_weights = load_ic_weights(market_segment=market_segment)
-    try:
-        pool_snapshot = _load_pool()
-    except Exception:
-        pool_snapshot = None
-
-    pool_models = (pool_snapshot or {}).get("models", {}) if pool_snapshot else {}
-    formal_slots = (pool_snapshot or {}).get("formal_layer3_slots", {}) if pool_snapshot else {}
+    pool_snapshot = _load_pool()
+    pool_models, formal_slots = _require_model_pool_contract(pool_snapshot, stage="predict_v2")
 
     def _resolve_model_pool_status(name: str) -> str:
         if isinstance(pool_models.get(name), dict):
@@ -597,18 +649,18 @@ def predict_stock_v2(req: PredictRequest) -> dict:
             if direct_prediction and slot_status in {"production_adapter_active", "active"}:
                 return "retired"
             return "retired"
-        return "active"
+        raise ModelPoolContractError(f"predict_v2: missing model_pool status for {name}")
 
     model_pool_status = {
         name: _resolve_model_pool_status(name)
         for name in _MODEL_NAMES_V2
     }
-    degraded_dampening = 1.0
+    degraded_dampening = 0.1
     try:
         ml_pool_cfg = (req.trading_config or {}).get("mlPool") or {}
-        degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 1.0))
+        degraded_dampening = float(ml_pool_cfg.get("degradedDampening", 0.1))
     except (TypeError, ValueError):
-        degraded_dampening = 1.0
+        degraded_dampening = 0.1
 
     rank_scores: dict[str, float] = {}
     model_errors: list[str] = []
@@ -706,6 +758,10 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 model_name = futures[future]
                 try:
                     pred = future.result()
+                    block_reason = _model_prediction_block_reason(pred)
+                    if block_reason:
+                        model_errors.append(f"{model_name}: excluded fallback prediction: {block_reason}")
+                        continue
                     time_series_signals[model_name] = {
                         "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
                         "direction": getattr(pred, "direction", None),
@@ -731,6 +787,10 @@ def predict_stock_v2(req: PredictRequest) -> dict:
                 model_name = futures[future]
                 try:
                     pred = future.result()
+                    block_reason = _model_prediction_block_reason(pred)
+                    if block_reason:
+                        model_errors.append(f"{model_name}: excluded fallback overlay: {block_reason}")
+                        continue
                     state_space_overlays[model_name] = {
                         "forecast_pct": float(getattr(pred, "forecast_pct", 0.0)),
                         "direction": getattr(pred, "direction", None),

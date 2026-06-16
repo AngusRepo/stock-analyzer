@@ -19,6 +19,7 @@ from services.adaptive import resolve_adaptive_params_for_regime
 from services.active9_dataset_policy import daily_price_history_limit, daily_price_lookback_years
 from services.market_regime_state import resolve_market_regime_contract
 from services.market_segment_policy import policy_for_segment
+from services.model_lifecycle_policy import resolve_degraded_dampening
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,7 @@ def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, floa
             return {}
 
         pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
-        degraded_dampening = (
-            trading_cfg.get("mlPool", {}).get("degradedDampening")
-            if isinstance(trading_cfg.get("mlPool"), dict)
-            else None
-        )
-        degraded_dampening = float(degraded_dampening if degraded_dampening is not None else 1.0)
+        degraded_dampening = resolve_degraded_dampening(trading_cfg)
 
         weights: dict[str, float] = {}
         for name, entry in (pool.get("models") or {}).items():
@@ -84,7 +80,16 @@ def _load_current_regime_label() -> str | None:
 
 def load_effective_adaptive_params() -> dict:
     """Load KV adaptive params and resolve P8 regime overrides for ML runtime."""
-    raw = kv_client.get_json("ml:adaptive_params", default={}) or {}
+    raw = kv_client.get_json("ml:adaptive_params", default=None)
+    if not isinstance(raw, dict) or not raw:
+        raise RuntimeError("adaptive params missing: ml:adaptive_params")
+    provenance = raw.get("provenance")
+    if not isinstance(provenance, dict):
+        raise RuntimeError("adaptive params missing provenance: ml:adaptive_params")
+    if provenance.get("schema_version") != "adaptive-params-v2":
+        raise RuntimeError("adaptive params invalid schema_version: ml:adaptive_params")
+    if provenance.get("fallback") is True:
+        raise RuntimeError(f"adaptive params fallback provenance not allowed: source={provenance.get('source')}")
     regime = _load_current_regime_label()
     return resolve_adaptive_params_for_regime(raw, regime)
 

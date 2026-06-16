@@ -1,0 +1,306 @@
+[
+  {
+    "results": [
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "buzz_evidence",
+        "decision": "observe",
+        "count": 66
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "diversity_cooldown",
+        "decision": "observe",
+        "count": 37
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "final_selection",
+        "decision": "observe",
+        "count": 68
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "l1_candidate_seed_after_overlay",
+        "decision": "selected",
+        "count": 68
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "layer1_raw_signal_observe",
+        "decision": "observe",
+        "count": 40
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "observe",
+        "count": 112
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "pass",
+        "count": 68
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "layer2_coarse_ml_gate",
+        "decision": "observe",
+        "count": 136
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "drop",
+        "count": 12
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "pass",
+        "count": 39
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "rrg_overlay",
+        "decision": "observe",
+        "count": 180
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "scoring",
+        "decision": "pass",
+        "count": 506
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "strategy_pool_ml_queue",
+        "decision": "pass",
+        "count": 68
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "universe",
+        "decision": "drop",
+        "count": 1472
+      },
+      {
+        "run_id": "screener-2026-06-12-1781275176039",
+        "stage": "universe",
+        "decision": "pass",
+        "count": 506
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "buzz_evidence",
+        "decision": "observe",
+        "count": 46
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "diversity_cooldown",
+        "decision": "observe",
+        "count": 18
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "final_selection",
+        "decision": "observe",
+        "count": 21
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "l1_candidate_seed_after_overlay",
+        "decision": "selected",
+        "count": 21
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer1_raw_signal_observe",
+        "decision": "observe",
+        "count": 40
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "observe",
+        "count": 99
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "pass",
+        "count": 21
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer2_coarse_ml_gate",
+        "decision": "observe",
+        "count": 42
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "drop",
+        "count": 17
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "pass",
+        "count": 40
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "rrg_overlay",
+        "decision": "observe",
+        "count": 120
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "scoring",
+        "decision": "pass",
+        "count": 506
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "strategy_pool_ml_queue",
+        "decision": "pass",
+        "count": 71
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "strategy_pool_research_only",
+        "decision": "observe",
+        "count": 9
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "universe",
+        "decision": "drop",
+        "count": 1472
+      },
+      {
+        "run_id": "screener-2026-06-12-1781453187444",
+        "stage": "universe",
+        "decision": "pass",
+        "count": 506
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "buzz_evidence",
+        "decision": "observe",
+        "count": 46
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "diversity_cooldown",
+        "decision": "observe",
+        "count": 19
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "final_selection",
+        "decision": "observe",
+        "count": 19
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "l15_ml_slate_queue",
+        "decision": "observe",
+        "count": 38
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "l1_candidate_seed_after_overlay",
+        "decision": "selected",
+        "count": 19
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "layer1_raw_signal_observe",
+        "decision": "observe",
+        "count": 40
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "observe",
+        "count": 101
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "layer1_strategy_breadth_gate",
+        "decision": "pass",
+        "count": 19
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "drop",
+        "count": 3
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "layer3_formal_ml_gate",
+        "decision": "pass",
+        "count": 12
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "rrg_overlay",
+        "decision": "observe",
+        "count": 120
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "scoring",
+        "decision": "pass",
+        "count": 506
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "strategy_pool_ml_queue",
+        "decision": "observe",
+        "count": 64
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "strategy_pool_research_only",
+        "decision": "observe",
+        "count": 9
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "universe",
+        "decision": "drop",
+        "count": 1472
+      },
+      {
+        "run_id": "screener-2026-06-12-1781493330819",
+        "stage": "universe",
+        "decision": "pass",
+        "count": 506
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 25.6562
+      },
+      "duration": 25.6562,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2044510208,
+      "rows_read": 9429,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

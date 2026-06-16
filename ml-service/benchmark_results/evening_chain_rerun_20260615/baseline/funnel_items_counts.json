@@ -1,0 +1,282 @@
+﻿[
+    {
+        "stage":  "buzz_evidence",
+        "decision":  "observe",
+        "reason_code":  "weighted_keyword_evidence",
+        "rows":  42,
+        "symbols":  42,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  33.41428571428572
+    },
+    {
+        "stage":  "diversity_cooldown",
+        "decision":  "observe",
+        "reason_code":  "new_money_boost",
+        "rows":  13,
+        "symbols":  13,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  29.53846153846154
+    },
+    {
+        "stage":  "final_selection",
+        "decision":  "observe",
+        "reason_code":  "selected_for_l1_breadth_seed",
+        "rows":  24,
+        "symbols":  24,
+        "min_rank":  1,
+        "max_rank":  24,
+        "avg_score_after":  26.329166666666666
+    },
+    {
+        "stage":  "l15_ml_slate_queue",
+        "decision":  "observe",
+        "reason_code":  "ml_slate_queue_seed_from_l1_5_router",
+        "rows":  48,
+        "symbols":  24,
+        "min_rank":  1,
+        "max_rank":  24,
+        "avg_score_after":  27.110416666666666
+    },
+    {
+        "stage":  "l1_candidate_seed_after_overlay",
+        "decision":  "selected",
+        "reason_code":  "selected_for_l1_breadth_seed",
+        "rows":  24,
+        "symbols":  24,
+        "min_rank":  1,
+        "max_rank":  24,
+        "avg_score_after":  26.329166666666666
+    },
+    {
+        "stage":  "layer1_raw_signal_observe",
+        "decision":  "observe",
+        "reason_code":  "layer1_breadth_after_overlay_top_up_observe",
+        "rows":  40,
+        "symbols":  40,
+        "min_rank":  1,
+        "max_rank":  40,
+        "avg_score_after":  36.415
+    },
+    {
+        "stage":  "layer1_strategy_breadth_gate",
+        "decision":  "observe",
+        "reason_code":  "raw_signal_top_up_observe_after_strategy_quota",
+        "rows":  96,
+        "symbols":  96,
+        "min_rank":  25,
+        "max_rank":  120,
+        "avg_score_after":  31.837500000000002
+    },
+    {
+        "stage":  "layer1_strategy_breadth_gate",
+        "decision":  "pass",
+        "reason_code":  "l15_ple_router_selected_by_strategy_portfolio_evidence",
+        "rows":  24,
+        "symbols":  24,
+        "min_rank":  1,
+        "max_rank":  24,
+        "avg_score_after":  27.891666666666666
+    },
+    {
+        "stage":  "layer3_formal_ml_gate",
+        "decision":  "drop",
+        "reason_code":  "formal_family_rank_not_selected",
+        "rows":  3,
+        "symbols":  3,
+        "min_rank":  9,
+        "max_rank":  12,
+        "avg_score_after":  0.365565
+    },
+    {
+        "stage":  "layer3_formal_ml_gate",
+        "decision":  "pass",
+        "reason_code":  "formal_family_rank_pass",
+        "rows":  11,
+        "symbols":  11,
+        "min_rank":  1,
+        "max_rank":  11,
+        "avg_score_after":  0.4360539090909091
+    },
+    {
+        "stage":  "rrg_overlay",
+        "decision":  "observe",
+        "reason_code":  "rrg_overlay_improving_tailwind",
+        "rows":  12,
+        "symbols":  12,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  33.925000000000004
+    },
+    {
+        "stage":  "rrg_overlay",
+        "decision":  "observe",
+        "reason_code":  "rrg_overlay_lagging_risk",
+        "rows":  49,
+        "symbols":  49,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  25.55918367346939
+    },
+    {
+        "stage":  "rrg_overlay",
+        "decision":  "observe",
+        "reason_code":  "rrg_overlay_weakening_risk",
+        "rows":  59,
+        "symbols":  59,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  29.47966101694915
+    },
+    {
+        "stage":  "scoring",
+        "decision":  "pass",
+        "reason_code":  "base_score_computed",
+        "rows":  516,
+        "symbols":  516,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  18.102906976744187
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Scan raw OHLCV structure for liquidity sweep, BOS/CHOCH and displacement evidence before ML ranking.",
+        "rows":  12,
+        "symbols":  12,
+        "min_rank":  25,
+        "max_rank":  46,
+        "avg_score_after":  73.18866666666666
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Select price bases that show volume-confirmed breakout pressure before heavy ML ranking.",
+        "rows":  12,
+        "symbols":  12,
+        "min_rank":  1,
+        "max_rank":  14,
+        "avg_score_after":  79.88375
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Select stocks with constructive chip flow and tolerable technical structure for defensive accumulation.",
+        "rows":  4,
+        "symbols":  4,
+        "min_rank":  10,
+        "max_rank":  16,
+        "avg_score_after":  78.6055
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use FinLab raw institution flow and broker concentration evidence to widen L1 with accumulation candidates that old high-score ranking misses.",
+        "rows":  2,
+        "symbols":  2,
+        "min_rank":  17,
+        "max_rank":  18,
+        "avg_score_after":  77.9805
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use canonical sector_flow stock detail plus RRG-style relative strength to admit leading theme core stocks into L1.",
+        "rows":  16,
+        "symbols":  16,
+        "min_rank":  22,
+        "max_rank":  56,
+        "avg_score_after":  73.4204375
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use mined RSI reclaim and volume expansion structure to catch early trend repair before old aggregate scores become high.",
+        "rows":  16,
+        "symbols":  16,
+        "min_rank":  30,
+        "max_rank":  65,
+        "avg_score_after":  66.9694375
+    },
+    {
+        "stage":  "strategy_pool_ml_queue",
+        "decision":  "observe",
+        "reason_code":  "Use raw price, moving-average and volume-expansion evidence to add breakout candidates before L2 coarse ML.",
+        "rows":  3,
+        "symbols":  3,
+        "min_rank":  19,
+        "max_rank":  21,
+        "avg_score_after":  77.382
+    },
+    {
+        "stage":  "strategy_pool_research_only",
+        "decision":  "observe",
+        "reason_code":  "strategy_research_discovery_lane_only",
+        "rows":  9,
+        "symbols":  9,
+        "min_rank":  1,
+        "max_rank":  9,
+        "avg_score_after":  54.702555555555556
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "avg_volume_below_min",
+        "rows":  863,
+        "symbols":  863,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "price_out_of_range",
+        "rows":  242,
+        "symbols":  242,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "restricted_attention_or_punished",
+        "rows":  355,
+        "symbols":  355,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "turnover_below_min",
+        "rows":  1,
+        "symbols":  1,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "drop",
+        "reason_code":  "zero_volume",
+        "rows":  2,
+        "symbols":  2,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    },
+    {
+        "stage":  "universe",
+        "decision":  "pass",
+        "reason_code":  "hard_filters_passed",
+        "rows":  516,
+        "symbols":  516,
+        "min_rank":  null,
+        "max_rank":  null,
+        "avg_score_after":  null
+    }
+]

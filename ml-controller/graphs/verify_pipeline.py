@@ -9,6 +9,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from services import verify_service
+from services.arf_feedback_contract import count_updated_arf, validate_arf_feedback_results
 from services.modal_client import batch_update_arf
 
 logger = logging.getLogger(__name__)
@@ -114,15 +115,15 @@ async def node_arf_feedback(state: VerifyStateV2) -> dict:
 
     try:
         results = await batch_update_arf(items)
-        updated = sum(
-            1 for r in results
-            if isinstance(r, dict) and (r.get("status") == "ok" or r.get("updated"))
-        )
+        errors = validate_arf_feedback_results(items, results)
+        updated = count_updated_arf(results)
         logger.info("[Verify V2] ARF feedback: %s/%s updated", updated, len(items))
+        if errors:
+            return {"errors": [f"arf_feedback failed: {'; '.join(errors[:5])}"], "arf_updated": updated}
         return {"arf_updated": updated}
     except Exception as e:
-        logger.warning("[Verify V2] ARF feedback failed (non-blocking): %s", e)
-        return {"errors": [f"arf_feedback non-fatal: {e}"], "arf_updated": 0}
+        logger.error("[Verify V2] ARF feedback failed: %s", e)
+        return {"errors": [f"arf_feedback failed: {e}"], "arf_updated": 0}
 
 
 _verify_graph_singleton: Any = None

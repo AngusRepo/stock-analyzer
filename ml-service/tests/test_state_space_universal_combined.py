@@ -3,6 +3,9 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+import pytest
+
+from app import model_pool
 from app import state_space_universal
 
 
@@ -204,3 +207,43 @@ def test_state_space_batch_surfaces_markov_fallback_reason(monkeypatch):
     assert result[0]["degraded"] is True
     assert result[0]["fallback_reason"] == "svd_not_converged"
     assert result[0]["diagnostics"]["fallback_type"] == "momentum"
+
+
+def test_state_space_batch_requires_hyperparam_aware_runner(monkeypatch):
+    from app import models
+
+    monkeypatch.setattr(state_space_universal, "_load_hyperparams", lambda *_: {"same": "spec"})
+
+    def legacy_runner(prices, horizon=5, stock_id=0):
+        return SimpleNamespace(
+            forecast_pct=0.01,
+            direction="up",
+            confidence=0.6,
+        )
+
+    monkeypatch.setattr(models, "run_markov_switching", legacy_runner)
+
+    result = state_space_universal.state_space_batch_predict(
+        model_name="MarkovSwitching",
+        series_list=[{"symbol": "2330", "prices": [1.0] * 60}],
+    )
+
+    assert result[0]["symbol"] == "2330"
+    assert result[0]["error"].startswith("TypeError:")
+    assert "hyperparams" in result[0]["error"]
+
+
+def test_state_space_hyperparams_missing_artifact_fails_closed(monkeypatch):
+    class Blob:
+        def exists(self):
+            return False
+
+    class Bucket:
+        def blob(self, _path):
+            return Blob()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(model_pool, "_get_bucket", lambda: Bucket())
+
+    with pytest.raises(FileNotFoundError, match="state-space hyperparams missing"):
+        model_pool.load_state_space_hyperparams("KalmanFilter", "v404")

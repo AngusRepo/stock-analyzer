@@ -612,7 +612,7 @@ paper.get('/quadrant-filter', async (c) => {
 // GET /api/paper/pending-buys — current pending-buy snapshot for Bot Dashboard.
 paper.get('/pending-buys', async (c) => {
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const snapshot = await loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: true })
+  const snapshot = await loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: false })
   const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
   const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
     ? snapshot.meta.source_reco_date

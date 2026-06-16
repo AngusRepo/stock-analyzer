@@ -13,7 +13,7 @@ import type { Bindings } from '../types'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedPruneSql, buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
 import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
-import { loadMarketDataFromD1, type FMChip, type FMStockPrice } from './screenerMarketData'
+import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice } from './screenerMarketData'
 import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
@@ -27,6 +27,7 @@ import { buildPriceActionStructure } from './priceActionStructure'
 import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidencePayload, type StrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
 import { coerceModalStrategySimilarityGraphEvidence, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'
+import type { StrategySpec } from './strategySpec'
 import {
   buildFinLabTaxonomyThemeSignals,
   refreshStockThemeFeaturesFromSignals,
@@ -87,7 +88,7 @@ function resolveScreenerRunDate(runDate?: string | null): string {
 }
 
 type L125StrategySimilarityEvidenceLoad = {
-  status: 'modal_python' | 'unavailable_degraded' | 'invalid_degraded' | 'empty_degraded'
+  status: 'modal_python' | 'unavailable_blocked' | 'invalid_blocked' | 'empty_blocked'
   evidence: StrategySimilarityGraphEvidence | null
   error?: string
   payload_strategy_count: number
@@ -100,7 +101,7 @@ async function loadL125StrategySimilarityGraphEvidence(
   const payloadStrategyCount = payload.strategies.length
   if (!payloadStrategyCount) {
     return {
-      status: 'empty_degraded',
+      status: 'empty_blocked',
       evidence: null,
       payload_strategy_count: payloadStrategyCount,
       error: 'no_strategy_similarity_payload_strategies',
@@ -108,7 +109,7 @@ async function loadL125StrategySimilarityGraphEvidence(
   }
   if (!env.ML_CONTROLLER_URL) {
     return {
-      status: 'unavailable_degraded',
+      status: 'unavailable_blocked',
       evidence: null,
       payload_strategy_count: payloadStrategyCount,
       error: 'ML_CONTROLLER_URL not set',
@@ -124,7 +125,7 @@ async function loadL125StrategySimilarityGraphEvidence(
     const evidence = coerceModalStrategySimilarityGraphEvidence(raw)
     if (!evidence || evidence.source !== 'modal_python') {
       return {
-        status: 'invalid_degraded',
+        status: 'invalid_blocked',
         evidence: null,
         payload_strategy_count: payloadStrategyCount,
         error: 'invalid_modal_strategy_similarity_evidence_contract',
@@ -133,7 +134,7 @@ async function loadL125StrategySimilarityGraphEvidence(
     return { status: 'modal_python', evidence, payload_strategy_count: payloadStrategyCount }
   } catch (error) {
     return {
-      status: 'unavailable_degraded',
+      status: 'unavailable_blocked',
       evidence: null,
       payload_strategy_count: payloadStrategyCount,
       error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
@@ -586,7 +587,7 @@ interface ChipDayNet {
 }
 
 interface StockDailyData {
-  prices: Map<string, FMStockPrice[]>   // stockId ??sorted prices
+  prices: Map<string, CanonicalScreenerPrice[]>   // stockId ??sorted prices
   chips: Map<string, Map<string, ChipDayNet>>  // stockId ??date ??net
 }
 
@@ -630,12 +631,54 @@ interface StrategyRawSignals extends StrategyRawFundamentalSignals {
   factorSignals?: Record<string, number | null>
 }
 
+const RAW_FUNDAMENTAL_FIELDS = [
+  ['revenueGrowthYoY', 'revenue_growth_yoy'],
+  ['grossMargin', 'gross_margin'],
+  ['operatingMargin', 'operating_margin'],
+  ['roe', 'roe'],
+  ['eps', 'eps'],
+  ['pe', 'pe'],
+  ['pb', 'pb'],
+  ['dividendYield', 'dividend_yield'],
+] as const
+
+type RawFundamentalSignalField = typeof RAW_FUNDAMENTAL_FIELDS[number][0]
+type RawFundamentalColumn = typeof RAW_FUNDAMENTAL_FIELDS[number][1]
+
+interface StrategyRawFundamentalLoadTelemetry {
+  requestedSymbols: number
+  symbolsWithAnyFundamental: number
+  canonicalRowsScanned: number
+  canonicalSymbols: number
+  canonicalErrors: string[]
+  revenueRows: number
+  revenueSymbols: number
+  revenueErrors: string[]
+  fieldCoverage: Record<RawFundamentalSignalField, number>
+  sourceCoverage: Record<string, number>
+}
+
+interface StrategyRawFundamentalLoadResult {
+  fundamentals: Map<string, StrategyRawFundamentalSignals>
+  telemetry: StrategyRawFundamentalLoadTelemetry
+}
+
+interface FinLabStyleFactorNormalizationTelemetry {
+  method: 'finlab_style_cs_sector_rank_zscore_winsor_sector_neutral_v2'
+  universeCount: number
+  sectorCount: number
+  fieldCoverage: Record<string, number>
+  sectorFieldCoverage: Record<string, number>
+  compositeCoverage: Record<string, number>
+  allocationCoverage: Record<string, number>
+}
+
 function buildStockData(
-  allPrices: FMStockPrice[],
-  allChips: FMChip[],
+  allPrices: CanonicalScreenerPrice[],
+  allChips: CanonicalScreenerChip[],
 ): StockDailyData {
   // Group prices by stock_id, sorted by date
-  const prices = new Map<string, FMStockPrice[]>()
+  const prices = new Map<string, CanonicalScreenerPrice[]>()
   for (const p of allPrices) {
     if (!prices.has(p.stock_id)) prices.set(p.stock_id, [])
     prices.get(p.stock_id)!.push(p)
@@ -687,6 +730,10 @@ function avg(values: number[]): number | null {
   return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : null
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 function pctChange(current: number | null | undefined, previous: number | null | undefined): number | null {
   if (current == null || previous == null || previous <= 0) return null
   return (current - previous) / previous
@@ -726,45 +773,88 @@ function mergeFundamentalSignals(
   map.set(key, next)
 }
 
+function emptyRawFundamentalCoverage(): Record<RawFundamentalSignalField, number> {
+  return RAW_FUNDAMENTAL_FIELDS.reduce((acc, [field]) => {
+    acc[field] = 0
+    return acc
+  }, {} as Record<RawFundamentalSignalField, number>)
+}
+
+function createRawFundamentalTelemetry(requestedSymbols: number): StrategyRawFundamentalLoadTelemetry {
+  return {
+    requestedSymbols,
+    symbolsWithAnyFundamental: 0,
+    canonicalRowsScanned: 0,
+    canonicalSymbols: 0,
+    canonicalErrors: [],
+    revenueRows: 0,
+    revenueSymbols: 0,
+    revenueErrors: [],
+    fieldCoverage: emptyRawFundamentalCoverage(),
+    sourceCoverage: {},
+  }
+}
+
+function finalizeRawFundamentalTelemetry(
+  fundamentals: Map<string, StrategyRawFundamentalSignals>,
+  telemetry: StrategyRawFundamentalLoadTelemetry,
+): StrategyRawFundamentalLoadTelemetry {
+  const fieldCoverage = emptyRawFundamentalCoverage()
+  const sourceCoverage: Record<string, number> = {}
+  const canonicalSymbols = new Set<string>()
+  const revenueSymbols = new Set<string>()
+  for (const [symbol, signals] of fundamentals.entries()) {
+    for (const [field] of RAW_FUNDAMENTAL_FIELDS) {
+      if (signals[field] != null) fieldCoverage[field] += 1
+    }
+    const sources = String(signals.source ?? '').split('+').map((value) => value.trim()).filter(Boolean)
+    for (const source of sources) {
+      sourceCoverage[source] = (sourceCoverage[source] ?? 0) + 1
+      if (source === 'finlab.fundamental_features') canonicalSymbols.add(symbol)
+      if (source === 'finlab.monthly_revenue') revenueSymbols.add(symbol)
+    }
+  }
+  return {
+    ...telemetry,
+    symbolsWithAnyFundamental: fundamentals.size,
+    canonicalSymbols: canonicalSymbols.size,
+    revenueSymbols: revenueSymbols.size,
+    fieldCoverage,
+    sourceCoverage,
+  }
+}
+
 async function loadStrategyRawFundamentalSignals(
   env: Bindings,
   symbols: string[],
   endDate: string,
-): Promise<Map<string, StrategyRawFundamentalSignals>> {
+): Promise<StrategyRawFundamentalLoadResult> {
   const fundamentals = new Map<string, StrategyRawFundamentalSignals>()
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
-  if (!uniqueSymbols.length) return fundamentals
+  const telemetry = createRawFundamentalTelemetry(uniqueSymbols.length)
+  if (!uniqueSymbols.length) return { fundamentals, telemetry }
   const revenueMonth = endDate.slice(0, 7)
 
   for (const chunk of chunkArray(uniqueSymbols, D1_IN_CHUNK_SIZE)) {
     const placeholders = chunk.map(() => '?').join(',')
-    const requestedSymbolRows = chunk
-      .map((_, index) => `${index === 0 ? 'SELECT' : 'UNION ALL SELECT'} ? AS stock_id`)
-      .join(' ')
-    const latestNonNullFundamentalColumn = (column: string) => `
-      (SELECT f2.${column}
-         FROM canonical_fundamental_features f2
-        WHERE f2.stock_id = s.stock_id
-          AND f2.available_date <= ?
-          AND f2.source = 'finlab.fundamental_factor_diversity'
-          AND f2.${column} IS NOT NULL
-        ORDER BY f2.available_date DESC, f2.period DESC
-        LIMIT 1) AS ${column}`
+    const canonicalColumns = RAW_FUNDAMENTAL_FIELDS.map(([, column]) => column).join(', ')
+    const nonNullPredicate = RAW_FUNDAMENTAL_FIELDS.map(([, column]) => `${column} IS NOT NULL`).join(' OR ')
     try {
       const { results } = await env.DB.prepare(`
-        WITH requested_symbols AS (${requestedSymbolRows})
-        SELECT s.stock_id AS symbol,
-               ${latestNonNullFundamentalColumn('revenue_growth_yoy')},
-               ${latestNonNullFundamentalColumn('gross_margin')},
-               ${latestNonNullFundamentalColumn('operating_margin')},
-               ${latestNonNullFundamentalColumn('roe')},
-               ${latestNonNullFundamentalColumn('eps')},
-               ${latestNonNullFundamentalColumn('pe')},
-               ${latestNonNullFundamentalColumn('pb')},
-               ${latestNonNullFundamentalColumn('dividend_yield')}
-          FROM requested_symbols s
-      `).bind(...chunk, endDate, endDate, endDate, endDate, endDate, endDate, endDate, endDate).all<{
+        SELECT stock_id AS symbol,
+               available_date,
+               period,
+               ${canonicalColumns}
+          FROM canonical_fundamental_features
+         WHERE stock_id IN (${placeholders})
+           AND available_date <= ?
+           AND source = 'finlab.fundamental_factor_diversity'
+           AND (${nonNullPredicate})
+         ORDER BY stock_id, available_date DESC, period DESC
+      `).bind(...chunk, endDate).all<{
         symbol: string
+        available_date: string | null
+        period: string | null
         revenue_growth_yoy: number | null
         gross_margin: number | null
         operating_margin: number | null
@@ -774,21 +864,20 @@ async function loadStrategyRawFundamentalSignals(
         pb: number | null
         dividend_yield: number | null
       }>()
+      telemetry.canonicalRowsScanned += (results ?? []).length
       for (const row of results ?? []) {
-        mergeFundamentalSignals(fundamentals, row.symbol, {
-          revenueGrowthYoY: finiteOrNull(row.revenue_growth_yoy),
-          grossMargin: finiteOrNull(row.gross_margin),
-          operatingMargin: finiteOrNull(row.operating_margin),
-          roe: finiteOrNull(row.roe),
-          eps: finiteOrNull(row.eps),
-          pe: finiteOrNull(row.pe),
-          pb: finiteOrNull(row.pb),
-          dividendYield: finiteOrNull(row.dividend_yield),
-          source: 'finlab.canonical_fundamental_features',
-        })
+        const patch: StrategyRawFundamentalSignals = { source: 'finlab.fundamental_features' }
+        const rowRecord = row as Record<RawFundamentalColumn, unknown>
+        for (const [field, column] of RAW_FUNDAMENTAL_FIELDS) {
+          const value = finiteOrNull(rowRecord[column])
+          if (value != null) {
+            ;(patch as Record<RawFundamentalSignalField, number | null>)[field] = value
+          }
+        }
+        mergeFundamentalSignals(fundamentals, row.symbol, patch)
       }
-    } catch {
-      // Older local D1 snapshots may not have canonical_fundamental_features.
+    } catch (error) {
+      telemetry.canonicalErrors.push(`canonical_fundamental_features:${errorText(error)}`)
     }
 
     try {
@@ -808,19 +897,20 @@ async function loadStrategyRawFundamentalSignals(
         yoy: number | null
         mom: number | null
       }>()
+      telemetry.revenueRows += (results ?? []).length
       for (const row of results ?? []) {
         mergeFundamentalSignals(fundamentals, row.symbol, {
           monthlyRevenueYoY: finiteOrNull(row.yoy),
           monthlyRevenueMoM: finiteOrNull(row.mom),
-          source: 'canonical_revenue_monthly',
+          source: 'finlab.monthly_revenue',
         })
       }
-    } catch {
-      // Canonical revenue is optional in older snapshots.
+    } catch (error) {
+      telemetry.revenueErrors.push(`canonical_revenue_monthly:${errorText(error)}`)
     }
   }
 
-  return fundamentals
+  return { fundamentals, telemetry: finalizeRawFundamentalTelemetry(fundamentals, telemetry) }
 }
 
 async function loadStrategyRawSectorRotationSignals(
@@ -885,7 +975,7 @@ async function loadStrategyRawSectorRotationSignals(
 }
 
 function deriveStrategyRawSignals(
-  prices: FMStockPrice[],
+  prices: CanonicalScreenerPrice[],
   chipDates: Map<string, ChipDayNet> | undefined,
   fundamentals?: StrategyRawFundamentalSignals,
   extraFactors?: StrategyRawFactorSignalPatch,
@@ -974,8 +1064,16 @@ function deriveStrategyRawSignals(
     brokerConcentration: finiteOrNull(latestBroker?.concentration),
     ...(fundamentals ?? {}),
     source: [
-      'stock_prices',
-      chipRows.some((row) => String(row.source || '').includes('canonical')) ? 'canonical_chip_or_broker_flow' : null,
+      'finlab.price',
+      chipRows.some((row) => String(row.source || '').includes('institutional_investors_trading_summary'))
+        ? 'finlab.institutional_investors_trading_summary'
+        : null,
+      chipRows.some((row) => String(row.source || '') === 'finlab.broker_transactions')
+        ? 'finlab.broker_transactions'
+        : null,
+      chipRows.some((row) => String(row.source || '') === 'finlab.rotc_broker_transactions')
+        ? 'finlab.rotc_broker_transactions'
+        : null,
       fundamentals?.source ?? null,
       extraFactors?.source ?? null,
     ].filter(Boolean).join('+'),
@@ -1052,29 +1150,318 @@ function deriveStrategyRawSignals(
   }
 }
 
-function rawSignalEmergencyFallbackScore(candidate: { raw_signals?: StrategyRawSignals; score?: number | null }): number {
-  const raw = candidate.raw_signals ?? {}
-  const close20 = finiteOrNull(raw.closeAboveMa20Pct) ?? 0
-  const close60 = finiteOrNull(raw.closeAboveMa60Pct) ?? 0
-  const volume = finiteOrNull(raw.volumeExpansion20) ?? 1
-  const ret20 = finiteOrNull(raw.return20d) ?? 0
-  const flowAmount = finiteOrNull(raw.brokerNetAmount5d) ?? 0
-  const flowShares = finiteOrNull(raw.foreignTrustNet5d) ?? 0
-  const revenue = finiteOrNull(raw.revenueGrowthYoY) ?? finiteOrNull(raw.monthlyRevenueYoY) ?? 0
-  const roe = finiteOrNull(raw.roe) ?? 0
-  const eps = finiteOrNull(raw.eps) ?? 0
-  const pe = finiteOrNull(raw.pe)
-  const trendScore = Math.max(-12, Math.min(18, close20 * 180))
-    + Math.max(-10, Math.min(14, close60 * 120))
-    + Math.max(-6, Math.min(16, (volume - 0.8) * 18))
-    + Math.max(-8, Math.min(12, ret20 * 80))
-  const flowScore = Math.max(-10, Math.min(14, Math.sign(flowAmount) * Math.log10(Math.abs(flowAmount) + 1)))
-    + Math.max(-8, Math.min(12, Math.sign(flowShares) * Math.log10(Math.abs(flowShares) + 1)))
-  const qualityScore = Math.max(-8, Math.min(12, revenue / 4))
-    + Math.max(-4, Math.min(12, roe / 2))
-    + Math.max(-6, Math.min(12, eps * 2))
-  const valuationScore = pe == null ? 0 : Math.max(-8, Math.min(12, 10 - (pe - 12) / 3))
-  return Math.max(0, Math.min(100, 45 + trendScore * 0.34 + flowScore * 0.25 + qualityScore * 0.28 + valuationScore * 0.13))
+type FinLabNormalizationField = {
+  rawField: keyof StrategyRawSignals
+  signalKey: string
+  direction: 'higher_is_better' | 'lower_is_better'
+  sectorRank: boolean
+}
+
+const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
+  { rawField: 'roe', signalKey: 'Roe', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'eps', signalKey: 'Eps', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'grossMargin', signalKey: 'GrossMargin', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'operatingMargin', signalKey: 'OperatingMargin', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'revenueGrowthYoY', signalKey: 'RevenueGrowthYoY', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'monthlyRevenueYoY', signalKey: 'MonthlyRevenueYoY', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'return20d', signalKey: 'Return20d', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'volumeExpansion20', signalKey: 'VolumeExpansion20', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'dividendYield', signalKey: 'DividendYield', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'pe', signalKey: 'PeCheap', direction: 'lower_is_better', sectorRank: true },
+  { rawField: 'pb', signalKey: 'PbCheap', direction: 'lower_is_better', sectorRank: true },
+]
+
+function percentileRank(value: number, sortedAsc: number[]): number | null {
+  if (!Number.isFinite(value) || !sortedAsc.length) return null
+  if (sortedAsc.length === 1) return 1
+  let lower = 0
+  while (lower < sortedAsc.length && sortedAsc[lower] < value) lower++
+  let upper = lower
+  while (upper < sortedAsc.length && sortedAsc[upper] <= value) upper++
+  const midpointIndex = (lower + Math.max(lower, upper - 1)) / 2
+  return clamp(midpointIndex / (sortedAsc.length - 1), 0, 1)
+}
+
+function rankKey(prefix: 'finlabCs' | 'finlabSector', signalKey: string): string {
+  return `${prefix}${signalKey}Rank`
+}
+
+function zScoreKey(prefix: 'finlabCs' | 'finlabSector', signalKey: string): string {
+  return `${prefix}${signalKey}ZScore`
+}
+
+function winsorizedKey(prefix: 'finlabCs', signalKey: string): string {
+  return `${prefix}${signalKey}WinsorizedValue`
+}
+
+function sectorNeutralRankKey(signalKey: string): string {
+  return `finlabSectorNeutral${signalKey}Rank`
+}
+
+function meanStd(sortedAsc: number[]): { mean: number; std: number } | null {
+  if (sortedAsc.length < 2) return null
+  const mean = sortedAsc.reduce((sum, value) => sum + value, 0) / sortedAsc.length
+  const variance = sortedAsc.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (sortedAsc.length - 1)
+  const std = Math.sqrt(Math.max(0, variance))
+  return std > 0 ? { mean, std } : null
+}
+
+function directedZScore(value: number, sortedAsc: number[], direction: FinLabNormalizationField['direction']): number | null {
+  const stats = meanStd(sortedAsc)
+  if (!stats) return null
+  const raw = (value - stats.mean) / stats.std
+  const directed = direction === 'lower_is_better' ? -raw : raw
+  return Math.round(clamp(directed, -5, 5) * 10000) / 10000
+}
+
+function winsorizedValue(value: number, sortedAsc: number[]): number | null {
+  if (!sortedAsc.length) return null
+  const lower = sortedAsc[Math.floor((sortedAsc.length - 1) * 0.05)]
+  const upper = sortedAsc[Math.ceil((sortedAsc.length - 1) * 0.95)]
+  return Math.round(clamp(value, lower, upper) * 10000) / 10000
+}
+
+function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyRawSignals; industry?: string | null }>(
+  candidates: T[],
+): FinLabStyleFactorNormalizationTelemetry {
+  const telemetry: FinLabStyleFactorNormalizationTelemetry = {
+    method: 'finlab_style_cs_sector_rank_zscore_winsor_sector_neutral_v2',
+    universeCount: candidates.length,
+    sectorCount: 0,
+    fieldCoverage: {},
+    sectorFieldCoverage: {},
+    compositeCoverage: {},
+    allocationCoverage: {},
+  }
+  const sortedByField = new Map<keyof StrategyRawSignals, number[]>()
+  for (const field of FINLAB_STYLE_NORMALIZATION_FIELDS) {
+    const values = candidates
+      .map((candidate) => finiteOrNull(candidate.raw_signals?.[field.rawField]))
+      .filter((value): value is number => value != null)
+      .sort((a, b) => a - b)
+    sortedByField.set(field.rawField, values)
+  }
+
+  const bySector = new Map<string, T[]>()
+  for (const candidate of candidates) {
+    const sector = String(candidate.industry ?? '').trim() || 'unknown'
+    const bucket = bySector.get(sector) ?? []
+    bucket.push(candidate)
+    bySector.set(sector, bucket)
+  }
+  telemetry.sectorCount = bySector.size
+
+  const sortedBySectorField = new Map<string, Map<keyof StrategyRawSignals, number[]>>()
+  for (const [sector, sectorCandidates] of bySector.entries()) {
+    const fieldMap = new Map<keyof StrategyRawSignals, number[]>()
+    for (const field of FINLAB_STYLE_NORMALIZATION_FIELDS) {
+      if (!field.sectorRank) continue
+      const values = sectorCandidates
+        .map((candidate) => finiteOrNull(candidate.raw_signals?.[field.rawField]))
+        .filter((value): value is number => value != null)
+        .sort((a, b) => a - b)
+      fieldMap.set(field.rawField, values)
+    }
+    sortedBySectorField.set(sector, fieldMap)
+  }
+
+  for (const candidate of candidates) {
+    const raw = candidate.raw_signals
+    if (!raw) continue
+    raw.factorSignals = { ...(raw.factorSignals ?? {}) }
+    const sector = String(candidate.industry ?? '').trim() || 'unknown'
+    for (const field of FINLAB_STYLE_NORMALIZATION_FIELDS) {
+      const value = finiteOrNull(raw[field.rawField])
+      if (value == null) continue
+      const csRankRaw = percentileRank(value, sortedByField.get(field.rawField) ?? [])
+      if (csRankRaw != null) {
+        const rank = field.direction === 'lower_is_better' ? 1 - csRankRaw : csRankRaw
+        const key = rankKey('finlabCs', field.signalKey)
+        raw.factorSignals[key] = Math.round(rank * 10000) / 10000
+        telemetry.fieldCoverage[key] = (telemetry.fieldCoverage[key] ?? 0) + 1
+      }
+      const csZScore = directedZScore(value, sortedByField.get(field.rawField) ?? [], field.direction)
+      if (csZScore != null) {
+        const key = zScoreKey('finlabCs', field.signalKey)
+        raw.factorSignals[key] = csZScore
+        telemetry.fieldCoverage[key] = (telemetry.fieldCoverage[key] ?? 0) + 1
+      }
+      const csWinsorized = winsorizedValue(value, sortedByField.get(field.rawField) ?? [])
+      if (csWinsorized != null) {
+        const key = winsorizedKey('finlabCs', field.signalKey)
+        raw.factorSignals[key] = csWinsorized
+        telemetry.fieldCoverage[key] = (telemetry.fieldCoverage[key] ?? 0) + 1
+      }
+      if (field.sectorRank) {
+        const sectorValues = sortedBySectorField.get(sector)?.get(field.rawField) ?? []
+        if (sectorValues.length >= 3) {
+          const sectorRankRaw = percentileRank(value, sectorValues)
+          if (sectorRankRaw != null) {
+            const rank = field.direction === 'lower_is_better' ? 1 - sectorRankRaw : sectorRankRaw
+            const key = rankKey('finlabSector', field.signalKey)
+            const neutralKey = sectorNeutralRankKey(field.signalKey)
+            raw.factorSignals[key] = Math.round(rank * 10000) / 10000
+            raw.factorSignals[neutralKey] = raw.factorSignals[key]
+            telemetry.sectorFieldCoverage[key] = (telemetry.sectorFieldCoverage[key] ?? 0) + 1
+            telemetry.sectorFieldCoverage[neutralKey] = (telemetry.sectorFieldCoverage[neutralKey] ?? 0) + 1
+          }
+          const sectorZScore = directedZScore(value, sectorValues, field.direction)
+          if (sectorZScore != null) {
+            const key = zScoreKey('finlabSector', field.signalKey)
+            raw.factorSignals[key] = sectorZScore
+            telemetry.sectorFieldCoverage[key] = (telemetry.sectorFieldCoverage[key] ?? 0) + 1
+          }
+        }
+      }
+    }
+    const atrPct = raw.close && raw.technicalIndicators?.atr14
+      ? finiteOrNull(raw.technicalIndicators.atr14)! / Math.max(1, Math.abs(raw.close))
+      : null
+    const volatilityProxy = Math.max(
+      0.005,
+      Math.abs(atrPct ?? finiteOrNull(raw.return20d) ?? 0.02),
+    )
+    raw.factorSignals.finlabInverseVolatilityWeight = Math.round(clamp(1 / (1 + volatilityProxy * 25), 0, 1) * 10000) / 10000
+    telemetry.allocationCoverage.finlabInverseVolatilityWeight = (telemetry.allocationCoverage.finlabInverseVolatilityWeight ?? 0) + 1
+    const sectorSize = bySector.get(sector)?.length ?? 1
+    raw.factorSignals.finlabIndustryCapWeight = Math.round((1 / Math.sqrt(Math.max(1, sectorSize))) * 10000) / 10000
+    telemetry.allocationCoverage.finlabIndustryCapWeight = (telemetry.allocationCoverage.finlabIndustryCapWeight ?? 0) + 1
+    const volumeExpansion = finiteOrNull(raw.volumeExpansion20)
+    if (volumeExpansion != null) {
+      raw.factorSignals.finlabTurnoverControlWeight = Math.round(clamp(1 / (1 + Math.max(0, volumeExpansion - 1)), 0.2, 1) * 10000) / 10000
+      telemetry.allocationCoverage.finlabTurnoverControlWeight = (telemetry.allocationCoverage.finlabTurnoverControlWeight ?? 0) + 1
+    }
+
+    const qualityComposite = avg([
+      finiteOrNull(raw.factorSignals.finlabCsRoeRank),
+      finiteOrNull(raw.factorSignals.finlabCsEpsRank),
+      finiteOrNull(raw.factorSignals.finlabCsGrossMarginRank),
+      finiteOrNull(raw.factorSignals.finlabCsOperatingMarginRank),
+      finiteOrNull(raw.factorSignals.finlabCsRevenueGrowthYoYRank),
+      finiteOrNull(raw.factorSignals.finlabCsMonthlyRevenueYoYRank),
+    ].filter((value): value is number => value != null))
+    const valueComposite = avg([
+      finiteOrNull(raw.factorSignals.finlabCsPeCheapRank),
+      finiteOrNull(raw.factorSignals.finlabCsPbCheapRank),
+      finiteOrNull(raw.factorSignals.finlabCsDividendYieldRank),
+    ].filter((value): value is number => value != null))
+    const sectorQualityComposite = avg([
+      finiteOrNull(raw.factorSignals.finlabSectorRoeRank),
+      finiteOrNull(raw.factorSignals.finlabSectorGrossMarginRank),
+      finiteOrNull(raw.factorSignals.finlabSectorOperatingMarginRank),
+      finiteOrNull(raw.factorSignals.finlabSectorRevenueGrowthYoYRank),
+      finiteOrNull(raw.factorSignals.finlabSectorMonthlyRevenueYoYRank),
+    ].filter((value): value is number => value != null))
+
+    if (qualityComposite != null) {
+      raw.factorSignals.finlabQualityCompositeRank = Math.round(qualityComposite * 10000) / 10000
+      telemetry.compositeCoverage.finlabQualityCompositeRank = (telemetry.compositeCoverage.finlabQualityCompositeRank ?? 0) + 1
+    }
+    if (valueComposite != null) {
+      raw.factorSignals.finlabValueCompositeRank = Math.round(valueComposite * 10000) / 10000
+      telemetry.compositeCoverage.finlabValueCompositeRank = (telemetry.compositeCoverage.finlabValueCompositeRank ?? 0) + 1
+    }
+    if (sectorQualityComposite != null) {
+      raw.factorSignals.finlabSectorQualityCompositeRank = Math.round(sectorQualityComposite * 10000) / 10000
+      telemetry.compositeCoverage.finlabSectorQualityCompositeRank = (telemetry.compositeCoverage.finlabSectorQualityCompositeRank ?? 0) + 1
+    }
+  }
+
+  return telemetry
+}
+
+type L0RawSignalAuditField =
+  | 'pe'
+  | 'pb'
+  | 'roe'
+  | 'eps'
+  | 'dividendYield'
+  | 'monthlyRevenueYoY'
+  | 'brokerCount'
+  | 'brokerConcentration'
+
+interface L0RawSignalCoverageAudit {
+  version: 'l0-raw-signal-coverage-audit-v1'
+  universeCount: number
+  candidateCount: number
+  rawCoverage: Record<L0RawSignalAuditField, number>
+  canonicalCoverageBaseline: Partial<Record<L0RawSignalAuditField, number>>
+  sourceCoverage: Record<string, number>
+  brokerFlowMaterializationStatus: 'materialized' | 'not_materialized'
+  brokerFlowSources: Record<string, number>
+  status: 'pass' | 'warn' | 'fail'
+  warnings: string[]
+  failures: string[]
+  fundamental_loader_error: string[]
+}
+
+const L0_RAW_SIGNAL_AUDIT_FIELDS: L0RawSignalAuditField[] = [
+  'pe',
+  'pb',
+  'roe',
+  'eps',
+  'dividendYield',
+  'monthlyRevenueYoY',
+  'brokerCount',
+  'brokerConcentration',
+]
+
+function buildL0RawSignalCoverageAudit<T extends { raw_signals?: StrategyRawSignals }>(
+  candidates: T[],
+  universeCount: number,
+  fundamentalTelemetry: StrategyRawFundamentalLoadTelemetry,
+  brokerFlowSources: Record<string, number>,
+): L0RawSignalCoverageAudit {
+  const rawCoverage = Object.fromEntries(L0_RAW_SIGNAL_AUDIT_FIELDS.map((field) => [field, 0])) as Record<L0RawSignalAuditField, number>
+  const sourceCoverage: Record<string, number> = {}
+  for (const candidate of candidates) {
+    const raw = candidate.raw_signals
+    if (!raw) continue
+    for (const field of L0_RAW_SIGNAL_AUDIT_FIELDS) {
+      if (raw[field] != null) rawCoverage[field] += 1
+    }
+    for (const source of String(raw.source ?? '').split('+').map((value) => value.trim()).filter(Boolean)) {
+      sourceCoverage[source] = (sourceCoverage[source] ?? 0) + 1
+    }
+  }
+  const canonicalCoverageBaseline: Partial<Record<L0RawSignalAuditField, number>> = {
+    pe: fundamentalTelemetry.fieldCoverage.pe,
+    pb: fundamentalTelemetry.fieldCoverage.pb,
+    roe: fundamentalTelemetry.fieldCoverage.roe,
+    eps: fundamentalTelemetry.fieldCoverage.eps,
+    dividendYield: fundamentalTelemetry.fieldCoverage.dividendYield,
+    monthlyRevenueYoY: fundamentalTelemetry.revenueSymbols,
+  }
+  const failures: string[] = []
+  for (const field of ['pe', 'pb', 'roe', 'eps', 'dividendYield', 'monthlyRevenueYoY'] as L0RawSignalAuditField[]) {
+    const baseline = canonicalCoverageBaseline[field] ?? 0
+    if (baseline > 0 && rawCoverage[field] === 0) failures.push(`${field}:raw_signals_zero_while_canonical_baseline_${baseline}`)
+  }
+  const hasListedBrokerFlow = (brokerFlowSources['finlab.broker_transactions'] ?? 0) > 0
+  const brokerFlowMaterializationStatus = hasListedBrokerFlow ? 'materialized' : 'not_materialized'
+  const warnings: string[] = []
+  if (!hasListedBrokerFlow) {
+    warnings.push('listed_otc_finlab_broker_transactions:not_materialized')
+  }
+  const fundamentalErrors = [
+    ...fundamentalTelemetry.canonicalErrors.map((item) => `fundamental:${item}`),
+    ...fundamentalTelemetry.revenueErrors.map((item) => `revenue:${item}`),
+  ]
+  if (fundamentalErrors.length) warnings.push('fundamental_loader_error')
+  return {
+    version: 'l0-raw-signal-coverage-audit-v1',
+    universeCount,
+    candidateCount: candidates.length,
+    rawCoverage,
+    canonicalCoverageBaseline,
+    sourceCoverage,
+    brokerFlowMaterializationStatus,
+    brokerFlowSources,
+    status: failures.length ? 'fail' : warnings.length ? 'warn' : 'pass',
+    warnings,
+    failures,
+    fundamental_loader_error: fundamentalErrors,
+  }
 }
 
 function calcMarketReturn5d(data: StockDailyData): number {
@@ -1127,7 +1514,7 @@ function formatAbsTwdAmount(amount: number): string {
 
 function summarizeBrokerFlowChip(
   chipDates: Map<string, ChipDayNet> | undefined,
-  prices: FMStockPrice[],
+  prices: CanonicalScreenerPrice[],
   latestClose: number,
 ): BrokerFlowSummary | null {
   if (!chipDates?.size) return null
@@ -1354,7 +1741,7 @@ async function getIndustryMapping(db: D1Database, kv: KVNamespace): Promise<Map<
 // Sprint 6a.7b: exported for cross-runtime parity test
 // (ml-controller/tests/test_screener_parity.py)
 export function scoreMultiFactor(
-  prices: FMStockPrice[],
+  prices: CanonicalScreenerPrice[],
   chipDates: Map<string, ChipDayNet> | undefined,
   marketReturn5d: number,
   latestClose: number,
@@ -1690,10 +2077,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   } = await import('./multiSourceThemeEvidence')
 
   type BuzzResult = Awaited<ReturnType<typeof detectPttBuzz>>
-  let allPrices: FMStockPrice[]
-  let emergingResearchPrices: FMStockPrice[]
-  let allChips: FMChip[]
+  let allPrices: CanonicalScreenerPrice[]
+  let emergingResearchPrices: CanonicalScreenerPrice[]
+  let allChips: CanonicalScreenerChip[]
   let tpexSymbolSet = new Set<string>()
+  let chipSourceSummary: Record<string, number> = {}
   let combinedBuzz: BuzzResult = []
   let conceptBuzzScore = new Map<string, number>()
   let conceptEvidenceBreakdown = new Map<string, Record<string, number>>()
@@ -1712,6 +2100,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     emergingResearchPrices = marketData.emergingResearchPrices
     allChips = marketData.allChips
     tpexSymbolSet = marketData.tpexSymbols
+    chipSourceSummary = marketData.chipSourceSummary ?? {}
 
     // ?蔥 buzz嚗-score 璅???same as before嚗?
     const themeEvidence = combineMultiSourceThemeEvidence([
@@ -1727,7 +2116,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     debugLog.push(
       `[Data] prices=${allPrices.length} emerging_research=${emergingResearchPrices.length} ` +
       `chips=${allChips.length} buzz=${combinedBuzz.length} theme_sources=${JSON.stringify(themeEvidence.acceptedSources)} ` +
-      `lanes=${JSON.stringify(marketData.laneCounts)} chip_sources=${JSON.stringify(marketData.chipSourceSummary ?? {})}`,
+      `lanes=${JSON.stringify(marketData.laneCounts)} chip_sources=${JSON.stringify(chipSourceSummary)}`,
     )
   } catch (e) {
     console.error('[Screener v2] Data fetch failed:', e)
@@ -1812,7 +2201,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? Step 1: Universe hard filter ??
-  const universe: { stockId: string; prices: FMStockPrice[] }[] = []
+  const universe: { stockId: string; prices: CanonicalScreenerPrice[] }[] = []
   let skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
 
   for (const [stockId, prices] of data.prices) {
@@ -1865,11 +2254,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   if (skipEtf > 0) debugLog.push(`[Step 1] hard gate excluded ETFs=${skipEtf}`)
 
   // ?? Step 2: 憭?摮?????
-  const rawFundamentalSignals = await loadStrategyRawFundamentalSignals(
+  const rawFundamentalLoad = await loadStrategyRawFundamentalSignals(
     env,
     universe.map((row) => row.stockId),
     endDate,
   )
+  const rawFundamentalSignals = rawFundamentalLoad.fundamentals
   const rawSectorRotationSignals = await loadStrategyRawSectorRotationSignals(
     env,
     universe.map((row) => row.stockId),
@@ -1877,9 +2267,18 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   )
   debugLog.push(
     `[Step 1b] raw strategy signals: fundamentals=${rawFundamentalSignals.size}/${universe.length} ` +
+    `canonical=${rawFundamentalLoad.telemetry.canonicalSymbols}/${universe.length} ` +
+    `revenue=${rawFundamentalLoad.telemetry.revenueSymbols}/${universe.length} ` +
+    `coverage=${JSON.stringify(rawFundamentalLoad.telemetry.fieldCoverage)} ` +
     `sector_rotation=${rawSectorRotationSignals.size}/${universe.length} ` +
-    `sources=finlab.canonical_fundamental_features+canonical_revenue_monthly+sector_flow_stocks`,
+    `sources=finlab.fundamental_features+finlab.monthly_revenue+sector_flow_stocks`,
   )
+  if (rawFundamentalLoad.telemetry.canonicalErrors.length || rawFundamentalLoad.telemetry.revenueErrors.length) {
+    debugLog.push(
+      `[Step 1b] raw fundamental loader errors: ` +
+      [...rawFundamentalLoad.telemetry.canonicalErrors, ...rawFundamentalLoad.telemetry.revenueErrors].slice(0, 4).join(' | '),
+    )
+  }
 
   type ScoredCandidate = ScreenerCandidate & {
     chip_score: number
@@ -1937,6 +2336,29 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     })
   }
 
+  const finLabFactorNormalizationTelemetry = applyFinLabStyleFactorNormalization(scored)
+  const l0RawSignalCoverageAudit = buildL0RawSignalCoverageAudit(
+    scored,
+    universe.length,
+    rawFundamentalLoad.telemetry,
+    chipSourceSummary,
+  )
+  debugLog.push(
+    `[Step 1c] FinLab-style factor normalization: method=${finLabFactorNormalizationTelemetry.method} ` +
+    `cs=${JSON.stringify(finLabFactorNormalizationTelemetry.fieldCoverage)} ` +
+    `sector=${JSON.stringify(finLabFactorNormalizationTelemetry.sectorFieldCoverage)} ` +
+    `composite=${JSON.stringify(finLabFactorNormalizationTelemetry.compositeCoverage)} ` +
+    `allocation=${JSON.stringify(finLabFactorNormalizationTelemetry.allocationCoverage)}`,
+  )
+  debugLog.push(
+    `[Step 1d] L0 raw signal coverage audit: status=${l0RawSignalCoverageAudit.status} ` +
+    `raw=${JSON.stringify(l0RawSignalCoverageAudit.rawCoverage)} ` +
+    `canonical=${JSON.stringify(l0RawSignalCoverageAudit.canonicalCoverageBaseline)} ` +
+    `broker_flow=${l0RawSignalCoverageAudit.brokerFlowMaterializationStatus} ` +
+    `sources=${JSON.stringify(l0RawSignalCoverageAudit.sourceCoverage)} ` +
+    `warnings=${JSON.stringify(l0RawSignalCoverageAudit.warnings)} failures=${JSON.stringify(l0RawSignalCoverageAudit.failures)}`,
+  )
+
   applyScreenerScoreCalibration(scored, screenerPolicy.scoreCalibration)
   debugLog.push(
     `[Step 2b] score calibration ${screenerPolicy.scoreCalibration.enabled ? screenerPolicy.scoreCalibration.method : 'disabled'} ` +
@@ -1970,6 +2392,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let layer2CoarseQueueSeed: ScoredCandidate[] = []
   let overlayEligibleSymbols = new Set<string>()
   let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
+  let runtimeStrategySpecs: StrategySpec[] = []
   try {
     const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, strategyCandidatePoolModule, strategyPortfolioMetricsModule] = await Promise.all([
       import('./strategyLearning'),
@@ -1980,10 +2403,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const { loadStrategyPortfolioMetricOverrides } = strategyPortfolioMetricsModule
     passesLayer1TopUpQualityGuard = strategyCandidatePoolModule.passesLayer1TopUpQualityGuard
     const currentRegime = (adaptiveParams as any)?.provenance?.regime ?? null
-    const [{ specs, source }, policyState] = await Promise.all([
+    const [{ specs, source, registryRowCount, activeCount }, policyState] = await Promise.all([
       listStrategySpecsForLearning(env.DB),
       getLatestStrategyPolicyState(env.DB).catch(() => null),
     ])
+    runtimeStrategySpecs = specs
     const strategyPortfolioMetrics = await loadStrategyPortfolioMetricOverrides(env.DB, {
       regime: currentRegime,
       marketSegment: 'all',
@@ -2030,6 +2454,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       version: layer1BreadthPlan.version,
       candidate_pool_version: strategySelectionPlan.version,
       spec_source: source,
+      strategy_registry_row_count: registryRowCount,
+      strategy_registry_active_count: activeCount,
+      strategy_registry_runtime_count: specs.length,
       capacity: strategySelectionPlan.capacity,
       telemetry: strategySelectionPlan.telemetry,
       layer1_telemetry: layer1BreadthPlan.telemetry,
@@ -2070,7 +2497,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_similarity_evidence_source: layer1BreadthPlan.telemetry.strategy_similarity_evidence_source ?? null,
       strategy_similarity_algorithm_owner: layer1BreadthPlan.telemetry.strategy_similarity_algorithm_owner ?? null,
       strategy_similarity_medoid_algorithm: layer1BreadthPlan.telemetry.strategy_similarity_medoid_algorithm ?? null,
-      strategy_similarity_degraded_reason: layer1BreadthPlan.telemetry.strategy_similarity_degraded_reason ?? strategySimilarityEvidence.error ?? null,
+      strategy_similarity_blocked_reason: strategySimilarityEvidence.error ?? layer1BreadthPlan.telemetry.strategy_similarity_blocked_reason ?? null,
       strategy_similarity_payload_strategy_count: strategySimilarityEvidence.payload_strategy_count,
       strategy_portfolio_metrics: strategyPortfolioMetrics.telemetry,
       pool_status: strategySelectionPlan.pools.map((pool: any) => ({
@@ -2140,7 +2567,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_similarity_evidence_source: layer1BreadthPlan.telemetry.strategy_similarity_evidence_source ?? null,
           strategy_similarity_algorithm_owner: layer1BreadthPlan.telemetry.strategy_similarity_algorithm_owner ?? null,
           strategy_similarity_medoid_algorithm: layer1BreadthPlan.telemetry.strategy_similarity_medoid_algorithm ?? null,
-          strategy_similarity_degraded_reason: layer1BreadthPlan.telemetry.strategy_similarity_degraded_reason ?? strategySimilarityEvidence.error ?? null,
+          strategy_similarity_blocked_reason: strategySimilarityEvidence.error ?? layer1BreadthPlan.telemetry.strategy_similarity_blocked_reason ?? null,
           candidate_route_score: (candidate as any).candidate_route_score ?? null,
           ml_slate_eligibility: (candidate as any).ml_slate_eligibility ?? null,
           family_exposure: (candidate as any).family_exposure ?? null,
@@ -2338,19 +2765,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       })
     }
   } catch (e) {
-    const rawSignalSorted = [...strategySourceUniverse].sort((a, b) => rawSignalEmergencyFallbackScore(b) - rawSignalEmergencyFallbackScore(a))
-    layer1BreadthPool = rawSignalSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)
-    layer2CoarseQueueSeed = layer1BreadthPool.slice(0, screenerPolicy.sizing.candidatePoolSize)
-    overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
-    strategySelectionTelemetry = {
-      version: 'layer1-breadth-fallback',
-      selection_order: 'emergency_raw_signal_fallback_after_layer1_strategy_pool_error',
-      source_universe_count: strategySourceUniverse.length,
-      layer1_breadth_count: layer1BreadthPool.length,
-      layer2_coarse_queue_seed_count: layer2CoarseQueueSeed.length,
-      error: String(e),
-    }
-    debugLog.push(`[Step 2c] layer1 breadth unavailable before overlays; emergency raw-signal fallback used: ${String(e)}`)
+    debugLog.push(`[Step 2c] layer1 breadth unavailable; strategy registry is required for clean runtime: ${String(e)}`)
+    throw new Error(`strategy_registry_required_for_clean_runtime:${String(e)}`)
   }
 
   // ?? Step 3: RRG 鞊⊿??? ?? (2026-04-09 rewired)
@@ -2984,7 +3400,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // 5d: top N ?芣嚗trategy pool 撌脣 Step 2c嚗??函′蝭拙??RG/?駁???摰???
   let finalCandidates = dedupeScreenerCandidatesBySymbol(
-    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, screenerPolicy.sizing.candidatePoolSize) as ScreenerCandidate[]),
+    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, screenerPolicy.sizing.candidatePoolSize) as ScreenerCandidate[], runtimeStrategySpecs),
   )
   if (layer1BreadthPool.length > 0) {
     const layer1TargetSize = screenerPolicy.sizing.candidatePoolSize
@@ -3067,7 +3483,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     finalCandidates = dedupeScreenerCandidatesBySymbol(
       annotateCandidatesWithStrategySpecs([
         ...(selectedCandidates as any[]),
-      ] as ScreenerCandidate[]),
+      ] as ScreenerCandidate[], runtimeStrategySpecs),
     )
     strategySelectionTelemetry = {
       ...(strategySelectionTelemetry ?? {}),
@@ -3085,7 +3501,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `controller_l2_keep_ratio=${screenerPolicy.sizing.coarseMlKeepRatio} core_ml_target=${maxCandidates} post_diversity_universe=${afterIndustryLimit.length}`,
     )
   } else {
-    debugLog.push(`[Step 5] layer1 breadth unavailable; fallback to score-ranked L1 seed ${screenerPolicy.sizing.candidatePoolSize}`)
+    finalCandidates = []
+    strategySelectionTelemetry = {
+      ...(strategySelectionTelemetry ?? {}),
+      post_diversity_universe_count: afterIndustryLimit.length,
+      layer1_breadth_count: 0,
+      coarse_queue_count: 0,
+      top_up_count: 0,
+      raw_signal_observe_count: 0,
+      selected_after_overlay_count: 0,
+      l1_seed_count: 0,
+      core_ml_shortlist_size: maxCandidates,
+      layer1_breadth_blocked_reason: 'no_formal_strategy_or_observe_evidence',
+    }
+    debugLog.push(`[Step 5] layer1 breadth empty; blocked score-ranked L1 fallback ${screenerPolicy.sizing.candidatePoolSize}`)
   }
   const step5Msg = `[Step 5] ${scored.length} 瑼????璆凌${maxPerIndustry} ??${afterIndustryLimit.length} 瑼???coarse ${coarseQueueSize} ??${finalCandidates.length} 瑼???core target ${maxCandidates}`
   debugLog.push(step5Msg)
@@ -3144,6 +3573,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     emergingResearchCandidates.push(...dedupeScreenerCandidatesBySymbol(
       annotateCandidatesWithStrategySpecs(
         emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
+        runtimeStrategySpecs,
       ),
     ))
     debugLog.push(`[Step 5e] emerging research lane: ${emergingResearchCandidates.length}/${emergingScored.length} top ${emergingMaxCandidates}`)
@@ -3638,6 +4068,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         mlShortlistSize: screenerPolicy.sizing.mlShortlistSize,
         emergingResearchSize: screenerPolicy.sizing.emergingResearchSize,
         strategyCandidatePool: strategySelectionTelemetry,
+        rawFundamentalSignals: rawFundamentalLoad.telemetry,
+        fundamental_loader_error: l0RawSignalCoverageAudit.fundamental_loader_error,
+        l0RawSignalCoverageAudit,
+        finLabFactorNormalization: finLabFactorNormalizationTelemetry,
         restrictedCount: punishedSet.size,
         buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
       },

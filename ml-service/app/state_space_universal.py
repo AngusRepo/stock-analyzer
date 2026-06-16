@@ -51,7 +51,8 @@ _DEFAULT_MAX_WORKERS = {
 def _load_hyperparams(model_name: str, version: str) -> dict:
     """Module-cached hyperparam load (one shot per container lifetime per version).
 
-    Falls back to model_pool.DEFAULT_STATE_SPACE_HYPERPARAMS if GCS read fails.
+    Serving hyperparams are artifact-required; missing GCS rows make the overlay
+    return per-symbol errors instead of defaulting into synthetic output.
     """
     from .model_pool import load_state_space_hyperparams
     return load_state_space_hyperparams(model_name, version)
@@ -121,11 +122,7 @@ def _predict_one_state_space(
         }
     try:
         arr = np.asarray(prices, dtype=np.float64)
-        try:
-            pred = runner(arr, horizon=horizon, stock_id=0, hyperparams=hyperparams)
-        except TypeError:
-            # Compatibility fallback for older deployed runners.
-            pred = runner(arr, horizon=horizon, stock_id=0)
+        pred = runner(arr, horizon=horizon, stock_id=0, hyperparams=hyperparams)
         return _to_dict_shape(pred, model_name, symbol, version)
     except Exception as e:
         return {"symbol": symbol, "error": f"{type(e).__name__}: {e}"}

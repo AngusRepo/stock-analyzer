@@ -62,6 +62,7 @@ def test_long_history_enrichment_prefers_gcs_sequence_and_trims_to_target(monkey
     )
 
     assert meta["status"] == "ok"
+    assert meta["source"] == "gcs_long_history_or_payload_prices"
     assert meta["target_points"] == 1024
     assert meta["enriched_series"] == 1
     assert enriched[0]["sequence_source"] == "gcs_long_history"
@@ -69,6 +70,22 @@ def test_long_history_enrichment_prefers_gcs_sequence_and_trims_to_target(monkey
     assert enriched[0]["prices"][0] == 176.0
     assert enriched[1]["sequence_source"] == "payload_prices"
     assert enriched[1]["prices"] == [90.0, 91.0]
+
+
+def test_long_history_enrichment_surfaces_payload_only_without_fallback_label(monkeypatch):
+    def raise_loader(**_kwargs):
+        raise RuntimeError("gcs unavailable")
+
+    monkeypatch.setattr(state_space_series, "load_long_history_sequence_map", raise_loader)
+
+    enriched, meta = state_space_series.enrich_state_space_series_with_long_history(
+        [{"symbol": "2330", "prices": [1.0, 2.0]}],
+        target_points=1024,
+    )
+
+    assert enriched == [{"symbol": "2330", "prices": [1.0, 2.0]}]
+    assert meta["status"] == "payload_prices_only"
+    assert "fallback" not in meta["status"]
 
 
 def test_build_state_space_series_export_applies_limit():

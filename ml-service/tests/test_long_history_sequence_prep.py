@@ -5,8 +5,13 @@ import json
 
 import numpy as np
 import polars as pl
+import pytest
 
-from app.long_history_sequence_prep import build_finlab_long_history_sequence_prep
+from app.long_history_sequence_prep import (
+    SequenceSourceInvalidError,
+    SequenceSourceMissingError,
+    build_finlab_long_history_sequence_prep,
+)
 from app.research_benchmarks import common
 from app.gcs_batch_io import clear_gcs_batch_cache
 
@@ -125,6 +130,30 @@ def test_build_finlab_long_history_sequence_prep_reads_gs_style_prefix(tmp_path)
         "gs://stockvision-models/finlab/v4/backfill/run-1/raw/daily_price/close.parquet"
     )
     assert result["manifest"]["summary"]["symbols"] == 2
+
+
+def test_build_finlab_long_history_sequence_prep_requires_requested_source(tmp_path):
+    with pytest.raises(SequenceSourceMissingError, match="missing source parquet"):
+        build_finlab_long_history_sequence_prep({
+            "source_artifact_root": str(tmp_path),
+            "lanes": ["daily_price"],
+            "min_len": 8,
+            "dry_run": True,
+        })
+
+
+def test_build_finlab_long_history_sequence_prep_rejects_invalid_source_schema(tmp_path):
+    lane = tmp_path / "raw" / "daily_price"
+    lane.mkdir(parents=True)
+    pl.DataFrame({"2330": [100.0, 101.0]}).write_parquet(lane / "close.parquet")
+
+    with pytest.raises(SequenceSourceInvalidError, match="missing date column"):
+        build_finlab_long_history_sequence_prep({
+            "source_artifact_root": str(tmp_path),
+            "lanes": ["daily_price"],
+            "min_len": 2,
+            "dry_run": True,
+        })
 
 
 def test_build_finlab_long_history_sequence_prep_stitches_multiple_gcs_prefixes(tmp_path):

@@ -1,0 +1,46 @@
+﻿[
+    {
+        "run_id":  "screener-2026-06-15-1781547996222",
+        "date":  "2026-06-15",
+        "status":  "success",
+        "universe_count":  516,
+        "candidate_count":  516,
+        "final_count":  120,
+        "emerging_count":  24,
+        "created_at":  "2026-06-15 18:27:45",
+        "metadata_head":  "{\"candidatePoolSize\":120,\"coarseMlQueueSize\":80,\"coarseMlKeepRatio\":0.75,\"mlShortlistSize\":40,\"emergingResearchSize\":24,\"strategyCandidatePool\":{\"version\":\"strategy-candidate-pool-v1:layer1-breadth-v1\",\"candidate_pool_version\":\"strategy-candidate-pool-v1\",\"spec_source\":\"registry\",\"capacity\":{\"mode\":\"base\",\"totalCap\":120,\"baseTotalBudget\":64,\"mlQueueCap\":120,\"researchQueueBudget\":40,\"reason\":\"requested_cap_bounded_without_mode_upgrade\"},\"telemetry\":{\"strategy_count\":75,\"pool_entries\":626,\"deduped_symbols\":73,\"ml_queue_count\":63,\"research_only_count\":10,\"dropped_count\":0,\"overflow_count\":10,\"estimated_batch_chunks\":2,\"strategy_usage\":{\"breakout_vol_expansion_seed_v1\":12,\"defensive_accumulation_seed_v1\":4,\"finlab_ai_skill_chip_accumulation_v1\":2,\"finlab_ai_skill_rsi_volume_reclaim_v1\":16,\"finlab_ai_skill_sector_rotation_core_v1\":15,\"finlab_ai_skill_smc_structure_reclaim_v1\":12,\"finlab_ai_skill_volume_breakout_v1\":2},\"industry_usage\":{\"LED照明產業\":1,\"交通運輸及航運\":1,\"人工智慧\":1,\"休閒娛樂\":1,\"元宇宙\":1,\"其他\":8,\"半導體\":3,\"半導體業\":1,\"印刷電路板\":4,\"大數據\":1,\"太陽能產業\":6,\"建材營造\":8,\"汽車\":2,\"石化及塑橡膠\":4,\"被動元件\":2,\"製藥\":1,\"軟體服務\":1,\"通信網路\":1,\"造紙\":1,\"連接器\":3,\"金融\":6,\"電機機械\":1,\"電腦及週邊設備\":5}},\"layer1_telemetry\":{\"selection_order\":\"full_fea"
+    },
+    {
+        "run_id":  "screener-2026-06-15-1781547526312",
+        "date":  "2026-06-15",
+        "status":  "success",
+        "universe_count":  516,
+        "candidate_count":  516,
+        "final_count":  120,
+        "emerging_count":  24,
+        "created_at":  "2026-06-15 18:20:18",
+        "metadata_head":  "{\"candidatePoolSize\":120,\"coarseMlQueueSize\":80,\"coarseMlKeepRatio\":0.75,\"mlShortlistSize\":40,\"emergingResearchSize\":24,\"strategyCandidatePool\":{\"version\":\"strategy-candidate-pool-v1:layer1-breadth-v1\",\"candidate_pool_version\":\"strategy-candidate-pool-v1\",\"spec_source\":\"registry\",\"capacity\":{\"mode\":\"base\",\"totalCap\":120,\"baseTotalBudget\":64,\"mlQueueCap\":120,\"researchQueueBudget\":40,\"reason\":\"requested_cap_bounded_without_mode_upgrade\"},\"telemetry\":{\"strategy_count\":75,\"pool_entries\":626,\"deduped_symbols\":73,\"ml_queue_count\":63,\"research_only_count\":10,\"dropped_count\":0,\"overflow_count\":10,\"estimated_batch_chunks\":2,\"strategy_usage\":{\"breakout_vol_expansion_seed_v1\":12,\"defensive_accumulation_seed_v1\":4,\"finlab_ai_skill_chip_accumulation_v1\":2,\"finlab_ai_skill_rsi_volume_reclaim_v1\":16,\"finlab_ai_skill_sector_rotation_core_v1\":15,\"finlab_ai_skill_smc_structure_reclaim_v1\":12,\"finlab_ai_skill_volume_breakout_v1\":2},\"industry_usage\":{\"LED照明產業\":1,\"交通運輸及航運\":1,\"人工智慧\":1,\"休閒娛樂\":1,\"元宇宙\":1,\"其他\":8,\"半導體\":3,\"半導體業\":1,\"印刷電路板\":4,\"大數據\":1,\"太陽能產業\":6,\"建材營造\":8,\"汽車\":2,\"石化及塑橡膠\":4,\"被動元件\":2,\"製藥\":1,\"軟體服務\":1,\"通信網路\":1,\"造紙\":1,\"連接器\":3,\"金融\":6,\"電機機械\":1,\"電腦及週邊設備\":5}},\"layer1_telemetry\":{\"selection_order\":\"full_fea"
+    },
+    {
+        "run_id":  "screener-2026-06-15-1781547309763",
+        "date":  "2026-06-15",
+        "status":  "success",
+        "universe_count":  516,
+        "candidate_count":  516,
+        "final_count":  120,
+        "emerging_count":  24,
+        "created_at":  "2026-06-15 18:16:15",
+        "metadata_head":  "{\"candidatePoolSize\":120,\"coarseMlQueueSize\":80,\"coarseMlKeepRatio\":0.75,\"mlShortlistSize\":40,\"emergingResearchSize\":24,\"strategyCandidatePool\":{\"version\":\"strategy-candidate-pool-v1:layer1-breadth-v1\",\"candidate_pool_version\":\"strategy-candidate-pool-v1\",\"spec_source\":\"registry\",\"capacity\":{\"mode\":\"base\",\"totalCap\":120,\"baseTotalBudget\":64,\"mlQueueCap\":120,\"researchQueueBudget\":40,\"reason\":\"requested_cap_bounded_without_mode_upgrade\"},\"telemetry\":{\"strategy_count\":75,\"pool_entries\":626,\"deduped_symbols\":73,\"ml_queue_count\":63,\"research_only_count\":10,\"dropped_count\":0,\"overflow_count\":10,\"estimated_batch_chunks\":2,\"strategy_usage\":{\"breakout_vol_expansion_seed_v1\":12,\"defensive_accumulation_seed_v1\":4,\"finlab_ai_skill_chip_accumulation_v1\":2,\"finlab_ai_skill_rsi_volume_reclaim_v1\":16,\"finlab_ai_skill_sector_rotation_core_v1\":15,\"finlab_ai_skill_smc_structure_reclaim_v1\":12,\"finlab_ai_skill_volume_breakout_v1\":2},\"industry_usage\":{\"LED照明產業\":1,\"交通運輸及航運\":1,\"人工智慧\":1,\"休閒娛樂\":1,\"元宇宙\":1,\"其他\":8,\"半導體\":3,\"半導體業\":1,\"印刷電路板\":4,\"大數據\":1,\"太陽能產業\":6,\"建材營造\":8,\"汽車\":2,\"石化及塑橡膠\":4,\"被動元件\":2,\"製藥\":1,\"軟體服務\":1,\"通信網路\":1,\"造紙\":1,\"連接器\":3,\"金融\":6,\"電機機械\":1,\"電腦及週邊設備\":5}},\"layer1_telemetry\":{\"selection_order\":\"full_fea"
+    },
+    {
+        "run_id":  "screener-2026-06-15-1781533530594",
+        "date":  "2026-06-15",
+        "status":  "success",
+        "universe_count":  516,
+        "candidate_count":  516,
+        "final_count":  24,
+        "emerging_count":  24,
+        "created_at":  "2026-06-15 14:27:23",
+        "metadata_head":  "{\"candidatePoolSize\":120,\"coarseMlQueueSize\":80,\"coarseMlKeepRatio\":0.75,\"mlShortlistSize\":40,\"emergingResearchSize\":24,\"strategyCandidatePool\":{\"version\":\"strategy-candidate-pool-v1:layer1-breadth-v1\",\"candidate_pool_version\":\"strategy-candidate-pool-v1\",\"spec_source\":\"registry\",\"capacity\":{\"mode\":\"base\",\"totalCap\":120,\"baseTotalBudget\":64,\"mlQueueCap\":120,\"researchQueueBudget\":40,\"reason\":\"requested_cap_bounded_without_mode_upgrade\"},\"telemetry\":{\"strategy_count\":75,\"pool_entries\":626,\"deduped_symbols\":74,\"ml_queue_count\":65,\"research_only_count\":9,\"dropped_count\":0,\"overflow_count\":9,\"estimated_batch_chunks\":2,\"strategy_usage\":{\"breakout_vol_expansion_seed_v1\":12,\"defensive_accumulation_seed_v1\":4,\"finlab_ai_skill_chip_accumulation_v1\":2,\"finlab_ai_skill_rsi_volume_reclaim_v1\":16,\"finlab_ai_skill_sector_rotation_core_v1\":16,\"finlab_ai_skill_smc_structure_reclaim_v1\":12,\"finlab_ai_skill_volume_breakout_v1\":3},\"industry_usage\":{\"LED照明產業\":1,\"交通運輸及航運\":1,\"休閒娛樂\":1,\"元宇宙\":1,\"其他\":8,\"半導體\":5,\"半導體業\":1,\"印刷電路板\":4,\"大數據\":1,\"太陽能產業\":6,\"平面顯示器\":1,\"建材營造\":8,\"汽車\":2,\"石化及塑橡膠\":4,\"被動元件\":2,\"製藥\":1,\"軟體服務\":1,\"造紙\":1,\"連接器\":3,\"金融\":6,\"電機機械\":2,\"電腦及週邊設備\":5}},\"layer1_telemetry\":{\"selection_order\":\"full_feature_enric"
+    }
+]

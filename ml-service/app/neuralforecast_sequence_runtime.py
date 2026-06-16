@@ -24,6 +24,7 @@ from .prep_lineage import (
     collect_prep_lineage,
     validate_prep_lineage_for_registration,
 )
+from .training_promotion_policy import resolve_training_promotion_intent
 from .research_benchmarks.common import cpcv_proxy_pbo, data_slice_report, direction_accuracy, load_sequence_dataset, rank_ic
 from .sequence_training import build_sequence_window_dataset
 from .model_validation import build_model_cpcv_evidence
@@ -427,7 +428,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         or payload.get("batch_count")
         or DEFAULT_BATCH_COUNT
     )
-    promote_to_active = bool(payload.get("promote_to_active", False))
+    promote_to_active, _promotion_reason = resolve_training_promotion_intent(payload, model_name=model_name)
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset_source = load_sequence_dataset(payload)

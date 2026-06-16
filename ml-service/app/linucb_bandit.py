@@ -229,36 +229,29 @@ BANDIT_STATE_FILENAME = "linucb_bandit_state.npz"
 
 
 def save_bandit(bandit: LinUCBBandit, dir_path: str) -> str:
-    """儲存 A, b, obs_count 到本地 .npz 檔 + GCS 持久化。"""
-    # 本地存檔（快速存取）
+    """Persist LinUCB state to GCS and mirror locally for diagnostics."""
     os.makedirs(dir_path, exist_ok=True)
     path = os.path.join(dir_path, BANDIT_STATE_FILENAME)
     np.savez(path, A=bandit.A, b=bandit.b, obs_count=bandit.obs_count,
              alpha=np.array([bandit.alpha]))
-    # #3 GCS 持久化（防容器重啟遺失）
-    _save_bandit_gcs(bandit)
+    if not _save_bandit_gcs(bandit):
+        raise RuntimeError("LinUCB GCS save failed")
     return path
 
 
-def load_bandit(dir_path: str) -> LinUCBBandit:
-    """從 GCS 載入（主）→ 本地 fallback → 全新 bandit。"""
-    # #3 先嘗試 GCS
+def load_bandit(dir_path: str, *, allow_fresh: bool = False) -> LinUCBBandit:
+    """Load LinUCB state from GCS.
+
+    Online update paths must use the default artifact-required behavior so a
+    missing durable state cannot be replaced by a fresh bandit. Prediction paths
+    may pass allow_fresh=True only when they need a transparent no-op object.
+    """
     gcs_bandit = _load_bandit_gcs()
     if gcs_bandit is not None:
         return gcs_bandit
-    # 本地 fallback
-    path = os.path.join(dir_path, BANDIT_STATE_FILENAME)
-    if not os.path.exists(path):
+    if allow_fresh:
         return LinUCBBandit()
-    data = np.load(path)
-    bandit = LinUCBBandit(
-        alpha=float(data["alpha"][0]),
-    )
-    bandit.A         = data["A"].copy()
-    bandit.b         = data["b"].copy()
-    bandit.obs_count = data["obs_count"].copy()
-    bandit = _migrate_bandit_arms(bandit)
-    return bandit
+    raise FileNotFoundError("LinUCB state missing in GCS: meta/linucb_bandit_state.npz")
 
 
 def _migrate_bandit_arms(bandit: LinUCBBandit) -> LinUCBBandit:

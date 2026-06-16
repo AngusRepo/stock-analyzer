@@ -10,7 +10,7 @@ import {
 import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig'
 import type { StrategyCandidatePoolCandidate, StrategyQueueDecision } from './strategyCandidatePool'
 import {
-  buildStrategySimilarityGraphEvidence,
+  buildMissingStrategySimilarityGraphEvidence,
   type StrategySimilarityGraphEvidence,
 } from './strategyPortfolioMetrics'
 
@@ -42,7 +42,9 @@ export interface StrategyPortfolioMetrics {
   return_correlation: number
   holding_overlap: number
   turnover: number
+  factor_return: number
   factor_crowding: number
+  centrality: number
   ic: number
   rank_ic: number
   shapley_contribution: number
@@ -171,6 +173,8 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     strategy_similarity_evidence_source?: string
     strategy_similarity_algorithm_owner?: string
     strategy_similarity_medoid_algorithm?: string
+    strategy_similarity_blocked_reason?: string
+    /** @deprecated Read historical funnel rows only. New runtime writes blocked_reason. */
     strategy_similarity_degraded_reason?: string
     strategy_metric_status_counts: Record<string, number>
     strategy_metric_ready_count: number
@@ -403,18 +407,20 @@ function overrideNumber<T extends keyof StrategyPortfolioMetrics>(
 }
 
 function computeReliability(metrics: Pick<StrategyPortfolioMetrics,
-  'rolling_sharpe' | 'max_drawdown' | 'recent_alpha' | 'ic' | 'rank_ic' | 'regime_performance' | 'live_backtest_divergence'
+  'rolling_sharpe' | 'max_drawdown' | 'recent_alpha' | 'factor_return' | 'ic' | 'rank_ic' | 'regime_performance' | 'live_backtest_divergence'
 >): number {
   const sharpeScore = clamp((metrics.rolling_sharpe + 1) / 3, 0, 1)
   const drawdownScore = 1 - clamp(metrics.max_drawdown, 0, 1)
   const alphaScore = clamp(0.5 + metrics.recent_alpha * 5, 0, 1)
+  const factorReturnScore = clamp(0.5 + metrics.factor_return * 5, 0, 1)
   const icScore = clamp(0.5 + average([metrics.ic, metrics.rank_ic]) * 3, 0, 1)
   const regimeScore = clamp(0.5 + metrics.regime_performance * 2, 0, 1)
   const divergenceScore = 1 - clamp(metrics.live_backtest_divergence, 0, 1)
   return round3(
     sharpeScore * 0.22
     + drawdownScore * 0.18
-    + alphaScore * 0.18
+    + alphaScore * 0.14
+    + factorReturnScore * 0.04
     + icScore * 0.18
     + regimeScore * 0.12
     + divergenceScore * 0.12,
@@ -422,13 +428,14 @@ function computeReliability(metrics: Pick<StrategyPortfolioMetrics,
 }
 
 function computeCrowdingScore(metrics: Pick<StrategyPortfolioMetrics,
-  'return_correlation' | 'holding_overlap' | 'turnover' | 'factor_crowding'
+  'return_correlation' | 'holding_overlap' | 'turnover' | 'factor_crowding' | 'centrality'
 >): number {
   return round3(clamp(
     metrics.holding_overlap * 0.35
     + metrics.return_correlation * 0.25
-    + metrics.turnover * 0.15
-    + metrics.factor_crowding * 0.25,
+    + metrics.turnover * 0.12
+    + metrics.factor_crowding * 0.2
+    + metrics.centrality * 0.08,
     0,
     1,
   ))
@@ -517,18 +524,11 @@ function portfolioPriorForLabels(
       labelsByStrategy.set(label.strategy_id, labels)
     }
   }
-  const localStrategySimilarityGraph = buildStrategySimilarityGraphEvidence(
-    validSpecs.map((spec) => ({
-      strategy_id: spec.id,
-      family_id: spec.familyId,
-      symbols: [...(strategySymbols.get(spec.id) ?? new Set<string>())],
-    })),
-    {
-      edgeThreshold: options.strategySimilarityEdgeThreshold,
-      thresholdQuantile: options.strategySimilarityThresholdQuantile,
-    },
-  )
-  const strategySimilarityGraph = options.strategySimilarityGraphEvidence ?? localStrategySimilarityGraph
+  const strategySimilarityGraph = options.strategySimilarityGraphEvidence
+    ?? buildMissingStrategySimilarityGraphEvidence(
+      validSpecs.map((spec) => spec.id),
+      'modal_python_strategy_similarity_evidence_missing',
+    )
 
   const strategy_prior_weight: Record<string, number> = {}
   const strategy_metric_status: Record<string, string> = {}
@@ -572,7 +572,9 @@ function portfolioPriorForLabels(
       return_correlation: round3(clamp(maxOverlap * 0.72 + familySupportRatio * 0.28, 0, 1)),
       holding_overlap: round3(clamp(maxOverlap, 0, 1)),
       turnover: round3(rawTurnover),
+      factor_return: round3(clamp((avgAffinity - 0.5) * 0.16, -0.12, 0.18)),
       factor_crowding: round3(clamp(familySupportRatio * 0.52 + supportRatio * 0.18 + graphCrowding * 0.3, 0, 1)),
+      centrality: round3(clamp(graphCrowding * 0.65 + maxOverlap * 0.35, 0, 1)),
       ic: round3(clamp((avgAffinity - 0.5) * 0.42, -0.25, 0.3)),
       rank_ic: round3(clamp((avgAffinity - 0.5) * 0.48, -0.28, 0.35)),
       shapley_contribution: round3(clamp((avgAffinity / Math.sqrt(Math.max(1, familyCount))) * (0.75 + graphUniqueness * 0.25), 0, 1)),
@@ -590,7 +592,9 @@ function portfolioPriorForLabels(
       return_correlation: overrideNumber(rawOverride, 'return_correlation', derived.return_correlation),
       holding_overlap: overrideNumber(rawOverride, 'holding_overlap', derived.holding_overlap),
       turnover: overrideNumber(rawOverride, 'turnover', derived.turnover),
+      factor_return: overrideNumber(rawOverride, 'factor_return', derived.factor_return),
       factor_crowding: overrideNumber(rawOverride, 'factor_crowding', derived.factor_crowding),
+      centrality: overrideNumber(rawOverride, 'centrality', derived.centrality),
       ic: overrideNumber(rawOverride, 'ic', derived.ic),
       rank_ic: overrideNumber(rawOverride, 'rank_ic', derived.rank_ic),
       shapley_contribution: overrideNumber(rawOverride, 'shapley_contribution', derived.shapley_contribution),
@@ -981,7 +985,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       strategy_similarity_evidence_source: prior.strategy_similarity_graph.source ?? 'unknown',
       strategy_similarity_algorithm_owner: prior.strategy_similarity_graph.algorithm_owner ?? 'unknown',
       strategy_similarity_medoid_algorithm: prior.strategy_similarity_graph.medoid_algorithm ?? 'none',
-      strategy_similarity_degraded_reason: prior.strategy_similarity_graph.degraded_reason,
+      strategy_similarity_blocked_reason: prior.strategy_similarity_graph.blocked_reason,
       strategy_metric_status_counts: Object.fromEntries(Object.entries(metricStatusCounts).sort()),
       strategy_metric_ready_count: Object.entries(prior.strategy_metric_status)
         .filter(([, status]) => status === 'ready' || status === 'reward_only' || status === 'backtest_only' || status === 'decision_log_only')

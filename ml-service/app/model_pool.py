@@ -135,8 +135,8 @@ MIN_ACTIVE_PER_FAMILY = {
     "time_series": 2,    # ≥2 of 3 time-series must stay active
 }
 
-# State-space default hyperparameters (used when no GCS pool entry exists).
-# Stage 6.3 future: Optuna search replaces these with Pareto-optimal values.
+# State-space hyperparameter schema/template. Serving must load the concrete
+# versioned hyperparams artifact from GCS; these values are not a runtime fallback.
 DEFAULT_STATE_SPACE_HYPERPARAMS = {
     "KalmanFilter": {
         "process_noise":      0.01,    # Q matrix scalar (state evolution variance)
@@ -359,21 +359,22 @@ def compute_weight(
     model_name: str,
     ic_value: float,
     pool: Optional[dict] = None,
-    degraded_dampening: float = 1.0,
+    degraded_dampening: float = 0.1,
 ) -> float:
     """ML_POOL ensemble weight = max(0, ic) × status_filter × dampening.
 
     2026-04-19 R1+R3 hybrid (replaces hardcoded 0.0/0.1/1.0 lifecycle multipliers):
       - **R3 (continuous IC-based)**: IC drives weight directly; IC<0 → 0.
         Industry standard for cases with clear ground truth (IC).
-      - **R1 (KV-driven dampening)**: degraded_dampening defaults to 1.0
-        (pure IC, no extra dampening). Caller passes from
+      - **R1 (KV-driven dampening)**: degraded_dampening defaults to 0.1
+        so degraded models remain diagnostic but no longer behave as active.
+        Caller may override from
         `trading:config.mlPool.degradedDampening` for production override.
         Future Optuna search (after #31 backtest Mode B) can tune this.
 
     Status semantics:
       active:     pure IC weight
-      degraded:   IC × degraded_dampening (default 1.0 = no extra dampening)
+      degraded:   IC × degraded_dampening (default 0.1)
       challenger: 0 (shadow predict only)
       retired:    0 (excluded)
 
@@ -382,7 +383,7 @@ def compute_weight(
       ic_value:    raw IC (e.g. 0.13 from model_pool weekly_ic/rolling_ic)
       pool:        loaded model_pool dict (or None to fetch from GCS)
       degraded_dampening: extra multiplier applied only if status == degraded.
-                          Default 1.0 = no dampening = pure R3 (industry std).
+                          Default 0.1 = diagnostic low-weight contribution.
                           Future: Optuna-searchable post #31 Mode B.
 
     Returns:
@@ -512,22 +513,22 @@ def state_space_hyperparams_path(model_name: str, version: str = "v1") -> str:
 
 
 def load_state_space_hyperparams(model_name: str, version: str = "v1") -> dict:
-    """Load shared hyperparams from GCS, fall back to DEFAULT_STATE_SPACE_HYPERPARAMS.
+    """Load shared serving hyperparams from GCS.
 
     Inference path (run_kalman_filter / run_markov_switching) calls this once
     per request; the returned dict drives state-space construction.
     """
     if model_name not in DEFAULT_STATE_SPACE_HYPERPARAMS:
         raise ValueError(f"{model_name} is not a state-space model")
-    try:
-        bucket = _get_bucket()
-        path = state_space_hyperparams_path(model_name, version)
-        blob = bucket.blob(path)
-        if blob.exists():
-            return json.loads(blob.download_as_text().lstrip("\ufeff"))
-    except Exception as e:
-        logger.warning(f"[ModelPool] state-space hyperparams load failed for {model_name}/{version}: {e}")
-    return dict(DEFAULT_STATE_SPACE_HYPERPARAMS[model_name])
+    bucket = _get_bucket()
+    path = state_space_hyperparams_path(model_name, version)
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise FileNotFoundError(f"state-space hyperparams missing: gs://{_get_configured_gcs_bucket()}/{path}")
+    payload = json.loads(blob.download_as_text().lstrip("\ufeff"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"state-space hyperparams payload must be object: {path}")
+    return payload
 
 
 def save_state_space_hyperparams(model_name: str, hyperparams: dict, version: str = "v1") -> str:

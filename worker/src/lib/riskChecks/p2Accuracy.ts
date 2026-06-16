@@ -1,12 +1,42 @@
 /**
- * p2Accuracy.ts — Layer 2: Model accuracy gate (30d recent)
+ * p2Accuracy.ts - Layer 2: model accuracy evidence.
  *
- * Reads adaptive_params.recent_accuracy_30d first (single source of truth),
- * falls back to local SQL over predictions table if unavailable.
- * 2026-04-21 R1 extract from paper.ts L2.
+ * Runtime sources:
+ * 1. ml:adaptive_params.recent_accuracy_30d from ml-controller.
+ * 2. model_accuracy active-9 aggregate as the local authoritative table.
+ *
+ * No predictions-table fallback: if both sources are unavailable, fail closed.
  */
 import type { TradingConfig } from '../tradingConfig'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
+
+const ACTIVE_9_MODELS = [
+  'LightGBM',
+  'XGBoost',
+  'ExtraTrees',
+  'TabM',
+  'GNN',
+  'DLinear',
+  'PatchTST',
+  'iTransformer',
+  'TimesFM',
+]
+
+async function readActive9ModelAccuracy30d(db: D1Database): Promise<{ accuracy: number; samples: number } | null> {
+  const placeholders = ACTIVE_9_MODELS.map(() => '?').join(', ')
+  const row = await db.prepare(`
+    SELECT CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS accuracy,
+           SUM(total_count) AS samples
+      FROM model_accuracy
+     WHERE period='30d'
+       AND total_count >= 3
+       AND model_name IN (${placeholders})
+  `).bind(...ACTIVE_9_MODELS).first<{ accuracy: number | null; samples: number | null }>()
+  const accuracy = Number(row?.accuracy)
+  const samples = Number(row?.samples)
+  if (!Number.isFinite(accuracy) || !Number.isFinite(samples) || samples <= 0) return null
+  return { accuracy, samples }
+}
 
 export async function checkP2Accuracy(
   db: D1Database,
@@ -16,9 +46,9 @@ export async function checkP2Accuracy(
 ): Promise<LegacyLayerResult> {
   const cc = cfg.circuit
   const { defaults, effectiveBuy } = deps
-
-  const defaultAcc = cc.defaultAccuracy ?? 0.5
-  let recentAcc = defaultAcc
+  let recentAcc: number | null = null
+  let evidenceSource = 'missing'
+  const evidenceErrors: string[] = []
 
   if (kv) {
     try {
@@ -26,32 +56,44 @@ export async function checkP2Accuracy(
       const adaptive = await getAdaptiveParams(kv)
       if (adaptive?.recent_accuracy_30d != null) {
         recentAcc = adaptive.recent_accuracy_30d
+        evidenceSource = 'ml:adaptive_params'
       }
-    } catch {
-      /* fallback to local SQL */
+    } catch (error: any) {
+      evidenceErrors.push(`adaptive_params:${error?.message ?? error}`)
     }
   }
 
-  if (recentAcc === defaultAcc) {
-    // Sprint 4-3 root cause fix (2026-04-07):
-    // WHERE direction_correct IN (0, 1) excludes -1 (neutral HOLD/NO_SIGNAL)
-    const accuracyRow = await db.prepare(`
-      SELECT AVG(CASE WHEN direction_correct=1 THEN 1.0 ELSE 0.0 END) as acc
-      FROM predictions
-      WHERE generated_at >= datetime('now', '-30 days')
-      AND direction_correct IN (0, 1)
-    `).first<any>()
-    recentAcc = accuracyRow?.acc ?? defaultAcc
+  if (recentAcc == null) {
+    try {
+      const observed = await readActive9ModelAccuracy30d(db)
+      if (observed) {
+        recentAcc = observed.accuracy
+        evidenceSource = `model_accuracy.active9.samples_${observed.samples}`
+      }
+    } catch (error: any) {
+      evidenceErrors.push(`model_accuracy:${error?.message ?? error}`)
+    }
+  }
+
+  if (recentAcc == null) {
+    console.warn(`[CircuitBreaker] Layer2: model accuracy evidence unavailable; fail closed (${evidenceErrors.join('; ') || 'no evidence'})`)
+    return {
+      halt: true,
+      reason: `P2 model accuracy evidence unavailable (${evidenceErrors.join('; ') || 'no evidence'})`,
+      maxPositionPct: 0,
+      buyConfThreshold: 1.0,
+      sellConfThreshold: Math.max(defaults.sellConfThreshold, 1.0),
+    }
   }
 
   if (recentAcc < cc.lowAccuracyThreshold) {
-    console.warn(`[CircuitBreaker] Layer2: model accuracy ${(recentAcc * 100).toFixed(1)}% < ${(cc.lowAccuracyThreshold * 100).toFixed(0)}%, raising threshold`)
+    console.warn(`[CircuitBreaker] Layer2: model accuracy ${(recentAcc * 100).toFixed(1)}% < ${(cc.lowAccuracyThreshold * 100).toFixed(0)}%, raising threshold source=${evidenceSource}`)
     const raisedConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
     return {
       ...defaults,
       buyConfThreshold: raisedConf,
       sellConfThreshold: raisedConf,
-      reason: `模型近期準確率 ${(recentAcc * 100).toFixed(1)}%`,
+      reason: `P2 model accuracy ${(recentAcc * 100).toFixed(1)}% source=${evidenceSource}`,
     }
   }
 

@@ -1,0 +1,379 @@
+﻿{
+    "date":  "2026-06-15",
+    "logs":  [
+                 {
+                     "task":  "pre-market-warmup",
+                     "status":  "success",
+                     "summary":  "Worker:self ok, Frontend:ok, ML-Controller:ok pipelineJob=ok verifyJob=ok callback=ok, Shioaji:ok; state=empty(æ²æåé¸); active=0/0; debate_pending=0; exec[pending=0 filled=0 skipped=0 cancelled=0 expired=0 rejected=0]; debate=no_pending_debate",
+                     "duration_ms":  9455,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T00:50:11.358Z"
+                 },
+                 {
+                     "task":  "evening-chain",
+                     "status":  "success",
+                     "summary":  "root chain closed after successful 2026-06-15 rerun: finlab canonical ready, screener run_id=screener-2026-06-15-1781547309763, pipeline=pipeline-v2-l6vvl success, verify-v2 skipped historical window",
+                     "duration_ms":  271397,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:44:36.219Z"
+                 },
+                 {
+                     "task":  "update",
+                     "status":  "success",
+                     "summary":  "market data update ready for 2026-06-15; FinLab primary canonical ready; TWSE/TPEX supplemental refresh complete; FinLab canonical ready for 2026-06-15: canonical_market_daily=2723 canonical_chip_daily=2651 canonical_institutional_amount_daily=14; market data ready for 2026-06-15: price=1970 TWSE=1083 OTC=887, chip=14423, indicators=1970; TWSE/TPEX supplemental fetched price=1966 chip=14423 margin=1847; source_role=supplemental_after_finlab_canonical",
+                     "duration_ms":  0,
+                     "run_id":  "finlab-v4-3y-20260615-1781546771293",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:24:07.460Z"
+                 },
+                 {
+                     "task":  "indicator-queue",
+                     "status":  "success",
+                     "summary":  "indicator queue complete for 2026-06-15; run_id=2026-06-15-mqfjl91g; shards=4",
+                     "duration_ms":  0,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:26:32.173Z"
+                 },
+                 {
+                     "task":  "ml-warmup",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "post-pipeline-chain",
+                     "status":  "success",
+                     "summary":  "verify-v2:triggered",
+                     "duration_ms":  3470,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:36:49.084Z"
+                 },
+                 {
+                     "task":  "post-verify-chain",
+                     "status":  "success",
+                     "summary":  "manual closure after successful rerun pipeline-v2-l6vvl: model-ic-tracker:success historical-current-date tasks:skipped verify-v2:skipped",
+                     "duration_ms":  2096,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:44:35.656Z"
+                 },
+                 {
+                     "task":  "dataset-snapshot-export",
+                     "status":  "success",
+                     "summary":  "run_id=pipeline-v2-l6vvl:snapshot backtest=backtest_dataset:2026-06-15:pipeline-v2-l6vvl:snapshot rows=2163436 price=price_history:2026-06-15:pipeline-v2-l6vvl:snapshot rows=730394",
+                     "duration_ms":  167167,
+                     "run_id":  "pipeline-v2-l6vvl:snapshot",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:39:37.840Z"
+                 },
+                 {
+                     "task":  "linucb-reward-ledger",
+                     "status":  "skipped",
+                     "summary":  "skipped historical callback run_date=2026-06-15; linucb-reward-ledger is current-date only",
+                     "duration_ms":  0,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:31.090Z"
+                 },
+                 {
+                     "task":  "adaptive-meta-policy-replay",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "linucb-multiplier-replay",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "meta-learning-shadow",
+                     "status":  "skipped",
+                     "summary":  "skipped historical callback run_date=2026-06-15; meta-learning-shadow is current-date only",
+                     "duration_ms":  0,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:34.246Z"
+                 },
+                 {
+                     "task":  "strategy-learning",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "pipeline",
+                     "status":  "success",
+                     "summary":  "run_id=pipeline-v2-l6vvl preds=1010 recos=40 llm_reasons=0 snapshot=deferred errors=0",
+                     "duration_ms":  271397,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:36:44.620Z"
+                 },
+                 {
+                     "task":  "ml-predict",
+                     "status":  "success",
+                     "summary":  "run_id=pipeline-v2-l6vvl symbols=120 rows=1010 models=8",
+                     "duration_ms":  271397,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:36:49.570Z"
+                 },
+                 {
+                     "task":  "recommendation",
+                     "status":  "success",
+                     "summary":  "run_id=pipeline-v2-l6vvl recos=40",
+                     "duration_ms":  271397,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:36:50.104Z"
+                 },
+                 {
+                     "task":  "screener",
+                     "status":  "success",
+                     "summary":  "{\"hotSectors\":[],\"candidates\":[{\"symbol\":\"6202\",\"name\":\"çç¾¤\",\"sector\":\"åå°é«\",\"score\":44.4,\"reason\":\"[rrg_overlay Improving +3] institutional_turnover_intensity_227.6% | RSI 56 | MACD æ­î«´î¹¦ | buzz_evidence:äººèè¾¨è­+1.5\",\"chip_score\":33,\"tech_score\":24,\"momentum_score\":14.6,\"score_components\":\"{\\\"version\\\":\\\"score_v2\\\",\\\"weights\\\":{\\\"mlEdge\\\":25,\\\"chipFlow\\\":25,\\\"technicalStructure\\\":25,\\\"fundamentalQuality\\\":20,\\\"newsTheme\\\":5},\\\"components\\\":{\\\"mlEdge\\\":0,\\\"chipFlow\\\":20.6,\\\"technicalStructure\\\":19.3,\\\"",
+                     "duration_ms":  0,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:28:08.019Z"
+                 },
+                 {
+                     "task":  "us-leading",
+                     "status":  "success",
+                     "summary":  "{\"date\":\"2026-06-15\",\"sox_close\":13371.4697265625,\"sox_return\":0.015186592380902246,\"sox_ma5\":12862.7740234375,\"tsm_close\":423.92999267578125,\"tsm_return\":0.006792184914183038,\"tsm_premium\":null,\"gspc",
+                     "duration_ms":  2108,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-14T22:30:04.045Z"
+                 },
+                 {
+                     "task":  "news-analyst",
+                     "status":  "success",
+                     "summary":  "bias=neutral conf=0.30 factors=0",
+                     "duration_ms":  5757,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-14T22:45:07.714Z"
+                 },
+                 {
+                     "task":  "morning-setup",
+                     "status":  "success",
+                     "summary":  "morning setup done; state=empty(æ²æåé¸); active=0/0; debate_pending=0; exec[pending=0 filled=0 skipped=0 cancelled=0 expired=0 rejected=0]; source=d1",
+                     "duration_ms":  14560,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-14T23:15:16.899Z"
+                 },
+                 {
+                     "task":  "morning-briefing",
+                     "status":  "success",
+                     "summary":  "Morning briefing sent to not_sent:no_channel_configured; state=empty active=0/0; evidence=us-leading:kv | news-analyst:kv",
+                     "duration_ms":  1234,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-14T23:50:03.093Z"
+                 },
+                 {
+                     "task":  "daily-snapshot",
+                     "status":  "success",
+                     "summary":  "{\"date\":\"2026-06-15\"}",
+                     "duration_ms":  13342,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T06:20:15.307Z"
+                 },
+                 {
+                     "task":  "adapt",
+                     "status":  "skipped",
+                     "summary":  "skipped historical callback run_date=2026-06-15; adapt is current-date only",
+                     "duration_ms":  0,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:32.058Z"
+                 },
+                 {
+                     "task":  "daily-report",
+                     "status":  "skipped",
+                     "summary":  "skipped historical callback run_date=2026-06-15; daily-report is current-date only",
+                     "duration_ms":  0,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:32.576Z"
+                 },
+                 {
+                     "task":  "paper-intraday-cache-clear",
+                     "status":  "skipped",
+                     "summary":  "skipped historical callback run_date=2026-06-15; paper-intraday-cache-clear is current-date only",
+                     "duration_ms":  0,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:31.616Z"
+                 },
+                 {
+                     "task":  "paper-active-postmarket",
+                     "status":  "skipped",
+                     "summary":  "skipped historical callback run_date=2026-06-15; paper-active-postmarket is current-date only",
+                     "duration_ms":  0,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:33.220Z"
+                 },
+                 {
+                     "task":  "obsidian-daily",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "obsidian-sync",
+                     "status":  "skipped",
+                     "summary":  "skipped historical callback run_date=2026-06-15; obsidian-sync is current-date only",
+                     "duration_ms":  0,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:33.728Z"
+                 },
+                 {
+                     "task":  "regime-compute",
+                     "status":  "success",
+                     "summary":  "pre-pipeline regime=bull_market idx=0 kv=ok shift=same",
+                     "duration_ms":  28040,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:28:47.527Z"
+                 },
+                 {
+                     "task":  "verify-v2",
+                     "status":  "skipped",
+                     "summary":  "manual post-verify closure for successful 2026-06-15 rerun pipeline-v2-l6vvl; verify-v2 skipped: no pending predictions in verifiable window",
+                     "duration_ms":  933,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:27.620Z"
+                 },
+                 {
+                     "task":  "debate-memory-retention",
+                     "status":  "success",
+                     "summary":  "deleted=0 rows_read=1",
+                     "duration_ms":  3201,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-14T19:00:05.741Z"
+                 },
+                 {
+                     "task":  "intraday-check",
+                     "status":  "skipped",
+                     "summary":  "SKIPPED: éå°è¡ç¤ä¸­ææ®µï¼è«å  force=1",
+                     "duration_ms":  0,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T05:59:04.751Z"
+                 },
+                 {
+                     "task":  "intraday-rescore",
+                     "status":  "success",
+                     "summary":  "5 positions: 0 auto EXIT, 0 EXIT_SIGNAL, 0 WARN, 0 HOLD",
+                     "duration_ms":  7241,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T04:30:07.887Z"
+                 },
+                 {
+                     "task":  "eod-exit",
+                     "status":  "success",
+                     "summary":  "",
+                     "duration_ms":  3218,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T05:25:03.877Z"
+                 },
+                 {
+                     "task":  "weekly-audit",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "model-ic-tracker",
+                     "status":  "success",
+                     "summary":  "rolling_ic run_date=2026-06-15 n_rows=2900 | LightGBM:0.018(267) XGBoost:-0.002(267) ExtraTrees:0.008(267) TabM:-0.156(202) GNN:0.106(202) DLinear:0.077(202) PatchTST:-0.002(202) iTransformer:-0.086(202) TimesFM:-0.032(199)",
+                     "duration_ms":  2096,
+                     "run_id":  "pipeline-v2-l6vvl",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:40:30.655Z"
+                 },
+                 {
+                     "task":  "finlab-v4-backfill",
+                     "status":  "success",
+                     "summary":  "FinLab V4 backfill run_id=finlab-v4-3y-20260615-1781546771293 canonical=True rows=5565033 macro_context=ok",
+                     "duration_ms":  911760,
+                     "run_id":  "finlab-v4-3y-20260615-1781546771293",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T18:21:30.955Z"
+                 },
+                 {
+                     "task":  "weekly-cleanup",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "weekly-backtest",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "alpha-quality",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "weekly-optuna",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "sector-leaders",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "monthly-optuna",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 },
+                 {
+                     "task":  "optuna-queue",
+                     "status":  "skipped",
+                     "summary":  "empty",
+                     "duration_ms":  1569,
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T12:00:04.195Z"
+                 },
+                 {
+                     "task":  "monthly-retrain",
+                     "status":  "success",
+                     "summary":  "retrain followup run_id=universal-20260615T124432-3f2c0c79 monthly=True batches=5 samples=683231 features=49 candidate=v20260615052900",
+                     "duration_ms":  5031300,
+                     "run_id":  "universal-20260615T124432-3f2c0c79",
+                     "run_date":  "2026-06-15",
+                     "timestamp":  "2026-06-15T06:12:33.139Z"
+                 },
+                 {
+                     "task":  "verify",
+                     "status":  "skipped",
+                     "summary":  "no log for this date",
+                     "duration_ms":  0,
+                     "timestamp":  ""
+                 }
+             ]
+}

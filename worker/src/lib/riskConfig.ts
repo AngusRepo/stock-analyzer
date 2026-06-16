@@ -66,6 +66,22 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
   },
 }
 
+export const FAIL_CLOSED_RISK_CONFIG: RiskConfig = {
+  ...DEFAULT_RISK_CONFIG,
+  system: {
+    ...DEFAULT_RISK_CONFIG.system,
+    killSwitch: true,
+    haltOnProxyFailure: true,
+  },
+  order: {
+    ...DEFAULT_RISK_CONFIG.order,
+    maxSingleOrderValue: 0,
+    maxDailyBuyOrders: 0,
+    maxDailySellOrders: 0,
+    maxVolumeParticipation: 0,
+  },
+}
+
 /** Deep-merge user-supplied partial over defaults (one level deep per section). */
 function deepMerge(defaults: RiskConfig, partial: any): RiskConfig {
   if (!partial || typeof partial !== 'object') return defaults
@@ -77,27 +93,44 @@ function deepMerge(defaults: RiskConfig, partial: any): RiskConfig {
   }
 }
 
+function cloneRiskConfig(cfg: RiskConfig): RiskConfig {
+  return {
+    system: { ...cfg.system },
+    portfolio: { ...cfg.portfolio },
+    position: { ...cfg.position },
+    order: { ...cfg.order },
+  }
+}
+
 const RISK_CONFIG_KV_KEY = 'trading:risk_config'
 
 export async function getRiskConfig(kv: KVNamespace | undefined): Promise<RiskConfig> {
-  if (!kv) return DEFAULT_RISK_CONFIG
+  if (!kv) {
+    console.warn('[RiskConfig] KV binding missing, using fail-closed config')
+    return cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG)
+  }
   try {
     const raw = await kv.get(RISK_CONFIG_KV_KEY, 'json')
+    if (!raw || typeof raw !== 'object') {
+      console.warn('[RiskConfig] trading:risk_config missing, using fail-closed config')
+      return cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG)
+    }
     return deepMerge(DEFAULT_RISK_CONFIG, raw)
   } catch (e) {
-    console.warn('[RiskConfig] getRiskConfig failed, using defaults:', e)
-    return DEFAULT_RISK_CONFIG
+    console.warn('[RiskConfig] getRiskConfig failed, using fail-closed config:', e)
+    return cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG)
   }
 }
 
 /** Kill switch fast-path: read ONLY the kill switch boolean without full merge. */
 export async function isKillSwitchActive(kv: KVNamespace | undefined): Promise<boolean> {
-  if (!kv) return false
+  if (!kv) return true
   try {
     const raw = (await kv.get(RISK_CONFIG_KV_KEY, 'json')) as any
-    return Boolean(raw?.system?.killSwitch)
+    if (!raw || typeof raw !== 'object') return true
+    return typeof raw.system?.killSwitch === 'boolean' ? raw.system.killSwitch : true
   } catch {
-    return false
+    return true
   }
 }
 

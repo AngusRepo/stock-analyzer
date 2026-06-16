@@ -70,7 +70,7 @@ function assert(condition: unknown, message: string): void {
         strategy_similarity_evidence_source: 'modal_python',
         strategy_similarity_algorithm_owner: 'ml-service-modal-python',
         strategy_similarity_medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
-        strategy_similarity_degraded_reason: null,
+        strategy_similarity_blocked_reason: null,
         candidate_route_score: 79,
         ml_slate_eligibility: 0.79,
         source_universe_count: 486,
@@ -291,10 +291,10 @@ function assert(condition: unknown, message: string): void {
         strategy_portfolio_metric_status: 'ready',
         strategy_portfolio_metric_count: 9,
         strategy_portfolio_backtest_metric_count: 2,
-        strategy_similarity_evidence_status: 'unavailable_degraded',
-        strategy_similarity_evidence_source: 'worker_local_degraded',
-        strategy_similarity_algorithm_owner: 'worker-local-degraded-helper',
-        strategy_similarity_degraded_reason: 'controller_unavailable',
+        strategy_similarity_evidence_status: 'unavailable_blocked',
+        strategy_similarity_evidence_source: 'missing',
+        strategy_similarity_algorithm_owner: 'not_computed',
+        strategy_similarity_blocked_reason: 'controller_unavailable',
       }),
     },
   ])
@@ -311,11 +311,12 @@ function assert(condition: unknown, message: string): void {
   assert(health.metric_count_sum === 20, 'daily L1.25 health should expose aggregate strategy metric coverage')
   assert(health.backtest_metric_count_max === 4, 'daily L1.25 health should expose backtest metric coverage')
   assert(health.strategy_similarity_evidence_status_counts.modal_python === 1, 'daily L1.25 health should count Modal strategy similarity evidence')
-  assert(health.strategy_similarity_evidence_status_counts.unavailable_degraded === 1, 'daily L1.25 health should count degraded strategy similarity evidence')
+  assert(health.strategy_similarity_evidence_status_counts.unavailable_blocked === 1, 'daily L1.25 health should count blocked strategy similarity evidence')
   assert(health.strategy_similarity_sources.includes('modal_python'), 'daily L1.25 health should expose Modal strategy similarity source')
   assert(health.strategy_similarity_algorithm_owners.includes('ml-service-modal-python'), 'daily L1.25 health should expose Modal/Python similarity owner')
   assert(health.strategy_similarity_medoid_algorithms.includes("sklearn_extra.cluster.KMedoids(method='pam')"), 'daily L1.25 health should expose official PAM medoid algorithm')
-  assert(health.strategy_similarity_degraded_count === 1, 'daily L1.25 health should count degraded similarity evidence rows')
+  assert(health.strategy_similarity_blocked_count === 1, 'daily L1.25 health should count blocked similarity evidence rows')
+  assert(health.strategy_similarity_degraded_count === 0, 'new daily L1.25 health should not produce degraded similarity evidence rows')
   assert(health.used_live_strategy_asset_metrics === true, 'ready non-empty L1.25 metrics should be marked live')
   assert(health.no_stock_selection === true && health.no_topk === true, 'daily L1.25 health must preserve non-selector contract flags')
 

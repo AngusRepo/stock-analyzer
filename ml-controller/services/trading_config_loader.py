@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_SECTIONS = (
     "ensemble_v2",
+    "mlPool",
     "alphaFramework",
     "ranking",
     "signal",
@@ -40,6 +41,10 @@ DEFAULT_REQUIRED_CONFIG: dict[str, Any] = {
         "allowLegacyTopKOverride": False,
         "topKCount": 3,
         "topKConfidenceOverride": 0.72,
+    },
+    "mlPool": {
+        "useEnsembleV2": True,
+        "degradedDampening": 0.1,
     },
     "alphaFramework": {
         "allocation": {"slateSize": 8, "scoreRoundDecimals": 1, "weights": {}},

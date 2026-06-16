@@ -18,6 +18,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
+from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
 
 from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, strategy_similarity
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
@@ -140,7 +141,15 @@ def health():
 
 def _warmup_payload(symbol: str, stock_id: int) -> dict:
     prices = [
-        {"date": f"2026-01-{(idx % 28) + 1:02d}", "close": 100.0 + idx * 0.1, "adj_close": 100.0 + idx * 0.1}
+        {
+            "date": f"2026-01-{(idx % 28) + 1:02d}",
+            "open": 99.8 + idx * 0.1,
+            "high": 100.5 + idx * 0.1,
+            "low": 99.5 + idx * 0.1,
+            "close": 100.0 + idx * 0.1,
+            "adj_close": 100.0 + idx * 0.1,
+            "volume": 1_000_000 + idx * 1000,
+        }
         for idx in range(60)
     ]
     return {
@@ -149,6 +158,11 @@ def _warmup_payload(symbol: str, stock_id: int) -> dict:
         "prices": prices,
         "indicators": [],
         "stock_meta": {"market_segment": "LISTED"},
+        "adaptive_params": {
+            "provenance": {"fallback": False, "source": "ml_controller_warmup"},
+            "threshold_components": {"effective_delta": 0.0},
+        },
+        "trading_config": DEFAULT_REQUIRED_CONFIG,
         "runtime_options": {"owner": "ml_controller_warmup"},
     }
 
@@ -214,6 +228,17 @@ async def warmup():
                 summary = _summarize_strategy_similarity_warmup_result(result)
                 summary["elapsed_sec"] = round(asyncio.get_running_loop().time() - started, 3)
                 results[name] = summary
+                continue
+            if isinstance(result, list):
+                n_error = sum(1 for item in result if isinstance(item, dict) and item.get("error"))
+                results[name] = {
+                    "status": "ok" if n_error == 0 else "degraded",
+                    "elapsed_sec": round(asyncio.get_running_loop().time() - started, 3),
+                    "n_input": len(result),
+                    "n_success": len(result) - n_error,
+                    "n_error": n_error,
+                    "error": next((item.get("error") for item in result if isinstance(item, dict) and item.get("error")), None),
+                }
                 continue
             results[name] = {
                 "status": "ok" if not (isinstance(result, dict) and result.get("error")) else "degraded",

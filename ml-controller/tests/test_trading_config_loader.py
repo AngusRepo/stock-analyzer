@@ -21,10 +21,12 @@ def test_partial_kv_config_requires_explicit_offline_defaults(monkeypatch):
     assert result.config["ranking"]["topK"] == 5
     assert result.config["ranking"]["enabled"] is True
     assert result.config["ensemble_v2"]["buyThreshold"] == 0.68
+    assert result.config["mlPool"]["useEnsembleV2"] is True
+    assert result.config["mlPool"]["degradedDampening"] == 0.1
     assert result.config["signal"]["buySignalScore"] == 0.52
     assert result.config["sltp"]["slMultBase"] == 2.0
     assert result.contract.degraded is True
-    assert set(result.contract.missing_sections) >= {"alphaFramework", "signal", "sltp", "L2_formula"}
+    assert set(result.contract.missing_sections) >= {"mlPool", "alphaFramework", "signal", "sltp", "L2_formula"}
     assert result.contract.source == "offline_direct_kv_merged_required_defaults"
 
 
@@ -40,6 +42,7 @@ def test_worker_merged_config_is_preferred_and_raw_missing_sections_are_default_
         lambda timeout=10.0, allow_offline=False: {
             "ranking": {"topK": 4, "enabled": True},
             "ensemble_v2": {"buyThreshold": 0.71},
+            "mlPool": {"useEnsembleV2": True, "degradedDampening": 0.1},
             "alphaFramework": {"quality": {"minSamples": 40}},
             "signal": {"buySignalScore": 0.53},
             "sltp": {"slMultBase": 1.9},
@@ -61,6 +64,7 @@ def test_full_worker_config_is_not_degraded(monkeypatch):
     full = {
         "ranking": {"topK": 3, "enabled": True},
         "ensemble_v2": {"buyThreshold": 0.70},
+        "mlPool": {"useEnsembleV2": True, "degradedDampening": 0.1},
         "alphaFramework": {"quality": {"minSamples": 30}},
         "signal": {"buySignalScore": 0.52},
         "sltp": {"slMultBase": 2.0},
@@ -103,6 +107,7 @@ def test_full_raw_kv_config_can_be_used_only_when_worker_is_not_preferred(monkey
     full = {
         "ranking": {"topK": 3, "enabled": True},
         "ensemble_v2": {"buyThreshold": 0.70},
+        "mlPool": {"useEnsembleV2": True, "degradedDampening": 0.1},
         "alphaFramework": {"quality": {"minSamples": 30}},
         "signal": {"buySignalScore": 0.52},
         "sltp": {"slMultBase": 2.0},

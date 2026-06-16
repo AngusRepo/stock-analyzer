@@ -24,6 +24,8 @@ assert.equal(
   false,
   'legacy top-k override rollback flag must stay disabled by default',
 )
+assert.equal(champion.mlPool.useEnsembleV2, true, 'mlPool.useEnsembleV2 must default on for Modal contract')
+assert.equal(champion.mlPool.degradedDampening, 0.1, 'mlPool.degradedDampening must default to Modal contract baseline')
 
 const restored = buildChampionTradingConfig({
   alpha_framework: {
@@ -45,6 +47,9 @@ const restored = buildChampionTradingConfig({
     topKOverrideEnabled: true,
     allowLegacyTopKOverride: false,
   },
+  mlPool: {
+    degradedDampening: 0.2,
+  },
 })
 
 assert.deepEqual(validateTradingConfig(restored), [], 'restored champion config must fill missing nested defaults')
@@ -62,3 +67,5 @@ assert.equal(
   false,
   'legacy top-k rollback flag must not be enabled by materialization',
 )
+assert.equal(restored.mlPool.useEnsembleV2, true)
+assert.equal(restored.mlPool.degradedDampening, 0.2)

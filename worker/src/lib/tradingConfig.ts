@@ -296,6 +296,10 @@ export interface TradingConfig {
     topKCount: number                // 強制 BUY 的 top-K 數（預設 3，對齊 ranking.topK）
     topKConfidenceOverride: number   // Top-K 強制 BUY 時的 confidence（預設 0.72）
   }
+  mlPool: {
+    useEnsembleV2: boolean
+    degradedDampening: number
+  }
   // ── 2026-04-07 added: Optuna #2 Signal 月搜結果 destination ────────────────
   // 之前寫進 ml:adaptive_params 是錯的（adaptive_params 應該只裝 daily delta）
   signal: {
@@ -596,6 +600,10 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     allowLegacyTopKOverride: false,
     topKCount: 3,
     topKConfidenceOverride: 0.72,
+  },
+  mlPool: {
+    useEnsembleV2: true,
+    degradedDampening: 0.1,
   },
   // ── 2026-04-07 NEW: Optuna #2 destination ─────────────────────────────────
   signal: {
@@ -981,6 +989,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
     ranking: { ...d.ranking, ...partial.ranking },
     // #B Option 1 (2026-04-21):
     ensemble_v2: { ...d.ensemble_v2, ...partial.ensemble_v2 },
+    mlPool: { ...d.mlPool, ...partial.mlPool },
     // 2026-04-07 added:
     signal: { ...d.signal, ...partial.signal },
     sltp: { ...d.sltp, ...partial.sltp },
@@ -1463,6 +1472,10 @@ export function validateTradingConfig(config: TradingConfig): string[] {
     if (l2.confidence_effective_clip_lo >= l2.confidence_effective_clip_hi)
       errors.push(`confidence clip lo (${l2.confidence_effective_clip_lo}) must be < hi (${l2.confidence_effective_clip_hi})`)
   }
+  if (typeof config.mlPool?.useEnsembleV2 !== 'boolean')
+    errors.push('mlPool.useEnsembleV2 must be boolean')
+  if (!isFiniteNumber(config.mlPool?.degradedDampening) || config.mlPool.degradedDampening < 0 || config.mlPool.degradedDampening > 1)
+    errors.push('mlPool.degradedDampening must be 0-1')
   const alpha = config.alphaFramework
   const overlay = alpha?.riskOverlay
   const allocation = alpha?.allocation

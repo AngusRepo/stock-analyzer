@@ -60,6 +60,7 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
     barrier: { ...current.barrier, ...body.barrier },
     ranking: { ...current.ranking, ...body.ranking },
     ensemble_v2: { ...current.ensemble_v2, ...body.ensemble_v2 },
+    mlPool: { ...(current as any).mlPool, ...(body as any).mlPool },
     signal: { ...current.signal, ...body.signal },
     sltp: { ...current.sltp, ...body.sltp },
     L2_formula: { ...current.L2_formula, ...body.L2_formula },

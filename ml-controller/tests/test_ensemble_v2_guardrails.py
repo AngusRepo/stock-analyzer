@@ -443,6 +443,45 @@ def test_daily_pipeline_pool_and_ic_requires_active9_model_entries(monkeypatch):
         daily_pipeline_v2._load_pool_and_ic()
 
 
+def test_daily_pipeline_model_pool_versions_require_serving_model_version(monkeypatch):
+    import json
+    import sys
+    import types
+
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    pool = _full_model_pool({"GNN": {"status": "active", "version": ""}})
+
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps(pool)
+
+    class Bucket:
+        def blob(self, _path):
+            return Blob()
+
+    class Client:
+        def bucket(self, _name):
+            return Bucket()
+
+    google_storage_mod.Client = lambda: Client()
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+
+    with pytest.raises(RuntimeError, match="serving model GNN missing version"):
+        daily_pipeline_v2._load_model_pool_versions()
+
+
 def test_daily_pipeline_uses_lane_ic_before_global_ic(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
 

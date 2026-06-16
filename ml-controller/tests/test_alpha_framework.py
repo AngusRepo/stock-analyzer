@@ -402,6 +402,7 @@ def test_merge_llm_reasons_preserves_domain_watch_points():
     rows = [{
         "symbol": "2330",
         "reason": "template",
+        "score_components": {"version": "score_v2", "components": {}, "total": 0, "finalScore": 0},
         "watch_points": [
             "ML 信心中等，方向未明確，可等待訊號確認",
             "Alpha bucket: breakout_vol_expansion, regime=bull, sizing x0.9, risk=normal/normal",
@@ -414,6 +415,7 @@ def test_merge_llm_reasons_preserves_domain_watch_points():
         {
             "2330": {
                 "reason": "LLM reason",
+                "tradePlan": {"bias": "偏多", "entry": "轉強確認", "risk": "跌破支撐", "target": "壓力區"},
                 "watchPoints": ["觀察 2265 支撐", "留意成交量"],
             }
         },
@@ -421,6 +423,7 @@ def test_merge_llm_reasons_preserves_domain_watch_points():
 
     assert rows[0]["reason"] == "LLM reason"
     assert rows[0]["watch_points"][:2] == ["觀察 2265 支撐", "留意成交量"]
+    assert rows[0]["score_components"]["reasonVariants"]["gemini"]["tradePlan"]["entry"] == "轉強確認"
     assert any(point.startswith("Alpha bucket:") for point in rows[0]["watch_points"])
     assert any("window=2026-04-13~2026-04-27" in point for point in rows[0]["watch_points"])
 

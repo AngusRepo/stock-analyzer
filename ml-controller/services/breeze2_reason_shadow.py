@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.breeze2_research_context import build_breeze2_research_context_report
+from services.llm_reason import build_canonical_candidate_payload
 
 
 VALID_SCHEMA = "breeze2-research-context-v1"
@@ -63,6 +64,19 @@ def _domain_points(candidate: dict[str, Any]) -> list[str]:
     ]
 
 
+def _fallback_trade_plan(candidate: dict[str, Any], *, context: str, flags: list[str]) -> dict[str, str]:
+    name = str(candidate.get("name") or candidate.get("stock_name") or candidate.get("symbol") or "").strip()
+    market_structure = next((point for point in _domain_points(candidate) if point.startswith("Market structure:")), "")
+    alpha = next((point for point in _domain_points(candidate) if point.startswith("Alpha bucket:")), "")
+    flag_text = ", ".join(flags[:3]) if flags else "none"
+    return {
+        "bias": f"{name} 以 Breeze2 題材佐證作旁路判讀；context={context}。",
+        "entry": market_structure or "等待系統買入區、轉強確認與量能延續，不用 Breeze2 文字直接追價。",
+        "risk": f"題材/來源風險 flags={flag_text}；若 Score V2 或價量未延續，降權處理。",
+        "target": alpha or "以上方壓力與 Alpha/日線結構上緣作研究用目標區，不視為保證價位。",
+    }
+
+
 def build_breeze2_reason_shadow(
     candidates: list[dict[str, Any]],
     reports_by_symbol: dict[str, dict[str, Any]],
@@ -106,6 +120,7 @@ def build_breeze2_reason_shadow(
             "source": "breeze2_shadow",
             "decision_effect": "advisory_only",
             "reason": reason,
+            "tradePlan": _fallback_trade_plan(candidate, context=context, flags=flags),
             "watchPoints": watch_points,
             "breeze2_context": context,
             "riskFlags": flags,
@@ -167,18 +182,9 @@ def breeze2_reason_shadow_metrics(shadow: dict[str, dict[str, Any]]) -> dict[str
 
 
 def _generation_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "symbol": candidate.get("symbol"),
-        "name": candidate.get("name") or candidate.get("stock_name"),
-        "signal": candidate.get("signal"),
-        "score": candidate.get("score"),
-        "score_components": candidate.get("score_components"),
-        "reason": candidate.get("reason"),
-        "watch_points": candidate.get("watch_points") if isinstance(candidate.get("watch_points"), list) else [],
-        "theme": candidate.get("theme") if isinstance(candidate.get("theme"), dict) else {},
-        "news": candidate.get("news") if isinstance(candidate.get("news"), (dict, list)) else {},
-        "evidence_items": candidate.get("evidence_items") if isinstance(candidate.get("evidence_items"), list) else [],
-    }
+    payload = build_canonical_candidate_payload(candidate)
+    payload["provider_task"] = "breeze2_trade_plan"
+    return payload
 
 
 def build_breeze2_reason_generation_payload(
@@ -229,10 +235,18 @@ def coerce_breeze2_reason_generation_report(report: Any) -> dict[str, dict[str, 
             for point in (entry.get("watchPoints") or [])
             if isinstance(point, str) and point.strip()
         ][:3]
+        trade_plan = entry.get("tradePlan") or entry.get("trade_plan") or {}
+        if not isinstance(trade_plan, dict):
+            trade_plan = {}
         out[clean_symbol] = {
             "source": str(entry.get("source") or "breeze2_generation_shadow"),
             "decision_effect": "advisory_only",
             "reason": reason,
+            "tradePlan": {
+                str(key): str(value).strip()
+                for key, value in trade_plan.items()
+                if str(key).strip() and str(value).strip()
+            },
             "watchPoints": points,
             "breeze2_context": str(entry.get("breeze2_context") or "generation_shadow"),
             "riskFlags": [str(flag) for flag in (entry.get("riskFlags") or []) if flag],

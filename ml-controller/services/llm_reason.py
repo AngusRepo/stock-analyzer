@@ -1,7 +1,6 @@
 """Generate Score V2 recommendation reasons for Pipeline V2."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import math
@@ -17,9 +16,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-3.5-flash"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
-ANTHROPIC_BASE = "https://api.anthropic.com/v1/messages"
+CANONICAL_CANDIDATE_PAYLOAD_SCHEMA = "stockvision-canonical-candidate-payload-v1"
 
 SCORE_V2_WEIGHTS = {
     "mlEdge": 25.0,
@@ -29,15 +26,16 @@ SCORE_V2_WEIGHTS = {
     "newsTheme": 5.0,
 }
 
-SYSTEM_PROMPT = """你是台股投資研究助理，負責為每日推薦清單撰寫可驗證的推薦理由。
+SYSTEM_PROMPT = """你是台股投資研究助理，負責為每日推薦清單撰寫可驗證的推薦理由與交易計畫。
 
 規則：
-- 每支股票 reason 限 120 字內，必須使用 Score V2 的 finalScore 與五構面語意。
+- 每支股票 reason 限 140 字內，必須使用 canonical candidate payload 裡的 Score V2 finalScore 與五構面語意。
 - 五構面為 ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme。
 - 不可宣稱保證獲利、絕對勝率或水晶球式預測；請用條件式、風險可控的語氣。
+- tradePlan 必須是研究用交易計畫，不得要求真實下單；需包含 bias、entry、risk、target。
 - watchPoints 最多 3 點，必須是具體風險、觀察價量或資料品質提醒。
 - 必須只回傳 JSON array，格式：
-  [{"symbol":"2330","reason":"...","watchPoints":["...","...","..."]}]
+  [{"symbol":"2330","reason":"...","tradePlan":{"bias":"...","entry":"...","risk":"...","target":"..."},"watchPoints":["...","...","..."]}]
 """
 
 
@@ -66,6 +64,93 @@ def _parse_score_components(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict) and value.get("version") == "score_v2" and isinstance(value.get("components"), dict):
         return value
     return None
+
+
+def _clean_text(value: Any, max_len: int = 260) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:max_len]
+
+
+def _clean_string_list(value: Any, *, limit: int = 6, max_len: int = 180) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = _clean_text(item, max_len=max_len)
+        if text:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _compact_json_value(value: Any, *, depth: int = 0) -> Any:
+    """Keep canonical payload JSON prompt-safe without changing its schema keys."""
+    if depth > 5:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
+    if isinstance(value, str):
+        return _clean_text(value, max_len=600)
+    if isinstance(value, list):
+        return [_compact_json_value(item, depth=depth + 1) for item in value[:24]]
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, nested in value.items():
+            if key in {"reasonVariants", "reason_variants"}:
+                continue
+            out[str(key)] = _compact_json_value(nested, depth=depth + 1)
+        return out
+    return _clean_text(value, max_len=260)
+
+
+def _canonical_score_components(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    payload = _parse_score_components(candidate.get("score_components"))
+    if not payload:
+        return None
+    return _compact_json_value(payload)
+
+
+def build_canonical_candidate_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Build the single canonical candidate payload shared by Gemini and Breeze2."""
+    score_components = _canonical_score_components(candidate)
+    watch_points = _clean_string_list(candidate.get("watch_points"), limit=10, max_len=220)
+    payload: dict[str, Any] = {
+        "schema_version": CANONICAL_CANDIDATE_PAYLOAD_SCHEMA,
+        "symbol": str(candidate.get("symbol") or "").strip(),
+        "name": candidate.get("name") or candidate.get("stock_name"),
+        "signal": candidate.get("signal"),
+        "market_segment": candidate.get("market_segment"),
+        "recommendation_lane": candidate.get("recommendation_lane"),
+        "score_components_status": "ok" if score_components else "missing_score_v2",
+        "score_components": score_components,
+        "alpha_context": _compact_json_value(candidate.get("alpha_context")),
+        "alpha_allocation": _compact_json_value(candidate.get("alpha_allocation")),
+        "ml_vote_summary": _compact_json_value(candidate.get("ml_vote_summary")),
+        "ml_vote_summary_text": _clean_text(candidate.get("ml_vote_summary_text"), max_len=260),
+        "current_price": candidate.get("current_price"),
+        "rsi14": candidate.get("rsi14"),
+        "macd_hist": candidate.get("macd_hist"),
+        "foreign_net_5d": candidate.get("foreign_net_5d"),
+        "trust_net_5d": candidate.get("trust_net_5d"),
+        "watch_points": watch_points,
+        "reason_seed": _clean_text(candidate.get("reason"), max_len=260),
+        "theme": _compact_json_value(candidate.get("theme") if isinstance(candidate.get("theme"), dict) else {}),
+        "news": _compact_json_value(candidate.get("news") if isinstance(candidate.get("news"), (dict, list)) else {}),
+        "evidence_items": _compact_json_value(candidate.get("evidence_items") if isinstance(candidate.get("evidence_items"), list) else []),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def build_canonical_candidate_payloads(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        payload
+        for payload in (build_canonical_candidate_payload(candidate) for candidate in candidates)
+        if payload.get("symbol")
+    ]
 
 
 def _score_components(c: dict[str, Any]) -> dict[str, Any]:
@@ -180,66 +265,19 @@ async def _call_gemini(user_prompt: str, n_candidates: int, timeout: float) -> O
         return None
 
 
-async def _call_anthropic(user_prompt: str, n_candidates: int, timeout: float, max_attempts: int) -> Optional[str]:
-    """Call Claude fallback. Returns raw text or None on failure."""
-    if not ANTHROPIC_API_KEY:
-        return None
-    max_tokens = min(8192, n_candidates * 500)
-    headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    body = {
-        "model": ANTHROPIC_MODEL,
-        "max_tokens": max_tokens,
-        "system": SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": user_prompt}],
-    }
-    for attempt in range(1, max_attempts + 1):
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(ANTHROPIC_BASE, headers=headers, json=body)
-            if resp.status_code != 200:
-                logger.error("[llm_reason] Anthropic HTTP %s: %s", resp.status_code, resp.text[:300])
-                return None
-            data = resp.json()
-            text_blocks = [block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"]
-            raw = "\n".join(text_blocks)
-            logger.info("[llm_reason] Anthropic fallback OK (attempt=%s)", attempt)
-            try:
-                from .cost_tracker import record_llm_call
-
-                usage = data.get("usage", {}) or {}
-                await record_llm_call(
-                    "llm_reason",
-                    "anthropic",
-                    ANTHROPIC_MODEL,
-                    int(usage.get("input_tokens", 0) or 0),
-                    int(usage.get("output_tokens", 0) or 0),
-                    meta={"n_candidates": n_candidates, "attempt": attempt},
-                )
-            except Exception:
-                pass
-            return raw
-        except httpx.RequestError as exc:
-            if attempt < max_attempts:
-                backoff = 2 ** (attempt - 1)
-                logger.warning(
-                    "[llm_reason] Anthropic network error %s/%s, retry in %ss: %s",
-                    attempt,
-                    max_attempts,
-                    backoff,
-                    type(exc).__name__,
-                )
-                await asyncio.sleep(backoff)
-                continue
-            logger.error("[llm_reason] Anthropic failed after %s attempts: %s", max_attempts, type(exc).__name__)
-            return None
-        except Exception as exc:
-            logger.error("[llm_reason] Anthropic unexpected: %s: %r", type(exc).__name__, exc)
-            return None
-    return None
+def _trade_plan_from_item(item: dict[str, Any]) -> dict[str, str]:
+    raw = item.get("tradePlan") or item.get("trade_plan") or {}
+    if isinstance(raw, str):
+        summary = _clean_text(raw, max_len=220)
+        return {"summary": summary} if summary else {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key in ("bias", "entry", "risk", "target", "invalidation", "positionSizing"):
+        text = _clean_text(raw.get(key) or raw.get(key.lower()), max_len=180)
+        if text:
+            out[key] = text
+    return out
 
 
 def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
@@ -256,12 +294,24 @@ def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
 
     result: dict[str, dict] = {}
     for item in parsed:
-        symbol = item.get("symbol")
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip()
         reason = item.get("reason")
         if symbol and reason:
+            points = [
+                _clean_text(point, max_len=180)
+                for point in (item.get("watchPoints") or item.get("watch_points") or [])
+                if str(point).strip()
+            ][:3]
             result[symbol] = {
-                "reason": reason[:200],
-                "watchPoints": (item.get("watchPoints") or item.get("watch_points") or [])[:3],
+                "source": "gemini_3_5_flash",
+                "provider": "gemini",
+                "model": GEMINI_MODEL,
+                "decision_effect": "advisory_only",
+                "reason": _clean_text(reason, max_len=320),
+                "tradePlan": _trade_plan_from_item(item),
+                "watchPoints": points,
             }
     return result
 
@@ -275,33 +325,33 @@ async def generate_recommendation_reasons(
     """
     Generate LLM reasons for recommendation candidates.
 
-    Primary: Gemini. Fallback: Claude.
-    Returns: {symbol: {"reason": str, "watchPoints": list[str]}}
+    Gemini 3.5 Flash only. No secondary LLM fallback is used in this path.
+    Returns: {symbol: {"reason": str, "tradePlan": dict, "watchPoints": list[str]}}
     """
+    _ = max_attempts  # Kept for call-site compatibility; retries belong in provider clients.
     if not candidates:
         return {}
-    if not GEMINI_API_KEY and not ANTHROPIC_API_KEY:
-        logger.warning("[llm_reason] No API key set (GEMINI or ANTHROPIC), skipping")
+    if not GEMINI_API_KEY:
+        logger.warning("[llm_reason] No GEMINI_API_KEY set, skipping Gemini reason generation")
         return {}
 
-    stock_list = "\n".join(_build_stock_line(i, c) for i, c in enumerate(candidates))
-    theme_hint = f"\n\nTop themes: {', '.join(top_themes)}" if top_themes else ""
+    canonical_payload = {
+        "schema_version": CANONICAL_CANDIDATE_PAYLOAD_SCHEMA,
+        "provider_task": "gemini_trade_plan",
+        "top_themes": top_themes or [],
+        "candidates": build_canonical_candidate_payloads(candidates),
+    }
     user_prompt = (
-        f"請為以下 {len(candidates)} 檔候選股票撰寫推薦理由。\n"
-        f"{stock_list}{theme_hint}"
+        f"請為以下 {len(candidates)} 檔候選股票撰寫 Gemini 3.5 Flash 獨立交易計畫。\n"
+        "只能使用 canonical_candidate_payload，不可使用舊版 score/ml_score/chip_score 作正式輸入。\n"
+        f"canonical_candidate_payload={json.dumps(canonical_payload, ensure_ascii=False, separators=(',', ':'))}"
     )
 
     raw = await _call_gemini(user_prompt, len(candidates), timeout)
-    source = "gemini"
     if raw is None:
-        logger.info("[llm_reason] Gemini unavailable, falling back to Anthropic")
-        raw = await _call_anthropic(user_prompt, len(candidates), timeout, max_attempts)
-        source = "anthropic"
-
-    if raw is None:
-        logger.error("[llm_reason] All LLM providers failed")
+        logger.error("[llm_reason] Gemini reason generation failed")
         return {}
 
     result = _parse_reasons(raw, len(candidates))
-    logger.info("[llm_reason] Generated %s/%s reasons via %s", len(result), len(candidates), source)
+    logger.info("[llm_reason] Generated %s/%s Gemini reasons", len(result), len(candidates))
     return result

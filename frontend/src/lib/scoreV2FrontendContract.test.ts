@@ -17,6 +17,10 @@ assert(scoreBreakdownStart >= 0 && scoreBreakdownEnd > scoreBreakdownStart, 'Sco
 
 const scoreFormula = recommendationCard.slice(scoreFormulaStart, scoreBreakdownStart)
 const scoreBreakdown = recommendationCard.slice(scoreBreakdownStart, scoreBreakdownEnd)
+const recommendationComponentStart = recommendationCard.indexOf('export function RecommendationCardClean')
+const recommendationComponent = recommendationComponentStart >= 0
+  ? recommendationCard.slice(recommendationComponentStart)
+  : ''
 
 for (const label of ['ML Edge', '籌碼流', '技術結構', '基本面', '新聞題材']) {
   assert(viewModel.includes(label), `Score V2 view model should expose readable label: ${label}`)
@@ -228,15 +232,35 @@ for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '風控
   assert(scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should render: ${text}`)
 }
 
+for (const text of ['reasonVariantTradePlan', 'tradePlanLinesFromValue', 'geminiTradePlan', 'breeze2TradePlan', 'tradePlan']) {
+  assert(recommendationCard.includes(text), `Recommendation card should render independent provider trade plans: ${text}`)
+}
+
 assert(!scoreBreakdown.includes('方案 A | 突破追價'), 'Recommendation card should not render plan A copy')
 assert(!scoreBreakdown.includes('方案 B | 拉回低吸'), 'Recommendation card should not render plan B copy')
 
-for (const text of ['偏好買入價', '建議買入區間', '可追價上限', '前高壓力', '轉強確認', '關鍵支撐', 'ATR 防守', 'POC / 量能節點來源']) {
+for (const text of ['偏好買入價', '建議買入區間', '可追價上限', '樂觀目標價', '前高壓力', '轉強確認', '關鍵支撐', 'ATR 防守', 'POC / 量能節點來源']) {
   assert(scoreBreakdown.includes(text), `Recommendation card should use user-facing trading-plan label: ${text}`)
 }
 
-for (const text of ['Entry Model V2 /', 'missing_intraday_tick_anchor', 'missing_entry_model_v2_anchor']) {
+for (const text of ['Entry Model V2 /', 'daily_proxy_fallback', 'ohlcv_trade_plan_proxy']) {
   assert(scoreBreakdown.includes(text), `Recommendation card should prefer Entry Model V2 evidence or explicitly label fallback: ${text}`)
+}
+for (const text of ['missing_intraday_tick_anchor', 'missing_entry_model_v2_anchor']) {
+  assert(!scoreBreakdown.includes(text), `Recommendation card should not expose stale missing-anchor fallback token: ${text}`)
+}
+
+for (const tag of [
+  '<UniverseFeatureEvidenceBlock',
+  '<HardGateEvidenceBlock',
+  '<StrategyLabelerEvidenceBlock',
+  '<StrategyPortfolioIntelligenceBlock',
+  '<StrategyRouterEvidenceBlock',
+  '<MlStackEvidenceBlock',
+  '<EvidenceFusionBlock',
+  '<SparseAllocationBlock',
+]) {
+  assert(!recommendationComponent.includes(tag), `Recommendation card body should not render flow-tracking block: ${tag}`)
 }
 
 for (const text of ['OHLCV volume proxy', 'Alpha proxy']) {

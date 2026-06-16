@@ -13,9 +13,11 @@ def _payload() -> dict:
         "candidates": [
             {
                 "symbol": "2330",
+                "schema_version": "stockvision-canonical-candidate-payload-v1",
                 "name": "台積電",
                 "signal": "BUY",
                 "score": 82.5,
+                "score_components_status": "ok",
                 "score_components": {
                     "version": "score_v2",
                     "components": {
@@ -41,7 +43,9 @@ def test_prompt_contract_is_taiwan_finance_json_and_non_mutating():
     assert "台灣股市" in prompt
     assert "不得下單" in prompt
     assert '"symbol"' in prompt
+    assert '"tradePlan"' in prompt
     assert '"watchPoints"' in prompt
+    assert "canonical candidate payload" in prompt
     assert "2330" in prompt
 
 
@@ -52,6 +56,7 @@ def test_parse_breeze2_reason_generation_text_extracts_bounded_json():
           {
             "symbol": "2330",
             "reason": "台積電受惠先進製程與AI伺服器需求，但追價需看量能。",
+            "tradePlan": {"bias": "偏多", "entry": "量增轉強", "risk": "跌破月線", "target": "前高壓力"},
             "watchPoints": ["觀察量能是否續增", "留意外資買賣超", "破月線降風險", "第四點應被截斷"]
           }
         ]
@@ -59,6 +64,7 @@ def test_parse_breeze2_reason_generation_text_extracts_bounded_json():
     )
 
     assert parsed["2330"]["reason"].startswith("台積電")
+    assert parsed["2330"]["tradePlan"]["entry"] == "量增轉強"
     assert parsed["2330"]["watchPoints"] == ["觀察量能是否續增", "留意外資買賣超", "破月線降風險"]
 
 
@@ -71,4 +77,5 @@ def test_fallback_report_is_shadow_only_and_validates():
     assert report["primary_candidate_source_allowed"] is False
     assert report["model_id"] == "MediaTek-Research/Llama-Breeze2-3B-Instruct-v0_1"
     assert "2330" in report["reasons"]
+    assert report["reasons"]["2330"]["tradePlan"]["entry"]
     assert validate_breeze2_reason_generation_report(report) == []

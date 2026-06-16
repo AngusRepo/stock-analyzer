@@ -391,7 +391,7 @@ def _breeze2_reason_shadow_enabled() -> bool:
 
 
 def _breeze2_reason_shadow_provider() -> str:
-    provider = str(os.environ.get("BREEZE2_REASON_SHADOW_PROVIDER") or "context").strip().lower()
+    provider = str(os.environ.get("BREEZE2_REASON_SHADOW_PROVIDER") or "modal_generation").strip().lower()
     return provider if provider in {"context", "modal_generation"} else "context"
 
 
@@ -2428,12 +2428,12 @@ async def node_recommend(state: PipelineStateV2) -> dict:
 
 async def node_llm_reasons(state: PipelineStateV2) -> dict:
     """
-    Generate LLM reasons via Anthropic API (non-blocking, fallback empty on fail).
+    Generate Gemini reasons plus advisory-only Breeze2 trade-plan shadow.
     """
     logger.info("[Pipeline V2] node_llm_reasons")
     candidates = state["final_recommendations"]
     if not candidates:
-        return {"llm_reasons": {}}
+        return {"llm_reasons": {}, "breeze2_reason_shadow": {}}
 
     # Top themes from sector_flow_summary (Phase 6 ??node_compute_sector_flow populates)
     # Optional context for LLM prompt; empty list is acceptable fallback.
@@ -2447,14 +2447,17 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
         breeze2_shadow = {}
         if _breeze2_reason_shadow_enabled():
             provider = _breeze2_reason_shadow_provider()
-            try:
-                breeze2_shadow = (
-                    await build_breeze2_generation_shadow_for_candidates(candidates, run_date=state.get("run_date"))
-                    if provider == "modal_generation"
-                    else build_breeze2_reason_shadow_for_candidates(candidates)
-                )
-            except Exception as shadow_error:  # noqa: BLE001 - shadow provider must not block D1 writes.
-                logger.warning("[Pipeline V2] Breeze2 reason shadow skipped: %s", shadow_error)
+            if provider == "modal_generation":
+                try:
+                    breeze2_shadow = await build_breeze2_generation_shadow_for_candidates(candidates, run_date=state.get("run_date"))
+                except Exception as shadow_error:  # noqa: BLE001 - shadow provider must not block D1 writes.
+                    logger.warning("[Pipeline V2] Breeze2 modal generation failed; fallback to context shadow: %s", shadow_error)
+                    breeze2_shadow = build_breeze2_reason_shadow_for_candidates(candidates)
+            else:
+                try:
+                    breeze2_shadow = build_breeze2_reason_shadow_for_candidates(candidates)
+                except Exception as shadow_error:  # noqa: BLE001 - shadow provider must not block D1 writes.
+                    logger.warning("[Pipeline V2] Breeze2 context shadow skipped: %s", shadow_error)
         if breeze2_shadow:
             logger.info("[Pipeline V2] Breeze2 reason shadow generated: %s", breeze2_reason_shadow_metrics(breeze2_shadow))
         return {"llm_reasons": reasons, "breeze2_reason_shadow": breeze2_shadow}

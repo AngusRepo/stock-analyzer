@@ -45,6 +45,7 @@ def test_breeze2_shadow_reason_is_advisory_and_does_not_need_legacy_llm_provider
     assert shadow["2330"]["decision_effect"] == "advisory_only"
     assert shadow["2330"]["reason"].startswith("Breeze2 shadow")
     assert "人工複核" in shadow["2330"]["reason"]
+    assert shadow["2330"]["tradePlan"]["bias"].startswith("台積電")
     assert any(point.startswith("breeze2:human_review") for point in shadow["2330"]["watchPoints"])
     assert "Alpha bucket: breakout" in shadow["2330"]["watchPoints"]
 
@@ -85,7 +86,17 @@ def test_breeze2_shadow_for_candidates_builds_local_context_and_metrics():
 
 def test_breeze2_reason_generation_payload_is_shadow_only():
     payload = build_breeze2_reason_generation_payload(
-        [{"symbol": "2330", "name": "台積電", "score": 82}],
+        [{
+            "symbol": "2330",
+            "name": "台積電",
+            "score": 82,
+            "score_components": {
+                "version": "score_v2",
+                "components": {"mlEdge": 20},
+                "total": 20,
+                "finalScore": 20,
+            },
+        }],
         run_date="2026-05-21",
     )
 
@@ -94,6 +105,9 @@ def test_breeze2_reason_generation_payload_is_shadow_only():
     assert payload["execute_model"] is True
     assert payload["run_date"] == "2026-05-21"
     assert payload["candidates"][0]["symbol"] == "2330"
+    assert payload["candidates"][0]["schema_version"] == "stockvision-canonical-candidate-payload-v1"
+    assert payload["candidates"][0]["score_components_status"] == "ok"
+    assert "score" not in payload["candidates"][0]
 
 
 def test_coerce_breeze2_generation_report_requires_shadow_contract():
@@ -106,6 +120,7 @@ def test_coerce_breeze2_generation_report_requires_shadow_contract():
             "2330": {
                 "source": "breeze2_generation_shadow",
                 "reason": "台積電受惠先進製程，但追價需看量能。",
+                "tradePlan": {"bias": "偏多", "entry": "轉強確認", "risk": "跌破支撐", "target": "壓力區"},
                 "watchPoints": ["觀察成交量", "留意外資", "跌破月線降風險"],
             }
         },
@@ -113,6 +128,7 @@ def test_coerce_breeze2_generation_report_requires_shadow_contract():
 
     assert shadow["2330"]["source"] == "breeze2_generation_shadow"
     assert shadow["2330"]["decision_effect"] == "advisory_only"
+    assert shadow["2330"]["tradePlan"]["entry"] == "轉強確認"
     assert shadow["2330"]["watchPoints"][0] == "觀察成交量"
     assert coerce_breeze2_reason_generation_report({"schema_version": "bad"}) == {}
 
@@ -122,7 +138,9 @@ def test_pipeline_keeps_breeze2_shadow_out_of_canonical_reason_writer():
     pipeline = pipeline_path.read_text(encoding="utf-8")
 
     assert 'provider in {"context", "modal_generation"}' in pipeline
+    assert 'or "modal_generation"' in pipeline
     assert "build_breeze2_generation_shadow_for_candidates" in pipeline
+    assert "fallback to context shadow" in pipeline
     assert 'return {"llm_reasons": reasons, "breeze2_reason_shadow": breeze2_shadow}' in pipeline
     assert 'merge_llm_reasons_into_recommendations(final, state.get("llm_reasons") or {})' in pipeline
     assert 'merge_llm_reasons_into_recommendations(final, state.get("breeze2_reason_shadow")' not in pipeline

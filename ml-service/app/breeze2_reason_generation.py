@@ -50,13 +50,24 @@ def _clean_text(value: Any, max_len: int = 260) -> str:
 
 def _candidate_prompt_row(candidate: dict[str, Any]) -> dict[str, Any]:
     points = [_clean_text(point, 140) for point in _as_list(candidate.get("watch_points")) if str(point).strip()]
+    score_components = candidate.get("score_components") if isinstance(candidate.get("score_components"), dict) else {}
     return {
+        "schema_version": candidate.get("schema_version"),
         "symbol": _candidate_symbol(candidate),
         "name": _candidate_name(candidate),
         "signal": candidate.get("signal"),
-        "score": candidate.get("score"),
+        "market_segment": candidate.get("market_segment"),
+        "recommendation_lane": candidate.get("recommendation_lane"),
+        "score_components_status": candidate.get("score_components_status"),
+        "score_components": score_components,
         "score_v2": _score_v2_summary(candidate),
-        "reason_seed": _clean_text(candidate.get("reason"), 220),
+        "alpha_context": candidate.get("alpha_context") if isinstance(candidate.get("alpha_context"), dict) else {},
+        "alpha_allocation": candidate.get("alpha_allocation") if isinstance(candidate.get("alpha_allocation"), dict) else {},
+        "ml_vote_summary": candidate.get("ml_vote_summary") if isinstance(candidate.get("ml_vote_summary"), dict) else {},
+        "current_price": candidate.get("current_price"),
+        "rsi14": candidate.get("rsi14"),
+        "macd_hist": candidate.get("macd_hist"),
+        "reason_seed": _clean_text(candidate.get("reason_seed") or candidate.get("reason"), 220),
         "watch_points_seed": points[:6],
     }
 
@@ -73,11 +84,27 @@ def build_breeze2_reason_generation_prompt(payload: dict[str, Any]) -> str:
         "請使用繁體中文，語氣像專業投資平台的研究摘要。\n"
         "限制：只能產生研究摘要，不得下單、不得要求真實交易、不得改寫系統狀態。\n"
         "輸出必須是 JSON array；每個元素格式："
-        '{"symbol":"2330","reason":"80到140字理由","watchPoints":["觀察1","觀察2","觀察3"]}。\n'
+        '{"symbol":"2330","reason":"80到140字理由","tradePlan":{"bias":"判斷","entry":"進場條件","risk":"失效/風控","target":"目標區"},"watchPoints":["觀察1","觀察2","觀察3"]}。\n'
+        "tradePlan 是研究用交易計畫，不得要求真實下單；只能根據 canonical candidate payload 判讀。\n"
         "watchPoints 最多 3 條，每條要具體、可觀察，優先包含價量、籌碼、技術或風險觸發條件。\n"
         f"run_date={run_date}\n"
         f"candidates={json.dumps(candidates, ensure_ascii=False, separators=(',', ':'))}"
     )
+
+
+def _trade_plan_from_item(item: dict[str, Any]) -> dict[str, str]:
+    raw = item.get("tradePlan") or item.get("trade_plan") or {}
+    if isinstance(raw, str):
+        summary = _clean_text(raw, 220)
+        return {"summary": summary} if summary else {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key in ("bias", "entry", "risk", "target", "invalidation", "positionSizing"):
+        text = _clean_text(raw.get(key) or raw.get(key.lower()), 180)
+        if text:
+            out[key] = text
+    return out
 
 
 def parse_breeze2_reason_generation_text(text: str) -> dict[str, dict[str, Any]]:
@@ -106,9 +133,22 @@ def parse_breeze2_reason_generation_text(text: str) -> dict[str, dict[str, Any]]
         out[symbol] = {
             "source": "breeze2_generation_shadow",
             "reason": reason,
+            "tradePlan": _trade_plan_from_item(item),
             "watchPoints": points,
         }
     return out
+
+
+def _fallback_trade_plan(candidate: dict[str, Any]) -> dict[str, str]:
+    points = [_clean_text(point, 180) for point in _as_list(candidate.get("watch_points")) if str(point).strip()]
+    market_structure = next((point for point in points if point.startswith("Market structure:")), "")
+    alpha = next((point for point in points if point.startswith("Alpha bucket:")), "")
+    return {
+        "bias": "以 Score V2、籌碼、技術與 Alpha 結構作研究用偏向判讀。",
+        "entry": market_structure or "等待系統買入區、轉強確認與量能延續，不追逐單一文字理由。",
+        "risk": "若 ML、籌碼或技術任一主構面轉弱，降低部位或撤回追價。",
+        "target": alpha or "以上方壓力與 Alpha/日線結構上緣作研究目標區，不視為保證價位。",
+    }
 
 
 def build_fallback_breeze2_reason_generation(
@@ -132,6 +172,7 @@ def build_fallback_breeze2_reason_generation(
         reasons[symbol] = {
             "source": "breeze2_generation_fallback",
             "reason": f"Breeze2 shadow fallback：{name} 以 Score V2、籌碼與技術結構作研究摘要候選；ML={ml_edge}, 籌碼={chip_flow}, 技術={tech}。",
+            "tradePlan": _fallback_trade_plan(candidate),
             "watchPoints": [
                 "觀察 Score V2 的 ML、籌碼、技術三項是否同步轉強",
                 "若量能或法人籌碼沒有延續，降低追價權重",

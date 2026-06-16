@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -9,6 +10,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import llm_reason  # noqa: E402
+
+
+def test_llm_reason_generation_path_does_not_expose_anthropic_fallback():
+    assert not hasattr(llm_reason, "ANTHROPIC_API_KEY")
+    assert not hasattr(llm_reason, "_call_anthropic")
 
 
 def _score_v2_payload() -> dict:
@@ -54,35 +60,43 @@ def _candidate() -> dict:
     }
 
 
-def test_llm_reason_stock_line_prefers_score_v2_payload():
-    line = llm_reason._build_stock_line(0, _candidate())
+def test_canonical_candidate_payload_prefers_score_v2_and_excludes_legacy_scores():
+    payload = llm_reason.build_canonical_candidate_payload(_candidate())
 
-    assert "Score V2 finalScore=88.0/100" in line
-    assert "ML Edge=22.0/25" in line
-    assert "Chip Flow=21.0/25" in line
-    assert "Technical Structure=20.0/25" in line
-    assert "score=10" not in line
-    assert "籌碼+技術+ML" not in line
+    assert payload["schema_version"] == "stockvision-canonical-candidate-payload-v1"
+    assert payload["score_components_status"] == "ok"
+    assert payload["score_components"]["finalScore"] == 88
+    assert payload["score_components"]["components"]["mlEdge"] == 22
+    for legacy_key in ("score", "ml_score", "chip_score", "tech_score", "momentum_score"):
+        assert legacy_key not in payload
 
 
-@pytest.mark.asyncio
-async def test_generate_recommendation_reasons_prompt_uses_score_v2(monkeypatch: pytest.MonkeyPatch):
+def test_generate_recommendation_reasons_prompt_uses_canonical_payload_and_trade_plan(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, str] = {}
 
     async def fake_call_gemini(user_prompt: str, n_candidates: int, timeout: float):
         captured["prompt"] = user_prompt
         return json.dumps([
-            {"symbol": "2330", "reason": "Score V2 reason", "watchPoints": ["risk"]}
+            {
+                "symbol": "2330",
+                "reason": "Score V2 reason",
+                "tradePlan": {"bias": "偏多", "entry": "轉強確認", "risk": "跌破支撐", "target": "壓力區"},
+                "watchPoints": ["risk"],
+            }
         ])
 
     monkeypatch.setattr(llm_reason, "GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(llm_reason, "ANTHROPIC_API_KEY", "")
     monkeypatch.setattr(llm_reason, "_call_gemini", fake_call_gemini)
 
-    result = await llm_reason.generate_recommendation_reasons([_candidate()], top_themes=["AI"])
+    result = asyncio.run(llm_reason.generate_recommendation_reasons([_candidate()], top_themes=["AI"]))
 
     assert result["2330"]["reason"] == "Score V2 reason"
-    assert "Score V2 finalScore=88.0/100" in captured["prompt"]
-    assert "News/Theme=4.0/5" in captured["prompt"]
-    assert "Top themes: AI" in captured["prompt"]
-    assert "chip+tech+ml" not in captured["prompt"]
+    assert result["2330"]["provider"] == "gemini"
+    assert result["2330"]["tradePlan"]["entry"] == "轉強確認"
+    assert "canonical_candidate_payload=" in captured["prompt"]
+    assert '"schema_version":"stockvision-canonical-candidate-payload-v1"' in captured["prompt"]
+    assert '"score_components"' in captured["prompt"]
+    assert '"finalScore":88' in captured["prompt"]
+    assert '"top_themes":["AI"]' in captured["prompt"]
+    for legacy_key in ('"ml_score"', '"chip_score"', '"tech_score"', '"momentum_score"'):
+        assert legacy_key not in captured["prompt"]

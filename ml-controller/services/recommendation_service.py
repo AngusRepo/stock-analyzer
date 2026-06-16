@@ -3071,6 +3071,19 @@ def re_rank_recommendations(run_date: str) -> None:
     logger.info(f"[recommendation_service] Re-ranked {len(statements)} rows")
 
 
+def _clean_reason_variant_trade_plan(entry: dict[str, Any]) -> dict[str, str]:
+    raw = entry.get("tradePlan") or entry.get("trade_plan") or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        clean_key = str(key or "").strip()
+        clean_value = str(value or "").strip()
+        if clean_key and clean_value:
+            out[clean_key] = clean_value[:260]
+    return out
+
+
 def merge_llm_reasons_into_recommendations(
     recommendations: list[dict],
     llm_reasons: dict[str, dict],
@@ -3082,10 +3095,15 @@ def merge_llm_reasons_into_recommendations(
         sym = r["symbol"]
         if sym in llm_reasons:
             entry = llm_reasons[sym]
-            if entry.get("reason"):
-                r["reason"] = entry["reason"]
+            reason = str(entry.get("reason") or "").strip()
+            llm_points = [
+                str(p).strip()
+                for p in (entry.get("watchPoints") or [])
+                if isinstance(p, str) and p.strip()
+            ]
+            if reason:
+                r["reason"] = reason
             if entry.get("watchPoints"):
-                llm_points = [p for p in entry["watchPoints"] if isinstance(p, str) and p.strip()]
                 domain_points = [
                     p for p in (r.get("watch_points") or [])
                     if isinstance(p, str)
@@ -3098,6 +3116,23 @@ def merge_llm_reasons_into_recommendations(
                     )
                 ]
                 r["watch_points"] = llm_points + domain_points
+            if reason:
+                payload = _parse_score_components_payload(r.get("score_components"))
+                if payload:
+                    variants = payload.get("reasonVariants")
+                    if not isinstance(variants, dict):
+                        variants = {}
+                    variants["gemini"] = {
+                        "source": str(entry.get("source") or "gemini_3_5_flash"),
+                        "provider": "gemini",
+                        "model": str(entry.get("model") or "gemini-3.5-flash"),
+                        "decision_effect": "advisory_only",
+                        "reason": reason[:700],
+                        "tradePlan": _clean_reason_variant_trade_plan(entry),
+                        "watchPoints": llm_points[:5],
+                    }
+                    payload["reasonVariants"] = variants
+                    r["score_components"] = payload
 
 
 def merge_breeze2_reason_shadow_into_score_components(
@@ -3134,6 +3169,7 @@ def merge_breeze2_reason_shadow_into_score_components(
             "source": str(entry.get("source") or "breeze2_shadow"),
             "decision_effect": "advisory_only",
             "reason": reason[:700],
+            "tradePlan": _clean_reason_variant_trade_plan(entry),
             "watchPoints": watch_points,
             "breeze2_context": str(entry.get("breeze2_context") or "unknown"),
             "riskFlags": [str(flag) for flag in (entry.get("riskFlags") or []) if flag][:8],

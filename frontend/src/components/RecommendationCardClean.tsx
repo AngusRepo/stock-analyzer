@@ -1640,6 +1640,35 @@ function geminiVariantReasonFromRec(rec: any): string | null {
     ?? reasonTextFromValue(variants?.gemini ?? variants?.Gemini)
 }
 
+const TRADE_PLAN_LABELS: Record<string, string> = {
+  bias: '判斷',
+  entry: '進場',
+  risk: '風控',
+  target: '目標',
+  invalidation: '失效',
+  positionSizing: '部位',
+  summary: '摘要',
+}
+
+function tradePlanLinesFromValue(raw: unknown): string[] {
+  if (!raw) return []
+  if (typeof raw === 'string') {
+    const text = compactLine(raw)
+    return text ? [text] : []
+  }
+  const obj = parseObject(raw)
+  if (!obj) return []
+  const plan = parseObject(obj.tradePlan) ?? parseObject(obj.trade_plan) ?? obj
+  return Object.entries(plan)
+    .map(([key, value]) => {
+      const text = typeof value === 'string' || typeof value === 'number'
+        ? compactLine(String(value))
+        : ''
+      return text ? `${TRADE_PLAN_LABELS[key] ?? key}：${text}` : null
+    })
+    .filter((line): line is string => Boolean(line))
+}
+
 function planPrice(value: unknown): string | null {
   return fmtOptionalNumber(value as any, 2)
 }
@@ -1738,22 +1767,35 @@ function TradePlanRow({ row }: { row: TradePlanReadRow }) {
 
 function ProviderReasonCompare({
   geminiReason,
+  geminiTradePlan,
   geminiWatchPoints,
   breeze2Reason,
+  breeze2TradePlan,
   breeze2WatchPoints,
 }: {
   geminiReason: string
+  geminiTradePlan: string[]
   geminiWatchPoints: string[]
   breeze2Reason: string | null
+  breeze2TradePlan: string[]
   breeze2WatchPoints: string[]
 }) {
   const geminiPoints = geminiWatchPoints.filter(Boolean).slice(0, 3)
   const breezePoints = breeze2WatchPoints.filter(Boolean).slice(0, 3)
+  const geminiPlan = geminiTradePlan.filter(Boolean).slice(0, 4)
+  const breezePlan = breeze2TradePlan.filter(Boolean).slice(0, 4)
   return (
     <div className="mt-3 grid gap-2 sm:grid-cols-2">
       <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.05] p-3">
         <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">Gemini 3.5 Flash</p>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{geminiReason}</p>
+        {geminiPlan.length > 0 && (
+          <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/90">
+            {geminiPlan.map((line, index) => (
+              <p key={`gemini-plan-${index}`}>{line}</p>
+            ))}
+          </div>
+        )}
         {geminiPoints.length > 0 && (
           <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
             {geminiPoints.map((point, index) => (
@@ -1770,6 +1812,13 @@ function ProviderReasonCompare({
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           {breeze2Reason ?? 'Breeze2 尚未回寫逐檔中文總結；目前正式資料只有模型流程指標，還不能和 Gemini 做逐字理由比較。'}
         </p>
+        {breezePlan.length > 0 && (
+          <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/90">
+            {breezePlan.map((line, index) => (
+              <p key={`breeze2-plan-${index}`}>{line}</p>
+            ))}
+          </div>
+        )}
         {breezePoints.length > 0 && (
           <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
             {breezePoints.map((point, index) => (
@@ -2136,6 +2185,17 @@ function reasonVariantWatchPoints(rec: any, provider: 'gemini' | 'breeze2'): str
   return []
 }
 
+function reasonVariantTradePlan(rec: any, provider: 'gemini' | 'breeze2'): string[] {
+  const scoreV2 = scoreV2PayloadFromRec(rec)
+  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
+  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
+  const entry = parseObject(reasonVariants?.[provider])
+    ?? parseObject(reasonVariants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
+    ?? parseObject(variants?.[provider])
+    ?? parseObject(variants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
+  return tradePlanLinesFromValue(entry)
+}
+
 function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
   const vm = buildScoreBreakdownViewModel(rec)
   const ml = vm.rows.find((row) => row.key === 'mlEdge')?.value ?? 0
@@ -2212,20 +2272,21 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan:
   const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
   const modelEntry = planPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.entryPrice)
   const entryModel: EntryPriceModelV2Ui = plan.entryModelV2 ?? {
-    anchorSource: 'missing_intraday_tick_anchor',
+    anchorSource: 'daily_proxy_fallback',
     entry: null,
     preferred: null,
     chaseCeiling: null,
     premium: null,
     discount: null,
     poc: null,
-    fallback: 'missing_entry_model_v2_anchor',
+    fallback: 'ohlcv_trade_plan_proxy',
   }
   const isTrueVolumeAnchor = entryModel.anchorSource === 'intraday_volume_profile' || entryModel.anchorSource === 'tick_volume_profile'
   const sourceText = `Entry Model V2 / ${entryModel.anchorSource}`
   const entryZone = entryModel.entry ?? zones.buyReferenceZone
   const preferredEntry = entryModel.preferred ?? modelEntry ?? '-'
   const chaseCeiling = entryModel.chaseCeiling ?? zones.chaseCeilingZone
+  const optimisticTarget = planPrice(plan.optimisticHigh ?? context?.optimisticValueHigh)
   const pocSource = `${entryModel.poc ?? '-'} / ${entryModel.anchorSource}`
   const sourceNote = entryModel.fallback ?? ''
   return [
@@ -2233,6 +2294,7 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan:
     { label: '偏好買入價', value: preferredEntry, note: '', tone: 'neutral' },
     { label: '建議買入區間', value: entryZone, note: '', tone: 'good' },
     { label: '可追價上限', value: chaseCeiling, note: '', tone: 'warn' },
+    { label: '樂觀目標價', value: optimisticTarget ?? '-', note: '', tone: 'warn' },
     { label: '前高壓力', value: zones.resistance ?? '-', note: '', tone: 'warn' },
     { label: '轉強確認', value: zones.confirmation ?? '-', note: '', tone: 'good' },
     { label: '關鍵支撐', value: zones.support ?? '-', note: '', tone: 'good' },
@@ -2287,7 +2349,9 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
   ].filter(Boolean).join('，')
   const tradePlanRows = buildFocusedTradePlanRows(rec, context, plan)
   const geminiReason = geminiReasonForCompare(rec, reason)
+  const geminiTradePlan = reasonVariantTradePlan(rec, 'gemini')
   const geminiWatchPoints = reasonVariantWatchPoints(rec, 'gemini')
+  const breeze2TradePlan = reasonVariantTradePlan(rec, 'breeze2')
   const breeze2WatchPoints = reasonVariantWatchPoints(rec, 'breeze2')
 
   return (
@@ -2327,8 +2391,10 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
       </div>
       <ProviderReasonCompare
         geminiReason={geminiReason}
+        geminiTradePlan={geminiTradePlan}
         geminiWatchPoints={geminiWatchPoints}
         breeze2Reason={breeze2Reason}
+        breeze2TradePlan={breeze2TradePlan}
         breeze2WatchPoints={breeze2WatchPoints}
       />
     </div>
@@ -2532,14 +2598,6 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
   const displayReason = translateRecommendationReason(rec.reason)
   const mlVoteSummary = mlVoteSummaryFromRec(rec)
   const mlDiagnostics = mlDiagnosticsFromRec(rec)
-  const universeFeatureEvidence = universeFeaturesFromRec(rec)
-  const hardGateEvidence = hardGateFromRec(rec)
-  const strategyLabelerEvidence = strategyLabelerEvidenceFromRec(rec)
-  const strategyPortfolioEvidence = strategyPortfolioIntelligenceFromRec(rec)
-  const mlStackEvidence = mlStackEvidenceFromRec(rec)
-  const strategyRouterEvidence = strategyRouterEvidenceFromRec(rec)
-  const layer35Fusion = layer35EvidenceFromRec(rec)
-  const sparseAllocation = sparseAllocationFromRec(rec)
   const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
   const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
   const chip5dRaw = rec.chip_cash_total_5d ?? (
@@ -2662,22 +2720,6 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           </div>
 
           <ScoreBreakdownV2 rec={rec} />
-
-          <UniverseFeatureEvidenceBlock universe={universeFeatureEvidence} />
-
-          <HardGateEvidenceBlock gate={hardGateEvidence} />
-
-          <StrategyLabelerEvidenceBlock labeler={strategyLabelerEvidence} />
-
-          <StrategyPortfolioIntelligenceBlock portfolio={strategyPortfolioEvidence} />
-
-          <StrategyRouterEvidenceBlock router={strategyRouterEvidence} />
-
-          <MlStackEvidenceBlock coarse={mlStackEvidence?.coarse ?? null} formal={mlStackEvidence?.formal ?? null} />
-
-          <EvidenceFusionBlock fusion={layer35Fusion} />
-
-          <SparseAllocationBlock allocation={sparseAllocation} />
 
           <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
 

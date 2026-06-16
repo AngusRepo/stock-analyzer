@@ -19,6 +19,12 @@ assert(
   'emerging broker evidence should be preserved inside score_components.reasons',
 )
 assert(
+  route.includes('FINAL_RECOMMENDATION_ROW_WHERE')
+    && route.includes("r.signal IS NOT NULL AND r.confidence IS NOT NULL AND r.score_components LIKE '%score_v2%'")
+    && route.includes('WHERE r.date = ? AND ${FINAL_RECOMMENDATION_ROW_WHERE}'),
+  'daily recommendations route must not return L1 seed/observe rows as recommendation cards',
+)
+assert(
   !route.includes('function replaceChipReason'),
   'recommendations route should not keep legacy chip reason replacement helper',
 )

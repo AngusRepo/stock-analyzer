@@ -100,6 +100,61 @@ adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
   })
 })
 
+adminConfigCoreRoutes.get('/api/admin/risk-config', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+
+  const { buildRiskConfigRepairPlan } = await import('../lib/riskConfig')
+  const plan = await buildRiskConfigRepairPlan(c.env.KV)
+  return c.json({
+    ...plan,
+    production_effect: false,
+  })
+})
+
+adminConfigCoreRoutes.post('/api/admin/risk-config/push-defaults', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => ({}))
+  const dryRun = body?.dry_run !== false
+  const { buildRiskConfigRepairPlan, seedRiskConfigDefaults } = await import('../lib/riskConfig')
+
+  if (dryRun) {
+    const plan = await buildRiskConfigRepairPlan(c.env.KV)
+    return c.json({
+      success: true,
+      mode: 'dry_run',
+      production_effect: false,
+      would_write: plan.needsRepair,
+      ...plan,
+    })
+  }
+
+  if (c.req.header('X-Confirm-Risk-Config') !== 'true') {
+    return c.json({
+      error: 'X-Confirm-Risk-Config=true required to write trading:risk_config defaults',
+      production_effect: false,
+    }, 400)
+  }
+
+  try {
+    const result = await seedRiskConfigDefaults(c.env.KV)
+    return c.json({
+      success: true,
+      mode: result.written ? 'persisted' : 'no_op',
+      production_effect: result.written,
+      ...result,
+    })
+  } catch (error: any) {
+    return c.json({
+      error: 'risk_config_push_defaults_failed',
+      detail: error?.message ?? String(error),
+      production_effect: false,
+    }, 409)
+  }
+})
+
 adminConfigCoreRoutes.get('/api/admin/kv-get', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError

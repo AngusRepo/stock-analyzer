@@ -82,6 +82,19 @@ export const FAIL_CLOSED_RISK_CONFIG: RiskConfig = {
   },
 }
 
+export interface RiskConfigRepairPlan {
+  key: string
+  exists: boolean
+  source: 'kv' | 'missing' | 'error'
+  effective: RiskConfig
+  seedConfig: RiskConfig
+  runtimeKillSwitchActive: boolean
+  complete: boolean
+  needsRepair: boolean
+  repairReasons: string[]
+  error?: string
+}
+
 /** Deep-merge user-supplied partial over defaults (one level deep per section). */
 function deepMerge(defaults: RiskConfig, partial: any): RiskConfig {
   if (!partial || typeof partial !== 'object') return defaults
@@ -91,6 +104,29 @@ function deepMerge(defaults: RiskConfig, partial: any): RiskConfig {
     position:  { ...defaults.position,  ...(partial.position  ?? {}) },
     order:     { ...defaults.order,     ...(partial.order     ?? {}) },
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function collectMissingFields(raw: unknown): string[] {
+  if (!isRecord(raw)) return ['missing_or_invalid_risk_config']
+  const reasons: string[] = []
+  for (const [section, defaults] of Object.entries(DEFAULT_RISK_CONFIG) as Array<[keyof RiskConfig, Record<string, unknown>]>) {
+    const sectionValue = raw[section]
+    if (!isRecord(sectionValue)) {
+      reasons.push(`missing_${section}_section`)
+      continue
+    }
+    for (const key of Object.keys(defaults)) {
+      if (!(key in sectionValue)) reasons.push(`missing_${section}.${key}`)
+    }
+  }
+  if (isRecord(raw.system) && typeof raw.system.killSwitch !== 'boolean') {
+    reasons.push('missing_system.killSwitch_boolean')
+  }
+  return [...new Set(reasons)]
 }
 
 function cloneRiskConfig(cfg: RiskConfig): RiskConfig {
@@ -103,6 +139,73 @@ function cloneRiskConfig(cfg: RiskConfig): RiskConfig {
 }
 
 const RISK_CONFIG_KV_KEY = 'trading:risk_config'
+
+export function normalizeRiskConfig(partial: unknown): RiskConfig {
+  return cloneRiskConfig(deepMerge(DEFAULT_RISK_CONFIG, isRecord(partial) ? partial : {}))
+}
+
+function runtimeKillSwitchFromRaw(raw: unknown): boolean {
+  if (!isRecord(raw)) return true
+  if (!isRecord(raw.system)) return true
+  return typeof raw.system.killSwitch === 'boolean' ? raw.system.killSwitch : true
+}
+
+export async function buildRiskConfigRepairPlan(kv: KVNamespace | undefined): Promise<RiskConfigRepairPlan> {
+  if (!kv) {
+    return {
+      key: RISK_CONFIG_KV_KEY,
+      exists: false,
+      source: 'error',
+      effective: cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG),
+      seedConfig: cloneRiskConfig(DEFAULT_RISK_CONFIG),
+      runtimeKillSwitchActive: true,
+      complete: false,
+      needsRepair: true,
+      repairReasons: ['missing_kv_binding'],
+      error: 'KV binding missing',
+    }
+  }
+  try {
+    const raw = await kv.get(RISK_CONFIG_KV_KEY, 'json')
+    const exists = isRecord(raw)
+    const repairReasons = collectMissingFields(raw)
+    const complete = exists && repairReasons.length === 0
+    const seedConfig = normalizeRiskConfig(raw)
+    return {
+      key: RISK_CONFIG_KV_KEY,
+      exists,
+      source: exists ? 'kv' : 'missing',
+      effective: exists ? seedConfig : cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG),
+      seedConfig,
+      runtimeKillSwitchActive: runtimeKillSwitchFromRaw(raw),
+      complete,
+      needsRepair: !complete,
+      repairReasons,
+    }
+  } catch (error: any) {
+    return {
+      key: RISK_CONFIG_KV_KEY,
+      exists: false,
+      source: 'error',
+      effective: cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG),
+      seedConfig: cloneRiskConfig(DEFAULT_RISK_CONFIG),
+      runtimeKillSwitchActive: true,
+      complete: false,
+      needsRepair: true,
+      repairReasons: ['risk_config_read_error'],
+      error: error?.message ?? String(error),
+    }
+  }
+}
+
+export async function seedRiskConfigDefaults(kv: KVNamespace | undefined): Promise<RiskConfigRepairPlan & { written: boolean }> {
+  if (!kv) throw new Error('KV binding missing')
+  const plan = await buildRiskConfigRepairPlan(kv)
+  if (plan.source === 'error') throw new Error(plan.error ?? 'risk_config_read_error')
+  if (!plan.needsRepair) return { ...plan, written: false }
+  await kv.put(RISK_CONFIG_KV_KEY, JSON.stringify(plan.seedConfig))
+  return { ...plan, written: true }
+}
 
 export async function getRiskConfig(kv: KVNamespace | undefined): Promise<RiskConfig> {
   if (!kv) {

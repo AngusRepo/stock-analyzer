@@ -11,7 +11,9 @@ from pydantic import BaseModel, Field
 from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 
 
-ROOT = Path(__file__).resolve().parents[2]
+APP_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ROOT = APP_ROOT if (APP_ROOT / "data" / "feature_registry").exists() else REPO_ROOT
 DATA_DIR = ROOT / "data" / "feature_registry"
 OUT_DIR = ROOT / "output" / "feature_universe_triage"
 

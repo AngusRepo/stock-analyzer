@@ -102,7 +102,7 @@ REMOTE_PREFLIGHT_CHECKS = (
     {
         "id": "strategy_mining_execution_env_gated",
         "check_type": "remote_read_only",
-        "expected": "STRATEGY_MINING_EXECUTION_ENABLED remains false until Wei approves actual monthly mining execution",
+        "expected": "STRATEGY_MINING_EXECUTION_ENABLED=false until Wei approval; true is expected after approved strategy-mining execution cutover",
     },
     {
         "id": "sequence_artifacts_are_neuralforecast_zip",

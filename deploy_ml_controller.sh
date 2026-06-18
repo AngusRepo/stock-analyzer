@@ -290,6 +290,8 @@ build_verify_job_env_file() {
 
   PIPELINE_JOB_JSON="$pipeline_job_json" \
   VERIFY_JOB_NAME="$VERIFY_JOB_NAME" \
+  STRATEGY_MINING_JOB_NAME="$STRATEGY_MINING_JOB_NAME" \
+  STRATEGY_MINING_EXECUTION_ENABLED="$STRATEGY_MINING_EXECUTION_ENABLED" \
   STOCKVISION_WORKER_URL="$STOCKVISION_WORKER_URL" \
   VERIFY_ENV_FILE="$env_file" \
   "$PYTHON_BIN" - <<'PY' > "$meta_file"
@@ -316,6 +318,8 @@ for item in container.get("env", []):
 
 envs["VERIFY_JOB_NAME"] = os.environ["VERIFY_JOB_NAME"]
 envs["OPTUNA_JOB_NAME"] = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep")
+envs["STRATEGY_MINING_JOB_NAME"] = os.environ["STRATEGY_MINING_JOB_NAME"]
+envs["STRATEGY_MINING_EXECUTION_ENABLED"] = os.environ["STRATEGY_MINING_EXECUTION_ENABLED"]
 envs["VERIFY_CALLBACK_TASK"] = "verify-v2"
 envs["STOCKVISION_WORKER_URL"] = os.environ["STOCKVISION_WORKER_URL"]
 

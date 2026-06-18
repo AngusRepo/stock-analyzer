@@ -14,6 +14,9 @@ node_modules/
 **/node_modules/
 frontend/
 worker/
+!worker/
+worker/*
+!worker/migration_strategy_mining_ledger_2026_06_18.sql
 
 .uv-cache/
 .uv-python/
@@ -48,6 +51,14 @@ data/*
 !data/finlab_research/
 data/finlab_research/*
 !data/finlab_research/dagster_asset_graph.json
+!data/feature_registry/
+data/feature_registry/*
+!data/feature_registry/*.json
+!output/
+output/*
+!output/feature_universe_triage/
+output/feature_universe_triage/*
+!output/feature_universe_triage/feature_registry_local_closure_20260617.json
 
 tools/*
 !tools/finlab_v4_remote_backfill.py

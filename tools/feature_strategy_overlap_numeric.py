@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gc
 import importlib.util
 import json
 import math
@@ -308,10 +309,13 @@ def _build_ml_feature_pool(
             margin_balance = cache["margin"].combine_first(margin_balance)
             short_balance = cache["short"].combine_first(short_balance)
 
-    rows_by_feature: dict[str, list[pd.Series]] = {name: [] for name in requested_features}
-    out_index: pd.DatetimeIndex | None = None
+    feature_arrays: dict[str, np.ndarray] = {
+        name: np.full((len(index), len(columns)), np.nan, dtype=np.float32)
+        for name in requested_features
+    }
 
     for n, symbol in enumerate(columns, start=1):
+        symbol_idx = n - 1
         price_df = pd.DataFrame(
             {
                 "date": close.index,
@@ -364,13 +368,10 @@ def _build_ml_feature_pool(
             continue
         feature_df["date"] = pd.to_datetime(feature_df["date"])
         feature_df = feature_df.set_index("date").reindex(index=index)
-        if out_index is None:
-            out_index = index
         for feature in requested_features:
             raw_series = feature_df[feature] if feature in feature_df.columns else pd.Series(np.nan, index=feature_df.index)
             series = pd.to_numeric(raw_series, errors="coerce")
-            series.name = symbol
-            rows_by_feature[feature].append(series)
+            feature_arrays[feature][:, symbol_idx] = series.to_numpy(dtype=np.float32, na_value=np.nan)
         if n % 100 == 0:
             print(
                 f"[overlap] built ML features for {n}/{len(columns)} symbols "
@@ -378,13 +379,14 @@ def _build_ml_feature_pool(
                 file=sys.stderr,
                 flush=True,
             )
+        if n % 50 == 0:
+            gc.collect()
 
     feature_values: dict[str, pd.DataFrame] = {}
-    for feature, series_list in rows_by_feature.items():
-        if not series_list:
+    for feature, array in feature_arrays.items():
+        if not np.isfinite(array).any():
             continue
-        frame = pd.concat(series_list, axis=1)
-        frame = frame.reindex(index=index, columns=columns)
+        frame = pd.DataFrame(array, index=index, columns=columns)
         feature_values[feature] = frame.replace([np.inf, -np.inf], np.nan).astype(float)
     return feature_values, list(requested_features)
 

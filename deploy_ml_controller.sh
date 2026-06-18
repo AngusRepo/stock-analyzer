@@ -462,7 +462,7 @@ sync_strategy_mining_job() {
   local env_file="$1"
   local service_account_args=()
   local mining_cpu="${STRATEGY_MINING_JOB_CPU:-${VERIFY_JOB_CPU:-2}}"
-  local mining_memory="${STRATEGY_MINING_JOB_MEMORY:-${VERIFY_JOB_MEMORY:-4Gi}}"
+  local mining_memory="${STRATEGY_MINING_JOB_MEMORY:-8Gi}"
   if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
     service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
   fi

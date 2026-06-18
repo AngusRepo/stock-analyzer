@@ -59,10 +59,22 @@ output/*
 !output/feature_universe_triage/
 output/feature_universe_triage/*
 !output/feature_universe_triage/feature_registry_local_closure_20260617.json
+!output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv
+!output/feature_universe_triage/strategy95_vs_ml106_full_mapping.csv
+!output/finlab_ml_feature_backtests/
+output/finlab_ml_feature_backtests/*
+!output/finlab_ml_feature_backtests/ml106_features_sii_20230101_20260615_top10_bothdir_best.csv
+!output/finlab_strategy95_backtests/
+output/finlab_strategy95_backtests/*
+!output/finlab_strategy95_backtests/strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv
 
 tools/*
 !tools/finlab_v4_remote_backfill.py
 !tools/finlab_macro_context_snapshot.py
+!tools/finlab_alpha_miner_bakeoff.py
+!tools/finlab_alphabuilders_factor_backtest.py
+!tools/finlab_strategy_spec_backtest.py
+!tools/feature_strategy_overlap_numeric.py
 
 deploy_ml_controller.sh
 *.md

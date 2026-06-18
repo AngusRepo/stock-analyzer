@@ -20,6 +20,7 @@ finlab==2.0.13  # V4 primary structured data adapter; PyPI latest 2026-06-05; au
 shioaji[speed]>=1.2.5  # Sinopac L5 market-data fallback used by FinLab execution lane checks
 dagster==1.13.4  # V4 data asset orchestration runtime; schedules stay disabled in formal-shadow mode
 optuna==4.9.0
+pymoo==0.6.1.6
 scipy>=1.10.0  # optuna_feature_window 需要
 # 2026-04-07 LangGraph A+B refactor: real StateGraph + LLM reason in controller
 langgraph==1.0.10

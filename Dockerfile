@@ -37,13 +37,21 @@ COPY ml-controller/ /app/
 COPY ml-service/ /app/ml-service/
 RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json
-RUN mkdir -p /app/data/feature_registry /app/output/feature_universe_triage /app/worker
+RUN mkdir -p /app/data/feature_registry /app/output/feature_universe_triage /app/output/finlab_ml_feature_backtests /app/output/finlab_strategy95_backtests /app/worker
 COPY data/feature_registry/*.json /app/data/feature_registry/
 COPY output/feature_universe_triage/feature_registry_local_closure_20260617.json /app/output/feature_universe_triage/feature_registry_local_closure_20260617.json
+COPY output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv /app/output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv
+COPY output/feature_universe_triage/strategy95_vs_ml106_full_mapping.csv /app/output/feature_universe_triage/strategy95_vs_ml106_full_mapping.csv
+COPY output/finlab_ml_feature_backtests/ml106_features_sii_20230101_20260615_top10_bothdir_best.csv /app/output/finlab_ml_feature_backtests/ml106_features_sii_20230101_20260615_top10_bothdir_best.csv
+COPY output/finlab_strategy95_backtests/strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv /app/output/finlab_strategy95_backtests/strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv
 COPY worker/migration_strategy_mining_ledger_2026_06_18.sql /app/worker/migration_strategy_mining_ledger_2026_06_18.sql
 RUN mkdir -p /app/tools
 COPY tools/finlab_v4_remote_backfill.py /app/tools/finlab_v4_remote_backfill.py
 COPY tools/finlab_macro_context_snapshot.py /app/tools/finlab_macro_context_snapshot.py
+COPY tools/finlab_alpha_miner_bakeoff.py /app/tools/finlab_alpha_miner_bakeoff.py
+COPY tools/finlab_alphabuilders_factor_backtest.py /app/tools/finlab_alphabuilders_factor_backtest.py
+COPY tools/finlab_strategy_spec_backtest.py /app/tools/finlab_strategy_spec_backtest.py
+COPY tools/feature_strategy_overlap_numeric.py /app/tools/feature_strategy_overlap_numeric.py
 
 ENV PORT=8080
 EXPOSE 8080

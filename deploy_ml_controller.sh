@@ -61,6 +61,7 @@ PIPELINE_JOB_NAME="${PIPELINE_JOB_NAME:-pipeline-v2}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
 OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-7200s}"
+STRATEGY_MINING_JOB_TIMEOUT="${STRATEGY_MINING_JOB_TIMEOUT:-28800s}"
 STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
 CF_API_TOKEN_SECRET="${CF_API_TOKEN_SECRET:-stockvision-cf-api-token:latest}"
 STOCKVISION_AUTH_TOKEN_SECRET="${STOCKVISION_AUTH_TOKEN_SECRET:-stockvision-stockvision-auth-token:latest}"
@@ -452,6 +453,59 @@ sync_optuna_job() {
   echo ""
 }
 
+sync_strategy_mining_job() {
+  local env_file="$1"
+  local service_account_args=()
+  local mining_cpu="${STRATEGY_MINING_JOB_CPU:-${VERIFY_JOB_CPU:-2}}"
+  local mining_memory="${STRATEGY_MINING_JOB_MEMORY:-${VERIFY_JOB_MEMORY:-4Gi}}"
+  if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
+    service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
+  fi
+
+  if gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== Step 3d/4: Update Job $STRATEGY_MINING_JOB_NAME image + entrypoint ==="
+    if ! gcloud run jobs update "$STRATEGY_MINING_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=strategy_mining_job_main \
+        --cpu="$mining_cpu" \
+        --memory="$mining_memory" \
+        --task-timeout="$STRATEGY_MINING_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --update-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "??Strategy mining job update failed" >&2
+      exit 4
+    fi
+    echo "??Strategy mining job update succeeded"
+  else
+    echo "=== Step 3d/4: Create Job $STRATEGY_MINING_JOB_NAME ==="
+    if ! gcloud run jobs create "$STRATEGY_MINING_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=strategy_mining_job_main \
+        --cpu="$mining_cpu" \
+        --memory="$mining_memory" \
+        --task-timeout="$STRATEGY_MINING_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --set-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "??Strategy mining job create failed" >&2
+      exit 4
+    fi
+    echo "??Strategy mining job create succeeded"
+  fi
+  echo ""
+}
+
 run_preflight() {
   echo "=== Preflight: local deploy inputs ==="
   require_nonempty "GCS_BUCKET_NAME" "Example: export GCS_BUCKET_NAME=stockvision-models"
@@ -606,6 +660,7 @@ echo ""
 # ── Step 4/4: Verify ─────────────────────────────────────────────────────────
 sync_verify_job "$VERIFY_JOB_ENV_FILE"
 sync_optuna_job "$VERIFY_JOB_ENV_FILE"
+sync_strategy_mining_job "$VERIFY_JOB_ENV_FILE"
 
 echo "=== Step 4/4: Verify Service and Job image match ==="
 SERVICE_IMG=$(gcloud run services describe "$SERVICE" --region="$REGION" \
@@ -616,6 +671,8 @@ VERIFY_JOB_IMG=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" 
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
+STRATEGY_MINING_JOB_IMG=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
 VERIFY_JOB_COMMAND=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 VERIFY_JOB_ARGS=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
@@ -624,13 +681,18 @@ OPTUNA_JOB_COMMAND=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGI
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 OPTUNA_JOB_ARGS=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
+STRATEGY_MINING_JOB_COMMAND=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].command[0])")
+STRATEGY_MINING_JOB_ARGS=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].args)")
 
-if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ]; then
+if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$STRATEGY_MINING_JOB_IMG" ]; then
   echo "❌ VERIFICATION FAILED — images differ:" >&2
   echo "  Service: $SERVICE_IMG" >&2
   echo "  Job    : $JOB_IMG" >&2
   echo "  Verify : $VERIFY_JOB_IMG" >&2
   echo "  Optuna : $OPTUNA_JOB_IMG" >&2
+  echo "  Mining : $STRATEGY_MINING_JOB_IMG" >&2
   exit 5
 fi
 
@@ -645,6 +707,13 @@ if [ "$OPTUNA_JOB_COMMAND" != "python" ] || [ "$OPTUNA_JOB_ARGS" != "-m;optuna_j
   echo "??VERIFICATION FAILED ??optuna job entrypoint drift:" >&2
   echo "  command : $OPTUNA_JOB_COMMAND" >&2
   echo "  args    : $OPTUNA_JOB_ARGS" >&2
+  exit 5
+fi
+
+if [ "$STRATEGY_MINING_JOB_COMMAND" != "python" ] || [ "$STRATEGY_MINING_JOB_ARGS" != "-m;strategy_mining_job_main" ]; then
+  echo "??VERIFICATION FAILED ??strategy mining job entrypoint drift:" >&2
+  echo "  command : $STRATEGY_MINING_JOB_COMMAND" >&2
+  echo "  args    : $STRATEGY_MINING_JOB_ARGS" >&2
   exit 5
 fi
 
@@ -712,6 +781,7 @@ echo "  Image            : $SERVICE_IMG"
 echo "  Pipeline job     : synced"
 echo "  Verify job       : synced"
 echo "  Optuna job       : synced"
+echo "  Strategy mining  : synced"
 [ -n "$MODAL_RESULT" ] && echo "  $MODAL_RESULT"
 echo ""
 echo "Next step: trigger pipeline-v2 to verify new code path executes. Example:"

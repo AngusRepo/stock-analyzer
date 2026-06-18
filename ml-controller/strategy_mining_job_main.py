@@ -204,6 +204,15 @@ def _assert_runtime_files() -> None:
         raise RuntimeError(f"strategy_mining_runtime_files_missing:{missing}")
 
 
+def _login_finlab() -> None:
+    api_key = os.environ.get("FINLAB_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("FINLAB_API_KEY_missing_for_strategy_mining")
+    from finlab import login
+
+    login(api_key)
+
+
 def _ledger_candidate_id(run_id: str, raw_candidate_id: str) -> str:
     safe_raw = raw_candidate_id.replace(":", "_").replace("/", "_").strip()
     return f"{run_id}__{safe_raw}"
@@ -545,6 +554,7 @@ def main() -> int:
 
     LOGGER.info("strategy mining job starting run_id=%s run_date=%s", run_id, run_date)
     _assert_runtime_files()
+    _login_finlab()
     alpha = _load_alpha_miner()
     args = _build_args(alpha, run_date=run_date, output_dir=output_dir)
     _insert_run(run_id, run_date, cadence, args)

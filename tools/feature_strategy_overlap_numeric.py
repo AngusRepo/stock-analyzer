@@ -55,7 +55,7 @@ def _common_index(frame: pd.DataFrame, start: str, end: str) -> pd.DatetimeIndex
 
 def _to_float_frame(frame: pd.DataFrame, index: pd.DatetimeIndex, columns: list[str]) -> pd.DataFrame:
     out = frame.reindex(index=index, columns=columns)
-    return out.replace([np.inf, -np.inf], np.nan).astype(float)
+    return out.replace([np.inf, -np.inf], np.nan).astype("float32")
 
 
 def _align_frame(raw: Any, index: pd.Index, columns: list[str], *, ffill: bool) -> pd.DataFrame:
@@ -166,7 +166,7 @@ def _build_strategy_factor_pool(
 
     for factor in ab_factor_defs:
         fid = str(factor.get("id") or "")
-        frame = ab_values.get(fid)
+        frame = ab_values.pop(fid, None)
         if frame is None:
             missing.append(fid)
             continue
@@ -184,7 +184,7 @@ def _build_strategy_factor_pool(
         if leaf in alpha.L1_SEMANTIC_DUPLICATE_ALIASES:
             semantic_duplicates[leaf] = alpha.L1_SEMANTIC_DUPLICATE_ALIASES[leaf]
             continue
-        frame = l1_features.get(leaf)
+        frame = l1_features.pop(leaf, None)
         if frame is None:
             missing.append(f"l1:{leaf}")
             continue
@@ -197,6 +197,9 @@ def _build_strategy_factor_pool(
             "category": "l1_signal",
             "direction": direction,
         }
+    del ab_values
+    del tech_features, fin_features, chip_features, sector_features, l1_features
+    gc.collect()
 
     info = {
         "alphabuilderstw_input_count": len(ab_factor_defs),
@@ -387,7 +390,7 @@ def _build_ml_feature_pool(
         if not np.isfinite(array).any():
             continue
         frame = pd.DataFrame(array, index=index, columns=columns)
-        feature_values[feature] = frame.replace([np.inf, -np.inf], np.nan).astype(float)
+        feature_values[feature] = frame.replace([np.inf, -np.inf], np.nan).astype("float32")
     return feature_values, list(requested_features)
 
 

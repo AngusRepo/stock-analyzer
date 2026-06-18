@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import importlib.util
 import itertools
 import json
@@ -839,7 +840,7 @@ def _apply_monthly_mining_config(args: argparse.Namespace) -> argparse.Namespace
 
 
 def _runtime_float_frame(frame: pd.DataFrame, index: pd.DatetimeIndex, columns: list[str]) -> pd.DataFrame:
-    return frame.reindex(index=index, columns=columns).replace([np.inf, -np.inf], np.nan).astype(float)
+    return frame.reindex(index=index, columns=columns).replace([np.inf, -np.inf], np.nan).astype("float32")
 
 
 def _registry_l1_leaf_id(feature_id: str) -> str | None:
@@ -1002,13 +1003,13 @@ def _build_unified_registry_factor_universe(args: argparse.Namespace) -> tuple[
         role = str(row.get("selector_role") or "unknown")
         selected_role_counts[role] = selected_role_counts.get(role, 0) + 1
         if source == "ml106":
-            frame = ml_values.get(fid)
+            frame = ml_values.pop(fid, None)
             direction = float(ml_direction.get(fid, 1.0))
             category = str(row.get("category") or _feature_group(fid))
             source_label = "ml106"
         elif source == "strategy95":
-            frame = strategy_values.get(fid)
-            raw_meta = strategy_meta.get(fid, {})
+            frame = strategy_values.pop(fid, None)
+            raw_meta = strategy_meta.pop(fid, {})
             direction = float((row.get("triage") or {}).get("strategy_direction") or raw_meta.get("direction") or 1.0)
             category = str(row.get("category") or raw_meta.get("category") or "strategy95")
             source_label = str(row.get("source_system") or raw_meta.get("source") or "strategy95")
@@ -1018,8 +1019,10 @@ def _build_unified_registry_factor_universe(args: argparse.Namespace) -> tuple[
         if frame is None:
             missing.append(f"{source}:{fid}")
             continue
-        factor_values[fid] = frame.reindex(index=close.index, columns=columns)
+        factor_values[fid] = _runtime_float_frame(frame, close.index, columns)
         meta[fid] = FactorMeta(id=fid, source=source_label, category=category, direction=direction)
+    del ml_values, strategy_values, strategy_meta
+    gc.collect()
 
     info = {
         "factor_universe_mode": "unified_registry_v1",

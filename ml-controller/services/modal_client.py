@@ -35,7 +35,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "train_tabm_universal": {"cpu": 4.0, "memory_mb": 16384, "gpu": "L4"},
     "retrain_single_stock": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "prep_universal_batch": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
-    "retrain_orchestrator": {"cpu": 1.0, "memory_mb": 1024, "gpu": None},
+    "retrain_orchestrator": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
     "train_universal_from_gcs": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "train_tree_models": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
     "train_wf_tree_window": {"cpu": 2.0, "memory_mb": 4096, "gpu": None},
@@ -43,6 +43,7 @@ _MODAL_RESOURCE_SPECS: dict[str, dict] = {
     "walk_forward_orchestrator": {"cpu": 1.0, "memory_mb": 2048, "gpu": None},
     "shap_feature_audit": {"cpu": 1.0, "memory_mb": 4096, "gpu": "L4"},
     "feature_selection_pipeline": {"cpu": 4.0, "memory_mb": 8192, "gpu": None},
+    "strategy_mining_research": {"cpu": 4.0, "memory_mb": 16384, "gpu": None},
     "train_dlinear_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
     "dlinear_universal_predict": {"cpu": 2.0, "memory_mb": 2048, "gpu": None},
     "train_patchtst_universal": {"cpu": 1.0, "memory_mb": 8192, "gpu": "L4"},
@@ -1261,6 +1262,36 @@ async def feature_selection(payload: dict | None = None, fire_and_forget: bool =
             resp = await client.post(url, json=payload, headers=_ml_headers())
             return resp.json() if resp.status_code == 200 else {"error": f"HTTP {resp.status_code}"}
     raise RuntimeError("Neither MODAL_TOKEN_ID nor ML_SERVICE_URL is set")
+
+
+async def strategy_mining_research(payload: dict | None = None, fire_and_forget: bool = True) -> dict:
+    """Run monthly strategy mining on Modal.
+
+    This is the heavy compute owner for pymoo NSGA-III + novelty and FinLab
+    confirmation. Controller/Worker only orchestrate and read D1 ledger output.
+    """
+    payload = payload or {}
+    if not _USE_MODAL:
+        raise RuntimeError("strategy_mining_research requires Modal credentials")
+    fn = _lookup("strategy_mining_research")
+    if fire_and_forget:
+        logger.info("[ml_client] Modal.spawn strategy_mining_research")
+        t0 = time.time()
+        call = await fn.spawn.aio(payload)
+        call_id = getattr(call, "object_id", None) or getattr(call, "function_call_id", None) or str(call)
+        await _record_modal_observation(
+            "strategy_mining_research",
+            wall_sec=time.time() - t0,
+            compute_sec=0.0,
+            source="modal_spawn",
+            meta={"call_type": "spawn", "run_date": payload.get("run_date")},
+        )
+        return {"status": "spawned", "backend": "modal", "function_call_id": call_id}
+    logger.info("[ml_client] Modal.remote strategy_mining_research")
+    result = await _modal_remote_call("strategy_mining_research", payload)
+    if isinstance(result, dict):
+        result.setdefault("backend", "modal")
+    return result
 
 
 async def build_finlab_long_sequence_prep(payload: dict | None = None, fire_and_forget: bool = False) -> dict:

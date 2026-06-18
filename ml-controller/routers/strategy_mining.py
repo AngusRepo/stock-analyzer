@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from services import modal_client
 from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 
 
@@ -144,6 +145,32 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
             ),
         }
 
+    backend = os.environ.get("STRATEGY_MINING_BACKEND", "modal").strip().lower() or "modal"
+    if backend != "cloud_run":
+        try:
+            spawned = await modal_client.strategy_mining_research({
+                "run_date": req.run_date or "",
+                "cadence": req.cadence,
+                "persist": req.persist,
+                "trigger_source": req.trigger_source,
+            }, fire_and_forget=True)
+        except Exception as exc:
+            if backend in {"modal", "modal_only"}:
+                raise HTTPException(status_code=503, detail=f"strategy_mining_modal_trigger_failed:{exc}") from exc
+            packet["modal_trigger_error"] = str(exc)
+        else:
+            return {
+                **packet,
+                "status": "triggered",
+                "triggered": True,
+                "backend": "modal",
+                "function_call_id": spawned.get("function_call_id"),
+                "summary": (
+                    "monthly_pymoo_strategy_mining triggered "
+                    f"modal_function_call_id={spawned.get('function_call_id', 'unknown')} callback expected"
+                ),
+            }
+
     try:
         execution = _strategy_mining_job_client().run_job({
             "STRATEGY_MINING_RUN_DATE": req.run_date or "",
@@ -166,6 +193,7 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
         **packet,
         "status": "triggered",
         "triggered": True,
+        "backend": "cloud_run",
         "execution_id": execution.execution_id,
         "execution_name": execution.execution_name,
         "summary": f"monthly_pymoo_strategy_mining triggered execution_id={execution.execution_id} callback expected",

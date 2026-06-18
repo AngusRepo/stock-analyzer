@@ -27,6 +27,7 @@
     "pymoo_population": 48,
     "pymoo_generations": 6,
     "finlab_confirm_top_n": 8,
+    "finlab_confirm_top_n_bounds": [6, 24],
     "pbo_folds": 8,
     "promote_min_validation_sharpe": 1.0,
     "promote_min_holdout_sharpe": 1.0,

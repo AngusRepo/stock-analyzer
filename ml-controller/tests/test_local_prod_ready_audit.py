@@ -330,7 +330,11 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "ml-controller/routers/strategy_mining.py",
-        '@router.post("/monthly_pymoo/run") STRATEGY_MINING_EXECUTION_ENABLED production_mutation_allowed research_only strategy_mining_runs strategy_promotion_ledger',
+        (
+            '@router.post("/monthly_pymoo/run") STRATEGY_MINING_EXECUTION_ENABLED '
+            'STRATEGY_MINING_BACKEND modal_client.strategy_mining_research '
+            'production_mutation_allowed research_only strategy_mining_runs strategy_promotion_ledger'
+        ),
     )
     _write(
         tmp_path / "worker/migration_strategy_mining_ledger_2026_06_18.sql",

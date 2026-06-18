@@ -95,12 +95,178 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _bounded_int(value: int, bounds: list[Any] | tuple[Any, Any] | None, default_bounds: tuple[int, int]) -> int:
+    lo, hi = default_bounds
+    if bounds and len(bounds) >= 2:
+        try:
+            lo = int(bounds[0])
+            hi = int(bounds[1])
+        except (TypeError, ValueError):
+            lo, hi = default_bounds
+    if hi < lo:
+        lo, hi = hi, lo
+    return max(lo, min(hi, int(value)))
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         out = float(value)
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
+
+
+def _load_previous_completed_telemetry() -> dict[str, Any] | None:
+    try:
+        rows = d1_client.query(
+            """
+            SELECT run_id, run_date, config_json, telemetry_json, updated_at
+            FROM strategy_mining_runs
+            WHERE status = 'completed'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            timeout=30.0,
+        )
+    except Exception as exc:
+        LOGGER.warning("strategy mining adaptive telemetry read skipped: %s", exc)
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    try:
+        telemetry = json.loads(row.get("telemetry_json") or "{}")
+    except Exception:
+        telemetry = {}
+    try:
+        config = json.loads(row.get("config_json") or "{}")
+    except Exception:
+        config = {}
+    return {
+        "run_id": row.get("run_id"),
+        "run_date": row.get("run_date"),
+        "updated_at": row.get("updated_at"),
+        "telemetry": telemetry if isinstance(telemetry, dict) else {},
+        "config": config if isinstance(config, dict) else {},
+    }
+
+
+def _pbo_failure_rate(summary: dict[str, Any]) -> float | None:
+    values: list[float] = []
+    for algo_summary in summary.values():
+        if not isinstance(algo_summary, dict):
+            continue
+        pbo = algo_summary.get("pbo")
+        if isinstance(pbo, dict):
+            value = _safe_float(pbo.get("pbo"))
+            if value is not None:
+                values.append(value)
+    if not values:
+        return None
+    return sum(1.0 for value in values if value >= 0.50) / len(values)
+
+
+def _median_summary_metric(summary: dict[str, Any], key: str) -> float | None:
+    values: list[float] = []
+    for algo_summary in summary.values():
+        if not isinstance(algo_summary, dict):
+            continue
+        value = _safe_float(algo_summary.get(key))
+        if value is not None:
+            values.append(value)
+    if not values:
+        return None
+    values.sort()
+    mid = len(values) // 2
+    if len(values) % 2:
+        return values[mid]
+    return (values[mid - 1] + values[mid]) / 2.0
+
+
+def _apply_adaptive_mining_params(args: argparse.Namespace) -> argparse.Namespace:
+    config = _load_json(MONTHLY_CONFIG)
+    adaptive = config.get("adaptive_controller") if isinstance(config.get("adaptive_controller"), dict) else {}
+    if adaptive.get("enabled_after_first_telemetry") is not True:
+        args.adaptive_controller_applied = False
+        args.adaptive_controller_reason = "disabled"
+        return args
+
+    previous = _load_previous_completed_telemetry()
+    if not previous:
+        args.adaptive_controller_applied = False
+        args.adaptive_controller_reason = "no_previous_completed_telemetry"
+        return args
+
+    telemetry = previous.get("telemetry") or {}
+    summary = telemetry.get("summary") if isinstance(telemetry.get("summary"), dict) else {}
+    families = (
+        telemetry.get("adaptive_strategy_families")
+        if isinstance(telemetry.get("adaptive_strategy_families"), dict)
+        else {}
+    )
+    accepted = int(families.get("eligible_count") or 0)
+    family_count = int(families.get("family_count") or 0)
+    evaluated = int(families.get("evaluated_count") or 0)
+    runtime_seconds = float(telemetry.get("runtime_seconds") or 0.0)
+    median_novelty = _median_summary_metric(summary, "median_top10_novelty")
+    median_similarity_penalty = _median_summary_metric(summary, "median_top10_similarity_penalty")
+    median_max_similarity = _median_summary_metric(summary, "median_top10_max_similarity")
+    pbo_fail = _pbo_failure_rate(summary)
+
+    pop = int(args.pymoo_population)
+    gen = int(args.pymoo_generations)
+    top_n = int(args.finlab_confirm_top_n)
+    reasons: list[str] = []
+
+    if accepted < 4 or family_count < 3:
+        pop = int(round(pop * 1.25))
+        gen += 1
+        top_n += 2
+        reasons.append("low_accepted_or_family_count")
+    if median_novelty is not None and median_novelty < 0.20:
+        pop = int(round(pop * 1.20))
+        top_n += 2
+        reasons.append("low_novelty")
+    if median_max_similarity is not None and median_max_similarity >= 0.70:
+        pop = int(round(pop * 1.15))
+        reasons.append("high_similarity")
+    if pbo_fail is not None and pbo_fail >= 0.50:
+        gen = max(1, gen - 1)
+        top_n = max(1, top_n - 2)
+        reasons.append("high_pbo_failure")
+    if runtime_seconds >= 7200:
+        gen = max(1, gen - 1)
+        top_n = max(1, top_n - 2)
+        reasons.append("runtime_pressure")
+
+    args.pymoo_population = _bounded_int(pop, adaptive.get("population_bounds"), (32, 128))
+    args.pymoo_generations = _bounded_int(gen, adaptive.get("generation_bounds"), (4, 16))
+    defaults = config.get("defaults") if isinstance(config.get("defaults"), dict) else {}
+    top_n_bounds = defaults.get("finlab_confirm_top_n_bounds") or adaptive.get("finlab_confirm_top_n_bounds")
+    args.finlab_confirm_top_n = _bounded_int(top_n, top_n_bounds, (6, 24))
+    args.adaptive_controller_applied = True
+    args.adaptive_controller_reason = ",".join(reasons) if reasons else "previous_telemetry_within_target"
+    args.adaptive_controller_previous_run = {
+        "run_id": previous.get("run_id"),
+        "run_date": previous.get("run_date"),
+        "updated_at": previous.get("updated_at"),
+    }
+    args.adaptive_controller_inputs = {
+        "accepted_candidate_count": accepted,
+        "family_count": family_count,
+        "evaluated_count": evaluated,
+        "median_novelty": median_novelty,
+        "median_similarity_penalty": median_similarity_penalty,
+        "median_max_similarity": median_max_similarity,
+        "pbo_failure_rate": pbo_fail,
+        "runtime_seconds": runtime_seconds,
+    }
+    args.adaptive_controller_outputs = {
+        "pymoo_population": args.pymoo_population,
+        "pymoo_generations": args.pymoo_generations,
+        "finlab_confirm_top_n": args.finlab_confirm_top_n,
+    }
+    return args
 
 
 def _now_tw() -> datetime:
@@ -164,8 +330,9 @@ def _build_args(alpha: Any, *, run_date: str, output_dir: Path) -> argparse.Name
         output_dir=str(output_dir),
     )
     args = alpha._apply_monthly_mining_config(args)
+    args = _apply_adaptive_mining_params(args)
 
-    # Environment overrides are intentionally applied after the monthly config.
+    # Environment overrides are intentionally applied after monthly config and adaptive params.
     for env_name, attr, caster in [
         ("STRATEGY_MINING_PYMOO_POPULATION", "pymoo_population", int),
         ("STRATEGY_MINING_PYMOO_GENERATIONS", "pymoo_generations", int),

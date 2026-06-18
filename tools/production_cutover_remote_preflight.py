@@ -209,7 +209,11 @@ def _build_checks(root: Path, location: str, region: str) -> tuple[list[dict[str
     missing_ledgers = sorted(LEDGER_TABLES - remote_tables)
     missing_alpha = sorted(ALPHA_MINER_IDS - alpha_ids)
     inactive_alpha = sorted(ALPHA_MINER_IDS - alpha_active_ids)
-    strategy_env_present = "STRATEGY_MINING_EXECUTION_ENABLED" in env and "STRATEGY_MINING_JOB_NAME" in env
+    strategy_backend = str(env.get("STRATEGY_MINING_BACKEND") or "modal").strip().lower() or "modal"
+    strategy_env_present = (
+        "STRATEGY_MINING_EXECUTION_ENABLED" in env
+        and strategy_backend in {"modal", "modal_only"}
+    )
 
     checks = [
         {
@@ -241,7 +245,7 @@ def _build_checks(root: Path, location: str, region: str) -> tuple[list[dict[str
                 "latestReadyRevisionName": (service.get("status") or {}).get("latestReadyRevisionName"),
                 "url": (service.get("status") or {}).get("url"),
                 "STRATEGY_MINING_EXECUTION_ENABLED": env.get("STRATEGY_MINING_EXECUTION_ENABLED"),
-                "STRATEGY_MINING_JOB_NAME": env.get("STRATEGY_MINING_JOB_NAME"),
+                "STRATEGY_MINING_BACKEND": env.get("STRATEGY_MINING_BACKEND") or "modal",
             },
         },
         {
@@ -338,7 +342,7 @@ def build_remote_preflight(root: Path, location: str, region: str) -> dict[str, 
                 "deploy_ml_controller_strategy_mining_route",
                 "apply_strategy_mining_ledger_migration",
                 "sync_gcp_scheduler_manifest",
-                "configure STRATEGY_MINING_JOB_NAME and set STRATEGY_MINING_EXECUTION_ENABLED=true after Wei approval",
+                "set STRATEGY_MINING_BACKEND=modal and STRATEGY_MINING_EXECUTION_ENABLED=true after Wei approval",
                 "feature_selection_retrain_release remains blocked until explicit retrain/release approval",
             ],
         },

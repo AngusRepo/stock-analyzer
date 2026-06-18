@@ -72,9 +72,21 @@ def build_validation_payload() -> dict[str, Any]:
         "ml-controller/routers/strategy_mining.py": [
             "@router.post(\"/monthly_pymoo/run\")",
             "STRATEGY_MINING_EXECUTION_ENABLED",
+            "STRATEGY_MINING_BACKEND",
+            "modal_client.strategy_mining_research",
             "production_mutation_allowed",
             "strategy_mining_runs",
             "strategy_promotion_ledger",
+        ],
+        "ml-controller/services/modal_client.py": [
+            "async def strategy_mining_research",
+            "_lookup(\"strategy_mining_research\")",
+            "\"backend\": \"modal\"",
+        ],
+        "ml-service/modal_app.py": [
+            "def strategy_mining_research",
+            "strategy_mining_job_main",
+            "STRATEGY_MINING_RUN_DATE",
         ],
         "worker/migration_strategy_mining_ledger_2026_06_18.sql": [
             "CREATE TABLE IF NOT EXISTS strategy_mining_runs",
@@ -131,6 +143,7 @@ def build_validation_payload() -> dict[str, Any]:
         "validated_cases": [
             "monthly_strategy_mining_scheduler",
             "worker_controller_route_surface",
+            "modal_strategy_mining_compute_owner",
             "strategy_mining_ledger_schema",
             "alpha_miner_cli_defaults_pymoo_only",
             "promotion_contract_monthly_pymoo",

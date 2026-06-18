@@ -74,7 +74,7 @@ APPROVAL_REQUIRED_ACTIONS = (
     {
         "id": "enable_strategy_mining_execution_env",
         "approval_gate": "wei_explicit_approval_required",
-        "mutation_scope": "STRATEGY_MINING_EXECUTION_ENABLED=1 and STRATEGY_MINING_JOB_NAME production env/job binding",
+        "mutation_scope": "STRATEGY_MINING_EXECUTION_ENABLED=1 and STRATEGY_MINING_BACKEND=modal production env binding",
     },
     {
         "id": "feature_selection_retrain_release",

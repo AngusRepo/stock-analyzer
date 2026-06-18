@@ -21,6 +21,14 @@ _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 _LOCAL_SOURCE_ROOT = Path(__file__).resolve().parent
 _LOCAL_REPO_ROOT   = _LOCAL_SOURCE_ROOT if (_LOCAL_SOURCE_ROOT / "tools").exists() else _LOCAL_SOURCE_ROOT.parent
 _LOCAL_TOOLS_DIR   = _LOCAL_REPO_ROOT / "tools"
+_LOCAL_DATA_FEATURE_REGISTRY_DIR = _LOCAL_REPO_ROOT / "data" / "feature_registry"
+_LOCAL_STRATEGY_MINING_JOB = _LOCAL_REPO_ROOT / "ml-controller" / "strategy_mining_job_main.py"
+_LOCAL_STRATEGY_MINING_ARTIFACT_FILES = [
+    _LOCAL_REPO_ROOT / "output" / "feature_universe_triage" / "formal137_pairwise_similarity_long_20260617.csv",
+    _LOCAL_REPO_ROOT / "output" / "feature_universe_triage" / "strategy95_vs_ml106_full_mapping.csv",
+    _LOCAL_REPO_ROOT / "output" / "finlab_ml_feature_backtests" / "ml106_features_sii_20230101_20260615_top10_bothdir_best.csv",
+    _LOCAL_REPO_ROOT / "output" / "finlab_strategy95_backtests" / "strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv",
+]
 _LOCAL_CONTROLLER_SERVICES_DIR = (
     _LOCAL_REPO_ROOT / "services"
     if (_LOCAL_REPO_ROOT / "services").exists()
@@ -45,6 +53,12 @@ image = (
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
     .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
+    .add_local_dir(str(_LOCAL_DATA_FEATURE_REGISTRY_DIR), remote_path="/root/data/feature_registry")
+    .add_local_file(str(_LOCAL_STRATEGY_MINING_JOB), remote_path="/root/strategy_mining_job_main.py")
+    .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[0]), remote_path="/root/output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv")
+    .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[1]), remote_path="/root/output/feature_universe_triage/strategy95_vs_ml106_full_mapping.csv")
+    .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[2]), remote_path="/root/output/finlab_ml_feature_backtests/ml106_features_sii_20230101_20260615_top10_bothdir_best.csv")
+    .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[3]), remote_path="/root/output/finlab_strategy95_backtests/strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv")
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 
@@ -257,8 +271,8 @@ def _combine_tree_child_oos_artifacts(child_results: dict[str, dict], payload: d
 # feature selection, training, and SHAP audit.
 
 @app.function(
-    cpu=1,
-    memory=1024,
+    cpu=4,
+    memory=8192,
     timeout=18000,              # 300 min: selection, train, SHAP, and regime-history buffer
     scaledown_window=60,
     max_containers=1,
@@ -366,7 +380,9 @@ def retrain_orchestrator(payload: dict) -> dict:
     if is_monthly and not artifact_lifecycle_only:
         print(f"[Orchestrator] Monthly -> running feature selection (max {selection_params['max_rounds']} rounds)")
         try:
-            fs_result = feature_selection_pipeline.remote(build_feature_selection_run_kwargs(selection_params))
+            from app.feature_selection import run_feature_selection_pipeline
+
+            fs_result = run_feature_selection_pipeline(**build_feature_selection_run_kwargs(selection_params))
             fs_pool = fs_result.get("feature_pool", {}) if isinstance(fs_result.get("feature_pool"), dict) else {}
             fs_target_perm = fs_result.get("target_permutation", {}) if isinstance(fs_result.get("target_permutation"), dict) else {}
             fs_k_sweep = fs_result.get("k_sweep", {}) if isinstance(fs_result.get("k_sweep"), dict) else {}
@@ -1810,6 +1826,63 @@ def feature_selection_pipeline(payload: dict) -> dict:
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc(), "type": "feature_selection"}
+
+
+@app.function(
+    cpu=4,
+    memory=16384,
+    timeout=14400,
+    scaledown_window=60,
+    max_containers=1,
+)
+def strategy_mining_research(payload: dict) -> dict:
+    """Run monthly pymoo NSGA-III + novelty strategy mining in Modal.
+
+    Reuses strategy_mining_job_main so D1 ledger writes, GCS artifacts,
+    promotion packets, and fail-closed contracts stay identical to the Cloud
+    Run Job path. The controller owns orchestration only.
+    """
+    _setup_env()
+    import importlib
+    import os
+    from contextlib import contextmanager
+
+    @contextmanager
+    def patched_env(updates: dict[str, str]):
+        previous = {key: os.environ.get(key) for key in updates}
+        try:
+            for key, value in updates.items():
+                os.environ[key] = str(value)
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    env_updates = {
+        "STRATEGY_MINING_RUN_DATE": str(payload.get("run_date") or ""),
+        "STRATEGY_MINING_CADENCE": str(payload.get("cadence") or "monthly"),
+        "STRATEGY_MINING_PERSIST": "1" if payload.get("persist", True) else "0",
+        "STRATEGY_MINING_TRIGGER_SOURCE": str(payload.get("trigger_source") or "modal_controller"),
+    }
+    optional_env = {
+        "STRATEGY_MINING_RUN_ID": payload.get("run_id"),
+        "STRATEGY_MINING_OUTPUT_DIR": payload.get("output_dir"),
+        "STRATEGY_MINING_FINLAB_CONFIRM_TOP_N": payload.get("finlab_confirm_top_n"),
+        "STRATEGY_MINING_PYMOO_POPULATION": payload.get("pymoo_population"),
+        "STRATEGY_MINING_PYMOO_GENERATIONS": payload.get("pymoo_generations"),
+    }
+    for key, value in optional_env.items():
+        if value is not None and str(value).strip():
+            env_updates[key] = str(value)
+
+    with patched_env(env_updates):
+        job = importlib.import_module("strategy_mining_job_main")
+        exit_code = int(job.main())
+    status = "completed" if exit_code == 0 else "error"
+    return {"status": status, "exit_code": exit_code, "backend": "modal"}
 
 
 @app.function(

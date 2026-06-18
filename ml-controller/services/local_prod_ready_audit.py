@@ -475,13 +475,15 @@ def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
             (
                 "@router.post(\"/monthly_pymoo/run\")",
                 "STRATEGY_MINING_EXECUTION_ENABLED",
+                "STRATEGY_MINING_BACKEND",
+                "modal_client.strategy_mining_research",
                 "production_mutation_allowed",
                 "research_only",
                 "strategy_mining_runs",
                 "strategy_promotion_ledger",
             ),
             "roadmap:p8:monthly_strategy_mining_controller_surface",
-            "Controller exposes fail-closed monthly pymoo strategy mining preflight and optional job trigger surface",
+            "Controller exposes fail-closed monthly pymoo strategy mining preflight and Modal trigger surface",
         ),
         _check_text_contains(
             root,

@@ -1350,7 +1350,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 req.followup_webhook_url,
                 json=_followup_payload,
                 headers=_headers,
-                timeout=15,
+                timeout=_httpx.Timeout(120.0, connect=15.0),
                 follow_redirects=True,
             )
             if _resp.status_code < 200 or _resp.status_code >= 300:

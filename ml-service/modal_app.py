@@ -1022,7 +1022,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 followup_webhook_url,
                 json=payload_out,
                 headers=headers,
-                timeout=15,
+                timeout=httpx.Timeout(120.0, connect=15.0),
                 follow_redirects=True,
             )
             if resp.status_code < 200 or resp.status_code >= 300:

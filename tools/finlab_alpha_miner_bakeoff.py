@@ -949,12 +949,22 @@ def _build_unified_registry_factor_universe(args: argparse.Namespace) -> tuple[
     index = overlap._common_index(close_all, args.start_date, args.end_date)
     close = close_all.reindex(index=index, columns=columns).astype(float)
     tradable = close.notna()
+    registry_features = registry.get("features", [])
+    required_ml_features = {
+        str(row.get("feature_id") or "").strip()
+        for row in registry_features
+        if isinstance(row, dict)
+        and row.get("eligible_for_alpha_mining")
+        and str(row.get("runtime_value_source") or "").strip() == "ml106"
+        and str(row.get("feature_id") or "").strip()
+    }
 
     ml_values, _ml_feature_names = overlap._build_ml_feature_pool(
         base=base,
         start_date=args.start_date,
         end_date=args.end_date,
         columns=columns,
+        required_features=required_ml_features,
     )
     ml_direction = _load_direction_map(ML106_BEST_PATH, id_key="feature_id", direction_key="direction_mode")
 
@@ -965,7 +975,6 @@ def _build_unified_registry_factor_universe(args: argparse.Namespace) -> tuple[
         end_date=args.end_date,
         columns=columns,
     )
-    registry_features = registry.get("features", [])
     l1_supplement_info = _supplement_registry_l1_strategy_values(
         registry_features=registry_features,
         strategy_values=strategy_values,

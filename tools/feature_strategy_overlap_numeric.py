@@ -6,6 +6,7 @@ import importlib.util
 import json
 import math
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -212,9 +213,49 @@ def _build_ml_feature_pool(
     start_date: str,
     end_date: str,
     columns: list[str],
+    required_features: set[str] | None = None,
+    symbol_timeout_seconds: int | None = None,
 ) -> tuple[dict[str, pd.DataFrame], list[str]]:
     sys.path.insert(0, str(ML_SERVICE))
     from app.features import FEATURE_COLS, build_feature_matrix  # type: ignore
+
+    requested_features = list(FEATURE_COLS)
+    if required_features is not None:
+        missing_requested = sorted(set(required_features) - set(FEATURE_COLS))
+        if missing_requested:
+            print(
+                f"[overlap] warning: requested ML features missing from FEATURE_COLS: {missing_requested[:20]}",
+                file=sys.stderr,
+                flush=True,
+            )
+        requested_features = [feature for feature in FEATURE_COLS if feature in required_features]
+    if not requested_features:
+        return {}, []
+
+    if symbol_timeout_seconds is None:
+        try:
+            symbol_timeout_seconds = int(os.environ.get("STOCKVISION_ML_FEATURE_SYMBOL_TIMEOUT_SECONDS", "45"))
+        except ValueError:
+            symbol_timeout_seconds = 45
+
+    @contextlib.contextmanager
+    def symbol_timeout(symbol: str):
+        if symbol_timeout_seconds <= 0 or not hasattr(signal, "SIGALRM"):
+            yield
+            return
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def _raise_timeout(_signum: int, _frame: Any) -> None:
+            raise TimeoutError(f"ml_feature_symbol_timeout:{symbol}:{symbol_timeout_seconds}s")
+
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.alarm(symbol_timeout_seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
 
     close = base["close"].loc[:end_date].reindex(columns=columns)
     high = base["high"].loc[:end_date].reindex(index=close.index, columns=columns)
@@ -267,7 +308,7 @@ def _build_ml_feature_pool(
             margin_balance = cache["margin"].combine_first(margin_balance)
             short_balance = cache["short"].combine_first(short_balance)
 
-    rows_by_feature: dict[str, list[pd.Series]] = {name: [] for name in FEATURE_COLS}
+    rows_by_feature: dict[str, list[pd.Series]] = {name: [] for name in requested_features}
     out_index: pd.DatetimeIndex | None = None
 
     for n, symbol in enumerate(columns, start=1):
@@ -296,25 +337,47 @@ def _build_ml_feature_pool(
             }
         )
         chip_df = chip_df.dropna(subset=["date"])
-        with open(os.devnull, "w", encoding="utf-8") as devnull, contextlib.redirect_stdout(devnull):
-            feature_df = build_feature_matrix(
-                prices=price_df.to_dict("records"),
-                indicators=[],
-                chips=chip_df.to_dict("records"),
-                sentiment_scores=[],
-                market_env={},
-                stock_meta=None,
-            ).to_pandas()
+        try:
+            with (
+                open(os.devnull, "w", encoding="utf-8") as devnull,
+                contextlib.redirect_stdout(devnull),
+                symbol_timeout(symbol),
+            ):
+                feature_df = build_feature_matrix(
+                    prices=price_df.to_dict("records"),
+                    indicators=[],
+                    chips=chip_df.to_dict("records"),
+                    sentiment_scores=[],
+                    market_env={},
+                    stock_meta=None,
+                ).to_pandas()
+        except TimeoutError as exc:
+            print(f"[overlap] warning: {exc}; skipped symbol {symbol} ({n}/{len(columns)})", file=sys.stderr, flush=True)
+            continue
+        except Exception as exc:
+            print(
+                f"[overlap] warning: build_feature_matrix failed for {symbol} ({n}/{len(columns)}): "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
         feature_df["date"] = pd.to_datetime(feature_df["date"])
         feature_df = feature_df.set_index("date").reindex(index=index)
         if out_index is None:
             out_index = index
-        for feature in FEATURE_COLS:
-            series = pd.to_numeric(feature_df.get(feature), errors="coerce")
+        for feature in requested_features:
+            raw_series = feature_df[feature] if feature in feature_df.columns else pd.Series(np.nan, index=feature_df.index)
+            series = pd.to_numeric(raw_series, errors="coerce")
             series.name = symbol
             rows_by_feature[feature].append(series)
         if n % 100 == 0:
-            print(f"[overlap] built ML features for {n}/{len(columns)} symbols", file=sys.stderr, flush=True)
+            print(
+                f"[overlap] built ML features for {n}/{len(columns)} symbols "
+                f"requested_features={len(requested_features)}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     feature_values: dict[str, pd.DataFrame] = {}
     for feature, series_list in rows_by_feature.items():
@@ -323,7 +386,7 @@ def _build_ml_feature_pool(
         frame = pd.concat(series_list, axis=1)
         frame = frame.reindex(index=index, columns=columns)
         feature_values[feature] = frame.replace([np.inf, -np.inf], np.nan).astype(float)
-    return feature_values, list(FEATURE_COLS)
+    return feature_values, list(requested_features)
 
 
 def _summarize_features(

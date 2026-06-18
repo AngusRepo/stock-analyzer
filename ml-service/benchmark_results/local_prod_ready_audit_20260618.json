@@ -1,0 +1,787 @@
+{
+  "schema_version": "stockvision-local-prod-ready-audit-v2",
+  "roadmap_scope_version": "planscope-full-session-root-2026-06-14",
+  "roadmap_scope": "full_session_root",
+  "audit_scope": [
+    "p0_source_of_truth_semantics",
+    "p1_active9_data_chain",
+    "p1_optuna_adaptive_search_scheduler",
+    "p1_mode_b_confidence_bandit_replay",
+    "p2_opb_l4_allocation",
+    "p2_promotion_governance",
+    "p2_alpha_mining_similarity_fail_closed",
+    "p2_legacy_cleanup",
+    "p3_model_pool_ui_observability",
+    "finlab_p0_p9_l0_l125_l15_l4_raw_signal_portfolio_intelligence_closure",
+    "p12_production_cutover_preflight_packet_and_remote_readonly_audit"
+  ],
+  "local_closure": "done",
+  "local_prod_ready": "done",
+  "promotion_allowed": false,
+  "production_mutation_allowed": false,
+  "checks": [
+    {
+      "id": "scheduler_manifest:weekly-optuna",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:adaptive-meta-policy-replay",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:linucb-multiplier-replay",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:monthly-optuna",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:monthly-strategy-mining",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_manifest:optuna-queue",
+      "status": "pass",
+      "detail": "required local scheduler job is present"
+    },
+    {
+      "id": "scheduler_sync:dry_run_uses_remote_state",
+      "status": "pass",
+      "detail": "GCP Scheduler dry-run reads remote job state and does not require production scheduler secrets"
+    },
+    {
+      "id": "scheduler_sync:no_dryrun_exists_shortcut",
+      "status": "pass",
+      "detail": "GCP Scheduler dry-run must not pretend every manifest job already exists"
+    },
+    {
+      "id": "runtime_pin:scikit-learn==1.9.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:networkx==3.6.1",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:scikit-learn-extra==0.3.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:xgboost==3.2.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:lightgbm==4.6.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:torch==2.12.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:torch-geometric==2.8.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:neuralforecast==3.1.9",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:tabm==0.0.3",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:timesfm[torch]==2.0.1",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:optuna==4.9.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_image:ml_service_python311_sklearn_extra_wheel",
+      "status": "pass",
+      "detail": "ml-service runtime is Python 3.11 so official sklearn-extra KMedoids/PAM resolves from a manylinux wheel"
+    },
+    {
+      "id": "controller_runtime_pin:optuna==4.9.0",
+      "status": "pass",
+      "detail": "controller dependency is pinned to reviewed official/stable version"
+    },
+    {
+      "id": "controller_runtime_pin:scikit-learn==1.9.0",
+      "status": "pass",
+      "detail": "controller dependency is pinned to reviewed official/stable version"
+    },
+    {
+      "id": "controller_runtime_pin:networkx==3.6.1",
+      "status": "pass",
+      "detail": "controller dependency is pinned to reviewed official/stable version"
+    },
+    {
+      "id": "controller_runtime_owner:no_sklearn_extra_hard_pin",
+      "status": "pass",
+      "detail": "KMedoids/PAM official dependency is owned by ml-service/Modal, not ml-controller proxy runtime"
+    },
+    {
+      "id": "worker_runtime_pin:hono==4.12.25",
+      "status": "pass",
+      "detail": "reviewed Worker/meta runtime pin is present (actual=4.12.25)"
+    },
+    {
+      "id": "worker_runtime_pin:wrangler==4.100.0",
+      "status": "pass",
+      "detail": "reviewed Worker/meta runtime pin is present (actual=4.100.0)"
+    },
+    {
+      "id": "worker_runtime_pin:typescript==6.0.3",
+      "status": "pass",
+      "detail": "reviewed Worker/meta runtime pin is present (actual=6.0.3)"
+    },
+    {
+      "id": "active9_track:LightGBM",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:XGBoost",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:ExtraTrees",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:TabM",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:GNN",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:DLinear",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:PatchTST",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:iTransformer",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:TimesFM",
+      "status": "pass",
+      "detail": "active-9 model is a production_slot_member in the backend track"
+    },
+    {
+      "id": "active9_track:TimesFM:timesfm25",
+      "status": "pass",
+      "detail": "TimesFM production slot is backed by the TimesFM 2.5 runtime/config, not a separate TimesFM25 voter"
+    },
+    {
+      "id": "ui:new_flow_workbench",
+      "status": "pass",
+      "detail": "Model Pool renders the new workbench"
+    },
+    {
+      "id": "ui:retired_hidden",
+      "status": "pass",
+      "detail": "retired ML are filtered from the main surface"
+    },
+    {
+      "id": "ui:meta_replay_visible",
+      "status": "pass",
+      "detail": "meta replay is visible in the evidence flow"
+    },
+    {
+      "id": "ui:multiplier_replay_visible",
+      "status": "pass",
+      "detail": "LinUCB multiplier replay is visible in the evidence flow"
+    },
+    {
+      "id": "roadmap:p0:adaptive_l2_name_boundary",
+      "status": "pass",
+      "detail": "legacy adaptive_l2 formula constants remain separated from new L2 coarse ML gate/search naming"
+    },
+    {
+      "id": "roadmap:p0:l2_l3_semantics",
+      "status": "pass",
+      "detail": "L2 is 3ML coarse and L3 is 6ML formal family evidence, not a single top-k ranker"
+    },
+    {
+      "id": "roadmap:p0:l3_family_view",
+      "status": "pass",
+      "detail": "Model Pool exposes L3 by Tree/TabM/Sequence/GNN family semantics"
+    },
+    {
+      "id": "roadmap:p0:meta_policy_boundary",
+      "status": "pass",
+      "detail": "LinUCB/NeuralUCB/NeuralTS/NeuCB are meta-policy research lanes with LinUCB as production baseline"
+    },
+    {
+      "id": "roadmap:p0:l4_allocator_boundary",
+      "status": "pass",
+      "detail": "L4 sparse allocation is separated from meta-policy replay and legacy top-k override remains disabled"
+    },
+    {
+      "id": "roadmap:p0:opb_controller_ml_controller_surface",
+      "status": "pass",
+      "detail": "ML controller adaptive surface describes OPB as the sparse tangent allocation controller, not a separate research owner"
+    },
+    {
+      "id": "roadmap:p0:opb_controller_worker_surface",
+      "status": "pass",
+      "detail": "Worker adaptive governance describes OPB consistently with the controller surface"
+    },
+    {
+      "id": "roadmap:p1:active9_dataset_policy",
+      "status": "pass",
+      "detail": "active-9 dataset policy includes all production slots and retired model exclusions"
+    },
+    {
+      "id": "roadmap:p1:active9_verified_replay_source",
+      "status": "pass",
+      "detail": "adaptive meta replay uses verified active-9 prediction rows only"
+    },
+    {
+      "id": "roadmap:p1:active9_confidence_hook",
+      "status": "pass",
+      "detail": "adaptive confidence hook is scoped to active-9 evidence and excludes retired CatBoost"
+    },
+    {
+      "id": "roadmap:p1:retired_models_not_ic_tracked",
+      "status": "pass",
+      "detail": "retired models are not tracked as active model IC sources"
+    },
+    {
+      "id": "roadmap:p1:active9_teacher_labels",
+      "status": "pass",
+      "detail": "PLE/Listwise router evidence expects active-9 teacher labels without fake backfill"
+    },
+    {
+      "id": "roadmap:p1:optuna_worker_boundary",
+      "status": "pass",
+      "detail": "Worker triggers controller-owned 9-source sweep Job; it does not fan out or mutate production"
+    },
+    {
+      "id": "roadmap:p1:optuna_controller_boundary",
+      "status": "pass",
+      "detail": "controller owns long-running research sweep and separates L2/circuit search from bandit dims"
+    },
+    {
+      "id": "roadmap:p1:scheduler_policy_surface",
+      "status": "pass",
+      "detail": "scheduler policy exposes required Optuna/adaptive replay tasks"
+    },
+    {
+      "id": "roadmap:p8:monthly_strategy_mining_worker_surface",
+      "status": "pass",
+      "detail": "Worker exposes monthly pymoo strategy mining as a scheduler-triggered, research-only controller workflow"
+    },
+    {
+      "id": "roadmap:p8:monthly_strategy_mining_controller_surface",
+      "status": "pass",
+      "detail": "Controller exposes fail-closed monthly pymoo strategy mining preflight and optional job trigger surface"
+    },
+    {
+      "id": "roadmap:p8:monthly_alpha_miner_cli_defaults_pymoo_only",
+      "status": "pass",
+      "detail": "alpha miner CLI defaults are config-aligned pymoo-only; random/optuna/deap require explicit research invocation"
+    },
+    {
+      "id": "roadmap:p9:strategy_mining_ledger_migration",
+      "status": "pass",
+      "detail": "Pymoo/FinLab strategy mining has local D1 ledger tables for runs, candidates, backtests, similarity, and promotion decisions"
+    },
+    {
+      "id": "roadmap:p1:post_verify_chain",
+      "status": "pass",
+      "detail": "post-verify chain closes rolling IC, reward ledger, adaptive params, shadow evidence, and strategy learning"
+    },
+    {
+      "id": "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact_fresh",
+      "status": "pass",
+      "detail": "monthly pymoo runtime contract validation artifact is newer than scheduler, miner, promotion, closure, and route contracts"
+    },
+    {
+      "id": "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact",
+      "status": "pass",
+      "detail": "monthly pymoo runtime validation artifact proves pymoo-only monthly policy and feature-pool closure alignment"
+    },
+    {
+      "id": "roadmap:p1:neural_shadow_replay_read_only",
+      "status": "pass",
+      "detail": "NeuralUCB/NeuralTS/NeuCB shadow state is evidence/research, not production mutation"
+    },
+    {
+      "id": "roadmap:p2:strategy_promotion_gate",
+      "status": "pass",
+      "detail": "strategy promotion requires shadow-first evidence and Wei approval for production allocation"
+    },
+    {
+      "id": "roadmap:p2:strategy_lab_governance_ui",
+      "status": "pass",
+      "detail": "Strategy Lab exposes shadow approval and Wei approval gates"
+    },
+    {
+      "id": "roadmap:p2:model_pool_promotion_governance",
+      "status": "pass",
+      "detail": "Model Pool separates artifact/parameter governance from the L2/L3 alpha vote graph"
+    },
+    {
+      "id": "roadmap:p2:active9_artifact_promotion_blocker",
+      "status": "pass",
+      "detail": "artifact promotion blocks non-active-9 models from production selection"
+    },
+    {
+      "id": "roadmap:p2:alpha_mining_similarity_matrix_only_fail_closed",
+      "status": "pass",
+      "detail": "alpha mining novelty uses formal137 pairwise matrix only and exposes missing-pair evidence"
+    },
+    {
+      "id": "roadmap:p2:alpha_mining_no_self_similarity_fill",
+      "status": "pass",
+      "detail": "alpha mining novelty must not fill missing pairwise similarity from registry cluster leaders"
+    },
+    {
+      "id": "roadmap:p2:alpha_mining_similarity_validator",
+      "status": "pass",
+      "detail": "alpha mining novelty validator covers high duplicate, low similarity, archive duplicate, and missing-pair fail-closed cases"
+    },
+    {
+      "id": "roadmap:p2:alpha_mining_similarity_validation_artifact_fresh",
+      "status": "pass",
+      "detail": "alpha mining similarity novelty validation artifact is newer than validator and miner source"
+    },
+    {
+      "id": "roadmap:p2:alpha_mining_similarity_validation_artifact",
+      "status": "pass",
+      "detail": "alpha mining similarity novelty validation artifact proves missing pair fail-closed behavior"
+    },
+    {
+      "id": "roadmap:p2:l4_pending_buy_policy",
+      "status": "pass",
+      "detail": "pending-buy execution is owned by L4 sparse final BUY rows only"
+    },
+    {
+      "id": "roadmap:p2:l4_pending_buy_query",
+      "status": "pass",
+      "detail": "pending-buy orchestrator filters executable rows to sparse tangent allocation output"
+    },
+    {
+      "id": "roadmap:p2:l4_data_quality_owner",
+      "status": "pass",
+      "detail": "DataQuality has an explicit owner check for L4 allocator pending-buy execution"
+    },
+    {
+      "id": "roadmap:p2:l4_recommendation_context",
+      "status": "pass",
+      "detail": "recommendation context exposes sparse final allocation evidence and controller provenance"
+    },
+    {
+      "id": "roadmap:p2:l4_sparse_zero_selection_diagnostics",
+      "status": "pass",
+      "detail": "L4 sparse allocation writes per-candidate diagnostics for selected and zero-selection outcomes"
+    },
+    {
+      "id": "roadmap:v4:shared_similarity_evidence",
+      "status": "pass",
+      "detail": "Shared controller similarity evidence uses official graph/covariance/HDBSCAN surfaces without becoming a selector"
+    },
+    {
+      "id": "roadmap:v4:l4_cluster_covariance_evidence",
+      "status": "pass",
+      "detail": "L4 sparse allocation persists cluster exposure and LedoitWolf covariance evidence"
+    },
+    {
+      "id": "roadmap:v4:l125_modal_strategy_similarity_owner",
+      "status": "pass",
+      "detail": "L1.25 strategy similarity graph is owned by Modal/Python with official NetworkX and sklearn-extra PAM evidence"
+    },
+    {
+      "id": "roadmap:v4:l125_modal_function_surface",
+      "status": "pass",
+      "detail": "Modal app exposes the L1.25 strategy similarity evidence function"
+    },
+    {
+      "id": "roadmap:v4:gnn_multi_similarity_edge_production",
+      "status": "pass",
+      "detail": "GNN production GraphSAGE uses NetworkX multi-source similarity graph edges without becoming a selector"
+    },
+    {
+      "id": "roadmap:v4:gnn_batch_context_source_wiring",
+      "status": "pass",
+      "detail": "GNN batch prediction passes existing strategy/sector/chip/regime context into the production edge builder"
+    },
+    {
+      "id": "roadmap:v4:gnn_no_shadow_edge_path",
+      "status": "pass",
+      "detail": "GNN multi-similarity edge integration must not remain a shadow-only path"
+    },
+    {
+      "id": "roadmap:v4:gnn_legacy_shadow_wrapper_removed",
+      "status": "pass",
+      "detail": "Legacy GNN shadow wrapper must be removed after production multi-source edge promotion"
+    },
+    {
+      "id": "roadmap:v4:gnn_legacy_numpy_shadow_model_removed",
+      "status": "pass",
+      "detail": "Legacy numpy-only shadow GNN model must be removed after GraphSAGE production owner is active"
+    },
+    {
+      "id": "roadmap:v4:l125_controller_modal_proxy",
+      "status": "pass",
+      "detail": "L1.25 strategy similarity route proxies to Modal and exposes HDBSCAN only as research/shadow evidence"
+    },
+    {
+      "id": "roadmap:v4:l125_modal_warmup_preflight",
+      "status": "pass",
+      "detail": "Controller warmup exercises Modal L1.25 strategy similarity evidence and reports official PAM preflight status"
+    },
+    {
+      "id": "roadmap:v4:l125_worker_warmup_fail_visible",
+      "status": "pass",
+      "detail": "Worker admin warmup reports degraded when any controller warmup target, including L1.25 PAM preflight, is degraded"
+    },
+    {
+      "id": "roadmap:v4:l125_worker_modal_wiring",
+      "status": "pass",
+      "detail": "Worker production screener calls controller/Modal for L1.25 strategy similarity evidence before routing"
+    },
+    {
+      "id": "roadmap:v4:l125_modal_evidence_strict_coercion",
+      "status": "pass",
+      "detail": "Worker rejects Modal L1.25 strategy similarity evidence unless official PAM preflight passed"
+    },
+    {
+      "id": "roadmap:v4:l125_similarity_observability",
+      "status": "pass",
+      "detail": "Daily funnel summaries expose L1.25 Modal strategy similarity source/status/algorithm evidence"
+    },
+    {
+      "id": "roadmap:v4:l125_worker_consumes_strategy_similarity_fields",
+      "status": "pass",
+      "detail": "Worker L1.25/L1.5 surface consumes strategy similarity fields but is not the formal algorithm owner"
+    },
+    {
+      "id": "roadmap:v4:similarity_promotion_gate",
+      "status": "pass",
+      "detail": "Similarity/clustering evidence has explicit production promotion gates"
+    },
+    {
+      "id": "roadmap:p2:l4_sparse_api_diagnostics",
+      "status": "pass",
+      "detail": "recommendation API exposes L4 sparse reason/edge/risk diagnostics"
+    },
+    {
+      "id": "roadmap:p3:finlab_primary_twse_supplemental_owner",
+      "status": "pass",
+      "detail": "evening-chain market data logs keep FinLab canonical as primary and TWSE/TPEX as supplemental"
+    },
+    {
+      "id": "roadmap:p3:no_legacy_market_data_fallback_wording",
+      "status": "pass",
+      "detail": "evening-chain must not describe TWSE/TPEX supplemental refresh as legacy fallback"
+    },
+    {
+      "id": "finlab_p0:l0_raw_signal_coverage_audit",
+      "status": "pass",
+      "detail": "P0/P9: L0 writes raw_signal coverage audit and explicitly marks missing listed broker materialization"
+    },
+    {
+      "id": "finlab_p1:fundamental_loader_non_silent_bulk",
+      "status": "pass",
+      "detail": "P1/P3: L0 fundamental loader scans latest non-null rows and reports errors without silent fallback"
+    },
+    {
+      "id": "finlab_p2:broker_transactions_raw_materialization",
+      "status": "pass",
+      "detail": "P2: remote backfill normalizes listed/OTC FinLab broker_transactions into broker_flow_diversity"
+    },
+    {
+      "id": "finlab_p2:broker_transactions_canonical_materialization",
+      "status": "pass",
+      "detail": "P2: canonical materializer writes listed/OTC broker flow rows into canonical_broker_flow_daily"
+    },
+    {
+      "id": "finlab_p3:canonical_screener_adapter_boundary",
+      "status": "pass",
+      "detail": "P3: Worker screener exposes canonical adapter types and keeps old FM names as aliases only"
+    },
+    {
+      "id": "finlab_p4:factor_normalization_evidence",
+      "status": "pass",
+      "detail": "P4: L0/L1 writes FinLab-style rank/z-score/winsor/sector-neutral/allocation evidence without selecting stocks"
+    },
+    {
+      "id": "finlab_p5:l125_factor_analysis_metrics",
+      "status": "pass",
+      "detail": "P5: L1.25 strategy metrics include factor return, centrality, RankIC, and Shapley evidence"
+    },
+    {
+      "id": "finlab_p6:l125_portfolio_intelligence_priors",
+      "status": "pass",
+      "detail": "P6: L1.25 emits strategy/family priors, reliability, crowding, diversification, and factor-analysis evidence"
+    },
+    {
+      "id": "finlab_p7:teacher_label_runtime_contract",
+      "status": "pass",
+      "detail": "P7: daily routing uses verified runtime teacher cache only and does not require same-day L2/L3"
+    },
+    {
+      "id": "finlab_p8:l4_risk_checklist_evidence",
+      "status": "pass",
+      "detail": "P8: L4 sparse allocation records FinLab-style risk checklist evidence without becoming a selector"
+    },
+    {
+      "id": "finlab_p9:rerun_report_artifact_present",
+      "status": "pass",
+      "detail": "P9: 2026-06-15 L0-L4 comparison report artifact is present for local audit"
+    },
+    {
+      "id": "strategy_baseline:active_spec_exporter_readonly",
+      "status": "pass",
+      "detail": "active strategy specs are generated by a read-only D1 exporter, not by manual shell JSON shaping"
+    },
+    {
+      "id": "strategy_baseline:active_spec_export_summary_present",
+      "status": "pass",
+      "detail": "current active StrategySpec export summary exists"
+    },
+    {
+      "id": "strategy_baseline:active_spec_export_readonly_summary",
+      "status": "pass",
+      "detail": "active StrategySpec export summary is explicitly read-only/non-mutating"
+    },
+    {
+      "id": "strategy_baseline:active_spec_export_no_errors",
+      "status": "pass",
+      "detail": "active StrategySpec export has a positive strategy count and no validation errors"
+    },
+    {
+      "id": "strategy_baseline:active_spec_json_present",
+      "status": "pass",
+      "detail": "active StrategySpec JSON exists at output/finlab_strategy_backtests/current_active_11_strategy_specs.json"
+    },
+    {
+      "id": "strategy_baseline:active_spec_json_count_matches",
+      "status": "pass",
+      "detail": "active StrategySpec JSON row count matches export summary"
+    },
+    {
+      "id": "strategy_baseline:active_spec_json_array_shape",
+      "status": "pass",
+      "detail": "active StrategySpec JSON uses clean arrays for supportedRegimes and riskNotes"
+    },
+    {
+      "id": "strategy_baseline:active_finlab_backtest_summary_present",
+      "status": "pass",
+      "detail": "FinLab backtest summary exists for the current active strategy count"
+    },
+    {
+      "id": "strategy_baseline:active_finlab_backtest_count_matches",
+      "status": "pass",
+      "detail": "active strategy FinLab backtest count matches exported active StrategySpec count"
+    },
+    {
+      "id": "strategy_baseline:active_finlab_backtest_no_errors",
+      "status": "pass",
+      "detail": "active strategy FinLab backtest has no sim errors and accounts for every active strategy, including unsupported composite feature rows"
+    },
+    {
+      "id": "roadmap:p3:l15_ml_slate_queue_stage",
+      "status": "pass",
+      "detail": "Worker persists L1.5 ML slate queue as a pre-controller queue, not formal L2"
+    },
+    {
+      "id": "roadmap:p3:worker_not_formal_l2_owner",
+      "status": "pass",
+      "detail": "Worker screener must not write formal layer2_coarse_ml_gate stage rows"
+    },
+    {
+      "id": "roadmap:p3:l15_l2_evidence_summary",
+      "status": "pass",
+      "detail": "funnel evidence separates L1.5 slate queue from formal L2 while keeping legacy read compatibility"
+    },
+    {
+      "id": "roadmap:p3:daily_api_reads_l15_and_l2",
+      "status": "pass",
+      "detail": "daily recommendation API reads both L1.5 slate queue and formal L2 evidence"
+    },
+    {
+      "id": "roadmap:p3:strategy_learning_l1_source",
+      "status": "pass",
+      "detail": "strategy learning reads L1/L1.5 strategy evidence instead of L2 owner stages"
+    },
+    {
+      "id": "roadmap:p3:strategy_learning_not_l2_owner",
+      "status": "pass",
+      "detail": "strategy learning must not treat formal L2 pass rows as its primary strategy evidence source"
+    },
+    {
+      "id": "roadmap:p3:layered_funnel_evidence",
+      "status": "pass",
+      "detail": "daily recommendation evidence exposes L1/L1.25/L1.5/L3.5 layer contracts"
+    },
+    {
+      "id": "roadmap:p3:daily_health_observability",
+      "status": "pass",
+      "detail": "daily recommendation API returns strategy portfolio intelligence health"
+    },
+    {
+      "id": "roadmap:p3:model_pool_evidence_ui",
+      "status": "pass",
+      "detail": "Model Pool UI surfaces active-9 fleet health and meta-policy evidence boundaries"
+    },
+    {
+      "id": "replay_file:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "read-only replay evidence file exists"
+    },
+    {
+      "id": "replay_fail_closed:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay evidence is explicitly non-mutating"
+    },
+    {
+      "id": "replay_status_terminal:adaptive_meta_policy_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay has a terminal gate status; fail is acceptable when fail-closed"
+    },
+    {
+      "id": "replay_file:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "read-only replay evidence file exists"
+    },
+    {
+      "id": "replay_fail_closed:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay evidence is explicitly non-mutating"
+    },
+    {
+      "id": "replay_status_terminal:linucb_multiplier_replay_20260605_20260611.json",
+      "status": "pass",
+      "detail": "replay has a terminal gate status; fail is acceptable when fail-closed"
+    },
+    {
+      "id": "roadmap:p12:production_cutover_packet_20260618_scope",
+      "status": "pass",
+      "detail": "P12 cutover packet must use the 2026-06-18 Feature Registry evidence scope and new approval gates"
+    },
+    {
+      "id": "roadmap:p12:remote_preflight_tool_read_only",
+      "status": "pass",
+      "detail": "P12 remote preflight must be repeatable and read-only instead of a hand-written snapshot"
+    },
+    {
+      "id": "roadmap:p12:production_cutover_packet_artifact_present",
+      "status": "pass",
+      "detail": "P12 production cutover packet 2026-06-18 artifact is present"
+    },
+    {
+      "id": "roadmap:p12:remote_preflight_artifact_present",
+      "status": "pass",
+      "detail": "P12 remote preflight 2026-06-18 artifact is present"
+    },
+    {
+      "id": "roadmap:p12:production_cutover_packet_artifact_fresh",
+      "status": "pass",
+      "detail": "P12 cutover packet artifact is newer than its non-circular upstream evidence"
+    },
+    {
+      "id": "roadmap:p12:cutover_ready_for_review",
+      "status": "pass",
+      "detail": "P12 packet is ready for Wei review after local evidence checks pass"
+    },
+    {
+      "id": "roadmap:p12:cutover_non_mutating",
+      "status": "pass",
+      "detail": "P12 packet remains non-mutating and allows no production action without Wei approval"
+    },
+    {
+      "id": "roadmap:p12:cutover_evidence_health_pass",
+      "status": "pass",
+      "detail": "P12 packet evidence health checks all pass"
+    },
+    {
+      "id": "roadmap:p12:cutover_feature_registry_evidence_source_fresh",
+      "status": "pass",
+      "detail": "P12 packet carries source-fresh feature registry closure evidence"
+    },
+    {
+      "id": "roadmap:p12:cutover_materialization_evidence_source_fresh",
+      "status": "pass",
+      "detail": "P12 packet carries source-fresh unified137 materialization evidence"
+    },
+    {
+      "id": "roadmap:p12:cutover_ml_migration_evidence_source_fresh",
+      "status": "pass",
+      "detail": "P12 packet carries source-fresh ML migration materialization gates"
+    },
+    {
+      "id": "roadmap:p12:cutover_alpha_promotion_evidence_source_fresh",
+      "status": "pass",
+      "detail": "P12 packet carries source-fresh alpha mining promotion evidence"
+    },
+    {
+      "id": "roadmap:p12:cutover_approval_actions_synced",
+      "status": "pass",
+      "detail": "P12 packet exposes the full approval-required action set"
+    },
+    {
+      "id": "roadmap:p12:cutover_remote_summary_present",
+      "status": "pass",
+      "detail": "P12 packet carries remote preflight summary separately from local readiness"
+    },
+    {
+      "id": "roadmap:p12:remote_preflight_non_mutating",
+      "status": "pass",
+      "detail": "P12 remote preflight artifact is explicitly read-only/non-mutating"
+    },
+    {
+      "id": "roadmap:p12:remote_preflight_expected_checks",
+      "status": "pass",
+      "detail": "P12 remote preflight covers Scheduler, controller env, D1 ledger, strategy seed, and registry schema"
+    }
+  ],
+  "failed_checks": [],
+  "production_cutover_requires_wei_approval": [
+    "deploy_worker_and_frontend",
+    "deploy_ml_controller_strategy_mining_route",
+    "apply_strategy_registry_alpha_miner_migration",
+    "apply_strategy_mining_ledger_migration",
+    "sync_gcp_scheduler_manifest",
+    "write_or_promote_gcs_model_artifacts",
+    "update_model_pool_champion_pointers",
+    "remove_challenger_pointers_after_approved_cutover",
+    "enable_strategy_mining_execution_env",
+    "feature_selection_retrain_release"
+  ]
+}

@@ -183,6 +183,43 @@ export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) 
   })
 }
 
+export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/strategy_mining/monthly_pymoo/run', {
+    method: 'POST',
+    jsonBody: {
+      cadence: 'monthly',
+      run_date: runDate,
+      persist: true,
+      dry_run: false,
+      trigger_source: 'worker_scheduler',
+    },
+    timeoutMs: 60_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`monthly strategy mining HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  if (data.status === 'blocked' || data.status === 'failed' || data.status === 'error') {
+    throw new Error(`monthly strategy mining ${data.status}: ${(data.errors ?? data.error ?? data.detail ?? []).toString().slice(0, 300)}`)
+  }
+  if (data.status === 'triggered') {
+    return `triggered monthly_pymoo_strategy_mining execution_id=${data.execution_id ?? 'unknown'} callback expected`
+  }
+  if (data.status === 'already_running') {
+    return `triggered monthly_pymoo_strategy_mining already_running execution_id=${data.execution_id ?? 'unknown'} callback expected`
+  }
+  const pool = data.feature_pool && typeof data.feature_pool === 'object' ? data.feature_pool as Record<string, any> : {}
+  return [
+    'monthly_pymoo_strategy_mining preflight_ready',
+    `features=${pool.eligible_for_alpha_mining ?? 'unknown'}`,
+    `triggered=${data.triggered === true ? '1' : '0'}`,
+    'production_effect=none',
+  ].join(' ')
+}
+
 function isFailureSummary(value: string): boolean {
   const normalized = value.trim().toLowerCase()
   return normalized.startsWith('failed') ||

@@ -14,6 +14,12 @@ if (-not $Project) {
   $Project = (gcloud config get-value project 2>$null)
 }
 if (-not $Project) { throw 'Missing GCP project. Set GOOGLE_CLOUD_PROJECT or gcloud config project.' }
+if ($DryRun -and -not $WorkerBaseUrl) {
+  $WorkerBaseUrl = 'https://dry-run-worker-base-url.invalid'
+}
+if ($DryRun -and -not $AuthToken) {
+  $AuthToken = 'DRY_RUN_AUTH_TOKEN_PLACEHOLDER'
+}
 if (-not $WorkerBaseUrl) { throw 'Missing STOCKVISION_WORKER_BASE_URL.' }
 if (-not $AuthToken) { throw 'Missing SCHEDULER_AUTH_TOKEN.' }
 
@@ -43,12 +49,10 @@ function New-SchedulerHeaderArg {
 }
 
 $currentJobs = @()
-if (-not $DryRun) {
-  $currentJobs = gcloud scheduler jobs list --project $Project --location $Location --format 'value(name.basename())'
-  if ($LASTEXITCODE -ne 0) { throw 'gcloud scheduler jobs list failed' }
-  foreach ($jobId in $currentJobs) {
-    if ($jobId) { [void]$currentIds.Add([string]$jobId) }
-  }
+$currentJobs = gcloud scheduler jobs list --project $Project --location $Location --format 'value(name.basename())'
+if ($LASTEXITCODE -ne 0) { throw 'gcloud scheduler jobs list failed' }
+foreach ($jobId in $currentJobs) {
+  if ($jobId) { [void]$currentIds.Add([string]$jobId) }
 }
 
 foreach ($job in $manifest.jobs) {
@@ -61,7 +65,7 @@ foreach ($job in $manifest.jobs) {
   $description = [string]$job.description
   $timeZone = if ($job.timeZone) { [string]$job.timeZone } else { [string]$manifest.timeZone }
   $headers = New-SchedulerHeaderArg -Job $job
-  $exists = $DryRun -or $currentIds.Contains([string]$job.id)
+  $exists = $currentIds.Contains([string]$job.id)
 
   if ($exists) {
     $args = @(
@@ -101,7 +105,7 @@ foreach ($job in $manifest.jobs) {
   }
 }
 
-if ($DeleteStale -and -not $DryRun) {
+if ($DeleteStale) {
   foreach ($jobId in $currentJobs) {
     if (-not $managedIds.Contains($jobId)) {
       Write-Host "[scheduler-sync] delete stale $jobId"

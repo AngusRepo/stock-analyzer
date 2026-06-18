@@ -16,7 +16,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'weekly-cleanup', 'weekly-backtest',
   'weekly-optuna', 'adaptive-meta-policy-replay', 'linucb-multiplier-replay',
-  'monthly-optuna', 'weekly-drift-retrain',
+  'monthly-optuna', 'monthly-strategy-mining', 'weekly-drift-retrain',
   'finlab-v4-backfill',
   'monthly-retrain',
 ])
@@ -106,6 +106,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'weekly-optuna',
       'weekly-drift-retrain',
       'monthly-optuna',
+      'monthly-strategy-mining',
       'weekly-cleanup',
       'optuna-queue',
       'retrain',

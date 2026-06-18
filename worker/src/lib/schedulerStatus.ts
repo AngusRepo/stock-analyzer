@@ -65,7 +65,8 @@ const JOB_DEFS: JobDef[] = [
   { id: 'linucb-multiplier-replay', name: 'LinUCB Multiplier Replay', schedule: 'Sunday 06:50', cron: '50 22 * * 6', group: 'weekly' },
   { id: 'weekly-drift-retrain', name: 'Weekly Drift Retrain', schedule: 'Manual, approval-gated shadow candidate', cron: 'manual confirm=weekly_drift', group: 'weekly' },
   { id: 'sector-leaders', name: 'Sector Leaders', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
-  { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00 UTC', cron: 'first saturday of month 16:00', group: 'monthly' },
+  { id: 'monthly-optuna', name: 'Monthly Optuna', schedule: 'First Sat 16:00', cron: 'first saturday of month 16:00 taipei', group: 'monthly' },
+  { id: 'monthly-strategy-mining', name: 'Monthly Strategy Mining', schedule: 'First Sat 10:00', cron: 'first saturday of month 10:00 taipei', group: 'monthly' },
   { id: 'monthly-retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
 
   { id: 'optuna-queue', name: 'Optuna Queue Processor', schedule: 'Every 6h', cron: '0 */6 * * *', group: 'daily' },
@@ -294,6 +295,7 @@ function isWeekdayTw(date: string): boolean {
 function runningSlaMs(def?: Pick<JobDef, 'id' | 'group'>): number {
   if (!def) return 60 * 60_000
   if (def.id === 'monthly-retrain') return 8 * 60 * 60_000
+  if (def.id === 'monthly-strategy-mining') return 4 * 60 * 60_000
   if (def.id === 'monthly-optuna') return 4 * 60 * 60_000
   if (def.id === 'weekly-optuna') return 3 * 60 * 60_000
   if (def.group === 'weekly' || def.group === 'monthly') return 2 * 60 * 60_000

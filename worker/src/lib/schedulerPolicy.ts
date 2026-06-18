@@ -61,6 +61,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'weekly-drift-retrain': { kind: 'research', holidayGated: false, description: 'approval-gated weekly drift hotfix candidate; not weekly cleanup' },
   'sector-leaders': { kind: 'research', holidayGated: false, description: 'weekly sector leader refresh' },
   'monthly-optuna': { kind: 'research', holidayGated: false, description: 'monthly Optuna research sweep' },
+  'monthly-strategy-mining': { kind: 'research', holidayGated: false, description: 'monthly pymoo NSGA-III + novelty strategy mining preflight/research ledger' },
   'optuna-queue': { kind: 'queue', holidayGated: false, description: 'Optuna queue processor' },
   retrain: { kind: 'research', holidayGated: false, description: 'model retrain lifecycle trigger' },
   'monthly-retrain': { kind: 'research', holidayGated: false, description: 'monthly universal retrain lifecycle' },

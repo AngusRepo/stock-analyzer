@@ -1,0 +1,31 @@
+{
+  "schema_version": "stockvision-monthly-pymoo-runtime-contract-v1",
+  "status": "pass",
+  "errors": [],
+  "validated_cases": [
+    "monthly_strategy_mining_scheduler",
+    "worker_controller_route_surface",
+    "strategy_mining_ledger_schema",
+    "alpha_miner_cli_defaults_pymoo_only",
+    "promotion_contract_monthly_pymoo",
+    "feature_pool_matches_local_closure"
+  ],
+  "scheduler_job": {
+    "id": "monthly-strategy-mining",
+    "schedule": "first saturday of month 10:00 taipei",
+    "timeZone": "Asia/Taipei",
+    "task": "monthly-strategy-mining",
+    "query": "sync=1&persist=1",
+    "description": "Monthly first Saturday TW 10:00 pymoo NSGA-III + novelty strategy mining preflight/research ledger"
+  },
+  "monthly_search_policy": {
+    "cadence": "monthly",
+    "algorithm": "pymoo",
+    "requires_finlab_backtest": true
+  },
+  "feature_pool": {
+    "eligible_for_alpha_mining": 137,
+    "expected_from_local_closure": 137
+  },
+  "decision_effect": "local_validation_only"
+}

@@ -1,0 +1,175 @@
+{
+  "json": "output/strategy_walk_forward_compare/strategy_walk_forward_compare_20260612_20260615_20260616.json",
+  "dates_requested": [
+    "2026-06-12",
+    "2026-06-15",
+    "2026-06-16"
+  ],
+  "missing_mined_dry_run_reports": [],
+  "production_evidence": {
+    "status": "reused_existing_report",
+    "source": "existing_report_reuse",
+    "path": "output/strategy_walk_forward_compare/strategy_walk_forward_compare_20260612_20260615_20260616.json",
+    "row_count": 3,
+    "reason": "D1 client env is unavailable in local closure context"
+  },
+  "mined3": {
+    "rows": [
+      {
+        "date": "2026-06-12",
+        "l15_seed_count": 130,
+        "l2_retention": 0.753846,
+        "l3_retention": 0.408163,
+        "l4_buy_count": 2,
+        "l4_buy_symbols": [
+          "8021",
+          "2317"
+        ],
+        "l1_avg_pairwise_jaccard": 0.19357,
+        "l1_max_pairwise_jaccard": 0.319797
+      },
+      {
+        "date": "2026-06-15",
+        "l15_seed_count": 130,
+        "l2_retention": 0.753846,
+        "l3_retention": 0.408163,
+        "l4_buy_count": 2,
+        "l4_buy_symbols": [
+          "8021",
+          "2609"
+        ],
+        "l1_avg_pairwise_jaccard": 0.17549,
+        "l1_max_pairwise_jaccard": 0.340206
+      },
+      {
+        "date": "2026-06-16",
+        "l15_seed_count": 130,
+        "l2_retention": 0.753846,
+        "l3_retention": 0.408163,
+        "l4_buy_count": 3,
+        "l4_buy_symbols": [
+          "9945",
+          "2327",
+          "6285"
+        ],
+        "l1_avg_pairwise_jaccard": 0.140247,
+        "l1_max_pairwise_jaccard": 0.262136
+      }
+    ],
+    "stability": {
+      "buy_symbol_frequency": {
+        "8021": 2,
+        "2317": 1,
+        "2327": 1,
+        "2609": 1,
+        "6285": 1,
+        "9945": 1
+      },
+      "avg_consecutive_buy_jaccard": 0.166666
+    },
+    "backtest_bias": {
+      "backtest_avg_latest_matches": 10.0,
+      "walk_forward_avg_l15_seed_count": 130.0,
+      "walk_forward_avg_l4_buy_count": 2.333333,
+      "l15_vs_backtest_latest_match_ratio": 13.0,
+      "buy_vs_backtest_latest_match_ratio": 0.233333,
+      "interpretation": "ratio_above_1_means_runtime_pipeline_is_broader_than_backtest_latest_holdings; ratio_below_1_means_runtime_pipeline_is_tighter_than_backtest_latest_holdings"
+    }
+  },
+  "current_strategy_benchmark": {
+    "rows": [
+      {
+        "date": "2026-06-12",
+        "run_id": "screener-2026-06-12-1781515300273",
+        "l15_seed_count": 20,
+        "l2_retention": 0.75,
+        "l3_retention": 0.8,
+        "l4_buy_count": 0,
+        "l4_buy_symbols": [],
+        "l15_strategy_avg_pairwise_jaccard": 0.393611,
+        "l15_strategy_max_pairwise_jaccard": 1.0,
+        "l15_family_avg_pairwise_jaccard": 0.461624,
+        "l15_family_max_pairwise_jaccard": 1.0,
+        "strategy_vector_coverage": {
+          "with_strategy_hit_vector": 0,
+          "rows": 20,
+          "coverage": 0.0
+        }
+      },
+      {
+        "date": "2026-06-15",
+        "run_id": "screener-2026-06-15-1781596344454",
+        "l15_seed_count": 120,
+        "l2_retention": 0.75,
+        "l3_retention": 0.444444,
+        "l4_buy_count": 3,
+        "l4_buy_symbols": [
+          "2618",
+          "2890",
+          "3022"
+        ],
+        "l15_strategy_avg_pairwise_jaccard": 0.247547,
+        "l15_strategy_max_pairwise_jaccard": 0.923077,
+        "l15_family_avg_pairwise_jaccard": 0.353212,
+        "l15_family_max_pairwise_jaccard": 0.655738,
+        "strategy_vector_coverage": {
+          "with_strategy_hit_vector": 0,
+          "rows": 120,
+          "coverage": 0.0
+        }
+      },
+      {
+        "date": "2026-06-16",
+        "run_id": "screener-2026-06-16-1781620817791",
+        "l15_seed_count": 120,
+        "l2_retention": 0.75,
+        "l3_retention": 0.444444,
+        "l4_buy_count": 3,
+        "l4_buy_symbols": [
+          "2887",
+          "2890",
+          "8131"
+        ],
+        "l15_strategy_avg_pairwise_jaccard": 0.257163,
+        "l15_strategy_max_pairwise_jaccard": 0.861538,
+        "l15_family_avg_pairwise_jaccard": 0.370605,
+        "l15_family_max_pairwise_jaccard": 0.689189,
+        "strategy_vector_coverage": {
+          "with_strategy_hit_vector": 0,
+          "rows": 120,
+          "coverage": 0.0
+        }
+      }
+    ],
+    "stability": {
+      "buy_symbol_frequency": {
+        "2890": 2,
+        "2618": 1,
+        "2887": 1,
+        "3022": 1,
+        "8131": 1
+      },
+      "avg_consecutive_buy_jaccard": 0.1
+    },
+    "backtest": {
+      "status": "ok",
+      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
+      "strategy_count": 11,
+      "ok": 8,
+      "avg_monthly_sharpe": 1.081053,
+      "median_monthly_sharpe": 1.134594,
+      "avg_cagr": 0.195891,
+      "avg_abs_max_drawdown": 0.146492,
+      "avg_latest_matches": 338.125,
+      "scope_note": "Backtest scope is read from the selected FinLab strategy-spec artifact; it is not assumed to equal the current production strategy registry count."
+    },
+    "backtest_bias": {
+      "backtest_avg_latest_matches": 338.125,
+      "walk_forward_avg_l15_seed_count": 86.666667,
+      "walk_forward_avg_l4_buy_count": 2.0,
+      "l15_vs_backtest_latest_match_ratio": 0.256315,
+      "buy_vs_backtest_latest_match_ratio": 0.005915,
+      "interpretation": "ratio_above_1_means_runtime_pipeline_is_broader_than_backtest_latest_holdings; ratio_below_1_means_runtime_pipeline_is_tighter_than_backtest_latest_holdings"
+    }
+  }
+}

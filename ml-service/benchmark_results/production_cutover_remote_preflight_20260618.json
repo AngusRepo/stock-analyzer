@@ -1,0 +1,210 @@
+{
+  "checks": [
+    {
+      "evidence": {
+        "expected_schedule": "first saturday of month 10:00 taipei",
+        "expected_timeZone": "Asia/Taipei",
+        "remote": null
+      },
+      "id": "gcp_scheduler_monthly_strategy_mining",
+      "status": "missing"
+    },
+    {
+      "evidence": {
+        "expected_schedule": "first saturday of month 16:00 taipei",
+        "expected_timeZone": "Asia/Taipei",
+        "remote": {
+          "description": "Monthly first Saturday UTC Optuna research sweep",
+          "httpTarget": {
+            "uri": "https://stockvision-worker.angus-solo-dev.workers.dev/api/admin/trigger/monthly-optuna?sync=1"
+          },
+          "name": "projects/gen-lang-client-0602998820/locations/asia-east1/jobs/monthly-optuna",
+          "schedule": "first saturday of month 16:00",
+          "timeZone": "UTC"
+        }
+      },
+      "id": "gcp_scheduler_monthly_optuna_timezone",
+      "status": "drift"
+    },
+    {
+      "evidence": {
+        "STRATEGY_MINING_EXECUTION_ENABLED": null,
+        "STRATEGY_MINING_JOB_NAME": null,
+        "latestReadyRevisionName": "ml-controller-00423-45s",
+        "url": "https://ml-controller-jnmn3apxvq-de.a.run.app"
+      },
+      "id": "ml_controller_strategy_mining_env",
+      "status": "missing"
+    },
+    {
+      "evidence": {
+        "missing_tables": [
+          "strategy_backtest_results",
+          "strategy_mining_candidates",
+          "strategy_mining_runs",
+          "strategy_promotion_ledger",
+          "strategy_similarity_matrix"
+        ],
+        "remote_tables": [
+          "strategy_spec_registry"
+        ]
+      },
+      "id": "d1_strategy_mining_ledger_tables",
+      "status": "missing"
+    },
+    {
+      "evidence": {
+        "inactive_ids": [],
+        "missing_ids": [],
+        "rows": [
+          {
+            "status": "active",
+            "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0081",
+            "updated_at": "2026-06-17 10:23:12"
+          },
+          {
+            "status": "active",
+            "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0187",
+            "updated_at": "2026-06-17 10:23:12"
+          },
+          {
+            "status": "active",
+            "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0193",
+            "updated_at": "2026-06-17 10:23:12"
+          }
+        ]
+      },
+      "id": "d1_alpha_miner_strategy_seed",
+      "status": "present"
+    },
+    {
+      "evidence": {
+        "columns": [
+          "alpha_bucket",
+          "candidate_policy_json",
+          "created_at",
+          "created_by",
+          "family_id",
+          "name",
+          "owner",
+          "owner_type",
+          "promotion_status",
+          "risk_notes_json",
+          "source_refs_json",
+          "status",
+          "strategy_id",
+          "supported_regimes_json",
+          "thesis",
+          "thresholds_json",
+          "updated_at",
+          "variant_id",
+          "version"
+        ],
+        "family_column_present": false,
+        "family_id_present": true
+      },
+      "id": "d1_strategy_spec_registry_schema",
+      "status": "present"
+    }
+  ],
+  "command_runs": {
+    "cloud_run": {
+      "cmd": [
+        "gcloud",
+        "run",
+        "services",
+        "describe",
+        "ml-controller",
+        "--region",
+        "asia-east1",
+        "--format=json(status.url,status.latestReadyRevisionName,spec.template.spec.containers[0].env)"
+      ],
+      "returncode": 0,
+      "stderr": ""
+    },
+    "d1_alpha": {
+      "cmd": [
+        "npx",
+        "wrangler@4",
+        "d1",
+        "execute",
+        "stockvision-db",
+        "--remote",
+        "--command",
+        "SELECT strategy_id,status,updated_at FROM strategy_spec_registry WHERE strategy_id LIKE 'alpha_miner_pymoo_nsga3_novelty_%' ORDER BY strategy_id;"
+      ],
+      "returncode": 0,
+      "stderr": ""
+    },
+    "d1_schema": {
+      "cmd": [
+        "npx",
+        "wrangler@4",
+        "d1",
+        "execute",
+        "stockvision-db",
+        "--remote",
+        "--command",
+        "PRAGMA table_info(strategy_spec_registry);"
+      ],
+      "returncode": 0,
+      "stderr": ""
+    },
+    "d1_tables": {
+      "cmd": [
+        "npx",
+        "wrangler@4",
+        "d1",
+        "execute",
+        "stockvision-db",
+        "--remote",
+        "--command",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('strategy_mining_runs','strategy_mining_candidates','strategy_backtest_results','strategy_similarity_matrix','strategy_promotion_ledger','strategy_spec_registry') ORDER BY name;"
+      ],
+      "returncode": 0,
+      "stderr": ""
+    },
+    "scheduler": {
+      "cmd": [
+        "gcloud",
+        "scheduler",
+        "jobs",
+        "list",
+        "--location",
+        "asia-east1",
+        "--format=json(name,schedule,timeZone,description,httpTarget.uri)"
+      ],
+      "returncode": 0,
+      "stderr": ""
+    }
+  },
+  "decision_effect": "read_only_observation",
+  "generated_at": "2026-06-18T14:37:24+08:00",
+  "location": "asia-east1",
+  "production_mutation_allowed": false,
+  "region": "asia-east1",
+  "schema_version": "stockvision-production-cutover-remote-preflight-v1",
+  "summary": {
+    "already_present_remote": [
+      "d1_alpha_miner_strategy_seed",
+      "d1_strategy_spec_registry_schema"
+    ],
+    "incomplete_remote_check_ids": [
+      "gcp_scheduler_monthly_strategy_mining",
+      "gcp_scheduler_monthly_optuna_timezone",
+      "ml_controller_strategy_mining_env",
+      "d1_strategy_mining_ledger_tables"
+    ],
+    "local_cutover_packet_blocked_reason": null,
+    "local_cutover_packet_path": "ml-service/benchmark_results/production_cutover_packet_20260618.json",
+    "local_cutover_packet_ready_for_review": true,
+    "remaining_remote_actions_requiring_wei_approval": [
+      "deploy_ml_controller_strategy_mining_route",
+      "apply_strategy_mining_ledger_migration",
+      "sync_gcp_scheduler_manifest",
+      "optionally configure STRATEGY_MINING_JOB_NAME and keep STRATEGY_MINING_EXECUTION_ENABLED=false until actual execution approval",
+      "feature_selection_retrain_release remains blocked until explicit retrain/release approval"
+    ],
+    "remote_cutover_complete": false
+  }
+}

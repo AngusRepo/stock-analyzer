@@ -1,0 +1,63 @@
+{
+  "schema_version": "stockvision-alpha-mining-similarity-novelty-validation-v1",
+  "status": "pass",
+  "decision_effect": "local_validation_only",
+  "validated_cases": [
+    "high_duplicate_penalized",
+    "low_similarity_bonus_allowed",
+    "archive_duplicate_penalized",
+    "missing_pair_fail_closed"
+  ],
+  "method": "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed",
+  "source_module": "tools/finlab_alpha_miner_bakeoff.py",
+  "cases": {
+    "high_duplicate": {
+      "base_novelty": 1.0,
+      "novelty": 0.6000000000000001,
+      "similarity_novelty_penalty": 0.3999999999999999,
+      "similarity_novelty_bonus": 0.0,
+      "max_internal_similarity": 0.95,
+      "max_archive_similarity": 0.0,
+      "max_similarity": 0.95,
+      "similarity_matrix_missing_internal_pairs": 0,
+      "similarity_matrix_missing_archive_pairs": 0,
+      "similarity_novelty_method": "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed"
+    },
+    "low_similarity": {
+      "base_novelty": 0.7,
+      "novelty": 0.742,
+      "similarity_novelty_penalty": 0.0,
+      "similarity_novelty_bonus": 0.042,
+      "max_internal_similarity": 0.12,
+      "max_archive_similarity": 0.0,
+      "max_similarity": 0.12,
+      "similarity_matrix_missing_internal_pairs": 0,
+      "similarity_matrix_missing_archive_pairs": 0,
+      "similarity_novelty_method": "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed"
+    },
+    "archive_duplicate": {
+      "base_novelty": 0.8,
+      "novelty": 0.3500000000000001,
+      "similarity_novelty_penalty": 0.44999999999999996,
+      "similarity_novelty_bonus": 0.0,
+      "max_internal_similarity": 0.12,
+      "max_archive_similarity": 1.0,
+      "max_similarity": 1.0,
+      "similarity_matrix_missing_internal_pairs": 0,
+      "similarity_matrix_missing_archive_pairs": 1,
+      "similarity_novelty_method": "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed"
+    },
+    "missing_pair_fail_closed": {
+      "base_novelty": 1.0,
+      "novelty": 0.55,
+      "similarity_novelty_penalty": 0.44999999999999996,
+      "similarity_novelty_bonus": 0.0,
+      "max_internal_similarity": 1.0,
+      "max_archive_similarity": 0.0,
+      "max_similarity": 1.0,
+      "similarity_matrix_missing_internal_pairs": 1,
+      "similarity_matrix_missing_archive_pairs": 0,
+      "similarity_novelty_method": "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed"
+    }
+  }
+}

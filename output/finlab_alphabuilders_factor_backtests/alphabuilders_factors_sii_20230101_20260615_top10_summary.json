@@ -1,0 +1,11 @@
+{
+  "json": "output\\finlab_alphabuilders_factor_backtests\\alphabuilders_factors_sii_20230101_20260615_top10.json",
+  "csv": "output\\finlab_alphabuilders_factor_backtests\\alphabuilders_factors_sii_20230101_20260615_top10.csv",
+  "composite_csv": "output\\finlab_alphabuilders_factor_backtests\\alphabuilders_factors_sii_20230101_20260615_top10_composites.csv",
+  "factor_count_input": 63,
+  "ok": 63,
+  "not_mapped": 0,
+  "no_signal": 0,
+  "errors": [],
+  "composites_ok": 6
+}

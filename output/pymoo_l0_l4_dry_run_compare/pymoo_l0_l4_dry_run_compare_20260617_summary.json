@@ -1,0 +1,116 @@
+{
+  "json": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\pymoo_l0_l4_dry_run_compare\\pymoo_l0_l4_dry_run_compare_20260617.json",
+  "run_date_requested": "2026-06-17",
+  "latest_factor_date": "2026-06-16T00:00:00",
+  "L1": {
+    "strategy_count": 3,
+    "active_labeled_candidates": 28,
+    "diversity": {
+      "unique_symbol_count": 28,
+      "avg_pairwise_jaccard": 0.037037,
+      "max_pairwise_jaccard": 0.111111
+    }
+  },
+  "L1_25": {
+    "alpha_miner_pymoo_nsga3_novelty_0081": {
+      "strategy_prior_weight": 0.401002,
+      "strategy_reliability": 0.864123,
+      "strategy_crowding_score": 0.111111,
+      "strategy_diversification_value": 0.888889,
+      "latest_match_count": 10
+    },
+    "alpha_miner_pymoo_nsga3_novelty_0193": {
+      "strategy_prior_weight": 0.380237,
+      "strategy_reliability": 0.796617,
+      "strategy_crowding_score": 0.0,
+      "strategy_diversification_value": 1.0,
+      "latest_match_count": 10
+    },
+    "alpha_miner_pymoo_nsga3_novelty_0187": {
+      "strategy_prior_weight": 0.218761,
+      "strategy_reliability": 0.47141,
+      "strategy_crowding_score": 0.111111,
+      "strategy_diversification_value": 0.888889,
+      "latest_match_count": 10
+    }
+  },
+  "L1_5": {
+    "final_seed_count": 28,
+    "final_seed_symbols": [
+      "3049",
+      "2406",
+      "4807",
+      "2472",
+      "2327",
+      "3481",
+      "2409",
+      "6189",
+      "2303",
+      "6770",
+      "2344",
+      "2337",
+      "2408",
+      "1605",
+      "2371",
+      "1802",
+      "2405",
+      "6271",
+      "2390",
+      "8131",
+      "3701",
+      "6226",
+      "9105",
+      "3050",
+      "3135",
+      "6152",
+      "1504",
+      "3057"
+    ]
+  },
+  "L2": {
+    "schema_version": "l2_core_ml_gate_v1",
+    "source": "l2_tree_rank",
+    "target_size": 21,
+    "upstream_count": 28,
+    "scored_count": 28,
+    "selected_count": 21,
+    "selected_symbols": [
+      "2327",
+      "2409",
+      "1605",
+      "2408",
+      "3701",
+      "6152",
+      "3481",
+      "2303",
+      "6770",
+      "3057",
+      "2405",
+      "1504",
+      "2406",
+      "2371",
+      "6226",
+      "2337",
+      "2390",
+      "9105",
+      "6271",
+      "3049",
+      "3050"
+    ],
+    "l3_payload_count": 21
+  },
+  "L3": {
+    "l3_payload_count": 21,
+    "l3_prediction_count": 21
+  },
+  "L4": {
+    "kept_count": 10,
+    "buy_signal_count": 3,
+    "sparse_selected_count": 3,
+    "sparse_selected_symbols": [
+      "2327",
+      "3049",
+      "2406"
+    ]
+  }
+}

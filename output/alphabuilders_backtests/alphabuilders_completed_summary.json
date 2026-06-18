@@ -1,0 +1,110 @@
+﻿{
+    "generated_at":  "2026-06-16T11:50:46.2371069Z",
+    "completed_count":  10,
+    "blocked_count":  53,
+    "block_reason":  "AlphaBuilders 429: free plan daily max 10 backtests; reset at UTC midnight",
+    "top_by_annualized":  [
+                              {
+                                  "factor_id":  "mom_9m",
+                                  "factor_name_zh":  "9 個月動能",
+                                  "annualized_return":  0.40045242667953151,
+                                  "sharpe":  0.97433979487045641,
+                                  "max_drawdown":  -0.52014071734016976,
+                                  "annualized_alpha":  0.19723450984394941,
+                                  "avg_turnover":  0.3964,
+                                  "total_fee_pct":  0.10913
+                              },
+                              {
+                                  "factor_id":  "mom_macd_trend_10",
+                                  "factor_name_zh":  "10 日 MACD 趨勢",
+                                  "annualized_return":  0.37022010894925539,
+                                  "sharpe":  1.04298027851625,
+                                  "max_drawdown":  -0.43507942339678052,
+                                  "annualized_alpha":  0.16700219211367329,
+                                  "avg_turnover":  0.5651,
+                                  "total_fee_pct":  0.15748
+                              },
+                              {
+                                  "factor_id":  "mom_vol_adj_12m",
+                                  "factor_name_zh":  "波動調整 12 月報酬",
+                                  "annualized_return":  0.3349832710632985,
+                                  "sharpe":  0.83580777332541745,
+                                  "max_drawdown":  -0.44921925042701277,
+                                  "annualized_alpha":  0.1317653542277164,
+                                  "avg_turnover":  0.3794,
+                                  "total_fee_pct":  0.10349
+                              },
+                              {
+                                  "factor_id":  "mom_rsi_14",
+                                  "factor_name_zh":  "14 日 RSI",
+                                  "annualized_return":  0.28834546547690976,
+                                  "sharpe":  0.91249282441246682,
+                                  "max_drawdown":  -0.37839067971743329,
+                                  "annualized_alpha":  0.085127548641327655,
+                                  "avg_turnover":  0.9705,
+                                  "total_fee_pct":  0.25959
+                              },
+                              {
+                                  "factor_id":  "mom_ma50_200_ratio",
+                                  "factor_name_zh":  "MA50/MA200 比",
+                                  "annualized_return":  0.2667389809427636,
+                                  "sharpe":  0.64412423112829686,
+                                  "max_drawdown":  -0.57703484627578283,
+                                  "annualized_alpha":  0.0635210641071815,
+                                  "avg_turnover":  0.4105,
+                                  "total_fee_pct":  0.11308
+                              },
+                              {
+                                  "factor_id":  "mom_12m_1m",
+                                  "factor_name_zh":  "12-1 月動能（Jegadeesh-Titman）",
+                                  "annualized_return":  0.26337779261038774,
+                                  "sharpe":  0.672074378603485,
+                                  "max_drawdown":  -0.45261489044640729,
+                                  "annualized_alpha":  0.060159875774805638,
+                                  "avg_turnover":  0.327,
+                                  "total_fee_pct":  0.08915
+                              },
+                              {
+                                  "factor_id":  "mom_close_to_52w_high",
+                                  "factor_name_zh":  "收盤價 / 52 週高點",
+                                  "annualized_return":  0.19501626643702075,
+                                  "sharpe":  0.88582307482474232,
+                                  "max_drawdown":  -0.2810744377496896,
+                                  "annualized_alpha":  -0.0082016503985613554,
+                                  "avg_turnover":  0.8883,
+                                  "total_fee_pct":  0.23014
+                              },
+                              {
+                                  "factor_id":  "mom_hl52",
+                                  "factor_name_zh":  "52 週高低位置",
+                                  "annualized_return":  0.18571213707094825,
+                                  "sharpe":  0.82463829428165436,
+                                  "max_drawdown":  -0.30337784638174931,
+                                  "annualized_alpha":  -0.017505779764633855,
+                                  "avg_turnover":  0.9026,
+                                  "total_fee_pct":  0.23443
+                              },
+                              {
+                                  "factor_id":  "mom_reversal_6m",
+                                  "factor_name_zh":  "6 個月反轉",
+                                  "annualized_return":  0.06048228000587752,
+                                  "sharpe":  0.17511690750029396,
+                                  "max_drawdown":  -0.35896328529648219,
+                                  "annualized_alpha":  -0.14273563682970458,
+                                  "avg_turnover":  0.5926,
+                                  "total_fee_pct":  0.16273
+                              },
+                              {
+                                  "factor_id":  "mom_reversal_1m",
+                                  "factor_name_zh":  "1 個月反轉",
+                                  "annualized_return":  -0.052883611405121433,
+                                  "sharpe":  -0.2600257663040364,
+                                  "max_drawdown":  -0.4590180291612555,
+                                  "annualized_alpha":  -0.25610152824070354,
+                                  "avg_turnover":  0.9661,
+                                  "total_fee_pct":  0.26822
+                              }
+                          ],
+    "positive_alpha_count":  6,
+    "sharpe_above_benchmark_count":  0
+}

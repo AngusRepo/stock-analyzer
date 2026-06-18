@@ -66,6 +66,7 @@ const TASK_NAMES: Record<string, string> = {
   'weekly-optuna': 'Weekly Optuna',
   'sector-leaders': 'Sector Leaders',
   'monthly-optuna': 'Monthly Optuna',
+  'monthly-strategy-mining': 'Monthly Strategy Mining',
   'optuna-queue': 'Optuna Queue Processor',
   'monthly-retrain': 'Monthly Universal Retrain',
   verify: 'Verify (compat alias)',

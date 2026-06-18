@@ -16,6 +16,7 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'weekly-audit',
   'lifecycle',
   'monthly-optuna',
+  'monthly-strategy-mining',
   'monthly-retrain',
 ])
 

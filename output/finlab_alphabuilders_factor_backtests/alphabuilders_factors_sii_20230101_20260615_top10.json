@@ -1,0 +1,2822 @@
+{
+  "schema_version": "stockvision-finlab-alphabuilders-factor-backtest-v1",
+  "generated_at": "2026-06-16T14:14:25.310885+00:00",
+  "allowed_use": "research_only",
+  "decision_effect": "none",
+  "config": {
+    "start_date": "2023-01-01",
+    "end_date": "2026-06-15",
+    "resample": "M",
+    "top_k": 10,
+    "position_limit": 0.1,
+    "trade_at_price": "close",
+    "universe": "sii",
+    "factor_count_input": 63,
+    "note": "Top-k is used only as a research benchmark to measure raw factor edge, not as production selector."
+  },
+  "feature_mapping": {
+    "mom_rsi_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_macd_trend_10": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_12m_1m": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_reversal_1m": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_reversal_6m": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_9m": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_hl52": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_close_to_52w_high": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_ma50_200_ratio": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "mom_vol_adj_12m": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vol_share_turnover_21d": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vol_chg_turnover_1y": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vol_signal_5d": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vol_money_flow_5d": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vol_cv_volprice_20d": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vola_realized_1m": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vola_realized_12m": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "liq_amihud_21d": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vola_cv_90d": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "vola_min_130d": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "val_ep": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "val_bp": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "val_sp": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "val_dp": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "size_log_mktcap": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_kd9_k": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_bbands_pctb_20": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_bias_20": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_granville_score": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_limit_up_streak_10": {
+      "status": "mapped_proxy",
+      "source": "OHLCV price-limit proxy",
+      "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+    },
+    "tech_sma_20_pos": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_ema_12_pos": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_wma_10_pos": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_dma_10_50": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_bbi": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_trix_12": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_kdj_j_9": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_williams_r_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_cci_20": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_mtm_10": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_roc_10": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_cmo_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_obv": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_volume_ratio_5": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_vr_26": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_mfi_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_emv_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_atr_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_keltner_pos_20": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_donchian_pos_20": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_sar": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_adx_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_psy_12": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_ma_convergence": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_bullish_streak_5": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_gap_up": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_gap_down": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_limit_down_count_10": {
+      "status": "mapped_proxy",
+      "source": "OHLCV price-limit proxy",
+      "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+    },
+    "tech_locked_open_up_10": {
+      "status": "mapped_proxy",
+      "source": "OHLCV price-limit proxy",
+      "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+    },
+    "tech_locked_open_down_10": {
+      "status": "mapped_proxy",
+      "source": "OHLCV price-limit proxy",
+      "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+    },
+    "tech_disposal_active": {
+      "status": "mapped_proxy",
+      "source": "etl:disposal_stock_filter inverted",
+      "caveat": "FinLab dataset is a filter; active flag is approximated by inverse boolean."
+    },
+    "tech_slow_kd_14": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    },
+    "tech_tower_3": {
+      "status": "mapped",
+      "source": "finlab_ohlcv_or_finlab_dataset"
+    }
+  },
+  "results": [
+    {
+      "id": "mom_rsi_14",
+      "kind": "single_factor",
+      "factor_id": "mom_rsi_14",
+      "factor_name": "14-Day RSI",
+      "factor_name_zh": "14 日 RSI",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "short_term",
+        "oscillator"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.669,
+      "cagr": 0.25128846984140374,
+      "benchmark_alpha": 0.34924114594935807,
+      "benchmark_beta": 2.1924510209270838,
+      "total_return": 1.109235070791804,
+      "max_drawdown": -0.26615605575060464,
+      "monthly_sharpe": 0.8975416619857337,
+      "monthly_sortino": 2.5407085493785657,
+      "calmar": 0.9441041200116776,
+      "win_ratio": 0.4524421593830334,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_macd_trend_10",
+      "kind": "single_factor",
+      "factor_id": "mom_macd_trend_10",
+      "factor_name": "10-Day MACD Trend",
+      "factor_name_zh": "10 日 MACD 趨勢",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "medium_term",
+        "trend"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.102,
+      "cagr": 0.505871526589152,
+      "benchmark_alpha": 0.5798937504545802,
+      "benchmark_beta": 1.6568215053786735,
+      "total_return": 2.9074755587371173,
+      "max_drawdown": -0.24251694478596542,
+      "monthly_sharpe": 1.4511224098652704,
+      "monthly_sortino": 4.0507241612947125,
+      "calmar": 2.085836388346842,
+      "win_ratio": 0.5666666666666667,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_12m_1m",
+      "kind": "single_factor",
+      "factor_id": "mom_12m_1m",
+      "factor_name": "12-Month Minus 1-Month Momentum",
+      "factor_name_zh": "12-1 月動能（Jegadeesh-Titman）",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "medium_term",
+        "academic",
+        "classic_momentum"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.1,
+      "cagr": 0.29879493958237147,
+      "benchmark_alpha": 0.4365659695397906,
+      "benchmark_beta": 3.0836955894029887,
+      "total_return": 1.3878241505522761,
+      "max_drawdown": -0.25733987660329893,
+      "monthly_sharpe": 0.9160370129142429,
+      "monthly_sortino": 1.9873390727541285,
+      "calmar": 1.161045591029987,
+      "win_ratio": 0.4754521963824289,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_reversal_1m",
+      "kind": "single_factor",
+      "factor_id": "mom_reversal_1m",
+      "factor_name": "1-Month Price Reversal",
+      "factor_name_zh": "1 個月反轉",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "short_term",
+        "reversal"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.101,
+      "cagr": 0.038710758885595054,
+      "benchmark_alpha": 0.1739123611793539,
+      "benchmark_beta": 3.0261847124343877,
+      "total_return": 0.13478702203960768,
+      "max_drawdown": -0.2546752471322862,
+      "monthly_sharpe": 0.18720355310136708,
+      "monthly_sortino": 0.3481481308546354,
+      "calmar": 0.15199450820756916,
+      "win_ratio": 0.45454545454545453,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 407,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_reversal_6m",
+      "kind": "single_factor",
+      "factor_id": "mom_reversal_6m",
+      "factor_name": "6-Month Price Reversal",
+      "factor_name_zh": "6 個月反轉",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "medium_term",
+        "reversal"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.1,
+      "cagr": -0.03851454521764952,
+      "benchmark_alpha": 0.041343373051803134,
+      "benchmark_beta": 1.787440439565033,
+      "total_return": -0.12257006697914907,
+      "max_drawdown": -0.31017476608985595,
+      "monthly_sharpe": -0.16519821020117298,
+      "monthly_sortino": -0.2749835412863933,
+      "calmar": -0.12416646279299359,
+      "win_ratio": 0.43717277486910994,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 404,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_9m",
+      "kind": "single_factor",
+      "factor_id": "mom_9m",
+      "factor_name": "9-Month Price Momentum",
+      "factor_name_zh": "9 個月動能",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "medium_term",
+        "trend"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.4147093054117248,
+      "benchmark_alpha": 0.5787302603812883,
+      "benchmark_beta": 3.6712413020766026,
+      "total_return": 2.1739879772530033,
+      "max_drawdown": -0.34427272296801537,
+      "monthly_sharpe": 1.1693406421677548,
+      "monthly_sortino": 2.9091223149101686,
+      "calmar": 1.204560315535358,
+      "win_ratio": 0.5090439276485789,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 401,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_hl52",
+      "kind": "single_factor",
+      "factor_id": "mom_hl52",
+      "factor_name": "52-Week High-Low Position",
+      "factor_name_zh": "52 週高低位置",
+      "category": "momentum",
+      "direction": -1,
+      "tags": [
+        "medium_term",
+        "anchor_effect"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.167,
+      "cagr": 0.4028287727256945,
+      "benchmark_alpha": 0.46253036390504526,
+      "benchmark_beta": 1.336286253046127,
+      "total_return": 2.0861130740525393,
+      "max_drawdown": -0.26652248227267306,
+      "monthly_sharpe": 1.5289672019025116,
+      "monthly_sortino": 4.279099795341095,
+      "calmar": 1.5113684054222893,
+      "win_ratio": 0.5205128205128206,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_close_to_52w_high",
+      "kind": "single_factor",
+      "factor_id": "mom_close_to_52w_high",
+      "factor_name": "Closing Price to 52-Week High",
+      "factor_name_zh": "收盤價 / 52 週高點",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "medium_term",
+        "anchor_effect"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.104,
+      "cagr": 0.2675524819928632,
+      "benchmark_alpha": 0.3280768650934911,
+      "benchmark_beta": 1.3547026053040834,
+      "total_return": 1.2018968755075838,
+      "max_drawdown": -0.23903821719133767,
+      "monthly_sharpe": 1.197084833838478,
+      "monthly_sortino": 3.3810852067715005,
+      "calmar": 1.1192406500095764,
+      "win_ratio": 0.5128205128205128,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_ma50_200_ratio",
+      "kind": "single_factor",
+      "factor_id": "mom_ma50_200_ratio",
+      "factor_name": "50-Day to 200-Day MA Ratio",
+      "factor_name_zh": "MA50/MA200 比",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "long_term",
+        "trend"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.33822672840206036,
+      "benchmark_alpha": 0.527740294514097,
+      "benchmark_beta": 4.241836241859711,
+      "total_return": 1.637825345312629,
+      "max_drawdown": -0.40857744267535434,
+      "monthly_sharpe": 1.152921352619967,
+      "monthly_sortino": 2.267133026415569,
+      "calmar": 0.827795211197424,
+      "win_ratio": 0.5025641025641026,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "mom_vol_adj_12m",
+      "kind": "single_factor",
+      "factor_id": "mom_vol_adj_12m",
+      "factor_name": "Volatility-Adjusted 12-Month Return",
+      "factor_name_zh": "波動調整 12 月報酬",
+      "category": "momentum",
+      "direction": 1,
+      "tags": [
+        "medium_term",
+        "risk_adjusted"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.3785676808036287,
+      "benchmark_alpha": 0.533786857370198,
+      "benchmark_beta": 3.474233228255827,
+      "total_return": 1.9119754476440378,
+      "max_drawdown": -0.3517698750706202,
+      "monthly_sharpe": 1.1214955568904736,
+      "monthly_sortino": 2.3991235121520087,
+      "calmar": 1.0761493411970506,
+      "win_ratio": 0.5307692307692308,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vol_share_turnover_21d",
+      "kind": "single_factor",
+      "factor_id": "vol_share_turnover_21d",
+      "factor_name": "Share Turnover (21-Day Avg)",
+      "factor_name_zh": "21 日平均周轉率",
+      "category": "volume",
+      "direction": -1,
+      "tags": [
+        "liquidity",
+        "attention"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.1,
+      "cagr": 0.12077008049251092,
+      "benchmark_alpha": 0.1401736015782455,
+      "benchmark_beta": 0.43430431208550463,
+      "total_return": 0.4616781080320136,
+      "max_drawdown": -0.08225307191350406,
+      "monthly_sharpe": 0.7882013908924753,
+      "monthly_sortino": 1.789734841309423,
+      "calmar": 1.468095923034521,
+      "win_ratio": 0.48429319371727747,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vol_chg_turnover_1y",
+      "kind": "single_factor",
+      "factor_id": "vol_chg_turnover_1y",
+      "factor_name": "1-Year Change in Share Turnover",
+      "factor_name_zh": "1 年周轉率變化",
+      "category": "volume",
+      "direction": 1,
+      "tags": [
+        "liquidity",
+        "change_of_attention"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.009012614300180966,
+      "benchmark_alpha": 0.10659290202513241,
+      "benchmark_beta": 2.1841159419589835,
+      "total_return": 0.03032123260180919,
+      "max_drawdown": -0.43468574848050856,
+      "monthly_sharpe": 0.08340600618476303,
+      "monthly_sortino": 0.1681798285690282,
+      "calmar": 0.020733154928901,
+      "win_ratio": 0.4025641025641026,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vol_signal_5d",
+      "kind": "single_factor",
+      "factor_id": "vol_signal_5d",
+      "factor_name": "5-Day Volume Signal",
+      "factor_name_zh": "5 日量能訊號",
+      "category": "volume",
+      "direction": 1,
+      "tags": [
+        "volume_surge"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.102,
+      "cagr": 0.042742312506867775,
+      "benchmark_alpha": 0.13439792713012827,
+      "benchmark_beta": 2.051505419137273,
+      "total_return": 0.14951684631966256,
+      "max_drawdown": -0.28164314821984926,
+      "monthly_sharpe": 0.20766448599252746,
+      "monthly_sortino": 0.4542490310240035,
+      "calmar": 0.15175513846379773,
+      "win_ratio": 0.40310077519379844,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vol_money_flow_5d",
+      "kind": "single_factor",
+      "factor_id": "vol_money_flow_5d",
+      "factor_name": "5-Day Money Flow Premium",
+      "factor_name_zh": "5 日資金溢價",
+      "category": "volume",
+      "direction": 1,
+      "tags": [
+        "volume_price"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.102,
+      "cagr": 0.12963569224946858,
+      "benchmark_alpha": 0.2660194351010013,
+      "benchmark_beta": 3.0526442781732004,
+      "total_return": 0.5005274587131929,
+      "max_drawdown": -0.3585890746741285,
+      "monthly_sharpe": 0.4988170220041379,
+      "monthly_sortino": 1.038480206834492,
+      "calmar": 0.3615059307313413,
+      "win_ratio": 0.42118863049095606,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vol_cv_volprice_20d",
+      "kind": "single_factor",
+      "factor_id": "vol_cv_volprice_20d",
+      "factor_name": "20-Day CV of Volume-to-Price",
+      "factor_name_zh": "20 日量價變異係數",
+      "category": "volume",
+      "direction": -1,
+      "tags": [
+        "volatility",
+        "volume"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.09970890251396014,
+      "benchmark_alpha": 0.17542025916346254,
+      "benchmark_beta": 1.6946289553032035,
+      "total_return": 0.372217491682568,
+      "max_drawdown": -0.20360167261761086,
+      "monthly_sharpe": 0.570571423399832,
+      "monthly_sortino": 1.285000992601167,
+      "calmar": 0.48970130853557003,
+      "win_ratio": 0.5076923076923077,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 407,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vola_realized_1m",
+      "kind": "single_factor",
+      "factor_id": "vola_realized_1m",
+      "factor_name": "1-Month Realized Volatility (annualized)",
+      "factor_name_zh": "1 月實現波動率",
+      "category": "volatility",
+      "direction": -1,
+      "tags": [
+        "risk",
+        "low_vol"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.096,
+      "cagr": 0.0014554661178258765,
+      "benchmark_alpha": 0.02223199618585739,
+      "benchmark_beta": 0.4650360395337763,
+      "total_return": 0.004853795269286421,
+      "max_drawdown": -0.10953273443592015,
+      "monthly_sharpe": -0.3652974864331864,
+      "monthly_sortino": -0.7376498788106443,
+      "calmar": 0.013286742615296764,
+      "win_ratio": 0.4536082474226804,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vola_realized_12m",
+      "kind": "single_factor",
+      "factor_id": "vola_realized_12m",
+      "factor_name": "12-Month Realized Volatility (annualized)",
+      "factor_name_zh": "12 月實現波動率",
+      "category": "volatility",
+      "direction": -1,
+      "tags": [
+        "risk",
+        "low_vol"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.028715904846702722,
+      "benchmark_alpha": 0.04052581457892066,
+      "benchmark_beta": 0.26433834866258676,
+      "total_return": 0.09883972998410107,
+      "max_drawdown": -0.038856746034228395,
+      "monthly_sharpe": 0.24180225413421197,
+      "monthly_sortino": 0.4998033023065354,
+      "calmar": 0.7388296622880075,
+      "win_ratio": 0.5244215938303342,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 402,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "liq_amihud_21d",
+      "kind": "single_factor",
+      "factor_id": "liq_amihud_21d",
+      "factor_name": "Amihud Illiquidity (21-day)",
+      "factor_name_zh": "Amihud 流動性折價",
+      "category": "volatility",
+      "direction": 1,
+      "tags": [
+        "liquidity",
+        "amihud"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.13413000660068253,
+      "benchmark_alpha": 0.22446021917002917,
+      "benchmark_beta": 2.0218392660345264,
+      "total_return": 0.520494950471982,
+      "max_drawdown": -0.09594553895195734,
+      "monthly_sharpe": 0.8180864148752743,
+      "monthly_sortino": 1.983466220400527,
+      "calmar": 1.3978349563315802,
+      "win_ratio": 0.44385026737967914,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vola_cv_90d",
+      "kind": "single_factor",
+      "factor_id": "vola_cv_90d",
+      "factor_name": "90-Day Price Coefficient of Variation",
+      "factor_name_zh": "90 日股價變異係數",
+      "category": "volatility",
+      "direction": -1,
+      "tags": [
+        "volatility",
+        "stability"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.034733245188884876,
+      "benchmark_alpha": 0.05694025355475463,
+      "benchmark_beta": 0.49705408875024687,
+      "total_return": 0.1203845533380481,
+      "max_drawdown": -0.059122098670509216,
+      "monthly_sharpe": 0.2985840348573276,
+      "monthly_sortino": 0.645804057783289,
+      "calmar": 0.5873839415445488,
+      "win_ratio": 0.5076923076923077,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "vola_min_130d",
+      "kind": "single_factor",
+      "factor_id": "vola_min_130d",
+      "factor_name": "130-Day Minimum Daily Return",
+      "factor_name_zh": "130 日最大單日跌幅",
+      "category": "volatility",
+      "direction": 1,
+      "tags": [
+        "tail_risk"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.04472047870094298,
+      "benchmark_alpha": 0.06837960747788764,
+      "benchmark_beta": 0.529556548144633,
+      "total_return": 0.15679303129506117,
+      "max_drawdown": -0.05754522601735301,
+      "monthly_sharpe": 0.484704606324487,
+      "monthly_sortino": 0.9723220569239226,
+      "calmar": 0.7770011829587754,
+      "win_ratio": 0.506426735218509,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 404,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "val_ep",
+      "kind": "single_factor",
+      "factor_id": "val_ep",
+      "factor_name": "Earnings to Price (= 1/PER)",
+      "factor_name_zh": "盈餘股價比 (E/P)",
+      "category": "valuation",
+      "direction": 1,
+      "tags": [
+        "value"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": -0.07666440723457457,
+      "benchmark_alpha": -0.0012054125282074252,
+      "benchmark_beta": 1.6889803990630428,
+      "total_return": -0.2332139838593037,
+      "max_drawdown": -0.3554148621154256,
+      "monthly_sharpe": -0.6560530773208646,
+      "monthly_sortino": -0.9925933495298356,
+      "calmar": -0.21569793057886172,
+      "win_ratio": 0.38320209973753283,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 401,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "val_bp",
+      "kind": "single_factor",
+      "factor_id": "val_bp",
+      "factor_name": "Book to Price (= 1/PBR)",
+      "factor_name_zh": "淨值股價比 (B/P)",
+      "category": "valuation",
+      "direction": 1,
+      "tags": [
+        "value",
+        "fama_french"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.097,
+      "cagr": -0.1187587754632291,
+      "benchmark_alpha": -0.07299635017814768,
+      "benchmark_beta": 1.0242892795067637,
+      "total_return": -0.34354015234426294,
+      "max_drawdown": -0.4014129365522099,
+      "monthly_sharpe": -0.8787486104652822,
+      "monthly_sortino": -1.3472654413903096,
+      "calmar": -0.29584451870946615,
+      "win_ratio": 0.3798449612403101,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 401,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "val_sp",
+      "kind": "single_factor",
+      "factor_id": "val_sp",
+      "factor_name": "Sales to Price (= 1/PSR)",
+      "factor_name_zh": "營收股價比 (S/P)",
+      "category": "valuation",
+      "direction": 1,
+      "tags": [
+        "value"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.101,
+      "cagr": 0.3170664797984333,
+      "benchmark_alpha": 0.3735162532272173,
+      "benchmark_beta": 1.2635016040668445,
+      "total_return": 1.5015035334670142,
+      "max_drawdown": -0.12432960015229066,
+      "monthly_sharpe": 1.5667947443236199,
+      "monthly_sortino": 5.821200672723778,
+      "calmar": 2.5500040165007083,
+      "win_ratio": 0.49742268041237114,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 402,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "val_dp",
+      "kind": "single_factor",
+      "factor_id": "val_dp",
+      "factor_name": "Dividend Yield",
+      "factor_name_zh": "股息殖利率 (D/P)",
+      "category": "valuation",
+      "direction": 1,
+      "tags": [
+        "value",
+        "income"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.097,
+      "cagr": -0.023108074953934632,
+      "benchmark_alpha": 0.04165140694684488,
+      "benchmark_beta": 1.4494957958228076,
+      "total_return": -0.07488278214128907,
+      "max_drawdown": -0.310270422703245,
+      "monthly_sharpe": -0.24462121814906826,
+      "monthly_sortino": -0.5082504132342214,
+      "calmar": -0.07447480815131995,
+      "win_ratio": 0.45103092783505155,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 401,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "size_log_mktcap",
+      "kind": "single_factor",
+      "factor_id": "size_log_mktcap",
+      "factor_name": "Log Market Capitalization",
+      "factor_name_zh": "市值對數 (Size)",
+      "category": "size",
+      "direction": -1,
+      "tags": [
+        "size",
+        "fama_french"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.096,
+      "cagr": 0.27022174825020673,
+      "benchmark_alpha": 0.35980324222165905,
+      "benchmark_beta": 2.0050808790300576,
+      "total_return": 1.2173718899700638,
+      "max_drawdown": -0.09128895395720704,
+      "monthly_sharpe": 1.3503703562114766,
+      "monthly_sortino": 3.582949666670399,
+      "calmar": 2.9597463775637896,
+      "win_ratio": 0.4483695652173913,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 402,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_kd9_k",
+      "kind": "single_factor",
+      "factor_id": "tech_kd9_k",
+      "factor_name": "9-Day Stochastic K",
+      "factor_name_zh": "KD(9) K 值",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "oscillator",
+        "taiwan_retail"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.186,
+      "cagr": 0.24764986099318276,
+      "benchmark_alpha": 0.33727949809968677,
+      "benchmark_beta": 2.0061584551595595,
+      "total_return": 1.088884579403842,
+      "max_drawdown": -0.29677640641030145,
+      "monthly_sharpe": 0.8913395764266677,
+      "monthly_sortino": 2.835953483387794,
+      "calmar": 0.834438018872103,
+      "win_ratio": 0.48186528497409326,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_bbands_pctb_20",
+      "kind": "single_factor",
+      "factor_id": "tech_bbands_pctb_20",
+      "factor_name": "Bollinger Bands %B (20-Day)",
+      "factor_name_zh": "布林通道 %B",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volatility_band",
+        "taiwan_retail"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.103,
+      "cagr": 0.1483565003945191,
+      "benchmark_alpha": 0.21022248989807302,
+      "benchmark_beta": 1.3847314564253763,
+      "total_return": 0.5849262389549927,
+      "max_drawdown": -0.2774755313148214,
+      "monthly_sharpe": 0.7211268094531443,
+      "monthly_sortino": 1.5138295921289777,
+      "calmar": 0.5346458955591494,
+      "win_ratio": 0.4318766066838046,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_bias_20",
+      "kind": "single_factor",
+      "factor_id": "tech_bias_20",
+      "factor_name": "20-Day BIAS",
+      "factor_name_zh": "20 日乖離率",
+      "category": "technical",
+      "direction": -1,
+      "tags": [
+        "mean_reversion",
+        "taiwan_retail"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.1,
+      "cagr": 0.10057153058220614,
+      "benchmark_alpha": 0.22043122154732475,
+      "benchmark_beta": 2.682790427643453,
+      "total_return": 0.37580430561205835,
+      "max_drawdown": -0.4413025171764722,
+      "monthly_sharpe": 0.440214585628417,
+      "monthly_sortino": 0.9769995047524218,
+      "calmar": 0.22789186045676915,
+      "win_ratio": 0.48195876288659795,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 408,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_granville_score",
+      "kind": "single_factor",
+      "factor_id": "tech_granville_score",
+      "factor_name": "Granville MA60/200 Trend Score",
+      "factor_name_zh": "葛蘭碧 MA 趨勢評分",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "taiwan_retail",
+        "regime_aware"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.103,
+      "cagr": 0.3510467771211254,
+      "benchmark_alpha": 0.48890627067758186,
+      "benchmark_beta": 3.085675648710515,
+      "total_return": 1.7228976596848264,
+      "max_drawdown": -0.4565099408510582,
+      "monthly_sharpe": 1.0747948559140006,
+      "monthly_sortino": 2.3624453439790276,
+      "calmar": 0.7689626360388407,
+      "win_ratio": 0.4896907216494845,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 404,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_limit_up_streak_10",
+      "kind": "single_factor",
+      "factor_id": "tech_limit_up_streak_10",
+      "factor_name": "10-Day Limit-Up Count",
+      "factor_name_zh": "10 日漲停次數",
+      "category": "event",
+      "direction": -1,
+      "tags": [
+        "taiwan_retail",
+        "event_factor"
+      ],
+      "mapping": {
+        "status": "mapped_proxy",
+        "source": "OHLCV price-limit proxy",
+        "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": -0.007155641127608803,
+      "benchmark_alpha": 0.022322975739044848,
+      "benchmark_beta": 0.6598127403235325,
+      "total_return": -0.02362485134238801,
+      "max_drawdown": -0.18051310455056135,
+      "monthly_sharpe": -0.2304396192707522,
+      "monthly_sortino": -0.4652696707886763,
+      "calmar": -0.039638367318265526,
+      "win_ratio": 0.4329896907216495,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 401,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_sma_20_pos",
+      "kind": "single_factor",
+      "factor_id": "tech_sma_20_pos",
+      "factor_name": "20-Day SMA Position",
+      "factor_name_zh": "20 日均線位置",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "ma"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.136,
+      "cagr": 0.22407244983492536,
+      "benchmark_alpha": 0.3456227481381352,
+      "benchmark_beta": 2.720630882153327,
+      "total_return": 0.9603328025962059,
+      "max_drawdown": -0.34984646541159825,
+      "monthly_sharpe": 0.7552470944805161,
+      "monthly_sortino": 1.749859476937298,
+      "calmar": 0.6404696553808407,
+      "win_ratio": 0.47164948453608246,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 408,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_ema_12_pos",
+      "kind": "single_factor",
+      "factor_id": "tech_ema_12_pos",
+      "factor_name": "12-Day EMA Position",
+      "factor_name_zh": "12 日 EMA 位置",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "ma"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.118,
+      "cagr": 0.16782812941038738,
+      "benchmark_alpha": 0.27962621563667184,
+      "benchmark_beta": 2.5023494816453153,
+      "total_return": 0.6761764298156567,
+      "max_drawdown": -0.4025913183680675,
+      "monthly_sharpe": 0.6141508501251196,
+      "monthly_sortino": 1.4193958189277247,
+      "calmar": 0.41685936372656135,
+      "win_ratio": 0.44473007712082263,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 408,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_wma_10_pos",
+      "kind": "single_factor",
+      "factor_id": "tech_wma_10_pos",
+      "factor_name": "10-Day WMA Position",
+      "factor_name_zh": "10 日 WMA 位置",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "ma"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.115,
+      "cagr": 0.1193516920869575,
+      "benchmark_alpha": 0.25182813505262724,
+      "benchmark_beta": 2.9651881313458612,
+      "total_return": 0.4555286969178187,
+      "max_drawdown": -0.3858439633969256,
+      "monthly_sharpe": 0.4601214333632537,
+      "monthly_sortino": 1.0979647267023989,
+      "calmar": 0.30931830020929746,
+      "win_ratio": 0.4418604651162791,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_dma_10_50",
+      "kind": "single_factor",
+      "factor_id": "tech_dma_10_50",
+      "factor_name": "DMA(10, 50)",
+      "factor_name_zh": "差離指標 DMA",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "ma"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.48715579247388807,
+      "benchmark_alpha": 0.5568351607254716,
+      "benchmark_beta": 1.5596164202024527,
+      "total_return": 2.748122075342993,
+      "max_drawdown": -0.2540742809829164,
+      "monthly_sharpe": 1.3871775195061278,
+      "monthly_sortino": 3.953596032000645,
+      "calmar": 1.9173000021463054,
+      "win_ratio": 0.5641025641025641,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_bbi",
+      "kind": "single_factor",
+      "factor_id": "tech_bbi",
+      "factor_name": "BBI (Bull-Bear Index)",
+      "factor_name_zh": "多空指標 BBI",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "ma"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.133,
+      "cagr": 0.20478812545363967,
+      "benchmark_alpha": 0.3239367745683607,
+      "benchmark_beta": 2.666875350151251,
+      "total_return": 0.8593878095998155,
+      "max_drawdown": -0.4271951670893068,
+      "monthly_sharpe": 0.7150483335457578,
+      "monthly_sortino": 1.7033745498745463,
+      "calmar": 0.4793671547770135,
+      "win_ratio": 0.44473007712082263,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 409,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_trix_12",
+      "kind": "single_factor",
+      "factor_id": "tech_trix_12",
+      "factor_name": "TRIX(12)",
+      "factor_name_zh": "三重指數平滑均線 TRIX",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "smoothed"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.1,
+      "cagr": 0.4376423193309871,
+      "benchmark_alpha": 0.5057806180807277,
+      "benchmark_beta": 1.5251230348567404,
+      "total_return": 2.3485392308992443,
+      "max_drawdown": -0.23449129065375574,
+      "monthly_sharpe": 1.195942094179933,
+      "monthly_sortino": 3.4185004849848815,
+      "calmar": 1.8662682755856204,
+      "win_ratio": 0.4910025706940874,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 405,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_kdj_j_9",
+      "kind": "single_factor",
+      "factor_id": "tech_kdj_j_9",
+      "factor_name": "KDJ J Value (9-Day)",
+      "factor_name_zh": "KDJ J 值",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "oscillator",
+        "short_term"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.096,
+      "cagr": -0.0436544902159709,
+      "benchmark_alpha": -0.010255693257355689,
+      "benchmark_beta": 0.7475571816838378,
+      "total_return": -0.13808913704785142,
+      "max_drawdown": -0.32231920076490284,
+      "monthly_sharpe": -0.4128024256219336,
+      "monthly_sortino": -0.7150395360955869,
+      "calmar": -0.1354344878229359,
+      "win_ratio": 0.4244791666666667,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_williams_r_14",
+      "kind": "single_factor",
+      "factor_id": "tech_williams_r_14",
+      "factor_name": "Williams %R (14-Day)",
+      "factor_name_zh": "威廉指標 %R",
+      "category": "technical",
+      "direction": -1,
+      "tags": [
+        "oscillator",
+        "short_term"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": -0.029092028298360995,
+      "benchmark_alpha": 0.07242019806994207,
+      "benchmark_beta": 2.27212357212662,
+      "total_return": -0.09361464486720872,
+      "max_drawdown": -0.21854125686205572,
+      "monthly_sharpe": -0.2936070880216923,
+      "monthly_sortino": -0.5020060151977526,
+      "calmar": -0.1331130679185395,
+      "win_ratio": 0.40512820512820513,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_cci_20",
+      "kind": "single_factor",
+      "factor_id": "tech_cci_20",
+      "factor_name": "CCI(20)",
+      "factor_name_zh": "商品通道指標 CCI",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "oscillator",
+        "trend"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.08164126697477925,
+      "benchmark_alpha": 0.13362643828305393,
+      "benchmark_beta": 1.1635714963242332,
+      "total_return": 0.2985864144165489,
+      "max_drawdown": -0.3320337482414141,
+      "monthly_sharpe": 0.3836270479507817,
+      "monthly_sortino": 0.8005630788620635,
+      "calmar": 0.2458750312486581,
+      "win_ratio": 0.41131105398457585,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_mtm_10",
+      "kind": "single_factor",
+      "factor_id": "tech_mtm_10",
+      "factor_name": "Momentum (10-Day)",
+      "factor_name_zh": "10 日動量 MTM",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "short_term",
+        "momentum"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.095,
+      "cagr": 0.3671560583085409,
+      "benchmark_alpha": 0.4440868975930038,
+      "benchmark_beta": 1.7219243397098043,
+      "total_return": 1.8324952908379428,
+      "max_drawdown": -0.25069716142087894,
+      "monthly_sharpe": 1.15534920055515,
+      "monthly_sortino": 3.111813433342129,
+      "calmar": 1.464481733300675,
+      "win_ratio": 0.5666666666666667,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 408,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_roc_10",
+      "kind": "single_factor",
+      "factor_id": "tech_roc_10",
+      "factor_name": "Rate of Change (10-Day)",
+      "factor_name_zh": "10 日 ROC 變動率",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "short_term",
+        "momentum"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.112,
+      "cagr": 0.3084463429562492,
+      "benchmark_alpha": 0.4139059041175163,
+      "benchmark_beta": 2.3604758105814105,
+      "total_return": 1.4474109676218174,
+      "max_drawdown": -0.38635927937256054,
+      "monthly_sharpe": 0.9392148828886947,
+      "monthly_sortino": 2.35269847649995,
+      "calmar": 0.7983200513693705,
+      "win_ratio": 0.48586118251928023,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_cmo_14",
+      "kind": "single_factor",
+      "factor_id": "tech_cmo_14",
+      "factor_name": "Chande Momentum Oscillator (14)",
+      "factor_name_zh": "錢德動量指標 CMO",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "oscillator",
+        "short_term"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.25128846984140374,
+      "benchmark_alpha": 0.34924114594935807,
+      "benchmark_beta": 2.1924510209270838,
+      "total_return": 1.109235070791804,
+      "max_drawdown": -0.26615605575060464,
+      "monthly_sharpe": 0.8975416619857337,
+      "monthly_sortino": 2.5407085493785657,
+      "calmar": 0.9441041200116776,
+      "win_ratio": 0.4524421593830334,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_obv",
+      "kind": "single_factor",
+      "factor_id": "tech_obv",
+      "factor_name": "On-Balance Volume 21D Rate of Change",
+      "factor_name_zh": "OBV 21 日變化率",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volume",
+        "trend"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.096,
+      "cagr": 0.20356269299295637,
+      "benchmark_alpha": 0.2873668213151848,
+      "benchmark_beta": 1.875767503232642,
+      "total_return": 0.8530988687968175,
+      "max_drawdown": -0.2992799886074031,
+      "monthly_sharpe": 0.8524304501168487,
+      "monthly_sortino": 1.799611783372804,
+      "calmar": 0.6801520289406737,
+      "win_ratio": 0.44072164948453607,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 406,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_volume_ratio_5",
+      "kind": "single_factor",
+      "factor_id": "tech_volume_ratio_5",
+      "factor_name": "Volume Ratio (5-Day)",
+      "factor_name_zh": "5 日量比",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volume",
+        "short_term"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.094,
+      "cagr": 0.06379995685005269,
+      "benchmark_alpha": 0.16647361854783999,
+      "benchmark_beta": 2.298119697756326,
+      "total_return": 0.2286351051124662,
+      "max_drawdown": -0.32470272947426915,
+      "monthly_sharpe": 0.2934269818983998,
+      "monthly_sortino": 0.6221324482654361,
+      "calmar": 0.1964812311280464,
+      "win_ratio": 0.4072164948453608,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_vr_26",
+      "kind": "single_factor",
+      "factor_id": "tech_vr_26",
+      "factor_name": "Volume Ratio Index (26)",
+      "factor_name_zh": "容量比率 VR",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volume",
+        "oscillator"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.096,
+      "cagr": 0.20118818089798074,
+      "benchmark_alpha": 0.33546135429650925,
+      "benchmark_beta": 3.0054039133782937,
+      "total_return": 0.8409552123799542,
+      "max_drawdown": -0.3312820408855389,
+      "monthly_sharpe": 0.7765375715212933,
+      "monthly_sortino": 1.8490147578167606,
+      "calmar": 0.6072834721902994,
+      "win_ratio": 0.4322916666666667,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 408,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_mfi_14",
+      "kind": "single_factor",
+      "factor_id": "tech_mfi_14",
+      "factor_name": "Money Flow Index (14)",
+      "factor_name_zh": "資金流量指標 MFI",
+      "category": "technical",
+      "direction": -1,
+      "tags": [
+        "volume",
+        "oscillator"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": -0.025589614021515827,
+      "benchmark_alpha": 0.04591409889651858,
+      "benchmark_beta": 1.6004502849360185,
+      "total_return": -0.0826834078857378,
+      "max_drawdown": -0.2033775059801275,
+      "monthly_sharpe": -0.2939397235097701,
+      "monthly_sortino": -0.4859452419387702,
+      "calmar": -0.1258170402267292,
+      "win_ratio": 0.42105263157894735,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 409,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_emv_14",
+      "kind": "single_factor",
+      "factor_id": "tech_emv_14",
+      "factor_name": "Ease of Movement (14)",
+      "factor_name_zh": "簡易波動指標 EMV",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volume",
+        "trend"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.096,
+      "cagr": 0.38090325828724847,
+      "benchmark_alpha": 0.4749070079427863,
+      "benchmark_beta": 2.1040631567443207,
+      "total_return": 1.928432571901431,
+      "max_drawdown": -0.16931896718714323,
+      "monthly_sharpe": 1.1391190681485723,
+      "monthly_sortino": 3.664557275678884,
+      "calmar": 2.249486692175192,
+      "win_ratio": 0.5449871465295629,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 407,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_atr_14",
+      "kind": "single_factor",
+      "factor_id": "tech_atr_14",
+      "factor_name": "Average True Range (14)",
+      "factor_name_zh": "平均真實波幅 ATR",
+      "category": "technical",
+      "direction": -1,
+      "tags": [
+        "volatility",
+        "range"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.1,
+      "cagr": 0.08249310051492253,
+      "benchmark_alpha": 0.1226905549207458,
+      "benchmark_beta": 0.8997298843942476,
+      "total_return": 0.3019942919111629,
+      "max_drawdown": -0.1322315607194109,
+      "monthly_sharpe": 0.5895333672607878,
+      "monthly_sortino": 1.3905356735983627,
+      "calmar": 0.6238061624964919,
+      "win_ratio": 0.47668393782383417,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 404,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_keltner_pos_20",
+      "kind": "single_factor",
+      "factor_id": "tech_keltner_pos_20",
+      "factor_name": "Keltner Channel Position (20)",
+      "factor_name_zh": "肯特納通道位置",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volatility",
+        "channel"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.20920568958063046,
+      "benchmark_alpha": 0.3110884317249124,
+      "benchmark_beta": 2.2804167369853263,
+      "total_return": 0.8821827843283978,
+      "max_drawdown": -0.30068196132273295,
+      "monthly_sharpe": 0.7894125839684943,
+      "monthly_sortino": 1.9959236914257945,
+      "calmar": 0.6957475306634147,
+      "win_ratio": 0.43556701030927836,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 409,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_donchian_pos_20",
+      "kind": "single_factor",
+      "factor_id": "tech_donchian_pos_20",
+      "factor_name": "Donchian Channel Position (20)",
+      "factor_name_zh": "唐奇安通道位置",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volatility",
+        "breakout"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.102,
+      "cagr": 0.16447903686554644,
+      "benchmark_alpha": 0.2510558259208228,
+      "benchmark_beta": 1.9378272967614654,
+      "total_return": 0.6602264466483845,
+      "max_drawdown": -0.2987998649049671,
+      "monthly_sharpe": 0.7201120131520315,
+      "monthly_sortino": 1.4783760729066078,
+      "calmar": 0.5504471444336585,
+      "win_ratio": 0.455012853470437,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_sar",
+      "kind": "single_factor",
+      "factor_id": "tech_sar",
+      "factor_name": "Parabolic SAR",
+      "factor_name_zh": "拋物線轉向 SAR",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "volatility",
+        "trend"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.1,
+      "cagr": 0.12815455780786067,
+      "benchmark_alpha": 0.2603721360183667,
+      "benchmark_beta": 2.959394024239316,
+      "total_return": 0.49398742351655955,
+      "max_drawdown": -0.40807543672903424,
+      "monthly_sharpe": 0.49671730486589166,
+      "monthly_sortino": 1.1818276720916574,
+      "calmar": 0.3140385475038512,
+      "win_ratio": 0.4649350649350649,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_adx_14",
+      "kind": "single_factor",
+      "factor_id": "tech_adx_14",
+      "factor_name": "Average Directional Index (14)",
+      "factor_name_zh": "平均趨向指標 ADX",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "trend",
+        "strength"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.102,
+      "cagr": 0.23085137531971633,
+      "benchmark_alpha": 0.29249369390352375,
+      "benchmark_beta": 1.3797250844115172,
+      "total_return": 0.9967097100405611,
+      "max_drawdown": -0.28675862549103426,
+      "monthly_sharpe": 0.8951033835393679,
+      "monthly_sortino": 2.1342098616803606,
+      "calmar": 0.8050091774315591,
+      "win_ratio": 0.43410852713178294,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 407,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_psy_12",
+      "kind": "single_factor",
+      "factor_id": "tech_psy_12",
+      "factor_name": "Psychological Line (12)",
+      "factor_name_zh": "心理線 PSY",
+      "category": "technical",
+      "direction": -1,
+      "tags": [
+        "sentiment",
+        "oscillator"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": -0.04049148849281492,
+      "benchmark_alpha": 0.01165363423647544,
+      "benchmark_beta": 1.1671516502336434,
+      "total_return": -0.12856200104907134,
+      "max_drawdown": -0.3032279998487176,
+      "monthly_sharpe": -0.3733902351113431,
+      "monthly_sortino": -0.7002758849057561,
+      "calmar": -0.13353039036339678,
+      "win_ratio": 0.40425531914893614,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 409,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_ma_convergence",
+      "kind": "single_factor",
+      "factor_id": "tech_ma_convergence",
+      "factor_name": "MA Convergence",
+      "factor_name_zh": "三線收斂指標",
+      "category": "technical",
+      "direction": -1,
+      "tags": [
+        "trend",
+        "breakout"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.102,
+      "cagr": 0.006218824681726298,
+      "benchmark_alpha": 0.02831082003838144,
+      "benchmark_beta": 0.494479780426148,
+      "total_return": 0.020854238023218175,
+      "max_drawdown": -0.16921682827719853,
+      "monthly_sharpe": -0.0446284513262293,
+      "monthly_sortino": -0.0863068032235041,
+      "calmar": 0.03674845616996189,
+      "win_ratio": 0.42276422764227645,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_bullish_streak_5",
+      "kind": "single_factor",
+      "factor_id": "tech_bullish_streak_5",
+      "factor_name": "Bullish Streak (5-Day)",
+      "factor_name_zh": "5 日紅 K 計數",
+      "category": "event",
+      "direction": 1,
+      "tags": [
+        "event",
+        "short_term"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.11745406563638427,
+      "benchmark_alpha": 0.22057111555452827,
+      "benchmark_beta": 2.3080439488846736,
+      "total_return": 0.4473298904943508,
+      "max_drawdown": -0.19946566022387324,
+      "monthly_sharpe": 0.627464809272618,
+      "monthly_sortino": 1.1947308259389622,
+      "calmar": 0.5888140212423137,
+      "win_ratio": 0.4315245478036176,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 409,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_gap_up",
+      "kind": "single_factor",
+      "factor_id": "tech_gap_up",
+      "factor_name": "Gap Up",
+      "factor_name_zh": "向上跳空缺口",
+      "category": "event",
+      "direction": 1,
+      "tags": [
+        "event",
+        "gap"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.097,
+      "cagr": 0.12280510767649733,
+      "benchmark_alpha": 0.22503522272356385,
+      "benchmark_beta": 2.2881919005195273,
+      "total_return": 0.47053266672553806,
+      "max_drawdown": -0.2632860921532625,
+      "monthly_sharpe": 0.5839469258395621,
+      "monthly_sortino": 1.117722785166939,
+      "calmar": 0.4664144715258952,
+      "win_ratio": 0.4490861618798956,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_gap_down",
+      "kind": "single_factor",
+      "factor_id": "tech_gap_down",
+      "factor_name": "Gap Down",
+      "factor_name_zh": "向下跳空缺口",
+      "category": "event",
+      "direction": -1,
+      "tags": [
+        "event",
+        "gap"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.094,
+      "cagr": 0.0031807753869328437,
+      "benchmark_alpha": 0.03192534046495331,
+      "benchmark_beta": 0.6433826369578192,
+      "total_return": 0.0106288047309262,
+      "max_drawdown": -0.1522391503479512,
+      "monthly_sharpe": -0.13270302829605743,
+      "monthly_sortino": -0.28777958405791776,
+      "calmar": 0.020891908950975938,
+      "win_ratio": 0.43444730077120824,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 400,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_limit_down_count_10",
+      "kind": "single_factor",
+      "factor_id": "tech_limit_down_count_10",
+      "factor_name": "Limit-Down Count (10-Day)",
+      "factor_name_zh": "10 日跌停次數",
+      "category": "event",
+      "direction": -1,
+      "tags": [
+        "taiwan_retail",
+        "event_factor"
+      ],
+      "mapping": {
+        "status": "mapped_proxy",
+        "source": "OHLCV price-limit proxy",
+        "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+      },
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": -0.007462564584221898,
+      "benchmark_alpha": 0.02202725893107142,
+      "benchmark_beta": 0.6600635760252991,
+      "total_return": -0.02462935752112838,
+      "max_drawdown": -0.18051310455056147,
+      "monthly_sharpe": -0.2342880419425577,
+      "monthly_sortino": -0.4738458626407858,
+      "calmar": -0.04133855665069044,
+      "win_ratio": 0.4329896907216495,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 400,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_locked_open_up_10",
+      "kind": "single_factor",
+      "factor_id": "tech_locked_open_up_10",
+      "factor_name": "Locked-at-Open-Up Count (10-Day)",
+      "factor_name_zh": "10 日開盤即漲停鎖死次數",
+      "category": "event",
+      "direction": 1,
+      "tags": [
+        "taiwan_retail",
+        "event_factor"
+      ],
+      "mapping": {
+        "status": "mapped_proxy",
+        "source": "OHLCV price-limit proxy",
+        "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+      },
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": 0.13671178997798816,
+      "benchmark_alpha": 0.1394384540167603,
+      "benchmark_beta": 0.061030260663247966,
+      "total_return": 0.532049055689197,
+      "max_drawdown": -0.1729674037731911,
+      "monthly_sharpe": 0.673262592113276,
+      "monthly_sortino": 1.5563298340511933,
+      "calmar": 0.7903447906828651,
+      "win_ratio": 0.4444444444444444,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_locked_open_down_10",
+      "kind": "single_factor",
+      "factor_id": "tech_locked_open_down_10",
+      "factor_name": "Locked-at-Open-Down Count (10-Day)",
+      "factor_name_zh": "10 日開盤即跌停鎖死次數",
+      "category": "event",
+      "direction": -1,
+      "tags": [
+        "taiwan_retail",
+        "event_factor"
+      ],
+      "mapping": {
+        "status": "mapped_proxy",
+        "source": "OHLCV price-limit proxy",
+        "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+      },
+      "status": "ok",
+      "elapsed_s": 0.103,
+      "cagr": -0.007382988729009665,
+      "benchmark_alpha": 0.022051275735841022,
+      "benchmark_beta": 0.6588200112580594,
+      "total_return": -0.024368989286035703,
+      "max_drawdown": -0.18051310455056135,
+      "monthly_sharpe": -0.2328641806973774,
+      "monthly_sortino": -0.4700562557686208,
+      "calmar": -0.04089774961155634,
+      "win_ratio": 0.4329896907216495,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 400,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_disposal_active",
+      "kind": "single_factor",
+      "factor_id": "tech_disposal_active",
+      "factor_name": "Disposal Stock Active",
+      "factor_name_zh": "處置股啟動",
+      "category": "event",
+      "direction": -1,
+      "tags": [
+        "taiwan_retail",
+        "event_factor"
+      ],
+      "mapping": {
+        "status": "mapped_proxy",
+        "source": "etl:disposal_stock_filter inverted",
+        "caveat": "FinLab dataset is a filter; active flag is approximated by inverse boolean."
+      },
+      "status": "ok",
+      "elapsed_s": 0.095,
+      "cagr": -0.007382988729009665,
+      "benchmark_alpha": 0.022051275735841022,
+      "benchmark_beta": 0.6588200112580594,
+      "total_return": -0.024368989286035703,
+      "max_drawdown": -0.18051310455056135,
+      "monthly_sharpe": -0.2328641806973774,
+      "monthly_sortino": -0.4700562557686208,
+      "calmar": -0.04089774961155634,
+      "win_ratio": 0.4329896907216495,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 400,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_slow_kd_14",
+      "kind": "single_factor",
+      "factor_id": "tech_slow_kd_14",
+      "factor_name": "14-Day Stochastic K",
+      "factor_name_zh": "KD(14) K 值",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "oscillator",
+        "smoothed"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.097,
+      "cagr": 0.26862202670030144,
+      "benchmark_alpha": 0.367595604594825,
+      "benchmark_beta": 2.2153016183090553,
+      "total_return": 1.2080884349028893,
+      "max_drawdown": -0.19637071913224202,
+      "monthly_sharpe": 0.9438016326041682,
+      "monthly_sortino": 3.023562655424826,
+      "calmar": 1.3678635452975014,
+      "win_ratio": 0.48704663212435234,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 409,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "tech_tower_3",
+      "kind": "single_factor",
+      "factor_id": "tech_tower_3",
+      "factor_name": "Tower Line (3-Day Reversal)",
+      "factor_name_zh": "寶塔線翻紅",
+      "category": "technical",
+      "direction": 1,
+      "tags": [
+        "pattern",
+        "reversal"
+      ],
+      "mapping": {
+        "status": "mapped",
+        "source": "finlab_ohlcv_or_finlab_dataset"
+      },
+      "status": "ok",
+      "elapsed_s": 0.097,
+      "cagr": -0.04865110874818601,
+      "benchmark_alpha": -0.01027001961482206,
+      "benchmark_beta": 0.8590746205034376,
+      "total_return": -0.1529903828971958,
+      "max_drawdown": -0.34492764979265544,
+      "monthly_sharpe": -0.48395073742808326,
+      "monthly_sortino": -0.7181974591559719,
+      "calmar": -0.1410431965818476,
+      "win_ratio": 0.4072164948453608,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 402,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    }
+  ],
+  "composite_results": [
+    {
+      "id": "ab_academic_momentum",
+      "kind": "composite",
+      "factor_id": "ab_academic_momentum",
+      "factor_name": "ab_academic_momentum",
+      "factor_name_zh": "ab_academic_momentum",
+      "category": "composite",
+      "direction": 1,
+      "tags": [
+        "composite"
+      ],
+      "component_factors": [
+        "mom_9m",
+        "mom_macd_trend_10",
+        "mom_vol_adj_12m",
+        "mom_close_to_52w_high",
+        "mom_12m_1m"
+      ],
+      "mapped_components": [
+        "mom_9m",
+        "mom_macd_trend_10",
+        "mom_vol_adj_12m",
+        "mom_close_to_52w_high",
+        "mom_12m_1m"
+      ],
+      "status": "ok",
+      "elapsed_s": 0.097,
+      "cagr": 0.4578329156555496,
+      "benchmark_alpha": 0.5328506691706649,
+      "benchmark_beta": 1.6791042043670559,
+      "total_return": 2.50768184232477,
+      "max_drawdown": -0.4375660778123728,
+      "monthly_sharpe": 1.1540428400947134,
+      "monthly_sortino": 3.140148744902471,
+      "calmar": 1.0462932936015363,
+      "win_ratio": 0.4948717948717949,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 406,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "ab_channel_breakout",
+      "kind": "composite",
+      "factor_id": "ab_channel_breakout",
+      "factor_name": "ab_channel_breakout",
+      "factor_name_zh": "ab_channel_breakout",
+      "category": "composite",
+      "direction": 1,
+      "tags": [
+        "composite"
+      ],
+      "component_factors": [
+        "tech_donchian_pos_20",
+        "tech_keltner_pos_20",
+        "tech_sar",
+        "tech_adx_14",
+        "tech_volume_ratio_5"
+      ],
+      "mapped_components": [
+        "tech_donchian_pos_20",
+        "tech_keltner_pos_20",
+        "tech_sar",
+        "tech_adx_14",
+        "tech_volume_ratio_5"
+      ],
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.1611829438942649,
+      "benchmark_alpha": 0.29126271376188584,
+      "benchmark_beta": 2.9115439779706653,
+      "total_return": 0.6446328515729414,
+      "max_drawdown": -0.40976419824205723,
+      "monthly_sharpe": 0.6567546157004566,
+      "monthly_sortino": 1.3438857929480486,
+      "calmar": 0.3933457611185483,
+      "win_ratio": 0.4370179948586118,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 409,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "ab_low_vol_value",
+      "kind": "composite",
+      "factor_id": "ab_low_vol_value",
+      "factor_name": "ab_low_vol_value",
+      "factor_name_zh": "ab_low_vol_value",
+      "category": "composite",
+      "direction": 1,
+      "tags": [
+        "composite"
+      ],
+      "component_factors": [
+        "val_ep",
+        "val_bp",
+        "val_dp",
+        "vola_realized_12m",
+        "vola_min_130d",
+        "tech_atr_14"
+      ],
+      "mapped_components": [
+        "val_ep",
+        "val_bp",
+        "val_dp",
+        "vola_realized_12m",
+        "vola_min_130d",
+        "tech_atr_14"
+      ],
+      "status": "ok",
+      "elapsed_s": 0.096,
+      "cagr": 0.09508243849225884,
+      "benchmark_alpha": 0.10241886121051438,
+      "benchmark_beta": 0.1642093725021344,
+      "total_return": 0.3530921733934216,
+      "max_drawdown": -0.0706759145235597,
+      "monthly_sharpe": 0.9601573852903621,
+      "monthly_sortino": 2.6617761530655484,
+      "calmar": 1.3451398221716118,
+      "win_ratio": 0.5333333333333333,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 403,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "ab_attention_flow",
+      "kind": "composite",
+      "factor_id": "ab_attention_flow",
+      "factor_name": "ab_attention_flow",
+      "factor_name_zh": "ab_attention_flow",
+      "category": "composite",
+      "direction": 1,
+      "tags": [
+        "composite"
+      ],
+      "component_factors": [
+        "vol_chg_turnover_1y",
+        "vol_signal_5d",
+        "tech_obv",
+        "tech_volume_ratio_5",
+        "tech_vr_26"
+      ],
+      "mapped_components": [
+        "vol_chg_turnover_1y",
+        "vol_signal_5d",
+        "tech_obv",
+        "tech_volume_ratio_5",
+        "tech_vr_26"
+      ],
+      "status": "ok",
+      "elapsed_s": 0.099,
+      "cagr": -0.007515605558866989,
+      "benchmark_alpha": 0.15430057634604108,
+      "benchmark_beta": 3.621892400662322,
+      "total_return": -0.02480287794527347,
+      "max_drawdown": -0.495007852997704,
+      "monthly_sharpe": 0.026367969348404748,
+      "monthly_sortino": 0.06127907298754381,
+      "calmar": -0.01518249395118654,
+      "win_ratio": 0.3634020618556701,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "ab_defensive_momentum",
+      "kind": "composite",
+      "factor_id": "ab_defensive_momentum",
+      "factor_name": "ab_defensive_momentum",
+      "factor_name_zh": "ab_defensive_momentum",
+      "category": "composite",
+      "direction": 1,
+      "tags": [
+        "composite"
+      ],
+      "component_factors": [
+        "mom_vol_adj_12m",
+        "mom_close_to_52w_high",
+        "vola_realized_1m",
+        "vola_realized_12m",
+        "tech_atr_14"
+      ],
+      "mapped_components": [
+        "mom_vol_adj_12m",
+        "mom_close_to_52w_high",
+        "vola_realized_1m",
+        "vola_realized_12m",
+        "tech_atr_14"
+      ],
+      "status": "ok",
+      "elapsed_s": 0.098,
+      "cagr": 0.11675354829076356,
+      "benchmark_alpha": 0.13603885602162832,
+      "benchmark_beta": 0.43165837119986317,
+      "total_return": 0.4443114473674883,
+      "max_drawdown": -0.06792495153417544,
+      "monthly_sharpe": 1.0827013641190903,
+      "monthly_sortino": 2.823856684621966,
+      "calmar": 1.718607957378602,
+      "win_ratio": 0.5552699228791774,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 402,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    },
+    {
+      "id": "ab_short_reversal",
+      "kind": "composite",
+      "factor_id": "ab_short_reversal",
+      "factor_name": "ab_short_reversal",
+      "factor_name_zh": "ab_short_reversal",
+      "category": "composite",
+      "direction": 1,
+      "tags": [
+        "composite"
+      ],
+      "component_factors": [
+        "mom_reversal_1m",
+        "tech_bias_20",
+        "tech_williams_r_14",
+        "tech_psy_12",
+        "tech_mfi_14"
+      ],
+      "mapped_components": [
+        "mom_reversal_1m",
+        "tech_bias_20",
+        "tech_williams_r_14",
+        "tech_psy_12",
+        "tech_mfi_14"
+      ],
+      "status": "ok",
+      "elapsed_s": 0.204,
+      "cagr": -0.0062124227934620135,
+      "benchmark_alpha": 0.10176698104230106,
+      "benchmark_beta": 2.4168768387491886,
+      "total_return": -0.020533334839526463,
+      "max_drawdown": -0.404594262516901,
+      "monthly_sharpe": -0.021104888927440855,
+      "monthly_sortino": -0.04139887349741619,
+      "calmar": -0.015354318698514724,
+      "win_ratio": 0.4498714652956298,
+      "avg_n_stock": 10.0,
+      "max_n_stock": 10.0,
+      "trade_count": 410,
+      "avg_turnover_proxy": null,
+      "match_days": 830,
+      "avg_daily_matches": 10.0,
+      "max_daily_matches": 10,
+      "latest_matches": 10
+    }
+  ]
+}

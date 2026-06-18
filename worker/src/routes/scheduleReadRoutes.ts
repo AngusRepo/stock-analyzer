@@ -45,7 +45,8 @@ const schedule: ScheduleRow[] = [
   { task: 'weekly-optuna', tw_time: 'Sunday 06:30', owner: 'gcp_scheduler', parameter_mode: 'research_sweep', layer: 'meta policy', description: 'Controller-owned weekly Optuna/GA calibration; Worker triggers but does not fan out.' },
   { task: 'adaptive-meta-policy-replay', tw_time: 'Sunday 06:40', owner: 'gcp_scheduler', parameter_mode: 'adaptive_learning', layer: 'meta policy', description: 'Persisted evidence-only active-9 walk-forward replay comparing LinUCB, NeuralUCB, NeuralTS, and NeuCB.' },
   { task: 'linucb-multiplier-replay', tw_time: 'Sunday 06:50', owner: 'gcp_scheduler', parameter_mode: 'research_sweep', layer: 'meta policy', description: 'Persisted evidence-only active-9 LinUCB weight-multiplier replay for bandit_* L2 constants.' },
-  { task: 'monthly-optuna', tw_time: 'first Saturday 16:00 UTC', owner: 'gcp_scheduler', parameter_mode: 'research_sweep', layer: 'meta policy', description: 'Heavier 9-source research sweep and adaptive search closure.' },
+  { task: 'monthly-strategy-mining', tw_time: 'first Saturday 10:00', owner: 'gcp_scheduler', parameter_mode: 'research_sweep', layer: 'governance', description: 'Monthly pymoo NSGA-III + novelty strategy mining preflight, FinLab validation contract, and promotion ledger evidence.' },
+  { task: 'monthly-optuna', tw_time: 'first Saturday 16:00', owner: 'gcp_scheduler', parameter_mode: 'research_sweep', layer: 'meta policy', description: 'Heavier 9-source research sweep and adaptive search closure.' },
   { task: 'weekly-drift-retrain', tw_time: 'manual approval-gated', owner: 'manual', parameter_mode: 'research_sweep', layer: 'L2/L3 model evidence', description: 'Approval-gated shadow candidate path, not automatic weekly retrain.' },
   { task: 'optuna-queue', tw_time: 'every 6h', owner: 'gcp_scheduler', parameter_mode: 'queue', layer: 'meta policy', description: 'Bounded queue processor for Optuna items.' },
 ]

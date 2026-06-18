@@ -1,0 +1,65 @@
+{
+  "schema_version": "stockvision-pymoo-monthly-mining-config-v1",
+  "owner": "alpha_mining_research",
+  "decision_effect": "research_only_until_promotion_gate",
+  "feature_pool_contract": {
+    "registry": "data/feature_registry/unified_feature_registry_v1.json",
+    "similarity_contract": "data/feature_registry/formal137_similarity_contract_v1.json",
+    "similarity_pairs": "output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv",
+    "feature_view_contract": "data/feature_registry/feature_view_contract_v1.json",
+    "ml_feature_selection_contract": "data/feature_registry/ml_feature_selection_contract_v1.json",
+    "promotion_contract": "data/feature_registry/alpha_mining_promotion_contract_v1.json",
+    "formal_pool": "137 = 69 core_prior + 68 evidence_watch",
+    "core_prior_role": "Higher prior and direct challenger seed eligible.",
+    "evidence_watch_role": "May enter pymoo combinations with lower prior, but cannot directly seed challenger status.",
+    "drop_research_candidate_role": "Excluded from selector, ML, PLE and alpha mining candidate paths.",
+    "audit_lineage": "179 remains lineage only; monthly mining must not use dropped features."
+  },
+  "defaults": {
+    "factor_universe": "unified_registry_v1",
+    "algorithm": "pymoo",
+    "min_factors": 2,
+    "max_factors": 8,
+    "random_trials": 0,
+    "optuna_trials": 0,
+    "deap_population": 0,
+    "deap_generations": 0,
+    "pymoo_population": 48,
+    "pymoo_generations": 6,
+    "finlab_confirm_top_n": 8,
+    "pbo_folds": 8,
+    "promote_min_validation_sharpe": 1.0,
+    "promote_min_holdout_sharpe": 1.0,
+    "promote_min_full_cagr": 0.0,
+    "promote_max_full_drawdown": 0.35,
+    "promote_max_turnover": 0.95,
+    "promote_min_deflated_sharpe_probability": 0.95,
+    "promote_family_factor_jaccard": 0.5,
+    "promote_family_category_jaccard": 0.67
+  },
+  "adaptive_controller": {
+    "enabled_after_first_telemetry": true,
+    "inputs": [
+      "accepted_candidate_count",
+      "effective_feature_count",
+      "median_novelty",
+      "median_similarity_penalty",
+      "median_max_similarity",
+      "holdout_sharpe_decay",
+      "pbo_failure_rate",
+      "finlab_confirm_pass_rate",
+      "runtime_seconds"
+    ],
+    "population_bounds": [32, 128],
+    "generation_bounds": [4, 16],
+    "max_factors_bounds": [4, 10],
+    "mutation_rate_bounds": [0.08, 0.35],
+    "rule": "Increase exploration when accepted candidates or novelty are low; decrease exploration when PBO failure, holdout decay, or runtime pressure is high."
+  },
+  "schedule": {
+    "cadence": "monthly",
+    "recommended_window": "first Saturday 10:00 Asia/Taipei after feature materialization audit and before monthly Optuna/retrain",
+    "requires_finlab_backtest": true,
+    "promotion_decision": "Compare mined candidates against current production strategies using walk-forward, PBO, deflated Sharpe, L1.5 diversity, L2/L3 retention and L4 BUY stability before writing promotion ledger."
+  }
+}

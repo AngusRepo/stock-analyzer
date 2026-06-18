@@ -1,0 +1,79 @@
+{
+  "schema_version": "stockvision-unified-feature-registry-v1",
+  "policy": {
+    "source_of_truth": "single_unified_feature_registry",
+    "formal_pool": "137 = 69 core_prior + 68 evidence_watch",
+    "audit_lineage_pool": "179 strategy95+ml106 deduped features remains audit lineage only.",
+    "excluded_pool": "42 drop_research_candidate features are removed from selector, ML, PLE and pymoo candidate paths.",
+    "base_pool": "strategy95_and_ml106_after_cross_pool_dedupe",
+    "supplement_pool": "finlab701_triage_transform_candidates_not_active_until_materialized",
+    "dedupe_contract": "Feature pruning first removes high-correlation weak duplicates and weak low-coverage panels. The remaining formal pool has selector_role=core_prior or evidence_watch; evidence_watch may enter pymoo combinations with lower prior, but is not a direct challenger seed.",
+    "consumer_contract": "L1, L1.25, L1.5, L2/L3 and alpha mining must reference this registry; consumers may choose transforms and feature-selection weights but may not maintain an independent feature universe.",
+    "pymoo_contract": "Monthly pymoo NSGA-III + novelty uses eligible_for_alpha_mining=true from this registry, starting with config defaults and then adapting population/generations/mutation after telemetry. It must auto-run FinLab validation before promotion.",
+    "no_transition_pool": "canonical114 is superseded by unified_registry_v1."
+  },
+  "source_files": {
+    "strategy95_mapping": "output/feature_universe_triage/strategy95_vs_ml106_full_mapping.csv",
+    "ml106_best": "output/finlab_ml_feature_backtests/ml106_features_sii_20230101_20260615_top10_bothdir_best.csv",
+    "overlap_pairs": "output/feature_strategy_overlap_numeric/feature_strategy_overlap_sii_20230101_20260615_pairs_ge_0_6.csv",
+    "finlab701_audits": "output/finlab_augment701_backtests/finlab701_sii_20230101_20260615_top10_bothdir_audits.csv",
+    "finlab701_triage": "output/feature_universe_triage/finlab701_triage_best_by_field.csv",
+    "prune_decision": "output/feature_universe_triage/unified179_feature_prune_decision_20260617.csv",
+    "pairwise_summary": "output/feature_universe_triage/unified179_pairwise_similarity_summary_20260617.json"
+  },
+  "summary": {
+    "total_features": 902,
+    "origin_counts": {
+      "strategy95": 95,
+      "ml106": 106,
+      "finlab701": 701
+    },
+    "status_counts": {
+      "candidate": 137,
+      "drop_research_candidate": 42,
+      "alias": 36,
+      "transform_candidate": 82,
+      "context_only": 410,
+      "chip_candidate": 4,
+      "drop": 191
+    },
+    "recommended_status_counts": {
+      "watch_not_selector": 68,
+      "keep_candidate": 69,
+      "drop_research_candidate": 42,
+      "alias_high_overlap": 22,
+      "alias": 14,
+      "transform_candidate": 82,
+      "context_only": 410,
+      "chip_candidate": 4,
+      "drop": 191
+    },
+    "selector_role_counts": {
+      "evidence_watch": 68,
+      "core_prior": 69,
+      "drop_research_candidate": 42,
+      "alias": 36,
+      "transform_candidate": 82,
+      "context_only": 410,
+      "chip_candidate": 4,
+      "drop": 191
+    },
+    "materializer_status_counts": {
+      "materialized": 137,
+      "not_required_drop": 42,
+      "not_required_alias": 22,
+      "not_in_formal_137_pool": 701
+    },
+    "eligible_counts": {
+      "eligible_for_strategy": 137,
+      "eligible_for_ml": 137,
+      "eligible_for_ple": 137,
+      "eligible_for_l1_25": 137,
+      "eligible_for_alpha_mining": 137
+    },
+    "formal_candidate_count": 137,
+    "core_prior_count": 69,
+    "evidence_watch_count": 68,
+    "drop_research_candidate_count": 42
+  }
+}

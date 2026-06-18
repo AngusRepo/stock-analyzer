@@ -1,17 +1,155 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.local_prod_ready_audit import build_local_prod_ready_audit
+from services.local_prod_ready_audit import (
+    CUTOVER_PACKET_FRESHNESS_DEPENDENCIES,
+    _production_cutover_packet_checks,
+    build_local_prod_ready_audit,
+)
 
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_cutover_freshness_dependencies(root: Path) -> None:
+    managed_elsewhere = {
+        "ml-controller/services/production_cutover_packet.py",
+        "tools/production_cutover_remote_preflight.py",
+        "ml-service/benchmark_results/production_cutover_remote_preflight_20260618.json",
+    }
+    for rel_path in CUTOVER_PACKET_FRESHNESS_DEPENDENCIES:
+        if rel_path in managed_elsewhere:
+            continue
+        path = root / rel_path
+        if path.exists():
+            continue
+        if rel_path.endswith(".sql"):
+            _write(path, "-- local test migration fixture\n")
+        elif rel_path.endswith(".json"):
+            _write(path, json.dumps({"status": "pass"}))
+        else:
+            _write(path, "local test evidence fixture\n")
+
+
+def _write_remote_preflight_fixture(root: Path) -> None:
+    _write(
+        root / "ml-service/benchmark_results/production_cutover_remote_preflight_20260618.json",
+        json.dumps({
+            "decision_effect": "read_only_observation",
+            "production_mutation_allowed": False,
+            "summary": {"remote_cutover_complete": False},
+            "checks": [
+                {"id": "gcp_scheduler_monthly_strategy_mining", "status": "missing"},
+                {"id": "gcp_scheduler_monthly_optuna_timezone", "status": "drift"},
+                {"id": "ml_controller_strategy_mining_env", "status": "missing"},
+                {"id": "d1_strategy_mining_ledger_tables", "status": "missing"},
+                {"id": "d1_alpha_miner_strategy_seed", "status": "present"},
+                {"id": "d1_strategy_spec_registry_schema", "status": "present"},
+            ],
+        }),
+    )
+
+
+def _write_production_cutover_packet_fixture(root: Path) -> None:
+    _write(
+        root / "ml-service/benchmark_results/production_cutover_packet_20260618.json",
+        json.dumps({
+            "cutover_ready_for_review": True,
+            "production_mutation_allowed": False,
+            "actions_allowed_without_wei_approval": [],
+            "remote_cutover_complete": False,
+            "remote_preflight_summary": {
+                "remote_cutover_complete": False,
+                "incomplete_remote_check_ids": ["gcp_scheduler_monthly_strategy_mining"],
+            },
+            "evidence_health": [
+                {
+                    "id": "feature_registry_local_closure_pass",
+                    "passed": True,
+                    "detail": {
+                        "artifact_fresh": True,
+                        "derived_artifact_freshness": {"feature_views": {"fresh": True}},
+                    },
+                },
+                {
+                    "id": "unified137_materialization_pass",
+                    "passed": True,
+                    "detail": {"artifact_fresh": True},
+                },
+                {
+                    "id": "ml_feature_migration_preflight_ready",
+                    "passed": True,
+                    "detail": {
+                        "materialization_audit_fresh": "pass",
+                        "materialization_contract_ready": "pass",
+                    },
+                },
+                {
+                    "id": "alpha_mining_promotion_contract_governance_only",
+                    "passed": True,
+                    "detail": {"source_contracts_fresh": True},
+                },
+                {"id": "strategy_feature_refs_no_blockers", "passed": True, "detail": {"blockers": 0}},
+                {
+                    "id": "local_audit_monthly_pymoo_runtime_contract_gates",
+                    "passed": True,
+                    "detail": {
+                        "missing_check_ids": [],
+                        "failed_check_ids": [],
+                    },
+                },
+            ],
+            "approval_required_actions": [
+                {"id": "deploy_worker_and_frontend"},
+                {"id": "deploy_ml_controller_strategy_mining_route"},
+                {"id": "apply_strategy_registry_alpha_miner_migration"},
+                {"id": "apply_strategy_mining_ledger_migration"},
+                {"id": "sync_gcp_scheduler_manifest"},
+                {"id": "write_or_promote_gcs_model_artifacts"},
+                {"id": "update_model_pool_champion_pointers"},
+                {"id": "remove_challenger_pointers_after_approved_cutover"},
+                {"id": "enable_strategy_mining_execution_env"},
+                {"id": "feature_selection_retrain_release"},
+            ],
+        }),
+    )
+
+
+def _write_cutover_tool_sources(root: Path) -> None:
+    _write(
+        root / "ml-controller/services/production_cutover_packet.py",
+        "\n".join([
+            "local_prod_ready_audit_20260618.json",
+            "production_cutover_remote_preflight_20260618.json",
+            "remote_cutover_complete",
+            "deploy_ml_controller_strategy_mining_route",
+            "apply_strategy_mining_ledger_migration",
+            "enable_strategy_mining_execution_env",
+            "feature_selection_retrain_release",
+        ]),
+    )
+    _write(
+        root / "tools/production_cutover_remote_preflight.py",
+        "\n".join([
+            "stockvision-production-cutover-remote-preflight-v1",
+            "gcp_scheduler_monthly_strategy_mining",
+            "ml_controller_strategy_mining_env",
+            "d1_strategy_mining_ledger_tables",
+            "d1_alpha_miner_strategy_seed",
+            "production_mutation_allowed",
+            "read_only_observation",
+            "local_cutover_packet_path",
+            "local_cutover_packet_ready_for_review",
+        ]),
+    )
 
 
 def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path):
@@ -23,9 +161,21 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
                 {"id": "adaptive-meta-policy-replay"},
                 {"id": "linucb-multiplier-replay"},
                 {"id": "monthly-optuna"},
+                {"id": "monthly-strategy-mining"},
                 {"id": "optuna-queue"},
             ]
         }),
+    )
+    _write(
+        tmp_path / "scripts/sync_gcp_scheduler.ps1",
+        "\n".join([
+            "$currentJobs = gcloud scheduler jobs list --project $Project --location $Location --format 'value(name.basename())'",
+            "$exists = $currentIds.Contains([string]$job.id)",
+            "if ($DeleteStale) {",
+            "DRY_RUN_AUTH_TOKEN_PLACEHOLDER",
+            "https://dry-run-worker-base-url.invalid",
+            "scheduler jobs delete",
+        ]),
     )
     _write(
         tmp_path / "ml-service/requirements.txt",
@@ -172,7 +322,26 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/lib/schedulerPolicy.ts",
-        "weekly-optuna monthly-optuna optuna-queue adaptive-meta-policy-replay linucb-multiplier-replay",
+        "weekly-optuna monthly-optuna monthly-strategy-mining optuna-queue adaptive-meta-policy-replay linucb-multiplier-replay",
+    )
+    _write(
+        tmp_path / "worker/src/lib/controllerResearchWorkflows.ts",
+        "runMonthlyStrategyMining /strategy_mining/monthly_pymoo/run monthly_pymoo_strategy_mining preflight_ready production_effect=none",
+    )
+    _write(
+        tmp_path / "ml-controller/routers/strategy_mining.py",
+        '@router.post("/monthly_pymoo/run") STRATEGY_MINING_EXECUTION_ENABLED production_mutation_allowed research_only strategy_mining_runs strategy_promotion_ledger',
+    )
+    _write(
+        tmp_path / "worker/migration_strategy_mining_ledger_2026_06_18.sql",
+        "\n".join([
+            "CREATE TABLE IF NOT EXISTS strategy_mining_runs",
+            "CREATE TABLE IF NOT EXISTS strategy_mining_candidates",
+            "CREATE TABLE IF NOT EXISTS strategy_backtest_results",
+            "CREATE TABLE IF NOT EXISTS strategy_similarity_matrix",
+            "CREATE TABLE IF NOT EXISTS strategy_promotion_ledger",
+            "real_trading_effect TEXT NOT NULL DEFAULT 'none'",
+        ]),
     )
     _write(
         tmp_path / "worker/src/lib/postMarketChainContract.test.ts",
@@ -441,6 +610,120 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         tmp_path / "ml-service/benchmark_results/evening_chain_rerun_20260615/report_20260615_v1_vs_rerun.md",
         "# 2026-06-15 V1 vs rerun\n",
     )
+    _write(
+        tmp_path / "tools/export_active_strategy_specs_from_d1.py",
+        "\n".join([
+            "read_only_d1_export",
+            "production_mutation_allowed",
+            "strategy_spec_registry",
+            "SELECT_ACTIVE_STRATEGIES_SQL_ONE_LINE",
+        ]),
+    )
+    _write(
+        tmp_path / "tools/finlab_alpha_miner_bakeoff.py",
+        "\n".join([
+            "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed",
+            "similarity_matrix_missing_internal_pairs",
+            "similarity_matrix_missing_archive_pairs",
+            "def _missing_similarity_pair_count",
+            '"algorithm": "pymoo"',
+            '"factor_universe": "unified_registry_v1"',
+            '"random_trials": 0',
+            '"optuna_trials": 0',
+            '"deap_population": 0',
+            'parser.add_argument("--algorithm", choices=["all", "random", "optuna", "deap", "pymoo"], default="pymoo")',
+            'parser.add_argument("--random-trials", type=int, default=0)',
+            'parser.add_argument("--optuna-trials", type=int, default=0)',
+            'parser.add_argument("--deap-population", type=int, default=0)',
+        ]),
+    )
+    _write(
+        tmp_path / "tools/validate_alpha_mining_similarity_novelty.py",
+        "\n".join([
+            "missing_pair_fail_closed",
+            "similarity_matrix_missing_internal_pairs",
+            "matrix_only_fail_closed",
+        ]),
+    )
+    _write(
+        tmp_path / "tools/validate_monthly_pymoo_runtime_contract.py",
+        "\n".join([
+            "stockvision-monthly-pymoo-runtime-contract-v1",
+            "monthly_strategy_mining_scheduler",
+            "alpha_miner_cli_defaults_pymoo_only",
+            "feature_pool_matches_local_closure",
+        ]),
+    )
+    _write(
+        tmp_path / "output/feature_universe_triage/alpha_mining_similarity_novelty_validation_20260618.json",
+        json.dumps({
+            "schema_version": "stockvision-alpha-mining-similarity-novelty-validation-v1",
+            "status": "pass",
+            "decision_effect": "local_validation_only",
+            "method": "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed",
+            "cases": {
+                "missing_pair_fail_closed": {
+                    "max_similarity": 1.0,
+                    "similarity_matrix_missing_internal_pairs": 1,
+                },
+            },
+        }),
+    )
+    _write(
+        tmp_path / "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json",
+        json.dumps({
+            "schema_version": "stockvision-monthly-pymoo-runtime-contract-v1",
+            "status": "pass",
+            "decision_effect": "local_validation_only",
+            "monthly_search_policy": {
+                "cadence": "monthly",
+                "algorithm": "pymoo",
+                "requires_finlab_backtest": True,
+            },
+            "feature_pool": {
+                "eligible_for_alpha_mining": 137,
+                "expected_from_local_closure": 137,
+            },
+        }),
+    )
+    _write(
+        tmp_path / "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
+        json.dumps([
+            {
+                "id": "trend_following_seed_v1",
+                "version": "strategy-spec-v1",
+                "status": "active",
+                "owner": "strategy",
+                "ownerType": "strategy",
+                "promotionStatus": "production",
+                "supportedRegimes": ["bull"],
+                "thresholds": {"minPrice": 10},
+                "candidatePolicy": {"poolQuota": 14},
+                "riskNotes": ["fixture"],
+            }
+            for _ in range(11)
+        ]),
+    )
+    _write(
+        tmp_path / "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
+        json.dumps({
+            "schema_version": "stockvision-active-strategy-spec-export-v1",
+            "decision_effect": "read_only_d1_export",
+            "production_mutation_allowed": False,
+            "strategy_count": 11,
+            "errors": [],
+            "json": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
+        }),
+    )
+    _write(
+        tmp_path / "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
+        json.dumps({
+            "strategy_count": 11,
+            "ok": 8,
+            "no_signal": 3,
+            "errors": [],
+        }),
+    )
     for name in (
         "adaptive_meta_policy_replay_20260605_20260611.json",
         "linucb_multiplier_replay_20260605_20260611.json",
@@ -449,12 +732,125 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             tmp_path / f"ml-service/benchmark_results/{name}",
             json.dumps({"status": "fail", "allowed_use": "research_only", "production_effect": False}),
         )
+    _write(
+        tmp_path / "ml-controller/services/production_cutover_packet.py",
+        "\n".join([
+            "local_prod_ready_audit_20260618.json",
+            "production_cutover_remote_preflight_20260618.json",
+            "remote_cutover_complete",
+            "deploy_ml_controller_strategy_mining_route",
+            "apply_strategy_mining_ledger_migration",
+            "enable_strategy_mining_execution_env",
+            "feature_selection_retrain_release",
+        ]),
+    )
+    _write(
+        tmp_path / "tools/production_cutover_remote_preflight.py",
+        "\n".join([
+            "stockvision-production-cutover-remote-preflight-v1",
+            "gcp_scheduler_monthly_strategy_mining",
+            "ml_controller_strategy_mining_env",
+            "d1_strategy_mining_ledger_tables",
+            "d1_alpha_miner_strategy_seed",
+            "production_mutation_allowed",
+            "read_only_observation",
+            "local_cutover_packet_path",
+            "local_cutover_packet_ready_for_review",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/benchmark_results/production_cutover_packet_20260618.json",
+        json.dumps({
+            "cutover_ready_for_review": True,
+            "production_mutation_allowed": False,
+            "actions_allowed_without_wei_approval": [],
+            "remote_cutover_complete": False,
+            "remote_preflight_summary": {
+                "remote_cutover_complete": False,
+                "incomplete_remote_check_ids": ["gcp_scheduler_monthly_strategy_mining"],
+            },
+            "evidence_health": [
+                {"id": "feature_registry_local_closure_pass", "passed": True},
+                {"id": "unified137_materialization_pass", "passed": True},
+            ],
+            "approval_required_actions": [
+                {"id": "deploy_worker_and_frontend"},
+                {"id": "deploy_ml_controller_strategy_mining_route"},
+                {"id": "apply_strategy_registry_alpha_miner_migration"},
+                {"id": "apply_strategy_mining_ledger_migration"},
+                {"id": "sync_gcp_scheduler_manifest"},
+                {"id": "write_or_promote_gcs_model_artifacts"},
+                {"id": "update_model_pool_champion_pointers"},
+                {"id": "remove_challenger_pointers_after_approved_cutover"},
+                {"id": "enable_strategy_mining_execution_env"},
+                {"id": "feature_selection_retrain_release"},
+            ],
+        }),
+    )
+    _write(
+        tmp_path / "ml-service/benchmark_results/production_cutover_remote_preflight_20260618.json",
+        json.dumps({
+            "decision_effect": "read_only_observation",
+            "production_mutation_allowed": False,
+            "summary": {"remote_cutover_complete": False},
+            "checks": [
+                {"id": "gcp_scheduler_monthly_strategy_mining", "status": "missing"},
+                {"id": "gcp_scheduler_monthly_optuna_timezone", "status": "drift"},
+                {"id": "ml_controller_strategy_mining_env", "status": "missing"},
+                {"id": "d1_strategy_mining_ledger_tables", "status": "missing"},
+                {"id": "d1_alpha_miner_strategy_seed", "status": "present"},
+                {"id": "d1_strategy_spec_registry_schema", "status": "present"},
+            ],
+        }),
+    )
+
+    _write_cutover_freshness_dependencies(tmp_path)
+    _write_remote_preflight_fixture(tmp_path)
+    _write_production_cutover_packet_fixture(tmp_path)
+    _write(
+        tmp_path / "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json",
+        json.dumps({
+            "schema_version": "stockvision-monthly-pymoo-runtime-contract-v1",
+            "status": "pass",
+            "decision_effect": "local_validation_only",
+            "monthly_search_policy": {
+                "cadence": "monthly",
+                "algorithm": "pymoo",
+                "requires_finlab_backtest": True,
+            },
+            "feature_pool": {
+                "eligible_for_alpha_mining": 137,
+                "expected_from_local_closure": 137,
+            },
+        }),
+    )
+    _write_production_cutover_packet_fixture(tmp_path)
 
     audit = build_local_prod_ready_audit(tmp_path)
 
-    assert audit["local_closure"] == "done"
-    assert audit["local_prod_ready"] == "done"
+    assert audit["local_closure"] == "done", audit["failed_checks"]
+    assert audit["local_prod_ready"] == "done", audit["failed_checks"]
     assert audit["promotion_allowed"] is False
     assert audit["production_mutation_allowed"] is False
     assert audit["failed_checks"] == []
     assert "sync_gcp_scheduler_manifest" in audit["production_cutover_requires_wei_approval"]
+    assert "deploy_ml_controller_strategy_mining_route" in audit["production_cutover_requires_wei_approval"]
+    assert "apply_strategy_mining_ledger_migration" in audit["production_cutover_requires_wei_approval"]
+    assert "feature_selection_retrain_release" in audit["production_cutover_requires_wei_approval"]
+
+
+def test_production_cutover_packet_checks_fail_when_packet_is_stale(tmp_path):
+    _write_cutover_tool_sources(tmp_path)
+    _write_remote_preflight_fixture(tmp_path)
+    _write_cutover_freshness_dependencies(tmp_path)
+    _write_production_cutover_packet_fixture(tmp_path)
+
+    packet_path = tmp_path / "ml-service/benchmark_results/production_cutover_packet_20260618.json"
+    source_path = tmp_path / "ml-controller/services/production_cutover_packet.py"
+    os.utime(packet_path, (100, 100))
+    os.utime(source_path, (200, 200))
+
+    checks = _production_cutover_packet_checks(tmp_path)
+    statuses = {row["id"]: row["status"] for row in checks}
+
+    assert statuses["roadmap:p12:production_cutover_packet_artifact_fresh"] == "fail"

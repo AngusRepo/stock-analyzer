@@ -173,9 +173,10 @@ class FakeStrategyRegistryD1 {
 
 {
   const activeSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
-  assert(activeSpecs.length === 25, 'production default strategy set should keep 13 active + 6 research consolidated + 6 AlphaBuilders strategies')
-  assert(activeSpecs.filter((spec) => spec.id.startsWith('research_consolidated_')).length === 6, '62 research strategies should be represented by six consolidated production strategies')
-  assert(activeSpecs.filter((spec) => spec.id.startsWith('alphabuilders_multifactor_')).length === 6, 'AlphaBuilders multifactor additions should contribute six production strategies')
+  assert(activeSpecs.length === 8, 'bootstrap strategy manifest should expose exactly 8 base production strategies')
+  assert(activeSpecs.filter((spec) => spec.id.startsWith('research_consolidated_')).length === 0, 'research consolidated strategies must not remain in bootstrap runtime defaults')
+  assert(activeSpecs.filter((spec) => spec.id.startsWith('alphabuilders_multifactor_')).length === 1, 'bootstrap should keep only the retained AlphaBuilders production label')
+  assert(activeSpecs.filter((spec) => spec.id.startsWith('alpha_miner_pymoo_nsga3_novelty_')).length === 0, 'pymoo mined strategies must live in D1 registry/migration, not TS bootstrap defaults')
   assert(activeSpecs.some((spec) => spec.id === 'trend_following_seed_v1'), 'existing active strategies must stay active')
   assert(!activeSpecs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'daily factor/strategy discovery lane must not remain active')
 }
@@ -219,8 +220,8 @@ async function runStrategyRegistrySeedContractTest(): Promise<void> {
   assert(seedReport.seeded === DEFAULT_STRATEGY_SPECS.length, 'seed should write the full source-approved registry manifest')
   assert(seedReport.demoted_stale_active === 1, 'seed should retire stale generated discovery rows outside the approved active set')
   assert(registryRowCount === DEFAULT_STRATEGY_SPECS.length + 1, 'registry should preserve retired history while exposing clean runtime specs')
-  assert(specs.length === 25, 'runtime reader should expose exactly 25 non-retired strategies after clean seed')
-  assert(activeCount === 25, 'runtime reader active count should be 25 after clean seed')
+  assert(specs.length === DEFAULT_STRATEGY_SPECS.length, 'runtime reader should expose the bootstrap manifest after clean seed when no mined D1 strategies are present')
+  assert(activeCount === DEFAULT_STRATEGY_SPECS.length, 'runtime reader active count should equal bootstrap manifest size after clean seed')
   assert(specs.every((spec) => spec.candidatePolicy && Object.keys(spec.candidatePolicy).length > 0), 'every runtime strategy must carry candidate policy from D1')
   assert(!specs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'retired discovery lane must not be visible to runtime reader')
 }
@@ -240,13 +241,13 @@ runStrategyRegistrySeedContractTest().catch((error) => {
 }
 
 {
-  const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'alphabuilders_multifactor_trend_reclaim_v1')
-  assert(spec != null, 'AlphaBuilders trend reclaim default spec should exist')
+  const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'alphabuilders_multifactor_revenue_quality_momentum_v1')
+  assert(spec != null, 'retained AlphaBuilders revenue quality momentum default spec should exist')
   const registryRow = strategySpecToRegistryRow(spec!, '2026-06-03T00:00:00.000Z')
   const restored = registryRowToStrategySpec(registryRow)
   assert(
-    restored.familyId === 'TREND_RECLAIM_CONTINUATION',
-    'registry conversion must preserve default family governance for AlphaBuilders trend reclaim',
+    restored.familyId === 'REVENUE_QUALITY_MOMENTUM',
+    'registry conversion must preserve default family governance for retained AlphaBuilders strategy',
   )
   assert(restored.ownerType === 'strategy', 'registry conversion must preserve production ownerType for default active specs')
   assert(restored.variantId === spec!.variantId, 'registry conversion must preserve variantId for default active specs')

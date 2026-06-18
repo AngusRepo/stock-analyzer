@@ -102,6 +102,7 @@ for (const critical of [
   'adaptive-meta-policy-replay',
   'linucb-multiplier-replay',
   'monthly-optuna',
+  'monthly-strategy-mining',
   'monthly-retrain',
   'optuna-queue',
 ]) {
@@ -109,27 +110,39 @@ for (const critical of [
   assert(String(job?.query ?? '').split('&').includes('sync=1'), `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }
 
-for (const monthly of ['monthly-optuna', 'monthly-retrain']) {
+for (const monthly of ['monthly-optuna', 'monthly-strategy-mining', 'monthly-retrain']) {
   const job = manifest.jobs.find((j: any) => j.id === monthly)
   assert(job?.schedule?.startsWith('first '), `${monthly} must use Cloud Scheduler groc syntax; cron DOM/DOW is OR and can over-trigger`)
 }
 
+const monthlyStrategyMining = manifest.jobs.find((j: any) => j.id === 'monthly-strategy-mining')
+assert(monthlyStrategyMining?.task === 'monthly-strategy-mining', 'monthly strategy mining must be a first-class scheduler task')
+assert(monthlyStrategyMining?.timeZone === 'Asia/Taipei', 'monthly strategy mining should use TW wall-clock time')
+assert(monthlyStrategyMining?.query === 'sync=1&persist=1', 'monthly strategy mining must run synchronously and persist research evidence')
+
 const monthlyRetrain = manifest.jobs.find((j: any) => j.id === 'monthly-retrain')
 assert(monthlyRetrain?.timeZone === 'Asia/Taipei', 'monthly retrain should use TW wall-clock time instead of UTC offset gymnastics')
+const monthlyOptuna = manifest.jobs.find((j: any) => j.id === 'monthly-optuna')
+assert(monthlyOptuna?.timeZone === 'Asia/Taipei', 'monthly optuna should use TW wall-clock time to match the monthly strategy/retrain sequence')
 assert(cronGcpDomainTasks.includes("runWithLog('obsidian-sync'"), 'obsidian scheduler log key must match manifest id obsidian-sync')
 assert(!cronGcpDomainTasks.includes("runWithLog('obsidian-daily'"), 'obsidian-daily is a compat trigger alias, not the scheduler log owner')
 
 const syncScript = fs.readFileSync('../scripts/sync_gcp_scheduler.ps1', 'utf8')
 assert(syncScript.includes('SCHEDULER_AUTH_TOKEN'), 'scheduler sync must load auth token from env, not source')
 assert(syncScript.includes('STOCKVISION_WORKER_BASE_URL'), 'scheduler sync must load worker base URL from env')
+assert(syncScript.includes('DRY_RUN_AUTH_TOKEN_PLACEHOLDER'), 'scheduler dry-run must not require production scheduler auth token')
+assert(syncScript.includes('https://dry-run-worker-base-url.invalid'), 'scheduler dry-run must not require production worker base URL')
 assert(syncScript.includes("'scheduler', 'jobs', 'update', 'http'"), 'scheduler sync must update existing jobs')
 assert(syncScript.includes("'scheduler', 'jobs', 'create', 'http'"), 'scheduler sync must create missing jobs')
+assert(!syncScript.includes('$exists = $DryRun -or'), 'scheduler dry-run must not pretend every job exists')
+assert(syncScript.includes('$exists = $currentIds.Contains([string]$job.id)'), 'scheduler dry-run must classify create/update from remote job state')
 assert(syncScript.includes('$query'), 'scheduler sync must append per-job query string')
 assert(syncScript.includes('$Job.headers'), 'scheduler sync must support per-job headers for confirm-gated evidence jobs')
 assert(syncScript.includes('New-SchedulerHeaderArg'), 'scheduler sync must compose authorization and job-level headers deterministically')
 assert(syncScript.includes('$job.timeZone'), 'scheduler sync must support per-job time zones for groc monthly schedules')
 assert(syncScript.includes('[switch]$DeleteStale'), 'scheduler sync must support explicit stale GCP job deletion')
 assert(syncScript.includes('scheduler jobs delete'), 'scheduler sync must delete stale GCP jobs when DeleteStale is approved')
+assert(syncScript.includes('if ($DeleteStale)'), 'scheduler dry-run must show stale job deletion candidates before mutation')
 
 const cloudflareScheduleSync = fs.readFileSync('../scripts/sync_cloudflare_worker_schedules.ps1', 'utf8')
 assert(cloudflareScheduleSync.includes('/workers/scripts/$ScriptName/schedules'), 'Cloudflare Worker schedule sync must use the script schedules API')

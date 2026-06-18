@@ -594,10 +594,13 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
-  const finlabDiscovery = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_discovery_v1')
-  assert(finlabDiscovery, 'FinLab AI Skill discovery spec should exist')
-  assert(finlabDiscovery?.status === 'retired', 'FinLab AI Skill discovery lane should be retired from daily runtime')
-  const pools = buildStrategyCandidatePools(candidates.slice(0, 20), [finlabDiscovery!], { regime: 'bull' })
+  const retiredDiscovery = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'finlab_ai_skill_discovery_v1',
+    status: 'retired' as const,
+  }
+  assert(!DEFAULT_STRATEGY_SPECS.some((spec) => spec.id === retiredDiscovery.id), 'FinLab AI Skill discovery spec must not remain in bootstrap defaults')
+  const pools = buildStrategyCandidatePools(candidates.slice(0, 20), [retiredDiscovery], { regime: 'bull' })
   assert(pools.length === 0, 'retired FinLab AI Skill discovery lane must not create runtime strategy pools')
 }
 

@@ -1,0 +1,101 @@
+{
+  "schema_version": "stockvision-ml-feature-universe-analysis-v1",
+  "source_files": {
+    "current_features": "ml-service/app/features/__init__.py:FEATURE_COLS",
+    "finlab_api_catalog": "data/finlab_research/api_fields.json",
+    "finlab_feature_lake_manifest": "data/finlab_research/feature_lake_manifest.json"
+  },
+  "counts": {
+    "current_feature_cols": 106,
+    "optional_feature_cols": 6,
+    "catboost_extra_cols": 14,
+    "finlab_api_fields": 2150,
+    "finlab_unique_api_keys": 2150,
+    "finlab_replace_fields": 130,
+    "finlab_augment_fields": 701,
+    "finlab_benchmark_fields": 1319,
+    "feature_lake_manifest_sidecar_fields_total_family_sum": 2411,
+    "naive_manifest_family_sum_plus_current": 2517,
+    "strict_api_field_union_plus_current": 2256,
+    "dedup_remove_replace_current_plus_augment": 807,
+    "expanded_research_current_plus_augment_plus_benchmark": 2126
+  },
+  "current_family_counts": {
+    "price_technical_engineered": 64,
+    "other": 2,
+    "chip_margin_flow": 15,
+    "sentiment": 3,
+    "market_global_regime": 15,
+    "fundamental_revenue": 1,
+    "sector_metadata": 6
+  },
+  "finlab_by_mode": {
+    "replace": 130,
+    "augment": 701,
+    "benchmark": 1319
+  },
+  "finlab_by_priority": {
+    "P0": 418,
+    "P2": 1319,
+    "P1": 413
+  },
+  "finlab_by_lane": {
+    "daily_price": 121,
+    "revenue": 8,
+    "fundamental_factor_diversity": 213,
+    "research": 1319,
+    "chip_diversity": 53,
+    "regime_context": 118,
+    "emerging_revenue_diversity": 9,
+    "emerging_price_diversity": 10,
+    "global_context": 296,
+    "emerging_chip_diversity": 1,
+    "security_master": 1,
+    "taxonomy_expansion": 1
+  },
+  "finlab_by_group": {
+    "price / OHLCV": 131,
+    "monthly revenue": 17,
+    "fundamentals": 213,
+    "other": 203,
+    "broker / branch flow": 6,
+    "chips / institutional flow": 48,
+    "derivatives / positioning": 30,
+    "taiwan macro": 88,
+    "world market": 6,
+    "security master / taxonomy": 2,
+    "us market": 290,
+    "non-US global market": 1116
+  },
+  "mode_lane_matrix": {
+    "replace": {
+      "daily_price": 121,
+      "revenue": 8,
+      "security_master": 1
+    },
+    "augment": {
+      "fundamental_factor_diversity": 213,
+      "chip_diversity": 53,
+      "regime_context": 118,
+      "emerging_revenue_diversity": 9,
+      "emerging_price_diversity": 10,
+      "global_context": 296,
+      "emerging_chip_diversity": 1,
+      "taxonomy_expansion": 1
+    },
+    "benchmark": {
+      "research": 1319
+    }
+  },
+  "recommendation": {
+    "recommended_ml_research_universe_count": 807,
+    "recommended_policy": "current_106 + FinLab augment fields only; exclude replace parity fields and keep benchmark/research out until separate gate",
+    "why_not_all_2256": "replace fields duplicate source data behind existing engineered features; benchmark fields add massive cross-market/research breadth but are not feature-governed for monthly retrain yet",
+    "why_ic_may_be_low": [
+      "tree/TabM monthly retrain uses selected_tabular feature_pool.tree_active, so the effective active feature count can be much smaller than 106",
+      "current 106 is heavy in price/technical engineered features and light in fundamentals/taxonomy/global/chip microstructure breadth",
+      "FinLab feature lake policy is shadow_only and eligible_for_ml_training=false, so those 701 augment fields are not currently helping IC",
+      "IC can also be capped by labels, universe restriction, train/serve parity, missing coverage, and overly aggressive feature selection, not only feature count"
+    ]
+  }
+}

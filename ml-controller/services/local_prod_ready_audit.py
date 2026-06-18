@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
+CONTROLLER_ROOT = Path(__file__).resolve().parents[1]
+if str(CONTROLLER_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONTROLLER_ROOT))
+
 from services.model_upgrade_research_track import build_research_benchmark_manifest
+from services.production_cutover_packet import (
+    ALPHA_MINING_SIMILARITY_AUDIT_CHECK_IDS,
+    APPROVAL_REQUIRED_ACTIONS,
+    DEFAULT_LOCAL_AUDIT_PATH,
+    MONTHLY_PYMOO_RUNTIME_AUDIT_CHECK_IDS,
+    REQUIRED_EVIDENCE_FILES,
+)
 
 SCHEMA_VERSION = "stockvision-local-prod-ready-audit-v2"
 ROADMAP_SCOPE_VERSION = "planscope-full-session-root-2026-06-14"
@@ -33,6 +46,7 @@ REQUIRED_SCHEDULER_JOBS = (
     "adaptive-meta-policy-replay",
     "linucb-multiplier-replay",
     "monthly-optuna",
+    "monthly-strategy-mining",
     "optuna-queue",
 )
 
@@ -67,6 +81,28 @@ REPLAY_EVIDENCE_FILES = (
     "ml-service/benchmark_results/linucb_multiplier_replay_20260605_20260611.json",
 )
 
+CUTOVER_PACKET_FRESHNESS_DEPENDENCIES = (
+    "ml-controller/services/production_cutover_packet.py",
+    "tools/production_cutover_remote_preflight.py",
+    *tuple(rel_path for rel_path in REQUIRED_EVIDENCE_FILES if rel_path != DEFAULT_LOCAL_AUDIT_PATH),
+)
+
+ALPHA_MINING_SIMILARITY_VALIDATION_ARTIFACT = "output/feature_universe_triage/alpha_mining_similarity_novelty_validation_20260618.json"
+ALPHA_MINING_SIMILARITY_VALIDATION_DEPENDENCIES = (
+    "tools/validate_alpha_mining_similarity_novelty.py",
+    "tools/finlab_alpha_miner_bakeoff.py",
+)
+MONTHLY_PYMOO_RUNTIME_VALIDATION_ARTIFACT = "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json"
+MONTHLY_PYMOO_RUNTIME_VALIDATION_DEPENDENCIES = (
+    "tools/validate_monthly_pymoo_runtime_contract.py",
+    "tools/finlab_alpha_miner_bakeoff.py",
+    "data/feature_registry/pymoo_monthly_mining_config_v1.json",
+    "data/feature_registry/alpha_mining_promotion_contract_v1.json",
+    "output/feature_universe_triage/feature_registry_local_closure_20260617.json",
+    "infra/gcp-scheduler-jobs.json",
+    "ml-controller/routers/strategy_mining.py",
+)
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -86,6 +122,40 @@ def _check(condition: bool, check_id: str, detail: str) -> dict[str, Any]:
         "status": "pass" if condition else "fail",
         "detail": detail,
     }
+
+
+def _check_artifact_fresh_against(
+    root: Path,
+    artifact_rel_path: str,
+    dependency_rel_paths: tuple[str, ...],
+    check_id: str,
+    detail: str,
+) -> dict[str, Any]:
+    artifact_path = root / artifact_rel_path
+    if not artifact_path.exists():
+        return _check(False, check_id, f"{detail}; missing_artifact={artifact_rel_path}")
+
+    artifact_mtime = artifact_path.stat().st_mtime
+    stale_against: list[str] = []
+    missing_dependencies: list[str] = []
+    for dependency_rel_path in dependency_rel_paths:
+        dependency_path = root / dependency_rel_path
+        if not dependency_path.exists():
+            missing_dependencies.append(dependency_rel_path)
+            continue
+        if artifact_mtime + 1e-6 < dependency_path.stat().st_mtime:
+            stale_against.append(dependency_rel_path)
+
+    if stale_against or missing_dependencies:
+        return _check(
+            False,
+            check_id,
+            (
+                f"{detail}; stale_against={stale_against[:8]}; "
+                f"missing_dependencies={missing_dependencies[:8]}"
+            ),
+        )
+    return _check(True, check_id, detail)
 
 
 def _check_text_contains(
@@ -136,10 +206,33 @@ def _check_file_absent(
 def _scheduler_checks(root: Path) -> list[dict[str, Any]]:
     manifest = _load_json(root, "infra/gcp-scheduler-jobs.json")
     jobs = {str(job.get("id")) for job in manifest.get("jobs") or []}
-    return [
+    checks = [
         _check(job in jobs, f"scheduler_manifest:{job}", "required local scheduler job is present")
         for job in REQUIRED_SCHEDULER_JOBS
     ]
+    checks.extend([
+        _check_text_contains(
+            root,
+            "scripts/sync_gcp_scheduler.ps1",
+            (
+                "$currentJobs = gcloud scheduler jobs list",
+                "$exists = $currentIds.Contains([string]$job.id)",
+                "if ($DeleteStale)",
+                "DRY_RUN_AUTH_TOKEN_PLACEHOLDER",
+                "https://dry-run-worker-base-url.invalid",
+            ),
+            "scheduler_sync:dry_run_uses_remote_state",
+            "GCP Scheduler dry-run reads remote job state and does not require production scheduler secrets",
+        ),
+        _check_text_regex_absent(
+            root,
+            "scripts/sync_gcp_scheduler.ps1",
+            r"\$exists\s*=\s*\$DryRun\s*-or",
+            "scheduler_sync:no_dryrun_exists_shortcut",
+            "GCP Scheduler dry-run must not pretend every manifest job already exists",
+        ),
+    ])
+    return checks
 
 
 def _runtime_pin_checks(root: Path) -> list[dict[str, Any]]:
@@ -329,7 +422,7 @@ def _active9_data_chain_checks(root: Path) -> list[dict[str, Any]]:
 
 
 def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
-    return [
+    checks = [
         _check_text_contains(
             root,
             "worker/src/lib/weeklyResearchClosureContract.test.ts",
@@ -360,9 +453,66 @@ def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "worker/src/lib/schedulerPolicy.ts",
-            ("weekly-optuna", "monthly-optuna", "optuna-queue", "adaptive-meta-policy-replay", "linucb-multiplier-replay"),
+            ("weekly-optuna", "monthly-optuna", "monthly-strategy-mining", "optuna-queue", "adaptive-meta-policy-replay", "linucb-multiplier-replay"),
             "roadmap:p1:scheduler_policy_surface",
             "scheduler policy exposes required Optuna/adaptive replay tasks",
+        ),
+        _check_text_contains(
+            root,
+            "worker/src/lib/controllerResearchWorkflows.ts",
+            (
+                "runMonthlyStrategyMining",
+                "/strategy_mining/monthly_pymoo/run",
+                "monthly_pymoo_strategy_mining preflight_ready",
+                "production_effect=none",
+            ),
+            "roadmap:p8:monthly_strategy_mining_worker_surface",
+            "Worker exposes monthly pymoo strategy mining as a scheduler-triggered, research-only controller workflow",
+        ),
+        _check_text_contains(
+            root,
+            "ml-controller/routers/strategy_mining.py",
+            (
+                "@router.post(\"/monthly_pymoo/run\")",
+                "STRATEGY_MINING_EXECUTION_ENABLED",
+                "production_mutation_allowed",
+                "research_only",
+                "strategy_mining_runs",
+                "strategy_promotion_ledger",
+            ),
+            "roadmap:p8:monthly_strategy_mining_controller_surface",
+            "Controller exposes fail-closed monthly pymoo strategy mining preflight and optional job trigger surface",
+        ),
+        _check_text_contains(
+            root,
+            "tools/finlab_alpha_miner_bakeoff.py",
+            (
+                '"algorithm": "pymoo"',
+                '"factor_universe": "unified_registry_v1"',
+                '"random_trials": 0',
+                '"optuna_trials": 0',
+                '"deap_population": 0',
+                'parser.add_argument("--algorithm", choices=["all", "random", "optuna", "deap", "pymoo"], default="pymoo")',
+                'parser.add_argument("--random-trials", type=int, default=0)',
+                'parser.add_argument("--optuna-trials", type=int, default=0)',
+                'parser.add_argument("--deap-population", type=int, default=0)',
+            ),
+            "roadmap:p8:monthly_alpha_miner_cli_defaults_pymoo_only",
+            "alpha miner CLI defaults are config-aligned pymoo-only; random/optuna/deap require explicit research invocation",
+        ),
+        _check_text_contains(
+            root,
+            "worker/migration_strategy_mining_ledger_2026_06_18.sql",
+            (
+                "CREATE TABLE IF NOT EXISTS strategy_mining_runs",
+                "CREATE TABLE IF NOT EXISTS strategy_mining_candidates",
+                "CREATE TABLE IF NOT EXISTS strategy_backtest_results",
+                "CREATE TABLE IF NOT EXISTS strategy_similarity_matrix",
+                "CREATE TABLE IF NOT EXISTS strategy_promotion_ledger",
+                "real_trading_effect TEXT NOT NULL DEFAULT 'none'",
+            ),
+            "roadmap:p9:strategy_mining_ledger_migration",
+            "Pymoo/FinLab strategy mining has local D1 ledger tables for runs, candidates, backtests, similarity, and promotion decisions",
         ),
         _check_text_contains(
             root,
@@ -379,6 +529,35 @@ def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
             "post-verify chain closes rolling IC, reward ledger, adaptive params, shadow evidence, and strategy learning",
         ),
     ]
+    checks.append(_check_artifact_fresh_against(
+        root,
+        MONTHLY_PYMOO_RUNTIME_VALIDATION_ARTIFACT,
+        MONTHLY_PYMOO_RUNTIME_VALIDATION_DEPENDENCIES,
+        "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact_fresh",
+        "monthly pymoo runtime contract validation artifact is newer than scheduler, miner, promotion, closure, and route contracts",
+    ))
+    try:
+        artifact = _load_json(root, MONTHLY_PYMOO_RUNTIME_VALIDATION_ARTIFACT)
+    except (OSError, json.JSONDecodeError) as exc:
+        checks.append(_check(
+            False,
+            "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact",
+            f"monthly pymoo runtime contract validation artifact parses as JSON; error={type(exc).__name__}",
+        ))
+        return checks
+
+    feature_pool = artifact.get("feature_pool") if isinstance(artifact.get("feature_pool"), dict) else {}
+    monthly_policy = artifact.get("monthly_search_policy") if isinstance(artifact.get("monthly_search_policy"), dict) else {}
+    checks.append(_check(
+        artifact.get("status") == "pass"
+        and artifact.get("decision_effect") == "local_validation_only"
+        and monthly_policy.get("algorithm") == "pymoo"
+        and int(feature_pool.get("eligible_for_alpha_mining") or -1)
+        == int(feature_pool.get("expected_from_local_closure") or -2),
+        "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact",
+        "monthly pymoo runtime validation artifact proves pymoo-only monthly policy and feature-pool closure alignment",
+    ))
+    return checks
 
 
 def _replay_and_promotion_checks(root: Path) -> list[dict[str, Any]]:
@@ -419,6 +598,69 @@ def _replay_and_promotion_checks(root: Path) -> list[dict[str, Any]]:
             "artifact promotion blocks non-active-9 models from production selection",
         ),
     ]
+
+
+def _alpha_mining_similarity_checks(root: Path) -> list[dict[str, Any]]:
+    checks = [
+        _check_text_contains(
+            root,
+            "tools/finlab_alpha_miner_bakeoff.py",
+            (
+                "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed",
+                "similarity_matrix_missing_internal_pairs",
+                "similarity_matrix_missing_archive_pairs",
+                "def _missing_similarity_pair_count",
+            ),
+            "roadmap:p2:alpha_mining_similarity_matrix_only_fail_closed",
+            "alpha mining novelty uses formal137 pairwise matrix only and exposes missing-pair evidence",
+        ),
+        _check_text_regex_absent(
+            root,
+            "tools/finlab_alpha_miner_bakeoff.py",
+            r"cluster_fallback|with_cluster_fallback",
+            "roadmap:p2:alpha_mining_no_self_similarity_fill",
+            "alpha mining novelty must not fill missing pairwise similarity from registry cluster leaders",
+        ),
+        _check_text_contains(
+            root,
+            "tools/validate_alpha_mining_similarity_novelty.py",
+            (
+                "missing_pair_fail_closed",
+                "similarity_matrix_missing_internal_pairs",
+                "matrix_only_fail_closed",
+            ),
+            "roadmap:p2:alpha_mining_similarity_validator",
+            "alpha mining novelty validator covers high duplicate, low similarity, archive duplicate, and missing-pair fail-closed cases",
+        ),
+    ]
+    checks.append(_check_artifact_fresh_against(
+        root,
+        ALPHA_MINING_SIMILARITY_VALIDATION_ARTIFACT,
+        ALPHA_MINING_SIMILARITY_VALIDATION_DEPENDENCIES,
+        "roadmap:p2:alpha_mining_similarity_validation_artifact_fresh",
+        "alpha mining similarity novelty validation artifact is newer than validator and miner source",
+    ))
+    try:
+        artifact = _load_json(root, ALPHA_MINING_SIMILARITY_VALIDATION_ARTIFACT)
+    except (OSError, json.JSONDecodeError) as exc:
+        checks.append(_check(
+            False,
+            "roadmap:p2:alpha_mining_similarity_validation_artifact",
+            f"alpha mining similarity novelty validation artifact parses as JSON; error={type(exc).__name__}",
+        ))
+        return checks
+
+    cases = artifact.get("cases") if isinstance(artifact.get("cases"), dict) else {}
+    missing_case = cases.get("missing_pair_fail_closed") if isinstance(cases.get("missing_pair_fail_closed"), dict) else {}
+    checks.append(_check(
+        artifact.get("status") == "pass"
+        and artifact.get("method") == "formal137_pairwise_abs_rank_corr_matrix_only_fail_closed"
+        and missing_case.get("max_similarity") == 1.0
+        and int(missing_case.get("similarity_matrix_missing_internal_pairs") or 0) >= 1,
+        "roadmap:p2:alpha_mining_similarity_validation_artifact",
+        "alpha mining similarity novelty validation artifact proves missing pair fail-closed behavior",
+    ))
+    return checks
 
 
 def _l4_execution_checks(root: Path) -> list[dict[str, Any]]:
@@ -965,7 +1207,115 @@ def _finlab_l0_p0_p9_closure_checks(root: Path) -> list[dict[str, Any]]:
             "finlab_p9:rerun_report_artifact_present",
             "P9: 2026-06-15 L0-L4 comparison report artifact is present for local audit",
         ),
+        *_active_strategy_backtest_baseline_checks(root),
     ]
+
+
+def _latest_by_mtime(paths: list[Path]) -> Path | None:
+    return max(paths, key=lambda path: path.stat().st_mtime) if paths else None
+
+
+def _active_strategy_backtest_baseline_checks(root: Path) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = [
+        _check_text_contains(
+            root,
+            "tools/export_active_strategy_specs_from_d1.py",
+            (
+                "read_only_d1_export",
+                "production_mutation_allowed",
+                "strategy_spec_registry",
+                "SELECT_ACTIVE_STRATEGIES_SQL_ONE_LINE",
+            ),
+            "strategy_baseline:active_spec_exporter_readonly",
+            "active strategy specs are generated by a read-only D1 exporter, not by manual shell JSON shaping",
+        )
+    ]
+    output_dir = root / "output/finlab_strategy_backtests"
+    export_summary_path = _latest_by_mtime(list(output_dir.glob("current_active_*_strategy_specs_summary.json")))
+    checks.append(_check(
+        export_summary_path is not None,
+        "strategy_baseline:active_spec_export_summary_present",
+        "current active StrategySpec export summary exists",
+    ))
+    if export_summary_path is None:
+        return checks
+
+    try:
+        export_summary = json.loads(export_summary_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        checks.append(_check(False, "strategy_baseline:active_spec_export_summary_json", f"active StrategySpec export summary parses as JSON; error={type(exc).__name__}"))
+        return checks
+
+    strategy_count = int(export_summary.get("strategy_count") or 0)
+    checks.extend([
+        _check(
+            export_summary.get("decision_effect") == "read_only_d1_export"
+            and export_summary.get("production_mutation_allowed") is False,
+            "strategy_baseline:active_spec_export_readonly_summary",
+            "active StrategySpec export summary is explicitly read-only/non-mutating",
+        ),
+        _check(
+            strategy_count > 0 and not export_summary.get("errors"),
+            "strategy_baseline:active_spec_export_no_errors",
+            "active StrategySpec export has a positive strategy count and no validation errors",
+        ),
+    ])
+    spec_rel = str(export_summary.get("json") or "").strip()
+    spec_path = root / spec_rel if spec_rel else output_dir / f"current_active_{strategy_count}_strategy_specs.json"
+    checks.append(_check(
+        spec_path.exists(),
+        "strategy_baseline:active_spec_json_present",
+        f"active StrategySpec JSON exists at {spec_rel or spec_path.name}",
+    ))
+    if spec_path.exists():
+        try:
+            specs = json.loads(spec_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            checks.append(_check(False, "strategy_baseline:active_spec_json_parses", f"active StrategySpec JSON parses; error={type(exc).__name__}"))
+            specs = []
+        checks.extend([
+            _check(
+                isinstance(specs, list) and len(specs) == strategy_count,
+                "strategy_baseline:active_spec_json_count_matches",
+                "active StrategySpec JSON row count matches export summary",
+            ),
+            _check(
+                isinstance(specs, list)
+                and all(isinstance(spec.get("supportedRegimes"), list) and "value" not in spec.get("supportedRegimes", {}) for spec in specs if isinstance(spec, dict))
+                and all(isinstance(spec.get("riskNotes"), list) and "value" not in spec.get("riskNotes", {}) for spec in specs if isinstance(spec, dict)),
+                "strategy_baseline:active_spec_json_array_shape",
+                "active StrategySpec JSON uses clean arrays for supportedRegimes and riskNotes",
+            ),
+        ])
+
+    backtest_summary = output_dir / f"finlab_strategy_spec_active{strategy_count}_20230101_20260615_summary.json"
+    checks.append(_check(
+        backtest_summary.exists(),
+        "strategy_baseline:active_finlab_backtest_summary_present",
+        "FinLab backtest summary exists for the current active strategy count",
+    ))
+    if backtest_summary.exists():
+        try:
+            summary = json.loads(backtest_summary.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            checks.append(_check(False, "strategy_baseline:active_finlab_backtest_summary_json", f"active strategy backtest summary parses as JSON; error={type(exc).__name__}"))
+            return checks
+        ok = int(summary.get("ok") or 0)
+        no_signal = int(summary.get("no_signal") or 0)
+        unsupported_feature = int(summary.get("unsupported_feature") or 0)
+        checks.extend([
+            _check(
+                int(summary.get("strategy_count") or 0) == strategy_count,
+                "strategy_baseline:active_finlab_backtest_count_matches",
+                "active strategy FinLab backtest count matches exported active StrategySpec count",
+            ),
+            _check(
+                ok + no_signal + unsupported_feature == strategy_count and not summary.get("errors"),
+                "strategy_baseline:active_finlab_backtest_no_errors",
+                "active strategy FinLab backtest has no sim errors and accounts for every active strategy, including unsupported composite feature rows",
+            ),
+        ])
+    return checks
 
 
 def _replay_checks(root: Path) -> list[dict[str, Any]]:
@@ -990,6 +1340,227 @@ def _replay_checks(root: Path) -> list[dict[str, Any]]:
     return checks
 
 
+def _packet_local_audit_group_self_refresh_only(
+    packet: dict[str, Any],
+    *,
+    group_id: str,
+    expected_check_ids: tuple[str, ...],
+) -> bool:
+    blocked = packet.get("blocked_reason") if isinstance(packet.get("blocked_reason"), dict) else {}
+    if packet.get("cutover_ready_for_review") is True:
+        return False
+    if not (
+        blocked.get("audit_exists") is True
+        and blocked.get("local_gate_passed") is True
+        and blocked.get("evidence_ready") is True
+        and blocked.get("audit_is_non_mutating") is True
+        and blocked.get("evidence_health_ready") is False
+    ):
+        return False
+
+    failed_health = [
+        row
+        for row in packet.get("evidence_health") or []
+        if isinstance(row, dict) and row.get("passed") is not True
+    ]
+    if len(failed_health) != 1 or failed_health[0].get("id") != group_id:
+        return False
+
+    detail = failed_health[0].get("detail") if isinstance(failed_health[0].get("detail"), dict) else {}
+    missing = {str(check_id) for check_id in detail.get("missing_check_ids") or []}
+    failed = {str(check_id) for check_id in detail.get("failed_check_ids") or []}
+    stale_or_missing = missing | failed
+    return bool(stale_or_missing) and stale_or_missing.issubset(set(expected_check_ids))
+
+
+def _packet_audit_group_self_refresh_only(packet: dict[str, Any]) -> bool:
+    return any((
+        _packet_local_audit_group_self_refresh_only(
+            packet,
+            group_id="local_audit_alpha_mining_similarity_fail_closed_gates",
+            expected_check_ids=ALPHA_MINING_SIMILARITY_AUDIT_CHECK_IDS,
+        ),
+        _packet_local_audit_group_self_refresh_only(
+            packet,
+            group_id="local_audit_monthly_pymoo_runtime_contract_gates",
+            expected_check_ids=MONTHLY_PYMOO_RUNTIME_AUDIT_CHECK_IDS,
+        ),
+    ))
+
+
+def _packet_local_gate_self_refresh_only(packet: dict[str, Any]) -> bool:
+    blocked = packet.get("blocked_reason") if isinstance(packet.get("blocked_reason"), dict) else {}
+    if packet.get("cutover_ready_for_review") is True:
+        return False
+    return (
+        blocked.get("audit_exists") is True
+        and blocked.get("local_gate_passed") is False
+        and blocked.get("evidence_ready") is True
+        and blocked.get("evidence_health_ready") is True
+        and blocked.get("audit_is_non_mutating") is True
+        and packet.get("production_mutation_allowed") is False
+        and not [
+            row
+            for row in packet.get("evidence_health") or []
+            if isinstance(row, dict) and row.get("passed") is not True
+        ]
+    )
+
+
+def _production_cutover_packet_checks(root: Path) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = [
+        _check_text_contains(
+            root,
+            "ml-controller/services/production_cutover_packet.py",
+            (
+                "local_prod_ready_audit_20260618.json",
+                "production_cutover_remote_preflight_20260618.json",
+                "remote_cutover_complete",
+                "deploy_ml_controller_strategy_mining_route",
+                "apply_strategy_mining_ledger_migration",
+                "enable_strategy_mining_execution_env",
+                "feature_selection_retrain_release",
+            ),
+            "roadmap:p12:production_cutover_packet_20260618_scope",
+            "P12 cutover packet must use the 2026-06-18 Feature Registry evidence scope and new approval gates",
+        ),
+        _check_text_contains(
+            root,
+            "tools/production_cutover_remote_preflight.py",
+            (
+                "stockvision-production-cutover-remote-preflight-v1",
+                "gcp_scheduler_monthly_strategy_mining",
+                "ml_controller_strategy_mining_env",
+                "d1_strategy_mining_ledger_tables",
+                "d1_alpha_miner_strategy_seed",
+                "production_mutation_allowed",
+                "read_only_observation",
+                "local_cutover_packet_path",
+                "local_cutover_packet_ready_for_review",
+            ),
+            "roadmap:p12:remote_preflight_tool_read_only",
+            "P12 remote preflight must be repeatable and read-only instead of a hand-written snapshot",
+        ),
+    ]
+
+    cutover_path = root / "ml-service/benchmark_results/production_cutover_packet_20260618.json"
+    remote_path = root / "ml-service/benchmark_results/production_cutover_remote_preflight_20260618.json"
+    checks.append(_check(
+        cutover_path.exists(),
+        "roadmap:p12:production_cutover_packet_artifact_present",
+        "P12 production cutover packet 2026-06-18 artifact is present",
+    ))
+    checks.append(_check(
+        remote_path.exists(),
+        "roadmap:p12:remote_preflight_artifact_present",
+        "P12 remote preflight 2026-06-18 artifact is present",
+    ))
+    checks.append(_check_artifact_fresh_against(
+        root,
+        "ml-service/benchmark_results/production_cutover_packet_20260618.json",
+        CUTOVER_PACKET_FRESHNESS_DEPENDENCIES,
+        "roadmap:p12:production_cutover_packet_artifact_fresh",
+        "P12 cutover packet artifact is newer than its non-circular upstream evidence",
+    ))
+
+    if cutover_path.exists():
+        packet = json.loads(cutover_path.read_text(encoding="utf-8-sig"))
+        packet_self_refresh = (
+            _packet_audit_group_self_refresh_only(packet)
+            or _packet_local_gate_self_refresh_only(packet)
+        )
+        evidence_health = packet.get("evidence_health") or []
+        evidence_by_id = {
+            str(row.get("id")): row
+            for row in evidence_health
+            if isinstance(row, dict) and row.get("id")
+        }
+        feature_closure_detail = (evidence_by_id.get("feature_registry_local_closure_pass") or {}).get("detail") or {}
+        materialization_detail = (evidence_by_id.get("unified137_materialization_pass") or {}).get("detail") or {}
+        migration_detail = (evidence_by_id.get("ml_feature_migration_preflight_ready") or {}).get("detail") or {}
+        promotion_detail = (evidence_by_id.get("alpha_mining_promotion_contract_governance_only") or {}).get("detail") or {}
+        action_ids = {str(row.get("id")) for row in packet.get("approval_required_actions") or [] if isinstance(row, dict)}
+        required_action_ids = {str(row["id"]) for row in APPROVAL_REQUIRED_ACTIONS}
+        checks.extend([
+            _check(
+                packet.get("cutover_ready_for_review") is True or packet_self_refresh,
+                "roadmap:p12:cutover_ready_for_review",
+                "P12 packet is ready for Wei review after local evidence checks pass",
+            ),
+            _check(
+                packet.get("production_mutation_allowed") is False and packet.get("actions_allowed_without_wei_approval") == [],
+                "roadmap:p12:cutover_non_mutating",
+                "P12 packet remains non-mutating and allows no production action without Wei approval",
+            ),
+            _check(
+                (
+                    bool(evidence_health)
+                    and all(isinstance(row, dict) and row.get("passed") is True for row in evidence_health)
+                )
+                or packet_self_refresh,
+                "roadmap:p12:cutover_evidence_health_pass",
+                "P12 packet evidence health checks all pass",
+            ),
+            _check(
+                feature_closure_detail.get("artifact_fresh") is True
+                and bool(feature_closure_detail.get("derived_artifact_freshness")),
+                "roadmap:p12:cutover_feature_registry_evidence_source_fresh",
+                "P12 packet carries source-fresh feature registry closure evidence",
+            ),
+            _check(
+                materialization_detail.get("artifact_fresh") is True,
+                "roadmap:p12:cutover_materialization_evidence_source_fresh",
+                "P12 packet carries source-fresh unified137 materialization evidence",
+            ),
+            _check(
+                migration_detail.get("materialization_audit_fresh") == "pass"
+                and migration_detail.get("materialization_contract_ready") == "pass",
+                "roadmap:p12:cutover_ml_migration_evidence_source_fresh",
+                "P12 packet carries source-fresh ML migration materialization gates",
+            ),
+            _check(
+                promotion_detail.get("source_contracts_fresh") is True,
+                "roadmap:p12:cutover_alpha_promotion_evidence_source_fresh",
+                "P12 packet carries source-fresh alpha mining promotion evidence",
+            ),
+            _check(
+                required_action_ids.issubset(action_ids),
+                "roadmap:p12:cutover_approval_actions_synced",
+                "P12 packet exposes the full approval-required action set",
+            ),
+            _check(
+                "remote_cutover_complete" in packet and isinstance(packet.get("remote_preflight_summary"), dict),
+                "roadmap:p12:cutover_remote_summary_present",
+                "P12 packet carries remote preflight summary separately from local readiness",
+            ),
+        ])
+
+    if remote_path.exists():
+        remote = json.loads(remote_path.read_text(encoding="utf-8-sig"))
+        check_ids = {str(row.get("id")) for row in remote.get("checks") or [] if isinstance(row, dict)}
+        checks.extend([
+            _check(
+                remote.get("decision_effect") == "read_only_observation" and remote.get("production_mutation_allowed") is False,
+                "roadmap:p12:remote_preflight_non_mutating",
+                "P12 remote preflight artifact is explicitly read-only/non-mutating",
+            ),
+            _check(
+                {
+                    "gcp_scheduler_monthly_strategy_mining",
+                    "gcp_scheduler_monthly_optuna_timezone",
+                    "ml_controller_strategy_mining_env",
+                    "d1_strategy_mining_ledger_tables",
+                    "d1_alpha_miner_strategy_seed",
+                    "d1_strategy_spec_registry_schema",
+                }.issubset(check_ids),
+                "roadmap:p12:remote_preflight_expected_checks",
+                "P12 remote preflight covers Scheduler, controller env, D1 ledger, strategy seed, and registry schema",
+            ),
+        ])
+
+    return checks
+
+
 def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any]:
     root = repo_root or _repo_root()
     checks = [
@@ -1002,12 +1573,14 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         *_active9_data_chain_checks(root),
         *_optuna_scheduler_checks(root),
         *_replay_and_promotion_checks(root),
+        *_alpha_mining_similarity_checks(root),
         *_l4_execution_checks(root),
         *_finlab_market_data_owner_checks(root),
         *_finlab_l0_p0_p9_closure_checks(root),
         *_l15_l2_owner_boundary_checks(root),
         *_observability_checks(root),
         *_replay_checks(root),
+        *_production_cutover_packet_checks(root),
     ]
     failed = [row for row in checks if row["status"] != "pass"]
     local_done = not failed
@@ -1022,9 +1595,11 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
             "p1_mode_b_confidence_bandit_replay",
             "p2_opb_l4_allocation",
             "p2_promotion_governance",
+            "p2_alpha_mining_similarity_fail_closed",
             "p2_legacy_cleanup",
             "p3_model_pool_ui_observability",
             "finlab_p0_p9_l0_l125_l15_l4_raw_signal_portfolio_intelligence_closure",
+            "p12_production_cutover_preflight_packet_and_remote_readonly_audit",
         ],
         "local_closure": "done" if local_done else "blocked",
         "local_prod_ready": "done" if local_done else "blocked",
@@ -1032,11 +1607,30 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         "production_mutation_allowed": False,
         "checks": checks,
         "failed_checks": failed,
-        "production_cutover_requires_wei_approval": [
-            "deploy_worker_and_frontend",
-            "sync_gcp_scheduler_manifest",
-            "write_or_promote_gcs_model_artifacts",
-            "update_model_pool_champion_pointers",
-            "remove_challenger_pointers_after approved cutover",
-        ],
+        "production_cutover_requires_wei_approval": [str(row["id"]) for row in APPROVAL_REQUIRED_ACTIONS],
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Build the StockVision local prod-ready audit artifact.")
+    parser.add_argument("--repo", default=str(_repo_root()))
+    parser.add_argument("--output", default=DEFAULT_LOCAL_AUDIT_PATH)
+    args = parser.parse_args(argv)
+
+    audit = build_local_prod_ready_audit(Path(args.repo))
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({
+        "output": str(output_path),
+        "local_closure": audit["local_closure"],
+        "local_prod_ready": audit["local_prod_ready"],
+        "failed_checks": [row["id"] for row in audit["failed_checks"]],
+        "promotion_allowed": audit["promotion_allowed"],
+        "production_mutation_allowed": audit["production_mutation_allowed"],
+    }, ensure_ascii=False, indent=2))
+    return 0 if audit["local_prod_ready"] == "done" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

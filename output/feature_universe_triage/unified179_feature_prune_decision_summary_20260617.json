@@ -1,0 +1,34 @@
+﻿{
+  "schema_version": "stockvision-unified179-feature-prune-decision-v1",
+  "source": {
+    "registry": "data\\feature_registry\\unified_feature_registry_v1.json",
+    "backtest_report": "output\\feature_universe_triage\\unified179_feature_backtest_report_20260617.csv",
+    "pairwise_summary": "output\\feature_universe_triage\\unified179_pairwise_similarity_summary_20260617.json",
+    "prune_candidates": "output\\feature_universe_triage\\unified179_prune_candidates_20260617.csv"
+  },
+  "counts": {
+    "total_features": 179,
+    "after_strict_drop": 137,
+    "keep_only": 69,
+    "missing_pairwise_panel": 15
+  },
+  "status_counts": {
+    "drop_research_candidate": 42,
+    "keep_candidate": 69,
+    "watch_not_selector": 68
+  },
+  "origin_status_counts": {
+    "ml106::drop_research_candidate": 41,
+    "strategy95::drop_research_candidate": 1,
+    "ml106::keep_candidate": 30,
+    "strategy95::keep_candidate": 39,
+    "ml106::watch_not_selector": 13,
+    "strategy95::watch_not_selector": 55
+  },
+  "artifacts": {
+    "decision_csv": "output\\feature_universe_triage\\unified179_feature_prune_decision_20260617.csv",
+    "after_strict_drop_csv": "output\\feature_universe_triage\\unified179_feature_pool_after_strict_drop_20260617.csv",
+    "keep_only_csv": "output\\feature_universe_triage\\unified179_feature_pool_keep_only_20260617.csv",
+    "summary_json": "output\\feature_universe_triage\\unified179_feature_prune_decision_summary_20260617.json"
+  }
+}

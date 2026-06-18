@@ -25,6 +25,8 @@ export interface CanonicalScreenerChip {
   broker_count?: number | null
   estimated_amount?: number | null
   concentration?: number | null
+  margin_balance?: number | null
+  short_balance?: number | null
 }
 
 /** @deprecated Use CanonicalScreenerPrice. The FinMind fetcher is retired. */
@@ -40,6 +42,8 @@ export interface CanonicalChipRow {
   foreign_net: number | null
   trust_net: number | null
   dealer_net: number | null
+  margin_balance?: number | null
+  short_balance?: number | null
   source: string | null
   as_of_date?: string | null
 }
@@ -196,6 +200,19 @@ export function canonicalChipRowsToFmChips(
     if (foreign) chips.push(foreign)
     if (trust) chips.push(trust)
     if (dealer) chips.push(dealer)
+    if (row.margin_balance != null || row.short_balance != null) {
+      chips.push({
+        date: row.date,
+        stock_id: row.stock_id,
+        name: 'margin_balance',
+        buy: Number(row.margin_balance ?? 0),
+        sell: 0,
+        source: row.source ?? 'canonical',
+        market_segment: row.market_segment ?? undefined,
+        margin_balance: row.margin_balance ?? null,
+        short_balance: row.short_balance ?? null,
+      })
+    }
   }
   for (const row of brokerRows) {
     const broker = netToChip(row, 'broker_flow', row.net_shares, {
@@ -245,7 +262,7 @@ async function loadCanonicalChipsFromD1(
     const dates = (canonicalDates ?? []).map(row => row.date).sort()
     if (dates.length) {
       const { results } = await db.prepare(
-        `SELECT stock_id, date, market_segment, foreign_net, trust_net, dealer_net, source, as_of_date
+        `SELECT stock_id, date, market_segment, foreign_net, trust_net, dealer_net, margin_balance, short_balance, source, as_of_date
          FROM canonical_chip_daily
          WHERE date >= ? AND date <= ?`,
       ).bind(dates[0], dates[dates.length - 1]).all<CanonicalChipRow>()

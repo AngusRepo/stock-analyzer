@@ -1,0 +1,2808 @@
+{
+  "json": "output\\finlab_alpha_miner_bakeoff\\alpha_miner_bakeoff_sii_20230101_20260615_seed42.json",
+  "rows_csv": "output\\finlab_alpha_miner_bakeoff\\alpha_miner_bakeoff_sii_20230101_20260615_seed42_rows.csv",
+  "finlab_confirm_csv": "output\\finlab_alpha_miner_bakeoff\\alpha_miner_bakeoff_sii_20230101_20260615_seed42_finlab_confirm.csv",
+  "summary": {
+    "deap_gp": {
+      "evaluated": 39,
+      "top_fitness": 4.107402557591101,
+      "top_validation_sharpe": 3.1178954896258877,
+      "top_holdout_sharpe": 8.377832740610295,
+      "top_full_cagr": 3.657378303107949,
+      "top_full_mdd": -0.28386369331594474,
+      "median_top10_validation_sharpe": 2.963807445786289,
+      "median_top10_holdout_sharpe": 7.538983437626893,
+      "median_top10_novelty": 1.0,
+      "median_top10_turnover": 0.5395180722891567,
+      "top_candidates": [
+        {
+          "candidate_id": "deap_gp_0027",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "tech_donchian_pos_20",
+            "l1_bbBandwidthPct"
+          ],
+          "weights": [
+            0.633177,
+            0.366823
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5395180722891567,
+          "fitness": 4.107402557591101,
+          "deflated_sharpe_proxy": 2.9393969274039717,
+          "deflated_sharpe": {
+            "probability": 0.7390160268722126,
+            "z_score": 0.6403148223805701,
+            "minimum_annualized_sharpe": 2.429690861240594,
+            "daily_sharpe": 0.1964089542723825,
+            "skew": -0.31492179414210136,
+            "kurtosis": 5.923414089504663
+          },
+          "fold_sharpes": [
+            3.879709394086144,
+            0.8123464913693036,
+            5.810309304329686,
+            4.7714783346464165,
+            1.3985002038812944,
+            2.515772244294699,
+            5.249570782939648,
+            8.062819928391415
+          ],
+          "train": {
+            "cagr": 2.4011022740745065,
+            "sharpe": 3.6236458335376,
+            "max_drawdown": -0.24817838063056474,
+            "positive_day_ratio": 0.5904365904365905
+          },
+          "validation": {
+            "cagr": 1.944740308787987,
+            "sharpe": 3.1178954896258877,
+            "max_drawdown": -0.28386369331594485,
+            "positive_day_ratio": 0.6172839506172839
+          },
+          "holdout": {
+            "cagr": 54.469758268738,
+            "sharpe": 8.377832740610295,
+            "max_drawdown": -0.07834723545546751,
+            "positive_day_ratio": 0.7358490566037735
+          },
+          "full": {
+            "cagr": 3.657378303107949,
+            "sharpe": 4.192564325929897,
+            "max_drawdown": -0.28386369331594474,
+            "positive_day_ratio": 0.6168674698795181
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0029",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "tech_donchian_pos_20",
+            "l1_bbBandwidthPct"
+          ],
+          "weights": [
+            0.633177,
+            0.366823
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5395180722891567,
+          "fitness": 4.107402557591101,
+          "deflated_sharpe_proxy": 2.9393969274039717,
+          "deflated_sharpe": {
+            "probability": 0.7390160268722126,
+            "z_score": 0.6403148223805701,
+            "minimum_annualized_sharpe": 2.429690861240594,
+            "daily_sharpe": 0.1964089542723825,
+            "skew": -0.31492179414210136,
+            "kurtosis": 5.923414089504663
+          },
+          "fold_sharpes": [
+            3.879709394086144,
+            0.8123464913693036,
+            5.810309304329686,
+            4.7714783346464165,
+            1.3985002038812944,
+            2.515772244294699,
+            5.249570782939648,
+            8.062819928391415
+          ],
+          "train": {
+            "cagr": 2.4011022740745065,
+            "sharpe": 3.6236458335376,
+            "max_drawdown": -0.24817838063056474,
+            "positive_day_ratio": 0.5904365904365905
+          },
+          "validation": {
+            "cagr": 1.944740308787987,
+            "sharpe": 3.1178954896258877,
+            "max_drawdown": -0.28386369331594485,
+            "positive_day_ratio": 0.6172839506172839
+          },
+          "holdout": {
+            "cagr": 54.469758268738,
+            "sharpe": 8.377832740610295,
+            "max_drawdown": -0.07834723545546751,
+            "positive_day_ratio": 0.7358490566037735
+          },
+          "full": {
+            "cagr": 3.657378303107949,
+            "sharpe": 4.192564325929897,
+            "max_drawdown": -0.28386369331594474,
+            "positive_day_ratio": 0.6168674698795181
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0030",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "tech_donchian_pos_20",
+            "l1_bbBandwidthPct"
+          ],
+          "weights": [
+            0.633177,
+            0.366823
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5395180722891567,
+          "fitness": 4.107402557591101,
+          "deflated_sharpe_proxy": 2.9393969274039717,
+          "deflated_sharpe": {
+            "probability": 0.7390160268722126,
+            "z_score": 0.6403148223805701,
+            "minimum_annualized_sharpe": 2.429690861240594,
+            "daily_sharpe": 0.1964089542723825,
+            "skew": -0.31492179414210136,
+            "kurtosis": 5.923414089504663
+          },
+          "fold_sharpes": [
+            3.879709394086144,
+            0.8123464913693036,
+            5.810309304329686,
+            4.7714783346464165,
+            1.3985002038812944,
+            2.515772244294699,
+            5.249570782939648,
+            8.062819928391415
+          ],
+          "train": {
+            "cagr": 2.4011022740745065,
+            "sharpe": 3.6236458335376,
+            "max_drawdown": -0.24817838063056474,
+            "positive_day_ratio": 0.5904365904365905
+          },
+          "validation": {
+            "cagr": 1.944740308787987,
+            "sharpe": 3.1178954896258877,
+            "max_drawdown": -0.28386369331594485,
+            "positive_day_ratio": 0.6172839506172839
+          },
+          "holdout": {
+            "cagr": 54.469758268738,
+            "sharpe": 8.377832740610295,
+            "max_drawdown": -0.07834723545546751,
+            "positive_day_ratio": 0.7358490566037735
+          },
+          "full": {
+            "cagr": 3.657378303107949,
+            "sharpe": 4.192564325929897,
+            "max_drawdown": -0.28386369331594474,
+            "positive_day_ratio": 0.6168674698795181
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0015",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "tech_gap_up",
+            "vola_cv_90d",
+            "tech_psy_12",
+            "tech_kdj_j_9",
+            "l1_closeAboveMa60Pct"
+          ],
+          "weights": [
+            0.326863,
+            0.037751,
+            0.093401,
+            0.228462,
+            0.313523
+          ],
+          "combine": "weighted_sum",
+          "complexity": 5,
+          "novelty": 1.0,
+          "turnover": 0.8050602409638554,
+          "fitness": 3.8970568898353166,
+          "deflated_sharpe_proxy": 2.631220839724774,
+          "deflated_sharpe": {
+            "probability": 0.6058824502227229,
+            "z_score": 0.26860313499330235,
+            "minimum_annualized_sharpe": 2.511327247869566,
+            "daily_sharpe": 0.17699568551009695,
+            "skew": -0.8350154674728402,
+            "kurtosis": 5.767687317832765
+          },
+          "fold_sharpes": [
+            5.2994978006536595,
+            0.4260253941407237,
+            3.108151482344977,
+            4.773582659261648,
+            0.7409831723483615,
+            0.3671841143612251,
+            5.735704514444647,
+            8.263190049746273
+          ],
+          "train": {
+            "cagr": 1.4314988382676206,
+            "sharpe": 2.913632108300681,
+            "max_drawdown": -0.23057871062373148,
+            "positive_day_ratio": 0.577962577962578
+          },
+          "validation": {
+            "cagr": 1.1817945287073175,
+            "sharpe": 2.80971940194669,
+            "max_drawdown": -0.24930931155378055,
+            "positive_day_ratio": 0.5925925925925926
+          },
+          "holdout": {
+            "cagr": 57.67621604215381,
+            "sharpe": 8.488282518938572,
+            "max_drawdown": -0.15621511437302626,
+            "positive_day_ratio": 0.7169811320754716
+          },
+          "full": {
+            "cagr": 2.537265668618887,
+            "sharpe": 3.7940235103253306,
+            "max_drawdown": -0.2568968405341815,
+            "positive_day_ratio": 0.6
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0036",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "tech_gap_up",
+            "vola_cv_90d",
+            "tech_psy_12",
+            "tech_kdj_j_9",
+            "l1_closeAboveMa60Pct"
+          ],
+          "weights": [
+            0.32397,
+            0.037417,
+            0.092575,
+            0.23529,
+            0.310749
+          ],
+          "combine": "weighted_sum",
+          "complexity": 5,
+          "novelty": 1.0,
+          "turnover": 0.8036144578313255,
+          "fitness": 3.861824428528313,
+          "deflated_sharpe_proxy": 2.5899906444995855,
+          "deflated_sharpe": {
+            "probability": 0.5934618165014365,
+            "z_score": 0.2364591952783931,
+            "minimum_annualized_sharpe": 2.5063287107529937,
+            "daily_sharpe": 0.17439842734170433,
+            "skew": -0.8281023271690025,
+            "kurtosis": 5.734694720713397
+          },
+          "fold_sharpes": [
+            5.39015785535425,
+            0.6914886048682742,
+            3.3452861378695946,
+            4.7102333867656325,
+            0.6545263358356623,
+            0.31735250101507556,
+            5.7100398871813765,
+            8.231766046866149
+          ],
+          "train": {
+            "cagr": 1.508868520062975,
+            "sharpe": 3.019516414261112,
+            "max_drawdown": -0.22629397189258116,
+            "positive_day_ratio": 0.577962577962578
+          },
+          "validation": {
+            "cagr": 1.156385482914358,
+            "sharpe": 2.768489206721502,
+            "max_drawdown": -0.24846682452235025,
+            "positive_day_ratio": 0.5925925925925926
+          },
+          "holdout": {
+            "cagr": 57.91361159868663,
+            "sharpe": 8.438173699380721,
+            "max_drawdown": -0.1562151143730266,
+            "positive_day_ratio": 0.7169811320754716
+          },
+          "full": {
+            "cagr": 2.5915824184228597,
+            "sharpe": 3.83665253534557,
+            "max_drawdown": -0.2641251622634132,
+            "positive_day_ratio": 0.6
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0016",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "l1_smcBiasBearish",
+            "tech_keltner_pos_20",
+            "tech_limit_down_count_10"
+          ],
+          "weights": [
+            0.247722,
+            0.3892,
+            0.363078
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.4065060240963856,
+          "fitness": 3.750298494806412,
+          "deflated_sharpe_proxy": 3.8307440542514515,
+          "deflated_sharpe": {
+            "probability": 0.9269966399290036,
+            "z_score": 1.4537821272940261,
+            "minimum_annualized_sharpe": 2.440061415634773,
+            "daily_sharpe": 0.25255854545024864,
+            "skew": -0.2066066040623312,
+            "kurtosis": 5.179315536417932
+          },
+          "fold_sharpes": [
+            2.3403610047924213,
+            1.031894260777044,
+            5.0249867002793716,
+            6.939778794584467,
+            5.37653414745727,
+            2.6907811598826457,
+            5.680824490835276,
+            5.446298011376585
+          ],
+          "train": {
+            "cagr": 2.418821281054139,
+            "sharpe": 4.157468311423652,
+            "max_drawdown": -0.1708318772027696,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.0546009255286273,
+            "sharpe": 4.009242616473368,
+            "max_drawdown": -0.19536406684449004,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 12.895831162108323,
+            "sharpe": 5.7399688437653325,
+            "max_drawdown": -0.1813348435958646,
+            "positive_day_ratio": 0.6320754716981132
+          },
+          "full": {
+            "cagr": 2.9566753477198895,
+            "sharpe": 4.323296057718907,
+            "max_drawdown": -0.1953640668444897,
+            "positive_day_ratio": 0.6132530120481928
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0031",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "l1_smcBiasBearish",
+            "tech_keltner_pos_20",
+            "tech_limit_down_count_10"
+          ],
+          "weights": [
+            0.203242,
+            0.412212,
+            0.384546
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.4065060240963856,
+          "fitness": 3.750298494806412,
+          "deflated_sharpe_proxy": 3.8307440542514515,
+          "deflated_sharpe": {
+            "probability": 0.9269966399290036,
+            "z_score": 1.4537821272940261,
+            "minimum_annualized_sharpe": 2.440061415634773,
+            "daily_sharpe": 0.25255854545024864,
+            "skew": -0.2066066040623312,
+            "kurtosis": 5.179315536417932
+          },
+          "fold_sharpes": [
+            2.3403610047924213,
+            1.031894260777044,
+            5.0249867002793716,
+            6.939778794584467,
+            5.37653414745727,
+            2.6907811598826457,
+            5.680824490835276,
+            5.446298011376585
+          ],
+          "train": {
+            "cagr": 2.418821281054139,
+            "sharpe": 4.157468311423652,
+            "max_drawdown": -0.1708318772027696,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.0546009255286273,
+            "sharpe": 4.009242616473368,
+            "max_drawdown": -0.19536406684449004,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 12.895831162108323,
+            "sharpe": 5.7399688437653325,
+            "max_drawdown": -0.1813348435958646,
+            "positive_day_ratio": 0.6320754716981132
+          },
+          "full": {
+            "cagr": 2.9566753477198895,
+            "sharpe": 4.323296057718907,
+            "max_drawdown": -0.1953640668444897,
+            "positive_day_ratio": 0.6132530120481928
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0033",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "tech_donchian_pos_20",
+            "mom_9m",
+            "tech_cmo_14",
+            "l1_bosBullish"
+          ],
+          "weights": [
+            0.109047,
+            0.096647,
+            0.312591,
+            0.481715
+          ],
+          "combine": "weighted_sum",
+          "complexity": 4,
+          "novelty": 1.0,
+          "turnover": 0.6383132530120481,
+          "fitness": 3.0162731737665123,
+          "deflated_sharpe_proxy": 1.855900338809598,
+          "deflated_sharpe": {
+            "probability": 0.3695022931479047,
+            "z_score": -0.33317182290787856,
+            "minimum_annualized_sharpe": 2.3860583949675584,
+            "daily_sharpe": 0.12815508475315454,
+            "skew": -0.39286927772067537,
+            "kurtosis": 5.74972497791154
+          },
+          "fold_sharpes": [
+            4.829418225464076,
+            0.35858932018604445,
+            5.200839240972655,
+            3.5761610442626,
+            0.44254353523092754,
+            0.8872115383417983,
+            4.665181453435306,
+            6.399274853663257
+          ],
+          "train": {
+            "cagr": 1.4844657218511892,
+            "sharpe": 3.110876529383709,
+            "max_drawdown": -0.22806421444397362,
+            "positive_day_ratio": 0.5654885654885655
+          },
+          "validation": {
+            "cagr": 0.7681315790034282,
+            "sharpe": 2.034398901031514,
+            "max_drawdown": -0.23967629095970933,
+            "positive_day_ratio": 0.6049382716049383
+          },
+          "holdout": {
+            "cagr": 20.264518874145626,
+            "sharpe": 6.700134134643492,
+            "max_drawdown": -0.13517409749622622,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 1.9584606363663255,
+            "sharpe": 3.3954514310808532,
+            "max_drawdown": -0.2879951382602747,
+            "positive_day_ratio": 0.5927710843373494
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0005",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "tech_kd9_k",
+            "l1_bbBandwidthPct",
+            "tech_limit_down_count_10",
+            "l1_smcBiasBearish"
+          ],
+          "weights": [
+            0.422687,
+            0.42673,
+            0.084695,
+            0.065889
+          ],
+          "combine": "weighted_sum",
+          "complexity": 4,
+          "novelty": 1.0,
+          "turnover": 0.26060240963855424,
+          "fitness": 2.5560825496238184,
+          "deflated_sharpe_proxy": 1.9369334871916972,
+          "deflated_sharpe": {
+            "probability": 0.39827257803511257,
+            "z_score": -0.257820871121074,
+            "minimum_annualized_sharpe": 2.387752596637495,
+            "daily_sharpe": 0.13325969329057433,
+            "skew": -0.39311404795238275,
+            "kurtosis": 5.276077010064193
+          },
+          "fold_sharpes": [
+            3.7730954364197498,
+            -0.37450979918505445,
+            3.5069411124653533,
+            2.821811384099858,
+            1.5081742005984164,
+            1.8730458745099308,
+            3.0249488068351575,
+            4.696396621793853
+          ],
+          "train": {
+            "cagr": 1.009806291402152,
+            "sharpe": 2.3177238945534575,
+            "max_drawdown": -0.21386117541297855,
+            "positive_day_ratio": 0.5696465696465697
+          },
+          "validation": {
+            "cagr": 0.9772598527528258,
+            "sharpe": 2.1154320494136134,
+            "max_drawdown": -0.2558782972798287,
+            "positive_day_ratio": 0.5720164609053497
+          },
+          "holdout": {
+            "cagr": 7.689683352137566,
+            "sharpe": 4.841375100797681,
+            "max_drawdown": -0.16614649862895337,
+            "positive_day_ratio": 0.6698113207547169
+          },
+          "full": {
+            "cagr": 1.4114775856462982,
+            "sharpe": 2.6556208221339497,
+            "max_drawdown": -0.25587829727982836,
+            "positive_day_ratio": 0.5831325301204819
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "deap_gp_0020",
+          "algorithm": "deap_gp",
+          "status": "ok",
+          "factor_ids": [
+            "l1_monthlyRevenueYoY",
+            "l1_smcNetScore",
+            "l1_volumeMomentumDivergence132710",
+            "tech_bbi",
+            "tech_kdj_j_9"
+          ],
+          "weights": [
+            0.116787,
+            0.281904,
+            0.059041,
+            0.237997,
+            0.304271
+          ],
+          "combine": "weighted_sum",
+          "complexity": 5,
+          "novelty": 1.0,
+          "turnover": 0.6553012048192772,
+          "fitness": 2.5445152583042185,
+          "deflated_sharpe_proxy": 1.0840628100376124,
+          "deflated_sharpe": {
+            "probability": 0.14877385709068813,
+            "z_score": -1.0417066300492377,
+            "minimum_annualized_sharpe": 2.3415730868748867,
+            "daily_sharpe": 0.07953389061797991,
+            "skew": -0.31004107131324593,
+            "kurtosis": 4.586098449480175
+          },
+          "fold_sharpes": [
+            5.368160883446408,
+            -0.33830455572369156,
+            4.903477033209544,
+            4.537957557952769,
+            -0.03350925293870773,
+            0.6755278632507136,
+            3.4875253482987834,
+            6.194852952354925
+          ],
+          "train": {
+            "cagr": 1.6378257808753416,
+            "sharpe": 3.3776488378226674,
+            "max_drawdown": -0.23824694299368177,
+            "positive_day_ratio": 0.5738045738045738
+          },
+          "validation": {
+            "cagr": 0.3996977867413487,
+            "sharpe": 1.2625613722595286,
+            "max_drawdown": -0.28154483186376733,
+            "positive_day_ratio": 0.551440329218107
+          },
+          "holdout": {
+            "cagr": 15.986485444649766,
+            "sharpe": 6.454222236859384,
+            "max_drawdown": -0.11012670241291078,
+            "positive_day_ratio": 0.6792452830188679
+          },
+          "full": {
+            "cagr": 1.7795334539705374,
+            "sharpe": 3.274198140111749,
+            "max_drawdown": -0.3106453987986857,
+            "positive_day_ratio": 0.5807228915662651
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        }
+      ],
+      "pbo": {
+        "candidate_count": 39,
+        "usable_candidate_count": 39,
+        "pbo": 0.0,
+        "median_logit": 2.3445492920930775,
+        "split_count": 70,
+        "fold_count": 8,
+        "method": "cscv_fold_sharpe_rank_logit"
+      }
+    },
+    "optuna_tpe": {
+      "evaluated": 50,
+      "top_fitness": 6.2672624011713065,
+      "top_validation_sharpe": 6.2768124783128725,
+      "top_holdout_sharpe": 10.915490080180367,
+      "top_full_cagr": 19.797949378310886,
+      "top_full_mdd": -0.23767869721413692,
+      "median_top10_validation_sharpe": 6.221553123479589,
+      "median_top10_holdout_sharpe": 10.915490080180367,
+      "median_top10_novelty": 1.0,
+      "median_top10_turnover": 0.8521686746987953,
+      "top_candidates": [
+        {
+          "candidate_id": "optuna_tpe_0030",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "l1_diTrend",
+            "l1_displacementPct",
+            "tech_limit_down_count_10"
+          ],
+          "weights": [
+            0.076224,
+            0.584639,
+            0.339136
+          ],
+          "combine": "max",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.8520481927710843,
+          "fitness": 6.2672624011713065,
+          "deflated_sharpe_proxy": 6.097375246364525,
+          "deflated_sharpe": {
+            "probability": 0.998859015929887,
+            "z_score": 3.050847015072943,
+            "minimum_annualized_sharpe": 2.682095936891888,
+            "daily_sharpe": 0.39540202009054437,
+            "skew": -0.514671663619146,
+            "kurtosis": 4.318918535117268
+          },
+          "fold_sharpes": [
+            8.858607223356001,
+            5.305463032721338,
+            11.448051680796453,
+            11.340084498426098,
+            5.683020439029786,
+            3.7886671630237663,
+            9.624245618441282,
+            10.586710967166212
+          ],
+          "train": {
+            "cagr": 19.332049760907246,
+            "sharpe": 8.630833147102397,
+            "max_drawdown": -0.1517857691663188,
+            "positive_day_ratio": 0.7089397089397089
+          },
+          "validation": {
+            "cagr": 8.885608915909849,
+            "sharpe": 6.2768124783128725,
+            "max_drawdown": -0.23767869721413704,
+            "positive_day_ratio": 0.6502057613168725
+          },
+          "holdout": {
+            "cagr": 125.81491840162855,
+            "sharpe": 10.915490080180367,
+            "max_drawdown": -0.07621304924168071,
+            "positive_day_ratio": 0.7641509433962265
+          },
+          "full": {
+            "cagr": 19.797949378310886,
+            "sharpe": 8.194590485113615,
+            "max_drawdown": -0.23767869721413692,
+            "positive_day_ratio": 0.6987951807228916
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0019",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "l1_roe",
+            "l1_displacementPct"
+          ],
+          "weights": [
+            0.087838,
+            0.912162
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.8521686746987953,
+          "fitness": 6.2573590749701005,
+          "deflated_sharpe_proxy": 6.042115891531242,
+          "deflated_sharpe": {
+            "probability": 0.9987353876827463,
+            "z_score": 3.0198229796955345,
+            "minimum_annualized_sharpe": 2.674056551022316,
+            "daily_sharpe": 0.3919210079358124,
+            "skew": -0.5080737157356217,
+            "kurtosis": 4.284308859303848
+          },
+          "fold_sharpes": [
+            8.858607223356001,
+            5.305463032721338,
+            11.448051680796453,
+            11.340084498426098,
+            5.683020439029786,
+            3.671806733403406,
+            9.624245618441282,
+            10.586710967166212
+          ],
+          "train": {
+            "cagr": 19.332049760907246,
+            "sharpe": 8.630833147102397,
+            "max_drawdown": -0.1517857691663188,
+            "positive_day_ratio": 0.7089397089397089
+          },
+          "validation": {
+            "cagr": 8.72480980848627,
+            "sharpe": 6.221553123479589,
+            "max_drawdown": -0.249639238650044,
+            "positive_day_ratio": 0.6502057613168725
+          },
+          "holdout": {
+            "cagr": 125.81491840162855,
+            "sharpe": 10.915490080180367,
+            "max_drawdown": -0.07621304924168071,
+            "positive_day_ratio": 0.7641509433962265
+          },
+          "full": {
+            "cagr": 19.698330187864155,
+            "sharpe": 8.176672390241968,
+            "max_drawdown": -0.24963923865004412,
+            "positive_day_ratio": 0.6987951807228916
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0028",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "tech_atr_14",
+            "l1_displacementPct"
+          ],
+          "weights": [
+            0.049612,
+            0.950388
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.8521686746987953,
+          "fitness": 6.2573590749701005,
+          "deflated_sharpe_proxy": 6.042115891531242,
+          "deflated_sharpe": {
+            "probability": 0.9987353876827463,
+            "z_score": 3.0198229796955345,
+            "minimum_annualized_sharpe": 2.674056551022316,
+            "daily_sharpe": 0.3919210079358124,
+            "skew": -0.5080737157356217,
+            "kurtosis": 4.284308859303848
+          },
+          "fold_sharpes": [
+            8.858607223356001,
+            5.305463032721338,
+            11.448051680796453,
+            11.340084498426098,
+            5.683020439029786,
+            3.671806733403406,
+            9.624245618441282,
+            10.586710967166212
+          ],
+          "train": {
+            "cagr": 19.332049760907246,
+            "sharpe": 8.630833147102397,
+            "max_drawdown": -0.1517857691663188,
+            "positive_day_ratio": 0.7089397089397089
+          },
+          "validation": {
+            "cagr": 8.72480980848627,
+            "sharpe": 6.221553123479589,
+            "max_drawdown": -0.249639238650044,
+            "positive_day_ratio": 0.6502057613168725
+          },
+          "holdout": {
+            "cagr": 125.81491840162855,
+            "sharpe": 10.915490080180367,
+            "max_drawdown": -0.07621304924168071,
+            "positive_day_ratio": 0.7641509433962265
+          },
+          "full": {
+            "cagr": 19.698330187864155,
+            "sharpe": 8.176672390241968,
+            "max_drawdown": -0.24963923865004412,
+            "positive_day_ratio": 0.6987951807228916
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0031",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "tech_granville_score",
+            "l1_displacementPct"
+          ],
+          "weights": [
+            0.157894,
+            0.842106
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.8521686746987953,
+          "fitness": 6.2573590749701005,
+          "deflated_sharpe_proxy": 6.042115891531242,
+          "deflated_sharpe": {
+            "probability": 0.9987353876827463,
+            "z_score": 3.0198229796955345,
+            "minimum_annualized_sharpe": 2.674056551022316,
+            "daily_sharpe": 0.3919210079358124,
+            "skew": -0.5080737157356217,
+            "kurtosis": 4.284308859303848
+          },
+          "fold_sharpes": [
+            8.858607223356001,
+            5.305463032721338,
+            11.448051680796453,
+            11.340084498426098,
+            5.683020439029786,
+            3.671806733403406,
+            9.624245618441282,
+            10.586710967166212
+          ],
+          "train": {
+            "cagr": 19.332049760907246,
+            "sharpe": 8.630833147102397,
+            "max_drawdown": -0.1517857691663188,
+            "positive_day_ratio": 0.7089397089397089
+          },
+          "validation": {
+            "cagr": 8.72480980848627,
+            "sharpe": 6.221553123479589,
+            "max_drawdown": -0.249639238650044,
+            "positive_day_ratio": 0.6502057613168725
+          },
+          "holdout": {
+            "cagr": 125.81491840162855,
+            "sharpe": 10.915490080180367,
+            "max_drawdown": -0.07621304924168071,
+            "positive_day_ratio": 0.7641509433962265
+          },
+          "full": {
+            "cagr": 19.698330187864155,
+            "sharpe": 8.176672390241968,
+            "max_drawdown": -0.24963923865004412,
+            "positive_day_ratio": 0.6987951807228916
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0033",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "mom_reversal_1m",
+            "l1_displacementPct"
+          ],
+          "weights": [
+            0.190999,
+            0.809001
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.8521686746987953,
+          "fitness": 6.2573590749701005,
+          "deflated_sharpe_proxy": 6.042115891531242,
+          "deflated_sharpe": {
+            "probability": 0.9987353876827463,
+            "z_score": 3.0198229796955345,
+            "minimum_annualized_sharpe": 2.674056551022316,
+            "daily_sharpe": 0.3919210079358124,
+            "skew": -0.5080737157356217,
+            "kurtosis": 4.284308859303848
+          },
+          "fold_sharpes": [
+            8.858607223356001,
+            5.305463032721338,
+            11.448051680796453,
+            11.340084498426098,
+            5.683020439029786,
+            3.671806733403406,
+            9.624245618441282,
+            10.586710967166212
+          ],
+          "train": {
+            "cagr": 19.332049760907246,
+            "sharpe": 8.630833147102397,
+            "max_drawdown": -0.1517857691663188,
+            "positive_day_ratio": 0.7089397089397089
+          },
+          "validation": {
+            "cagr": 8.72480980848627,
+            "sharpe": 6.221553123479589,
+            "max_drawdown": -0.249639238650044,
+            "positive_day_ratio": 0.6502057613168725
+          },
+          "holdout": {
+            "cagr": 125.81491840162855,
+            "sharpe": 10.915490080180367,
+            "max_drawdown": -0.07621304924168071,
+            "positive_day_ratio": 0.7641509433962265
+          },
+          "full": {
+            "cagr": 19.698330187864155,
+            "sharpe": 8.176672390241968,
+            "max_drawdown": -0.24963923865004412,
+            "positive_day_ratio": 0.6987951807228916
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0041",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "mom_reversal_1m",
+            "l1_displacementPct"
+          ],
+          "weights": [
+            0.278838,
+            0.721162
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.8521686746987953,
+          "fitness": 6.2573590749701005,
+          "deflated_sharpe_proxy": 6.042115891531242,
+          "deflated_sharpe": {
+            "probability": 0.9987353876827463,
+            "z_score": 3.0198229796955345,
+            "minimum_annualized_sharpe": 2.674056551022316,
+            "daily_sharpe": 0.3919210079358124,
+            "skew": -0.5080737157356217,
+            "kurtosis": 4.284308859303848
+          },
+          "fold_sharpes": [
+            8.858607223356001,
+            5.305463032721338,
+            11.448051680796453,
+            11.340084498426098,
+            5.683020439029786,
+            3.671806733403406,
+            9.624245618441282,
+            10.586710967166212
+          ],
+          "train": {
+            "cagr": 19.332049760907246,
+            "sharpe": 8.630833147102397,
+            "max_drawdown": -0.1517857691663188,
+            "positive_day_ratio": 0.7089397089397089
+          },
+          "validation": {
+            "cagr": 8.72480980848627,
+            "sharpe": 6.221553123479589,
+            "max_drawdown": -0.249639238650044,
+            "positive_day_ratio": 0.6502057613168725
+          },
+          "holdout": {
+            "cagr": 125.81491840162855,
+            "sharpe": 10.915490080180367,
+            "max_drawdown": -0.07621304924168071,
+            "positive_day_ratio": 0.7641509433962265
+          },
+          "full": {
+            "cagr": 19.698330187864155,
+            "sharpe": 8.176672390241968,
+            "max_drawdown": -0.24963923865004412,
+            "positive_day_ratio": 0.6987951807228916
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0032",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "l1_brokerConcentration",
+            "l1_displacementPct",
+            "vola_realized_12m"
+          ],
+          "weights": [
+            0.143207,
+            0.530598,
+            0.326195
+          ],
+          "combine": "max",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.8521686746987953,
+          "fitness": 6.239849416385241,
+          "deflated_sharpe_proxy": 6.036543660826453,
+          "deflated_sharpe": {
+            "probability": 0.9987210225647137,
+            "z_score": 3.0164001046815865,
+            "minimum_annualized_sharpe": 2.6733893825633985,
+            "daily_sharpe": 0.3915699903955089,
+            "skew": -0.5077933058878139,
+            "kurtosis": 4.280467374743101
+          },
+          "fold_sharpes": [
+            8.858607223356001,
+            5.305463032721338,
+            11.448051680796453,
+            11.32273659448436,
+            5.683020439029786,
+            3.660415615465169,
+            9.624245618441282,
+            10.586710967166212
+          ],
+          "train": {
+            "cagr": 19.311399704251365,
+            "sharpe": 8.627381649872152,
+            "max_drawdown": -0.15178576916631892,
+            "positive_day_ratio": 0.7089397089397089
+          },
+          "validation": {
+            "cagr": 8.710157982996913,
+            "sharpe": 6.215980892774801,
+            "max_drawdown": -0.2507294185222455,
+            "positive_day_ratio": 0.6502057613168725
+          },
+          "holdout": {
+            "cagr": 125.81491840162855,
+            "sharpe": 10.915490080180367,
+            "max_drawdown": -0.07621304924168071,
+            "positive_day_ratio": 0.7641509433962265
+          },
+          "full": {
+            "cagr": 19.677015357399753,
+            "sharpe": 8.172986631077745,
+            "max_drawdown": -0.2507294185222455,
+            "positive_day_ratio": 0.6987951807228916
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0022",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "mom_reversal_6m",
+            "tech_keltner_pos_20"
+          ],
+          "weights": [
+            0.060228,
+            0.939772
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.40385542168674704,
+          "fitness": 3.6738679670957786,
+          "deflated_sharpe_proxy": 3.768100258633523,
+          "deflated_sharpe": {
+            "probability": 0.9130632632305344,
+            "z_score": 1.359862393339649,
+            "minimum_annualized_sharpe": 2.4712274053321748,
+            "daily_sharpe": 0.248671487885324,
+            "skew": -0.28188678082696755,
+            "kurtosis": 4.993036017275971
+          },
+          "fold_sharpes": [
+            3.00542352935408,
+            1.0835861359366203,
+            4.7108380732949104,
+            6.714141349766303,
+            5.178224561427512,
+            2.81023340473376,
+            5.461243877098883,
+            5.242380881519529
+          ],
+          "train": {
+            "cagr": 2.4396714460604723,
+            "sharpe": 4.144183669991345,
+            "max_drawdown": -0.16966246969921783,
+            "positive_day_ratio": 0.6195426195426196
+          },
+          "validation": {
+            "cagr": 2.05722839789884,
+            "sharpe": 3.9475374905818708,
+            "max_drawdown": -0.17988237060337986,
+            "positive_day_ratio": 0.5925925925925926
+          },
+          "holdout": {
+            "cagr": 12.152534362992247,
+            "sharpe": 5.533555938999285,
+            "max_drawdown": -0.1862193645317184,
+            "positive_day_ratio": 0.6320754716981132
+          },
+          "full": {
+            "cagr": 2.9438545183204106,
+            "sharpe": 4.263267627962673,
+            "max_drawdown": -0.18621936453171795,
+            "positive_day_ratio": 0.6132530120481928
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0027",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "mom_reversal_6m",
+            "tech_keltner_pos_20"
+          ],
+          "weights": [
+            0.089017,
+            0.910983
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.40385542168674704,
+          "fitness": 3.6738679670957786,
+          "deflated_sharpe_proxy": 3.768100258633523,
+          "deflated_sharpe": {
+            "probability": 0.9130632632305344,
+            "z_score": 1.359862393339649,
+            "minimum_annualized_sharpe": 2.4712274053321748,
+            "daily_sharpe": 0.248671487885324,
+            "skew": -0.28188678082696755,
+            "kurtosis": 4.993036017275971
+          },
+          "fold_sharpes": [
+            3.00542352935408,
+            1.0835861359366203,
+            4.7108380732949104,
+            6.714141349766303,
+            5.178224561427512,
+            2.81023340473376,
+            5.461243877098883,
+            5.242380881519529
+          ],
+          "train": {
+            "cagr": 2.4396714460604723,
+            "sharpe": 4.144183669991345,
+            "max_drawdown": -0.16966246969921783,
+            "positive_day_ratio": 0.6195426195426196
+          },
+          "validation": {
+            "cagr": 2.05722839789884,
+            "sharpe": 3.9475374905818708,
+            "max_drawdown": -0.17988237060337986,
+            "positive_day_ratio": 0.5925925925925926
+          },
+          "holdout": {
+            "cagr": 12.152534362992247,
+            "sharpe": 5.533555938999285,
+            "max_drawdown": -0.1862193645317184,
+            "positive_day_ratio": 0.6320754716981132
+          },
+          "full": {
+            "cagr": 2.9438545183204106,
+            "sharpe": 4.263267627962673,
+            "max_drawdown": -0.18621936453171795,
+            "positive_day_ratio": 0.6132530120481928
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "optuna_tpe_0023",
+          "algorithm": "optuna_tpe",
+          "status": "ok",
+          "factor_ids": [
+            "tech_kd9_k",
+            "tech_bbands_pctb_20"
+          ],
+          "weights": [
+            0.072582,
+            0.927418
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.6919277108433736,
+          "fitness": 3.237893790017139,
+          "deflated_sharpe_proxy": 2.5475875323699206,
+          "deflated_sharpe": {
+            "probability": 0.6222597019137507,
+            "z_score": 0.31142099371168036,
+            "minimum_annualized_sharpe": 2.398839558560269,
+            "daily_sharpe": 0.17178641298811106,
+            "skew": -0.20732324124992094,
+            "kurtosis": 5.184986172099377
+          },
+          "fold_sharpes": [
+            3.761184217896377,
+            1.6399136621728423,
+            4.582279061815893,
+            3.4967846694284694,
+            0.7827026882140209,
+            0.30359639605435834,
+            6.7869353667176275,
+            5.773959860307547
+          ],
+          "train": {
+            "cagr": 1.349686916409377,
+            "sharpe": 3.028656846353149,
+            "max_drawdown": -0.24573122331788488,
+            "positive_day_ratio": 0.5904365904365905
+          },
+          "validation": {
+            "cagr": 1.1236254871328302,
+            "sharpe": 2.7270247643182683,
+            "max_drawdown": -0.24804649407525836,
+            "positive_day_ratio": 0.6131687242798354
+          },
+          "holdout": {
+            "cagr": 11.344778529525762,
+            "sharpe": 6.200515696702596,
+            "max_drawdown": -0.11528145808435342,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 1.8194228313402663,
+            "sharpe": 3.438858319752607,
+            "max_drawdown": -0.24804649407525825,
+            "positive_day_ratio": 0.6096385542168675
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        }
+      ],
+      "pbo": {
+        "candidate_count": 50,
+        "usable_candidate_count": 50,
+        "pbo": 0.0,
+        "median_logit": 4.055814039153872,
+        "split_count": 70,
+        "fold_count": 8,
+        "method": "cscv_fold_sharpe_rank_logit"
+      }
+    },
+    "pymoo_nsga3_novelty": {
+      "evaluated": 60,
+      "top_fitness": 3.7982535476895807,
+      "top_validation_sharpe": 3.1002519552568613,
+      "top_holdout_sharpe": 7.578957943453714,
+      "top_full_cagr": 2.5934026659865093,
+      "top_full_mdd": -0.20435906425410633,
+      "median_top10_validation_sharpe": 2.2073656365482988,
+      "median_top10_holdout_sharpe": 7.447493081157532,
+      "median_top10_novelty": 1.0,
+      "median_top10_turnover": 0.7210240963855421,
+      "top_candidates": [
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0031",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "tech_gap_up",
+            "l1_diTrend",
+            "l1_bosBullish"
+          ],
+          "weights": [
+            0.34063,
+            0.328365,
+            0.331005
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.7791566265060241,
+          "fitness": 3.7982535476895807,
+          "deflated_sharpe_proxy": 2.916680963120055,
+          "deflated_sharpe": {
+            "probability": 0.670032189137485,
+            "z_score": 0.44000205116504904,
+            "minimum_annualized_sharpe": 2.6105030048873417,
+            "daily_sharpe": 0.1952975160774143,
+            "skew": -0.7717294173391904,
+            "kurtosis": 5.092614383790332
+          },
+          "fold_sharpes": [
+            4.737321058244369,
+            1.343811061852992,
+            2.972539983803944,
+            5.591884605215648,
+            1.323413879186228,
+            2.700226886384665,
+            4.57706462168842,
+            7.2210521206406275
+          ],
+          "train": {
+            "cagr": 1.6365275633145457,
+            "sharpe": 3.356102539343239,
+            "max_drawdown": -0.18976135018436502,
+            "positive_day_ratio": 0.5925155925155925
+          },
+          "validation": {
+            "cagr": 1.5012679430154434,
+            "sharpe": 3.1002519552568613,
+            "max_drawdown": -0.2043590642541061,
+            "positive_day_ratio": 0.6255144032921811
+          },
+          "holdout": {
+            "cagr": 32.606164344497444,
+            "sharpe": 7.578957943453714,
+            "max_drawdown": -0.15943601399652352,
+            "positive_day_ratio": 0.7075471698113207
+          },
+          "full": {
+            "cagr": 2.5934026659865093,
+            "sharpe": 3.9575184342882954,
+            "max_drawdown": -0.20435906425410633,
+            "positive_day_ratio": 0.6168674698795181
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0044",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "tech_trix_12",
+            "tech_bbi",
+            "tech_kd9_k",
+            "tech_gap_up"
+          ],
+          "weights": [
+            0.07722,
+            0.224303,
+            0.38105,
+            0.317427
+          ],
+          "combine": "weighted_sum",
+          "complexity": 4,
+          "novelty": 1.0,
+          "turnover": 0.7873493975903615,
+          "fitness": 3.690670676611308,
+          "deflated_sharpe_proxy": 1.8021842229849323,
+          "deflated_sharpe": {
+            "probability": 0.30947988532615706,
+            "z_score": -0.49732516201892335,
+            "minimum_annualized_sharpe": 2.5201487941251317,
+            "daily_sharpe": 0.12509082056813542,
+            "skew": -0.7480302519051295,
+            "kurtosis": 4.894873050888517
+          },
+          "fold_sharpes": [
+            4.667107410458724,
+            0.6976976736591198,
+            2.330829503067799,
+            5.4767452522243465,
+            1.168964957626938,
+            0.7795135152311314,
+            4.0970974603581745,
+            8.756004560939374
+          ],
+          "train": {
+            "cagr": 1.3352017080033907,
+            "sharpe": 2.9699732553718685,
+            "max_drawdown": -0.19998514081234398,
+            "positive_day_ratio": 0.5738045738045738
+          },
+          "validation": {
+            "cagr": 0.6944789293611087,
+            "sharpe": 1.9857552151217386,
+            "max_drawdown": -0.22250616973550297,
+            "positive_day_ratio": 0.5555555555555556
+          },
+          "holdout": {
+            "cagr": 73.29857846461647,
+            "sharpe": 9.126466020843322,
+            "max_drawdown": -0.09591612313363929,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 2.307122735034542,
+            "sharpe": 3.729613347020298,
+            "max_drawdown": -0.22250616973550297,
+            "positive_day_ratio": 0.5831325301204819
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0001",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "tech_gap_up",
+            "l1_diTrend",
+            "l1_bosBullish"
+          ],
+          "weights": [
+            0.433105,
+            0.415071,
+            0.151824
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.8293975903614459,
+          "fitness": 3.56673145719447,
+          "deflated_sharpe_proxy": 2.1308124698492374,
+          "deflated_sharpe": {
+            "probability": 0.40914705584256517,
+            "z_score": -0.22973961257923323,
+            "minimum_annualized_sharpe": 2.5657098188855456,
+            "daily_sharpe": 0.14579245425847095,
+            "skew": -0.8505278213255416,
+            "kurtosis": 5.7539221899316955
+          },
+          "fold_sharpes": [
+            4.1668912425067886,
+            0.1666220595089658,
+            2.2207637998463494,
+            5.146515651601591,
+            1.2363653595498532,
+            1.3823296325270562,
+            4.16615796207129,
+            7.830640568326844
+          ],
+          "train": {
+            "cagr": 1.1455074213433285,
+            "sharpe": 2.762071793692223,
+            "max_drawdown": -0.21445580551734433,
+            "positive_day_ratio": 0.5717255717255717
+          },
+          "validation": {
+            "cagr": 0.9324804974830836,
+            "sharpe": 2.3143834619860435,
+            "max_drawdown": -0.2127455300947384,
+            "positive_day_ratio": 0.6090534979423868
+          },
+          "holdout": {
+            "cagr": 40.23208054133038,
+            "sharpe": 8.141583430284744,
+            "max_drawdown": -0.1277562969457804,
+            "positive_day_ratio": 0.7264150943396226
+          },
+          "full": {
+            "cagr": 2.0351274221507083,
+            "sharpe": 3.5250096739811916,
+            "max_drawdown": -0.21445580551734433,
+            "positive_day_ratio": 0.6024096385542169
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0020",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "tech_trix_12",
+            "tech_bbi"
+          ],
+          "weights": [
+            0.2561,
+            0.7439
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.34807228915662647,
+          "fitness": 3.336705108469095,
+          "deflated_sharpe_proxy": 2.7141525435668066,
+          "deflated_sharpe": {
+            "probability": 0.6408543913745355,
+            "z_score": 0.3607434808694939,
+            "minimum_annualized_sharpe": 2.5114325100140933,
+            "daily_sharpe": 0.1825394248497751,
+            "skew": -0.3732357451078644,
+            "kurtosis": 4.9640622126384715
+          },
+          "fold_sharpes": [
+            3.6274568083543652,
+            -0.4265721551218292,
+            2.555032478632742,
+            2.4488322517303645,
+            0.6531124766726628,
+            2.142996949956093,
+            4.769374066539089,
+            6.013966863254217
+          ],
+          "train": {
+            "cagr": 0.8991363118631552,
+            "sharpe": 1.8861152111438402,
+            "max_drawdown": -0.2766072982617058,
+            "positive_day_ratio": 0.5446985446985447
+          },
+          "validation": {
+            "cagr": 1.5920822686361493,
+            "sharpe": 2.8977235357036126,
+            "max_drawdown": -0.23833731514000356,
+            "positive_day_ratio": 0.5925925925925926
+          },
+          "holdout": {
+            "cagr": 16.685643572784883,
+            "sharpe": 6.09330250558874,
+            "max_drawdown": -0.20932013393820403,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 1.7660971642102203,
+            "sharpe": 2.8067008230665746,
+            "max_drawdown": -0.2766072982617058,
+            "positive_day_ratio": 0.5771084337349398
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0017",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "l1_bestOrderBlockStrength",
+            "l1_revenueGrowthYoY",
+            "tech_ema_12_pos",
+            "tech_donchian_pos_20",
+            "tech_sma_20_pos"
+          ],
+          "weights": [
+            0.176744,
+            0.101869,
+            0.186784,
+            0.259503,
+            0.2751
+          ],
+          "combine": "weighted_sum",
+          "complexity": 5,
+          "novelty": 1.0,
+          "turnover": 0.6856626506024095,
+          "fitness": 3.2980684535047065,
+          "deflated_sharpe_proxy": 2.175253255220016,
+          "deflated_sharpe": {
+            "probability": 0.44196798166963974,
+            "z_score": -0.1459815373512773,
+            "minimum_annualized_sharpe": 2.515390426066321,
+            "daily_sharpe": 0.14859196059560137,
+            "skew": -0.5670749437694829,
+            "kurtosis": 4.688877872633602
+          },
+          "fold_sharpes": [
+            5.253631609970291,
+            0.441913152430772,
+            5.865499584421617,
+            3.59210411723189,
+            -0.5948200125944147,
+            0.8353755986500108,
+            5.613822926298657,
+            7.1213092676671605
+          ],
+          "train": {
+            "cagr": 1.6119062635120418,
+            "sharpe": 3.2534384109912073,
+            "max_drawdown": -0.2665342909897912,
+            "positive_day_ratio": 0.577962577962578
+          },
+          "validation": {
+            "cagr": 1.0477772092828004,
+            "sharpe": 2.358824247356822,
+            "max_drawdown": -0.3623120017780954,
+            "positive_day_ratio": 0.6049382716049383
+          },
+          "holdout": {
+            "cagr": 27.99350956943661,
+            "sharpe": 7.316028218861351,
+            "max_drawdown": -0.13592980261608378,
+            "positive_day_ratio": 0.7452830188679245
+          },
+          "full": {
+            "cagr": 2.3076587643255007,
+            "sharpe": 3.6420104174283936,
+            "max_drawdown": -0.36873908675875644,
+            "positive_day_ratio": 0.6072289156626506
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0009",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "l1_bestOrderBlockStrength",
+            "l1_bbBandwidthPct",
+            "l1_squeezeMomentum"
+          ],
+          "weights": [
+            0.443054,
+            0.497314,
+            0.059632
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.6730120481927709,
+          "fitness": 3.1240240176369665,
+          "deflated_sharpe_proxy": 2.2364051619814598,
+          "deflated_sharpe": {
+            "probability": 0.48359692912711394,
+            "z_score": -0.041127993047121204,
+            "minimum_annualized_sharpe": 2.4631704702217503,
+            "daily_sharpe": 0.15244416863103447,
+            "skew": -0.20580898939455772,
+            "kurtosis": 5.7957295557703
+          },
+          "fold_sharpes": [
+            5.118551883669439,
+            1.4410420564806867,
+            4.984737396803212,
+            3.273994298985439,
+            -1.3331111055689937,
+            1.729729432363402,
+            4.721155107710787,
+            6.891988794631828
+          ],
+          "train": {
+            "cagr": 1.66898828210672,
+            "sharpe": 2.886023993651168,
+            "max_drawdown": -0.278484680155893,
+            "positive_day_ratio": 0.5862785862785863
+          },
+          "validation": {
+            "cagr": 1.2165453949946357,
+            "sharpe": 2.419976154118266,
+            "max_drawdown": -0.2916261002149614,
+            "positive_day_ratio": 0.5637860082304527
+          },
+          "holdout": {
+            "cagr": 27.80249050580582,
+            "sharpe": 7.077972849343497,
+            "max_drawdown": -0.1274893007962914,
+            "positive_day_ratio": 0.660377358490566
+          },
+          "full": {
+            "cagr": 2.4250330136327274,
+            "sharpe": 3.4015716515848604,
+            "max_drawdown": -0.45288314452630685,
+            "positive_day_ratio": 0.5891566265060241
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0045",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "mom_close_to_52w_high",
+            "l1_smcNetScore"
+          ],
+          "weights": [
+            0.560134,
+            0.439866
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.7563855421686746,
+          "fitness": 2.9102891571059737,
+          "deflated_sharpe_proxy": 0.46662434829786825,
+          "deflated_sharpe": {
+            "probability": 0.043033565156561336,
+            "z_score": -1.7165187986145454,
+            "minimum_annualized_sharpe": 2.425066487886244,
+            "daily_sharpe": 0.0409584565334078,
+            "skew": -0.5940652994603132,
+            "kurtosis": 6.690117507387551
+          },
+          "fold_sharpes": [
+            3.620619092758331,
+            2.1599732300388315,
+            6.912375402540171,
+            3.196049394724553,
+            -1.9887109619756778,
+            -0.28920918867730544,
+            3.11579558469315,
+            9.12441114791525
+          ],
+          "train": {
+            "cagr": 1.5190759987767577,
+            "sharpe": 3.1046031793215905,
+            "max_drawdown": -0.31976785424078036,
+            "positive_day_ratio": 0.5738045738045738
+          },
+          "validation": {
+            "cagr": 0.1610194628593229,
+            "sharpe": 0.6501953404346744,
+            "max_drawdown": -0.27513643160969736,
+            "positive_day_ratio": 0.5473251028806584
+          },
+          "holdout": {
+            "cagr": 84.8935287271495,
+            "sharpe": 9.409642215830253,
+            "max_drawdown": -0.11200060364576125,
+            "positive_day_ratio": 0.7169811320754716
+          },
+          "full": {
+            "cagr": 2.1513556415544604,
+            "sharpe": 3.478380954876811,
+            "max_drawdown": -0.47950503234002406,
+            "positive_day_ratio": 0.5843373493975904
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0033",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "mom_close_to_52w_high",
+            "l1_smcNetScore"
+          ],
+          "weights": [
+            0.56151,
+            0.43849
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.7565060240963857,
+          "fitness": 2.9050520965811346,
+          "deflated_sharpe_proxy": 0.4563822668939589,
+          "deflated_sharpe": {
+            "probability": 0.0421322137702979,
+            "z_score": -1.7264614574599038,
+            "minimum_annualized_sharpe": 2.425212670789235,
+            "daily_sharpe": 0.04031326605001676,
+            "skew": -0.6086994775321112,
+            "kurtosis": 6.669713262849992
+          },
+          "fold_sharpes": [
+            3.603813113145334,
+            2.1599732300388315,
+            6.912375402540171,
+            3.196049394724553,
+            -1.9916408630294284,
+            -0.28310491720222,
+            3.064612540093101,
+            9.12441114791525
+          ],
+          "train": {
+            "cagr": 1.5145761291621462,
+            "sharpe": 3.0987512861655016,
+            "max_drawdown": -0.31976785424078,
+            "positive_day_ratio": 0.5738045738045738
+          },
+          "validation": {
+            "cagr": 0.15782768298093308,
+            "sharpe": 0.639953259030765,
+            "max_drawdown": -0.274343599569169,
+            "positive_day_ratio": 0.5473251028806584
+          },
+          "holdout": {
+            "cagr": 84.8935287271495,
+            "sharpe": 9.409642215830253,
+            "max_drawdown": -0.11200060364576125,
+            "positive_day_ratio": 0.7169811320754716
+          },
+          "full": {
+            "cagr": 2.145555873757432,
+            "sharpe": 3.470785068598123,
+            "max_drawdown": -0.4797424567880162,
+            "positive_day_ratio": 0.5843373493975904
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0055",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "tech_trix_12",
+            "tech_donchian_pos_20"
+          ],
+          "weights": [
+            0.717594,
+            0.282406
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.393132530120482,
+          "fitness": 2.879082871103271,
+          "deflated_sharpe_proxy": 1.6659072144901574,
+          "deflated_sharpe": {
+            "probability": 0.2802411546888206,
+            "z_score": -0.5821252634908661,
+            "minimum_annualized_sharpe": 2.4600841473536224,
+            "daily_sharpe": 0.11650617595163516,
+            "skew": -0.36455599467217703,
+            "kurtosis": 5.158296518260218
+          },
+          "fold_sharpes": [
+            3.0364694858873134,
+            0.558059838175724,
+            3.7419440650930715,
+            2.114800511174331,
+            -0.05514855484720707,
+            2.351464820277451,
+            2.230464909645776,
+            6.340920500124819
+          ],
+          "train": {
+            "cagr": 0.9610090053935567,
+            "sharpe": 2.029034175118248,
+            "max_drawdown": -0.259988265988754,
+            "positive_day_ratio": 0.5571725571725572
+          },
+          "validation": {
+            "cagr": 0.7797521199064124,
+            "sharpe": 1.8494782066269637,
+            "max_drawdown": -0.25863140777587945,
+            "positive_day_ratio": 0.5761316872427984
+          },
+          "holdout": {
+            "cagr": 22.392894659276372,
+            "sharpe": 6.449751827993568,
+            "max_drawdown": -0.1049486444163007,
+            "positive_day_ratio": 0.7075471698113207
+          },
+          "full": {
+            "cagr": 1.6160262813090616,
+            "sharpe": 2.6930648769790753,
+            "max_drawdown": -0.3659978071776716,
+            "positive_day_ratio": 0.5819277108433735
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0014",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "tech_trix_12",
+            "tech_bbi",
+            "l1_liquiditySweepBullish"
+          ],
+          "weights": [
+            0.14504,
+            0.41142,
+            0.44354
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.4249397590361446,
+          "fitness": 2.8619183847957474,
+          "deflated_sharpe_proxy": 1.9167768189737473,
+          "deflated_sharpe": {
+            "probability": 0.3665072358086407,
+            "z_score": -0.3411183711411244,
+            "minimum_annualized_sharpe": 2.457827261549282,
+            "daily_sharpe": 0.13230947559374737,
+            "skew": -0.26660248900975425,
+            "kurtosis": 5.4264445952619464
+          },
+          "fold_sharpes": [
+            3.167194523566642,
+            -1.0118251655276207,
+            1.7468364700836108,
+            2.2902070823242773,
+            -0.3668230481631465,
+            1.3640916964973946,
+            4.1435579297291065,
+            6.16112151935092
+          ],
+          "train": {
+            "cagr": 0.5470392135795574,
+            "sharpe": 1.3796852354466624,
+            "max_drawdown": -0.38626591755672524,
+            "positive_day_ratio": 0.525987525987526
+          },
+          "validation": {
+            "cagr": 0.9320669731354705,
+            "sharpe": 2.1003478111105536,
+            "max_drawdown": -0.2515631364176746,
+            "positive_day_ratio": 0.5720164609053497
+          },
+          "holdout": {
+            "cagr": 15.374778839159479,
+            "sharpe": 6.17412377666805,
+            "max_drawdown": -0.19804990792742283,
+            "positive_day_ratio": 0.6981132075471698
+          },
+          "full": {
+            "cagr": 1.2316281630313317,
+            "sharpe": 2.31900879086339,
+            "max_drawdown": -0.38626591755672524,
+            "positive_day_ratio": 0.5614457831325301
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        }
+      ],
+      "pbo": {
+        "candidate_count": 60,
+        "usable_candidate_count": 60,
+        "pbo": 0.0,
+        "median_logit": 2.4208990849450425,
+        "split_count": 70,
+        "fold_count": 8,
+        "method": "cscv_fold_sharpe_rank_logit"
+      }
+    },
+    "random": {
+      "evaluated": 20,
+      "top_fitness": 5.27045440156206,
+      "top_validation_sharpe": 4.139315544573172,
+      "top_holdout_sharpe": 10.683728837450968,
+      "top_full_cagr": 7.817030130610592,
+      "top_full_mdd": -0.27484187212949196,
+      "median_top10_validation_sharpe": 0.09668804547398077,
+      "median_top10_holdout_sharpe": 3.417925548897408,
+      "median_top10_novelty": 1.0,
+      "median_top10_turnover": 0.322710843373494,
+      "top_candidates": [
+        {
+          "candidate_id": "random_0001",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "tech_sma_20_pos",
+            "tech_donchian_pos_20"
+          ],
+          "weights": [
+            0.362708,
+            0.637292
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.704698795180723,
+          "fitness": 5.27045440156206,
+          "deflated_sharpe_proxy": 3.9822925121729917,
+          "deflated_sharpe": {
+            "probability": 0.9746648411063993,
+            "z_score": 1.9542613450325743,
+            "minimum_annualized_sharpe": 2.040906000404594,
+            "daily_sharpe": 0.26075236973725024,
+            "skew": -0.17816246111560924,
+            "kurtosis": 4.574186255881384
+          },
+          "fold_sharpes": [
+            7.098235306604144,
+            2.7489290333378404,
+            7.882647093501051,
+            6.011017477833504,
+            3.464341044393526,
+            1.2839018645501268,
+            8.014989998398143,
+            10.427587403247243
+          ],
+          "train": {
+            "cagr": 5.927059379165192,
+            "sharpe": 5.5980837827822745,
+            "max_drawdown": -0.24759972074057235,
+            "positive_day_ratio": 0.6340956340956341
+          },
+          "validation": {
+            "cagr": 2.786480482728437,
+            "sharpe": 4.139315544573172,
+            "max_drawdown": -0.2748418721294922,
+            "positive_day_ratio": 0.6049382716049383
+          },
+          "holdout": {
+            "cagr": 181.93007993587423,
+            "sharpe": 10.683728837450968,
+            "max_drawdown": -0.08972471723696418,
+            "positive_day_ratio": 0.7924528301886793
+          },
+          "full": {
+            "cagr": 7.817030130610592,
+            "sharpe": 5.910296973153778,
+            "max_drawdown": -0.27484187212949196,
+            "positive_day_ratio": 0.6457831325301204
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0003",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "tech_gap_down",
+            "tech_sma_20_pos",
+            "mom_close_to_52w_high"
+          ],
+          "weights": [
+            0.485075,
+            0.031889,
+            0.483037
+          ],
+          "combine": "max",
+          "complexity": 3,
+          "novelty": 0.9166666666666666,
+          "turnover": 0.6212048192771085,
+          "fitness": 3.4099016085970444,
+          "deflated_sharpe_proxy": 1.3412735604917547,
+          "deflated_sharpe": {
+            "probability": 0.31892915370804986,
+            "z_score": -0.47069534733977536,
+            "minimum_annualized_sharpe": 1.9914679350988438,
+            "daily_sharpe": 0.09438381369065348,
+            "skew": -0.4436183834635704,
+            "kurtosis": 6.544586204883247
+          },
+          "fold_sharpes": [
+            2.6584944329570157,
+            1.757819209910418,
+            7.7649184061807395,
+            3.2887039841117294,
+            -1.6986316818148706,
+            -0.09834416483280675,
+            3.9873327525168976,
+            8.612190472823247
+          ],
+          "train": {
+            "cagr": 1.2008742135506725,
+            "sharpe": 3.04294161376246,
+            "max_drawdown": -0.30385710127833676,
+            "positive_day_ratio": 0.553014553014553
+          },
+          "validation": {
+            "cagr": 0.40761821578960045,
+            "sharpe": 1.498296592891935,
+            "max_drawdown": -0.14128765674625354,
+            "positive_day_ratio": 0.5473251028806584
+          },
+          "holdout": {
+            "cagr": 53.35677643405645,
+            "sharpe": 8.909038018500326,
+            "max_drawdown": -0.09728134523876353,
+            "positive_day_ratio": 0.7264150943396226
+          },
+          "full": {
+            "cagr": 1.9081909201008158,
+            "sharpe": 3.643076085862961,
+            "max_drawdown": -0.36109204781619486,
+            "positive_day_ratio": 0.5734939759036145
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0007",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "vol_signal_5d",
+            "l1_closeAboveMa60Pct",
+            "l1_brokerCount"
+          ],
+          "weights": [
+            0.276804,
+            0.320316,
+            0.40288
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.2471084337349398,
+          "fitness": 1.8434124730119898,
+          "deflated_sharpe_proxy": 1.5904988085208605,
+          "deflated_sharpe": {
+            "probability": 0.40924206277562897,
+            "z_score": -0.22949510398226206,
+            "minimum_annualized_sharpe": 1.987495885678793,
+            "daily_sharpe": 0.11008352861263929,
+            "skew": -0.3676997149383518,
+            "kurtosis": 4.148860073655319
+          },
+          "fold_sharpes": [
+            3.242383306084312,
+            -0.033110110357069567,
+            0.9443589580789109,
+            2.67419591100413,
+            -0.46871051969522415,
+            1.7509294339508947,
+            2.686993221751225,
+            2.8747803584416625
+          ],
+          "train": {
+            "cagr": 0.5756070966866633,
+            "sharpe": 1.4490290488894244,
+            "max_drawdown": -0.2882737033800171,
+            "positive_day_ratio": 0.5343035343035343
+          },
+          "validation": {
+            "cagr": 0.7910843931526879,
+            "sharpe": 1.7475218409210407,
+            "max_drawdown": -0.2567526323260183,
+            "positive_day_ratio": 0.5637860082304527
+          },
+          "holdout": {
+            "cagr": 2.3406462229326217,
+            "sharpe": 2.9518625062047574,
+            "max_drawdown": -0.29841855629896563,
+            "positive_day_ratio": 0.5754716981132075
+          },
+          "full": {
+            "cagr": 0.8006468110063796,
+            "sharpe": 1.7575714951031687,
+            "max_drawdown": -0.33864785012881216,
+            "positive_day_ratio": 0.5481927710843374
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0017",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "l1_liquiditySweepBullish",
+            "mom_ma50_200_ratio",
+            "tech_ema_12_pos",
+            "l1_roe"
+          ],
+          "weights": [
+            0.183387,
+            0.365452,
+            0.337068,
+            0.114093
+          ],
+          "combine": "weighted_sum",
+          "complexity": 4,
+          "novelty": 1.0,
+          "turnover": 0.3057831325301205,
+          "fitness": 1.1716062375743976,
+          "deflated_sharpe_proxy": 0.41264428608111414,
+          "deflated_sharpe": {
+            "probability": 0.08915190930833894,
+            "z_score": -1.3459959627058726,
+            "minimum_annualized_sharpe": 1.9519520476591081,
+            "daily_sharpe": 0.03588566797006035,
+            "skew": -0.31854791765345364,
+            "kurtosis": 5.241465586289143
+          },
+          "fold_sharpes": [
+            3.3373465482595046,
+            0.3130171359102067,
+            2.2715282531969225,
+            0.3581350930525143,
+            -0.9446199840353282,
+            0.03621224310105846,
+            2.8223022952355135,
+            3.4827417168375763
+          ],
+          "train": {
+            "cagr": 0.4714867526097051,
+            "sharpe": 1.3049763996697958,
+            "max_drawdown": -0.3087387994778592,
+            "positive_day_ratio": 0.525987525987526
+          },
+          "validation": {
+            "cagr": 0.1415884730642456,
+            "sharpe": 0.5696673184812945,
+            "max_drawdown": -0.3614088668536467,
+            "positive_day_ratio": 0.5473251028806584
+          },
+          "holdout": {
+            "cagr": 4.202089525308937,
+            "sharpe": 3.703183010399057,
+            "max_drawdown": -0.15244971613914604,
+            "positive_day_ratio": 0.6415094339622641
+          },
+          "full": {
+            "cagr": 0.6051612046102022,
+            "sharpe": 1.5005138414270196,
+            "max_drawdown": -0.49767656187931275,
+            "positive_day_ratio": 0.5469879518072289
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0013",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "mom_12m_1m",
+            "l1_monthlyRevenueYoY",
+            "l1_volumeMomentumDivergence132710"
+          ],
+          "weights": [
+            0.36451,
+            0.270052,
+            0.365438
+          ],
+          "combine": "max",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.15530120481927712,
+          "fitness": 0.9182131118001261,
+          "deflated_sharpe_proxy": -0.27135338570567213,
+          "deflated_sharpe": {
+            "probability": 0.022057396765947684,
+            "z_score": -2.012998439403204,
+            "minimum_annualized_sharpe": 1.9352361453756584,
+            "daily_sharpe": -0.007202135289344829,
+            "skew": -0.6333847886376517,
+            "kurtosis": 7.65323195882439
+          },
+          "fold_sharpes": [
+            1.6743807924492482,
+            -2.0114903483529427,
+            1.6140797748103715,
+            -0.14617054448698583,
+            0.09509465035009583,
+            -1.713795806381559,
+            3.37173486753925,
+            2.92859105836185
+          ],
+          "train": {
+            "cagr": 0.06439585290817362,
+            "sharpe": 0.36913547178258893,
+            "max_drawdown": -0.2952790946155046,
+            "positive_day_ratio": 0.5093555093555093
+          },
+          "validation": {
+            "cagr": -0.0903339868919063,
+            "sharpe": -0.11433035330549181,
+            "max_drawdown": -0.36963346413692866,
+            "positive_day_ratio": 0.5349794238683128
+          },
+          "holdout": {
+            "cagr": 3.8702135021391024,
+            "sharpe": 3.264004576313724,
+            "max_drawdown": -0.21921784397611344,
+            "positive_day_ratio": 0.5660377358490566
+          },
+          "full": {
+            "cagr": 0.23445693398909673,
+            "sharpe": 0.8017017364828771,
+            "max_drawdown": -0.41835093963925574,
+            "positive_day_ratio": 0.5240963855421686
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0019",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "tech_bbi",
+            "l1_roe",
+            "tech_mtm_10"
+          ],
+          "weights": [
+            0.340813,
+            0.330263,
+            0.328924
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.3396385542168675,
+          "fitness": 0.750139432689377,
+          "deflated_sharpe_proxy": 0.15068341185327302,
+          "deflated_sharpe": {
+            "probability": 0.054711533913527996,
+            "z_score": -1.600791676223765,
+            "minimum_annualized_sharpe": 1.9500778519113056,
+            "daily_sharpe": 0.01938368400729994,
+            "skew": -0.5371828069889258,
+            "kurtosis": 5.6871536258910105
+          },
+          "fold_sharpes": [
+            2.500139051978046,
+            0.38631698253186836,
+            1.6179396774818435,
+            -2.0361679130645807,
+            -2.089538203668359,
+            0.07106140361064911,
+            2.448551972800887,
+            3.2819979348328334
+          ],
+          "train": {
+            "cagr": 0.0902658953299944,
+            "sharpe": 0.44247545988279285,
+            "max_drawdown": -0.4174803450970539,
+            "positive_day_ratio": 0.5072765072765073
+          },
+          "validation": {
+            "cagr": 0.04809633635870636,
+            "sharpe": 0.30770644425345334,
+            "max_drawdown": -0.38573231908131034,
+            "positive_day_ratio": 0.49794238683127573
+          },
+          "holdout": {
+            "cagr": 2.932448963459385,
+            "sharpe": 3.441639479475114,
+            "max_drawdown": -0.16833889822603976,
+            "positive_day_ratio": 0.6132075471698113
+          },
+          "full": {
+            "cagr": 0.2696047175260352,
+            "sharpe": 0.9152924468341763,
+            "max_drawdown": -0.6126150532008505,
+            "positive_day_ratio": 0.5180722891566265
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0006",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "tech_obv",
+            "mom_ma50_200_ratio"
+          ],
+          "weights": [
+            0.568119,
+            0.431881
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.15012048192771088,
+          "fitness": 0.2626280399407096,
+          "deflated_sharpe_proxy": -0.445350438378736,
+          "deflated_sharpe": {
+            "probability": 0.014455706659545738,
+            "z_score": -2.1846923249046735,
+            "minimum_annualized_sharpe": 1.9297758742899092,
+            "daily_sharpe": -0.018162919342467054,
+            "skew": -0.5754225871471054,
+            "kurtosis": 5.438863046064847
+          },
+          "fold_sharpes": [
+            3.6901002363664595,
+            -0.2845523228904352,
+            0.7662898535371448,
+            -1.2723239329965832,
+            -2.0378309234585297,
+            -1.3724398812546617,
+            2.334423430444663,
+            2.4290640813550035
+          ],
+          "train": {
+            "cagr": 0.04895958924467014,
+            "sharpe": 0.31254179124424053,
+            "max_drawdown": -0.4309277647351215,
+            "positive_day_ratio": 0.5051975051975052
+          },
+          "validation": {
+            "cagr": -0.16818869071538634,
+            "sharpe": -0.2883274059785557,
+            "max_drawdown": -0.40420352496839085,
+            "positive_day_ratio": 0.522633744855967
+          },
+          "holdout": {
+            "cagr": 2.8571809759511253,
+            "sharpe": 2.7489029103319313,
+            "max_drawdown": -0.17541170679040896,
+            "positive_day_ratio": 0.6320754716981132
+          },
+          "full": {
+            "cagr": 0.15741389903345193,
+            "sharpe": 0.5712564264853862,
+            "max_drawdown": -0.637047316279143,
+            "positive_day_ratio": 0.5265060240963856
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0014",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "tech_bbands_pctb_20",
+            "l1_squeezeMomentum",
+            "l1_monthlyRevenueYoY",
+            "tech_locked_open_down_10",
+            "tech_limit_down_count_10"
+          ],
+          "weights": [
+            0.073497,
+            0.050655,
+            0.083272,
+            0.353352,
+            0.439223
+          ],
+          "combine": "max",
+          "complexity": 5,
+          "novelty": 1.0,
+          "turnover": 0.005783132530120482,
+          "fitness": -0.2181784029815198,
+          "deflated_sharpe_proxy": -0.7713183572206884,
+          "deflated_sharpe": {
+            "probability": 0.005690143142527952,
+            "z_score": -2.5307995550478006,
+            "minimum_annualized_sharpe": 1.8530575571785768,
+            "daily_sharpe": -0.0386969681196359,
+            "skew": -2.5995732136959853,
+            "kurtosis": 36.704992494504175
+          },
+          "fold_sharpes": [
+            4.503262696996484,
+            -1.5267104218542988,
+            1.7419497478938417,
+            -0.16880884333062363,
+            -0.9413270497716802,
+            -1.0369020353264253,
+            -0.9677274901158937,
+            -0.06019768259795543
+          ],
+          "train": {
+            "cagr": 0.0629548783170506,
+            "sharpe": 0.6312524006781002,
+            "max_drawdown": -0.12880764742222894,
+            "positive_day_ratio": 0.5343035343035343
+          },
+          "validation": {
+            "cagr": -0.09984235525313667,
+            "sharpe": -0.6142953248205081,
+            "max_drawdown": -0.1409637686752302,
+            "positive_day_ratio": 0.4567901234567901
+          },
+          "holdout": {
+            "cagr": -0.026992233703175605,
+            "sharpe": -0.19626802261381074,
+            "max_drawdown": -0.08431773788984898,
+            "positive_day_ratio": 0.5094339622641509
+          },
+          "full": {
+            "cagr": 0.001091896133955439,
+            "sharpe": 0.07038478744336374,
+            "max_drawdown": -0.25848376690167274,
+            "positive_day_ratio": 0.5084337349397591
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0004",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "mom_close_to_52w_high",
+            "l1_revenueGrowthYoY",
+            "l1_smcNetScore",
+            "size_log_mktcap"
+          ],
+          "weights": [
+            0.109893,
+            0.310401,
+            0.295276,
+            0.28443
+          ],
+          "combine": "weighted_sum",
+          "complexity": 4,
+          "novelty": 0.9583333333333334,
+          "turnover": 0.6756626506024096,
+          "fitness": -0.4589660571481618,
+          "deflated_sharpe_proxy": -2.1627615897425168,
+          "deflated_sharpe": {
+            "probability": 4.564350199211572e-05,
+            "z_score": -3.9126547449879805,
+            "minimum_annualized_sharpe": 1.8948429628787706,
+            "daily_sharpe": -0.12634965280336397,
+            "skew": -0.7057497478786231,
+            "kurtosis": 11.917244332694683
+          },
+          "fold_sharpes": [
+            1.962640701727682,
+            0.901603658874622,
+            2.498288159183523,
+            0.6218061156949443,
+            -4.701929194621957,
+            -3.5771520869774873,
+            0.4976952398252915,
+            3.559741601704576
+          ],
+          "train": {
+            "cagr": 0.1332047045090583,
+            "sharpe": 0.6379273002640252,
+            "max_drawdown": -0.3565808492041582,
+            "positive_day_ratio": 0.5072765072765073
+          },
+          "validation": {
+            "cagr": -0.41879892069737057,
+            "sharpe": -2.0057385573423363,
+            "max_drawdown": -0.4789716499706277,
+            "positive_day_ratio": 0.42386831275720166
+          },
+          "holdout": {
+            "cagr": 1.3861940433345006,
+            "sharpe": 3.4861718758362863,
+            "max_drawdown": -0.07152785515800175,
+            "positive_day_ratio": 0.5660377358490566
+          },
+          "full": {
+            "cagr": 0.02497055697090489,
+            "sharpe": 0.22415587770540762,
+            "max_drawdown": -0.6623541165382956,
+            "positive_day_ratio": 0.4903614457831325
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "random_0005",
+          "algorithm": "random",
+          "status": "ok",
+          "factor_ids": [
+            "vola_realized_12m",
+            "tech_gap_up"
+          ],
+          "weights": [
+            0.364265,
+            0.635735
+          ],
+          "combine": "max",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.9116867469879518,
+          "fitness": -0.5243250853423813,
+          "deflated_sharpe_proxy": -2.641723306688435,
+          "deflated_sharpe": {
+            "probability": 3.853417671352515e-06,
+            "z_score": -4.473170289101377,
+            "minimum_annualized_sharpe": 1.83586344415058,
+            "daily_sharpe": -0.1565214049595404,
+            "skew": -0.9883032476340841,
+            "kurtosis": 9.261815466918407
+          },
+          "fold_sharpes": [
+            0.30201733217534366,
+            -2.464483308312758,
+            -0.7246802815077319,
+            3.5009890994228083,
+            -3.270062614209847,
+            -3.5349950361098497,
+            -0.3642500575571257,
+            3.2208869133980325
+          ],
+          "train": {
+            "cagr": -0.07266718237943215,
+            "sharpe": -0.24922701223112803,
+            "max_drawdown": -0.38545672977681644,
+            "positive_day_ratio": 0.4781704781704782
+          },
+          "validation": {
+            "cagr": -0.4353835475404929,
+            "sharpe": -2.4847002742882545,
+            "max_drawdown": -0.46549134475311804,
+            "positive_day_ratio": 0.4444444444444444
+          },
+          "holdout": {
+            "cagr": 2.2893218342745976,
+            "sharpe": 3.3942116183197015,
+            "max_drawdown": -0.15325601324617832,
+            "positive_day_ratio": 0.5849056603773585
+          },
+          "full": {
+            "cagr": -0.05730075997155892,
+            "sharpe": -0.12102519753891411,
+            "max_drawdown": -0.574934930876513,
+            "positive_day_ratio": 0.4819277108433735
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        }
+      ],
+      "pbo": {
+        "candidate_count": 20,
+        "usable_candidate_count": 20,
+        "pbo": 0.0,
+        "median_logit": 3.7135720667043066,
+        "split_count": 70,
+        "fold_count": 8,
+        "method": "cscv_fold_sharpe_rank_logit"
+      }
+    }
+  },
+  "factor_universe": {
+    "alphabuilderstw_input_count": 63,
+    "l1_non_alpha_leaf_count": 40,
+    "mapped_factor_count": 95,
+    "missing": [
+      "l1:price"
+    ],
+    "semantic_duplicates": {
+      "adx14": "tech_adx_14",
+      "atr14": "tech_atr_14",
+      "bbPctB": "tech_bbands_pctb_20",
+      "closeAboveMa20Pct": "tech_sma_20_pos",
+      "pb": "val_bp",
+      "pe": "val_ep",
+      "rsi14": "mom_rsi_14"
+    },
+    "factor_ids": [
+      "l1_bbBandwidthPct",
+      "l1_bestFvgStrength",
+      "l1_bestOrderBlockStrength",
+      "l1_bosBullish",
+      "l1_brokerConcentration",
+      "l1_brokerCount",
+      "l1_brokerNetAmount5d",
+      "l1_chochBullish",
+      "l1_closeAboveMa60Pct",
+      "l1_dealerNet5d",
+      "l1_diTrend",
+      "l1_displacementPct",
+      "l1_eps",
+      "l1_foreignTrustNet5d",
+      "l1_liquiditySweepBullish",
+      "l1_macdHist",
+      "l1_monthlyRevenueMoM",
+      "l1_monthlyRevenueYoY",
+      "l1_return20d",
+      "l1_revenueGrowthYoY",
+      "l1_roe",
+      "l1_sectorFlowCore",
+      "l1_sectorRsMomentum",
+      "l1_sectorRsRatio",
+      "l1_sectorTurnoverShareDelta",
+      "l1_smcBiasBearish",
+      "l1_smcBullishScore",
+      "l1_smcNetScore",
+      "l1_squeezeMomentum",
+      "l1_squeezeRelease",
+      "l1_volumeExpansion20",
+      "l1_volumeMomentumDivergence132710",
+      "liq_amihud_21d",
+      "mom_12m_1m",
+      "mom_9m",
+      "mom_close_to_52w_high",
+      "mom_hl52",
+      "mom_ma50_200_ratio",
+      "mom_macd_trend_10",
+      "mom_reversal_1m",
+      "mom_reversal_6m",
+      "mom_rsi_14",
+      "mom_vol_adj_12m",
+      "size_log_mktcap",
+      "tech_adx_14",
+      "tech_atr_14",
+      "tech_bbands_pctb_20",
+      "tech_bbi",
+      "tech_bias_20",
+      "tech_bullish_streak_5",
+      "tech_cci_20",
+      "tech_cmo_14",
+      "tech_disposal_active",
+      "tech_dma_10_50",
+      "tech_donchian_pos_20",
+      "tech_ema_12_pos",
+      "tech_emv_14",
+      "tech_gap_down",
+      "tech_gap_up",
+      "tech_granville_score",
+      "tech_kd9_k",
+      "tech_kdj_j_9",
+      "tech_keltner_pos_20",
+      "tech_limit_down_count_10",
+      "tech_limit_up_streak_10",
+      "tech_locked_open_down_10",
+      "tech_locked_open_up_10",
+      "tech_ma_convergence",
+      "tech_mfi_14",
+      "tech_mtm_10",
+      "tech_obv",
+      "tech_psy_12",
+      "tech_roc_10",
+      "tech_sar",
+      "tech_slow_kd_14",
+      "tech_sma_20_pos",
+      "tech_tower_3",
+      "tech_trix_12",
+      "tech_volume_ratio_5",
+      "tech_vr_26",
+      "tech_williams_r_14",
+      "tech_wma_10_pos",
+      "val_bp",
+      "val_dp",
+      "val_ep",
+      "val_sp",
+      "vol_chg_turnover_1y",
+      "vol_cv_volprice_20d",
+      "vol_money_flow_5d",
+      "vol_share_turnover_21d",
+      "vol_signal_5d",
+      "vola_cv_90d",
+      "vola_min_130d",
+      "vola_realized_12m",
+      "vola_realized_1m"
+    ]
+  },
+  "runtime_seconds": 420.058
+}

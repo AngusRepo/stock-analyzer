@@ -1,0 +1,710 @@
+{
+  "json": "output\\finlab_alpha_miner_canonical114_smoke\\alpha_miner_bakeoff_canonical114_pymoo_sii_20230101_20260615_seed42.json",
+  "rows_csv": "output\\finlab_alpha_miner_canonical114_smoke\\alpha_miner_bakeoff_canonical114_pymoo_sii_20230101_20260615_seed42_rows.csv",
+  "finlab_confirm_csv": "output\\finlab_alpha_miner_canonical114_smoke\\alpha_miner_bakeoff_canonical114_pymoo_sii_20230101_20260615_seed42_finlab_confirm.csv",
+  "summary": {
+    "pymoo_nsga3_novelty": {
+      "evaluated": 4,
+      "top_fitness": -1.4854246382518668,
+      "top_validation_sharpe": -1.012702887078831,
+      "top_holdout_sharpe": -2.2743400392868716,
+      "top_full_cagr": -0.21533084914486156,
+      "top_full_mdd": -0.5654085614597334,
+      "median_top10_validation_sharpe": -1.773872856305684,
+      "median_top10_holdout_sharpe": -2.0311283971368574,
+      "median_top10_novelty": 1.0,
+      "median_top10_turnover": 0.2915060240963856,
+      "top_candidates": [
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0002",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "market_return_1d",
+            "us_vix",
+            "CNTD_5",
+            "l1_monthlyRevenueMoM"
+          ],
+          "weights": [
+            0.308879,
+            0.073312,
+            0.244207,
+            0.373601
+          ],
+          "combine": "weighted_sum",
+          "complexity": 4,
+          "novelty": 0.9166666666666667,
+          "turnover": 0.25132530120481933,
+          "fitness": -1.4854246382518668,
+          "deflated_sharpe_proxy": -1.1195196934937113,
+          "deflated_sharpe": {
+            "probability": 0.020780652048460958,
+            "z_score": -2.037886309078377,
+            "minimum_annualized_sharpe": 1.0808757252130647,
+            "daily_sharpe": -0.06379428550494555,
+            "skew": -0.050583120013781825,
+            "kurtosis": 17.46267852273189
+          },
+          "fold_sharpes": [
+            -1.9502445544850817,
+            -3.65246710234818,
+            -0.7712540984335994,
+            0.22392143389347907,
+            -1.199828385925872,
+            -0.8432520123923003,
+            -2.3795870843448066,
+            -2.2039160078202205
+          ],
+          "train": {
+            "cagr": -0.1906520099061373,
+            "sharpe": -1.5229397688159312,
+            "max_drawdown": -0.3423178877145361,
+            "positive_day_ratio": 0.446985446985447
+          },
+          "validation": {
+            "cagr": -0.2045045093536222,
+            "sharpe": -1.012702887078831,
+            "max_drawdown": -0.2545706990169405,
+            "positive_day_ratio": 0.42386831275720166
+          },
+          "holdout": {
+            "cagr": -0.3392804575720012,
+            "sharpe": -2.2743400392868716,
+            "max_drawdown": -0.20553530054542624,
+            "positive_day_ratio": 0.42452830188679247
+          },
+          "full": {
+            "cagr": -0.21533084914486156,
+            "sharpe": -1.4073380700145526,
+            "max_drawdown": -0.5654085614597334,
+            "positive_day_ratio": 0.43734939759036146
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0000",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "us_sox_return",
+            "CNTN_20",
+            "us_vix"
+          ],
+          "weights": [
+            0.155709,
+            0.467655,
+            0.376636
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.17373493975903614,
+          "fitness": -1.6124740580851509,
+          "deflated_sharpe_proxy": -1.9014965825692127,
+          "deflated_sharpe": {
+            "probability": 0.0018867001028127408,
+            "z_score": -2.896508832096436,
+            "minimum_annualized_sharpe": 1.0237680976259012,
+            "daily_sharpe": -0.11305419930241502,
+            "skew": -1.4763805063822297,
+            "kurtosis": 24.836418244603106
+          },
+          "fold_sharpes": [
+            0.05000463857405154,
+            -5.178603406365577,
+            -0.027658373465951437,
+            1.3229336801026677,
+            -2.5911866292494192,
+            -1.5999038196853415,
+            -2.826676095339488,
+            -1.9906386672268503
+          ],
+          "train": {
+            "cagr": -0.10952174582399021,
+            "sharpe": -0.9281443195276996,
+            "max_drawdown": -0.24330368731633834,
+            "positive_day_ratio": 0.47401247401247404
+          },
+          "validation": {
+            "cagr": -0.2568246742679392,
+            "sharpe": -1.7946797761543325,
+            "max_drawdown": -0.2591728203210173,
+            "positive_day_ratio": 0.411522633744856
+          },
+          "holdout": {
+            "cagr": -0.26127655073559297,
+            "sharpe": -2.0118858442677805,
+            "max_drawdown": -0.16234004258900092,
+            "positive_day_ratio": 0.39622641509433965
+          },
+          "full": {
+            "cagr": -0.17535169996510125,
+            "sharpe": -1.3667922798999512,
+            "max_drawdown": -0.5125921646330948,
+            "positive_day_ratio": 0.4457831325301205
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0003",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "sector_peer_return_5d",
+            "val_sp",
+            "ma5_bias",
+            "KSFT2",
+            "market_return_5d"
+          ],
+          "weights": [
+            0.016524,
+            0.188371,
+            0.283133,
+            0.182431,
+            0.329542
+          ],
+          "combine": "weighted_sum",
+          "complexity": 5,
+          "novelty": 1.0,
+          "turnover": 0.45012048192771087,
+          "fitness": -2.0713922257940616,
+          "deflated_sharpe_proxy": -1.859882742871916,
+          "deflated_sharpe": {
+            "probability": 0.0028990214056990008,
+            "z_score": -2.7589893296268113,
+            "minimum_annualized_sharpe": 1.0806004325349763,
+            "daily_sharpe": -0.11043277380390182,
+            "skew": -0.14924094931641466,
+            "kurtosis": 10.671698711741403
+          },
+          "fold_sharpes": [
+            -2.645809817130127,
+            -4.50205466076877,
+            -5.044254314832679,
+            -1.58749913232714,
+            -4.3380857556465555,
+            -1.3781324551946947,
+            -2.4614202468183706,
+            -1.254701561368655
+          ],
+          "train": {
+            "cagr": -0.3887631749882725,
+            "sharpe": -3.5026412105555624,
+            "max_drawdown": -0.6176505414901754,
+            "positive_day_ratio": 0.37422037422037424
+          },
+          "validation": {
+            "cagr": -0.3528772547285908,
+            "sharpe": -1.7530659364570358,
+            "max_drawdown": -0.34370661762529275,
+            "positive_day_ratio": 0.41975308641975306
+          },
+          "holdout": {
+            "cagr": -0.3246727678338581,
+            "sharpe": -1.4222006793575204,
+            "max_drawdown": -0.24113124447179912,
+            "positive_day_ratio": 0.39622641509433965
+          },
+          "full": {
+            "cagr": -0.3705024681510559,
+            "sharpe": -2.377037992297824,
+            "max_drawdown": -0.8042141455910466,
+            "positive_day_ratio": 0.39036144578313253
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0001",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "margin_change_5d_ts",
+            "CNTP_5",
+            "CNTD_10"
+          ],
+          "weights": [
+            0.433105,
+            0.415071,
+            0.151824
+          ],
+          "combine": "weighted_sum",
+          "complexity": 3,
+          "novelty": 1.0,
+          "turnover": 0.33168674698795186,
+          "fitness": -2.3770874712996077,
+          "deflated_sharpe_proxy": -2.6170991497670326,
+          "deflated_sharpe": {
+            "probability": 0.0001748561918584948,
+            "z_score": -3.5753853680032033,
+            "minimum_annualized_sharpe": 1.0467104800787597,
+            "daily_sharpe": -0.15813292383491073,
+            "skew": -0.926662628906867,
+            "kurtosis": 16.516036913679343
+          },
+          "fold_sharpes": [
+            -0.5803655536359438,
+            -4.746106089003261,
+            -0.36972809664610434,
+            0.23273032018299897,
+            -2.968936915904075,
+            -2.296096105249667,
+            -5.03122028862495,
+            -1.977866927663793
+          ],
+          "train": {
+            "cagr": -0.22830023988726977,
+            "sharpe": -1.7862870013056933,
+            "max_drawdown": -0.4043612252775244,
+            "positive_day_ratio": 0.42411642411642414
+          },
+          "validation": {
+            "cagr": -0.4092930418242048,
+            "sharpe": -2.5102823433521526,
+            "max_drawdown": -0.44691478374945415,
+            "positive_day_ratio": 0.3950617283950617
+          },
+          "holdout": {
+            "cagr": -0.4127525314834102,
+            "sharpe": -2.0503709500059344,
+            "max_drawdown": -0.23692256065922668,
+            "positive_day_ratio": 0.42452830188679247
+          },
+          "full": {
+            "cagr": -0.3108486583121626,
+            "sharpe": -2.0293231775945118,
+            "max_drawdown": -0.7161407539246005,
+            "positive_day_ratio": 0.41566265060240964
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        }
+      ],
+      "pbo": {
+        "candidate_count": 4,
+        "usable_candidate_count": 4,
+        "pbo": 0.0,
+        "median_logit": 0.8472978603872034,
+        "split_count": 70,
+        "fold_count": 8,
+        "method": "cscv_fold_sharpe_rank_logit"
+      }
+    }
+  },
+  "factor_universe": {
+    "factor_universe_mode": "canonical114",
+    "ml106_input_count": 106,
+    "strategy_selected_input_count": 8,
+    "mapped_factor_count": 114,
+    "missing": [],
+    "strategy_selected_factors": [
+      "l1_monthlyRevenueMoM",
+      "l1_revenueGrowthYoY",
+      "l1_sectorTurnoverShareDelta",
+      "l1_volumeMomentumDivergence132710",
+      "mom_12m_1m",
+      "tech_adx_14",
+      "tech_granville_score",
+      "val_sp"
+    ],
+    "direction_source": {
+      "ml106": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_ml_feature_backtests\\ml106_features_sii_20230101_20260615_top10_bothdir_best.csv",
+      "strategy_selected": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\feature_universe_triage\\strategy95_vs_ml106_full_mapping.csv"
+    },
+    "strategy_info": {
+      "alphabuilderstw_input_count": 63,
+      "l1_leaf_refs": 40,
+      "l1_semantic_duplicates": {
+        "adx14": "tech_adx_14",
+        "atr14": "tech_atr_14",
+        "bbPctB": "tech_bbands_pctb_20",
+        "closeAboveMa20Pct": "tech_sma_20_pos",
+        "pb": "val_bp",
+        "pe": "val_ep",
+        "rsi14": "mom_rsi_14"
+      },
+      "missing": [
+        "l1:price"
+      ],
+      "ab_mapping": {
+        "mom_rsi_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_macd_trend_10": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_12m_1m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_reversal_1m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_reversal_6m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_9m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_hl52": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_close_to_52w_high": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_ma50_200_ratio": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_vol_adj_12m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_share_turnover_21d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_chg_turnover_1y": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_signal_5d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_money_flow_5d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_cv_volprice_20d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_realized_1m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_realized_12m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "liq_amihud_21d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_cv_90d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_min_130d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_ep": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_bp": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_sp": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_dp": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "size_log_mktcap": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_kd9_k": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bbands_pctb_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bias_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_granville_score": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_limit_up_streak_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_sma_20_pos": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_ema_12_pos": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_wma_10_pos": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_dma_10_50": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bbi": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_trix_12": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_kdj_j_9": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_williams_r_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_cci_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_mtm_10": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_roc_10": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_cmo_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_obv": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_volume_ratio_5": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_vr_26": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_mfi_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_emv_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_atr_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_keltner_pos_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_donchian_pos_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_sar": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_adx_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_psy_12": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_ma_convergence": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bullish_streak_5": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_gap_up": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_gap_down": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_limit_down_count_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_locked_open_up_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_locked_open_down_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_disposal_active": {
+          "status": "mapped_proxy",
+          "source": "etl:disposal_stock_filter inverted",
+          "caveat": "FinLab dataset is a filter; active flag is approximated by inverse boolean."
+        },
+        "tech_slow_kd_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_tower_3": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        }
+      }
+    },
+    "note": "canonical114 = ML106 FEATURE_COLS + selected low-overlap strategy factors. Research-only alpha mining universe.",
+    "factor_ids": [
+      "BETA_10",
+      "BETA_20",
+      "BETA_5",
+      "BETA_60",
+      "CNTD_10",
+      "CNTD_20",
+      "CNTD_5",
+      "CNTN_10",
+      "CNTN_20",
+      "CNTN_5",
+      "CNTP_10",
+      "CNTP_20",
+      "CNTP_5",
+      "CORD_10",
+      "CORR_10",
+      "IMAX_20",
+      "IMIN_20",
+      "IMXD_20",
+      "KLEN",
+      "KLOW",
+      "KLOW2",
+      "KMID",
+      "KMID2",
+      "KSFT",
+      "KSFT2",
+      "KUP",
+      "KUP2",
+      "RESI_10",
+      "RESI_20",
+      "RESI_5",
+      "RESI_60",
+      "RSQR_10",
+      "RSQR_20",
+      "RSQR_5",
+      "RSQR_60",
+      "VSTD_10",
+      "VSTD_20",
+      "WVMA",
+      "adl_trend_numeric",
+      "adl_value",
+      "advance_ratio",
+      "atr14",
+      "avg_volume_bucket",
+      "bb_lower_raw",
+      "bb_position",
+      "bb_upper_raw",
+      "bull_alignment_pct",
+      "chip_5d",
+      "dealer_5d",
+      "dealer_ratio_5d",
+      "foreign_5d",
+      "foreign_consecutive_sell",
+      "foreign_net_5d_market",
+      "has_sentiment",
+      "institutional_net",
+      "keltner_position",
+      "l1_monthlyRevenueMoM",
+      "l1_revenueGrowthYoY",
+      "l1_sectorTurnoverShareDelta",
+      "l1_volumeMomentumDivergence132710",
+      "limit_down_count",
+      "limit_down_pct",
+      "linear_factor",
+      "ma10_bias",
+      "ma20_bias",
+      "ma5_bias",
+      "ma60_bias",
+      "macdHist",
+      "margin_balance",
+      "margin_change_5d",
+      "margin_change_5d_ts",
+      "margin_ratio",
+      "market_bias_20d",
+      "market_cap_bucket",
+      "market_return_1d",
+      "market_return_5d",
+      "market_risk_level",
+      "market_risk_score",
+      "mom_12m_1m",
+      "retail_pct",
+      "return_10d",
+      "return_1d",
+      "return_3d",
+      "return_5d",
+      "revenue_yoy",
+      "rsi14",
+      "rsi5_dulling",
+      "sector_encoded",
+      "sector_peer_return_1d",
+      "sector_peer_return_5d",
+      "sentiment",
+      "sentiment_3d",
+      "short_change_5d",
+      "short_ratio",
+      "short_squeeze_proxy",
+      "stock_vs_market",
+      "stock_vs_sector",
+      "tech_adx_14",
+      "tech_granville_score",
+      "us_dxy_return",
+      "us_gspc_return",
+      "us_hy_spread",
+      "us_hy_spread_chg",
+      "us_sentiment_score",
+      "us_sox_return",
+      "us_vix",
+      "val_sp",
+      "vol_ratio_20d",
+      "vol_ratio_5d",
+      "volatility_20d",
+      "volatility_5d",
+      "vwap_5d",
+      "vwap_bias",
+      "vwap_bias_5d"
+    ]
+  },
+  "runtime_seconds": 173.579
+}

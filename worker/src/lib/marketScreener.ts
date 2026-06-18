@@ -579,6 +579,8 @@ interface ChipDayNet {
   trust: number
   dealer?: number
   brokerFlow?: number
+  marginBalance?: number | null
+  shortBalance?: number | null
   source?: string
   marketSegment?: string
   brokerCount?: number | null
@@ -614,8 +616,10 @@ interface StrategyRawSignals extends StrategyRawFundamentalSignals {
   close?: number | null
   ma20?: number | null
   ma60?: number | null
+  ma10Bias?: number | null
   closeAboveMa20Pct?: number | null
   closeAboveMa60Pct?: number | null
+  return5d?: number | null
   volumeExpansion20?: number | null
   return20d?: number | null
   return60d?: number | null
@@ -625,6 +629,8 @@ interface StrategyRawSignals extends StrategyRawFundamentalSignals {
   foreignTrustNet5d?: number | null
   brokerNetShares5d?: number | null
   brokerNetAmount5d?: number | null
+  marginBalance?: number | null
+  shortBalance?: number | null
   brokerCount?: number | null
   brokerConcentration?: number | null
   technicalIndicators?: Record<string, number | null>
@@ -702,6 +708,10 @@ function buildStockData(
     if (chipName.includes('dealer')) entry.dealer = (entry.dealer ?? 0) + net
     if (chipName.includes('broker_flow')) {
       entry.brokerFlow = (entry.brokerFlow ?? 0) + net
+    }
+    if (chipName.includes('margin_balance')) {
+      entry.marginBalance = c.margin_balance ?? net
+      entry.shortBalance = c.short_balance ?? entry.shortBalance ?? null
     }
     if (c.name.includes('憭?')) entry.foreign += net
     if (c.name.includes('?縑')) entry.trust += net
@@ -922,6 +932,49 @@ async function loadStrategyRawSectorRotationSignals(
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
   if (!uniqueSymbols.length) return out
 
+  const mergePatch = (symbol: string, source: string, factorSignals: Record<string, number | null>) => {
+    const existing = out.get(symbol)
+    out.set(symbol, {
+      source: [existing?.source, source].filter(Boolean).join('+') || null,
+      factorSignals: {
+        ...(existing?.factorSignals ?? {}),
+        ...factorSignals,
+      },
+    })
+  }
+
+  let advanceRatio: number | null = null
+  try {
+    const row = await env.DB.prepare(
+      'SELECT advance_ratio FROM market_breadth WHERE date <= ? ORDER BY date DESC LIMIT 1',
+    ).bind(endDate).first<{ advance_ratio: number | null }>()
+    advanceRatio = finiteOrNull(row?.advance_ratio)
+  } catch {
+    advanceRatio = null
+  }
+
+  let usSentimentScore: number | null = null
+  try {
+    const row = await env.DB.prepare(
+      'SELECT sentiment FROM us_market_signals WHERE date <= ? ORDER BY date DESC LIMIT 1',
+    ).bind(endDate).first<{ sentiment: string | null }>()
+    const sentiment = String(row?.sentiment ?? '').toLowerCase()
+    usSentimentScore = sentiment === 'bullish' ? 1 : sentiment === 'bearish' ? 0 : sentiment === 'neutral' ? 0.5 : null
+  } catch {
+    usSentimentScore = null
+  }
+
+  if (advanceRatio != null || usSentimentScore != null) {
+    for (const symbol of uniqueSymbols) {
+      mergePatch(symbol, 'market_breadth+us_market_signals', {
+        advance_ratio: advanceRatio,
+        advanceRatio,
+        us_sentiment_score: usSentimentScore,
+        usSentimentScore,
+      })
+    }
+  }
+
   for (const chunk of chunkArray(uniqueSymbols, D1_IN_CHUNK_SIZE)) {
     const placeholders = chunk.map(() => '?').join(',')
     try {
@@ -955,16 +1008,13 @@ async function loadStrategyRawSectorRotationSignals(
         sector_turnover_share_delta: number | null
       }>()
       for (const row of results ?? []) {
-        out.set(row.symbol, {
-          source: 'sector_flow_stocks+sector_flow',
-          factorSignals: {
-            sectorNetAmount: finiteOrNull(row.sector_net_amount),
-            sectorFlowCore: finiteOrNull(row.sector_flow_core),
-            sectorVolumeRatio: finiteOrNull(row.sector_volume_ratio),
-            sectorRsRatio: finiteOrNull(row.sector_rs_ratio),
-            sectorRsMomentum: finiteOrNull(row.sector_rs_momentum),
-            sectorTurnoverShareDelta: finiteOrNull(row.sector_turnover_share_delta),
-          },
+        mergePatch(row.symbol, 'sector_flow_stocks+sector_flow', {
+          sectorNetAmount: finiteOrNull(row.sector_net_amount),
+          sectorFlowCore: finiteOrNull(row.sector_flow_core),
+          sectorVolumeRatio: finiteOrNull(row.sector_volume_ratio),
+          sectorRsRatio: finiteOrNull(row.sector_rs_ratio),
+          sectorRsMomentum: finiteOrNull(row.sector_rs_momentum),
+          sectorTurnoverShareDelta: finiteOrNull(row.sector_turnover_share_delta),
         })
       }
     } catch {
@@ -1000,12 +1050,15 @@ function deriveStrategyRawSignals(
   const close = latest ? finiteOrNull(latest.close) : null
   const ma20 = avg(closes.slice(-20))
   const ma60 = avg(closes.slice(-60))
+  const ma10 = avg(closes.slice(-10))
   const avgVol5 = avg(volumes.slice(-5))
   const avgVol20 = avg(volumes.slice(-20))
   const latestIndex = closes.length - 1
+  const ma10Bias = pctChange(close, ma10)
   const closeAboveMa20Pct = pctChange(close, ma20)
   const closeAboveMa60Pct = pctChange(close, ma60)
   const volumeExpansion20 = avgVol5 != null && avgVol20 != null && avgVol20 > 0 ? avgVol5 / avgVol20 : null
+  const return5d = latestIndex >= 5 ? pctChange(closes[latestIndex], closes[latestIndex - 5]) : null
   const return20d = latestIndex >= 20 ? pctChange(closes[latestIndex], closes[latestIndex - 20]) : null
   const return60d = latestIndex >= 60 ? pctChange(closes[latestIndex], closes[latestIndex - 60]) : null
   const technicals = computeTechnicalIndicators(closes, highs, lows, volumes)
@@ -1045,13 +1098,16 @@ function deriveStrategyRawSignals(
   const brokerNetShares5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.brokerFlow) ?? 0), 0)
   const brokerNetAmount5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.estimatedAmount) ?? 0), 0)
   const latestBroker = [...chipRows].reverse().find((row) => row.brokerCount != null || row.concentration != null)
+  const latestMargin = [...chipRows].reverse().find((row) => row.marginBalance != null || row.shortBalance != null)
   const base: StrategyRawSignals = {
     close,
+    ma10Bias,
     ma20,
     ma60,
     closeAboveMa20Pct,
     closeAboveMa60Pct,
     volumeExpansion20,
+    return5d,
     return20d,
     return60d,
     foreignNet5d,
@@ -1060,6 +1116,8 @@ function deriveStrategyRawSignals(
     foreignTrustNet5d: foreignNet5d + trustNet5d,
     brokerNetShares5d,
     brokerNetAmount5d,
+    marginBalance: finiteOrNull(latestMargin?.marginBalance),
+    shortBalance: finiteOrNull(latestMargin?.shortBalance),
     brokerCount: finiteOrNull(latestBroker?.brokerCount),
     brokerConcentration: finiteOrNull(latestBroker?.concentration),
     ...(fundamentals ?? {}),
@@ -1085,6 +1143,8 @@ function deriveStrategyRawSignals(
       closeAboveMa20Pct,
       closeAboveMa60Pct,
       volumeExpansion20,
+      ma10Bias,
+      return5d,
       return20d,
       return60d,
       rsi14: latestRsi14,
@@ -1128,11 +1188,19 @@ function deriveStrategyRawSignals(
     factorSignals: {
       closeAboveMa20Pct,
       volumeExpansion20,
+      ma10_bias: ma10Bias,
+      ma10Bias,
+      return_5d: return5d,
+      return5d,
       return20d,
       rsi14: latestRsi14,
       foreignTrustNet5d: base.foreignTrustNet5d ?? null,
       brokerNetShares5d,
       brokerNetAmount5d,
+      margin_balance: base.marginBalance ?? null,
+      marginBalance: base.marginBalance ?? null,
+      short_balance: base.shortBalance ?? null,
+      shortBalance: base.shortBalance ?? null,
       brokerCount: base.brokerCount ?? null,
       brokerConcentration: base.brokerConcentration ?? null,
       revenueGrowthYoY: base.revenueGrowthYoY ?? null,
@@ -1164,12 +1232,27 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'operatingMargin', signalKey: 'OperatingMargin', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'revenueGrowthYoY', signalKey: 'RevenueGrowthYoY', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'monthlyRevenueYoY', signalKey: 'MonthlyRevenueYoY', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'monthlyRevenueMoM', signalKey: 'MonthlyRevenueMoM', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'return5d', signalKey: 'Return5d', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'return20d', signalKey: 'Return20d', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'ma10Bias', signalKey: 'Ma10Bias', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'volumeExpansion20', signalKey: 'VolumeExpansion20', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'marginBalance', signalKey: 'MarginBalance', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'dividendYield', signalKey: 'DividendYield', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'pe', signalKey: 'PeCheap', direction: 'lower_is_better', sectorRank: true },
   { rawField: 'pb', signalKey: 'PbCheap', direction: 'lower_is_better', sectorRank: true },
 ]
+
+function weightedFiniteScore(parts: Array<[number | null | undefined, number]>): number | null {
+  let weighted = 0
+  let weightSum = 0
+  for (const [value, weight] of parts) {
+    if (value == null || !Number.isFinite(value) || weight <= 0) continue
+    weighted += clamp(value, 0, 1) * weight
+    weightSum += weight
+  }
+  return weightSum > 0 ? Math.round((weighted / weightSum) * 10000) / 10000 : null
+}
 
 function percentileRank(value: number, sortedAsc: number[]): number | null {
   if (!Number.isFinite(value) || !sortedAsc.length) return null
@@ -1364,6 +1447,41 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
     if (sectorQualityComposite != null) {
       raw.factorSignals.finlabSectorQualityCompositeRank = Math.round(sectorQualityComposite * 10000) / 10000
       telemetry.compositeCoverage.finlabSectorQualityCompositeRank = (telemetry.compositeCoverage.finlabSectorQualityCompositeRank ?? 0) + 1
+    }
+
+    const alphaMiner0081 = weightedFiniteScore([
+      [finiteOrNull(raw.factorSignals.finlabCsMa10BiasRank), 0.415128],
+      [finiteOrNull(raw.factorSignals.advance_ratio ?? raw.factorSignals.advanceRatio), 0.117772],
+      [finiteOrNull(raw.factorSignals.finlabCsReturn20dRank), 0.20684],
+      [finiteOrNull(raw.factorSignals.finlabCsVolumeExpansion20Rank), 0.260259],
+    ])
+    if (alphaMiner0081 != null) {
+      raw.factorSignals.alphaMinerPymoo0081Score = alphaMiner0081
+      raw.factorSignals.alpha_miner_pymoo_nsga3_novelty_0081_score = alphaMiner0081
+      telemetry.compositeCoverage.alphaMinerPymoo0081Score = (telemetry.compositeCoverage.alphaMinerPymoo0081Score ?? 0) + 1
+    }
+
+    const alphaMiner0193 = weightedFiniteScore([
+      [finiteOrNull(raw.factorSignals.us_sentiment_score ?? raw.factorSignals.usSentimentScore), 0.479025],
+      [finiteOrNull(raw.factorSignals.finlabCsMarginBalanceRank), 0.520975],
+    ])
+    if (alphaMiner0193 != null) {
+      raw.factorSignals.alphaMinerPymoo0193Score = alphaMiner0193
+      raw.factorSignals.alpha_miner_pymoo_nsga3_novelty_0193_score = alphaMiner0193
+      telemetry.compositeCoverage.alphaMinerPymoo0193Score = (telemetry.compositeCoverage.alphaMinerPymoo0193Score ?? 0) + 1
+    }
+
+    const alphaMiner0187 = weightedFiniteScore([
+      [finiteOrNull(raw.factorSignals.finlabCsVolumeExpansion20Rank), 0.300141],
+      [finiteOrNull(raw.factorSignals.finlabCsMonthlyRevenueMoMRank), 0.056417],
+      [finiteOrNull(raw.factorSignals.finlabCsReturn20dRank), 0.106408],
+      [finiteOrNull(raw.factorSignals.finlabCsMa10BiasRank), 0.351215],
+      [finiteOrNull(raw.factorSignals.finlabCsReturn5dRank), 0.185819],
+    ])
+    if (alphaMiner0187 != null) {
+      raw.factorSignals.alphaMinerPymoo0187Score = alphaMiner0187
+      raw.factorSignals.alpha_miner_pymoo_nsga3_novelty_0187_score = alphaMiner0187
+      telemetry.compositeCoverage.alphaMinerPymoo0187Score = (telemetry.compositeCoverage.alphaMinerPymoo0187Score ?? 0) + 1
     }
   }
 

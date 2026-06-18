@@ -1,0 +1,1097 @@
+{
+  "json": "output\\finlab_alpha_miner_canonical114\\alpha_miner_bakeoff_canonical114_pymoo_sii_20230101_20260615_seed42.json",
+  "rows_csv": "output\\finlab_alpha_miner_canonical114\\alpha_miner_bakeoff_canonical114_pymoo_sii_20230101_20260615_seed42_rows.csv",
+  "finlab_confirm_csv": "output\\finlab_alpha_miner_canonical114\\alpha_miner_bakeoff_canonical114_pymoo_sii_20230101_20260615_seed42_finlab_confirm.csv",
+  "summary": {
+    "pymoo_nsga3_novelty": {
+      "evaluated": 360,
+      "top_fitness": 4.258644798494217,
+      "top_validation_sharpe": 3.303544187753088,
+      "top_holdout_sharpe": 8.725750497601174,
+      "top_full_cagr": 4.137953954936691,
+      "top_full_mdd": -0.26903335334852885,
+      "median_top10_validation_sharpe": 3.601907184024109,
+      "median_top10_holdout_sharpe": 7.868360565275726,
+      "median_top10_novelty": 1.0,
+      "median_top10_turnover": 0.5901204819277109,
+      "top_candidates": [
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0179",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "rsi14",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.14059,
+            0.85941
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.546144578313253,
+          "fitness": 4.258644798494217,
+          "deflated_sharpe_proxy": 3.083441255763594,
+          "deflated_sharpe": {
+            "probability": 0.5150106538095818,
+            "z_score": 0.03763501170735032,
+            "minimum_annualized_sharpe": 3.2619625832752606,
+            "daily_sharpe": 0.20810372299779856,
+            "skew": -0.6249669599554193,
+            "kurtosis": 4.9002353478338225
+          },
+          "fold_sharpes": [
+            5.82897906528766,
+            2.1107430437484442,
+            3.689218523802091,
+            4.926470375530863,
+            4.358140546283506,
+            1.7134103870698223,
+            5.192371703530191,
+            8.537572008026471
+          ],
+          "train": {
+            "cagr": 2.9603732825458415,
+            "sharpe": 4.118289137129105,
+            "max_drawdown": -0.20345885217185422,
+            "positive_day_ratio": 0.6070686070686071
+          },
+          "validation": {
+            "cagr": 1.8397264145063126,
+            "sharpe": 3.303544187753088,
+            "max_drawdown": -0.26903335334852874,
+            "positive_day_ratio": 0.6008230452674898
+          },
+          "holdout": {
+            "cagr": 64.18352043606724,
+            "sharpe": 8.725750497601174,
+            "max_drawdown": -0.1440063140324539,
+            "positive_day_ratio": 0.7264150943396226
+          },
+          "full": {
+            "cagr": 4.137953954936691,
+            "sharpe": 4.587870500591187,
+            "max_drawdown": -0.26903335334852885,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0062",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "rsi14",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.137685,
+            0.862315
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5472289156626506,
+          "fitness": 4.226647143376028,
+          "deflated_sharpe_proxy": 3.0469755029478804,
+          "deflated_sharpe": {
+            "probability": 0.5035888499291084,
+            "z_score": 0.008996034043687018,
+            "minimum_annualized_sharpe": 3.257153685447016,
+            "daily_sharpe": 0.20580659649015257,
+            "skew": -0.6231613876113286,
+            "kurtosis": 4.832280389915196
+          },
+          "fold_sharpes": [
+            5.91039976398003,
+            2.0717806721317475,
+            3.6633952756326233,
+            5.024600769376797,
+            4.506669053600736,
+            1.6516364250726132,
+            5.1599278034802785,
+            8.458246411561127
+          ],
+          "train": {
+            "cagr": 3.0152503729169595,
+            "sharpe": 4.162713483555382,
+            "max_drawdown": -0.2007065935418062,
+            "positive_day_ratio": 0.6070686070686071
+          },
+          "validation": {
+            "cagr": 1.812077930887146,
+            "sharpe": 3.2670784349373743,
+            "max_drawdown": -0.27509711526045855,
+            "positive_day_ratio": 0.6049382716049383
+          },
+          "holdout": {
+            "cagr": 63.94074681528721,
+            "sharpe": 8.680043347045718,
+            "max_drawdown": -0.15203271997301648,
+            "positive_day_ratio": 0.7264150943396226
+          },
+          "full": {
+            "cagr": 4.161818327050212,
+            "sharpe": 4.596458367762104,
+            "max_drawdown": -0.27509711526045877,
+            "positive_day_ratio": 0.6216867469879518
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0100",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "short_ratio",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.386164,
+            0.613836
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0144",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "short_ratio",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.388094,
+            0.611906
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0150",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "short_ratio",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.385875,
+            0.614125
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0171",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "short_ratio",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.864221,
+            0.135779
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0194",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "short_ratio",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.387462,
+            0.612538
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0213",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "foreign_net_5d_market",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.386164,
+            0.613836
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0217",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "short_ratio",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.872269,
+            0.127731
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        },
+        {
+          "candidate_id": "pymoo_nsga3_novelty_0279",
+          "algorithm": "pymoo_nsga3_novelty",
+          "status": "ok",
+          "factor_ids": [
+            "short_ratio",
+            "ma5_bias"
+          ],
+          "weights": [
+            0.38798,
+            0.61202
+          ],
+          "combine": "weighted_sum",
+          "complexity": 2,
+          "novelty": 1.0,
+          "turnover": 0.5901204819277109,
+          "fitness": 4.146519363922155,
+          "deflated_sharpe_proxy": 3.381804252034615,
+          "deflated_sharpe": {
+            "probability": 0.6311745361148018,
+            "z_score": 0.33496574330959816,
+            "minimum_annualized_sharpe": 3.2348871723804575,
+            "daily_sharpe": 0.22689882510630366,
+            "skew": -0.4701795658203517,
+            "kurtosis": 4.591224158875455
+          },
+          "fold_sharpes": [
+            7.034782100398776,
+            1.6179045272269992,
+            4.717602710886896,
+            3.8899146672229437,
+            4.227268186329479,
+            2.1648094455607247,
+            5.408366740677667,
+            7.722232282270384
+          ],
+          "train": {
+            "cagr": 3.351644149784936,
+            "sharpe": 4.145633482898383,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6174636174636174
+          },
+          "validation": {
+            "cagr": 2.3576572368781883,
+            "sharpe": 3.601907184024109,
+            "max_drawdown": -0.2914467043318415,
+            "positive_day_ratio": 0.5967078189300411
+          },
+          "holdout": {
+            "cagr": 42.80292728015126,
+            "sharpe": 7.868360565275726,
+            "max_drawdown": -0.1349351042332021,
+            "positive_day_ratio": 0.6886792452830188
+          },
+          "full": {
+            "cagr": 4.416979068160902,
+            "sharpe": 4.544289714637767,
+            "max_drawdown": -0.29584420462416383,
+            "positive_day_ratio": 0.6204819277108434
+          },
+          "latest_matches": 10,
+          "match_days": 830
+        }
+      ],
+      "pbo": {
+        "candidate_count": 360,
+        "usable_candidate_count": 360,
+        "pbo": 0.0,
+        "median_logit": 2.8099902394452045,
+        "split_count": 70,
+        "fold_count": 8,
+        "method": "cscv_fold_sharpe_rank_logit"
+      }
+    }
+  },
+  "adaptive_strategy_families": {
+    "schema_version": "adaptive-alpha-strategy-families-v1",
+    "decision_effect": "research_only",
+    "promotion_gate": {
+      "min_validation_sharpe": 1.0,
+      "min_holdout_sharpe": 1.0,
+      "min_full_cagr": 0.0,
+      "max_full_drawdown": 0.35,
+      "max_turnover": 0.95,
+      "min_deflated_sharpe_probability": 0.95,
+      "family_factor_jaccard": 0.5,
+      "family_category_jaccard": 0.67
+    },
+    "evaluated_count": 360,
+    "eligible_count": 0,
+    "family_count": 0,
+    "rejected_counts": {
+      "validation_sharpe_below_floor": 252,
+      "deflated_sharpe_probability_below_floor": 87,
+      "full_drawdown_too_deep": 21
+    },
+    "families": []
+  },
+  "factor_universe": {
+    "factor_universe_mode": "canonical114",
+    "ml106_input_count": 106,
+    "strategy_selected_input_count": 8,
+    "mapped_factor_count": 114,
+    "missing": [],
+    "strategy_selected_factors": [
+      "l1_monthlyRevenueMoM",
+      "l1_revenueGrowthYoY",
+      "l1_sectorTurnoverShareDelta",
+      "l1_volumeMomentumDivergence132710",
+      "mom_12m_1m",
+      "tech_adx_14",
+      "tech_granville_score",
+      "val_sp"
+    ],
+    "direction_source": {
+      "ml106": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_ml_feature_backtests\\ml106_features_sii_20230101_20260615_top10_bothdir_best.csv",
+      "strategy_selected": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\feature_universe_triage\\strategy95_vs_ml106_full_mapping.csv"
+    },
+    "strategy_info": {
+      "alphabuilderstw_input_count": 63,
+      "l1_leaf_refs": 40,
+      "l1_semantic_duplicates": {
+        "adx14": "tech_adx_14",
+        "atr14": "tech_atr_14",
+        "bbPctB": "tech_bbands_pctb_20",
+        "closeAboveMa20Pct": "tech_sma_20_pos",
+        "pb": "val_bp",
+        "pe": "val_ep",
+        "rsi14": "mom_rsi_14"
+      },
+      "missing": [
+        "l1:price"
+      ],
+      "ab_mapping": {
+        "mom_rsi_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_macd_trend_10": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_12m_1m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_reversal_1m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_reversal_6m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_9m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_hl52": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_close_to_52w_high": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_ma50_200_ratio": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "mom_vol_adj_12m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_share_turnover_21d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_chg_turnover_1y": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_signal_5d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_money_flow_5d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vol_cv_volprice_20d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_realized_1m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_realized_12m": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "liq_amihud_21d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_cv_90d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "vola_min_130d": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_ep": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_bp": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_sp": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "val_dp": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "size_log_mktcap": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_kd9_k": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bbands_pctb_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bias_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_granville_score": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_limit_up_streak_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_sma_20_pos": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_ema_12_pos": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_wma_10_pos": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_dma_10_50": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bbi": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_trix_12": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_kdj_j_9": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_williams_r_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_cci_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_mtm_10": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_roc_10": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_cmo_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_obv": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_volume_ratio_5": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_vr_26": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_mfi_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_emv_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_atr_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_keltner_pos_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_donchian_pos_20": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_sar": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_adx_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_psy_12": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_ma_convergence": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_bullish_streak_5": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_gap_up": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_gap_down": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_limit_down_count_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_locked_open_up_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_locked_open_down_10": {
+          "status": "mapped_proxy",
+          "source": "OHLCV price-limit proxy",
+          "caveat": "No per-symbol AlphaBuilders limit_fg/limo_fg; reconstructed with +/-9.5% and narrow range."
+        },
+        "tech_disposal_active": {
+          "status": "mapped_proxy",
+          "source": "etl:disposal_stock_filter inverted",
+          "caveat": "FinLab dataset is a filter; active flag is approximated by inverse boolean."
+        },
+        "tech_slow_kd_14": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        },
+        "tech_tower_3": {
+          "status": "mapped",
+          "source": "finlab_ohlcv_or_finlab_dataset"
+        }
+      }
+    },
+    "note": "canonical114 = ML106 FEATURE_COLS + selected low-overlap strategy factors. Research-only alpha mining universe.",
+    "factor_ids": [
+      "BETA_10",
+      "BETA_20",
+      "BETA_5",
+      "BETA_60",
+      "CNTD_10",
+      "CNTD_20",
+      "CNTD_5",
+      "CNTN_10",
+      "CNTN_20",
+      "CNTN_5",
+      "CNTP_10",
+      "CNTP_20",
+      "CNTP_5",
+      "CORD_10",
+      "CORR_10",
+      "IMAX_20",
+      "IMIN_20",
+      "IMXD_20",
+      "KLEN",
+      "KLOW",
+      "KLOW2",
+      "KMID",
+      "KMID2",
+      "KSFT",
+      "KSFT2",
+      "KUP",
+      "KUP2",
+      "RESI_10",
+      "RESI_20",
+      "RESI_5",
+      "RESI_60",
+      "RSQR_10",
+      "RSQR_20",
+      "RSQR_5",
+      "RSQR_60",
+      "VSTD_10",
+      "VSTD_20",
+      "WVMA",
+      "adl_trend_numeric",
+      "adl_value",
+      "advance_ratio",
+      "atr14",
+      "avg_volume_bucket",
+      "bb_lower_raw",
+      "bb_position",
+      "bb_upper_raw",
+      "bull_alignment_pct",
+      "chip_5d",
+      "dealer_5d",
+      "dealer_ratio_5d",
+      "foreign_5d",
+      "foreign_consecutive_sell",
+      "foreign_net_5d_market",
+      "has_sentiment",
+      "institutional_net",
+      "keltner_position",
+      "l1_monthlyRevenueMoM",
+      "l1_revenueGrowthYoY",
+      "l1_sectorTurnoverShareDelta",
+      "l1_volumeMomentumDivergence132710",
+      "limit_down_count",
+      "limit_down_pct",
+      "linear_factor",
+      "ma10_bias",
+      "ma20_bias",
+      "ma5_bias",
+      "ma60_bias",
+      "macdHist",
+      "margin_balance",
+      "margin_change_5d",
+      "margin_change_5d_ts",
+      "margin_ratio",
+      "market_bias_20d",
+      "market_cap_bucket",
+      "market_return_1d",
+      "market_return_5d",
+      "market_risk_level",
+      "market_risk_score",
+      "mom_12m_1m",
+      "retail_pct",
+      "return_10d",
+      "return_1d",
+      "return_3d",
+      "return_5d",
+      "revenue_yoy",
+      "rsi14",
+      "rsi5_dulling",
+      "sector_encoded",
+      "sector_peer_return_1d",
+      "sector_peer_return_5d",
+      "sentiment",
+      "sentiment_3d",
+      "short_change_5d",
+      "short_ratio",
+      "short_squeeze_proxy",
+      "stock_vs_market",
+      "stock_vs_sector",
+      "tech_adx_14",
+      "tech_granville_score",
+      "us_dxy_return",
+      "us_gspc_return",
+      "us_hy_spread",
+      "us_hy_spread_chg",
+      "us_sentiment_score",
+      "us_sox_return",
+      "us_vix",
+      "val_sp",
+      "vol_ratio_20d",
+      "vol_ratio_5d",
+      "volatility_20d",
+      "volatility_5d",
+      "vwap_5d",
+      "vwap_bias",
+      "vwap_bias_5d"
+    ]
+  },
+  "runtime_seconds": 990.414
+}

@@ -222,6 +222,17 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     operatorRisk: 'low',
     recommendation: 'Disable scheduled polling after queue readback proves empty; keep manual drain only.',
   },
+  'monthly-strategy-mining': {
+    task: 'monthly-strategy-mining',
+    owner: 'gcp_scheduler',
+    consolidationClass: 'keep_scheduler',
+    currentFunction: 'Monthly pymoo NSGA-III + novelty strategy mining preflight and research ledger trigger.',
+    upstream: ['feature-registry-materialization', 'formal137-similarity-contract'],
+    downstream: ['strategy_mining_runs', 'strategy_backtest_results', 'strategy_promotion_ledger', 'monthly-optuna', 'monthly-retrain'],
+    requiredBeforeDisable: [],
+    operatorRisk: 'medium',
+    recommendation: 'Keep as the monthly strategy discovery owner; endpoint is research-only until promotion gates and Wei approval pass.',
+  },
 }
 
 export function getSchedulerDependencySpec(task: string): SchedulerDependencySpec | undefined {

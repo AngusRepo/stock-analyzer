@@ -7,6 +7,7 @@ import {
   runRegimeCompute,
   runVerifyV2,
   runWeeklyDriftRetrain,
+  runMonthlyStrategyMining,
   summarizeWeeklyValidationChain,
   triggerRetrain,
 } from './controllerWorkflows'
@@ -48,6 +49,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
       return runWeeklyDriftRetrain(c.env, requestedRunDate())
     },
     'monthly-optuna': () => deps.runMonthlyOptunaResearch(requestedRunDate()),
+    'monthly-strategy-mining': () => runMonthlyStrategyMining(c.env, requestedRunDate()),
     'optuna-queue': () => deps.runOptunaQueueProcessor(),
     'monthly-retrain': async () => triggerRetrain(c.env, true, 'monthly-retrain'),
     retrain: async () => {

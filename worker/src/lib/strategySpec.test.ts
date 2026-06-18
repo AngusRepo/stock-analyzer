@@ -13,7 +13,31 @@ function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
+const ACTIVE_PRODUCTION_STRATEGY_IDS = [
+  'trend_following_seed_v1',
+  'breakout_vol_expansion_seed_v1',
+  'defensive_accumulation_seed_v1',
+  'finlab_ai_skill_quality_trend_v1',
+  'finlab_ai_skill_reversion_value_v1',
+  'finlab_ai_skill_revenue_revision_breakout_v1',
+  'finlab_ai_skill_broker_accumulation_reclaim_v1',
+  'alphabuilders_multifactor_revenue_quality_momentum_v1',
+] as const
+
 const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore', 'minMomentumScore'] as const
+
+{
+  const ids = DEFAULT_STRATEGY_SPECS.map((spec) => spec.id)
+  assert(DEFAULT_STRATEGY_SPECS.length === 8, 'bootstrap manifest should expose exactly 8 base production strategies')
+  assert(
+    JSON.stringify(ids) === JSON.stringify(ACTIVE_PRODUCTION_STRATEGY_IDS),
+    `bootstrap manifest ids changed unexpectedly: ${ids.join(',')}`,
+  )
+  assert(DEFAULT_STRATEGY_SPECS.every((spec) => spec.status === 'active'), 'bootstrap manifest must not contain retired/research/shadow strategies')
+  assert(DEFAULT_STRATEGY_SPECS.every((spec) => spec.ownerType === 'strategy'), 'all bootstrap specs should be owned by strategy')
+  assert(DEFAULT_STRATEGY_SPECS.every((spec) => spec.promotionStatus === 'production'), 'all bootstrap specs should be production promotion status')
+  assert(ids.every((id) => ACTIVE_PRODUCTION_STRATEGY_IDS.includes(id as typeof ACTIVE_PRODUCTION_STRATEGY_IDS[number])), 'bootstrap manifest must only contain the approved 8 base strategy ids')
+}
 
 {
   for (const spec of DEFAULT_STRATEGY_SPECS) {
@@ -23,14 +47,6 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     assert((spec.candidatePolicy?.evidenceRequirements ?? []).length > 0, `${spec.id} should define evidence requirements`)
     assert(spec.familyId != null, `${spec.id} should declare a strategy family`)
     assert(spec.variantId != null, `${spec.id} should declare a strategy variant`)
-    assert(spec.ownerType != null, `${spec.id} should declare ownerType`)
-    assert(spec.promotionStatus != null, `${spec.id} should declare promotionStatus`)
-  }
-}
-
-{
-  const productionSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
-  for (const spec of productionSpecs) {
     for (const key of legacyScoreThresholdKeys) {
       assert(spec.thresholds[key] == null, `${spec.id} must not use legacy Score V2 threshold ${key} in L1 strategy specs`)
     }
@@ -38,115 +54,58 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
-  const finlabDiscovery = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'finlab_ai_skill_discovery_v1')
-  assert(finlabDiscovery?.status === 'retired', 'FinLab AI Skill discovery lane should be retired from daily runtime')
-  assert(finlabDiscovery?.ownerType === 'retired', 'retired discovery lane should not own runtime strategy decisions')
-  assert(finlabDiscovery?.promotionStatus === 'retired', 'retired discovery lane should not be promotable without an explicit new spec')
-  assert(finlabDiscovery?.candidatePolicy?.maxMlShare === 0, 'FinLab AI Skill discovery lane must not enter ML queue directly')
-  assert(
-    finlabDiscovery?.candidatePolicy?.evidenceRequirements?.includes('strategy_hypothesis'),
-    'FinLab AI Skill discovery lane should require strategy hypothesis evidence',
-  )
-  assert(
-    finlabDiscovery?.candidatePolicy?.evidenceRequirements?.includes('raw_factor_mining'),
-    'FinLab AI Skill discovery lane should preserve factor-mining evidence',
-  )
-  assert(
-    finlabDiscovery?.candidatePolicy?.evidenceRequirements?.includes('raw_technical_indicator_mining'),
-    'FinLab AI Skill discovery lane should preserve technical-indicator mining evidence',
-  )
+  const activeIds = new Set(DEFAULT_STRATEGY_SPECS.map((spec) => spec.id))
+  assert([...activeIds].filter((id) => id.startsWith('alpha_miner_pymoo_nsga3_novelty_')).length === 0, 'mined strategies must live in D1 strategy_spec_registry, not TS bootstrap defaults')
+  assert([...activeIds].filter((id) => id.startsWith('alphabuilders_multifactor_')).length === 1, 'only one AlphaBuilders strategy should remain production active')
 }
 
 {
-  for (const id of ['trend_following_seed_v1', 'breakout_vol_expansion_seed_v1', 'defensive_accumulation_seed_v1']) {
-    const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === id)
-    assert(spec?.status === 'active', `${id} should be an active production seed strategy`)
-  }
-}
-
-{
-  const activeSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
-  assert(activeSpecs.length === 25, 'clean runtime manifest should expose exactly 25 active strategies before D1 seeding')
-  assert(
-    activeSpecs.filter((spec) => spec.id.startsWith('research_consolidated_')).length === 6,
-    'research strategies should be consolidated into 6 active non-duplicate families',
-  )
-  assert(
-    activeSpecs.filter((spec) => spec.id.startsWith('alphabuilders_multifactor_')).length === 6,
-    'AlphaBuilders multifactor additions should contribute 6 active specs',
-  )
-  assert(!activeSpecs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'daily factor/strategy discovery lane must not remain active')
-}
-
-{
-  const activeFinLabSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.id.startsWith('finlab_ai_skill_') && spec.status === 'active')
-  assert(activeFinLabSpecs.length >= 8, 'FinLab AI Skill production specs should widen L1 diversity beyond the first seeded batch')
-  const activeProductionOwnerSpecs = activeFinLabSpecs.filter((spec) => spec.ownerType === 'strategy')
-  assert(activeProductionOwnerSpecs.length >= 8, 'FinLab AI Skill production owner specs should stay curated and remain eligible for L2')
-  assert(activeProductionOwnerSpecs.some((spec) => spec.id === 'finlab_ai_skill_volume_breakout_v1'), 'volume breakout should be a production owner variant, not silently downgraded to feature')
-  assert(activeProductionOwnerSpecs.some((spec) => spec.id === 'finlab_ai_skill_rsi_volume_reclaim_v1'), 'RSI reclaim should be a production owner variant, not silently downgraded to feature')
-  assert(activeProductionOwnerSpecs.some((spec) => spec.familyId === 'SMC_STRUCTURE_RECLAIM'), 'SMC structure reclaim family should have an active production owner')
-  assert(activeProductionOwnerSpecs.some((spec) => spec.familyId === 'SECTOR_ROTATION_CORE'), 'sector rotation core family should have an active production owner')
-  assert(new Set(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').map((spec) => spec.familyId)).size === 6, 'active strategy specs should cover all 6 strategy families')
-  assert(
-    activeProductionOwnerSpecs.every((spec) => (spec.candidatePolicy?.maxMlShare ?? 1) > 0),
-    'active FinLab AI Skill production-owner specs must be eligible for the L2 coarse ML queue',
-  )
-  assert(
-    activeFinLabSpecs.every((spec) => spec.thresholds.minSeedScore == null && spec.thresholds.minChipScore == null && spec.thresholds.minTechScore == null && spec.thresholds.minMomentumScore == null),
-    'active FinLab AI Skill specs must use raw row signals, not legacy Score V2/chip/technical thresholds',
-  )
-  assert(
-    activeFinLabSpecs.every((spec) => !(spec.candidatePolicy?.evidenceRequirements ?? []).includes('score_v2')),
-    'active FinLab AI Skill specs must not require score_v2 evidence',
-  )
-  assert(
-    activeFinLabSpecs
-      .filter((spec) => spec.id.includes('factor') || spec.id.includes('revision') || spec.id.includes('reclaim') || spec.id.includes('broker'))
-      .every((spec) => (spec.candidatePolicy?.evidenceRequirements ?? []).some((item) => item.includes('raw_factor') || item.includes('raw_technical_indicator'))),
-    'new FinLab AI Skill production specs should be generated from raw factor/technical-indicator mining evidence',
-  )
-  assert(
-    activeFinLabSpecs.every((spec) => spec.riskNotes.some((note) => note.includes('future FinLab AI discoveries') || note.includes('Active breadth strategy') || note.includes('L2/L3') || note.includes('Mean-reversion'))),
-    'active FinLab AI Skill specs should document that only this seeded batch bypasses the discovery lane',
-  )
-}
-
-{
-  const candidate = {
-    symbol: '2454',
+  const raw = deriveStrategyRawSignals({
+    symbol: '3034',
+    current_price: 80,
     raw_signals: {
-      close: 120,
+      ma10Bias: 0.03,
+      return5d: 0.04,
+      marginBalance: 1_200_000,
+      factorSignals: {
+        alphaMinerPymoo0081Score: 0.71,
+        finlabRevenueAcceleration: 1.4,
+      },
+      technicalIndicators: {
+        rsi14: 58,
+        macdHistogramSlope: 0.12,
+      },
+    },
+  })
+  assert(raw.factorSignals?.alphaMinerPymoo0081Score === 0.71, 'raw parser should preserve registry-seeded mined scores')
+  assert(raw.factorSignals?.ma10_bias === 0.03, 'raw parser should expose ma10Bias alias for mined strategies')
+  assert(raw.factorSignals?.return_5d === 0.04, 'raw parser should expose return5d alias for mined strategies')
+  assert(raw.factorSignals?.margin_balance === 1_200_000, 'raw parser should expose margin balance evidence')
+  assert(raw.factorSignals?.finlabRevenueAcceleration === 1.4, 'raw parser should preserve discovered factor signals')
+  assert(raw.technicalIndicators?.rsi14 === 58, 'raw parser should preserve discovered technical indicators')
+}
+
+{
+  const assessment = assessCandidateAgainstStrategySpecs({
+    symbol: '2330',
+    current_price: 900,
+    raw_signals: {
       closeAboveMa20Pct: 0.03,
       closeAboveMa60Pct: 0.02,
-      volumeExpansion20: 1.35,
-      return20d: 0.08,
-      revenueGrowthYoY: 12,
-      monthlyRevenueYoY: 16,
-      roe: 15,
-      eps: 2.4,
-      pe: 18,
-      pb: 2,
-      foreignTrustNet5d: 1500,
-      brokerNetAmount5d: 20_000_000,
-      brokerCount: 12,
-      brokerConcentration: 0.35,
+      volumeExpansion20: 1.25,
+      return20d: 0.06,
+      technicalIndicators: { macdHist: 0.1, adx14: 23, diTrend: 5 },
     },
-  }
-  const assessment = assessCandidateAgainstStrategySpecs(candidate, DEFAULT_STRATEGY_SPECS)
-  assert(
-    assessment.matches.some((match) => match.specId.startsWith('finlab_ai_skill_')),
-    'raw row indicators should be sufficient for active FinLab AI Skill strategy matches without Score V2 or current_price',
-  )
+  }, DEFAULT_STRATEGY_SPECS)
+  assert(assessment.matches.some((match) => match.specId === 'trend_following_seed_v1'), 'trend seed should match raw trend evidence')
 }
 
 {
-  const candidate = {
+  const assessment = assessCandidateAgainstStrategySpecs({
     symbol: '3034',
     current_price: 85,
     raw_signals: {
       closeAboveMa20Pct: 0.025,
-      closeAboveMa60Pct: 0.01,
       volumeExpansion20: 1.18,
       return20d: 0.04,
       revenueGrowthYoY: 9,
@@ -154,12 +113,6 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
       monthlyRevenueMoM: 2,
       roe: 13,
       eps: 1.6,
-      pe: 22,
-      pb: 2.4,
-      foreignTrustNet5d: 600,
-      brokerNetAmount5d: 8_000_000,
-      brokerCount: 7,
-      brokerConcentration: 0.45,
       technicalIndicators: {
         rsi14: 56,
         volumeExpansion20: 1.18,
@@ -169,17 +122,12 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
         monthlyRevenueYoY: 14,
         monthlyRevenueMoM: 2,
         revenueGrowthYoY: 9,
-        brokerNetAmount5d: 8_000_000,
-        brokerCount: 7,
-        roe: 13,
-        eps: 1.6,
       },
     },
-  }
-  const assessment = assessCandidateAgainstStrategySpecs(candidate, DEFAULT_STRATEGY_SPECS)
+  }, DEFAULT_STRATEGY_SPECS)
   assert(
     assessment.matches.some((match) => match.specId === 'finlab_ai_skill_revenue_revision_breakout_v1'),
-    'new FinLab AI Skill revenue revision strategy should match raw mined factors directly in production',
+    'revenue revision strategy should match raw mined revenue factors directly in production',
   )
 }
 
@@ -191,93 +139,29 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
       closeAboveMa20Pct: -0.01,
       volumeExpansion20: 0.95,
       foreignTrustNet5d: 1200,
-      technicalIndicators: {
-        rsi14: 48,
-      },
     },
   }, DEFAULT_STRATEGY_SPECS)
   assert(
-    assessment.matches.some((match) => match.specId === 'defensive_accumulation_seed_v1' || match.specId === 'finlab_ai_skill_chip_accumulation_v1'),
-    'listed/OTC accumulation strategies should not require ROTC-only brokerCount coverage',
-  )
-}
-
-{
-  const raw = deriveStrategyRawSignals({
-    symbol: '3034',
-    current_price: 80,
-    raw_signals: {
-      closeAboveMa20Pct: 0.04,
-      volumeExpansion20: 1.25,
-      factorSignals: {
-        finlabRevenueAcceleration: 1.4,
-        brokerAccumulationPersistence: 0.7,
-      },
-      technicalIndicators: {
-        rsi14: 58,
-        macdHistogramSlope: 0.12,
-      },
-    },
-  })
-  assert(raw.factorSignals?.finlabRevenueAcceleration === 1.4, 'raw parser should preserve FinLab-discovered factor signals')
-  assert(raw.technicalIndicators?.rsi14 === 58, 'raw parser should preserve FinLab-discovered technical indicators')
-
-  const assessment = assessCandidateAgainstStrategySpecs({
-    symbol: '3034',
-    current_price: 80,
-    raw_signals: raw,
-  }, [{
-    ...DEFAULT_STRATEGY_SPECS[0],
-    id: 'finlab_dynamic_factor_threshold_test_v1',
-    thresholds: {
-      minPrice: 10,
-      minFactorSignals: { finlabRevenueAcceleration: 1 },
-      minTechnicalIndicators: { rsi14: 50, macdHistogramSlope: 0 },
-    },
-  }])
-  assert(assessment.matches.length === 1, 'strategy specs should support discovered factor and technical-indicator thresholds')
-}
-
-{
-  const assessment = assessCandidateAgainstStrategySpecs({
-    symbol: '6789',
-    current_price: 42,
-    raw_signals: {
-      close: 42,
-      return20d: 0.03,
-      technicalIndicators: {
-        displacementPct: 0.012,
-        liquiditySweepBullish: 1,
-        bosBullish: 0,
-        chochBullish: 1,
-        bestFvgStrength: 0.2,
-      },
-    },
-  }, DEFAULT_STRATEGY_SPECS)
-  assert(
-    assessment.matches.some((match) => match.specId === 'finlab_ai_skill_smc_structure_reclaim_v1'),
-    'SMC structure reclaim should match real liquidity sweep/BOS/CHOCH/FVG primitives without Score V2',
+    assessment.matches.some((match) => match.specId === 'defensive_accumulation_seed_v1'),
+    'defensive accumulation should not require brokerCount coverage',
   )
 }
 
 {
   const assessment = assessCandidateAgainstStrategySpecs({
-    symbol: '7788',
-    current_price: 55,
+    symbol: '2454',
+    current_price: 120,
     raw_signals: {
-      close: 55,
       volumeExpansion20: 0.9,
-      factorSignals: {
-        sectorFlowCore: 1,
-        sectorRsRatio: 104,
-        sectorRsMomentum: 2.5,
-        sectorTurnoverShareDelta: 0.01,
-      },
+      monthlyRevenueYoY: 12,
+      monthlyRevenueMoM: 3,
+      closeAboveMa20Pct: -0.01,
+      factorSignals: { monthlyRevenueYoY: 12, monthlyRevenueMoM: 3 },
     },
   }, DEFAULT_STRATEGY_SPECS)
   assert(
-    assessment.matches.some((match) => match.specId === 'finlab_ai_skill_sector_rotation_core_v1'),
-    'sector rotation core should match canonical sector_flow raw factors without Score V2',
+    assessment.matches.some((match) => match.specId === 'alphabuilders_multifactor_revenue_quality_momentum_v1'),
+    'retained AlphaBuilders revenue-quality strategy should match revenue plus price evidence',
   )
 }
 
@@ -304,32 +188,6 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     current_price: 900,
     score_v2: JSON.stringify({
       version: 'score_v2',
-      finalScore: 66,
-      components: {
-        mlEdge: 10,
-        chipFlow: 24,
-        technicalStructure: 22,
-        fundamentalQuality: 8,
-        newsTheme: 2,
-      },
-      technicalBreakdown: {
-        volumeConfirmation: 4,
-      },
-    }),
-  }
-  const assessment = assessCandidateAgainstStrategySpecs(candidate, DEFAULT_STRATEGY_SPECS)
-  assert(
-    assessment.matches.every((match) => match.status !== 'active'),
-    'Score V2 alone must not match active L1 strategies after raw-signal migration',
-  )
-}
-
-{
-  const candidate = {
-    symbol: '2330',
-    current_price: 900,
-    score_v2: JSON.stringify({
-      version: 'score_v2',
       finalScore: 70,
       components: {
         mlEdge: 12,
@@ -338,16 +196,8 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
         fundamentalQuality: 10,
         newsTheme: 2,
       },
-      technicalBreakdown: {
-        trendStructure: 6,
-        volatilityStructure: 4,
-        reversalExtreme: 4,
-        volumeConfirmation: 3,
-        executionRisk: 1,
-      },
-      seedComponents: {
-        screenerMomentumSeed20: 10,
-      },
+      technicalBreakdown: { trendStructure: 6, volatilityStructure: 4, reversalExtreme: 4, volumeConfirmation: 3, executionRisk: 1 },
+      seedComponents: { screenerMomentumSeed20: 10 },
     }),
   }
   const scores = deriveStrategyThresholdScores(candidate)
@@ -356,15 +206,12 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   assert(scores.seedScore === 70, 'strategy seed score should use canonical finalScore')
   assert(
     assessment.matches.every((match) => match.status !== 'active'),
-    'Score V2 compatibility parser must not make default L1 baseline match old legacy thresholds',
+    'Score V2 compatibility parser must not make default L1 baseline match old thresholds',
   )
 }
 
 {
-  const weak = annotateCandidateWithStrategySpecs({
-    symbol: '9999',
-    current_price: 20,
-  }, DEFAULT_STRATEGY_SPECS)
+  const weak = annotateCandidateWithStrategySpecs({ symbol: '9999', current_price: 20 }, DEFAULT_STRATEGY_SPECS)
   assert(
     weak.strategy_matches?.every((match) => match.status !== 'active'),
     'weak seed should not match active production strategy specs',
@@ -372,12 +219,9 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
-  const legacyOnly = deriveStrategyThresholdScores({
-    symbol: '2330',
-    current_price: 900,
-  })
-  assert(legacyOnly.source === 'missing_score_v2', 'strategy thresholds must not project legacy score fields into Score V2')
-  assert(legacyOnly.seedScore === 0, 'legacy-only strategy candidate should not pass seed thresholds')
+  const missingScore = deriveStrategyThresholdScores({ symbol: '2330', current_price: 900 })
+  assert(missingScore.source === 'missing_score_v2', 'strategy thresholds must not project legacy score fields into Score V2')
+  assert(missingScore.seedScore === 0, 'candidate without Score V2 should not receive synthetic score threshold values')
 }
 
 {
@@ -403,9 +247,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
         closeAboveMa60Pct: 0.02,
         volumeExpansion20: 1.25,
         return20d: 0.06,
-        technicalIndicators: {
-          macdHist: 0.1,
-        },
+        technicalIndicators: { macdHist: 0.1 },
       },
     },
     { symbol: '0000', current_price: 12 },

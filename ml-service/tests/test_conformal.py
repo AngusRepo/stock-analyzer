@@ -2,8 +2,6 @@
 import pytest
 import numpy as np
 import json
-import uuid
-from pathlib import Path
 
 
 def _import_calibrator():
@@ -65,11 +63,9 @@ class TestConformalCalibrator:
         assert r_anomaly["calibrated_confidence"] <= r_normal["calibrated_confidence"]
 
 
-def test_conformal_save_and_load_prefers_gcs(monkeypatch):
+def test_conformal_save_and_load_prefers_gcs(monkeypatch, tmp_path):
     from app.conformal import ConformalCalibrator, load_conformal, save_conformal
 
-    tmp_path = Path("ml-service/.test_tmp") / f"conformal-{uuid.uuid4().hex}"
-    tmp_path.mkdir(parents=True, exist_ok=True)
     uploads: dict[str, str] = {}
 
     class FakeBlob:

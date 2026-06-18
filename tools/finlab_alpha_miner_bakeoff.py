@@ -31,6 +31,7 @@ UNIFIED_FEATURE_REGISTRY_PATH = ROOT / "data" / "feature_registry" / "unified_fe
 MONTHLY_MINING_CONFIG_PATH = ROOT / "data" / "feature_registry" / "pymoo_monthly_mining_config_v1.json"
 FORMAL137_SIMILARITY_CONTRACT_PATH = ROOT / "data" / "feature_registry" / "formal137_similarity_contract_v1.json"
 FORMAL137_PAIRWISE_SIMILARITY_PATH = FEATURE_TRIAGE_DIR / "formal137_pairwise_similarity_long_20260617.csv"
+STRATEGY_FEATURE_REF_CONTRACT_PATH = ROOT / "data" / "feature_registry" / "strategy_feature_ref_contract_v1.json"
 
 MONTHLY_CONFIGURABLE_DEFAULTS = {
     "factor_universe": "unified_registry_v1",
@@ -521,6 +522,25 @@ def _similarity_adjusted_novelty(
 
 
 def _load_strategy_leaf_refs() -> list[str]:
+    if STRATEGY_FEATURE_REF_CONTRACT_PATH.exists():
+        try:
+            contract = json.loads(STRATEGY_FEATURE_REF_CONTRACT_PATH.read_text(encoding="utf-8-sig"))
+            leaves = {
+                str(row.get("feature_id") or "")[3:]
+                for row in contract.get("refs", [])
+                if isinstance(row, dict)
+                and str(row.get("feature_id") or "").startswith("l1_")
+                and row.get("ok", True)
+            }
+            if leaves:
+                return sorted(leaves)
+        except Exception as exc:
+            print(
+                f"[alpha-miner] warning: strategy feature ref contract load failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     tsx_expr = r"""
 import { DEFAULT_STRATEGY_SPECS } from './worker/src/lib/strategySpec';
 const active = DEFAULT_STRATEGY_SPECS.filter(s => s.status === 'active' && !s.id.startsWith('alphabuilders_'));

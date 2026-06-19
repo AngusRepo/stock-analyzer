@@ -1728,11 +1728,12 @@ def build_core_family_vote(
     family_scores: list[float] = []
     inactive_models: list[str] = []
     inactive_lifecycle_models: list[str] = []
+    duplicate_groups_all: dict[str, list[list[str]]] = {}
+    effective_model_vote_count = 0
 
     for family_name, model_names in _CORE_FAMILY_MODEL_GROUPS.items():
         model_scores: dict[str, float] = {}
-        weighted_sum = 0.0
-        weight_sum = 0.0
+        score_buckets: dict[float, dict[str, Any]] = {}
         for model_name in model_names:
             lifecycle_weight = lifecycle_weights.get(model_name) if lifecycle_weights is not None else None
             if require_lifecycle_weights and lifecycle_weights is None:
@@ -1745,12 +1746,26 @@ def build_core_family_vote(
             if score is not None:
                 model_scores[model_name] = round(score, 6)
                 weight = float(lifecycle_weight if lifecycle_weight is not None else 1.0)
-                weighted_sum += score * weight
-                weight_sum += weight
+                bucket_key = round(float(score), 6)
+                bucket = score_buckets.setdefault(bucket_key, {"score": float(score), "weight": 0.0, "models": []})
+                bucket["weight"] = max(float(bucket["weight"]), weight)
+                bucket["models"].append(model_name)
             else:
                 inactive_models.append(model_name)
         if model_scores:
+            weighted_sum = sum(float(row["score"]) * float(row["weight"]) for row in score_buckets.values())
+            weight_sum = sum(float(row["weight"]) for row in score_buckets.values())
             family_score = weighted_sum / weight_sum if weight_sum > 0 else sum(model_scores.values()) / len(model_scores)
+            duplicate_groups = [
+                list(row["models"])
+                for row in score_buckets.values()
+                if len(row.get("models") or []) > 1
+            ]
+            if duplicate_groups:
+                duplicate_groups_all[family_name] = duplicate_groups
+            effective_count = len(score_buckets)
+            effective_model_vote_count += effective_count
+            score_values = list(model_scores.values())
             active_families.append(family_name)
             family_scores.append(family_score)
             families[family_name] = {
@@ -1758,6 +1773,10 @@ def build_core_family_vote(
                 "score": round(family_score, 6),
                 "models": model_scores,
                 "model_count": len(model_scores),
+                "effective_model_count": effective_count,
+                "duplicate_model_groups": duplicate_groups,
+                "duplicate_guard_applied": bool(duplicate_groups),
+                "model_score_range": round(max(score_values) - min(score_values), 6) if score_values else 0.0,
                 "lifecycle_weighted": lifecycle_weights is not None,
             }
         else:
@@ -1780,6 +1799,8 @@ def build_core_family_vote(
         "active_family_count": len(active_families),
         "active_families": active_families,
         "families": families,
+        "effective_model_vote_count": effective_model_vote_count,
+        "duplicate_model_groups": duplicate_groups_all,
         "inactive_formal_models": sorted(set(inactive_models)),
         "inactive_lifecycle_models": sorted(set(inactive_lifecycle_models)),
         "lifecycle_weight_source": (
@@ -1810,6 +1831,8 @@ def _merge_core_family_vote_evidence(row: dict, vote: dict[str, Any], rank: int,
         "family_score": vote.get("family_score"),
         "active_family_count": vote.get("active_family_count"),
         "active_families": vote.get("active_families"),
+        "effective_model_vote_count": vote.get("effective_model_vote_count"),
+        "duplicate_model_groups": vote.get("duplicate_model_groups"),
         "inactive_formal_models": vote.get("inactive_formal_models"),
     }
     row["ml_vote_summary"] = summary

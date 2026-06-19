@@ -79,6 +79,30 @@ def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
         if src_rel is not None:
             shutil.copytree(src_rel, stable_dir / rel_dir, dirs_exist_ok=True)
 
+    data_registry = repo_root / "data" / "feature_registry"
+    if data_registry.exists():
+        shutil.copytree(data_registry, stable_dir / "data" / "feature_registry", dirs_exist_ok=True)
+
+    formal137_pairs = repo_root / "output" / "feature_universe_triage" / "formal137_pairwise_similarity_long_20260617.csv"
+    if formal137_pairs.exists():
+        target = stable_dir / "output" / "feature_universe_triage" / formal137_pairs.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(formal137_pairs, target)
+
+    strategy_mining_job = next(
+        (
+            candidate
+            for candidate in (
+                repo_root / "strategy_mining_job_main.py",
+                repo_root / "ml-controller" / "strategy_mining_job_main.py",
+            )
+            if candidate.exists()
+        ),
+        None,
+    )
+    if strategy_mining_job is not None:
+        shutil.copy2(strategy_mining_job, stable_dir / "strategy_mining_job_main.py")
+
     req_file = src_dir / "requirements.txt"
     if req_file.exists():
         shutil.copy2(req_file, stable_dir / "requirements.txt")

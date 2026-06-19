@@ -68,7 +68,10 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
       return5d: 0.04,
       marginBalance: 1_200_000,
       factorSignals: {
-        alphaMinerPymoo0081Score: 0.71,
+        KLOW2: 0.74,
+        advance_ratio: 0.61,
+        CNTD_20: 0.66,
+        KSFT: 0.69,
         finlabRevenueAcceleration: 1.4,
       },
       technicalIndicators: {
@@ -77,12 +80,50 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
       },
     },
   })
-  assert(raw.factorSignals?.alphaMinerPymoo0081Score === 0.71, 'raw parser should preserve registry-seeded mined scores')
+  assert(raw.factorSignals?.KLOW2 === 0.74, 'raw parser should preserve mined feature_ref factor values')
   assert(raw.factorSignals?.ma10_bias === 0.03, 'raw parser should expose ma10Bias alias for mined strategies')
   assert(raw.factorSignals?.return_5d === 0.04, 'raw parser should expose return5d alias for mined strategies')
   assert(raw.factorSignals?.margin_balance === 1_200_000, 'raw parser should expose margin balance evidence')
   assert(raw.factorSignals?.finlabRevenueAcceleration === 1.4, 'raw parser should preserve discovered factor signals')
   assert(raw.technicalIndicators?.rsi14 === 58, 'raw parser should preserve discovered technical indicators')
+}
+
+{
+  const assessment = assessCandidateAgainstStrategySpecs({
+    symbol: '3034',
+    current_price: 85,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      factorSignals: {
+        KLOW2: 0.9,
+        advance_ratio: 0.7,
+        CNTD_20: 0.8,
+        KSFT: 0.8,
+      },
+    },
+  }, [{
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'alpha_miner_pymoo_nsga3_novelty_0081',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.7,
+      featureRefs: {
+        weightedScore: {
+          min: 0.62,
+          terms: [
+            { featureRef: 'KLOW2', signal: 'factorSignals.KLOW2', weight: 0.415128 },
+            { featureRef: 'advance_ratio', signal: 'factorSignals.advance_ratio', weight: 0.117772 },
+            { featureRef: 'CNTD_20', signal: 'factorSignals.CNTD_20', weight: 0.20684 },
+            { featureRef: 'KSFT', signal: 'factorSignals.KSFT', weight: 0.260259 },
+          ],
+        },
+      },
+    },
+  }])
+  assert(
+    assessment.matches.some((match) => match.specId === 'alpha_miner_pymoo_nsga3_novelty_0081'),
+    'mined strategy should match through formal featureRefs, not alphaMiner composite score',
+  )
 }
 
 {

@@ -5,6 +5,7 @@
   "validated_cases": [
     "monthly_strategy_mining_scheduler",
     "worker_controller_route_surface",
+    "modal_strategy_mining_compute_owner",
     "strategy_mining_ledger_schema",
     "alpha_miner_cli_defaults_pymoo_only",
     "promotion_contract_monthly_pymoo",
@@ -12,7 +13,7 @@
   ],
   "scheduler_job": {
     "id": "monthly-strategy-mining",
-    "schedule": "first saturday of month 10:00 taipei",
+    "schedule": "first saturday of month 10:00",
     "timeZone": "Asia/Taipei",
     "task": "monthly-strategy-mining",
     "query": "sync=1&persist=1",

@@ -160,22 +160,52 @@ async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
   }
 }
 
-async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Promise<Set<string>> {
+async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Promise<{
+  hardBlockedSymbols: Set<string>
+  riskEvidenceSymbols: Set<string>
+  sourceCounts: Record<string, number>
+}> {
   const restricted = await loadTradingRestrictionSet(env, runDate, {
     refreshOfficialIfStale: true,
     refreshTtlMs: 12 * 60 * 60_000,
   })
+  const hardBlockedSymbols = new Set<string>()
+  const delistingRisk = await readSymbolList(env.KV, 'market:delisting_risk')
+  for (const symbol of delistingRisk) hardBlockedSymbols.add(symbol)
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT symbol
+        FROM stock_trading_restrictions
+       WHERE COALESCE(active, 1) = 1
+         AND (start_date IS NULL OR start_date <= ?)
+         AND (end_date IS NULL OR end_date >= ?)
+         AND LOWER(COALESCE(restriction_type, '')) IN ('delisting','suspended','halted','untradable','data_untrusted','execution_block')
+    `).bind(runDate, runDate).all<{ symbol: string | null }>()
+    for (const row of results ?? []) {
+      const symbol = String(row.symbol ?? '').match(/\b(\d{4,6})\b/)?.[1]
+      if (symbol) hardBlockedSymbols.add(symbol)
+    }
+  } catch {
+    // Older D1 snapshots may not carry restriction_type; attention/disposition
+    // must stay risk evidence, so absence of this query should not hard block.
+  }
   await env.KV.put(
     `market:trading_restrictions:summary:${runDate}`,
     JSON.stringify({
       count: restricted.symbols.size,
+      hard_block_count: hardBlockedSymbols.size,
+      risk_evidence_count: [...restricted.symbols].filter((symbol) => !hardBlockedSymbols.has(symbol)).length,
       source_counts: restricted.sourceCounts,
       freshness: restricted.freshness,
       generated_at: new Date().toISOString(),
     }),
     { expirationTtl: 7 * 86400 },
   ).catch(() => {})
-  return restricted.symbols
+  return {
+    hardBlockedSymbols,
+    riskEvidenceSymbols: restricted.symbols,
+    sourceCounts: restricted.sourceCounts,
+  }
 }
 
 export interface ScreenerSelectionFlag {
@@ -1061,6 +1091,26 @@ function deriveStrategyRawSignals(
   const return5d = latestIndex >= 5 ? pctChange(closes[latestIndex], closes[latestIndex - 5]) : null
   const return20d = latestIndex >= 20 ? pctChange(closes[latestIndex], closes[latestIndex - 20]) : null
   const return60d = latestIndex >= 60 ? pctChange(closes[latestIndex], closes[latestIndex - 60]) : null
+  const latestOhlcv = indicatorRows[latestIndex]
+  const latestRange = latestOhlcv ? Math.max(1e-8, latestOhlcv.high - latestOhlcv.low) : null
+  const latestOpen = latestOhlcv?.open ?? null
+  const kLow2 = latestOhlcv && latestRange != null
+    ? clamp((Math.min(latestOhlcv.open, latestOhlcv.close) - latestOhlcv.low) / latestRange, 0, 1)
+    : null
+  const kSft = latestOhlcv && latestOpen != null && Math.abs(latestOpen) > 1e-8
+    ? clamp((2 * latestOhlcv.close - latestOhlcv.high - latestOhlcv.low) / latestOpen, -0.2, 0.2)
+    : null
+  const kSft2 = latestOhlcv && latestRange != null
+    ? clamp((2 * latestOhlcv.close - latestOhlcv.high - latestOhlcv.low) / latestRange, -1, 1)
+    : null
+  const last20Closes = closes.slice(-21)
+  const cntp20 = last20Closes.length >= 21
+    ? last20Closes.slice(1).filter((value, idx) => value > last20Closes[idx]).length / 20
+    : null
+  const cntn20 = last20Closes.length >= 21
+    ? last20Closes.slice(1).filter((value, idx) => value < last20Closes[idx]).length / 20
+    : null
+  const cntd20 = cntp20 != null && cntn20 != null ? cntp20 - cntn20 : null
   const technicals = computeTechnicalIndicators(closes, highs, lows, volumes)
   const latestRsi14 = technicals.rsi14 ?? rsi14(closes)
   const bbBandwidthPct = technicals.bbUpper != null && technicals.bbLower != null && technicals.bbMid != null && technicals.bbMid > 0
@@ -1184,10 +1234,20 @@ function deriveStrategyRawSignals(
       bestFvgRetested: bestFvg?.status === 'retested' ? 1 : 0,
       bestOrderBlockStrength: bestOrderBlock?.strength ?? null,
       bestOrderBlockRetested: bestOrderBlock?.status === 'retested' ? 1 : 0,
+      KLOW2: kLow2,
+      KSFT: kSft,
+      KSFT2: kSft2,
+      CNTN_20: cntn20,
+      CNTD_20: cntd20,
     },
     factorSignals: {
       closeAboveMa20Pct,
       volumeExpansion20,
+      KLOW2: kLow2,
+      KSFT: kSft,
+      KSFT2: kSft2,
+      CNTN_20: cntn20,
+      CNTD_20: cntd20,
       ma10_bias: ma10Bias,
       ma10Bias,
       return_5d: return5d,
@@ -1242,17 +1302,6 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'pe', signalKey: 'PeCheap', direction: 'lower_is_better', sectorRank: true },
   { rawField: 'pb', signalKey: 'PbCheap', direction: 'lower_is_better', sectorRank: true },
 ]
-
-function weightedFiniteScore(parts: Array<[number | null | undefined, number]>): number | null {
-  let weighted = 0
-  let weightSum = 0
-  for (const [value, weight] of parts) {
-    if (value == null || !Number.isFinite(value) || weight <= 0) continue
-    weighted += clamp(value, 0, 1) * weight
-    weightSum += weight
-  }
-  return weightSum > 0 ? Math.round((weighted / weightSum) * 10000) / 10000 : null
-}
 
 function percentileRank(value: number, sortedAsc: number[]): number | null {
   if (!Number.isFinite(value) || !sortedAsc.length) return null
@@ -1449,40 +1498,6 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
       telemetry.compositeCoverage.finlabSectorQualityCompositeRank = (telemetry.compositeCoverage.finlabSectorQualityCompositeRank ?? 0) + 1
     }
 
-    const alphaMiner0081 = weightedFiniteScore([
-      [finiteOrNull(raw.factorSignals.finlabCsMa10BiasRank), 0.415128],
-      [finiteOrNull(raw.factorSignals.advance_ratio ?? raw.factorSignals.advanceRatio), 0.117772],
-      [finiteOrNull(raw.factorSignals.finlabCsReturn20dRank), 0.20684],
-      [finiteOrNull(raw.factorSignals.finlabCsVolumeExpansion20Rank), 0.260259],
-    ])
-    if (alphaMiner0081 != null) {
-      raw.factorSignals.alphaMinerPymoo0081Score = alphaMiner0081
-      raw.factorSignals.alpha_miner_pymoo_nsga3_novelty_0081_score = alphaMiner0081
-      telemetry.compositeCoverage.alphaMinerPymoo0081Score = (telemetry.compositeCoverage.alphaMinerPymoo0081Score ?? 0) + 1
-    }
-
-    const alphaMiner0193 = weightedFiniteScore([
-      [finiteOrNull(raw.factorSignals.us_sentiment_score ?? raw.factorSignals.usSentimentScore), 0.479025],
-      [finiteOrNull(raw.factorSignals.finlabCsMarginBalanceRank), 0.520975],
-    ])
-    if (alphaMiner0193 != null) {
-      raw.factorSignals.alphaMinerPymoo0193Score = alphaMiner0193
-      raw.factorSignals.alpha_miner_pymoo_nsga3_novelty_0193_score = alphaMiner0193
-      telemetry.compositeCoverage.alphaMinerPymoo0193Score = (telemetry.compositeCoverage.alphaMinerPymoo0193Score ?? 0) + 1
-    }
-
-    const alphaMiner0187 = weightedFiniteScore([
-      [finiteOrNull(raw.factorSignals.finlabCsVolumeExpansion20Rank), 0.300141],
-      [finiteOrNull(raw.factorSignals.finlabCsMonthlyRevenueMoMRank), 0.056417],
-      [finiteOrNull(raw.factorSignals.finlabCsReturn20dRank), 0.106408],
-      [finiteOrNull(raw.factorSignals.finlabCsMa10BiasRank), 0.351215],
-      [finiteOrNull(raw.factorSignals.finlabCsReturn5dRank), 0.185819],
-    ])
-    if (alphaMiner0187 != null) {
-      raw.factorSignals.alphaMinerPymoo0187Score = alphaMiner0187
-      raw.factorSignals.alpha_miner_pymoo_nsga3_novelty_0187_score = alphaMiner0187
-      telemetry.compositeCoverage.alphaMinerPymoo0187Score = (telemetry.compositeCoverage.alphaMinerPymoo0187Score ?? 0) + 1
-    }
   }
 
   return telemetry
@@ -2247,9 +2262,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? ?蔭?⊥?????
-  const punishedSet = await loadRestrictedScreenerSymbols(env, endDate)
-  // restricted symbols are loaded once through loadRestrictedScreenerSymbols above.
-  debugLog.push(`[Guard] restricted symbols loaded=${punishedSet.size} (punished + attention, KV fallback enabled)`)
+  const restrictionPolicy = await loadRestrictedScreenerSymbols(env, endDate)
+  const punishedSet = restrictionPolicy.hardBlockedSymbols
+  const restrictionRiskSet = restrictionPolicy.riskEvidenceSymbols
+  debugLog.push(`[Guard] trading restriction policy hard_block=${punishedSet.size} risk_evidence=${restrictionRiskSet.size} (attention/disposition are not L0 hard blocks)`)
 
   // ?? 霈???寧璆?mapping + 璁艙璅惜 ??
   const industryMap = await getIndustryMapping(env.DB, env.KV)
@@ -2345,7 +2361,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
     if (punishedSet.has(stockId)) {
       skipPunish++
-      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'restricted_attention_or_punished', evidence: { restricted: true } })
+      pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'drop', reasonCode: 'hard_trading_restriction_block', evidence: { restricted: true, policy: 'hard_block' } })
       continue
     }
 
@@ -2365,7 +2381,18 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
 
     universe.push({ stockId, prices })
-    pushFunnelItem(funnelItems, { symbol: stockId, stage: 'universe', decision: 'pass', reasonCode: 'hard_filters_passed', evidence: { close: latest.close, avgVol20, avgDailyTurnover } })
+    pushFunnelItem(funnelItems, {
+      symbol: stockId,
+      stage: 'universe',
+      decision: 'pass',
+      reasonCode: 'hard_filters_passed',
+      evidence: {
+        close: latest.close,
+        avgVol20,
+        avgDailyTurnover,
+        tradingRestrictionRisk: restrictionRiskSet.has(stockId),
+      },
+    })
   }
   const universeMsg = `[Step 1] Universe: ${universe.length} passed | drops: price=${skipPrice} avgVol=${skipVol} turnover=${skipTurnover} restricted=${skipPunish} zeroVol=${skipVolZero} etf=${skipEtf} other=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero - skipEtf}`
   debugLog.push(universeMsg)

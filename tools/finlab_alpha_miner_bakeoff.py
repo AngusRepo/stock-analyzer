@@ -207,6 +207,19 @@ def _load_direction_map(path: Path, *, id_key: str, direction_key: str) -> dict[
     return out
 
 
+def _registry_direction(row: dict[str, Any], default: float = 1.0) -> float:
+    triage = row.get("triage") if isinstance(row.get("triage"), dict) else {}
+    for source in (triage, row):
+        for key in ("direction_mode", "strategy_direction", "declared_direction"):
+            if source.get(key) is not None:
+                return _direction_from_mode(source.get(key), default)
+        if source.get("direction") is not None:
+            value = _safe_float(source.get("direction"))
+            if value is not None and value != 0:
+                return 1.0 if value > 0 else -1.0
+    return float(default)
+
+
 def _rank_pct(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.replace([np.inf, -np.inf], np.nan).rank(axis=1, pct=True)
 
@@ -987,7 +1000,6 @@ def _build_unified_registry_factor_universe(args: argparse.Namespace) -> tuple[
         columns=columns,
         required_features=required_ml_features,
     )
-    ml_direction = _load_direction_map(ML106_BEST_PATH, id_key="feature_id", direction_key="direction_mode")
 
     strategy_values, strategy_meta, strategy_info = overlap._build_strategy_factor_pool(
         base=base,
@@ -1024,13 +1036,13 @@ def _build_unified_registry_factor_universe(args: argparse.Namespace) -> tuple[
         selected_role_counts[role] = selected_role_counts.get(role, 0) + 1
         if source == "ml106":
             frame = ml_values.pop(fid, None)
-            direction = float(ml_direction.get(fid, 1.0))
+            direction = _registry_direction(row, 1.0)
             category = str(row.get("category") or _feature_group(fid))
-            source_label = "ml106"
+            source_label = str(row.get("source_system") or "stockvision_formal137")
         elif source == "strategy95":
             frame = strategy_values.pop(fid, None)
             raw_meta = strategy_meta.pop(fid, {})
-            direction = float((row.get("triage") or {}).get("strategy_direction") or raw_meta.get("direction") or 1.0)
+            direction = _registry_direction(row, float(raw_meta.get("direction") or 1.0))
             category = str(row.get("category") or raw_meta.get("category") or "strategy95")
             source_label = str(row.get("source_system") or raw_meta.get("source") or "strategy95")
         else:
@@ -1066,6 +1078,7 @@ def _build_unified_registry_factor_universe(args: argparse.Namespace) -> tuple[
         },
         "origin_counts": (registry.get("summary") or {}).get("origin_counts"),
         "registry_l1_supplement": l1_supplement_info,
+        "direction_source": "unified_feature_registry_v1.triage.direction_mode/strategy_direction",
         "strategy_info": strategy_info,
         "note": "unified_registry_v1 supersedes canonical114. L1, ML, PLE, L1.25 and alpha mining share one registry; consumers may apply transforms but may not maintain independent feature universes.",
     }

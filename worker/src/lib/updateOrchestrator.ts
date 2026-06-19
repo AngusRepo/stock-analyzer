@@ -17,6 +17,7 @@ const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
+const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const FINLAB_CANONICAL_DAILY_CHECKS = [
   { table: 'canonical_market_daily', minRows: 1000 },
   { table: 'canonical_chip_daily', minRows: 1000 },
@@ -868,6 +869,88 @@ export async function processUpdateBatch(
       }
       throw e
     }
+    return
+  }
+
+  if (msg.type === 'strategy_learning_materialize') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `strategy-learning-${triggerTime}`
+    const offset = Math.max(0, Math.floor(Number(msg.cursor ?? 0)))
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid strategy-learning date ${triggerTime}, skipping.`)
+      return
+    }
+
+    const {
+      materializeStrategyDecisionLogChunk,
+      refreshStrategyAdaptivePolicyState,
+      refreshStrategyRewardLedger,
+      seedDefaultStrategySpecRegistry,
+    } = await import('./strategyLearning')
+
+    if (offset === 0) {
+      await seedDefaultStrategySpecRegistry(env.DB)
+    }
+
+    const chunk = await materializeStrategyDecisionLogChunk(env.DB, {
+      date: triggerTime,
+      offset,
+      limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
+      dryRun: false,
+    })
+
+    if (chunk.has_more) {
+      await logSchedulerResult(env.KV, 'strategy-learning', {
+        status: 'running',
+        summary: `materialized chunk offset=${chunk.offset} candidates=${chunk.candidate_count} decision_rows=${chunk.persisted_rows}; next_offset=${chunk.next_offset}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      })
+      await env.UPDATE_QUEUE.send({
+        type: 'strategy_learning_materialize',
+        cursor: chunk.next_offset,
+        triggerTime,
+        runId,
+        force: Boolean(msg.force),
+      })
+      return
+    }
+
+    const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: triggerTime, dryRun: false })
+    const policy = msg.force
+      ? await refreshStrategyAdaptivePolicyState(env.DB, { date: triggerTime, dryRun: false })
+      : null
+    const summary = [
+      `materialized_complete offset=${chunk.offset}`,
+      `last_candidates=${chunk.candidate_count}`,
+      `last_decision_rows=${chunk.persisted_rows}`,
+      `reward_source_rows=${rewards.source_rows}`,
+      `reward_rows=${rewards.persisted_rows}`,
+      `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
+    ].join(' ')
+
+    await logSchedulerResult(env.KV, 'strategy-learning', {
+      status: 'success',
+      summary,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    })
+    await logSchedulerResult(env.KV, 'post-verify-chain', {
+      status: 'success',
+      summary: `strategy-learning queue closed; ${summary}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    })
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'success',
+      summary: `root chain closed after queued strategy-learning: ${summary}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    })
     return
   }
 

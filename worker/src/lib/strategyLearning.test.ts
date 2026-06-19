@@ -140,6 +140,8 @@ class FakeStrategyRegistryD1 {
     'strategy decision materialization must be idempotent across historical replay runs',
   )
   assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE'), 'strategy learning replay writes must be chunked for D1 production latency')
+  assert(source.includes('STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT = 2000'), 'strategy learning must default to full L0 universe scale, not the old 500-candidate partial cap')
+  assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE = 250'), 'strategy learning D1 writes must avoid excessive 50-row round trips that can be killed in callback waitUntil')
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
   assert(
     source.includes('screener_funnel_items') &&

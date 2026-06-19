@@ -2,9 +2,7 @@
   "schema_version": "stockvision-feature-registry-local-closure-v1",
   "status": "pass",
   "errors": [],
-  "warnings": [
-    "ml_feature_migration_preflight_ready=84; retrain_release_required"
-  ],
+  "warnings": [],
   "counts": {
     "registry_features": 902,
     "formal_alpha_mining_features": 137,
@@ -19,12 +17,12 @@
     },
     "strategy_count": 11,
     "strategy_ref_blockers": 0,
-    "ml_feature_cols_current": 106,
+    "ml_feature_cols_current": 137,
     "ml_training_view_candidates": 137,
-    "ml_formal137_not_in_current_feature_cols": 84,
+    "ml_formal137_not_in_current_feature_cols": 0,
     "ml_migration_preflight_status": "preflight_ready",
     "ml_migration_materialization_blockers": 0,
-    "ml_migration_production_activation": "blocked_until_feature_selection_retrain_release_approval",
+    "ml_migration_production_activation": "pass",
     "monthly_algorithm": "pymoo",
     "monthly_cadence": "monthly",
     "promotion_seeded_strategies": [

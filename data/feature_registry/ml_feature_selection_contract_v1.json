@@ -15,129 +15,30 @@
     "similarity_contract": "data/feature_registry/formal137_similarity_contract_v1.json"
   },
   "counts": {
-    "feature_cols": 106,
+    "feature_cols": 137,
     "optional_feature_cols": 6,
     "catboost_extra_cols": 14,
     "formal137_ml_training_view": 137,
-    "feature_cols_mapped_to_formal137": 53,
+    "feature_cols_mapped_to_formal137": 137,
     "feature_cols_not_mapped_to_formal137": 0,
-    "formal137_not_in_current_feature_cols": 84,
+    "formal137_not_in_current_feature_cols": 0,
     "similarity_refresh_required": 0
   },
   "mapping_counts": {
-    "direct": 95,
-    "alias": 11
+    "direct": 137
   },
   "formal137_status_counts": {
-    "alias": 14,
-    "formal_candidate": 53,
-    "drop_research_candidate": 39
+    "formal_candidate": 137
   },
   "selector_role_counts": {
-    "alias": 14,
-    "evidence_watch": 18,
-    "drop_research_candidate": 39,
-    "core_prior": 35
+    "evidence_watch": 68,
+    "core_prior": 69
   },
-  "formal137_not_in_current_feature_cols": [
-    "l1_bbBandwidthPct",
-    "l1_bestFvgStrength",
-    "l1_bestOrderBlockStrength",
-    "l1_bosBullish",
-    "l1_brokerConcentration",
-    "l1_brokerNetAmount5d",
-    "l1_chochBullish",
-    "l1_diTrend",
-    "l1_displacementPct",
-    "l1_eps",
-    "l1_foreignTrustNet5d",
-    "l1_liquiditySweepBullish",
-    "l1_monthlyRevenueMoM",
-    "l1_monthlyRevenueYoY",
-    "l1_return20d",
-    "l1_roe",
-    "l1_sectorFlowCore",
-    "l1_sectorRsMomentum",
-    "l1_sectorRsRatio",
-    "l1_sectorTurnoverShareDelta",
-    "l1_smcBiasBearish",
-    "l1_smcBullishScore",
-    "l1_smcNetScore",
-    "l1_squeezeMomentum",
-    "l1_squeezeRelease",
-    "l1_volumeExpansion20",
-    "l1_volumeMomentumDivergence132710",
-    "liq_amihud_21d",
-    "ma60_bias",
-    "mom_12m_1m",
-    "mom_9m",
-    "mom_close_to_52w_high",
-    "mom_hl52",
-    "mom_ma50_200_ratio",
-    "mom_macd_trend_10",
-    "mom_reversal_1m",
-    "mom_reversal_6m",
-    "mom_vol_adj_12m",
-    "size_log_mktcap",
-    "tech_adx_14",
-    "tech_bbi",
-    "tech_bias_20",
-    "tech_bullish_streak_5",
-    "tech_cci_20",
-    "tech_cmo_14",
-    "tech_disposal_active",
-    "tech_dma_10_50",
-    "tech_donchian_pos_20",
-    "tech_ema_12_pos",
-    "tech_emv_14",
-    "tech_gap_down",
-    "tech_gap_up",
-    "tech_granville_score",
-    "tech_kd9_k",
-    "tech_kdj_j_9",
-    "tech_keltner_pos_20",
-    "tech_limit_up_streak_10",
-    "tech_locked_open_down_10",
-    "tech_locked_open_up_10",
-    "tech_ma_convergence",
-    "tech_mfi_14",
-    "tech_mtm_10",
-    "tech_obv",
-    "tech_psy_12",
-    "tech_roc_10",
-    "tech_sar",
-    "tech_slow_kd_14",
-    "tech_tower_3",
-    "tech_trix_12",
-    "tech_vr_26",
-    "tech_williams_r_14",
-    "val_bp",
-    "val_dp",
-    "val_ep",
-    "val_sp",
-    "vol_chg_turnover_1y",
-    "vol_cv_volprice_20d",
-    "vol_money_flow_5d",
-    "vol_share_turnover_21d",
-    "vol_signal_5d",
-    "vola_cv_90d",
-    "vola_min_130d",
-    "vola_realized_12m",
-    "vola_realized_1m"
-  ],
+  "formal137_not_in_current_feature_cols": [],
   "feature_mappings": [
     {
-      "ml_feature": "return_1d",
-      "registry_feature_id": "return_1d",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "return_3d",
-      "registry_feature_id": "return_3d",
+      "ml_feature": "l1_bbBandwidthPct",
+      "registry_feature_id": "l1_bbBandwidthPct",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
@@ -145,80 +46,35 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "return_5d",
-      "registry_feature_id": "return_5d",
+      "ml_feature": "l1_bestFvgStrength",
+      "registry_feature_id": "l1_bestFvgStrength",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "return_10d",
-      "registry_feature_id": "return_10d",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "volatility_5d",
-      "registry_feature_id": "volatility_5d",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "volatility_20d",
-      "registry_feature_id": "volatility_20d",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "rsi14",
-      "registry_feature_id": "mom_rsi_14",
-      "mapping_type": "alias",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "macdHist",
-      "registry_feature_id": "l1_macdHist",
-      "mapping_type": "alias",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "bb_position",
-      "registry_feature_id": "tech_bbands_pctb_20",
-      "mapping_type": "alias",
+      "ml_feature": "l1_bestOrderBlockStrength",
+      "registry_feature_id": "l1_bestOrderBlockStrength",
+      "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "vol_ratio_5d",
-      "registry_feature_id": "tech_volume_ratio_5",
-      "mapping_type": "alias",
+      "ml_feature": "l1_bosBullish",
+      "registry_feature_id": "l1_bosBullish",
+      "mapping_type": "direct",
       "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
+      "selector_role": "evidence_watch",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "vol_ratio_20d",
-      "registry_feature_id": "vol_ratio_20d",
+      "ml_feature": "l1_brokerConcentration",
+      "registry_feature_id": "l1_brokerConcentration",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -226,26 +82,53 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "ma20_bias",
-      "registry_feature_id": "tech_sma_20_pos",
-      "mapping_type": "alias",
+      "ml_feature": "l1_brokerNetAmount5d",
+      "registry_feature_id": "l1_brokerNetAmount5d",
+      "mapping_type": "direct",
       "formal137_status": "formal_candidate",
-      "selector_role": "evidence_watch",
+      "selector_role": "core_prior",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "ma60_bias",
+      "ml_feature": "l1_closeAboveMa60Pct",
       "registry_feature_id": "l1_closeAboveMa60Pct",
-      "mapping_type": "alias",
+      "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "institutional_net",
-      "registry_feature_id": "institutional_net",
+      "ml_feature": "l1_dealerNet5d",
+      "registry_feature_id": "l1_dealerNet5d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_diTrend",
+      "registry_feature_id": "l1_diTrend",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_displacementPct",
+      "registry_feature_id": "l1_displacementPct",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_eps",
+      "registry_feature_id": "l1_eps",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -253,8 +136,782 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "chip_5d",
-      "registry_feature_id": "chip_5d",
+      "ml_feature": "l1_foreignTrustNet5d",
+      "registry_feature_id": "l1_foreignTrustNet5d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_macdHist",
+      "registry_feature_id": "l1_macdHist",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_monthlyRevenueMoM",
+      "registry_feature_id": "l1_monthlyRevenueMoM",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_monthlyRevenueYoY",
+      "registry_feature_id": "l1_monthlyRevenueYoY",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_return20d",
+      "registry_feature_id": "l1_return20d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_revenueGrowthYoY",
+      "registry_feature_id": "l1_revenueGrowthYoY",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_roe",
+      "registry_feature_id": "l1_roe",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_sectorFlowCore",
+      "registry_feature_id": "l1_sectorFlowCore",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_sectorRsRatio",
+      "registry_feature_id": "l1_sectorRsRatio",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_sectorTurnoverShareDelta",
+      "registry_feature_id": "l1_sectorTurnoverShareDelta",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_smcBullishScore",
+      "registry_feature_id": "l1_smcBullishScore",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_smcNetScore",
+      "registry_feature_id": "l1_smcNetScore",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_squeezeMomentum",
+      "registry_feature_id": "l1_squeezeMomentum",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_squeezeRelease",
+      "registry_feature_id": "l1_squeezeRelease",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_volumeExpansion20",
+      "registry_feature_id": "l1_volumeExpansion20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "l1_volumeMomentumDivergence132710",
+      "registry_feature_id": "l1_volumeMomentumDivergence132710",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "liq_amihud_21d",
+      "registry_feature_id": "liq_amihud_21d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_12m_1m",
+      "registry_feature_id": "mom_12m_1m",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_9m",
+      "registry_feature_id": "mom_9m",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_close_to_52w_high",
+      "registry_feature_id": "mom_close_to_52w_high",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_hl52",
+      "registry_feature_id": "mom_hl52",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_ma50_200_ratio",
+      "registry_feature_id": "mom_ma50_200_ratio",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_macd_trend_10",
+      "registry_feature_id": "mom_macd_trend_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_reversal_1m",
+      "registry_feature_id": "mom_reversal_1m",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_reversal_6m",
+      "registry_feature_id": "mom_reversal_6m",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_rsi_14",
+      "registry_feature_id": "mom_rsi_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "mom_vol_adj_12m",
+      "registry_feature_id": "mom_vol_adj_12m",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "size_log_mktcap",
+      "registry_feature_id": "size_log_mktcap",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_adx_14",
+      "registry_feature_id": "tech_adx_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_atr_14",
+      "registry_feature_id": "tech_atr_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_bbands_pctb_20",
+      "registry_feature_id": "tech_bbands_pctb_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_bbi",
+      "registry_feature_id": "tech_bbi",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_bias_20",
+      "registry_feature_id": "tech_bias_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_bullish_streak_5",
+      "registry_feature_id": "tech_bullish_streak_5",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_cmo_14",
+      "registry_feature_id": "tech_cmo_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_disposal_active",
+      "registry_feature_id": "tech_disposal_active",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_dma_10_50",
+      "registry_feature_id": "tech_dma_10_50",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_donchian_pos_20",
+      "registry_feature_id": "tech_donchian_pos_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_ema_12_pos",
+      "registry_feature_id": "tech_ema_12_pos",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_emv_14",
+      "registry_feature_id": "tech_emv_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_gap_down",
+      "registry_feature_id": "tech_gap_down",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_gap_up",
+      "registry_feature_id": "tech_gap_up",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_granville_score",
+      "registry_feature_id": "tech_granville_score",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_kd9_k",
+      "registry_feature_id": "tech_kd9_k",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_kdj_j_9",
+      "registry_feature_id": "tech_kdj_j_9",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_keltner_pos_20",
+      "registry_feature_id": "tech_keltner_pos_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_limit_down_count_10",
+      "registry_feature_id": "tech_limit_down_count_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_limit_up_streak_10",
+      "registry_feature_id": "tech_limit_up_streak_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_locked_open_down_10",
+      "registry_feature_id": "tech_locked_open_down_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_locked_open_up_10",
+      "registry_feature_id": "tech_locked_open_up_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_ma_convergence",
+      "registry_feature_id": "tech_ma_convergence",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_mfi_14",
+      "registry_feature_id": "tech_mfi_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_mtm_10",
+      "registry_feature_id": "tech_mtm_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_obv",
+      "registry_feature_id": "tech_obv",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_psy_12",
+      "registry_feature_id": "tech_psy_12",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_roc_10",
+      "registry_feature_id": "tech_roc_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_sar",
+      "registry_feature_id": "tech_sar",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_slow_kd_14",
+      "registry_feature_id": "tech_slow_kd_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_sma_20_pos",
+      "registry_feature_id": "tech_sma_20_pos",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_tower_3",
+      "registry_feature_id": "tech_tower_3",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_trix_12",
+      "registry_feature_id": "tech_trix_12",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_volume_ratio_5",
+      "registry_feature_id": "tech_volume_ratio_5",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_vr_26",
+      "registry_feature_id": "tech_vr_26",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_williams_r_14",
+      "registry_feature_id": "tech_williams_r_14",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "tech_wma_10_pos",
+      "registry_feature_id": "tech_wma_10_pos",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "val_bp",
+      "registry_feature_id": "val_bp",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "val_dp",
+      "registry_feature_id": "val_dp",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "val_ep",
+      "registry_feature_id": "val_ep",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "val_sp",
+      "registry_feature_id": "val_sp",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vol_chg_turnover_1y",
+      "registry_feature_id": "vol_chg_turnover_1y",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vol_cv_volprice_20d",
+      "registry_feature_id": "vol_cv_volprice_20d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vol_money_flow_5d",
+      "registry_feature_id": "vol_money_flow_5d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vol_share_turnover_21d",
+      "registry_feature_id": "vol_share_turnover_21d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vol_signal_5d",
+      "registry_feature_id": "vol_signal_5d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vola_cv_90d",
+      "registry_feature_id": "vola_cv_90d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vola_min_130d",
+      "registry_feature_id": "vola_min_130d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vola_realized_12m",
+      "registry_feature_id": "vola_realized_12m",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vola_realized_1m",
+      "registry_feature_id": "vola_realized_1m",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "margin_balance",
+      "registry_feature_id": "margin_balance",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "VSTD_10",
+      "registry_feature_id": "VSTD_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "linear_factor",
+      "registry_feature_id": "linear_factor",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "CNTP_20",
+      "registry_feature_id": "CNTP_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "RSQR_20",
+      "registry_feature_id": "RSQR_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "VSTD_20",
+      "registry_feature_id": "VSTD_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "margin_change_5d_ts",
+      "registry_feature_id": "margin_change_5d_ts",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "CNTD_20",
+      "registry_feature_id": "CNTD_20",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "RESI_5",
+      "registry_feature_id": "RESI_5",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -271,98 +928,17 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "sentiment",
-      "registry_feature_id": "sentiment",
+      "ml_feature": "BETA_60",
+      "registry_feature_id": "BETA_60",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "sentiment_3d",
-      "registry_feature_id": "sentiment_3d",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "has_sentiment",
-      "registry_feature_id": "has_sentiment",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "atr14",
-      "registry_feature_id": "tech_atr_14",
-      "mapping_type": "alias",
       "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
+      "selector_role": "evidence_watch",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "market_risk_score",
-      "registry_feature_id": "market_risk_score",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "market_risk_level",
-      "registry_feature_id": "market_risk_level",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "market_return_1d",
-      "registry_feature_id": "market_return_1d",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "market_return_5d",
-      "registry_feature_id": "market_return_5d",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "market_bias_20d",
-      "registry_feature_id": "market_bias_20d",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "stock_vs_market",
-      "registry_feature_id": "stock_vs_market",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "linear_factor",
-      "registry_feature_id": "linear_factor",
+      "ml_feature": "KMID",
+      "registry_feature_id": "KMID",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -379,107 +955,8 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "keltner_position",
-      "registry_feature_id": "keltner_position",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "us_sox_return",
-      "registry_feature_id": "us_sox_return",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "us_gspc_return",
-      "registry_feature_id": "us_gspc_return",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "us_dxy_return",
-      "registry_feature_id": "us_dxy_return",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "us_hy_spread",
-      "registry_feature_id": "us_hy_spread",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "us_hy_spread_chg",
-      "registry_feature_id": "us_hy_spread_chg",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "us_vix",
-      "registry_feature_id": "us_vix",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "us_sentiment_score",
-      "registry_feature_id": "us_sentiment_score",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "advance_ratio",
-      "registry_feature_id": "advance_ratio",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "bull_alignment_pct",
-      "registry_feature_id": "bull_alignment_pct",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "revenue_yoy",
-      "registry_feature_id": "l1_revenueGrowthYoY",
-      "mapping_type": "alias",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "margin_balance",
-      "registry_feature_id": "margin_balance",
+      "ml_feature": "dealer_ratio_5d",
+      "registry_feature_id": "dealer_ratio_5d",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -487,35 +964,8 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "short_ratio",
-      "registry_feature_id": "short_ratio",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "margin_change_5d",
-      "registry_feature_id": "margin_change_5d",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "retail_pct",
-      "registry_feature_id": "retail_pct",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "margin_ratio",
-      "registry_feature_id": "margin_ratio",
+      "ml_feature": "chip_5d",
+      "registry_feature_id": "chip_5d",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -523,8 +973,8 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "margin_change_5d_ts",
-      "registry_feature_id": "margin_change_5d_ts",
+      "ml_feature": "institutional_net",
+      "registry_feature_id": "institutional_net",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -532,17 +982,26 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "short_change_5d",
-      "registry_feature_id": "short_change_5d",
+      "ml_feature": "RESI_20",
+      "registry_feature_id": "RESI_20",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
-      "ml_feature": "short_squeeze_proxy",
-      "registry_feature_id": "short_squeeze_proxy",
+      "ml_feature": "RESI_10",
+      "registry_feature_id": "RESI_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "RSQR_60",
+      "registry_feature_id": "RSQR_60",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -559,137 +1018,20 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "vwap_5d",
-      "registry_feature_id": "vwap_5d",
+      "ml_feature": "IMXD_20",
+      "registry_feature_id": "IMXD_20",
       "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
-      "ml_feature": "vwap_bias_5d",
-      "registry_feature_id": "vwap_bias_5d",
+      "ml_feature": "RESI_60",
+      "registry_feature_id": "RESI_60",
       "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "dealer_5d",
-      "registry_feature_id": "l1_dealerNet5d",
-      "mapping_type": "alias",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "dealer_ratio_5d",
-      "registry_feature_id": "dealer_ratio_5d",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "foreign_consecutive_sell",
-      "registry_feature_id": "foreign_consecutive_sell",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "foreign_net_5d_market",
-      "registry_feature_id": "foreign_net_5d_market",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "limit_down_count",
-      "registry_feature_id": "tech_limit_down_count_10",
-      "mapping_type": "alias",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "limit_down_pct",
-      "registry_feature_id": "limit_down_pct",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "adl_value",
-      "registry_feature_id": "adl_value",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "adl_trend_numeric",
-      "registry_feature_id": "adl_trend_numeric",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "ma5_bias",
-      "registry_feature_id": "ma5_bias",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "ma10_bias",
-      "registry_feature_id": "tech_wma_10_pos",
-      "mapping_type": "alias",
-      "formal137_status": "formal_candidate",
-      "selector_role": "evidence_watch",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "bb_upper_raw",
-      "registry_feature_id": "bb_upper_raw",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "bb_lower_raw",
-      "registry_feature_id": "bb_lower_raw",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "KMID",
-      "registry_feature_id": "KMID",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
@@ -703,13 +1045,49 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "KMID2",
-      "registry_feature_id": "KMID2",
+      "ml_feature": "IMIN_20",
+      "registry_feature_id": "IMIN_20",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "KSFT",
+      "registry_feature_id": "KSFT",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "RSQR_10",
+      "registry_feature_id": "RSQR_10",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "KLOW",
+      "registry_feature_id": "KLOW",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "vol_ratio_20d",
+      "registry_feature_id": "vol_ratio_20d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
       "ml_feature": "KUP",
@@ -730,92 +1108,11 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "KLOW",
-      "registry_feature_id": "KLOW",
+      "ml_feature": "CNTP_5",
+      "registry_feature_id": "CNTP_5",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "KLOW2",
-      "registry_feature_id": "KLOW2",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "evidence_watch",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "KSFT",
-      "registry_feature_id": "KSFT",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "evidence_watch",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "KSFT2",
-      "registry_feature_id": "KSFT2",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "IMAX_20",
-      "registry_feature_id": "IMAX_20",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "IMIN_20",
-      "registry_feature_id": "IMIN_20",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "IMXD_20",
-      "registry_feature_id": "IMXD_20",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "BETA_20",
-      "registry_feature_id": "BETA_20",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "RSQR_20",
-      "registry_feature_id": "RSQR_20",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "RESI_20",
-      "registry_feature_id": "RESI_20",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "evidence_watch",
       "active_pool_status": "candidate",
       "eligible_for_ml": true
     },
@@ -829,107 +1126,8 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "CORD_10",
-      "registry_feature_id": "CORD_10",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "BETA_5",
-      "registry_feature_id": "BETA_5",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "RSQR_5",
-      "registry_feature_id": "RSQR_5",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "RESI_5",
-      "registry_feature_id": "RESI_5",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "BETA_10",
-      "registry_feature_id": "BETA_10",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "RSQR_10",
-      "registry_feature_id": "RSQR_10",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "RESI_10",
-      "registry_feature_id": "RESI_10",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "BETA_60",
-      "registry_feature_id": "BETA_60",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "evidence_watch",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "RSQR_60",
-      "registry_feature_id": "RSQR_60",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "RESI_60",
-      "registry_feature_id": "RESI_60",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "evidence_watch",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "CNTP_5",
-      "registry_feature_id": "CNTP_5",
-      "mapping_type": "direct",
-      "formal137_status": "formal_candidate",
-      "selector_role": "core_prior",
-      "active_pool_status": "candidate",
-      "eligible_for_ml": true
-    },
-    {
-      "ml_feature": "CNTN_5",
-      "registry_feature_id": "CNTN_5",
+      "ml_feature": "ma10_bias",
+      "registry_feature_id": "ma10_bias",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
@@ -946,35 +1144,17 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "CNTP_10",
-      "registry_feature_id": "CNTP_10",
+      "ml_feature": "return_3d",
+      "registry_feature_id": "return_3d",
       "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
-      "ml_feature": "CNTN_10",
-      "registry_feature_id": "CNTN_10",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "CNTD_10",
-      "registry_feature_id": "CNTD_10",
-      "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "CNTP_20",
-      "registry_feature_id": "CNTP_20",
+      "ml_feature": "volatility_5d",
+      "registry_feature_id": "volatility_5d",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -991,8 +1171,8 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "CNTD_20",
-      "registry_feature_id": "CNTD_20",
+      "ml_feature": "CORD_10",
+      "registry_feature_id": "CORD_10",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "core_prior",
@@ -1000,8 +1180,35 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "VSTD_10",
-      "registry_feature_id": "VSTD_10",
+      "ml_feature": "margin_ratio",
+      "registry_feature_id": "margin_ratio",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "short_squeeze_proxy",
+      "registry_feature_id": "short_squeeze_proxy",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "volatility_20d",
+      "registry_feature_id": "volatility_20d",
+      "mapping_type": "direct",
+      "formal137_status": "formal_candidate",
+      "selector_role": "core_prior",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
+    },
+    {
+      "ml_feature": "CNTN_5",
+      "registry_feature_id": "CNTN_5",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
@@ -1009,8 +1216,8 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "VSTD_20",
-      "registry_feature_id": "VSTD_20",
+      "ml_feature": "ma60_bias",
+      "registry_feature_id": "ma60_bias",
       "mapping_type": "direct",
       "formal137_status": "formal_candidate",
       "selector_role": "evidence_watch",
@@ -1018,67 +1225,49 @@
       "eligible_for_ml": true
     },
     {
-      "ml_feature": "WVMA",
-      "registry_feature_id": "WVMA",
+      "ml_feature": "return_5d",
+      "registry_feature_id": "return_5d",
       "mapping_type": "direct",
-      "formal137_status": "alias",
-      "selector_role": "alias",
-      "active_pool_status": "alias",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
-      "ml_feature": "sector_encoded",
-      "registry_feature_id": "sector_encoded",
+      "ml_feature": "KLOW2",
+      "registry_feature_id": "KLOW2",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
-      "ml_feature": "market_cap_bucket",
-      "registry_feature_id": "market_cap_bucket",
+      "ml_feature": "us_sentiment_score",
+      "registry_feature_id": "us_sentiment_score",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
-      "ml_feature": "avg_volume_bucket",
-      "registry_feature_id": "avg_volume_bucket",
+      "ml_feature": "advance_ratio",
+      "registry_feature_id": "advance_ratio",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     },
     {
-      "ml_feature": "sector_peer_return_1d",
-      "registry_feature_id": "sector_peer_return_1d",
+      "ml_feature": "KSFT2",
+      "registry_feature_id": "KSFT2",
       "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "sector_peer_return_5d",
-      "registry_feature_id": "sector_peer_return_5d",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
-    },
-    {
-      "ml_feature": "stock_vs_sector",
-      "registry_feature_id": "stock_vs_sector",
-      "mapping_type": "direct",
-      "formal137_status": "drop_research_candidate",
-      "selector_role": "drop_research_candidate",
-      "active_pool_status": "drop_research_candidate",
-      "eligible_for_ml": false
+      "formal137_status": "formal_candidate",
+      "selector_role": "evidence_watch",
+      "active_pool_status": "candidate",
+      "eligible_for_ml": true
     }
   ]
 }

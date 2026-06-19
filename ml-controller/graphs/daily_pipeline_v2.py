@@ -2515,11 +2515,35 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         if (ctx.get("risk_overlay") or {}).get("skip"):
             alpha_skip_count += 1
 
+    dispersion = state.get("prediction_dispersion") or {}
+    prediction_output_models = int(dispersion.get("n_models_seen") or 0) if isinstance(dispersion, dict) else 0
+    if prediction_output_models <= 0:
+        model_names: set[str] = set()
+        for pred in (state.get("predictions") or {}).values():
+            if not isinstance(pred, dict) or pred.get("error"):
+                continue
+            rank_scores = pred.get("rank_scores") or {}
+            if isinstance(rank_scores, dict):
+                model_names.update(str(name) for name in rank_scores if str(name))
+            for src_key, model_name in (
+                ("dlinear", "DLinear"),
+                ("patchtst", "PatchTST"),
+                ("itransformer", "iTransformer"),
+                ("timesfm", "TimesFM"),
+            ):
+                if isinstance(pred.get(src_key), dict):
+                    model_names.add(model_name)
+        prediction_output_models = len(model_names)
+    prediction_rows_per_symbol = (
+        round(predictions_written / len(stock_id_map), 3) if stock_id_map else 0
+    )
+
     metrics = {
         "predictions_written": predictions_written,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
         "prediction_symbols": len(stock_id_map),
-        "prediction_output_models": round(predictions_written / len(stock_id_map)) if stock_id_map else 0,
+        "prediction_output_models": prediction_output_models,
+        "prediction_rows_per_symbol": prediction_rows_per_symbol,
         "stale_predictions_deleted": stale_predictions_deleted,
         "recommendations_updated": rec_updated,
         "sell_marked_non_buy": sell_marked_non_buy,
@@ -2529,7 +2553,6 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "alpha_selected_bucket_counts": alpha_selected_bucket_counts,
         "alpha_skip_count": alpha_skip_count,
     }
-    dispersion = state.get("prediction_dispersion") or {}
     if dispersion:
         metrics["prediction_dispersion"] = {
             key: value for key, value in dispersion.items()

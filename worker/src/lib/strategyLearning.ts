@@ -182,7 +182,8 @@ const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
 const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
 const ACTIVE_COOLDOWN_HIT_RATE = 0.48
-const STRATEGY_LEARNING_D1_BATCH_SIZE = 50
+const STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT = 2000
+const STRATEGY_LEARNING_D1_BATCH_SIZE = 250
 
 function stageForStrategyStatus(status: StrategySpecStatus): StrategyLearningStage {
   if (status === 'active') return 'L3_production_allocation'
@@ -660,9 +661,11 @@ export function buildStrategyDecisionRows(
 export async function listStrategyLearningCandidates(
   db: D1Database,
   date: string,
-  limit = 500,
+  limit = STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
+  offset = 0,
 ): Promise<StrategyCandidateInput[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
+  const safeOffset = Math.max(0, Math.floor(offset))
   const { results } = await db.prepare(`
     WITH latest_run AS (
       SELECT run_id
@@ -717,7 +720,8 @@ export async function listStrategyLearningCandidates(
          ) ELSE 0 END DESC,
        fc.symbol ASC
      LIMIT ?
-  `).bind(date, date, safeLimit).all<StrategyCandidateInput & {
+     OFFSET ?
+  `).bind(date, date, safeLimit, safeOffset).all<StrategyCandidateInput & {
     score_components?: unknown
     funnel_evidence?: string | null
     funnel_score?: number | null
@@ -983,6 +987,46 @@ export async function persistStrategyRewardLedgerRows(db: D1Database, rows: Stra
     persisted += chunk.length
   }
   return persisted
+}
+
+export async function materializeStrategyDecisionLogChunk(
+  db: D1Database,
+  options: { date: string; offset?: number; limit?: number; dryRun?: boolean },
+): Promise<{
+  success: boolean
+  mode: 'dry_run' | 'persisted'
+  date: string
+  spec_source: 'registry'
+  offset: number
+  limit: number
+  candidate_count: number
+  decision_rows: number
+  persisted_rows: number
+  has_more: boolean
+  next_offset: number
+  preview: StrategyDecisionLogRow[]
+}> {
+  const offset = Math.max(0, Math.floor(options.offset ?? 0))
+  const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 80), 250))
+  const { specs, source } = await listStrategySpecsForLearning(db)
+  const candidates = await listStrategyLearningCandidates(db, options.date, limit, offset)
+  const rows = buildStrategyDecisionRows(options.date, candidates, specs)
+  const dryRun = options.dryRun !== false
+  const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows)
+  return {
+    success: true,
+    mode: dryRun ? 'dry_run' : 'persisted',
+    date: options.date,
+    spec_source: source,
+    offset,
+    limit,
+    candidate_count: candidates.length,
+    decision_rows: rows.length,
+    persisted_rows: persisted,
+    has_more: candidates.length === limit,
+    next_offset: offset + candidates.length,
+    preview: rows.slice(0, 20),
+  }
 }
 
 export async function refreshStrategyRewardLedger(
@@ -1355,7 +1399,11 @@ export async function runStrategyLearningClosure(
 ): Promise<string> {
   await ensureStrategyLearningTables(db)
   const seeded = await seedDefaultStrategySpecRegistry(db)
-  const decisions = await materializeStrategyDecisionLog(db, { date, dryRun: false })
+  const decisions = await materializeStrategyDecisionLog(db, {
+    date,
+    limit: STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
+    dryRun: false,
+  })
   const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
   const policy = options.persistPolicy === false
     ? null

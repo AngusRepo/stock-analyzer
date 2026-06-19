@@ -6,6 +6,8 @@ Triple Barrier Label (Prado 2018) 保留作為 SLTP 執行層使用。
 2.0 新增：Cross-sectional rank label 在 P1 實作。
 """
 import os
+import json
+from pathlib import Path
 import numpy as np
 import polars as pl
 from typing import Optional
@@ -294,7 +296,12 @@ def build_feature_matrix(
             pl.DataFrame(chips, infer_schema_length=None)
             .with_columns(pl.col("date").cast(pl.Date))
         )
-        chip_cols = ["foreign_net", "trust_net", "dealer_net", "margin_balance", "short_balance"]
+        chip_cols = [
+            "foreign_net", "trust_net", "dealer_net",
+            "margin_balance", "short_balance",
+            "broker_net_shares", "broker_estimated_amount",
+            "broker_count", "broker_concentration",
+        ]
         for col in chip_cols:
             if col in df_chip.columns:
                 df_chip = df_chip.with_columns(pl.col(col).cast(pl.Float64, strict=False))
@@ -791,6 +798,175 @@ def build_feature_matrix(
         ])
 
     # ── 13. Rolling Z-score normalization ────────────────────────────────────
+    # -- 13. formal137 canonical materialization ---------------------------------
+    def _series_scalar(name: str, default: float = 0.0) -> float:
+        return safe_float((market_env or {}).get(name), default)
+
+    def _meta_scalar(name: str, default: float = 0.0) -> float:
+        return _meta_float(stock_meta or {}, name, default)
+
+    def _feature_col(name: str, default: float | pl.Expr = 0.0) -> pl.Expr:
+        if name in df.columns:
+            return pl.col(name).cast(pl.Float64, strict=False)
+        return default if isinstance(default, pl.Expr) else pl.lit(float(default))
+
+    def _add_missing(exprs: list[tuple[str, pl.Expr]]) -> None:
+        nonlocal df
+        todo = [expr.alias(name) for name, expr in exprs if name not in df.columns]
+        if todo:
+            df = df.with_columns(todo)
+
+    close_expr = pl.col("close")
+    high_expr = _feature_col("high", close_expr)
+    low_expr = _feature_col("low", close_expr)
+    open_expr = _feature_col("open", close_expr)
+    volume_expr = _feature_col("volume")
+    dollar_volume = (volume_expr * close_expr).abs().clip(1.0, None)
+    bb_mid_expr = ((pl.col("bb_upper") + pl.col("bb_lower")) / 2.0) if {"bb_upper", "bb_lower"}.issubset(set(df.columns)) else close_expr.rolling_mean(20)
+    bb_width_expr = _safe_div(_feature_col("bb_upper") - _feature_col("bb_lower"), bb_mid_expr)
+    ret1_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(1), pl.col("adj_close").shift(1))
+    ret20_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(20), pl.col("adj_close").shift(20))
+    ret21_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(21), pl.col("adj_close").shift(21))
+    ret126_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(126), pl.col("adj_close").shift(126))
+    ret189_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(189), pl.col("adj_close").shift(189))
+    ret252_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(252), pl.col("adj_close").shift(252))
+    ma50_expr = close_expr.rolling_mean(50)
+    ma200_expr = close_expr.rolling_mean(200)
+    ema12_expr = close_expr.ewm_mean(span=12, adjust=False)
+    donchian_low20 = low_expr.rolling_min(20)
+    donchian_high20 = high_expr.rolling_max(20)
+    donchian_range20 = (donchian_high20 - donchian_low20).clip(1e-9, None)
+    typical_price = (high_expr + low_expr + close_expr) / 3.0
+    money_flow = typical_price * volume_expr
+    pos_flow = pl.when(typical_price > typical_price.shift(1)).then(money_flow).otherwise(0.0).rolling_sum(14)
+    neg_flow = pl.when(typical_price < typical_price.shift(1)).then(money_flow).otherwise(0.0).rolling_sum(14)
+    cmo_num = ret1_raw.clip(0, None).rolling_sum(14) - (-ret1_raw.clip(None, 0)).rolling_sum(14)
+    cmo_den = ret1_raw.abs().rolling_sum(14)
+    obv_expr = pl.when(close_expr > close_expr.shift(1)).then(volume_expr).when(close_expr < close_expr.shift(1)).then(-volume_expr).otherwise(0.0).cum_sum()
+    kd_low9 = low_expr.rolling_min(9)
+    kd_high9 = high_expr.rolling_max(9)
+    kd_k_expr = _safe_div(close_expr - kd_low9, (kd_high9 - kd_low9).clip(1e-9, None)) * 100.0
+    kd_d_expr = kd_k_expr.rolling_mean(3)
+    trix_expr = close_expr.ewm_mean(span=12, adjust=False).ewm_mean(span=12, adjust=False).ewm_mean(span=12, adjust=False).pct_change()
+    vr_up = pl.when(close_expr > close_expr.shift(1)).then(volume_expr).otherwise(0.0).rolling_sum(26)
+    vr_down = pl.when(close_expr < close_expr.shift(1)).then(volume_expr).otherwise(0.0).rolling_sum(26)
+    fvg_strength = pl.when(low_expr > high_expr.shift(2)).then(_safe_div(low_expr - high_expr.shift(2), close_expr)).otherwise(0.0)
+    order_block_strength = _safe_div((close_expr - open_expr).abs(), _feature_col("atr14", 1.0).clip(1e-9, None))
+    bos_bullish = (close_expr > high_expr.rolling_max(20).shift(1)).cast(pl.Float64)
+    displacement = _safe_div(close_expr - open_expr, open_expr).clip(-0.5, 0.5)
+    broker_amount = _feature_col("broker_estimated_amount")
+    broker_net_shares = _feature_col("broker_net_shares")
+    broker_net_amount = pl.when(broker_amount.abs() > 0).then(broker_amount).otherwise(broker_net_shares * close_expr)
+    eps = _series_scalar("eps")
+    roe = _series_scalar("roe")
+    pe = _series_scalar("pe")
+    pb = _series_scalar("pb")
+    dividend_yield = _series_scalar("dividend_yield")
+    revenue_yoy = _series_scalar("revenue_yoy")
+    revenue_mom = _series_scalar("revenue_mom")
+    revenue = _series_scalar("revenue")
+    market_cap_proxy = _meta_scalar("market_cap_proxy")
+    size_value = np.log1p(max(market_cap_proxy, 0.0)) if market_cap_proxy > 0 else _meta_scalar("market_cap_bucket")
+
+    _add_missing([
+        ("l1_bbBandwidthPct", bb_width_expr),
+        ("l1_bestFvgStrength", fvg_strength.clip(0.0, 1.0)),
+        ("l1_bestOrderBlockStrength", order_block_strength.clip(0.0, 5.0)),
+        ("l1_bosBullish", bos_bullish),
+        ("l1_brokerConcentration", _feature_col("broker_concentration")),
+        ("l1_brokerNetAmount5d", broker_net_amount.rolling_sum(5)),
+        ("l1_closeAboveMa60Pct", _safe_div(close_expr - _feature_col("ma60"), _feature_col("ma60"))),
+        ("l1_dealerNet5d", _feature_col("dealer_5d")),
+        ("l1_diTrend", _feature_col("plusDi14") - _feature_col("minusDi14")),
+        ("l1_displacementPct", displacement),
+        ("l1_eps", pl.lit(eps)),
+        ("l1_foreignTrustNet5d", _feature_col("foreign_5d") + _feature_col("trust_net").rolling_sum(5)),
+        ("l1_macdHist", _feature_col("macdHist")),
+        ("l1_monthlyRevenueMoM", pl.lit(revenue_mom)),
+        ("l1_monthlyRevenueYoY", pl.lit(revenue_yoy)),
+        ("l1_return20d", ret20_raw),
+        ("l1_revenueGrowthYoY", pl.lit(revenue_yoy)),
+        ("l1_roe", pl.lit(roe)),
+        ("l1_sectorFlowCore", pl.lit(_meta_scalar("sector_flow_core", _series_scalar("sector_flow_core")))),
+        ("l1_sectorRsRatio", pl.lit(_meta_scalar("stock_vs_sector", _series_scalar("sector_rs_ratio")))),
+        ("l1_sectorTurnoverShareDelta", pl.lit(_series_scalar("sector_turnover_share_delta"))),
+        ("l1_smcBullishScore", (bos_bullish + fvg_strength.clip(0.0, 1.0) + displacement.clip(0.0, 0.5) * 2.0) / 3.0),
+        ("l1_smcNetScore", bos_bullish + displacement + fvg_strength.clip(0.0, 1.0) - (1.0 - bos_bullish) * 0.25),
+        ("l1_squeezeMomentum", (bb_width_expr - bb_width_expr.rolling_mean(20)) * close_expr.sign()),
+        ("l1_squeezeRelease", (bb_width_expr > bb_width_expr.rolling_mean(20)).cast(pl.Float64)),
+        ("l1_volumeExpansion20", _safe_div(volume_expr, volume_expr.rolling_mean(20))),
+        ("l1_volumeMomentumDivergence132710", _feature_col("volumeMomentumDivergence132710", _feature_col("CORD_10"))),
+        ("liq_amihud_21d", _safe_div(ret1_raw.abs(), dollar_volume).rolling_mean(21)),
+        ("mom_12m_1m", ret252_raw - ret21_raw),
+        ("mom_9m", ret189_raw),
+        ("mom_close_to_52w_high", _safe_div(close_expr, high_expr.rolling_max(252))),
+        ("mom_hl52", _safe_div(close_expr - low_expr.rolling_min(252), (high_expr.rolling_max(252) - low_expr.rolling_min(252)).clip(1e-9, None))),
+        ("mom_ma50_200_ratio", _safe_div(ma50_expr, ma200_expr) - 1.0),
+        ("mom_macd_trend_10", _feature_col("macdHist").rolling_mean(10)),
+        ("mom_reversal_1m", -ret21_raw),
+        ("mom_reversal_6m", -ret126_raw),
+        ("mom_rsi_14", _feature_col("rsi14")),
+        ("mom_vol_adj_12m", _safe_div(ret252_raw, ret1_raw.rolling_std(252).clip(1e-9, None))),
+        ("size_log_mktcap", pl.lit(size_value)),
+        ("tech_adx_14", _feature_col("adx14")),
+        ("tech_atr_14", _feature_col("atr14")),
+        ("tech_bbands_pctb_20", _feature_col("bb_position")),
+        ("tech_bbi", _safe_div(close_expr, (close_expr.rolling_mean(3) + close_expr.rolling_mean(6) + close_expr.rolling_mean(12) + close_expr.rolling_mean(24)) / 4.0) - 1.0),
+        ("tech_bias_20", -_feature_col("ma20_bias")),
+        ("tech_bullish_streak_5", (close_expr > close_expr.shift(1)).cast(pl.Float64).rolling_sum(5)),
+        ("tech_cmo_14", _safe_div(cmo_num, cmo_den.clip(1e-9, None)) * 100.0),
+        ("tech_disposal_active", pl.lit(_series_scalar("disposal_active"))),
+        ("tech_dma_10_50", _safe_div(close_expr.rolling_mean(10), ma50_expr) - 1.0),
+        ("tech_donchian_pos_20", _safe_div(close_expr - donchian_low20, donchian_range20)),
+        ("tech_ema_12_pos", _safe_div(close_expr, ema12_expr) - 1.0),
+        ("tech_emv_14", _safe_div(((high_expr + low_expr) / 2.0 - (high_expr.shift(1) + low_expr.shift(1)) / 2.0) * (high_expr - low_expr), volume_expr.clip(1.0, None)).rolling_mean(14)),
+        ("tech_gap_down", _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(None, 0.0)),
+        ("tech_gap_up", _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(0.0, None)),
+        ("tech_granville_score", ((close_expr > close_expr.rolling_mean(20)).cast(pl.Float64) + (close_expr.rolling_mean(20) > close_expr.rolling_mean(20).shift(1)).cast(pl.Float64)) / 2.0),
+        ("tech_kd9_k", kd_k_expr),
+        ("tech_kdj_j_9", 3.0 * kd_k_expr - 2.0 * kd_d_expr),
+        ("tech_keltner_pos_20", _feature_col("keltner_position")),
+        ("tech_limit_down_count_10", pl.lit(_series_scalar("limit_down_count"))),
+        ("tech_limit_up_streak_10", (ret1_raw > 0.095).cast(pl.Float64).rolling_sum(10)),
+        ("tech_locked_open_down_10", pl.lit(_series_scalar("locked_open_down"))),
+        ("tech_locked_open_up_10", (open_expr >= close_expr.shift(1) * 1.095).cast(pl.Float64).rolling_sum(10)),
+        ("tech_ma_convergence", (_safe_div(close_expr.rolling_mean(5), close_expr.rolling_mean(20)) - 1.0).abs() + (_safe_div(close_expr.rolling_mean(20), close_expr.rolling_mean(60)) - 1.0).abs()),
+        ("tech_mfi_14", 100.0 - 100.0 / (1.0 + _safe_div(pos_flow, neg_flow.clip(1e-9, None)))),
+        ("tech_mtm_10", _safe_div(close_expr - close_expr.shift(10), close_expr.shift(10))),
+        ("tech_obv", obv_expr),
+        ("tech_psy_12", (close_expr > close_expr.shift(1)).cast(pl.Float64).rolling_mean(12)),
+        ("tech_roc_10", _safe_div(close_expr, close_expr.shift(10)) - 1.0),
+        ("tech_sar", _safe_div(close_expr - _feature_col("parabolicSar", close_expr), close_expr)),
+        ("tech_slow_kd_14", _safe_div(close_expr - low_expr.rolling_min(14), (high_expr.rolling_max(14) - low_expr.rolling_min(14)).clip(1e-9, None)) * 100.0),
+        ("tech_sma_20_pos", _feature_col("ma20_bias")),
+        ("tech_tower_3", (close_expr > close_expr.shift(1)).cast(pl.Float64).rolling_sum(3) - (close_expr < close_expr.shift(1)).cast(pl.Float64).rolling_sum(3)),
+        ("tech_trix_12", trix_expr),
+        ("tech_volume_ratio_5", _feature_col("vol_ratio_5d")),
+        ("tech_vr_26", _safe_div(vr_up, vr_down.clip(1e-9, None))),
+        ("tech_williams_r_14", -100.0 * _safe_div(high_expr.rolling_max(14) - close_expr, (high_expr.rolling_max(14) - low_expr.rolling_min(14)).clip(1e-9, None))),
+        ("tech_wma_10_pos", _feature_col("ma10_bias")),
+        ("val_bp", pl.lit(1.0 / pb if pb > 0 else 0.0)),
+        ("val_dp", pl.lit(dividend_yield / 100.0 if dividend_yield > 1.0 else dividend_yield)),
+        ("val_ep", pl.lit(1.0 / pe if pe > 0 else 0.0)),
+        ("val_sp", pl.lit(revenue) / dollar_volume),
+        ("vol_chg_turnover_1y", _safe_div(volume_expr.rolling_mean(21), volume_expr.rolling_mean(252)) - 1.0),
+        ("vol_cv_volprice_20d", _safe_div((volume_expr * close_expr).rolling_std(20), (volume_expr * close_expr).rolling_mean(20).abs().clip(1.0, None))),
+        ("vol_money_flow_5d", money_flow.rolling_sum(5)),
+        ("vol_share_turnover_21d", volume_expr.rolling_mean(21)),
+        ("vol_signal_5d", _safe_div(volume_expr.rolling_mean(5), volume_expr.rolling_mean(20)) - 1.0),
+        ("vola_cv_90d", _safe_div(ret1_raw.rolling_std(90), ret1_raw.rolling_mean(90).abs().clip(1e-9, None))),
+        ("vola_min_130d", ret1_raw.rolling_min(130)),
+        ("vola_realized_12m", ret1_raw.rolling_std(252)),
+        ("vola_realized_1m", ret1_raw.rolling_std(21)),
+    ])
+
+    formal_missing = [col for col in FEATURE_COLS if col not in df.columns]
+    if formal_missing:
+        raise RuntimeError(
+            f"{FEATURE_SCHEMA}_materialization_missing:{len(formal_missing)}:"
+            f"first_missing={','.join(formal_missing[:25])}"
+        )
+
     # Only raw-scale features (returns, volatility, chip flows, bias) are Z-scored.
     # RSI/MACD/KD are intentionally EXCLUDED — they are already bounded by their
     # own formulas (RSI ∈ [0,100], MACD is differenced). Z-scoring them would be
@@ -896,62 +1072,44 @@ NIGHT_SESSION_COLS = ["taifex_night_change_pct", "taifex_night_range_pct", "taif
 ORDERBOOK_COLS = ["orderbook_imbalance", "orderbook_spread_pct", "orderbook_available"]
 OPTIONAL_FEATURE_COLS = NIGHT_SESSION_COLS + ORDERBOOK_COLS
 
-FEATURE_COLS = [
-    # 價格動量
-    "return_1d", "return_3d", "return_5d", "return_10d",
-    # 波動率
-    "volatility_5d", "volatility_20d",
-    # 技術指標
-    "rsi14", "macdHist", "bb_position",
-    # 成交量
-    "vol_ratio_5d", "vol_ratio_20d",
-    # 均線
-    "ma20_bias", "ma60_bias",
-    # 籌碼
-    "institutional_net", "chip_5d", "foreign_5d",
-    # 情感
-    "sentiment", "sentiment_3d", "has_sentiment",
-    # 波動
-    "atr14",
-    # 大盤環境
-    "market_risk_score", "market_risk_level",
-    "market_return_1d", "market_return_5d", "market_bias_20d",
-    "stock_vs_market",
-    # FinLab 策略因子
-    "linear_factor", "rsi5_dulling", "keltner_position",
-    # Wave 2
-    "us_sox_return", "us_gspc_return", "us_dxy_return",
-    "us_hy_spread", "us_hy_spread_chg", "us_vix",
-    "us_sentiment_score", "advance_ratio", "bull_alignment_pct",
-    "revenue_yoy",
-    # Wave 3
-    "margin_balance", "short_ratio", "margin_change_5d", "retail_pct",
-    # Tier 0
-    "margin_ratio", "margin_change_5d_ts", "short_change_5d", "short_squeeze_proxy",
-    "vwap_bias", "vwap_5d", "vwap_bias_5d",
-    "dealer_5d", "dealer_ratio_5d",
-    # Tier 0.5
-    "foreign_consecutive_sell", "foreign_net_5d_market",
-    "limit_down_count", "limit_down_pct",
-    "adl_value", "adl_trend_numeric",
-    "ma5_bias", "ma10_bias", "bb_upper_raw", "bb_lower_raw",
-    # Tier A: Alpha158
-    "KMID", "KLEN", "KMID2", "KUP", "KUP2", "KLOW", "KLOW2", "KSFT", "KSFT2",
-    "IMAX_20", "IMIN_20", "IMXD_20",
-    "BETA_20", "RSQR_20", "RESI_20",
-    "CORR_10", "CORD_10",
-    # Tier B
-    "BETA_5", "RSQR_5", "RESI_5",
-    "BETA_10", "RSQR_10", "RESI_10",
-    "BETA_60", "RSQR_60", "RESI_60",
-    "CNTP_5", "CNTN_5", "CNTD_5",
-    "CNTP_10", "CNTN_10", "CNTD_10",
-    "CNTP_20", "CNTN_20", "CNTD_20",
-    "VSTD_10", "VSTD_20", "WVMA",
-    # Universal model
-    "sector_encoded", "market_cap_bucket", "avg_volume_bucket",
-    "sector_peer_return_1d", "sector_peer_return_5d", "stock_vs_sector",
-]
+FEATURE_SCHEMA = "formal137"
+
+
+def _registry_search_paths() -> list[Path]:
+    here = Path(__file__).resolve()
+    return [
+        Path("/root/data/feature_registry/unified_feature_registry_v1.json"),
+        Path("/app/data/feature_registry/unified_feature_registry_v1.json"),
+        here.parents[3] / "data" / "feature_registry" / "unified_feature_registry_v1.json",
+        here.parents[2] / "data" / "feature_registry" / "unified_feature_registry_v1.json",
+    ]
+
+
+def _load_formal_feature_cols() -> list[str]:
+    errors: list[str] = []
+    for path in _registry_search_paths():
+        try:
+            if not path.exists():
+                continue
+            with path.open("r", encoding="utf-8") as fh:
+                registry = json.load(fh)
+            features = [
+                str(row.get("feature_id"))
+                for row in registry.get("features", [])
+                if isinstance(row, dict)
+                and row.get("eligible_for_ml")
+                and row.get("active_pool_status") == "candidate"
+                and row.get("feature_id")
+            ]
+            if len(features) != 137:
+                raise RuntimeError(f"formal137_feature_count_mismatch:{len(features)}:{path}")
+            return features
+        except Exception as exc:  # noqa: BLE001 - fail closed with path context.
+            errors.append(f"{path}:{exc}")
+    raise RuntimeError(f"formal137_registry_unavailable:{'; '.join(errors) or 'no_registry_path_found'}")
+
+
+FEATURE_COLS = _load_formal_feature_cols()
 
 CATBOOST_EXTRA_COLS = [
     "rsi14_lag1", "rsi14_lag3",
@@ -1071,7 +1229,14 @@ def get_features(
         predict（target_rank 由 batch pool 產生，單股 df 沒有 rank）。
         Caller 不應讀 y，只用 X_latest。
     """
-    available = [c for c in FEATURE_COLS if c in df.columns]
+    missing = [c for c in FEATURE_COLS if c not in df.columns]
+    if missing:
+        preview = ",".join(missing[:25])
+        raise RuntimeError(
+            f"{FEATURE_SCHEMA}_feature_schema_missing:{len(missing)}:"
+            f"first_missing={preview}"
+        )
+    available = list(FEATURE_COLS)
     if target_col not in df.columns:
         if not allow_missing_target:
             raise ValueError(f"target_col '{target_col}' not found in DataFrame. "

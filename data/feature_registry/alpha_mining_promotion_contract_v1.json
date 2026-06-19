@@ -17,8 +17,8 @@
     "selector_role_counts": {
       "evidence_watch": 68,
       "core_prior": 69,
-      "drop_research_candidate": 42,
-      "alias": 36,
+      "drop_research_candidate": 43,
+      "alias": 35,
       "transform_candidate": 82,
       "context_only": 410,
       "chip_candidate": 4,

@@ -64,6 +64,6 @@
   "panel_mapping_pass": true,
   "coverage_pass": true,
   "pass": true,
-  "metadata_refreshed_at": "2026-06-18T04:04:05.410461+00:00",
+  "metadata_refreshed_at": "2026-06-18T17:59:08.397816+00:00",
   "metadata_refresh_reason": "registry_metadata_only_refresh; materialized factor counts and coverage were unchanged"
 }

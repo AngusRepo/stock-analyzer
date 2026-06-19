@@ -363,8 +363,6 @@ def _assert_runtime_files() -> None:
         ROOT / "tools" / "finlab_alphabuilders_factor_backtest.py",
         ROOT / "tools" / "finlab_strategy_spec_backtest.py",
         ROOT / "tools" / "feature_strategy_overlap_numeric.py",
-        ROOT / "output" / "finlab_ml_feature_backtests" / "ml106_features_sii_20230101_20260615_top10_bothdir_best.csv",
-        ROOT / "output" / "finlab_strategy95_backtests" / "strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv",
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:

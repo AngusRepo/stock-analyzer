@@ -21,6 +21,22 @@ FINLAB701_TRIAGE = TRIAGE / "finlab701_triage_best_by_field.csv"
 PRUNE_DECISION = TRIAGE / "unified179_feature_prune_decision_20260617.csv"
 PAIRWISE_SUMMARY = TRIAGE / "unified179_pairwise_similarity_summary_20260617.json"
 
+MINED_ACTIVE_FEATURE_REF_PROMOTIONS = {
+    "advance_ratio",
+    "us_sentiment_score",
+    "KSFT2",
+    "ma10_bias",
+    "return_5d",
+}
+
+MINED_ACTIVE_FEATURE_REF_REPLACED_EVIDENCE = {
+    "l1_chochBullish",
+    "l1_liquiditySweepBullish",
+    "l1_smcBiasBearish",
+    "l1_sectorRsMomentum",
+    "tech_cci_20",
+}
+
 
 def _rel(path: Path) -> str:
     return path.resolve().relative_to(ROOT.resolve()).as_posix()
@@ -55,7 +71,7 @@ def _load_prune_decisions() -> tuple[dict[str, dict[str, str]], set[str]]:
     decisions = {row["feature_id"]: row for row in _read_csv_optional(PRUNE_DECISION) if row.get("feature_id")}
     missing_panels: set[str] = set()
     if PAIRWISE_SUMMARY.exists():
-        summary = json.loads(PAIRWISE_SUMMARY.read_text(encoding="utf-8"))
+        summary = json.loads(PAIRWISE_SUMMARY.read_text(encoding="utf-8-sig"))
         missing_panels = {str(item) for item in summary.get("missing_features") or []}
     return decisions, missing_panels
 
@@ -65,6 +81,32 @@ def _selector_contract(feature_id: str, base_status: str, decisions: dict[str, d
     recommended = decision.get("recommended_status") if decision else "keep_candidate"
     if feature_id in missing_panels and recommended == "keep_candidate":
         recommended = "watch_not_selector"
+
+    if feature_id in MINED_ACTIVE_FEATURE_REF_PROMOTIONS:
+        return {
+            "active_pool_status": "candidate",
+            "recommended_status": "watch_not_selector",
+            "selector_role": "evidence_watch",
+            "promotion_state": "active_mined_strategy_dependency",
+            "eligible": True,
+            "direct_challenger_eligible": False,
+            "prior_weight": 0.35,
+            "materializer_status": "materialized",
+            "reasons": "promoted_from_lineage_for_active_mined_feature_ref",
+        }
+
+    if feature_id in MINED_ACTIVE_FEATURE_REF_REPLACED_EVIDENCE:
+        return {
+            "active_pool_status": "drop_research_candidate",
+            "recommended_status": "drop_research_candidate",
+            "selector_role": "drop_research_candidate",
+            "promotion_state": "replaced_by_active_mined_feature_ref",
+            "eligible": False,
+            "direct_challenger_eligible": False,
+            "prior_weight": 0.0,
+            "materializer_status": "not_required_drop",
+            "reasons": "replaced_to_keep_formal_pool_137_after_mined_feature_ref_cutover",
+        }
 
     if base_status == "alias":
         return {

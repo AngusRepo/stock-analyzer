@@ -21,6 +21,7 @@ type ChainedTask = {
 }
 
 const TASK_OBSERVABILITY_TIMEOUT_MS = 5_000
+const TASK_EXECUTION_TIMEOUT_MS = 25_000
 
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -48,6 +49,23 @@ async function withObservabilityTimeout<T>(label: string, promise: Promise<T>): 
         timer = setTimeout(
           () => reject(new Error(`${label} timed out after ${TASK_OBSERVABILITY_TIMEOUT_MS}ms`)),
           TASK_OBSERVABILITY_TIMEOUT_MS,
+        )
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function withTaskExecutionTimeout<T>(label: string, promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
         )
       }),
     ])
@@ -95,12 +113,14 @@ async function logChainedTask(
   ctx: ChainContext,
   task: string,
   fn: () => Promise<unknown>,
-  options: { critical?: boolean } = {},
+  options: { critical?: boolean; timeoutMs?: number } = {},
 ): Promise<ChainedTask> {
   const t0 = Date.now()
   const critical = options.critical !== false
   try {
-    const rawSummary = await fn()
+    const rawSummary = options.timeoutMs
+      ? await withTaskExecutionTimeout(task, fn(), options.timeoutMs)
+      : await fn()
     const summary = normalizeSummary(rawSummary)
     const status = classifySchedulerSummary(summary)
     const durationMs = Date.now() - t0
@@ -155,13 +175,17 @@ async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): P
   ].join(' ')
 }
 
-async function runStrategyLearningClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
-  const { runStrategyLearningClosure } = await import('./strategyLearning')
-  return runStrategyLearningClosure(
-    env.DB,
-    ctx.runDate ?? new Date().toISOString().slice(0, 10),
-    { persistPolicy: isCurrentBusinessDate(ctx.runDate) },
-  )
+async function enqueueStrategyLearningClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const runId = ctx.upstreamRunId || `strategy-learning-${runDate}-${Date.now()}`
+  await env.UPDATE_QUEUE.send({
+    type: 'strategy_learning_materialize',
+    cursor: 0,
+    triggerTime: runDate,
+    runId,
+    force: isCurrentBusinessDate(runDate),
+  })
+  return `triggered strategy-learning queue run_date=${runDate} run_id=${runId}`
 }
 
 async function logChainSummary(
@@ -172,18 +196,25 @@ async function logChainSummary(
   results: ChainedTask[],
 ): Promise<void> {
   const hasError = results.some((row) => row.critical !== false && row.status === 'error')
+  const waitingForQueuedStrategyLearning = task === 'post-verify-chain'
+    && results.some((row) => row.task === 'strategy-learning' && row.status === 'triggered')
   const summary = results.map((row) => `${row.task}:${row.status}`).join(' ')
+  const status = hasError ? 'error' : waitingForQueuedStrategyLearning ? 'running' : 'success'
   await logSchedulerResult(env.KV, task, {
-    status: hasError ? 'error' : 'success',
-    summary: summary || 'success',
+    status,
+    summary: waitingForQueuedStrategyLearning
+      ? `waiting for queued strategy-learning: ${summary || 'success'}`
+      : summary || 'success',
     duration_ms: Date.now() - startedAt,
     run_id: ctx.upstreamRunId,
     run_date: ctx.runDate,
   }, env)
   if (task === 'post-verify-chain') {
     await logSchedulerResult(env.KV, 'evening-chain', {
-      status: hasError ? 'error' : 'success',
-      summary: `root chain closed after post-verify: ${summary || 'success'}`,
+      status,
+      summary: waitingForQueuedStrategyLearning
+        ? `root chain waiting for queued strategy-learning: ${summary || 'success'}`
+        : `root chain closed after post-verify: ${summary || 'success'}`,
       duration_ms: Date.now() - startedAt,
       run_id: ctx.upstreamRunId,
       run_date: ctx.runDate,
@@ -230,7 +261,10 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
   // Strategy learning is evidence materialization, not a live trading mutation.
   // Historical reruns need it so strategy_decision_log can explain family/variant
   // ownership for the replayed business date.
-  results.push(await logChainedTask(env, ctx, 'strategy-learning', () => runStrategyLearningClosureTask(env, ctx), { critical: false }))
+  results.push(await logChainedTask(env, ctx, 'strategy-learning', () => enqueueStrategyLearningClosureTask(env, ctx), {
+    critical: false,
+    timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+  }))
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
 }

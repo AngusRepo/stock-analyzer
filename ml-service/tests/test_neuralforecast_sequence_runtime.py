@@ -1,7 +1,15 @@
 import numpy as np
+import pandas as pd
 
 from app.model_validation import build_model_cpcv_evidence
-from app.neuralforecast_sequence_runtime import _fold_metrics, _make_nf_model, _panel_train_eval_rows, default_seq_len_for_model
+from app.neuralforecast_sequence_runtime import (
+    _fold_metrics,
+    _make_nf_model,
+    _panel_train_eval_rows,
+    _predict_horizon_by_id_with_column,
+    _prediction_column,
+    default_seq_len_for_model,
+)
 
 
 def test_neuralforecast_sequence_defaults_follow_model_core_windows():
@@ -83,3 +91,39 @@ def test_neuralforecast_fold_metrics_feed_model_cpcv_bundle():
     assert evidence["schema_version"] == "model-cpcv-evidence-v1"
     assert evidence["folds"] >= 4
     assert evidence["oos_ic_mean"] > 0
+
+
+def test_prediction_column_prefers_named_model_and_ignores_reset_index():
+    pred_df = pd.DataFrame(
+        {
+            "unique_id": ["2330", "2330"],
+            "ds": [1, 2],
+            "PatchTST": [100.0, 101.0],
+        },
+        index=[800, 801],
+    ).reset_index()
+
+    assert _prediction_column(pred_df, "PatchTST") == "PatchTST"
+
+
+def test_predict_horizon_uses_named_model_column_not_index_column():
+    class FakeNeuralForecast:
+        def predict(self, df):  # noqa: ANN001
+            return pd.DataFrame(
+                {
+                    "unique_id": ["2330", "2330", "2317", "2317"],
+                    "ds": [1, 2, 1, 2],
+                    "PatchTST": [100.0, 101.0, 200.0, 202.0],
+                },
+                index=[900, 901, 902, 903],
+            )
+
+    pred_by_id, pred_col = _predict_horizon_by_id_with_column(
+        FakeNeuralForecast(),
+        pd.DataFrame({"unique_id": ["2330"], "ds": [0], "y": [99.0]}),
+        horizon_idx=2,
+        model_name="PatchTST",
+    )
+
+    assert pred_col == "PatchTST"
+    assert pred_by_id == {"2330": 101.0, "2317": 202.0}

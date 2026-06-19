@@ -83,13 +83,6 @@ SIGNAL_TO_FEATURE_ID: dict[str, str] = {
     "factorSignals.brokerCount": "l1_brokerCount",
 }
 
-STRATEGY_COMPOSITES = {
-    "factorSignals.alphaMinerPymoo0081Score": "alpha_miner_pymoo_nsga3_novelty_0081",
-    "factorSignals.alphaMinerPymoo0193Score": "alpha_miner_pymoo_nsga3_novelty_0193",
-    "factorSignals.alphaMinerPymoo0187Score": "alpha_miner_pymoo_nsga3_novelty_0187",
-}
-
-
 def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
     fields = sorted({key for row in rows for key in row.keys()})
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
@@ -227,6 +220,35 @@ def _extract_sql_strategy_refs(path: Path) -> list[dict[str, Any]]:
                         "threshold_path": f"{key}.{nested_key}",
                         "runtime_signal": f"{prefix}.{nested_key}",
                     })
+            elif key == "featureRefs" and isinstance(value, dict):
+                weighted = value.get("weightedScore") if isinstance(value.get("weightedScore"), dict) else {}
+                for idx, term in enumerate(weighted.get("terms") or []):
+                    if not isinstance(term, dict):
+                        continue
+                    feature_ref = str(term.get("featureRef") or "").strip()
+                    signal = str(term.get("signal") or feature_ref).strip()
+                    if feature_ref:
+                        rows.append({
+                            "strategy_id": strategy_id,
+                            "source": "d1_migration",
+                            "threshold_path": f"featureRefs.weightedScore.terms[{idx}]",
+                            "runtime_signal": signal,
+                            "feature_ref": feature_ref,
+                        })
+                for block_name in ("all", "any", "not"):
+                    for idx, condition in enumerate(value.get(block_name) or []):
+                        if not isinstance(condition, dict):
+                            continue
+                        feature_ref = str(condition.get("featureRef") or "").strip()
+                        signal = str(condition.get("signal") or feature_ref).strip()
+                        if feature_ref:
+                            rows.append({
+                                "strategy_id": strategy_id,
+                                "source": "d1_migration",
+                                "threshold_path": f"featureRefs.{block_name}[{idx}]",
+                                "runtime_signal": signal,
+                                "feature_ref": feature_ref,
+                            })
             else:
                 signal = DIRECT_THRESHOLD_SIGNAL.get(key)
                 if signal:
@@ -243,15 +265,7 @@ def _resolve_ref(row: dict[str, Any], registry: dict[str, dict[str, Any]]) -> di
     runtime_signal = str(row["runtime_signal"])
     if runtime_signal.startswith("runtime_gate."):
         return {**row, "ref_type": "runtime_gate", "feature_id": "", "registry_status": "not_applicable", "ok": True}
-    if runtime_signal in STRATEGY_COMPOSITES:
-        return {
-            **row,
-            "ref_type": "strategy_composite",
-            "feature_id": STRATEGY_COMPOSITES[runtime_signal],
-            "registry_status": "not_applicable",
-            "ok": True,
-        }
-    feature_id = SIGNAL_TO_FEATURE_ID.get(runtime_signal)
+    feature_id = str(row.get("feature_ref") or "").strip() or SIGNAL_TO_FEATURE_ID.get(runtime_signal)
     if not feature_id and "." not in runtime_signal:
         feature_id = SIGNAL_TO_FEATURE_ID.get(runtime_signal)
     if not feature_id:
@@ -293,7 +307,7 @@ def main() -> int:
     summary = {
         "schema_version": "stockvision-strategy-feature-ref-contract-v1",
         "policy": {
-            "purpose": "Map runtime strategy thresholds and DSL signals to unified feature registry ids or explicit non-feature runtime gates/composites.",
+            "purpose": "Map runtime strategy thresholds, DSL signals, and D1 featureRefs to unified feature registry ids or explicit non-feature runtime gates.",
             "blocker_rule": "Any active strategy signal that maps to a missing/dropped registry feature or lacks mapping is a blocker.",
             "no_behavior_change": "This contract is validation metadata; it does not change L1 matching by itself.",
         },

@@ -14,6 +14,7 @@ from services import trading_config_loader  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation,
     build_reason,
+    build_core_family_vote,
     build_ml_vote_summary_data,
     filter_and_score_recommendations,
     prune_predictions_outside_universe,
@@ -832,6 +833,41 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
     assert summary["missing"] == 0
     assert summary["activeWeightCount"] == 6
     assert summary["zeroWeightModels"] == ["TabM", "DLinear", "TimesFM"]
+
+
+def test_core_family_vote_deduplicates_exact_same_model_scores_within_family():
+    vote = build_core_family_vote(
+        {
+            "rank_scores": {
+                "LightGBM": 0.72,
+                "XGBoost": 0.72,
+                "ExtraTrees": 0.63,
+                "TabM": 0.61,
+                "GNN": 0.58,
+            },
+            "patchtst": {"forecast_pct": 0.01},
+            "itransformer": {"forecast_pct": 0.01},
+            "dlinear": {"forecast_pct": -0.01},
+            "ensemble_v2": {
+                "weights": {
+                    "LightGBM": 0.2,
+                    "XGBoost": 0.3,
+                    "ExtraTrees": 0.1,
+                    "TabM": 0.1,
+                    "GNN": 0.1,
+                    "PatchTST": 0.2,
+                    "iTransformer": 0.2,
+                    "DLinear": 0.1,
+                }
+            },
+        }
+    )
+
+    assert vote["families"]["tree"]["effective_model_count"] == 2
+    assert vote["families"]["tree"]["duplicate_model_groups"] == [["XGBoost", "LightGBM"]]
+    assert vote["families"]["learned_sequence"]["effective_model_count"] == 2
+    assert vote["families"]["learned_sequence"]["duplicate_guard_applied"] is True
+    assert vote["effective_model_vote_count"] < 8
 
 
 def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):

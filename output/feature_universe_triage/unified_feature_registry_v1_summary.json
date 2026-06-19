@@ -30,8 +30,8 @@
     },
     "status_counts": {
       "candidate": 137,
-      "drop_research_candidate": 42,
-      "alias": 36,
+      "drop_research_candidate": 43,
+      "alias": 35,
       "transform_candidate": 82,
       "context_only": 410,
       "chip_candidate": 4,
@@ -40,8 +40,8 @@
     "recommended_status_counts": {
       "watch_not_selector": 68,
       "keep_candidate": 69,
-      "drop_research_candidate": 42,
-      "alias_high_overlap": 22,
+      "drop_research_candidate": 43,
+      "alias_high_overlap": 21,
       "alias": 14,
       "transform_candidate": 82,
       "context_only": 410,
@@ -51,8 +51,8 @@
     "selector_role_counts": {
       "evidence_watch": 68,
       "core_prior": 69,
-      "drop_research_candidate": 42,
-      "alias": 36,
+      "drop_research_candidate": 43,
+      "alias": 35,
       "transform_candidate": 82,
       "context_only": 410,
       "chip_candidate": 4,
@@ -60,8 +60,8 @@
     },
     "materializer_status_counts": {
       "materialized": 137,
-      "not_required_drop": 42,
-      "not_required_alias": 22,
+      "not_required_drop": 43,
+      "not_required_alias": 21,
       "not_in_formal_137_pool": 701
     },
     "eligible_counts": {
@@ -74,6 +74,6 @@
     "formal_candidate_count": 137,
     "core_prior_count": 69,
     "evidence_watch_count": 68,
-    "drop_research_candidate_count": 42
+    "drop_research_candidate_count": 43
   }
 }

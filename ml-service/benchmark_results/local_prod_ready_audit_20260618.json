@@ -308,7 +308,7 @@
     {
       "id": "roadmap:p8:monthly_strategy_mining_controller_surface",
       "status": "pass",
-      "detail": "Controller exposes fail-closed monthly pymoo strategy mining preflight and optional job trigger surface"
+      "detail": "Controller exposes fail-closed monthly pymoo strategy mining preflight and Modal trigger surface"
     },
     {
       "id": "roadmap:p8:monthly_alpha_miner_cli_defaults_pymoo_only",

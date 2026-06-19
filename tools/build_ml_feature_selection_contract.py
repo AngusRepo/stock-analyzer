@@ -65,7 +65,12 @@ def _load_feature_lists(path: Path) -> dict[str, list[str]]:
         value = assignments.get(name)
         if value is None:
             return []
-        parsed = ast.literal_eval(value)
+        try:
+            parsed = ast.literal_eval(value)
+        except (ValueError, TypeError):
+            if name == "FEATURE_COLS":
+                return _formal_ml_training_view_feature_ids()
+            raise
         return [str(item) for item in parsed]
 
     night = literal_list("NIGHT_SESSION_COLS")
@@ -75,6 +80,19 @@ def _load_feature_lists(path: Path) -> dict[str, list[str]]:
         "OPTIONAL_FEATURE_COLS": night + orderbook,
         "CATBOOST_EXTRA_COLS": literal_list("CATBOOST_EXTRA_COLS"),
     }
+
+
+def _formal_ml_training_view_feature_ids() -> list[str]:
+    view_doc = _load_json(FEATURE_VIEW)
+    section = (view_doc.get("views") or {}).get("ml_training_view") or {}
+    features = [
+        str(row.get("feature_id"))
+        for row in section.get("features", [])
+        if isinstance(row, dict) and row.get("feature_id")
+    ]
+    if len(features) != 137:
+        raise RuntimeError(f"formal137_ml_training_view_count_mismatch:{len(features)}")
+    return features
 
 
 def _registry_by_feature_id(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -98,7 +116,11 @@ def _resolve_ml_feature(feature: str, registry: dict[str, dict[str, Any]], ml_tr
     direct = feature if feature in registry else None
     alias = ML_FEATURE_ALIAS_TO_REGISTRY.get(feature)
     alias_row = registry.get(alias or "")
-    if alias and alias_row is not None and bool(alias_row.get("eligible_for_ml")) and alias in ml_training_ids:
+    direct_row = registry.get(direct or "")
+    if direct and direct_row is not None and bool(direct_row.get("eligible_for_ml")) and direct in ml_training_ids:
+        feature_id = direct
+        mapping_type = "direct"
+    elif alias and alias_row is not None and bool(alias_row.get("eligible_for_ml")) and alias in ml_training_ids:
         feature_id = alias
         mapping_type = "alias"
     elif direct:

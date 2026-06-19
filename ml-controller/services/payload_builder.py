@@ -747,10 +747,10 @@ def _bulk_load_accuracies(
     return real_acc, model_stats
 
 
-def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
+def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str] | None = None) -> dict[int, dict]:
     """
-    Per-stock margin / shareholding / monthly_revenue (latest 1 row each).
-    Returns: {stock_id: {margin_balance, short_ratio, margin_5d_ago, retail_pct, revenue_yoy}}
+    Per-stock margin / shareholding / revenue / fundamentals (latest 1 row each).
+    Returns: {stock_id: {margin_balance, short_ratio, retail_pct, revenue_yoy, revenue_mom, eps, roe, pe, pb, dividend_yield}}
 
     Worker did 4 separate queries per stock — we do 4 bulk queries total.
     """
@@ -799,12 +799,12 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
         if sid in out:
             out[sid]["retail_pct"] = r.get("retail_pct")
 
-    # monthly_revenue: latest revenue_yoy
+    # monthly_revenue: latest revenue_yoy/revenue_mom
     rev_rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
         placeholders = ",".join("?" * len(chunk))
         rev_rows.extend(d1_client.query(
-            f"SELECT r1.stock_id, r1.revenue_yoy "
+            f"SELECT r1.stock_id, r1.revenue_yoy, r1.revenue_mom, r1.revenue "
             f"FROM monthly_revenue r1 "
             f"INNER JOIN ("
             f"  SELECT stock_id, MAX(date) as max_date "
@@ -817,6 +817,54 @@ def _bulk_load_per_stock_misc(stock_ids: list[int]) -> dict[int, dict]:
         sid = r["stock_id"]
         if sid in out:
             out[sid]["revenue_yoy"] = r.get("revenue_yoy")
+            out[sid]["revenue_mom"] = r.get("revenue_mom")
+            out[sid]["revenue"] = r.get("revenue")
+
+    # financials/canonical_fundamental_features: latest point-in-time snapshot.
+    fin_rows: list[dict] = []
+    symbol_by_id = symbol_by_id or {}
+    id_by_symbol = {symbol: sid for sid, symbol in symbol_by_id.items() if symbol}
+    try:
+        symbols = [symbol_by_id.get(sid) for sid in stock_ids if symbol_by_id.get(sid)]
+        for chunk in _d1_bind_chunks(symbols):
+            placeholders = ",".join("?" * len(chunk))
+            fin_rows.extend(d1_client.query(
+                f"SELECT f.stock_id AS symbol, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
+                f"FROM canonical_fundamental_features f "
+                f"INNER JOIN ("
+                f"  SELECT stock_id, MAX(available_date) as max_date "
+                f"  FROM canonical_fundamental_features "
+                f"  WHERE stock_id IN ({placeholders}) AND source = 'finlab.fundamental_factor_diversity' "
+                f"  GROUP BY stock_id"
+                f") latest ON f.stock_id = latest.stock_id AND f.available_date = latest.max_date",
+                list(chunk),
+                timeout=60.0,
+            ))
+    except Exception:
+        fin_rows = []
+    if not fin_rows:
+        for chunk in _d1_bind_chunks(stock_ids):
+            placeholders = ",".join("?" * len(chunk))
+            fin_rows.extend(d1_client.query(
+                f"SELECT f.stock_id, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
+                f"FROM financials f "
+                f"INNER JOIN ("
+                f"  SELECT stock_id, MAX(period) as max_period "
+                f"  FROM financials WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+                f") latest ON f.stock_id = latest.stock_id AND f.period = latest.max_period",
+                list(chunk),
+                timeout=60.0,
+            ))
+    for r in fin_rows:
+        sid = r.get("stock_id")
+        if sid is None and r.get("symbol") is not None:
+            sid = id_by_symbol.get(str(r.get("symbol")))
+        if sid in out:
+            out[sid]["eps"] = r.get("eps")
+            out[sid]["roe"] = r.get("roe")
+            out[sid]["pe"] = r.get("pe")
+            out[sid]["pb"] = r.get("pb")
+            out[sid]["dividend_yield"] = r.get("dividend_yield")
 
     return out
 
@@ -1029,7 +1077,7 @@ def build_payloads(
     chips_by_sym = _bulk_load_chips(symbols)
     sentiment_by_id = _bulk_load_sentiment(stock_ids)
     real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
-    misc_by_id = _bulk_load_per_stock_misc(stock_ids)
+    misc_by_id = _bulk_load_per_stock_misc(stock_ids, {int(s["id"]): str(s["symbol"]) for s in active_stocks})
 
     # ── Stock meta: sector encoding + cross-sectional features ──────────────
     # Sector tags
@@ -1081,6 +1129,13 @@ def build_payloads(
         env_for_stock = {
             **base_env,
             "revenue_yoy": misc.get("revenue_yoy"),
+            "revenue_mom": misc.get("revenue_mom"),
+            "revenue": misc.get("revenue"),
+            "eps": misc.get("eps"),
+            "roe": misc.get("roe"),
+            "pe": misc.get("pe"),
+            "pb": misc.get("pb"),
+            "dividend_yield": misc.get("dividend_yield"),
             "margin_balance": misc.get("margin_balance"),
             "short_ratio": misc.get("short_ratio"),
             "margin_change_5d": None,  # bulk load skipped, fallback null (worker behavior)

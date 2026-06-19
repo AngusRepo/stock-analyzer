@@ -55,7 +55,7 @@ def build_canonical_feature_contract(
         "features_hash": _sha256_json(features),
         "features": features,
         "production_mutation_allowed": False,
-        "sidecar_policy": "do_not_append_finlab_features_to_feature_cols",
+        "sidecar_policy": "do_not_append_unpromoted_finlab_sidecar_to_formal_feature_contract",
     }
 
 
@@ -173,7 +173,7 @@ def build_finlab_feature_lake_manifest(
         "source_plan_checksum": adoption_plan.get("checksum"),
         "source_dagster_payload_checksum": definitions_payload.get("asset_graph_checksum"),
         "policy": {
-            "production_ml_input": "current_106_features_only",
+            "production_ml_input": "formal137_governed_feature_contract",
             "sidecar_mode": "shadow_only",
             "promotion_default": "no_direct_production_use",
             "training_policy": "not_eligible_until_shadow_gates_pass",
@@ -206,11 +206,14 @@ def validate_finlab_feature_lake_manifest(manifest: dict[str, Any]) -> list[str]
     if not manifest.get("checksum"):
         errors.append("checksum_missing")
     canonical = manifest.get("canonical_feature_contract") or {}
-    if canonical.get("feature_count") != 106:
-        errors.append("canonical_feature_count_not_106")
+    features = canonical.get("features")
+    if not isinstance(features, list) or not features:
+        errors.append("canonical_features_missing")
+    elif canonical.get("feature_count") != len(features):
+        errors.append("canonical_feature_count_mismatch")
     if canonical.get("production_mutation_allowed") is not False:
         errors.append("production_feature_mutation_allowed")
-    if manifest.get("policy", {}).get("production_ml_input") != "current_106_features_only":
+    if manifest.get("policy", {}).get("production_ml_input") != "formal137_governed_feature_contract":
         errors.append("production_ml_input_policy_invalid")
 
     families = manifest.get("sidecar_families")

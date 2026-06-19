@@ -79,7 +79,7 @@ APPROVAL_REQUIRED_ACTIONS = (
     {
         "id": "feature_selection_retrain_release",
         "approval_gate": "wei_explicit_approval_required",
-        "mutation_scope": "production ML feature schema change from current 106 contract toward formal137-selected artifact schema",
+        "mutation_scope": "production ML feature schema retrain/release on the active formal137 artifact schema",
     },
 )
 

@@ -349,7 +349,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/lib/postMarketChainContract.test.ts",
-        "runModelIcRollingRefresh runLinUcbRewardLedgerRefresh runAdaptiveUpdate runMetaLearningShadowClosure runStrategyLearningClosureTask root chain closed after post-verify",
+        "runModelIcRollingRefresh runLinUcbRewardLedgerRefresh runAdaptiveUpdate runMetaLearningShadowClosure strategy_learning_materialize waiting for queued strategy-learning root chain closed after post-verify",
     )
     _write(
         tmp_path / "worker/src/lib/strategyLearning.ts",

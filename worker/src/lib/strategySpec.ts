@@ -58,6 +58,7 @@ export interface StrategySpecThresholds {
   minFactorSignals?: Record<string, number>
   maxFactorSignals?: Record<string, number>
   dsl?: StrategySignalDsl
+  featureRefs?: StrategyFeatureRefDsl
   includeIndustries?: string[]
   excludeIndustries?: string[]
 }
@@ -74,6 +75,29 @@ export interface StrategySignalDsl {
   all?: StrategySignalCondition[]
   any?: StrategySignalCondition[]
   not?: StrategySignalCondition[]
+}
+
+export interface StrategyFeatureRefTerm {
+  featureRef: string
+  signal?: string
+  weight?: number
+}
+
+export interface StrategyFeatureRefWeightedScore {
+  min: number
+  terms: StrategyFeatureRefTerm[]
+}
+
+export interface StrategyFeatureRefCondition extends StrategyFeatureRefTerm {
+  op: StrategySignalOperator
+  value: number | string | boolean
+}
+
+export interface StrategyFeatureRefDsl {
+  weightedScore?: StrategyFeatureRefWeightedScore
+  all?: StrategyFeatureRefCondition[]
+  any?: StrategyFeatureRefCondition[]
+  not?: StrategyFeatureRefCondition[]
 }
 
 export interface StrategyRawSignals {
@@ -495,7 +519,64 @@ function signalValue(raw: StrategyRawSignals, signalPath: string): unknown {
   return cursor
 }
 
-function compareSignal(rawValue: unknown, condition: StrategySignalCondition): boolean {
+function featureRefValue(raw: StrategyRawSignals, term: StrategyFeatureRefTerm): unknown {
+  const explicitSignal = cleanText(term.signal)
+  if (explicitSignal) return signalValue(raw, explicitSignal)
+
+  const featureRef = cleanText(term.featureRef)
+  if (!featureRef) return null
+  const direct = signalValue(raw, featureRef)
+  if (finiteNumber(direct) != null) return direct
+  const factorDirect = raw.factorSignals?.[featureRef]
+  if (finiteNumber(factorDirect) != null) return factorDirect
+  const technicalDirect = raw.technicalIndicators?.[featureRef]
+  if (finiteNumber(technicalDirect) != null) return technicalDirect
+
+  const aliases: Record<string, string[]> = {
+    l1_closeAboveMa60Pct: ['closeAboveMa60Pct', 'technicalIndicators.closeAboveMa60Pct', 'factorSignals.closeAboveMa60Pct'],
+    l1_volumeExpansion20: ['volumeExpansion20', 'technicalIndicators.volumeExpansion20', 'factorSignals.volumeExpansion20'],
+    l1_return20d: ['return20d', 'technicalIndicators.return20d', 'factorSignals.return20d'],
+    l1_return5d: ['return5d', 'technicalIndicators.return5d', 'factorSignals.return5d', 'factorSignals.return_5d'],
+    l1_monthlyRevenueMoM: ['monthlyRevenueMoM', 'factorSignals.monthlyRevenueMoM'],
+    l1_monthlyRevenueYoY: ['monthlyRevenueYoY', 'factorSignals.monthlyRevenueYoY'],
+    l1_revenueGrowthYoY: ['revenueGrowthYoY', 'factorSignals.revenueGrowthYoY'],
+    l1_roe: ['roe', 'factorSignals.roe'],
+    l1_eps: ['eps', 'factorSignals.eps'],
+    l1_brokerNetAmount5d: ['brokerNetAmount5d', 'factorSignals.brokerNetAmount5d'],
+    l1_brokerCount: ['brokerCount', 'factorSignals.brokerCount'],
+    l1_brokerConcentration: ['brokerConcentration', 'factorSignals.brokerConcentration'],
+    tech_sma_20_pos: ['closeAboveMa20Pct', 'technicalIndicators.closeAboveMa20Pct', 'factorSignals.closeAboveMa20Pct'],
+    tech_adx_14: ['technicalIndicators.adx14'],
+    mom_rsi_14: ['technicalIndicators.rsi14', 'factorSignals.rsi14'],
+    l1_macdHist: ['technicalIndicators.macdHist'],
+    l1_diTrend: ['technicalIndicators.diTrend'],
+    l1_squeezeRelease: ['technicalIndicators.squeezeRelease'],
+    l1_squeezeMomentum: ['technicalIndicators.squeezeMomentum'],
+    l1_bbBandwidthPct: ['technicalIndicators.bbBandwidthPct'],
+    val_ep: ['pe', 'factorSignals.pe'],
+    val_bp: ['pb', 'factorSignals.pb'],
+    val_dp: ['dividendYield', 'factorSignals.dividendYield'],
+    KLOW2: ['factorSignals.KLOW2', 'technicalIndicators.KLOW2'],
+    KSFT: ['factorSignals.KSFT', 'technicalIndicators.KSFT'],
+    KSFT2: ['factorSignals.KSFT2', 'technicalIndicators.KSFT2'],
+    CNTD_20: ['factorSignals.CNTD_20', 'technicalIndicators.CNTD_20'],
+    CNTN_20: ['factorSignals.CNTN_20', 'technicalIndicators.CNTN_20'],
+    ma10_bias: ['ma10Bias', 'factorSignals.ma10_bias', 'factorSignals.ma10Bias', 'technicalIndicators.ma10Bias'],
+    return_5d: ['return5d', 'factorSignals.return_5d', 'factorSignals.return5d', 'technicalIndicators.return5d'],
+    margin_balance: ['marginBalance', 'factorSignals.margin_balance', 'factorSignals.marginBalance'],
+    advance_ratio: ['factorSignals.advance_ratio', 'factorSignals.advanceRatio'],
+    us_sentiment_score: ['factorSignals.us_sentiment_score', 'factorSignals.usSentimentScore'],
+  }
+  for (const alias of aliases[featureRef] ?? []) {
+    const value = signalValue(raw, alias)
+    if (finiteNumber(value) != null) return value
+  }
+  return null
+}
+
+type StrategyComparisonCondition = Pick<StrategySignalCondition, 'op' | 'value'>
+
+function compareSignal(rawValue: unknown, condition: StrategyComparisonCondition): boolean {
   const op = condition.op
   const expected = condition.value
   if (typeof expected === 'number') {
@@ -533,6 +614,32 @@ function meetsSignalDsl(raw: StrategyRawSignals, dsl?: StrategySignalDsl): boole
   return true
 }
 
+function meetsFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeatureRefDsl): boolean {
+  if (!dsl) return true
+  const all = dsl.all ?? []
+  const any = dsl.any ?? []
+  const not = dsl.not ?? []
+  if (all.some((condition) => !compareSignal(featureRefValue(raw, condition), condition))) return false
+  if (any.length && !any.some((condition) => compareSignal(featureRefValue(raw, condition), condition))) return false
+  if (not.some((condition) => compareSignal(featureRefValue(raw, condition), condition))) return false
+
+  const weighted = dsl.weightedScore
+  if (weighted) {
+    let score = 0
+    let weightSum = 0
+    for (const term of weighted.terms ?? []) {
+      const value = finiteNumber(featureRefValue(raw, term))
+      const weight = finiteNumber(term.weight) ?? 1
+      if (value == null || weight <= 0) continue
+      score += value * weight
+      weightSum += weight
+    }
+    if (weightSum <= 0) return false
+    if ((score / weightSum) < weighted.min) return false
+  }
+  return true
+}
+
 function meetsRawSignalThresholds(raw: StrategyRawSignals, thresholds: StrategySpecThresholds): boolean {
   const minChecks: Array<[unknown, number | undefined]> = [
     [raw.closeAboveMa20Pct, thresholds.minCloseAboveMa20Pct],
@@ -565,6 +672,7 @@ function meetsRawSignalThresholds(raw: StrategyRawSignals, thresholds: StrategyS
     && meetsSignalMap(raw.technicalIndicators, thresholds.minTechnicalIndicators, thresholds.maxTechnicalIndicators)
     && meetsSignalMap(raw.factorSignals, thresholds.minFactorSignals, thresholds.maxFactorSignals)
     && meetsSignalDsl(raw, thresholds.dsl)
+    && meetsFeatureRefDsl(raw, thresholds.featureRefs)
 }
 
 export function assessCandidateAgainstStrategySpecs(

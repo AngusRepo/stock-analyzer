@@ -249,16 +249,49 @@ def _train_nf(
     return nf, df
 
 
-def _predict_horizon_by_id(nf: Any, df: Any, *, horizon_idx: int) -> dict[str, float]:
+def _prediction_column(pred_df: Any, model_name: str | None = None) -> str | None:
+    if model_name and model_name in pred_df.columns:
+        return str(model_name)
+    candidate_cols: list[str] = []
+    for col in pred_df.columns:
+        col_name = str(col)
+        if col_name in {"unique_id", "ds", "index", "level_0"}:
+            continue
+        try:
+            is_numeric = bool(np.issubdtype(pred_df[col].dtype, np.number))
+        except Exception:  # noqa: BLE001 - non-pandas objects in tests.
+            is_numeric = True
+        if is_numeric:
+            candidate_cols.append(col_name)
+    return candidate_cols[0] if len(candidate_cols) == 1 else None
+
+
+def _predict_horizon_by_id_with_column(
+    nf: Any,
+    df: Any,
+    *,
+    horizon_idx: int,
+    model_name: str | None = None,
+) -> tuple[dict[str, float], str]:
     pred_df = nf.predict(df=df).reset_index()
-    numeric_cols = [col for col in pred_df.columns if col not in {"unique_id", "ds"}]
-    if not numeric_cols:
-        raise RuntimeError("NeuralForecast prediction column missing")
-    pred_col = numeric_cols[0]
+    pred_col = _prediction_column(pred_df, model_name)
+    if not pred_col:
+        columns = ",".join(str(col) for col in pred_df.columns)
+        raise RuntimeError(f"NeuralForecast prediction column missing_or_ambiguous:{columns}")
     pred_by_id: dict[str, float] = {}
     for uid, group in pred_df.sort_values(["unique_id", "ds"]).groupby("unique_id", sort=False):
         idx = min(max(int(horizon_idx), 1), len(group)) - 1
         pred_by_id[str(uid)] = float(group.iloc[idx][pred_col])
+    return pred_by_id, pred_col
+
+
+def _predict_horizon_by_id(nf: Any, df: Any, *, horizon_idx: int, model_name: str | None = None) -> dict[str, float]:
+    pred_by_id, _pred_col = _predict_horizon_by_id_with_column(
+        nf,
+        df,
+        horizon_idx=horizon_idx,
+        model_name=model_name,
+    )
     return pred_by_id
 
 
@@ -370,7 +403,12 @@ def neuralforecast_batch_predict(
     if rows and valid_eval:
         h_idx = min(max(int(horizon_used), 1), pred_len)
         try:
-            pred_by_id = _predict_horizon_by_id(nf, pd.DataFrame(rows), horizon_idx=h_idx)
+            pred_by_id, pred_col = _predict_horizon_by_id_with_column(
+                nf,
+                pd.DataFrame(rows),
+                horizon_idx=h_idx,
+                model_name=model_name,
+            )
         except Exception as exc:  # noqa: BLE001
             return [
                 {"symbol": item.get("symbol", "?"), "error": f"{model_name} NeuralForecast inference failed: {type(exc).__name__}: {exc}"}
@@ -395,6 +433,7 @@ def neuralforecast_batch_predict(
                 "model_version": version,
                 "artifact_schema": cfg["artifact_schema"],
                 "horizon_used": h_idx,
+                "prediction_col_used": pred_col,
             }
     return [
         out_by_uid.get(str(item.get("symbol") or f"series_{idx}"), {"symbol": item.get("symbol", "?"), "error": "prediction missing"})
@@ -455,7 +494,12 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         seed=seed,
         n_series=len(eval_rows),
     )
-    pred_by_id = _predict_horizon_by_id(nf, df, horizon_idx=pred_len)
+    pred_by_id, pred_col = _predict_horizon_by_id_with_column(
+        nf,
+        df,
+        horizon_idx=pred_len,
+        model_name=model_name,
+    )
     pred_return: list[float] = []
     actual_return: list[float] = []
     for row in eval_rows:
@@ -478,6 +522,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "oos_ic": round(float(oos_ic), 6),
         "direction_accuracy": round(float(direction_accuracy(np.asarray(pred_return), np.asarray(actual_return))), 6),
         "rank_ic_all": round(float(oos_ic), 6),
+        "prediction_col_used": pred_col,
         "pbo": cpcv_proxy_pbo(folds),
         "oos_samples": int(len(pred_return)),
         "fold_metrics": folds,

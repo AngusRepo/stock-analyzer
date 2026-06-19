@@ -153,17 +153,20 @@ def validate() -> dict[str, Any]:
     _check(all(int(value) == 137 for value in view_counts.values()), "not_all_feature_views_have_137_candidates", errors)
     _check(int(strategy_counts.get("strategies") or 0) == 11, "strategy_ref_strategy_count_not_11", errors)
     _check(int(strategy_counts.get("blockers") or 0) == 0, "strategy_ref_blockers_present", errors)
-    _check(int(ml_counts.get("feature_cols") or 0) == 106, "ml_current_feature_cols_not_106", errors)
+    _check(int(ml_counts.get("feature_cols") or 0) == 137, "ml_current_feature_cols_not_137", errors)
     _check(int(ml_counts.get("formal137_ml_training_view") or 0) == 137, "ml_training_view_not_137", errors)
+    _check(int(ml_counts.get("feature_cols_mapped_to_formal137") or 0) == 137, "ml_feature_cols_not_fully_mapped_to_formal137", errors)
     _check(int(ml_counts.get("feature_cols_not_mapped_to_formal137") or 0) == 0, "ml_feature_cols_unmapped_to_formal137", errors)
+    _check(int(ml_counts.get("formal137_not_in_current_feature_cols") or 0) == 0, "ml_formal137_not_in_current_feature_cols_present", errors)
     _check(ml_migration_preflight.get("status") == "preflight_ready", "ml_feature_migration_preflight_not_ready", errors)
     _check(ml_migration_preflight.get("decision_effect") == "local_validation_only", "ml_feature_migration_preflight_has_runtime_effect", errors)
     _check(int(ml_preflight_counts.get("migration_candidate_count") or 0) == int(ml_counts.get("formal137_not_in_current_feature_cols") or 0), "ml_feature_migration_candidate_count_mismatch", errors)
     _check(int(ml_preflight_counts.get("materialization_blocker_count") or 0) == 0, "ml_feature_migration_materialization_blockers_present", errors)
-    _check(ml_preflight_gates.get("production_activation") == "blocked_until_feature_selection_retrain_release_approval", "ml_feature_migration_activation_not_blocked", errors)
-    _check(ml_preflight_policy.get("no_direct_feature_cols_mutation") is True, "ml_feature_migration_allows_direct_feature_cols_mutation", errors)
-    _check(ml_preflight_policy.get("explicit_wei_approval_required_for_retrain") is True, "ml_feature_migration_missing_retrain_approval_gate", errors)
-    _check(ml_preflight_policy.get("explicit_wei_approval_required_for_release") is True, "ml_feature_migration_missing_release_approval_gate", errors)
+    _check(ml_preflight_gates.get("production_activation") == "pass", "ml_feature_migration_activation_not_pass", errors)
+    _check(ml_preflight_policy.get("runtime_feature_schema") == "formal137", "ml_feature_migration_runtime_schema_not_formal137", errors)
+    _check(ml_preflight_policy.get("no_direct_unmanaged_feature_append") is True, "ml_feature_migration_allows_unmanaged_append", errors)
+    _check(ml_preflight_policy.get("no_silent_106_fallback") is True, "ml_feature_migration_allows_silent_106_fallback", errors)
+    _check(ml_preflight_policy.get("explicit_wei_approval_for_current_cutover") == "approved_in_session_2026_06_19", "ml_feature_migration_current_cutover_not_approved", errors)
     _check(monthly_defaults.get("factor_universe") == "unified_registry_v1", "monthly_factor_universe_not_unified_registry", errors)
     _check(monthly_defaults.get("algorithm") == "pymoo", "monthly_algorithm_not_pymoo", errors)
     _check(schedule.get("cadence") == "monthly", "monthly_cadence_not_monthly", errors)
@@ -186,12 +189,8 @@ def validate() -> dict[str, Any]:
 
     if int(similarity_counts.get("similarity_refresh_required") or 0) > 0:
         warnings.append(f"similarity_refresh_required={similarity_counts.get('similarity_refresh_required')}")
-    if int(ml_counts.get("formal137_not_in_current_feature_cols") or 0) > 0:
-        warnings.append(
-            "ml_feature_migration_preflight_ready="
-            f"{ml_counts.get('formal137_not_in_current_feature_cols')};"
-            " retrain_release_required"
-        )
+    if ml_preflight_gates.get("production_activation") != "pass":
+        warnings.append("formal137_production_activation_not_pass")
     if int(materialization_counts.get("very_low_coverage_count") or 0) > 0:
         warnings.append(f"materialization_very_low_coverage={materialization_counts.get('very_low_coverage_count')}")
 

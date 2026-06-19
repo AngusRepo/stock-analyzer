@@ -88,7 +88,7 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <
-    postMarketChain.indexOf("'strategy-learning', () => runStrategyLearningClosureTask"),
+    postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
   'Strategy learning reward closure should run after model/meta-learning evidence is available',
 )
 assert(
@@ -96,8 +96,13 @@ assert(
   'Strategy learning must run for historical reruns so strategy_decision_log can materialize replay-date family evidence',
 )
 assert(
-  postMarketChain.includes('persistPolicy: isCurrentBusinessDate(ctx.runDate)'),
-  'historical strategy-learning reruns must not refresh live strategy_policy_state before root-chain closure',
+  postMarketChain.includes('force: isCurrentBusinessDate(runDate)'),
+  'historical strategy-learning reruns must not refresh live strategy_policy_state in queued closure',
+)
+assert(
+  postMarketChain.includes("type: 'strategy_learning_materialize'") &&
+    postMarketChain.includes('waiting for queued strategy-learning'),
+  'post-verify must enqueue strategy-learning materialization and keep root chain running until queue closure writes final status',
 )
 assert(
   postMarketChain.includes('runPaperActivePostmarketPromotion'),
@@ -126,6 +131,12 @@ assert(
     postMarketChain.includes('withObservabilityTimeout') &&
     postMarketChain.includes('TASK_OBSERVABILITY_TIMEOUT_MS'),
   'post-market task observability writes must not let KV/profile logging block downstream chain tasks',
+)
+assert(
+  postMarketChain.includes('withTaskExecutionTimeout') &&
+    postMarketChain.includes('TASK_EXECUTION_TIMEOUT_MS') &&
+    postMarketChain.includes("timeoutMs: TASK_EXECUTION_TIMEOUT_MS"),
+  'non-critical evidence closures must have execution timeout protection so post-verify cannot leave evening-chain triggered forever',
 )
 assert(
   postMarketChain.includes("task === 'post-verify-chain'") &&

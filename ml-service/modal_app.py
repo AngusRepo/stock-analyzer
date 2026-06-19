@@ -19,15 +19,40 @@ _LOCAL_APP_DIR     = Path(__file__).parent / "app"
 _LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # optuna routes import scripts/optuna_*.py
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 _LOCAL_SOURCE_ROOT = Path(__file__).resolve().parent
-_LOCAL_REPO_ROOT   = _LOCAL_SOURCE_ROOT if (_LOCAL_SOURCE_ROOT / "tools").exists() else _LOCAL_SOURCE_ROOT.parent
+
+
+def _resolve_local_repo_root() -> Path:
+    env_root = os.environ.get("STOCKVISION_MODAL_REPO_ROOT", "").strip()
+    candidates = [
+        Path(env_root) if env_root else None,
+        _LOCAL_SOURCE_ROOT if (_LOCAL_SOURCE_ROOT / "tools").exists() else _LOCAL_SOURCE_ROOT.parent,
+        Path.cwd(),
+        Path("/app"),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if (candidate / "tools").exists() and (candidate / "data" / "feature_registry").exists():
+            return candidate
+    return _LOCAL_SOURCE_ROOT if (_LOCAL_SOURCE_ROOT / "tools").exists() else _LOCAL_SOURCE_ROOT.parent
+
+
+_LOCAL_REPO_ROOT   = _resolve_local_repo_root()
 _LOCAL_TOOLS_DIR   = _LOCAL_REPO_ROOT / "tools"
 _LOCAL_DATA_FEATURE_REGISTRY_DIR = _LOCAL_REPO_ROOT / "data" / "feature_registry"
-_LOCAL_STRATEGY_MINING_JOB = _LOCAL_REPO_ROOT / "ml-controller" / "strategy_mining_job_main.py"
+_LOCAL_STRATEGY_MINING_JOB = next(
+    (
+        candidate
+        for candidate in (
+            _LOCAL_REPO_ROOT / "strategy_mining_job_main.py",
+            _LOCAL_REPO_ROOT / "ml-controller" / "strategy_mining_job_main.py",
+        )
+        if candidate.exists()
+    ),
+    _LOCAL_REPO_ROOT / "ml-controller" / "strategy_mining_job_main.py",
+)
 _LOCAL_STRATEGY_MINING_ARTIFACT_FILES = [
     _LOCAL_REPO_ROOT / "output" / "feature_universe_triage" / "formal137_pairwise_similarity_long_20260617.csv",
-    _LOCAL_REPO_ROOT / "output" / "feature_universe_triage" / "strategy95_vs_ml106_full_mapping.csv",
-    _LOCAL_REPO_ROOT / "output" / "finlab_ml_feature_backtests" / "ml106_features_sii_20230101_20260615_top10_bothdir_best.csv",
-    _LOCAL_REPO_ROOT / "output" / "finlab_strategy95_backtests" / "strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv",
 ]
 _LOCAL_CONTROLLER_SERVICES_DIR = (
     _LOCAL_REPO_ROOT / "services"
@@ -56,9 +81,6 @@ image = (
     .add_local_dir(str(_LOCAL_DATA_FEATURE_REGISTRY_DIR), remote_path="/root/data/feature_registry")
     .add_local_file(str(_LOCAL_STRATEGY_MINING_JOB), remote_path="/root/strategy_mining_job_main.py")
     .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[0]), remote_path="/root/output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv")
-    .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[1]), remote_path="/root/output/feature_universe_triage/strategy95_vs_ml106_full_mapping.csv")
-    .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[2]), remote_path="/root/output/finlab_ml_feature_backtests/ml106_features_sii_20230101_20260615_top10_bothdir_best.csv")
-    .add_local_file(str(_LOCAL_STRATEGY_MINING_ARTIFACT_FILES[3]), remote_path="/root/output/finlab_strategy95_backtests/strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv")
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 

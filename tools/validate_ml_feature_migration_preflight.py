@@ -42,12 +42,12 @@ def main() -> int:
 
     _assert(contract.get("schema_version") == "stockvision-ml-feature-migration-preflight-v1", "invalid_schema_version", errors)
     _assert(contract.get("decision_effect") == "local_validation_only", "preflight_must_be_local_validation_only", errors)
-    _assert(policy.get("no_direct_feature_cols_mutation") is True, "direct_feature_cols_mutation_not_blocked", errors)
-    _assert(policy.get("no_daily_runtime_effect") is True, "daily_runtime_effect_not_blocked", errors)
-    _assert(policy.get("explicit_wei_approval_required_for_retrain") is True, "retrain_approval_not_required", errors)
-    _assert(policy.get("explicit_wei_approval_required_for_release") is True, "release_approval_not_required", errors)
+    _assert(policy.get("runtime_feature_schema") == "formal137", "runtime_schema_not_formal137", errors)
+    _assert(policy.get("no_direct_unmanaged_feature_append") is True, "unmanaged_feature_append_not_blocked", errors)
+    _assert(policy.get("no_silent_106_fallback") is True, "silent_106_fallback_not_blocked", errors)
     _assert(policy.get("retrain_required_before_activation") is True, "retrain_not_required_before_activation", errors)
     _assert(policy.get("release_gate_required_before_activation") is True, "release_gate_not_required_before_activation", errors)
+    _assert(policy.get("explicit_approval_marker") == "approved_in_session_2026_06_19", "formal137_cutover_approval_marker_missing", errors)
     _assert(int(counts.get("migration_candidate_count") or 0) == len(expected_ids), "migration_candidate_count_mismatch", errors)
     _assert(len(migration_ids) == len(expected_ids), "migration_candidate_rows_mismatch", errors)
     _assert(int(counts.get("materialization_blocker_count") or 0) == 0, "materialization_blockers_present", errors)
@@ -59,7 +59,7 @@ def main() -> int:
     _assert(gates.get("materialization_contract_ready") == "pass", "materialization_contract_ready_gate_failed", errors)
     _assert(gates.get("similarity_contract_ready") == "pass", "similarity_contract_not_ready", errors)
     _assert(gates.get("no_201_invariant") == "pass", "no_201_invariant_failed", errors)
-    _assert(gates.get("production_activation") == "blocked_until_feature_selection_retrain_release_approval", "production_activation_not_blocked", errors)
+    _assert(gates.get("production_activation") == "pass", "production_activation_not_ready", errors)
 
     status = "pass" if not errors else "fail"
     print(json.dumps({

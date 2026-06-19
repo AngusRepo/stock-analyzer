@@ -13,7 +13,7 @@ from services.finlab_feature_lake import (  # noqa: E402
 
 
 def _feature_cols() -> list[str]:
-    return [f"feature_{idx:03d}" for idx in range(106)]
+    return [f"feature_{idx:03d}" for idx in range(137)]
 
 
 def _adoption_plan() -> dict:
@@ -103,16 +103,16 @@ def _definitions_payload() -> dict:
     }
 
 
-def test_canonical_feature_contract_freezes_current_106_features():
+def test_canonical_feature_contract_freezes_formal137_features():
     contract = build_canonical_feature_contract(
         _feature_cols(),
         schema_version="v2",
         source_module="ml-service.app.features.FEATURE_COLS",
     )
 
-    assert contract["feature_count"] == 106
+    assert contract["feature_count"] == 137
     assert contract["production_mutation_allowed"] is False
-    assert contract["sidecar_policy"] == "do_not_append_finlab_features_to_feature_cols"
+    assert contract["sidecar_policy"] == "do_not_append_unpromoted_finlab_sidecar_to_formal_feature_contract"
     assert contract["features"][0] == "feature_000"
     assert contract["features_hash"].startswith("sha256:")
 
@@ -130,8 +130,8 @@ def test_feature_lake_manifest_keeps_finlab_sidecar_out_of_production_features()
     emerging = families["finlab/diversity/emerging_chip_diversity/feature_lake"]
     research = families["finlab/research/research/feature_lake"]
 
-    assert manifest["canonical_feature_contract"]["feature_count"] == 106
-    assert manifest["policy"]["production_ml_input"] == "current_106_features_only"
+    assert manifest["canonical_feature_contract"]["feature_count"] == 137
+    assert manifest["policy"]["production_ml_input"] == "formal137_governed_feature_contract"
     assert parity["promotion_state"] == "shadow_parity"
     assert parity["eligible_for_ml_training"] is False
     assert parity["join_keys"] == ["symbol", "date"]
@@ -148,10 +148,10 @@ def test_validate_feature_lake_manifest_blocks_unsafe_promotion():
         canonical_features=_feature_cols(),
         generated_at="2026-05-16T00:00:00+00:00",
     )
-    manifest["canonical_feature_contract"]["feature_count"] = 107
+    manifest["canonical_feature_contract"]["feature_count"] = 136
     manifest["sidecar_families"][1]["eligible_for_pending_buy"] = True
 
     errors = validate_finlab_feature_lake_manifest(manifest)
 
-    assert "canonical_feature_count_not_106" in errors
+    assert "canonical_feature_count_mismatch" in errors
     assert "emerging_pending_buy_enabled:finlab/diversity/emerging_chip_diversity/feature_lake" in errors

@@ -211,8 +211,8 @@
       "passed": true,
       "detail": {
         "status": "preflight_ready",
-        "production_activation": "blocked_until_feature_selection_retrain_release_approval",
-        "migration_candidate_count": 84,
+        "production_activation": "pass",
+        "migration_candidate_count": 0,
         "materialization_blocker_count": 0,
         "materialization_audit_fresh": "pass",
         "materialization_contract_ready": "pass"
@@ -234,7 +234,7 @@
       "passed": true,
       "detail": {
         "strategies": 11,
-        "refs": 67,
+        "refs": 75,
         "blockers": 0
       }
     },
@@ -385,12 +385,12 @@
     {
       "id": "enable_strategy_mining_execution_env",
       "approval_gate": "wei_explicit_approval_required",
-      "mutation_scope": "STRATEGY_MINING_EXECUTION_ENABLED=1 and STRATEGY_MINING_JOB_NAME production env/job binding"
+      "mutation_scope": "STRATEGY_MINING_EXECUTION_ENABLED=1 and STRATEGY_MINING_BACKEND=modal production env binding"
     },
     {
       "id": "feature_selection_retrain_release",
       "approval_gate": "wei_explicit_approval_required",
-      "mutation_scope": "production ML feature schema change from current 106 contract toward formal137-selected artifact schema"
+      "mutation_scope": "production ML feature schema retrain/release on the active formal137 artifact schema"
     }
   ],
   "remote_preflight_checks": [
@@ -412,7 +412,7 @@
     {
       "id": "strategy_mining_execution_env_gated",
       "check_type": "remote_read_only",
-      "expected": "STRATEGY_MINING_EXECUTION_ENABLED remains false until Wei approves actual monthly mining execution"
+      "expected": "STRATEGY_MINING_EXECUTION_ENABLED=false until Wei approval; true is expected after approved strategy-mining execution cutover"
     },
     {
       "id": "sequence_artifacts_are_neuralforecast_zip",

@@ -747,9 +747,9 @@ def retrain_orchestrator(payload: dict) -> dict:
                     if isinstance(candidate, dict) and (candidate.get("oos_ic") is not None or candidate.get("after_oos_ic") is not None):
                         evidence = dict(candidate)
                         break
-                if not evidence:
-                    raise RuntimeError("TimesFM artifact evidence missing: expected oos_ic or after_oos_ic")
-                oos_ic = evidence.get("oos_ic") if evidence.get("oos_ic") is not None else evidence.get("after_oos_ic")
+                oos_ic = None
+                if evidence:
+                    oos_ic = evidence.get("oos_ic") if evidence.get("oos_ic") is not None else evidence.get("after_oos_ic")
                 model_cpcv = (
                     evidence.get("model_cpcv")
                     or config.get("model_cpcv")
@@ -773,7 +773,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 if oos_ic is not None:
                     metrics["oos_ic"] = oos_ic
                 result = {
-                    "status": "ok",
+                    "status": "ok" if evidence else "warning",
                     "model": "TimesFM",
                     "version": version,
                     "artifact_path": gcs_path,
@@ -781,6 +781,9 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "artifact_type": "foundation_forecast_config",
                     "note": "TimesFM is config-backed foundation runtime; no local retrain is run.",
                 }
+                if not evidence:
+                    result["warning"] = "timesfm_oos_evidence_missing"
+                    result["validation_status"] = "evidence_missing_non_blocking"
                 if metrics:
                     result["metrics"] = metrics
                 if oos_ic is not None:

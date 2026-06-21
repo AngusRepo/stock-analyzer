@@ -1,0 +1,102 @@
+{
+  "schema_version": "stockvision-production-retrain-release-evidence-v1",
+  "generated_at": "2026-06-22T00:30:58+08:00",
+  "decision_effect": "production_observation",
+  "run": {
+    "run_id": "universal-20260621T231108-40d3a660",
+    "lock_key": "retrain:2026-06-21",
+    "status": "completed",
+    "downstream_notes": "lock_released",
+    "candidate_version": "v20260621154455",
+    "is_monthly": true,
+    "batch_count": 5,
+    "elapsed_s": 4246.4,
+    "circuit_breaker": false
+  },
+  "dataset_snapshot": {
+    "snapshot_id": "backtest_dataset:2026-06-18:pipeline-v2-rf9tv:snapshot",
+    "business_date": "2026-06-18",
+    "row_count": 2204201,
+    "gcs_uri": "gs://stockvision-models/datasets/backtest_dataset/business_date=2026-06-18/run_id=pipeline-v2-rf9tv:snapshot"
+  },
+  "training": {
+    "total_samples": 687650,
+    "train_samples": 555977,
+    "feature_count": 46,
+    "feature_selection": {
+      "input_features": 137,
+      "active_count": 46,
+      "reserve_count": 91,
+      "target_permutation_n": 50,
+      "best_k": 20,
+      "best_ic": 0.161174
+    },
+    "ic_summary": {
+      "LightGBM": 0.0912,
+      "XGBoost": 0.0982,
+      "ExtraTrees": 0.1323,
+      "DLinear": 0.0406,
+      "StackingRank": 0.1236
+    }
+  },
+  "artifact_lifecycle": {
+    "status": "ok",
+    "targets": ["GNN", "TabM", "PatchTST", "iTransformer", "TimesFM"],
+    "artifacts": {
+      "GNN": {
+        "version": "v20260621154455",
+        "path": "universal/gnn/v20260621154455.pt",
+        "oos_ic": 0.084899,
+        "offline_gate_decision": "STRONG_PASS",
+        "production_pointer_updated": true
+      },
+      "TabM": {
+        "version": "v20260621154455",
+        "path": "universal/tabm/v20260621154455.pt",
+        "oos_ic": 0.090108,
+        "offline_gate_decision": "STRONG_PASS",
+        "production_pointer_updated": true
+      },
+      "PatchTST": {
+        "version": "v20260621154455",
+        "path": "universal/patchtst/v20260621154455.zip",
+        "oos_ic": 0.296486,
+        "offline_gate_decision": "FAIL",
+        "model_cpcv_decision": "FAIL",
+        "production_pointer_updated": true
+      },
+      "iTransformer": {
+        "version": "v20260621154455",
+        "path": "universal/itransformer/v20260621154455.zip",
+        "oos_ic": -0.058854,
+        "offline_gate_decision": "FAIL",
+        "model_cpcv_decision": "FAIL",
+        "production_pointer_updated": true
+      },
+      "TimesFM": {
+        "version": "v20260612T160113_timesfm25_ctx1024",
+        "path": "universal/timesfm/v20260612T160113_timesfm25_ctx1024.json",
+        "oos_ic": -0.205363,
+        "status": "warning",
+        "model_cpcv_decision": "FAIL",
+        "production_pointer_updated": false
+      }
+    }
+  },
+  "model_pool_release": {
+    "models_updated_to_v20260621154455": ["GNN", "TabM", "PatchTST", "iTransformer"],
+    "models_kept_at_previous_version": {
+      "LightGBM": "v20260619014016",
+      "XGBoost": "v20260619014016",
+      "ExtraTrees": "v20260619014016",
+      "DLinear": "v20260619014016",
+      "TimesFM": "v20260612T160113_timesfm25_ctx1024"
+    }
+  },
+  "observations": [
+    "Tree/DLinear artifacts for v20260621154455 are offline_strong_pass in model_artifact_registry but not promoted to model_pool champion pointers.",
+    "PatchTST and iTransformer were promoted to production pointers despite offline_gate_decision=FAIL; follow-up review is required for sequence artifact promotion policy.",
+    "TimesFM remained on the previous config-backed artifact and reported evidence_missing_non_blocking / model_cpcv FAIL.",
+    "Deferred SHAP audit started after followup and logged a non-blocking crash/retry; retrain followup was already completed before SHAP failure."
+  ]
+}

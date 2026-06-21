@@ -136,3 +136,133 @@ def resolve_market_regime_contract(kv: RegimeKVReader) -> dict[str, Any]:
         "monitors": {},
         "missing": True,
     }
+
+
+def build_market_regime_contract_from_market_env(
+    market_env: dict[str, Any] | None,
+    *,
+    run_date: str | None = None,
+) -> dict[str, Any]:
+    """Build a dated fallback contract from the already-loaded market_env.
+
+    This is only for historical/direct controller reruns where Worker readiness
+    can be bypassed and KV market_regime_state is unavailable. The source stays
+    explicit so production telemetry does not mistake it for a normal HMM KV
+    regime-compute result.
+    """
+    if not isinstance(market_env, dict) or not market_env:
+        return {
+            "schema_version": "market-regime-state-v1",
+            "label": None,
+            "raw_label": None,
+            "alpha_regime": "unknown",
+            "family": "unknown",
+            "source": "market_env_fallback_missing",
+            "run_date": run_date,
+            "computed_at": None,
+            "regime_surface": {},
+            "regime_index": None,
+            "hmm_state": None,
+            "label_zh": None,
+            "consensus_threshold": None,
+            "weight_multipliers": {},
+            "regime_evidence": {},
+            "transition_guard": {},
+            "monitors": {},
+            "missing": True,
+        }
+
+    try:
+        from services.market_regime_evidence import build_regime_evidence_pack
+    except Exception:
+        return {
+            "schema_version": "market-regime-state-v1",
+            "label": None,
+            "raw_label": None,
+            "alpha_regime": "unknown",
+            "family": "unknown",
+            "source": "market_env_fallback_unavailable",
+            "run_date": run_date,
+            "computed_at": None,
+            "regime_surface": {},
+            "regime_index": None,
+            "hmm_state": None,
+            "label_zh": None,
+            "consensus_threshold": None,
+            "weight_multipliers": {},
+            "regime_evidence": {},
+            "transition_guard": {},
+            "monitors": {},
+            "missing": True,
+        }
+
+    probe = build_regime_evidence_pack(market_env, raw_label="sideways")
+    counts = probe.get("support_counts") if isinstance(probe, dict) else {}
+    bearish = int((counts or {}).get("bearish") or 0)
+    bullish = int((counts or {}).get("bullish") or 0)
+    available = int((counts or {}).get("available") or 0)
+    if available <= 0:
+        return {
+            "schema_version": "market-regime-state-v1",
+            "label": None,
+            "raw_label": None,
+            "alpha_regime": "unknown",
+            "family": "unknown",
+            "source": "market_env_fallback_no_evidence",
+            "run_date": run_date,
+            "computed_at": None,
+            "regime_surface": {},
+            "regime_index": None,
+            "hmm_state": None,
+            "label_zh": None,
+            "consensus_threshold": None,
+            "weight_multipliers": {},
+            "regime_evidence": probe if isinstance(probe, dict) else {},
+            "transition_guard": {},
+            "monitors": {},
+            "missing": True,
+        }
+
+    if bearish >= 3 and bearish >= bullish:
+        raw_label = "bear_market"
+    elif bullish >= 3 and bullish > bearish:
+        raw_label = "bull_market"
+    elif bearish >= 2:
+        raw_label = "volatile"
+    else:
+        raw_label = "sideways"
+
+    evidence_pack = build_regime_evidence_pack(market_env, raw_label=raw_label)
+    label = str(evidence_pack.get("effective_label") or raw_label)
+    normalized = normalize_regime_label(label)
+    if not normalized:
+        normalized = ("sideways", "sideways")
+        label = "sideways"
+    normalized_label, family = normalized
+    surface = {
+        "bull_market": 0.0,
+        "bear_market": 0.0,
+        "volatile": 0.0,
+        "sideways": 0.0,
+    }
+    surface[normalized_label] = 1.0
+    return {
+        "schema_version": "market-regime-state-v1",
+        "label": normalized_label,
+        "raw_label": raw_label,
+        "alpha_regime": family,
+        "family": family,
+        "source": "market_env_fallback",
+        "run_date": run_date,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "regime_surface": surface,
+        "regime_index": None,
+        "hmm_state": None,
+        "label_zh": None,
+        "consensus_threshold": None,
+        "weight_multipliers": {},
+        "regime_evidence": evidence_pack,
+        "transition_guard": evidence_pack.get("transition_guard") if isinstance(evidence_pack.get("transition_guard"), dict) else {},
+        "monitors": evidence_pack.get("monitors") if isinstance(evidence_pack.get("monitors"), dict) else {},
+        "missing": False,
+    }

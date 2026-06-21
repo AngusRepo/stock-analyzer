@@ -47,7 +47,10 @@ from services.model_lifecycle_policy import (
     resolve_degraded_dampening,
 )
 from services.model_score_quality import drop_degenerate_rank_scores
-from services.market_regime_state import resolve_market_regime_contract
+from services.market_regime_state import (
+    build_market_regime_contract_from_market_env,
+    resolve_market_regime_contract,
+)
 from services.prediction_dispersion import build_prediction_dispersion_report
 from services.screener_sizing_policy import resolve_controller_screener_sizing
 from services.state_space_series import (
@@ -2313,6 +2316,16 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         persona_weight = 1.0
     persona_weight = max(0.0, min(2.0, persona_weight))  # clamp [0, 2] safety bound
     regime_contract = resolve_market_regime_contract(kv_client)
+    if regime_contract.get("missing"):
+        regime_contract = build_market_regime_contract_from_market_env(
+            state.get("market_env"),
+            run_date=state.get("run_date"),
+        )
+        logger.warning(
+            "[Pipeline V2] market_regime_state missing in KV; using %s for run_date=%s",
+            regime_contract.get("source"),
+            state.get("run_date"),
+        )
     regime_label = str(regime_contract.get("alpha_regime") or "unknown")
     regime_surface = regime_contract.get("regime_surface") if isinstance(regime_contract.get("regime_surface"), dict) else {}
     if regime_contract.get("missing") or regime_label == "unknown":

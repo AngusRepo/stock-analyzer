@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.market_regime_state import (  # noqa: E402
     MARKET_REGIME_STATE_KEY,
+    build_market_regime_contract_from_market_env,
     resolve_market_regime_contract,
 )
 
@@ -67,6 +68,32 @@ def test_daily_pipeline_recommendation_path_uses_market_regime_state_contract():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
     assert "resolve_market_regime_contract" in source
+    assert "build_market_regime_contract_from_market_env" in source
     assert 'kv_client.get("ml:regime")' not in source
     assert 'kv_client.get_json("ml:regime:meta"' not in source
     assert "market_regime_state missing before recommendation" in source
+
+
+def test_market_env_fallback_builds_dated_regime_contract_when_kv_missing():
+    contract = build_market_regime_contract_from_market_env(
+        {
+            "twii_return_1d": 0.012,
+            "twii_return_5d": 0.041,
+            "twii_bias_20d": 0.02,
+            "advance_ratio": 0.64,
+            "bull_alignment_pct": 0.61,
+            "history": {
+                "2026-06-16": {"market_return_1d": 0.004, "advance_ratio": 0.58},
+                "2026-06-17": {"market_return_1d": 0.006, "advance_ratio": 0.62},
+                "2026-06-18": {"market_return_1d": 0.012, "advance_ratio": 0.64},
+            },
+        },
+        run_date="2026-06-18",
+    )
+
+    assert contract["schema_version"] == "market-regime-state-v1"
+    assert contract["source"] == "market_env_fallback"
+    assert contract["run_date"] == "2026-06-18"
+    assert contract["missing"] is False
+    assert contract["alpha_regime"] in {"bull", "sideways", "volatile", "bear"}
+    assert contract["regime_surface"]

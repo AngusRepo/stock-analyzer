@@ -233,7 +233,7 @@ def test_build_artifact_records_from_no_challenger_active9_train_stage():
         },
         "stages": {
             "train": {
-                "status": "ok",
+                "status": "error",
                 "ic_tracking": {
                     "LightGBM": {
                         "oos_ic": 0.0488,

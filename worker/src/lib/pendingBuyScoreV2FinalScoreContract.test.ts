@@ -111,6 +111,15 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     'morning setup pending buys should keep canonical Score V2 payload on the pending-buy item',
   )
   assert(
+    pendingBuyOrchestrator.includes('buildSparseAllocationSummary(rec.alpha_allocation)') &&
+      pendingBuyOrchestrator.includes('buildL4SparseAllocationWatchPoint(sparseAllocation)'),
+    'morning setup pending buys should persist L4 sparse allocation weight evidence for execution sizing',
+  )
+  assert(
+    pendingBuyOrchestrator.includes('formatEntryPriceModelV2WatchPoint(buildEntryPriceModelV2FromOhlcvPlan(ohlcvEntryPlan))'),
+    'morning setup pending buys should persist Entry Model V2 daily proxy evidence beside the OHLCV trade plan',
+  )
+  assert(
     !morningSetupQuery.includes('dr.signal_source'),
     'morning setup must not read nonexistent daily_recommendations.signal_source schema column',
   )
@@ -123,6 +132,18 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
   assert(
     pendingBuyOrchestrator.includes('Signal Provenance (sparse tangent)'),
     'pending-buy provenance must identify sparse tangent allocation instead of old ranking promotion',
+  )
+  assert(
+    paperEntryTasks.includes('l4SparseSizingFromWatchPoints(pending.watch_points)') &&
+      paperEntryTasks.includes('resolveL4SparseBudgetFloor') &&
+      paperEntryTasks.includes("let sizingMode: 'kelly' | 'risk_parity' | 'l4_sparse_weight'"),
+    'paper entry sizing should consume L4 sparse allocation weight as a budget floor before daily/cash/slot caps',
+  )
+  assert(
+    paperEntryTasks.includes('avgVolume20dMap') &&
+      paperEntryTasks.includes('partial_fill_liquidity_base_source') &&
+      paperEntryTasks.includes("'avg_volume_20d'"),
+    'paper entry partial-fill realism should use 20d average volume as the liquidity base when available',
   )
   assert(
     !pendingBuyOrchestrator.includes('Signal Provenance (ranking promoted)'),

@@ -5,6 +5,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 const source = fs.readFileSync('src/lib/marketRegimeFactorPacket.ts', 'utf8')
+const otherRoutes = fs.readFileSync('src/routes/other.ts', 'utf8')
 
 assert(
   source.includes('function regimeEvidenceItem') &&
@@ -16,4 +17,11 @@ assert(
   source.includes('regimeState?.regime_evidence?.evidence?.tw_business_indicators?.signal') &&
     source.includes('regimeState?.regime_evidence?.evidence?.tw_business_indicators?.leading_index'),
   'business-cycle tile must read nested FinLab TW business indicator evidence when present',
+)
+
+assert(
+  otherRoutes.includes('buildMarketOptimisticOutlook') &&
+    otherRoutes.includes('marketOutlook') &&
+    otherRoutes.includes('market:risk:latest:v7-market-outlook'),
+  '/market/risk must expose a versioned marketOutlook optimistic TWII target and bypass stale v6 cache payloads',
 )

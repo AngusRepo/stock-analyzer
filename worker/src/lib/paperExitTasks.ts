@@ -1,6 +1,6 @@
 import type { Bindings } from '../types'
 import { formatTradeNotification, sendDiscordNotification } from './notify'
-import { checkExitConditions } from './paperExitPolicy'
+import { checkExitConditions, type ExitDecision } from './paperExitPolicy'
 import { batchGetIntradayOHLC, type IntradayOHLC } from './paperIntradayData'
 import {
   batchGetATR,
@@ -49,6 +49,54 @@ function buildPaperSellOrderIntent(params: {
       source: params.quote.source ?? null,
       quoteAgeMs: null,
     },
+  })
+}
+
+async function persistExitPositionUpdate(
+  env: Pick<Bindings, 'DB'>,
+  tradeDate: string,
+  pos: any,
+  decision: ExitDecision,
+  source: string,
+): Promise<void> {
+  const nextTrailingStop = decision.newTrailingStop ?? pos.trailing_stop
+  const nextHighest = decision.newHighest ?? pos.highest_since_entry
+  const nextTp2 = decision.newTp2Price ?? pos.tp2_price
+  const changed =
+    nextTrailingStop !== pos.trailing_stop ||
+    nextHighest !== pos.highest_since_entry ||
+    nextTp2 !== pos.tp2_price
+
+  if (!changed) return
+
+  await env.DB.prepare(`
+    UPDATE paper_positions
+    SET trailing_stop=?, highest_since_entry=?, tp2_price=?, updated_at=datetime('now')
+    WHERE account_id=? AND symbol=?
+  `).bind(
+    nextTrailingStop,
+    nextHighest,
+    nextTp2,
+    ACCOUNT_ID,
+    pos.symbol,
+  ).run()
+
+  await recordPaperExecutionEvent(env, {
+    tradeDate,
+    symbol: pos.symbol,
+    side: null,
+    eventType: 'paper_position_update',
+    status: 'updated',
+    reason: decision.reason,
+    detail: {
+      previous_trailing_stop: pos.trailing_stop ?? null,
+      new_trailing_stop: nextTrailingStop ?? null,
+      previous_highest_since_entry: pos.highest_since_entry ?? null,
+      new_highest_since_entry: nextHighest ?? null,
+      previous_tp2_price: pos.tp2_price ?? null,
+      new_tp2_price: nextTp2 ?? null,
+    },
+    source,
   })
 }
 
@@ -467,6 +515,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
         (env as any).DISCORD_WEBHOOK_URL,
         formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `TP1 已觸發，剩餘 ${remainingShares} 股`, tp1Pnl),
       )
+    } else if (decision.action === 'hold') {
+      await persistExitPositionUpdate(env, eodToday, pos, decision, 'eod_exit_hold_update')
     }
   }
 
@@ -716,16 +766,8 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         env.DISCORD_WEBHOOK_URL,
         formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `盤中 TP1，剩餘 ${remainingShares} 股`, tp1IntradayPnl),
       )
-    } else if (decision.action === 'hold' && (decision.newTrailingStop || decision.newHighest)) {
-      await env.DB.prepare(`
-        UPDATE paper_positions SET trailing_stop=?, highest_since_entry=?, updated_at=datetime('now')
-        WHERE account_id=? AND symbol=?
-      `).bind(
-        decision.newTrailingStop ?? pos.trailing_stop,
-        decision.newHighest ?? pos.highest_since_entry,
-        ACCOUNT_ID,
-        pos.symbol,
-      ).run()
+    } else if (decision.action === 'hold') {
+      await persistExitPositionUpdate(env, intradayToday, pos, decision, 'intraday_exit_hold_update')
     }
   }
 

@@ -1,21 +1,14 @@
 """
-debate_ab.py — #44 W5 Debate A/B routing + logging (2026-04-21)
+Gemini-only debate routing + logging.
 
-Deterministic hash-based assignment: same symbol always gets same model on
-the same day, rotates across days. 50/50 split between Gemini Flash Lite
-(primary / cheap) and Claude Haiku (fallback / more reliable reasoning).
-
-Logs every debate invocation (model, verdict, conviction, summary_len) to
-D1 `debate_ab_log` for later stats via /api/admin/debate-ab/stats.
-
-Toggle via env DEBATE_AB_ENABLED (default True in prod). When False, all
-calls use default fallback chain, no routing, no D1 logging.
+The previous implementation used deterministic Gemini/Anthropic A/B assignment.
+Formal morning debate now keeps the same logging table but always assigns Gemini
+when debate logging/routing is enabled.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
-import hashlib
 import json as _json
 import logging
 import os
@@ -37,15 +30,11 @@ _CF_D1_URL = (
 
 
 def assign_model(symbol: str, date: Optional[str] = None) -> Optional[str]:
-    """Return 'gemini' or 'anthropic' deterministically, or None if A/B off."""
+    """Return 'gemini' when routing is enabled, or None when disabled."""
+    _ = (symbol, date)
     if not _ENABLED:
         return None
-    d = date or _dt.datetime.now(_dt.timezone.utc).astimezone(
-        _dt.timezone(_dt.timedelta(hours=8))
-    ).date().isoformat()
-    h = hashlib.sha256(f"{symbol}:{d}".encode("utf-8")).digest()
-    # Use first byte, even → gemini, odd → anthropic
-    return "gemini" if (h[0] % 2 == 0) else "anthropic"
+    return "gemini"
 
 
 async def log_debate(
@@ -98,6 +87,6 @@ async def log_debate(
                 },
             )
             if r.status_code != 200:
-                logger.warning(f"[debate_ab] D1 insert failed {r.status_code}: {r.text[:200]}")
+                logger.warning("[debate_ab] D1 insert failed %s: %s", r.status_code, r.text[:200])
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"[debate_ab] exception (non-fatal): {e}")
+        logger.warning("[debate_ab] exception (non-fatal): %s", e)

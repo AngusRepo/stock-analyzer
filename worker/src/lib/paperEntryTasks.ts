@@ -66,6 +66,7 @@ import {
   type FiveSlotCandidate,
   type FiveSlotHolding,
 } from './fiveSlotCapitalAllocator'
+import { l4SparseSizingFromWatchPoints, resolveL4SparseBudgetFloor } from './l4SparseAllocationSizing'
 import {
   batchLoadOhlcvTradePlanLevelsBySymbol,
   formatOhlcvTradePlanWatchPoint,
@@ -644,7 +645,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   let dailySwaps = 0
   const maxSwaps = cfg.position.maxDailySwaps ?? 1
 
-  let marketRisk: { risk_level: string; change_rate?: number; risk_reasons?: string[] } = { risk_level: 'unknown' }
+  let marketRisk: { risk_level: string; change_rate?: number; risk_reasons?: string[]; [key: string]: unknown } = { risk_level: 'unknown' }
   if ((env as any).SHIOAJI_PROXY_URL) {
     try {
       const mrRes = await fetch(`${(env as any).SHIOAJI_PROXY_URL}/market-risk`, {
@@ -660,6 +661,17 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     } catch (e) {
       console.warn('[RiskGate] market-risk fetch failed (fail-closed):', e)
     }
+  }
+  const allocatorMarketContext = {
+    marketRiskLevel: marketRisk.risk_level,
+    riskScore: finiteNumber(marketRisk.risk_score ?? marketRisk.riskScore),
+    marketOutlookUpsidePct: finiteNumber(
+      (marketRisk.market_outlook as any)?.upside_pct ??
+        (marketRisk.marketOutlook as any)?.upside_pct ??
+        marketRisk.market_outlook_upside_pct ??
+        marketRisk.marketOutlookUpsidePct,
+    ),
+    regimeFamily: String(marketRisk.regime_family ?? (marketRisk.regimeState as any)?.family ?? '').trim() || null,
   }
 
   if (currentPositionCount >= maxPos && pendingBuys.length > 0) {
@@ -696,6 +708,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         dailyRemaining: cfg.position.dailyBuyLimit,
       },
       marketRiskLevel: marketRisk.risk_level,
+      marketContext: allocatorMarketContext,
       config: {
         maxPositions: maxPos,
         maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
@@ -977,6 +990,30 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
   }
 
+  const avgVolume20dMap = new Map<string, number>()
+  if (pendingSymbols.length > 0) {
+    const lookback = Math.max(1, Math.floor(Number(cfg.momentum?.avgVolumeLookbackDays ?? 20)))
+    const ph = pendingSymbols.map(() => '?').join(',')
+    const { results: volumeRows } = await env.DB.prepare(`
+      SELECT symbol, AVG(volume) AS avg_volume
+        FROM (
+          SELECT s.symbol, sp.volume,
+                 ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY sp.date DESC) AS rn
+            FROM stock_prices sp
+            JOIN stocks s ON s.id = sp.stock_id
+           WHERE s.symbol IN (${ph})
+             AND sp.date < ?
+             AND sp.volume IS NOT NULL
+        )
+       WHERE rn <= ?
+       GROUP BY symbol
+    `).bind(...pendingSymbols, today, lookback).all<{ symbol: string; avg_volume: number | null }>()
+    for (const row of volumeRows ?? []) {
+      const avg = Number(row.avg_volume ?? 0)
+      if (Number.isFinite(avg) && avg > 0) avgVolume20dMap.set(row.symbol, avg)
+    }
+  }
+
   const blockedSymbols = await loadExecutionBlockedSymbols(env, today)
 
   const toCapitalHolding = (pos: any): FiveSlotHolding => {
@@ -1013,6 +1050,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         dailyRemaining: Math.max(0, DAILY_BUY_LIMIT - dailyBuyTotal),
       },
       marketRiskLevel: marketRisk.risk_level,
+      marketContext: allocatorMarketContext,
       config: {
         maxPositions: maxPos,
         maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
@@ -1033,6 +1071,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       dailyRemaining: Math.max(0, DAILY_BUY_LIMIT - dailyBuyTotal),
     },
     marketRiskLevel: marketRisk.risk_level,
+    marketContext: allocatorMarketContext,
     config: {
       maxPositions: maxPos,
       maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
@@ -1544,19 +1583,33 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const mediumRiskDampen = marketRisk.risk_level === 'medium' ? cfg.L2_formula.medium_risk_scale : 1.0
     const stopPct = Math.max(cfg.position.minStopPct, (atr14 * 2) / price)
 
+    const sparseSizing = l4SparseSizingFromWatchPoints(pending.watch_points)
     let budget: number
-    let sizingMode: 'kelly' | 'risk_parity'
+    let sizingMode: 'kelly' | 'risk_parity' | 'l4_sparse_weight'
+    let allocationTargetBudget: number | null = null
     if (pending.kelly_pct != null && pending.kelly_pct > 0) {
       const kellyAdj = pending.kelly_pct * mediumRiskDampen
       const kellyBudget = totalPortfolio * kellyAdj
-      budget = Math.min(kellyBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
-      sizingMode = 'kelly'
+      const sparseFloor = resolveL4SparseBudgetFloor({
+        totalPortfolio,
+        baseBudget: kellyBudget,
+        allocationWeight: sparseSizing?.weight,
+      })
+      allocationTargetBudget = sparseFloor.allocationTarget
+      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+      sizingMode = sparseFloor.sizingMode === 'l4_sparse_weight' ? 'l4_sparse_weight' : 'kelly'
       console.log(`[Sizing] ${pending.symbol} kelly ${(kellyAdj * 100).toFixed(1)}% -> budget ${budget.toFixed(0)}`)
     } else {
       const riskPctAdj = pending.risk_pct * mediumRiskDampen
       const riskBudget = totalPortfolio * riskPctAdj / stopPct
-      budget = Math.min(riskBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
-      sizingMode = 'risk_parity'
+      const sparseFloor = resolveL4SparseBudgetFloor({
+        totalPortfolio,
+        baseBudget: riskBudget,
+        allocationWeight: sparseSizing?.weight,
+      })
+      allocationTargetBudget = sparseFloor.allocationTarget
+      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+      sizingMode = sparseFloor.sizingMode
     }
 
     const minPosVal = cfg.position.minPositionValue ?? 30_000
@@ -1640,8 +1693,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         continue
       }
     }
-    const executableVolume = Number(currentOhlc?.totalVolume ?? 0)
-    const rawFilledShares = applyPartialFill(shares, fillPrice, executableVolume, cfg)
+    const intradayExecutableVolume = Number(currentOhlc?.totalVolume ?? 0)
+    const liquidityBaseVolume = Number(avgVolume20dMap.get(pending.symbol) ?? intradayExecutableVolume)
+    const rawFilledShares = applyPartialFill(shares, fillPrice, liquidityBaseVolume, cfg)
     shares = normalizeTwFilledSharesForRequestedOrder(requestedShares, rawFilledShares)
     if (shares <= 0) {
       recordActiveExecutionStatus(
@@ -1786,6 +1840,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             allocation_target_position: Math.round(allocatorDecision.targetPositionValue),
             allocation_current_position: Math.round(allocatorDecision.currentPositionValue),
             allocation_budget_cap: Math.round(allocatorDecision.budgetCap),
+            l4_sparse_allocation_weight: sparseSizing?.weight ?? null,
+            l4_sparse_allocation_rank: sparseSizing?.allocationRank ?? null,
+            l4_sparse_allocation_target_budget: allocationTargetBudget == null ? null : Math.round(allocationTargetBudget),
             allocation_replace_symbol: allocatorDecision.replaceSymbol ?? null,
             allocation_replace_weakness: allocatorDecision.replaceWeaknessScore ?? null,
             allocation_candidate_rank: allocatorDecision.candidateRank ?? null,
@@ -1804,7 +1861,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             quote_ask: currentOhlc?.ask ?? null,
             quote_bid_volume: currentOhlc?.bidVolume ?? null,
             quote_ask_volume: currentOhlc?.askVolume ?? null,
-            quote_total_volume: currentOhlc?.totalVolume ?? null,
+            quote_total_volume: intradayExecutableVolume || null,
+            partial_fill_liquidity_base_volume: liquidityBaseVolume || null,
+            partial_fill_liquidity_base_source: avgVolume20dMap.has(pending.symbol) ? 'avg_volume_20d' : 'intraday_total_volume',
             slippage_ticks: cfg.position.fillSlippageTicks ?? 1,
             market_price: price,
             pre_trade_action: preTrade.action,
@@ -1860,9 +1919,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         price_tick: getTwTickSize(limitPrice),
         fill_price: fillPrice,
         total_cost: totalCost,
+        sizing_mode: sizingMode,
+        l4_sparse_allocation_weight: sparseSizing?.weight ?? null,
+        l4_sparse_allocation_rank: sparseSizing?.allocationRank ?? null,
+        l4_sparse_allocation_target_budget: allocationTargetBudget == null ? null : Math.round(allocationTargetBudget),
         quote_bid: currentOhlc?.bid ?? null,
         quote_ask: currentOhlc?.ask ?? null,
-        quote_total_volume: currentOhlc?.totalVolume ?? null,
+        quote_total_volume: intradayExecutableVolume || null,
+        partial_fill_liquidity_base_volume: liquidityBaseVolume || null,
+        partial_fill_liquidity_base_source: avgVolume20dMap.has(pending.symbol) ? 'avg_volume_20d' : 'intraday_total_volume',
       },
       orderId: autoOrderId?.id ?? null,
       source: 'auto_ml',

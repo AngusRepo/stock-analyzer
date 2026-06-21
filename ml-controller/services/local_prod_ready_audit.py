@@ -87,6 +87,12 @@ CUTOVER_PACKET_FRESHNESS_DEPENDENCIES = (
     "tools/production_cutover_remote_preflight.py",
     *tuple(rel_path for rel_path in REQUIRED_EVIDENCE_FILES if rel_path != DEFAULT_LOCAL_AUDIT_PATH),
 )
+ARTIFACT_LIFECYCLE_REPAIR_PACKET = "ml-service/benchmark_results/artifact_lifecycle_repair_packet_20260621.json"
+ARTIFACT_LIFECYCLE_REPAIR_PACKET_DEPENDENCIES = (
+    "ml-controller/services/artifact_lifecycle_repair_packet.py",
+    "ml-controller/scripts/artifact_lifecycle_repair_packet.py",
+    "ml-service/benchmark_results/production_retrain_release_20260621.json",
+)
 
 ALPHA_MINING_SIMILARITY_VALIDATION_ARTIFACT = "output/feature_universe_triage/alpha_mining_similarity_novelty_validation_20260618.json"
 ALPHA_MINING_SIMILARITY_VALIDATION_DEPENDENCIES = (
@@ -1567,6 +1573,66 @@ def _production_cutover_packet_checks(root: Path) -> list[dict[str, Any]]:
     return checks
 
 
+def _artifact_lifecycle_repair_packet_checks(root: Path) -> list[dict[str, Any]]:
+    packet_path = root / ARTIFACT_LIFECYCLE_REPAIR_PACKET
+    checks = [
+        _check(
+            packet_path.exists(),
+            "artifact_lifecycle:p6:repair_packet_present",
+            "P6 artifact lifecycle repair packet is present",
+        ),
+        _check_artifact_fresh_against(
+            root,
+            ARTIFACT_LIFECYCLE_REPAIR_PACKET,
+            ARTIFACT_LIFECYCLE_REPAIR_PACKET_DEPENDENCIES,
+            "artifact_lifecycle:p6:repair_packet_fresh",
+            "P6 artifact lifecycle repair packet is newer than source evidence and builder",
+        ),
+    ]
+    if not packet_path.exists():
+        return checks
+
+    packet = json.loads(packet_path.read_text(encoding="utf-8-sig"))
+    actions = packet.get("actions") if isinstance(packet.get("actions"), list) else []
+    actions_by_model = {
+        str(action.get("model_name")): action
+        for action in actions
+        if isinstance(action, dict) and action.get("model_name")
+    }
+    summary = packet.get("summary") if isinstance(packet.get("summary"), dict) else {}
+    checks.extend([
+        _check(
+            packet.get("schema_version") == "artifact-lifecycle-repair-packet-v1",
+            "artifact_lifecycle:p6:repair_packet_schema",
+            "P6 artifact lifecycle repair packet uses the expected schema",
+        ),
+        _check(
+            packet.get("production_mutation_allowed") is False
+            and all(
+                isinstance(action, dict)
+                and action.get("production_mutation_allowed") is False
+                and action.get("requires_wei_approval") is True
+                for action in actions
+            ),
+            "artifact_lifecycle:p6:repair_packet_non_mutating",
+            "P6 repair packet is local-only and every action requires Wei approval",
+        ),
+        _check(
+            {"PatchTST", "iTransformer"}.issubset(set(summary.get("production_pointer_fail_closed_repairs") or []))
+            and actions_by_model.get("PatchTST", {}).get("root_cause") == "production_pointer_updated_despite_cpcv_coverage_contract_drift"
+            and actions_by_model.get("iTransformer", {}).get("root_cause") == "production_pointer_updated_despite_true_performance_fail",
+            "artifact_lifecycle:p6:sequence_repair_actions",
+            "P6 repair packet separates PatchTST coverage-contract recompute from iTransformer true performance fail",
+        ),
+        _check(
+            {"DLinear", "ExtraTrees", "LightGBM", "XGBoost"}.issubset(set(summary.get("offline_pass_pending_release") or [])),
+            "artifact_lifecycle:p6:offline_pass_pending_release_actions",
+            "P6 repair packet includes offline-pass candidates that need promotion-controller approval before release",
+        ),
+    ])
+    return checks
+
+
 def _formal137_repair_roadmap_checks(root: Path) -> list[dict[str, Any]]:
     validator_path = root / "tools/validate_formal137_repair_roadmap.py"
     if not validator_path.exists():
@@ -1613,6 +1679,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         *_observability_checks(root),
         *_replay_checks(root),
         *_production_cutover_packet_checks(root),
+        *_artifact_lifecycle_repair_packet_checks(root),
         *_formal137_repair_roadmap_checks(root),
     ]
     failed = [row for row in checks if row["status"] != "pass"]
@@ -1633,6 +1700,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
             "p3_model_pool_ui_observability",
             "finlab_p0_p9_l0_l125_l15_l4_raw_signal_portfolio_intelligence_closure",
             "formal137_p0_p10_repair_no_partial_local_closure",
+            "artifact_lifecycle_p0_p8_repair_no_partial_local_closure",
             "p12_production_cutover_preflight_packet_and_remote_readonly_audit",
         ],
         "local_closure": "done" if local_done else "blocked",

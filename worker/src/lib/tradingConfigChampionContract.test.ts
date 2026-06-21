@@ -15,6 +15,11 @@ assert.equal(
   'champion allocator controller must be OnlinePortfolioBandit',
 )
 assert.equal(
+  champion.alphaFramework.allocation.buySignalCount,
+  5,
+  'champion allocation must expose up to five buy signals while maxPositions remains the hard cap',
+)
+assert.equal(
   champion.ensemble_v2.topKOverrideEnabled,
   false,
   'legacy top-k override must stay disabled in champion config',
@@ -69,3 +74,31 @@ assert.equal(
 )
 assert.equal(restored.mlPool.useEnsembleV2, true)
 assert.equal(restored.mlPool.degradedDampening, 0.2)
+
+const legacyAllocation = buildChampionTradingConfig({
+  alphaFramework: {
+    allocation: {
+      method: 'sparse_tangent_inverse_risk',
+      topK: 3,
+      selectionPoolSize: 30,
+      slateSize: 10,
+      weights: {},
+    },
+  },
+})
+
+assert.equal(
+  legacyAllocation.alphaFramework.allocation.buySignalCount,
+  5,
+  'legacy allocation.topK must not shrink L4 buySignalCount',
+)
+assert.equal(
+  (legacyAllocation.alphaFramework.allocation as any).topK,
+  undefined,
+  'legacy allocation.topK must not be materialized back into champion config',
+)
+assert.equal(
+  (legacyAllocation.alphaFramework.allocation as any).method,
+  undefined,
+  'legacy allocation.method must normalize to allocation.engine',
+)

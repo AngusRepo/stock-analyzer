@@ -183,7 +183,7 @@ class DebateResult:
     verdict: str             # APPROVE | DOWNGRADE | REJECT
     rounds: int              # total rounds counter (2*debate_rounds + 1 for Fulcrum)
     summary: str             # <=500 chars, goes into paper_orders.note
-    llm_source: str          # gemini_api | anthropic_api
+    llm_source: str          # gemini_api | unknown/cached local degradation
     conviction_score: int    # 0-100
     agent_turns: list[dict[str, Any]] = field(default_factory=list)
 

@@ -16,11 +16,13 @@ import { capEntryToLatestClose } from './entryPricePolicy'
 import { classifyBoard } from './boardTradability'
 import {
   buildMarketStructureWatchPoint,
+  buildSparseAllocationSummary,
   buildMlVoteSummary,
   buildMlVoteWatchPoint,
   parsePredictionForecastData,
   type PerModelPredictionRow,
 } from './recommendationContext'
+import { buildL4SparseAllocationWatchPoint } from './l4SparseAllocationSizing'
 import type { Bindings } from '../types'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import {
@@ -41,6 +43,10 @@ import {
   formatOhlcvTradePlanWatchPoint,
   resolveOhlcvEntryPlan,
 } from './ohlcvTradePlanLevels'
+import {
+  buildEntryPriceModelV2FromOhlcvPlan,
+  formatEntryPriceModelV2WatchPoint,
+} from './entryPriceModelV2'
 
 type CircuitBreakerState = _CBState
 
@@ -827,6 +833,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       if (!rec.ml_entry_price || rec.ml_entry_price <= 0) continue
       const forecastData = parsePredictionForecastData(rec.forecast_data)
       const alphaContext = parseAlphaContext(forecastData)
+      const sparseAllocation = buildSparseAllocationSummary(rec.alpha_allocation)
       const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(rec.stock_id)) ?? [])
       const scoreV2 = readScoreV2Snapshot(rec)
       if (!scoreV2) {
@@ -918,6 +925,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         adjustedTarget2 = ohlcvEntryPlan.target2
         originalEntry = ohlcvEntryPlan.entryPrice
         entryWatchPoints.push(formatOhlcvTradePlanWatchPoint(ohlcvEntryPlan))
+        entryWatchPoints.push(formatEntryPriceModelV2WatchPoint(buildEntryPriceModelV2FromOhlcvPlan(ohlcvEntryPlan)))
       }
       const nightDropPct = taifex?.changePct ?? 0
       const l2 = cfg.L2_formula
@@ -1000,6 +1008,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             alphaWatchPoint(alphaContext),
             buildMarketStructureWatchPoint(alphaContext),
             buildMlVoteWatchPoint(mlVoteSummary),
+            buildL4SparseAllocationWatchPoint(sparseAllocation),
           ].filter(Boolean) as string[]),
           ...entryWatchPoints,
         ],

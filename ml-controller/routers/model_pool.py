@@ -26,13 +26,13 @@ from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 from services.model_artifact_registry import (
-    apply_promoted_artifact_to_model_pool,
     backfill_champion_pointers_from_model_pool,
     build_candidate_selection,
     build_champion_pointer_projection,
     build_promotion_queue,
     list_artifact_registry,
     list_champion_pointers,
+    run_model_pool_release_writer,
     run_promotion_controller,
 )
 from services.model_upgrade_research_track import build_research_benchmark_manifest
@@ -1599,11 +1599,12 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
             if artifact is None:
                 raise HTTPException(status_code=500, detail="promoted artifact disappeared from registry readback")
             pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-            serving_update = apply_promoted_artifact_to_model_pool(
+            release_writer = run_model_pool_release_writer(
                 pool,
                 artifact,
                 reason=req.reason,
                 promoted_at=result.get("confirmed_at"),
+                confirm=True,
             )
             pool_blob.upload_from_string(
                 _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
@@ -1613,7 +1614,8 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
                 **result,
                 "serving_reader": "model_pool.json",
                 "serving_model_pool_updated": True,
-                "serving_update": serving_update,
+                "serving_update": release_writer["serving_update"],
+                "model_pool_release_writer": release_writer,
                 "note": "Champion pointer and model_pool.json serving owner were updated together.",
             }
         return result

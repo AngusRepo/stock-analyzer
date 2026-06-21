@@ -1,173 +1,259 @@
 {
+  "schema_version": "stockvision-production-cutover-packet-v1",
+  "cutover_ready_for_review": true,
+  "production_mutation_allowed": false,
   "actions_allowed_without_wei_approval": [],
-  "approval_required_actions": [
+  "local_gate": {
+    "audit_path": "ml-service\\benchmark_results\\local_prod_ready_audit_20260618.json",
+    "local_closure": "done",
+    "local_prod_ready": "done",
+    "failed_check_count": 0,
+    "self_refresh_only": false,
+    "passed": true
+  },
+  "evidence_inventory": [
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "deploy_worker_and_frontend",
-      "mutation_scope": "Cloudflare Worker / frontend production deploy"
+      "path": "ml-service/benchmark_results/local_prod_ready_audit_20260618.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "deploy_ml_controller_strategy_mining_route",
-      "mutation_scope": "Cloud Run ml-controller revision with /strategy_mining/monthly_pymoo/run"
+      "path": "ml-service/benchmark_results/adaptive_meta_policy_replay_20260605_20260611.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "apply_strategy_registry_alpha_miner_migration",
-      "mutation_scope": "Cloudflare D1 strategy_spec_registry seed/update for alpha miner strategy rows"
+      "path": "ml-service/benchmark_results/linucb_multiplier_replay_20260605_20260611.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "apply_strategy_mining_ledger_migration",
-      "mutation_scope": "Cloudflare D1 strategy mining ledger table creation"
+      "path": "ml-service/benchmark_results/production_cutover_remote_preflight_20260618.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "sync_gcp_scheduler_manifest",
-      "mutation_scope": "GCP Scheduler production job create/update"
+      "path": "output/feature_universe_triage/feature_registry_local_closure_20260617.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "write_or_promote_gcs_model_artifacts",
-      "mutation_scope": "GCS model artifact write or champion artifact promotion"
+      "path": "output/feature_universe_triage/unified137_materialization_audit_sii_20230101_20260615.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "update_model_pool_champion_pointers",
-      "mutation_scope": "production model_pool champion pointer update"
+      "path": "output/feature_universe_triage/alpha_mining_similarity_novelty_validation_20260618.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "remove_challenger_pointers_after_approved_cutover",
-      "mutation_scope": "production challenger/shadow pointer cleanup"
+      "path": "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "enable_strategy_mining_execution_env",
-      "mutation_scope": "STRATEGY_MINING_EXECUTION_ENABLED=1 and STRATEGY_MINING_BACKEND=modal production env binding"
+      "path": "data/feature_registry/unified_feature_registry_v1.json",
+      "required": true,
+      "exists": true
     },
     {
-      "approval_gate": "wei_explicit_approval_required",
-      "id": "feature_selection_retrain_release",
-      "mutation_scope": "production ML feature schema retrain/release on the active formal137 artifact schema"
+      "path": "data/feature_registry/feature_view_contract_v1.json",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "data/feature_registry/ml_feature_selection_contract_v1.json",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "data/feature_registry/ml_feature_migration_preflight_v1.json",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "data/feature_registry/strategy_feature_ref_contract_v1.json",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "data/feature_registry/alpha_mining_promotion_contract_v1.json",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "data/feature_registry/pymoo_monthly_mining_config_v1.json",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "data/feature_registry/formal137_similarity_contract_v1.json",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "worker/migration_strategy_registry_alpha_miner_2026_06_17.sql",
+      "required": true,
+      "exists": true
+    },
+    {
+      "path": "worker/migration_strategy_mining_ledger_2026_06_18.sql",
+      "required": true,
+      "exists": true
+    },
+    {
+      "id": "active_strategy_spec_exporter_source",
+      "path": "tools/export_active_strategy_specs_from_d1.py",
+      "required": true,
+      "dynamic": true,
+      "exists": true
+    },
+    {
+      "id": "active_strategy_backtest_tool_source",
+      "path": "tools/finlab_strategy_spec_backtest.py",
+      "required": true,
+      "dynamic": true,
+      "exists": true
+    },
+    {
+      "id": "active_strategy_spec_export_summary",
+      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
+      "required": true,
+      "dynamic": true,
+      "exists": true
+    },
+    {
+      "id": "active_strategy_spec_json",
+      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
+      "required": true,
+      "dynamic": true,
+      "exists": true
+    },
+    {
+      "id": "active_strategy_finlab_backtest_summary",
+      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
+      "required": true,
+      "dynamic": true,
+      "exists": true
+    },
+    {
+      "id": "active_strategy_finlab_backtest_json",
+      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
+      "required": true,
+      "dynamic": true,
+      "exists": true
     }
   ],
-  "blocked_reason": null,
-  "cutover_ready_for_review": true,
   "evidence_health": [
     {
+      "id": "feature_registry_local_closure_pass",
+      "passed": true,
       "detail": {
+        "status": "pass",
+        "feature_views": {
+          "strategy_view": 137,
+          "ml_training_view": 137,
+          "ple_router_view": 137,
+          "l1_25_view": 137,
+          "alpha_mining_view": 137
+        },
+        "strategy_count": 11,
         "artifact_fresh": true,
+        "stale_against": [],
         "derived_artifact_freshness": {
-          "feature_views": {
-            "fresh": true,
-            "missing_dependencies": [],
-            "stale_against": []
-          },
-          "ml_migration_preflight": {
-            "fresh": true,
-            "missing_dependencies": [],
-            "stale_against": []
-          },
-          "ml_selection": {
-            "fresh": true,
-            "missing_dependencies": [],
-            "stale_against": []
-          },
-          "promotion": {
-            "fresh": true,
-            "missing_dependencies": [],
-            "stale_against": []
-          },
           "similarity": {
             "fresh": true,
-            "missing_dependencies": [],
-            "stale_against": []
+            "stale_against": [],
+            "missing_dependencies": []
+          },
+          "feature_views": {
+            "fresh": true,
+            "stale_against": [],
+            "missing_dependencies": []
           },
           "strategy_refs": {
             "fresh": true,
-            "missing_dependencies": [],
-            "stale_against": []
+            "stale_against": [],
+            "missing_dependencies": []
+          },
+          "ml_selection": {
+            "fresh": true,
+            "stale_against": [],
+            "missing_dependencies": []
+          },
+          "ml_migration_preflight": {
+            "fresh": true,
+            "stale_against": [],
+            "missing_dependencies": []
+          },
+          "promotion": {
+            "fresh": true,
+            "stale_against": [],
+            "missing_dependencies": []
           }
-        },
-        "feature_views": {
-          "alpha_mining_view": 137,
-          "l1_25_view": 137,
-          "ml_training_view": 137,
-          "ple_router_view": 137,
-          "strategy_view": 137
-        },
-        "stale_against": [],
-        "status": "pass",
-        "strategy_count": 11
-      },
-      "id": "feature_registry_local_closure_pass",
-      "passed": true
+        }
+      }
     },
     {
-      "detail": {
-        "artifact_fresh": true,
-        "mapped_factor_count": 137,
-        "stale_against": [],
-        "very_low_coverage_count": 0,
-        "zero_coverage_count": 0
-      },
       "id": "unified137_materialization_pass",
-      "passed": true
-    },
-    {
+      "passed": true,
       "detail": {
-        "materialization_audit_fresh": "pass",
-        "materialization_blocker_count": 0,
-        "materialization_contract_ready": "pass",
-        "migration_candidate_count": 0,
-        "production_activation": "pass",
-        "status": "preflight_ready"
-      },
-      "id": "ml_feature_migration_preflight_ready",
-      "passed": true
+        "mapped_factor_count": 137,
+        "zero_coverage_count": 0,
+        "very_low_coverage_count": 0,
+        "artifact_fresh": true,
+        "stale_against": []
+      }
     },
     {
+      "id": "ml_feature_migration_preflight_ready",
+      "passed": true,
+      "detail": {
+        "status": "preflight_ready",
+        "production_activation": "pass",
+        "migration_candidate_count": 0,
+        "materialization_blocker_count": 0,
+        "materialization_audit_fresh": "pass",
+        "materialization_contract_ready": "pass"
+      }
+    },
+    {
+      "id": "alpha_mining_promotion_contract_governance_only",
+      "passed": true,
       "detail": {
         "decision_effect": "governance_contract_only",
         "monthly_cadence": "monthly",
         "requires_finlab_backtest": true,
         "source_contracts_fresh": true,
         "stale_against": []
-      },
-      "id": "alpha_mining_promotion_contract_governance_only",
-      "passed": true
+      }
     },
     {
-      "detail": {
-        "blockers": 0,
-        "refs": 75,
-        "strategies": 11
-      },
       "id": "strategy_feature_refs_no_blockers",
-      "passed": true
+      "passed": true,
+      "detail": {
+        "strategies": 11,
+        "refs": 75,
+        "blockers": 0
+      }
     },
     {
+      "id": "active_strategy_baseline_export_and_backtest",
+      "passed": true,
       "detail": {
-        "backtest_errors": [],
-        "backtest_json_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
-        "backtest_no_signal": 0,
-        "backtest_ok": 8,
-        "backtest_summary_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
-        "backtest_tool_path": "tools/finlab_strategy_spec_backtest.py",
-        "backtest_unsupported_feature": 3,
-        "errors": [],
-        "export_summary_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
+        "strategy_count": 11,
         "exporter_path": "tools/export_active_strategy_specs_from_d1.py",
+        "backtest_tool_path": "tools/finlab_strategy_spec_backtest.py",
+        "export_summary_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
+        "spec_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
+        "backtest_summary_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
+        "backtest_json_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
+        "backtest_ok": 8,
+        "backtest_no_signal": 0,
+        "backtest_unsupported_feature": 3,
+        "backtest_errors": [],
         "freshness": {
-          "backtest_json": {
-            "fresh": true,
-            "stale_against": []
-          },
-          "backtest_summary": {
-            "fresh": true,
-            "stale_against": []
-          },
           "export_summary": {
             "fresh": true,
             "stale_against": []
@@ -175,15 +261,22 @@
           "spec_json": {
             "fresh": true,
             "stale_against": []
+          },
+          "backtest_summary": {
+            "fresh": true,
+            "stale_against": []
+          },
+          "backtest_json": {
+            "fresh": true,
+            "stale_against": []
           }
         },
-        "spec_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
-        "strategy_count": 11
-      },
-      "id": "active_strategy_baseline_export_and_backtest",
-      "passed": true
+        "errors": []
+      }
     },
     {
+      "id": "local_audit_alpha_mining_similarity_fail_closed_gates",
+      "passed": true,
       "detail": {
         "description": "local audit proves alpha mining novelty uses formal137 matrix-only fail-closed similarity",
         "expected_check_ids": [
@@ -193,20 +286,20 @@
           "roadmap:p2:alpha_mining_similarity_validation_artifact",
           "roadmap:p2:alpha_mining_similarity_validation_artifact_fresh"
         ],
-        "failed_check_ids": [],
         "missing_check_ids": [],
+        "failed_check_ids": [],
         "statuses": {
-          "roadmap:p2:alpha_mining_no_self_similarity_fill": "pass",
           "roadmap:p2:alpha_mining_similarity_matrix_only_fail_closed": "pass",
+          "roadmap:p2:alpha_mining_no_self_similarity_fill": "pass",
+          "roadmap:p2:alpha_mining_similarity_validator": "pass",
           "roadmap:p2:alpha_mining_similarity_validation_artifact": "pass",
-          "roadmap:p2:alpha_mining_similarity_validation_artifact_fresh": "pass",
-          "roadmap:p2:alpha_mining_similarity_validator": "pass"
+          "roadmap:p2:alpha_mining_similarity_validation_artifact_fresh": "pass"
         }
-      },
-      "id": "local_audit_alpha_mining_similarity_fail_closed_gates",
-      "passed": true
+      }
     },
     {
+      "id": "local_audit_monthly_pymoo_runtime_contract_gates",
+      "passed": true,
       "detail": {
         "description": "local audit proves monthly strategy mining uses pymoo-only runtime contract and durable validation artifact",
         "expected_check_ids": [
@@ -214,215 +307,26 @@
           "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact",
           "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact_fresh"
         ],
-        "failed_check_ids": [],
         "missing_check_ids": [],
+        "failed_check_ids": [],
         "statuses": {
           "roadmap:p8:monthly_alpha_miner_cli_defaults_pymoo_only": "pass",
           "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact": "pass",
           "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact_fresh": "pass"
         }
-      },
-      "id": "local_audit_monthly_pymoo_runtime_contract_gates",
-      "passed": true
-    }
-  ],
-  "evidence_inventory": [
-    {
-      "exists": true,
-      "path": "ml-service/benchmark_results/local_prod_ready_audit_20260618.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "ml-service/benchmark_results/adaptive_meta_policy_replay_20260605_20260611.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "ml-service/benchmark_results/linucb_multiplier_replay_20260605_20260611.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "ml-service/benchmark_results/production_cutover_remote_preflight_20260618.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "output/feature_universe_triage/feature_registry_local_closure_20260617.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "output/feature_universe_triage/unified137_materialization_audit_sii_20230101_20260615.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "output/feature_universe_triage/alpha_mining_similarity_novelty_validation_20260618.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/unified_feature_registry_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/feature_view_contract_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/ml_feature_selection_contract_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/ml_feature_migration_preflight_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/strategy_feature_ref_contract_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/alpha_mining_promotion_contract_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/pymoo_monthly_mining_config_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "data/feature_registry/formal137_similarity_contract_v1.json",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "worker/migration_strategy_registry_alpha_miner_2026_06_17.sql",
-      "required": true
-    },
-    {
-      "exists": true,
-      "path": "worker/migration_strategy_mining_ledger_2026_06_18.sql",
-      "required": true
-    },
-    {
-      "dynamic": true,
-      "exists": true,
-      "id": "active_strategy_spec_exporter_source",
-      "path": "tools/export_active_strategy_specs_from_d1.py",
-      "required": true
-    },
-    {
-      "dynamic": true,
-      "exists": true,
-      "id": "active_strategy_backtest_tool_source",
-      "path": "tools/finlab_strategy_spec_backtest.py",
-      "required": true
-    },
-    {
-      "dynamic": true,
-      "exists": true,
-      "id": "active_strategy_spec_export_summary",
-      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
-      "required": true
-    },
-    {
-      "dynamic": true,
-      "exists": true,
-      "id": "active_strategy_spec_json",
-      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
-      "required": true
-    },
-    {
-      "dynamic": true,
-      "exists": true,
-      "id": "active_strategy_finlab_backtest_summary",
-      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
-      "required": true
-    },
-    {
-      "dynamic": true,
-      "exists": true,
-      "id": "active_strategy_finlab_backtest_json",
-      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
-      "required": true
-    }
-  ],
-  "local_gate": {
-    "audit_path": "ml-service\\benchmark_results\\local_prod_ready_audit_20260618.json",
-    "failed_check_count": 0,
-    "local_closure": "done",
-    "local_prod_ready": "done",
-    "passed": true,
-    "self_refresh_only": false
-  },
-  "production_mutation_allowed": false,
-  "remote_cutover_complete": false,
-  "remote_preflight_checks": [
-    {
-      "check_type": "remote_read_only",
-      "expected": "weekly-optuna, monthly-optuna, monthly-strategy-mining, optuna-queue, adaptive-meta-policy-replay, linucb-multiplier-replay exist in GCP Scheduler",
-      "id": "scheduler_actual_matches_manifest"
-    },
-    {
-      "check_type": "remote_read_only",
-      "expected": "strategy_mining_runs, strategy_mining_candidates, strategy_backtest_results, active_strategy_backtest_results, strategy_similarity_matrix, strategy_promotion_ledger exist in remote D1 after approved migration apply",
-      "id": "d1_strategy_mining_ledger_tables_exist"
-    },
-    {
-      "check_type": "remote_read_only",
-      "expected": "/strategy_mining/monthly_pymoo/run returns preflight_ready or blocked without allowing production mutation",
-      "id": "ml_controller_strategy_mining_route_ready"
-    },
-    {
-      "check_type": "remote_read_only",
-      "expected": "STRATEGY_MINING_EXECUTION_ENABLED=false until Wei approval; true is expected after approved strategy-mining execution cutover",
-      "id": "strategy_mining_execution_env_gated"
-    },
-    {
-      "check_type": "remote_read_only",
-      "expected": "PatchTST and iTransformer production artifact slots point to NeuralForecast-backed zip artifacts",
-      "id": "sequence_artifacts_are_neuralforecast_zip"
-    },
-    {
-      "check_type": "remote_read_only",
-      "expected": "TimesFM production slot config references google/timesfm-2.5-200m-pytorch and max_context >= 1024",
-      "id": "timesfm_active_slot_uses_25_config"
-    },
-    {
-      "check_type": "remote_read_only",
-      "expected": "production model_pool champion set contains only the active-9 ML families",
-      "id": "active9_model_pool_has_no_retired_champion"
-    },
-    {
-      "check_type": "remote_read_only",
-      "expected": "shadow/challenger rows are removed only after approved champion cutover evidence is captured",
-      "id": "challenger_cleanup_scope_is_explicit"
+      }
     }
   ],
   "remote_preflight_summary": {
     "already_present_remote": [
-      "d1_alpha_miner_strategy_seed",
-      "d1_strategy_spec_registry_schema"
-    ],
-    "incomplete_remote_check_ids": [
       "gcp_scheduler_monthly_strategy_mining",
       "gcp_scheduler_monthly_optuna_timezone",
       "ml_controller_strategy_mining_env",
-      "d1_strategy_mining_ledger_tables"
+      "d1_strategy_mining_ledger_tables",
+      "d1_alpha_miner_strategy_seed",
+      "d1_strategy_spec_registry_schema"
     ],
+    "incomplete_remote_check_ids": [],
     "local_cutover_packet_blocked_reason": null,
     "local_cutover_packet_path": "ml-service/benchmark_results/production_cutover_packet_20260618.json",
     "local_cutover_packet_ready_for_review": true,
@@ -430,10 +334,105 @@
       "deploy_ml_controller_strategy_mining_route",
       "apply_strategy_mining_ledger_migration",
       "sync_gcp_scheduler_manifest",
-      "optionally configure STRATEGY_MINING_JOB_NAME and keep STRATEGY_MINING_EXECUTION_ENABLED=false until actual execution approval",
+      "set STRATEGY_MINING_BACKEND=modal and STRATEGY_MINING_EXECUTION_ENABLED=true after Wei approval",
       "feature_selection_retrain_release remains blocked until explicit retrain/release approval"
     ],
-    "remote_cutover_complete": false
+    "remote_cutover_complete": true
   },
-  "schema_version": "stockvision-production-cutover-packet-v1"
+  "remote_cutover_complete": true,
+  "approval_required_actions": [
+    {
+      "id": "deploy_worker_and_frontend",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "Cloudflare Worker / frontend production deploy"
+    },
+    {
+      "id": "deploy_ml_controller_strategy_mining_route",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "Cloud Run ml-controller revision with /strategy_mining/monthly_pymoo/run"
+    },
+    {
+      "id": "apply_strategy_registry_alpha_miner_migration",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "Cloudflare D1 strategy_spec_registry seed/update for alpha miner strategy rows"
+    },
+    {
+      "id": "apply_strategy_mining_ledger_migration",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "Cloudflare D1 strategy mining ledger table creation"
+    },
+    {
+      "id": "sync_gcp_scheduler_manifest",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "GCP Scheduler production job create/update"
+    },
+    {
+      "id": "write_or_promote_gcs_model_artifacts",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "GCS model artifact write or champion artifact promotion"
+    },
+    {
+      "id": "update_model_pool_champion_pointers",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "production model_pool champion pointer update"
+    },
+    {
+      "id": "remove_challenger_pointers_after_approved_cutover",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "production challenger/shadow pointer cleanup"
+    },
+    {
+      "id": "enable_strategy_mining_execution_env",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "STRATEGY_MINING_EXECUTION_ENABLED=1 and STRATEGY_MINING_BACKEND=modal production env binding"
+    },
+    {
+      "id": "feature_selection_retrain_release",
+      "approval_gate": "wei_explicit_approval_required",
+      "mutation_scope": "production ML feature schema retrain/release on the active formal137 artifact schema"
+    }
+  ],
+  "remote_preflight_checks": [
+    {
+      "id": "scheduler_actual_matches_manifest",
+      "check_type": "remote_read_only",
+      "expected": "weekly-optuna, monthly-optuna, monthly-strategy-mining, optuna-queue, adaptive-meta-policy-replay, linucb-multiplier-replay exist in GCP Scheduler"
+    },
+    {
+      "id": "d1_strategy_mining_ledger_tables_exist",
+      "check_type": "remote_read_only",
+      "expected": "strategy_mining_runs, strategy_mining_candidates, strategy_backtest_results, active_strategy_backtest_results, strategy_similarity_matrix, strategy_promotion_ledger exist in remote D1 after approved migration apply"
+    },
+    {
+      "id": "ml_controller_strategy_mining_route_ready",
+      "check_type": "remote_read_only",
+      "expected": "/strategy_mining/monthly_pymoo/run returns preflight_ready or blocked without allowing production mutation"
+    },
+    {
+      "id": "strategy_mining_execution_env_gated",
+      "check_type": "remote_read_only",
+      "expected": "STRATEGY_MINING_EXECUTION_ENABLED=false until Wei approval; true is expected after approved strategy-mining execution cutover"
+    },
+    {
+      "id": "sequence_artifacts_are_neuralforecast_zip",
+      "check_type": "remote_read_only",
+      "expected": "PatchTST and iTransformer production artifact slots point to NeuralForecast-backed zip artifacts"
+    },
+    {
+      "id": "timesfm_active_slot_uses_25_config",
+      "check_type": "remote_read_only",
+      "expected": "TimesFM production slot config references google/timesfm-2.5-200m-pytorch and max_context >= 1024"
+    },
+    {
+      "id": "active9_model_pool_has_no_retired_champion",
+      "check_type": "remote_read_only",
+      "expected": "production model_pool champion set contains only the active-9 ML families"
+    },
+    {
+      "id": "challenger_cleanup_scope_is_explicit",
+      "check_type": "remote_read_only",
+      "expected": "shadow/challenger rows are removed only after approved champion cutover evidence is captured"
+    }
+  ],
+  "blocked_reason": null
 }

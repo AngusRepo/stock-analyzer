@@ -38,11 +38,11 @@ const SCORE_V2_WEIGHTS = {
 } as const
 
 const SCORE_V2_TECHNICAL = [
-  ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '趨勢結構目前缺少方向指標，不能只靠單日價格變動下結論。'],
-  ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '波動結構目前缺少穩定度指標，突破或回測要保守確認。'],
-  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500', '轉折極端目前缺少過熱/過冷指標，進場要等位置確認。'],
-  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '量能確認目前缺少成交量佐證，突破前要等量能放大。'],
-  ['executionRisk', '執行風險', 2, 'bg-rose-500', '執行風險目前缺少流動性佐證，實際下單要保守處理。'],
+  ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '趨勢結構分數反映均線、動能與方向延續品質。'],
+  ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '波動結構分數反映波動穩定度與突破後回測風險。'],
+  ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500', '轉折極端分數反映過熱/過冷後的轉折風險與位置品質。'],
+  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '量能確認分數反映成交量是否支持突破或回測。'],
+  ['executionRisk', '執行風險', 2, 'bg-rose-500', '執行風險分數反映流動性、滑價與實際成交難度。'],
 ] as const
 
 function parseObject(raw: unknown): Record<string, any> | null {
@@ -154,7 +154,10 @@ function scoreV2TechnicalRows(payload: Record<string, any>): ScoreBreakdownRow[]
   const breakdown = parseObject(payload.technicalBreakdown) ?? {}
   return SCORE_V2_TECHNICAL
     .filter(([key]) => breakdown[key] != null)
-    .map(([key, label, max, color, explanation]) => row(key, label, breakdown[key], max, color, explanation))
+    .map(([key, label, max, color, explanation]) => {
+      const item = row(key, label, breakdown[key], max, color, undefined)
+      return item.value > 0 ? { ...item, explanation } : item
+    })
 }
 
 function storageSource(rec: Record<string, any>, payload: Record<string, any> | null): Record<string, any> {

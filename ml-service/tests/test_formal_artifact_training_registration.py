@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import inspect
+from pathlib import Path
 
 import numpy as np
 from app import gnn_training, itransformer_training, patchtst_universal, tabm_training
@@ -292,3 +293,11 @@ def test_formal_artifact_trainers_do_not_default_to_active_promotion():
         assert 'bool(kwargs.get("promote_to_active", False))' not in source
         assert "approved by Wei" not in source
         assert "resolve_training_promotion_intent" in source
+
+
+def test_artifact_lifecycle_orchestrator_does_not_default_to_active_promotion():
+    source = (Path(__file__).resolve().parents[1] / "modal_app.py").read_text(encoding="utf-8")
+
+    assert '"promote_to_active": True' not in source
+    assert '"promote_to_active": promote_to_active' in source
+    assert "artifact_lifecycle_promote_to_active" in source

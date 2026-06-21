@@ -1,0 +1,141 @@
+{
+  "actions": [
+    {
+      "decision_effect": "local_plan_only",
+      "evidence": {
+        "artifact_path": "universal/patchtst/v20260621154455.zip",
+        "model_cpcv_decision": "FAIL",
+        "offline_gate_decision": "FAIL",
+        "oos_ic": 0.296486,
+        "production_pointer_updated": true
+      },
+      "model_name": "PatchTST",
+      "production_mutation_allowed": false,
+      "recommendation": "Recompute offline gate with coverage_gate_value semantics before deciding keep versus rollback.",
+      "requires_live_readback": true,
+      "requires_wei_approval": true,
+      "root_cause": "production_pointer_updated_despite_cpcv_coverage_contract_drift",
+      "version": "v20260621154455"
+    },
+    {
+      "decision_effect": "local_plan_only",
+      "evidence": {
+        "artifact_path": "universal/itransformer/v20260621154455.zip",
+        "model_cpcv_decision": "FAIL",
+        "offline_gate_decision": "FAIL",
+        "oos_ic": -0.058854,
+        "production_pointer_updated": true
+      },
+      "model_name": "iTransformer",
+      "production_mutation_allowed": false,
+      "recommendation": "Rollback or remove this serving candidate after current model_pool/champion pointer readback.",
+      "requires_live_readback": true,
+      "requires_wei_approval": true,
+      "root_cause": "production_pointer_updated_despite_true_performance_fail",
+      "version": "v20260621154455"
+    },
+    {
+      "decision_effect": "local_plan_only",
+      "evidence": {
+        "candidate_version": "v20260621154455",
+        "current_model_pool_version": "v20260619014016",
+        "oos_ic": 0.0406
+      },
+      "model_name": "DLinear",
+      "production_mutation_allowed": false,
+      "recommendation": "Run promotion-controller dry-run, then require Wei approval before model_pool release writer confirm.",
+      "requires_live_readback": false,
+      "requires_wei_approval": true,
+      "root_cause": "offline_pass_candidate_not_released_to_model_pool",
+      "version": "v20260621154455"
+    },
+    {
+      "decision_effect": "local_plan_only",
+      "evidence": {
+        "candidate_version": "v20260621154455",
+        "current_model_pool_version": "v20260619014016",
+        "oos_ic": 0.1323
+      },
+      "model_name": "ExtraTrees",
+      "production_mutation_allowed": false,
+      "recommendation": "Run promotion-controller dry-run, then require Wei approval before model_pool release writer confirm.",
+      "requires_live_readback": false,
+      "requires_wei_approval": true,
+      "root_cause": "offline_pass_candidate_not_released_to_model_pool",
+      "version": "v20260621154455"
+    },
+    {
+      "decision_effect": "local_plan_only",
+      "evidence": {
+        "candidate_version": "v20260621154455",
+        "current_model_pool_version": "v20260619014016",
+        "oos_ic": 0.0912
+      },
+      "model_name": "LightGBM",
+      "production_mutation_allowed": false,
+      "recommendation": "Run promotion-controller dry-run, then require Wei approval before model_pool release writer confirm.",
+      "requires_live_readback": false,
+      "requires_wei_approval": true,
+      "root_cause": "offline_pass_candidate_not_released_to_model_pool",
+      "version": "v20260621154455"
+    },
+    {
+      "decision_effect": "local_plan_only",
+      "evidence": {
+        "candidate_version": "v20260621154455",
+        "current_model_pool_version": "v20260619014016",
+        "oos_ic": 0.0982
+      },
+      "model_name": "XGBoost",
+      "production_mutation_allowed": false,
+      "recommendation": "Run promotion-controller dry-run, then require Wei approval before model_pool release writer confirm.",
+      "requires_live_readback": false,
+      "requires_wei_approval": true,
+      "root_cause": "offline_pass_candidate_not_released_to_model_pool",
+      "version": "v20260621154455"
+    }
+  ],
+  "decision_effect": "local_repair_plan_only",
+  "generated_at": "2026-06-21T17:21:30.047039+00:00",
+  "no_action": [
+    {
+      "model_name": "GNN",
+      "reason": "production pointer update is aligned with offline gate",
+      "version": "v20260621154455"
+    },
+    {
+      "model_name": "TabM",
+      "reason": "production pointer update is aligned with offline gate",
+      "version": "v20260621154455"
+    },
+    {
+      "model_name": "TimesFM",
+      "reason": "artifact did not update production pointer; keep as evidence until revalidated",
+      "version": "v20260612T160113_timesfm25_ctx1024"
+    }
+  ],
+  "production_mutation_allowed": false,
+  "run": {
+    "candidate_version": "v20260621154455",
+    "is_monthly": true,
+    "run_id": "universal-20260621T231108-40d3a660",
+    "status": "completed"
+  },
+  "schema_version": "artifact-lifecycle-repair-packet-v1",
+  "source_evidence_schema_version": "stockvision-production-retrain-release-evidence-v1",
+  "summary": {
+    "action_count": 6,
+    "no_action_count": 3,
+    "offline_pass_pending_release": [
+      "DLinear",
+      "ExtraTrees",
+      "LightGBM",
+      "XGBoost"
+    ],
+    "production_pointer_fail_closed_repairs": [
+      "PatchTST",
+      "iTransformer"
+    ],
+    "requires_wei_approval_count": 6
+  }
+}

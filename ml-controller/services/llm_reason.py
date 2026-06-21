@@ -153,6 +153,21 @@ def build_canonical_candidate_payloads(candidates: list[dict[str, Any]]) -> list
     ]
 
 
+def build_gemini_trade_plan_request(
+    canonical_candidate_payloads: list[dict[str, Any]],
+    *,
+    top_themes: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "stockvision-llm-trade-plan-request-v1",
+        "provider_task": "gemini_trade_plan",
+        "provider": "gemini",
+        "model": GEMINI_MODEL,
+        "top_themes": top_themes or [],
+        "candidates": canonical_candidate_payloads,
+    }
+
+
 def _score_components(c: dict[str, Any]) -> dict[str, Any]:
     payload = _parse_score_components(c.get("score_components"))
     if payload:
@@ -316,12 +331,48 @@ def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
     return result
 
 
+async def generate_recommendation_reasons_from_payloads(
+    canonical_candidate_payloads: list[dict[str, Any]],
+    top_themes: Optional[list[str]] = None,
+    timeout: float = 60.0,
+    max_attempts: int = 3,
+) -> dict[str, dict]:
+    _ = max_attempts
+    if not canonical_candidate_payloads:
+        return {}
+    if not GEMINI_API_KEY:
+        logger.warning("[llm_reason] No GEMINI_API_KEY set, skipping Gemini reason generation")
+        return {}
+
+    canonical_payload = build_gemini_trade_plan_request(canonical_candidate_payloads, top_themes=top_themes)
+    user_prompt = (
+        f"請為以下 {len(canonical_candidate_payloads)} 檔候選股票撰寫 Gemini 3.5 Flash 獨立交易計畫。\n"
+        "只能使用 canonical_candidate_payload；不要讀取或推測 legacy score/ml_score/chip_score 欄位。\n"
+        f"canonical_candidate_payload={json.dumps(canonical_payload, ensure_ascii=False, separators=(',', ':'))}"
+    )
+
+    raw = await _call_gemini(user_prompt, len(canonical_candidate_payloads), timeout)
+    if raw is None:
+        logger.error("[llm_reason] Gemini reason generation failed")
+        return {}
+
+    result = _parse_reasons(raw, len(canonical_candidate_payloads))
+    logger.info("[llm_reason] Generated %s/%s Gemini reasons", len(result), len(canonical_candidate_payloads))
+    return result
+
+
 async def generate_recommendation_reasons(
     candidates: list[dict],
     top_themes: Optional[list[str]] = None,
     timeout: float = 60.0,
     max_attempts: int = 3,
 ) -> dict[str, dict]:
+    return await generate_recommendation_reasons_from_payloads(
+        build_canonical_candidate_payloads(candidates),
+        top_themes=top_themes,
+        timeout=timeout,
+        max_attempts=max_attempts,
+    )
     """
     Generate LLM reasons for recommendation candidates.
 

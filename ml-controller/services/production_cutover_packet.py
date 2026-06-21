@@ -14,6 +14,7 @@ REQUIRED_EVIDENCE_FILES = (
     "ml-service/benchmark_results/adaptive_meta_policy_replay_20260605_20260611.json",
     "ml-service/benchmark_results/linucb_multiplier_replay_20260605_20260611.json",
     "ml-service/benchmark_results/production_cutover_remote_preflight_20260618.json",
+    "ml-service/benchmark_results/artifact_lifecycle_repair_packet_20260621.json",
     "output/feature_universe_triage/feature_registry_local_closure_20260617.json",
     "output/feature_universe_triage/unified137_materialization_audit_sii_20230101_20260615.json",
     "output/feature_universe_triage/alpha_mining_similarity_novelty_validation_20260618.json",

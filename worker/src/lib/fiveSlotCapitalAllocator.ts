@@ -18,6 +18,13 @@ export interface FiveSlotAllocatorAccount {
   dailyRemaining: number
 }
 
+export interface FiveSlotMarketContext {
+  marketRiskLevel?: string | null
+  riskScore?: number | null
+  marketOutlookUpsidePct?: number | null
+  regimeFamily?: string | null
+}
+
 export interface FiveSlotHolding {
   symbol: string
   shares: number
@@ -65,14 +72,64 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
-export function inferFiveSlotTargetExposure(marketRiskLevel: string | null | undefined): number {
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000
+}
+
+function normalizedRiskLevel(marketRiskLevel: string | null | undefined): string {
   const level = String(marketRiskLevel ?? 'unknown').toLowerCase()
-  if (['black', 'halt', 'closed'].includes(level)) return 0
-  if (['red', 'bear', 'bear_market'].includes(level)) return 0.25
-  if (['orange', 'high', 'volatile'].includes(level)) return 0.45
-  if (['medium', 'yellow', 'sideways', 'neutral'].includes(level)) return 0.65
-  if (['low', 'green', 'bull', 'bull_market', 'constructive'].includes(level)) return 0.90
-  return 0.55
+  if (['black', 'halt', 'closed'].includes(level)) return 'black'
+  if (['red', 'very_high', 'bear', 'bear_market'].includes(level)) return 'red'
+  if (['orange', 'high', 'volatile'].includes(level)) return 'orange'
+  if (['medium', 'yellow', 'sideways', 'neutral'].includes(level)) return 'yellow'
+  if (['low', 'green', 'bull', 'bull_market', 'constructive'].includes(level)) return 'green'
+  return 'unknown'
+}
+
+function impliedRiskScore(level: string): number {
+  if (level === 'green') return 4
+  if (level === 'yellow') return 34
+  if (level === 'orange') return 58
+  if (level === 'red') return 83
+  if (level === 'black') return 100
+  return 46
+}
+
+function regimeExposureAdjustment(regimeFamily: string | null | undefined): number {
+  const family = String(regimeFamily ?? '').toLowerCase()
+  if (family === 'bull') return 0.04
+  if (family === 'sideways') return -0.01
+  if (family === 'volatile') return -0.04
+  if (family === 'bear') return -0.06
+  return 0
+}
+
+function outlookExposureAdjustment(upsidePct: number | null | undefined): number {
+  if (upsidePct == null || !Number.isFinite(upsidePct)) return 0
+  if (upsidePct >= 6) return 0.05
+  if (upsidePct >= 3) return 0.025
+  if (upsidePct <= 0.5) return -0.08
+  if (upsidePct <= 1.2) return -0.05
+  return 0
+}
+
+export function inferFiveSlotTargetExposureFromContext(context: FiveSlotMarketContext): number {
+  const level = normalizedRiskLevel(context.marketRiskLevel)
+  if (level === 'black') return 0
+  const rawRiskScore = finiteNumber(context.riskScore, impliedRiskScore(level))
+  const riskScore = clamp(rawRiskScore, 0, 100)
+  const continuousBase = 0.92 - riskScore * 0.008
+  return round4(clamp(
+    continuousBase +
+      regimeExposureAdjustment(context.regimeFamily) +
+      outlookExposureAdjustment(context.marketOutlookUpsidePct),
+    0,
+    0.95,
+  ))
+}
+
+export function inferFiveSlotTargetExposure(marketRiskLevel: string | null | undefined): number {
+  return inferFiveSlotTargetExposureFromContext({ marketRiskLevel })
 }
 
 export function fiveSlotConfidenceMultiplier(candidate: FiveSlotCandidate): number {
@@ -180,13 +237,17 @@ function skipDecision(
 export function buildFiveSlotCapitalPlan(input: {
   account: FiveSlotAllocatorAccount
   marketRiskLevel: string | null | undefined
+  marketContext?: FiveSlotMarketContext | null
   config: FiveSlotAllocatorConfig
   holdings: FiveSlotHolding[]
   candidates: FiveSlotCandidate[]
 }): FiveSlotCapitalPlan {
   const maxPositions = Math.max(1, Math.floor(finiteNumber(input.config.maxPositions, 5)))
   const minPositionValue = Math.max(0, finiteNumber(input.config.minPositionValue, 30_000))
-  const targetExposure = inferFiveSlotTargetExposure(input.marketRiskLevel)
+  const targetExposure = inferFiveSlotTargetExposureFromContext({
+    marketRiskLevel: input.marketRiskLevel,
+    ...(input.marketContext ?? {}),
+  })
   const totalPortfolio = Math.max(0, finiteNumber(input.account.totalPortfolio, 0))
   const targetSlotValue = maxPositions > 0 ? (totalPortfolio * targetExposure) / maxPositions : 0
   const holdings = input.holdings ?? []
@@ -305,6 +366,7 @@ export function buildFiveSlotCapitalPlan(input: {
 export function buildFiveSlotExecutionDecision(input: {
   account: FiveSlotAllocatorAccount
   marketRiskLevel: string | null | undefined
+  marketContext?: FiveSlotMarketContext | null
   config: FiveSlotAllocatorConfig
   holdings: FiveSlotHolding[]
   candidate: FiveSlotCandidate
@@ -312,6 +374,7 @@ export function buildFiveSlotExecutionDecision(input: {
   const plan = buildFiveSlotCapitalPlan({
     account: input.account,
     marketRiskLevel: input.marketRiskLevel,
+    marketContext: input.marketContext,
     config: input.config,
     holdings: input.holdings,
     candidates: [input.candidate],

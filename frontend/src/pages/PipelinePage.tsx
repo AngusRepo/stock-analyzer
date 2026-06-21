@@ -47,6 +47,200 @@ function scoreFinalValue(rec: any): number {
   return buildScoreBreakdownViewModel(rec ?? {}).finalScore
 }
 
+type LayerTraceRow = {
+  layer: string
+  title: string
+  status: string
+  detail: string
+  metrics: string[]
+}
+
+function evidenceObject(raw: unknown): Record<string, any> | null {
+  const obj = parseMaybeJson(raw)
+  return Object.keys(obj).length > 0 ? obj : null
+}
+
+function textMetric(raw: unknown, fallback = '-'): string {
+  if (raw == null || raw === '') return fallback
+  if (typeof raw === 'boolean') return raw ? 'yes' : 'no'
+  return String(raw).replace(/_/g, ' ')
+}
+
+function numberMetric(raw: unknown, decimals = 1): string {
+  const value = Number(raw)
+  return Number.isFinite(value) ? fmt(value, decimals) : '-'
+}
+
+function percentMetric(raw: unknown): string {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return '-'
+  const pct = Math.abs(value) <= 1 ? value * 100 : value
+  return `${fmt(pct, 1)}%`
+}
+
+function boolMetric(raw: unknown, yes = 'yes', no = 'no'): string {
+  if (raw === true || raw === 1) return yes
+  if (raw === false || raw === 0) return no
+  if (typeof raw === 'string') {
+    const value = raw.trim().toLowerCase()
+    if (['true', '1', 'yes', 'pass', 'selected'].includes(value)) return yes
+    if (['false', '0', 'no', 'wait', 'blocked'].includes(value)) return no
+  }
+  return '-'
+}
+
+function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
+  const evidence = evidenceObject(rec?.screener_funnel_evidence) ?? {}
+  const l0 = evidenceObject(evidence.layer0_universe_features)
+  const l05 = evidenceObject(evidence.layer05_hard_gate)
+  const l1 = evidenceObject(evidence.layer1_strategy_labeler)
+  const l125 = evidenceObject(evidence.layer125_finlab_portfolio_intelligence)
+  const l15 = evidenceObject(evidence.layer15_multi_strategy_router) ?? evidenceObject(evidence.layer1_breadth)
+  const l2 = evidenceObject(evidence.layer2_3ml_coarse) ?? evidenceObject(evidence.layer2_coarse_ml) ?? evidenceObject(evidence.layer2_queue_seed)
+  const l3 = evidenceObject(evidence.layer3_6ml_formal) ?? evidenceObject(evidence.layer3_formal_ml)
+  const l35 = evidenceObject(evidence.layer35_evidence_fusion)
+  const l4 = evidenceObject(rec?.l4_sparse_allocation)
+    ?? evidenceObject(evidence.layer4_sparse_allocation)
+    ?? evidenceObject(rec?.alpha_allocation)
+
+  return [
+    {
+      layer: 'L0',
+      title: 'Universe / Features',
+      status: l0 ? boolMetric(l0.universe_passed, 'pass', textMetric(l0.universe_decision, 'review')) : 'no evidence',
+      detail: l0?.decision_policy ?? 'feature materialization evidence not found',
+      metrics: [
+        `source ${numberMetric(l0?.source_universe_count, 0)}`,
+        `groups ${numberMetric(l0?.feature_group_count ?? l0?.feature_groups?.length, 0)}`,
+        `base ${numberMetric(l0?.base_score, 1)}`,
+      ],
+    },
+    {
+      layer: 'L0.5',
+      title: 'Hard Gate',
+      status: l05 ? boolMetric(l05.pending_buy_blocked, 'blocked', 'allowed') : 'no evidence',
+      detail: l05?.decision_policy ?? 'tradability/data-trust gate evidence not found',
+      metrics: [
+        `lane ${textMetric(l05?.recommendation_lane)}`,
+        `board ${textMetric(l05?.board_type ?? l05?.market_segment)}`,
+        `ML ${boolMetric(l05?.ml_slate_allowed ?? l05?.eligible_for_ml, 'allowed', 'blocked')}`,
+      ],
+    },
+    {
+      layer: 'L1',
+      title: 'Strategy Labeler',
+      status: l1 ? textMetric(l1.decision ?? 'labeled') : 'no evidence',
+      detail: l1?.selection_policy ?? 'strategy labeler evidence not found',
+      metrics: [
+        `strategies ${numberMetric(l1?.strategy_count, 0)}`,
+        `families ${numberMetric(l1?.family_count, 0)}`,
+        `max ${numberMetric(l1?.max_strategy_affinity, 2)}`,
+      ],
+    },
+    {
+      layer: 'L1.25',
+      title: 'Portfolio Intelligence',
+      status: l125 ? textMetric(l125.portfolio_metric_status ?? 'available') : 'no evidence',
+      detail: l125?.selection_policy ?? 'strategy-as-asset portfolio evidence not found',
+      metrics: [
+        `metrics ${numberMetric(l125?.portfolio_metric_count, 0)}`,
+        `reliability ${percentMetric(l125?.strategy_reliability)}`,
+        `crowding ${percentMetric(l125?.strategy_crowding_score)}`,
+      ],
+    },
+    {
+      layer: 'L1.5',
+      title: 'Strategy Router',
+      status: l15 ? textMetric(l15.strategy_router_decision ?? 'routed') : 'no evidence',
+      detail: l15?.selection_policy ?? 'multi-strategy router evidence not found',
+      metrics: [
+        `route ${percentMetric(l15?.route_score)}`,
+        `formal L2 ${boolMetric(l15?.formal_l2_queue, 'queue', 'observe')}`,
+        `teachers ${numberMetric(l15?.teacher_label_count, 0)}`,
+      ],
+    },
+    {
+      layer: 'L2',
+      title: '3ML Coarse',
+      status: l2 ? boolMetric(l2.formal_l2_pass, 'pass', textMetric(l2.reason_code, 'wait')) : 'no evidence',
+      detail: l2?.decision_policy ?? 'coarse ML queue evidence not found',
+      metrics: [
+        `expected ${numberMetric(l2?.expected_model_count, 0)}`,
+        `queue ${numberMetric(l2?.coarse_queue_size, 0)}`,
+        `shortlist ${numberMetric(l2?.core_ml_shortlist_size, 0)}`,
+      ],
+    },
+    {
+      layer: 'L3',
+      title: '6ML Formal',
+      status: l3 ? textMetric(l3.decision ?? 'formal vote') : 'no evidence',
+      detail: l3?.decision_policy ?? 'formal family-vote evidence not found',
+      metrics: [
+        `family ${percentMetric(l3?.formal_family_score)}`,
+        `active ${numberMetric(l3?.active_l3_model_count ?? l3?.contributing_model_count, 0)}`,
+        `families ${numberMetric(l3?.active_family_count, 0)}`,
+      ],
+    },
+    {
+      layer: 'L3.5',
+      title: 'Evidence Fusion',
+      status: l35 ? textMetric(l35.conflict_level ?? l35.decision ?? 'fused') : 'no evidence',
+      detail: l35?.selection_policy ?? 'L1.5/L3 fusion evidence not found',
+      metrics: [
+        `route ${percentMetric(l35?.layer1_route_score)}`,
+        `family ${percentMetric(l35?.layer3_formal_family_score)}`,
+        `owner ${textMetric(l35?.final_allocation_owner)}`,
+      ],
+    },
+    {
+      layer: 'L4',
+      title: 'Sparse Allocation',
+      status: l4 ? boolMetric(l4.selected, 'selected', 'hold') : 'no evidence',
+      detail: l4?.selection_policy ?? 'final sparse allocation evidence not found',
+      metrics: [
+        `weight ${percentMetric(l4?.allocation_weight)}`,
+        `signals ${numberMetric(l4?.buy_signal_count, 0)}`,
+        `engine ${textMetric(l4?.engine ?? l4?.allocation_method)}`,
+      ],
+    },
+  ]
+}
+
+function LayerTracePanel({ rec }: { rec: any }) {
+  const rows = layerTraceRowsFromRec(rec)
+  return (
+    <div className="rounded-lg border border-border/70 bg-background/45 p-2">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-[11px] font-semibold text-foreground">Layer Evidence Trace</p>
+        <span className="font-mono text-[10px] text-muted-foreground">L0-L4 / screener_funnel_evidence</span>
+      </div>
+      <div className="grid gap-1.5">
+        {rows.map((row) => (
+          <div key={row.layer} className="grid gap-2 rounded-md border border-border/50 px-2 py-1.5 text-[11px] md:grid-cols-[86px_minmax(0,1fr)]">
+            <div>
+              <div className="font-mono font-semibold text-primary">{row.layer}</div>
+              <Badge variant="outline" className="mt-1 h-auto max-w-full whitespace-normal break-words px-1.5 py-0 text-[9px]">
+                {row.status}
+              </Badge>
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold text-foreground">{row.title}</p>
+              <p className="mt-0.5 break-words leading-5 text-muted-foreground">{row.detail}</p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {row.metrics.map((metric) => (
+                  <span key={metric} className="rounded border border-border/40 bg-background/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    {metric}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function buildScreenerSectorSummary(recs: any[]) {
   const bySector = new Map<string, {
     sector: string
@@ -186,6 +380,7 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
           {rec.reason && (
             <p className="text-xs text-muted-foreground leading-relaxed">{rec.reason}</p>
           )}
+          <LayerTracePanel rec={rec} />
           <div className="flex gap-4 text-[11px] text-muted-foreground">
             {rec.current_price && <span>現價 <span className="font-mono">${fmt(rec.current_price, 2)}</span></span>}
             {rec.rsi14 && <span>RSI <span className="font-mono">{rec.rsi14.toFixed(1)}</span></span>}

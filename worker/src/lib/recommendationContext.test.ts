@@ -223,6 +223,13 @@ const forecastData = {
   })
   assert(defaultController?.controller === 'OnlinePortfolioBandit', 'L4 sparse summary should expose default OnlinePortfolioBandit controller provenance')
 
+  const singleNameWeightFallback = buildSparseAllocationSummary({
+    selected: true,
+    engine: 'sparse_tangent_inverse_risk',
+    single_name_weight: 0.22,
+  })
+  assert(singleNameWeightFallback?.allocation_weight === 0.22, 'L4 sparse summary should use single_name_weight when allocation_weight is absent')
+
   assert(buildSparseAllocationSummary({ engine: 'rank_topk_equal_weight', selected: true }) === null, 'legacy top-k allocation must not be summarized as L4 sparse')
 }
 

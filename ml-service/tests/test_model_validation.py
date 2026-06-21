@@ -43,6 +43,41 @@ def test_build_model_cpcv_evidence_fails_low_coverage():
     assert "cpcv_coverage" in evidence["failed_gates"]
 
 
+def test_learned_sequence_coverage_uses_oos_union_not_fold_share_mean():
+    evidence = build_model_cpcv_evidence(
+        model="PatchTST",
+        fold_metrics=[
+            {"fold_id": i, "oos_ic": 0.31 + i * 0.001, "test_rows": 204, "coverage": 0.20}
+            for i in range(5)
+        ],
+    )
+
+    assert evidence["decision"] == "PASS"
+    assert evidence["coverage_mean"] == 0.2
+    assert evidence["coverage_gate_value"] == 1.0
+    assert evidence["coverage_gate_semantics"] == "legacy_coverage_fold_share_sum_capped"
+    assert "cpcv_coverage" not in evidence["failed_gates"]
+
+
+def test_learned_sequence_coverage_fix_keeps_itransformer_performance_fail_closed():
+    evidence = build_model_cpcv_evidence(
+        model="iTransformer",
+        fold_metrics=[
+            {"fold_id": 1, "oos_ic": -0.08, "test_rows": 204, "coverage": 0.20},
+            {"fold_id": 2, "oos_ic": -0.05, "test_rows": 204, "coverage": 0.20},
+            {"fold_id": 3, "oos_ic": 0.01, "test_rows": 204, "coverage": 0.20},
+            {"fold_id": 4, "oos_ic": -0.04, "test_rows": 204, "coverage": 0.20},
+            {"fold_id": 5, "oos_ic": 0.02, "test_rows": 204, "coverage": 0.20},
+        ],
+    )
+
+    assert evidence["decision"] == "FAIL"
+    assert evidence["coverage_gate_value"] == 1.0
+    assert "cpcv_coverage" not in evidence["failed_gates"]
+    assert "cpcv_oos_ic" in evidence["failed_gates"]
+    assert "cpcv_positive_fold_ratio" in evidence["failed_gates"]
+
+
 def test_build_model_cpcv_adapter_missing_evidence_fails_visible():
     evidence = build_model_cpcv_adapter_missing_evidence(
         model="FT-Transformer",

@@ -456,7 +456,7 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
     engine: 'sparse_tangent_inverse_risk',
     controller,
     selected: boolFromUnknown(allocation.selected),
-    allocation_weight: finiteOrNull(allocation.allocation_weight),
+    allocation_weight: finiteOrNull(allocation.allocation_weight ?? allocation.single_name_weight),
     buy_signal_count: finiteOrNull(allocation.buy_signal_count),
     allocation_capacity: finiteOrNull(allocation.allocation_capacity),
     sector_concentration_cap: finiteOrNull(allocation.sector_concentration_cap),

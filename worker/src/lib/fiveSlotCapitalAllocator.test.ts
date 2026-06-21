@@ -3,6 +3,7 @@ import {
   fiveSlotHoldingWeaknessScore,
   formatFiveSlotDecisionWatchPoint,
   inferFiveSlotTargetExposure,
+  inferFiveSlotTargetExposureFromContext,
 } from './fiveSlotCapitalAllocator'
 
 function assert(condition: unknown, message: string): void {
@@ -93,6 +94,28 @@ const baseConfig = {
 {
   assert(inferFiveSlotTargetExposure('low') > inferFiveSlotTargetExposure('orange'), 'orange risk should reduce target exposure')
   assert(inferFiveSlotTargetExposure('black') === 0, 'black risk should halt new exposure')
+  assert(
+    inferFiveSlotTargetExposure('yellow') > 0.60 && inferFiveSlotTargetExposure('yellow') < 0.70,
+    'yellow fallback should remain near the old 65% operational posture',
+  )
+  assert(
+    inferFiveSlotTargetExposureFromContext({
+      marketRiskLevel: 'yellow',
+      riskScore: 34,
+      marketOutlookUpsidePct: 6.5,
+      regimeFamily: 'bull',
+    }) > inferFiveSlotTargetExposure('yellow'),
+    'constructive outlook and bull regime should lift target exposure through the continuous context curve',
+  )
+  assert(
+    inferFiveSlotTargetExposureFromContext({
+      marketRiskLevel: 'yellow',
+      riskScore: 72,
+      marketOutlookUpsidePct: 0.4,
+      regimeFamily: 'bear',
+    }) < inferFiveSlotTargetExposure('orange'),
+    'high risk score plus weak outlook should cut exposure below the orange fallback',
+  )
   assert(
     fiveSlotHoldingWeaknessScore({ symbol: 'WEAK', shares: 1000, avgCost: 100, lastPrice: 92, daysHeld: 8, tp1Hit: false }) > 35,
     'weakness score should expose the same replacement evidence used by paper auto-swap',

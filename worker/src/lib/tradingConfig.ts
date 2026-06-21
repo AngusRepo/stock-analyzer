@@ -726,7 +726,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     allocation: {
       engine: 'sparse_tangent_inverse_risk',
       controller: 'OnlinePortfolioBandit',
-      buySignalCount: 3,
+      buySignalCount: 5,
       slateSize: 10,
       scoreRoundDecimals: 1,
       weights: {
@@ -895,7 +895,6 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
     },
     allocation: {
       ...d.allocation,
-      ...rawAllocation,
       engine: rawAllocation.engine ?? rawAllocation.method ?? d.allocation.engine,
       controller: rawAllocation.controller ?? d.allocation.controller,
       buySignalCount: rawAllocation.buySignalCount ?? rawAllocation.buy_signal_count ?? d.allocation.buySignalCount,
@@ -1004,6 +1003,162 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
 
 export function buildChampionTradingConfig(current?: Partial<any> | null): TradingConfig {
   return mergeConfig(current ?? {})
+}
+
+export type TradingConfigRepairSeverity = 'critical' | 'schema'
+
+export interface TradingConfigRepairChange {
+  path: string
+  current: unknown
+  target: unknown
+  severity: TradingConfigRepairSeverity
+  reason: string
+}
+
+export interface TradingConfigRepairPlan {
+  exists: boolean
+  valid: boolean
+  needsRepair: boolean
+  changes: TradingConfigRepairChange[]
+  legacyAllocationFields: string[]
+  errors: string[]
+  current: TradingConfig | null
+  target: TradingConfig
+}
+
+const TRADING_CONFIG_OPERATIONAL_DEFAULTS: Array<{
+  path: string
+  target: unknown
+  severity: TradingConfigRepairSeverity
+  reason: string
+}> = [
+  {
+    path: 'position.dailyBuyLimit',
+    target: DEFAULT_TRADING_CONFIG.position.dailyBuyLimit,
+    severity: 'critical',
+    reason: 'Repo champion default is NT$500k; old production KV drifted at NT$200k.',
+  },
+  {
+    path: 'position.manualDailyLimit',
+    target: DEFAULT_TRADING_CONFIG.position.manualDailyLimit,
+    severity: 'critical',
+    reason: 'Manual buy daily cap should match the approved NT$500k daily capital limit.',
+  },
+  {
+    path: 'alphaFramework.allocation.buySignalCount',
+    target: DEFAULT_TRADING_CONFIG.alphaFramework.allocation.buySignalCount,
+    severity: 'critical',
+    reason: 'L4 sparse allocation should expose up to five buy signals while maxPositions remains a cap, not a forced fill target.',
+  },
+]
+
+const LEGACY_ALPHA_ALLOCATION_FIELDS = [
+  'topK',
+  'method',
+  'selectionPoolSize',
+  'maxWeight',
+  'activatedBy',
+  'activationRunId',
+  'enforceBuySignalOwner',
+  'owner',
+]
+
+function cloneConfig<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function pathGet(target: any, path: string): unknown {
+  return path.split('.').reduce((cursor, key) => cursor?.[key], target)
+}
+
+function pathSet(target: any, path: string, value: unknown): void {
+  const parts = path.split('.')
+  let cursor = target
+  for (const part of parts.slice(0, -1)) {
+    cursor[part] = cursor[part] ?? {}
+    cursor = cursor[part]
+  }
+  cursor[parts[parts.length - 1]] = value
+}
+
+function detectLegacyAllocationFields(raw: any): string[] {
+  const allocation = raw?.alphaFramework?.allocation ?? raw?.alpha_framework?.allocation ?? null
+  if (!allocation || typeof allocation !== 'object' || Array.isArray(allocation)) return []
+  return LEGACY_ALPHA_ALLOCATION_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(allocation, field))
+}
+
+export function buildTradingConfigOperationalTarget(current?: Partial<any> | null): TradingConfig {
+  const target = cloneConfig(buildChampionTradingConfig(current ?? {}))
+  for (const item of TRADING_CONFIG_OPERATIONAL_DEFAULTS) {
+    pathSet(target, item.path, item.target)
+  }
+  return buildChampionTradingConfig(target)
+}
+
+function buildTradingConfigRepairChanges(current: TradingConfig | null, target: TradingConfig): TradingConfigRepairChange[] {
+  if (!current) {
+    return TRADING_CONFIG_OPERATIONAL_DEFAULTS.map((item) => ({
+      path: item.path,
+      current: null,
+      target: item.target,
+      severity: item.severity,
+      reason: item.reason,
+    }))
+  }
+  return TRADING_CONFIG_OPERATIONAL_DEFAULTS.flatMap((item) => {
+    const currentValue = pathGet(current, item.path)
+    const targetValue = pathGet(target, item.path)
+    return Object.is(currentValue, targetValue)
+      ? []
+      : [{
+          path: item.path,
+          current: currentValue,
+          target: targetValue,
+          severity: item.severity,
+          reason: item.reason,
+        }]
+  })
+}
+
+export async function buildTradingConfigRepairPlan(kv: KVNamespace): Promise<TradingConfigRepairPlan> {
+  let raw: any = null
+  const errors: string[] = []
+  try {
+    raw = await kv.get(KV_KEY, 'json')
+  } catch (error: any) {
+    errors.push(`trading:config read failed: ${error?.message ?? String(error)}`)
+  }
+
+  const exists = Boolean(raw && typeof raw === 'object' && !Array.isArray(raw))
+  const current = exists ? buildChampionTradingConfig(raw) : null
+  if (!exists) errors.push('trading:config missing or invalid')
+  if (current) errors.push(...validateTradingConfig(current))
+
+  const target = buildTradingConfigOperationalTarget(exists ? raw : null)
+  const changes = buildTradingConfigRepairChanges(current, target)
+  const legacyAllocationFields = detectLegacyAllocationFields(raw)
+
+  return {
+    exists,
+    valid: exists && errors.length === 0,
+    needsRepair: !exists || errors.length > 0 || changes.length > 0 || legacyAllocationFields.length > 0,
+    changes,
+    legacyAllocationFields,
+    errors,
+    current,
+    target,
+  }
+}
+
+export async function repairTradingConfigOperationalDefaults(
+  kv: KVNamespace,
+): Promise<TradingConfigRepairPlan & { written: boolean; snapshotId: string | null; skipped: boolean }> {
+  const plan = await buildTradingConfigRepairPlan(kv)
+  if (!plan.needsRepair) {
+    return { ...plan, written: false, snapshotId: null, skipped: true }
+  }
+  const result = await setTradingConfig(kv, plan.target, { source: 'admin_config_repair_defaults' })
+  return { ...plan, written: true, snapshotId: result.snapshotId, skipped: result.skipped }
 }
 
 export async function getTradingConfig(kv: KVNamespace): Promise<TradingConfig> {

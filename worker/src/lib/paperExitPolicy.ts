@@ -23,6 +23,7 @@ export interface ExitDecision {
   sellShares?: number
   newTrailingStop?: number
   newHighest?: number
+  newTp2Price?: number
   moveStopToEntry?: boolean
 }
 
@@ -113,8 +114,24 @@ export function checkExitConditions(
     return { action: 'full_sell', reason: `TP1 full exit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%` }
   }
 
+  const highestSoFar = Math.max(pos.highest_since_entry ?? entryPrice, currentPrice)
+  const trailSwitch3 = sltp?.trailSwitch3pct ?? 0.03
+  const trailSwitch8 = sltp?.trailSwitch8pct ?? 0.08
+
+  let trailMult = ex.trailMultDefault
+  if (pnlPct > trailSwitch8) trailMult = ex.trailMultAt8pct
+  else if (pnlPct > trailSwitch3) trailMult = ex.trailMultAt3pct
+
+  const effectiveAtr = atr14 > 0 ? atr14 : currentPrice * ex.fallbackAtrPct
   const tp2 = pos.tp2_price ?? entryPrice * ex.fallbackTp2Mult
-  if (currentPrice >= tp2 && pos.tp1_hit) {
+  const previousHighest = pos.highest_since_entry ?? entryPrice
+  const tp2ExtensionMult = Math.max(0.5, (sltp?.tp2DistanceMultiplier ?? 2.0) / 2)
+  const movingTp2 = pos.tp1_hit
+    ? Math.max(tp2, highestSoFar + effectiveAtr * tp2ExtensionMult)
+    : tp2
+  const shouldMoveTp2 = Boolean(pos.tp1_hit && movingTp2 > tp2 && highestSoFar > previousHighest)
+
+  if (currentPrice >= tp2 && pos.tp1_hit && !shouldMoveTp2) {
     return { action: 'full_sell', reason: `TP2 take profit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%` }
   }
 
@@ -125,27 +142,19 @@ export function checkExitConditions(
     }
   }
 
-  const highestSoFar = Math.max(pos.highest_since_entry ?? entryPrice, currentPrice)
-  const trailSwitch3 = sltp?.trailSwitch3pct ?? 0.03
-  const trailSwitch8 = sltp?.trailSwitch8pct ?? 0.08
-
-  let trailMult = ex.trailMultDefault
-  if (pnlPct > trailSwitch8) trailMult = ex.trailMultAt8pct
-  else if (pnlPct > trailSwitch3) trailMult = ex.trailMultAt3pct
-
-  const effectiveAtr = atr14 > 0 ? atr14 : currentPrice * ex.fallbackAtrPct
   const newTrailing = highestSoFar - effectiveAtr * trailMult
   const floorStop = pos.tp1_hit ? entryPrice : initStop
   const finalTrailing = Math.max(newTrailing, floorStop)
   const prevTrailing = pos.trailing_stop ?? initStop
   const updatedTrailing = Math.max(finalTrailing, prevTrailing)
 
-  if (updatedTrailing !== prevTrailing || highestSoFar !== (pos.highest_since_entry ?? entryPrice)) {
+  if (updatedTrailing !== prevTrailing || highestSoFar !== previousHighest || shouldMoveTp2) {
     return {
       action: 'hold',
-      reason: 'trailing update',
+      reason: shouldMoveTp2 ? 'trailing update; moving TP2 update' : 'trailing update',
       newTrailingStop: updatedTrailing,
       newHighest: highestSoFar,
+      newTp2Price: shouldMoveTp2 ? movingTp2 : undefined,
     }
   }
 

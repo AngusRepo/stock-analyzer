@@ -73,11 +73,11 @@ from services.recommendation_service import (
     merge_breeze2_reason_shadow_into_score_components,
     merge_llm_reasons_into_recommendations,
 )
-from services.llm_reason import generate_recommendation_reasons
+from services.llm_reason import build_canonical_candidate_payloads, generate_recommendation_reasons_from_payloads
 from services.breeze2_reason_shadow import (
     breeze2_reason_shadow_metrics,
-    build_breeze2_generation_shadow_for_candidates,
-    build_breeze2_reason_shadow_for_candidates,
+    build_breeze2_generation_shadow_for_canonical_payloads,
+    build_breeze2_reason_shadow_for_canonical_payloads,
 )
 from services.sector_flow_service import run_sector_flow_pipeline
 from services.persona_service import (
@@ -2455,20 +2455,28 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
     # Summary carries counts only; LLM prompt enhancement can read D1 directly if needed.
     # Keep minimal for now to avoid extra D1 roundtrip in hot path.
 
+    canonical_candidate_payloads = build_canonical_candidate_payloads(candidates)
+
     try:
-        reasons = await generate_recommendation_reasons(candidates, top_themes=top_themes)
+        reasons = await generate_recommendation_reasons_from_payloads(
+            canonical_candidate_payloads,
+            top_themes=top_themes,
+        )
         breeze2_shadow = {}
         if _breeze2_reason_shadow_enabled():
             provider = _breeze2_reason_shadow_provider()
             if provider == "modal_generation":
                 try:
-                    breeze2_shadow = await build_breeze2_generation_shadow_for_candidates(candidates, run_date=state.get("run_date"))
+                    breeze2_shadow = await build_breeze2_generation_shadow_for_canonical_payloads(
+                        canonical_candidate_payloads,
+                        run_date=state.get("run_date"),
+                    )
                 except Exception as shadow_error:  # noqa: BLE001 - shadow provider must not block D1 writes.
                     logger.warning("[Pipeline V2] Breeze2 modal generation failed; fallback to context shadow: %s", shadow_error)
-                    breeze2_shadow = build_breeze2_reason_shadow_for_candidates(candidates)
+                    breeze2_shadow = build_breeze2_reason_shadow_for_canonical_payloads(canonical_candidate_payloads)
             else:
                 try:
-                    breeze2_shadow = build_breeze2_reason_shadow_for_candidates(candidates)
+                    breeze2_shadow = build_breeze2_reason_shadow_for_canonical_payloads(canonical_candidate_payloads)
                 except Exception as shadow_error:  # noqa: BLE001 - shadow provider must not block D1 writes.
                     logger.warning("[Pipeline V2] Breeze2 context shadow skipped: %s", shadow_error)
         if breeze2_shadow:

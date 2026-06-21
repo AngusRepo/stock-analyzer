@@ -217,6 +217,58 @@ def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets
     assert offline["production_cutover_source"] == "artifact_lifecycle"
 
 
+def test_lifecycle_pool_update_cannot_promote_offline_failed_artifact():
+    payload = {
+        "run_id": "universal-20260621T231108-40d3a660",
+        "run_date": "2026-06-21",
+        "is_monthly": True,
+        "candidate_version": "v20260621154455",
+        "status": "completed",
+        "stages": {
+            "artifact_lifecycle": {
+                "status": "ok",
+                "results": {
+                    "iTransformer": {
+                        "status": "ok",
+                        "model": "iTransformer",
+                        "version": "v20260621154455",
+                        "artifact_path": "universal/itransformer/v20260621154455.zip",
+                        "metadata_path": "universal/itransformer/metadata_v20260621154455.json",
+                        "checksum": "sha256:it",
+                        "oos_ic": -0.058854,
+                        "model_cpcv": {
+                            "decision": "FAIL",
+                            "failed_gates": ["cpcv_oos_ic", "cpcv_positive_fold_ratio"],
+                            "oos_ic_mean": -0.037109,
+                            "positive_fold_ratio": 0.4,
+                            "coverage_gate_value": 1.0,
+                        },
+                        "pool_update": {
+                            "old_version": "v20260619014016",
+                            "new_version": "v20260621154455",
+                            "artifact_path": "universal/itransformer/v20260621154455.zip",
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert len(records) == 1
+    row = records[0]
+    assert row["state"] == "offline_failed"
+    assert row["offline_gate_decision"] == "FAIL"
+    assert row["promotion_decision"] == "blocked_offline_gate_failed"
+    assert row["live_gate_status"] == "not_started"
+    offline = json.loads(row["offline_evidence_json"])
+    assert offline["artifact_lifecycle_promoted_to_active_requested"] is True
+    assert offline["artifact_lifecycle_promoted_to_active_effective"] is False
+    assert offline["artifact_lifecycle_promotion_blocked_by_offline_gate"] is True
+    assert offline["production_cutover_source"] is None
+
+
 def test_build_artifact_records_from_no_challenger_active9_train_stage():
     payload = {
         "run_id": "universal-20260615T124432-3f2c0c79",
@@ -276,6 +328,8 @@ def test_build_artifact_records_from_no_challenger_active9_train_stage():
     assert by_model["LightGBM"]["artifact_path"] == "universal/lightgbm/v20260615052900.joblib"
     assert by_model["XGBoost"]["metadata_path"] == "universal/xgboost/metadata_v20260615052900.json"
     assert by_model["ExtraTrees"]["offline_gate_decision"] == "STRONG_PASS"
+    assert by_model["ExtraTrees"]["promotion_decision"] == "eligible_pending_approval"
+    assert by_model["ExtraTrees"]["approval_state"] == "required"
     assert by_model["DLinear"]["artifact_path"] == "universal/dlinear/v20260615052900.pt"
     assert by_model["GNN"]["state"] == "offline_passed_weak"
     offline = json.loads(by_model["LightGBM"]["offline_evidence_json"])
@@ -379,11 +433,14 @@ def test_timesfm_lifecycle_evidence_is_registered_instead_of_missing_oos_warning
     assert len(records) == 1
     row = records[0]
     assert row["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:monthly_release"
-    assert row["state"] == "production"
+    assert row["state"] == "offline_failed"
     assert row["offline_gate_decision"] == "FAIL"
+    assert row["promotion_decision"] == "blocked_offline_gate_failed"
     offline = json.loads(row["offline_evidence_json"])
     assert offline["gate"]["metrics"]["oos_ic"] == -0.001443
     assert offline["gate"]["metrics"]["model_cpcv_decision"] == "FAIL"
+    assert offline["artifact_lifecycle_promoted_to_active_requested"] is True
+    assert offline["artifact_lifecycle_promoted_to_active_effective"] is False
     assert "oos_ic_missing_from_callback" not in offline["gate"]["warnings"]
 
 
@@ -788,6 +845,15 @@ def test_promotion_blockers_enforce_cpcv_policy_metrics():
     assert "pbo_threshold_missing" not in codes
     assert "cpcv_coverage_below_policy" in codes
 
+    offline = json.loads(row["offline_evidence_json"])
+    offline["model_cpcv"]["coverage_gate_value"] = 1.0
+    offline["model_cpcv"]["coverage_gate_semantics"] = "legacy_coverage_fold_share_sum_capped"
+    row = dict(row, offline_evidence_json=json.dumps(offline))
+
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+
+    assert "cpcv_coverage_below_policy" not in codes
+
 
 def test_promotion_blockers_enforce_timesfm_foundation_validation_policy():
     foundation = {
@@ -1184,7 +1250,7 @@ def test_promotion_controller_blocks_non_active9_artifact_models():
     assert "model_not_active_production_artifact" in result["evidence"]["blockers"]
 
 
-def test_build_promotion_queue_requires_approval_for_weekly_drift():
+def test_build_promotion_queue_requires_approval_for_weekly_drift_and_monthly_release():
     queue = registry.build_promotion_queue(
         [
             {
@@ -1217,7 +1283,34 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift():
     assert by_model["XGBoost"]["promotion_decision"] == "approval_required"
     assert by_model["XGBoost"]["final_compared_to"] is None
     assert by_model["XGBoost"]["current_champion_version"] == "vOld"
-    assert by_model["LightGBM"]["promotion_decision"] == "auto_promote_candidate"
+    assert by_model["LightGBM"]["promotion_decision"] == "eligible_pending_approval"
+    assert by_model["LightGBM"]["approval_required"] is True
+
+
+def test_build_promotion_queue_includes_offline_monthly_release_pending_approval():
+    queue = registry.build_promotion_queue(
+        [
+            {
+                "artifact_id": "DLinear:vMonthly:monthly_release",
+                "model_name": "DLinear",
+                "version": "vMonthly",
+                "candidate_type": "monthly_release",
+                "state": "offline_strong_pass",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "not_started",
+                "approval_state": "required",
+                "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+                "live_evidence_json": "{}",
+            },
+        ],
+        champion_versions={"DLinear": "vOld"},
+    )
+
+    row = queue["queue"][0]
+    assert row["artifact_id"] == "DLinear:vMonthly:monthly_release"
+    assert row["promotion_decision"] == "eligible_pending_approval"
+    assert row["approval_required"] is True
+    assert row["blocker_codes"] == []
 
 
 def test_build_promotion_queue_suppresses_weekly_when_newer_monthly_is_ready():
@@ -1543,6 +1636,41 @@ def test_promotion_controller_allows_approved_offline_monthly_release_cutover(mo
     assert len(executed) == 3
 
 
+def test_promotion_controller_dry_run_offline_monthly_release_requires_wei_approval():
+    result = registry.run_promotion_controller(
+        artifact_id="DLinear:vFormal137:monthly_release",
+        registry_rows=[{
+            "artifact_id": "DLinear:vFormal137:monthly_release",
+            "model_name": "DLinear",
+            "version": "vFormal137",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "approval_state": "required",
+            "live_gate_status": "not_started",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+        }],
+        d1_pointers=[{
+            "model_name": "DLinear",
+            "champion_version": "vOld",
+            "champion_artifact_id": "DLinear:vOld:monthly_release",
+        }],
+        model_pool_versions={"DLinear": "vOld"},
+        confirm=False,
+        approved=False,
+        reason="formal137_initial_cutover",
+        allow_offline_monthly_release=True,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["decision"] == "approval_required"
+    assert result["can_promote"] is False
+    assert result["approval_required"] is True
+    assert result["evidence"]["offline_monthly_release_candidate"] is True
+    assert "live_gate_not_passed" not in result["evidence"]["blockers"]
+
+
 def test_promotion_controller_offline_monthly_release_cutover_still_blocks_failed_offline_gate():
     result = registry.run_promotion_controller(
         artifact_id="PatchTST:vBad:monthly_release",
@@ -1702,6 +1830,69 @@ def test_apply_promoted_artifact_to_model_pool_rejects_non_active9_artifacts():
         assert "not eligible for production artifact promotion" in str(exc)
     else:
         raise AssertionError("CatBoost artifact promotion should be rejected")
+
+
+def test_model_pool_release_writer_dry_run_does_not_mutate_pool():
+    pool = {
+        "models": {
+            "DLinear": {
+                "status": "active",
+                "version": "vOld",
+                "gcs_path": "universal/dlinear/vOld.pt",
+            },
+        },
+    }
+
+    result = registry.run_model_pool_release_writer(
+        pool,
+        {
+            "artifact_id": "DLinear:vNew:monthly_release",
+            "model_name": "DLinear",
+            "version": "vNew",
+            "candidate_type": "monthly_release",
+            "artifact_path": "universal/dlinear/vNew.pt",
+        },
+        reason="dry_run",
+        promoted_at="2026-06-22T00:00:00+00:00",
+        confirm=False,
+    )
+
+    assert result["decision_effect"] == "dry_run_only"
+    assert result["model_pool_updated"] is False
+    assert result["serving_update"]["old_version"] == "vOld"
+    assert result["planned_entry"]["version"] == "vNew"
+    assert pool["models"]["DLinear"]["version"] == "vOld"
+
+
+def test_model_pool_release_writer_confirm_mutates_pool():
+    pool = {
+        "models": {
+            "DLinear": {
+                "status": "active",
+                "version": "vOld",
+                "gcs_path": "universal/dlinear/vOld.pt",
+            },
+        },
+    }
+
+    result = registry.run_model_pool_release_writer(
+        pool,
+        {
+            "artifact_id": "DLinear:vNew:monthly_release",
+            "model_name": "DLinear",
+            "version": "vNew",
+            "candidate_type": "monthly_release",
+            "artifact_path": "universal/dlinear/vNew.pt",
+        },
+        reason="wei_approval",
+        promoted_at="2026-06-22T00:00:00+00:00",
+        confirm=True,
+    )
+
+    assert result["decision_effect"] == "write_model_pool"
+    assert result["model_pool_updated"] is True
+    assert pool["models"]["DLinear"]["version"] == "vNew"
+    assert pool["models"]["DLinear"]["promotion_controller"]["artifact_id"] == "DLinear:vNew:monthly_release"
 
 
 def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versions(monkeypatch):

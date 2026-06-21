@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
@@ -551,10 +552,27 @@ def _artifact_record_from_registration(
         registration=enriched_registration,
         ic_summary=local_ic_summary,
     )
-    promoted_to_active = bool(raw_registration.get("artifact_lifecycle_promoted_to_active"))
+    promotion_requested = bool(raw_registration.get("artifact_lifecycle_promoted_to_active"))
     pool_update = _nested_dict(raw_registration.get("artifact_lifecycle_result")).get("pool_update")
     artifact_id = f"{model_name}:{record_version}:{candidate_type}"
+    offline_gate_passed = offline_gate["decision"] != "FAIL"
+    promoted_to_active = promotion_requested and offline_gate_passed
+    promotion_blocked_by_offline_gate = promotion_requested and not promoted_to_active
+    eligible_pending_approval = (
+        not promoted_to_active
+        and candidate_type == "monthly_release"
+        and offline_gate["decision"] in {"PASS", "STRONG_PASS"}
+    )
     state = "production" if promoted_to_active else offline_gate["state"]
+    promotion_decision = (
+        "current_production"
+        if promoted_to_active
+        else "blocked_offline_gate_failed"
+        if promotion_blocked_by_offline_gate
+        else "eligible_pending_approval"
+        if eligible_pending_approval
+        else "not_evaluated"
+    )
     return {
         "artifact_id": artifact_id,
         "model_name": model_name,
@@ -593,12 +611,15 @@ def _artifact_record_from_registration(
             "callback_status": payload_dict.get("status"),
             "callback_error": payload_dict.get("error"),
             "pool_update": pool_update if isinstance(pool_update, dict) else None,
-            "production_cutover_source": raw_registration.get("production_cutover_source"),
+            "production_cutover_source": raw_registration.get("production_cutover_source") if promoted_to_active else None,
+            "artifact_lifecycle_promoted_to_active_requested": promotion_requested,
+            "artifact_lifecycle_promoted_to_active_effective": promoted_to_active,
+            "artifact_lifecycle_promotion_blocked_by_offline_gate": promotion_blocked_by_offline_gate,
         }),
         "live_gate_status": "not_applicable" if promoted_to_active else "not_started",
         "live_evidence_json": "{}",
-        "promotion_decision": "current_production" if promoted_to_active else "not_evaluated",
-        "approval_state": "not_required",
+        "promotion_decision": promotion_decision,
+        "approval_state": "required" if eligible_pending_approval else "not_required",
         "created_at": now,
     }
 
@@ -1091,11 +1112,44 @@ def _promotion_ready(row: dict[str, Any] | None) -> bool:
         return False
     state = str(row.get("state") or "")
     live_status = str(row.get("live_gate_status") or "")
+    if _offline_monthly_release_candidate(row):
+        return True
     return state in {"live_gate_passed", "approval_required", "approved", "production"} or live_status in {
         "passed",
         "multi_evidence_passed",
         "rolling_ic_passed",
     }
+
+
+def _offline_monthly_release_candidate(row: dict[str, Any] | None) -> bool:
+    if not row:
+        return False
+    return (
+        str(row.get("candidate_type") or "") == "monthly_release"
+        and str(row.get("offline_gate_decision") or "") in {"STRONG_PASS", "PASS"}
+        and str(row.get("state") or "") in {
+            "offline_passed",
+            "offline_strong_pass",
+            "live_gate_passed",
+            "approval_required",
+            "approved",
+        }
+    )
+
+
+def _offline_monthly_release_blockers(blockers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    hard_blocker_codes = {
+        "model_not_active_production_artifact",
+        "missing_current_champion",
+        "offline_gate_not_passed",
+    }
+    return [
+        blocker
+        for blocker in blockers
+        if str(blocker.get("code") or "") in hard_blocker_codes
+        or str(blocker.get("code") or "").startswith("cpcv_")
+        or str(blocker.get("code") or "").startswith("foundation_")
+    ]
 
 
 def _monthly_supersedes_weekly(monthly: dict[str, Any] | None, weekly: dict[str, Any] | None) -> bool:
@@ -1318,7 +1372,15 @@ def _add_cpcv_policy_blockers(
         add,
         code=f"{prefix}_coverage_below_policy",
         label="CPCV coverage is below policy",
-        value=_first_metric(evidence, "coverage_mean", "coverage"),
+        value=_first_metric(
+            evidence,
+            "coverage_gate_value",
+            "sequence_window_coverage",
+            "union_oos_coverage",
+            "valid_series_coverage",
+            "coverage_mean",
+            "coverage",
+        ),
         threshold=_first_metric(merged_policy, "min_coverage"),
         relation=">=",
         next_action="Increase fold/outcome coverage before promotion.",
@@ -2009,13 +2071,18 @@ def build_promotion_queue(
     for row in rows:
         state = str(row.get("state") or "")
         live_status = str(row.get("live_gate_status") or "")
+        offline_monthly_candidate = _offline_monthly_release_candidate(row)
         if state in {"production", "archived", "rejected"}:
             continue
-        if state not in {"live_gate_passed", "approval_required", "approved"} and live_status not in {
+        if (
+            not offline_monthly_candidate
+            and state not in {"live_gate_passed", "approval_required", "approved"}
+            and live_status not in {
             "passed",
             "multi_evidence_passed",
             "rolling_ic_passed",
-        }:
+        }
+        ):
             continue
 
         model_name = str(row.get("model_name") or "")
@@ -2050,8 +2117,11 @@ def build_promotion_queue(
         approval_required = (
             candidate_type in {"weekly_drift", "manual_hotfix"}
             or str(row.get("approval_state") or "") == "required"
+            or offline_monthly_candidate
         )
         blockers = artifact_promotion_blockers(row, champion_version=champion_version)
+        if offline_monthly_candidate:
+            blockers = _offline_monthly_release_blockers(blockers)
         blocker_codes = _blocker_codes(blockers)
         if not champion_version:
             decision = "blocked_missing_champion_pointer"
@@ -2059,6 +2129,9 @@ def build_promotion_queue(
         elif blockers:
             decision = "blocked_multi_evidence_gate"
             next_action = "Resolve blockers before final comparison: " + ", ".join(blocker_codes)
+        elif offline_monthly_candidate:
+            decision = "eligible_pending_approval"
+            next_action = "Run promotion-controller dry-run with allow_offline_monthly_release=true, then request Wei approval before release."
         elif approval_required:
             decision = "approval_required"
             next_action = "Run final comparison against current champion, then request Wei approval before promotion."
@@ -2180,6 +2253,44 @@ def apply_promoted_artifact_to_model_pool(
     }
 
 
+def run_model_pool_release_writer(
+    pool: dict[str, Any],
+    artifact: dict[str, Any],
+    *,
+    reason: str,
+    promoted_at: str | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Build or apply the serving model_pool release update.
+
+    Promotion controller owns the approval decision. This writer owns the
+    serving JSON mutation and stays dry-run by default so a D1 pointer promotion
+    cannot silently create split-brain with model_pool.json.
+    """
+    working_pool = pool if confirm else deepcopy(pool)
+    serving_update = apply_promoted_artifact_to_model_pool(
+        working_pool,
+        artifact,
+        reason=reason,
+        promoted_at=promoted_at,
+    )
+    model_name = serving_update["model_name"]
+    entry = (working_pool.get("models") or {}).get(model_name) or {}
+    return {
+        "schema_version": "model-pool-release-writer-v1",
+        "source_of_truth": "model_artifact_registry",
+        "serving_reader": "model_pool.json",
+        "decision_effect": "write_model_pool" if confirm else "dry_run_only",
+        "confirmed": bool(confirm),
+        "model_pool_updated": bool(confirm),
+        "can_release": True,
+        "serving_update": serving_update,
+        "planned_entry": entry,
+        "requires_wei_approval": True,
+        "production_mutation_allowed": bool(confirm),
+    }
+
+
 def _promotion_row_decision(
     *,
     artifact: dict[str, Any],
@@ -2198,35 +2309,25 @@ def _promotion_row_decision(
     state = str(artifact.get("state") or "")
     candidate_type = str(artifact.get("candidate_type") or "unknown")
     offline_decision = str(artifact.get("offline_gate_decision") or "")
-    approval_required = (
-        candidate_type in {"weekly_drift", "manual_hotfix"}
-        or str(artifact.get("approval_state") or "") == "required"
-    )
-    blockers: list[str] = []
-    offline_monthly_release_cutover = bool(
+    offline_monthly_release_candidate = bool(
         allow_offline_monthly_release
-        and approved
         and candidate_type == "monthly_release"
         and offline_decision in {"STRONG_PASS", "PASS"}
     )
+    approval_required = (
+        candidate_type in {"weekly_drift", "manual_hotfix"}
+        or str(artifact.get("approval_state") or "") == "required"
+        or offline_monthly_release_candidate
+    )
+    blockers: list[str] = []
+    offline_monthly_release_cutover = offline_monthly_release_candidate and approved
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
-    if offline_monthly_release_cutover:
-        hard_blocker_codes = {
-            "model_not_active_production_artifact",
-            "missing_current_champion",
-            "offline_gate_not_passed",
-        }
-        promotion_blockers = [
-            blocker
-            for blocker in promotion_blockers
-            if str(blocker.get("code") or "") in hard_blocker_codes
-            or str(blocker.get("code") or "").startswith("cpcv_")
-            or str(blocker.get("code") or "").startswith("foundation_")
-        ]
+    if offline_monthly_release_candidate:
+        promotion_blockers = _offline_monthly_release_blockers(promotion_blockers)
     if promotion_blockers:
         blockers.extend(_blocker_codes(promotion_blockers))
     if (
-        not offline_monthly_release_cutover
+        not offline_monthly_release_candidate
         and live_status not in {"passed", "multi_evidence_passed"}
         and state not in {"approval_required", "approved"}
     ):
@@ -2256,6 +2357,7 @@ def _promotion_row_decision(
         "approval_required": approval_required,
         "approved": approved,
         "allow_offline_monthly_release": allow_offline_monthly_release,
+        "offline_monthly_release_candidate": offline_monthly_release_candidate,
         "offline_monthly_release_cutover": offline_monthly_release_cutover,
         "blockers": blockers,
         "blocker_details": promotion_blockers,

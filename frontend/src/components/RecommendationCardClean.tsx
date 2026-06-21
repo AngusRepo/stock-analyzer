@@ -707,16 +707,22 @@ function extractTokenValue(text: string, key: string): string | null {
   return match?.[1]?.trim() ?? null
 }
 
+const STALE_ENTRY_MODEL_TOKENS = new Set([
+  'missing_' + 'intraday_tick_anchor',
+  'missing_' + 'entry_model_v2_anchor',
+])
+
 function cleanEntryModelToken(value: string | null): string | null {
   if (!value) return null
   const clean = value.trim()
-  return clean && clean.toLowerCase() !== 'na' ? clean : null
+  const normalized = clean.toLowerCase()
+  return clean && normalized !== 'na' && !STALE_ENTRY_MODEL_TOKENS.has(normalized) ? clean : null
 }
 
 function entryModelV2FromWatchPoints(points: string[]): EntryPriceModelV2Ui | null {
   const point = points.find((item) => item.startsWith('entry_price_model_v2:'))
   if (!point) return null
-  const anchorSource = cleanEntryModelToken(extractTokenValue(point, 'source')) ?? 'unknown'
+  const anchorSource = cleanEntryModelToken(extractTokenValue(point, 'source')) ?? 'daily_proxy_fallback'
   return {
     anchorSource,
     entry: cleanEntryModelToken(extractTokenValue(point, 'entry')),
@@ -725,7 +731,8 @@ function entryModelV2FromWatchPoints(points: string[]): EntryPriceModelV2Ui | nu
     premium: cleanEntryModelToken(extractTokenValue(point, 'premium')),
     discount: cleanEntryModelToken(extractTokenValue(point, 'discount')),
     poc: cleanEntryModelToken(extractTokenValue(point, 'poc')),
-    fallback: cleanEntryModelToken(extractTokenValue(point, 'fallback')),
+    fallback: cleanEntryModelToken(extractTokenValue(point, 'fallback'))
+      ?? (anchorSource === 'daily_proxy_fallback' ? 'ohlcv_trade_plan_proxy' : null),
   }
 }
 
@@ -1175,10 +1182,27 @@ function alphaDetailsFromRec(rec: any): any[] {
   return details.filter((item: any) => item && item.value != null)
 }
 
+function hasInformativeBreakdownRow(row: { value?: unknown; explanation?: unknown }): boolean {
+  const value = Number(row.value)
+  if (Number.isFinite(value) && value > 0) return true
+  const explanation = String(row.explanation ?? '').trim().toLowerCase()
+  if (!explanation) return false
+  return !(
+    explanation.includes('missing') ||
+    explanation.includes('unavailable') ||
+    explanation.includes('缺少') ||
+    explanation.includes('缺資料') ||
+    explanation.includes('資料不足')
+  )
+}
+
 function ScoreBreakdownV2({ rec }: { rec: any }) {
   const viewModel = buildScoreBreakdownViewModel(rec)
-  const riskText = viewModel.riskFlags.length > 0 ? viewModel.riskFlags.join(', ') : '無'
   const alphaDetails = alphaDetailsFromRec(rec)
+  const technicalRows = viewModel.technicalRows.filter(hasInformativeBreakdownRow)
+  const showAlpha = viewModel.hasBackendPayload && alphaDetails.length > 0
+
+  if (technicalRows.length === 0 && !showAlpha) return null
 
   return (
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
@@ -1186,10 +1210,10 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
         <span className="font-medium text-muted-foreground">Score V2 分解</span>
         <span className="font-mono text-[11px] text-muted-foreground">技術結構 + Alpha 明細</span>
       </div>
-      {viewModel.technicalRows.length > 0 && (
+      {technicalRows.length > 0 && (
         <div className="mt-2 space-y-2 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
           <p className="font-medium text-foreground/80">技術結構細項</p>
-          {viewModel.technicalRows.map((item) => (
+          {technicalRows.map((item) => (
             <div key={item.key} className="space-y-1">
               <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
               {item.explanation && (
@@ -1201,7 +1225,7 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
           ))}
         </div>
       )}
-      {viewModel.hasBackendPayload && alphaDetails.length > 0 && (
+      {showAlpha && (
         <div className="mt-2 space-y-1 rounded-md border border-border/40 bg-muted/20 p-2 text-[11px] leading-relaxed text-muted-foreground/90">
           <p className="font-medium text-foreground/80">Alpha 調整明細</p>
           {alphaDetails.map((item, index) => (
@@ -1211,11 +1235,6 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
             </p>
           ))}
         </div>
-      )}
-      {viewModel.hasBackendPayload && alphaDetails.length === 0 && (
-        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          Alpha 調整目前沒有細項，風險旗標: {riskText}
-        </p>
       )}
     </div>
   )

@@ -563,7 +563,7 @@ def test_sparse_tangent_allocation_marks_signal_source():
         "has_buy_signal": 0,
         "score": 70.0,
         "ml_forecast_pct": 0.03,
-        "score_components": _score_components(final_score=70.0),
+        "score_components": _score_components(final_score=70.0, ml_edge=20.0),
     }]
 
     promoted = apply_sparse_tangent_allocation(
@@ -586,6 +586,34 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert allocation["allocation_rank"] == 1
     assert allocation["sparse_diagnostics"]["candidate_count"] == 1
     assert allocation["sparse_diagnostics"]["selected_count"] == 1
+
+
+def test_sparse_tangent_allocation_blocks_positive_forecast_when_ml_edge_missing():
+    rows = [{
+        "symbol": "3152",
+        "chip_score": 19.0,
+        "tech_score": 16.0,
+        "confidence": 0.74,
+        "signal": "BUY",
+        "signal_source": "ensemble_v2_topk_policy",
+        "has_buy_signal": 1,
+        "score": 72.0,
+        "ml_forecast_pct": 0.03,
+        "score_components": _score_components(final_score=72.0, ml_edge=0.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1),
+    )
+
+    assert promoted[0]["signal"] == "HOLD"
+    assert promoted[0]["has_buy_signal"] == 0
+    assert promoted[0].get("sparse_tangent_selected") is not True
+    assert promoted[0]["promotion_blocked_reason"] == "missing_formal_ml_edge"
+    assert promoted[0]["promotion_blocked_ml_edge"] == 0.0
+    assert promoted[0]["alpha_allocation"]["selected"] is False
 
 
 def test_sparse_tangent_allocation_blocks_negative_forecast():
@@ -625,7 +653,7 @@ def test_sparse_tangent_allocation_reowns_existing_buy_labels():
         "topk_forced": True,
         "score": 72.0,
         "ml_forecast_pct": 0.03,
-        "score_components": _score_components(final_score=72.0),
+        "score_components": _score_components(final_score=72.0, ml_edge=21.0),
     }, {
         "symbol": "2317",
         "chip_score": 19.0,
@@ -636,7 +664,7 @@ def test_sparse_tangent_allocation_reowns_existing_buy_labels():
         "has_buy_signal": 0,
         "score": 62.0,
         "ml_forecast_pct": 0.01,
-        "score_components": _score_components(final_score=62.0),
+        "score_components": _score_components(final_score=62.0, ml_edge=18.0),
     }]
 
     promoted = apply_sparse_tangent_allocation(
@@ -664,7 +692,7 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
             "score": 70.0,
             "ml_forecast_pct": 0.03,
             "alpha_context": {"edge_bucket": "trend_following"},
-            "score_components": _score_components(final_score=70.0),
+            "score_components": _score_components(final_score=70.0, ml_edge=21.0),
         },
         {
             "symbol": "2317",
@@ -676,7 +704,7 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
             "score": 69.0,
             "ml_forecast_pct": 0.02,
             "alpha_context": {"edge_bucket": "mean_reversion"},
-            "score_components": _score_components(final_score=69.0),
+            "score_components": _score_components(final_score=69.0, ml_edge=20.0),
         },
         {
             "symbol": "2454",
@@ -688,7 +716,7 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
             "score": 68.0,
             "ml_forecast_pct": 0.01,
             "alpha_context": {"edge_bucket": "defensive_accumulation"},
-            "score_components": _score_components(final_score=68.0),
+            "score_components": _score_components(final_score=68.0, ml_edge=19.0),
         },
     ]
 
@@ -716,7 +744,7 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
             "has_buy_signal": 0,
             "score": 95.0,
             "ml_forecast_pct": 0.0,
-            "score_components": _score_components(final_score=95.0),
+            "score_components": _score_components(final_score=95.0, ml_edge=20.0),
         },
         {
             "symbol": "2317",
@@ -727,7 +755,7 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
             "has_buy_signal": 0,
             "score": 94.0,
             "ml_forecast_pct": 0.0,
-            "score_components": _score_components(final_score=94.0),
+            "score_components": _score_components(final_score=94.0, ml_edge=19.0),
         },
     ]
 
@@ -770,7 +798,7 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
         "signal": "HOLD",
         "has_buy_signal": 0,
         "score": 96.0,
-        "score_components": _score_components(final_score=96.0),
+        "score_components": _score_components(final_score=96.0, ml_edge=20.0),
     }]
 
     promoted = apply_sparse_tangent_allocation(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.breeze2_research_context import build_breeze2_research_context_report
-from services.llm_reason import build_canonical_candidate_payload
+from services.llm_reason import build_canonical_candidate_payload, build_canonical_candidate_payloads
 
 
 VALID_SCHEMA = "breeze2-research-context-v1"
@@ -165,6 +165,21 @@ def build_breeze2_reason_shadow_for_candidates(
     return build_breeze2_reason_shadow(candidates, reports)
 
 
+def build_breeze2_reason_shadow_for_canonical_payloads(
+    canonical_candidate_payloads: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    reports: dict[str, dict[str, Any]] = {}
+    for candidate in canonical_candidate_payloads:
+        symbol = _symbol(candidate)
+        if not symbol:
+            continue
+        reports[symbol] = build_breeze2_research_context_report(
+            _candidate_payload(candidate),
+            executor="controller_local_reason_shadow",
+        )
+    return build_breeze2_reason_shadow(canonical_candidate_payloads, reports)
+
+
 def breeze2_reason_shadow_metrics(shadow: dict[str, dict[str, Any]]) -> dict[str, Any]:
     contexts: dict[str, int] = {}
     risk_flags: dict[str, int] = {}
@@ -182,13 +197,11 @@ def breeze2_reason_shadow_metrics(shadow: dict[str, dict[str, Any]]) -> dict[str
 
 
 def _generation_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    payload = build_canonical_candidate_payload(candidate)
-    payload["provider_task"] = "breeze2_trade_plan"
-    return payload
+    return build_canonical_candidate_payload(candidate)
 
 
-def build_breeze2_reason_generation_payload(
-    candidates: list[dict[str, Any]],
+def build_breeze2_reason_generation_payload_from_canonical(
+    canonical_candidate_payloads: list[dict[str, Any]],
     *,
     run_date: str | None = None,
     execute_model: bool = True,
@@ -200,14 +213,29 @@ def build_breeze2_reason_generation_payload(
         "mutation_allowed": False,
         "real_trading_allowed": False,
         "primary_candidate_source_allowed": False,
+        "provider_task": "breeze2_trade_plan",
+        "provider": "breeze2",
         "run_date": run_date,
         "execute_model": bool(execute_model),
         "candidates": [
-            _generation_candidate(candidate)
-            for candidate in candidates
+            dict(candidate)
+            for candidate in canonical_candidate_payloads
             if isinstance(candidate, dict) and _symbol(candidate)
         ],
     }
+
+
+def build_breeze2_reason_generation_payload(
+    candidates: list[dict[str, Any]],
+    *,
+    run_date: str | None = None,
+    execute_model: bool = True,
+) -> dict[str, Any]:
+    return build_breeze2_reason_generation_payload_from_canonical(
+        build_canonical_candidate_payloads(candidates),
+        run_date=run_date,
+        execute_model=execute_model,
+    )
 
 
 def coerce_breeze2_reason_generation_report(report: Any) -> dict[str, dict[str, Any]]:
@@ -263,5 +291,22 @@ async def build_breeze2_generation_shadow_for_candidates(
 
     report = await modal_client.breeze2_reason_generation(
         build_breeze2_reason_generation_payload(candidates, run_date=run_date, execute_model=True),
+    )
+    return coerce_breeze2_reason_generation_report(report)
+
+
+async def build_breeze2_generation_shadow_for_canonical_payloads(
+    canonical_candidate_payloads: list[dict[str, Any]],
+    *,
+    run_date: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    from services import modal_client
+
+    report = await modal_client.breeze2_reason_generation(
+        build_breeze2_reason_generation_payload_from_canonical(
+            canonical_candidate_payloads,
+            run_date=run_date,
+            execute_model=True,
+        ),
     )
     return coerce_breeze2_reason_generation_report(report)

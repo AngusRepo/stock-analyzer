@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import llm_reason  # noqa: E402
+from services.breeze2_reason_shadow import build_breeze2_reason_generation_payload_from_canonical  # noqa: E402
 
 
 def test_llm_reason_generation_path_does_not_expose_anthropic_fallback():
@@ -100,3 +101,20 @@ def test_generate_recommendation_reasons_prompt_uses_canonical_payload_and_trade
     assert '"top_themes":["AI"]' in captured["prompt"]
     for legacy_key in ('"ml_score"', '"chip_score"', '"tech_score"', '"momentum_score"'):
         assert legacy_key not in captured["prompt"]
+
+
+def test_gemini_and_breeze2_trade_plans_share_same_canonical_candidate_payload():
+    canonical_candidates = llm_reason.build_canonical_candidate_payloads([_candidate()])
+    gemini_request = llm_reason.build_gemini_trade_plan_request(canonical_candidates, top_themes=["AI"])
+    breeze2_request = build_breeze2_reason_generation_payload_from_canonical(
+        canonical_candidates,
+        run_date="2026-06-21",
+        execute_model=True,
+    )
+
+    assert gemini_request["provider_task"] == "gemini_trade_plan"
+    assert breeze2_request["provider_task"] == "breeze2_trade_plan"
+    assert gemini_request["candidates"] == breeze2_request["candidates"]
+    assert gemini_request["candidates"][0]["schema_version"] == "stockvision-canonical-candidate-payload-v1"
+    assert "score" not in gemini_request["candidates"][0]
+    assert "ml_score" not in breeze2_request["candidates"][0]

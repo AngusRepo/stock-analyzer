@@ -7,6 +7,7 @@ import {
   Landmark,
   ShieldCheck,
   TrendingDown,
+  TrendingUp,
   Waves,
 } from 'lucide-react'
 import { marketApi } from '@/lib/api'
@@ -34,6 +35,19 @@ interface MarketRisk {
   riskLevel: 'green' | 'yellow' | 'orange' | 'red' | 'black'
   riskSummary: string
   calculatedAt: string
+  marketOutlook?: {
+    schema_version: string
+    index: string
+    horizon_trading_days: number
+    base_price: number | null
+    ma20: number | null
+    optimistic_target: number | null
+    upside_pct: number | null
+    confidence: 'low' | 'medium' | 'high'
+    target_basis: string
+    summary: string
+    missing_reasons?: string[]
+  } | null
   contextFactors?: MarketRiskFactor[]
   factorPacket?: {
     schema_version: string
@@ -283,6 +297,49 @@ function FactorCard({ group }: { group: FactorGroup }) {
   )
 }
 
+function fmtIndex(value: number | null | undefined) {
+  return value == null || !Number.isFinite(Number(value))
+    ? 'n/a'
+    : Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 2 })
+}
+
+function MarketOutlookCard({ outlook }: { outlook: NonNullable<MarketRisk['marketOutlook']> }) {
+  const target = fmtIndex(outlook.optimistic_target)
+  const base = fmtIndex(outlook.base_price)
+  const upside = outlook.upside_pct == null ? 'n/a' : `+${Number(outlook.upside_pct).toFixed(2)}%`
+  const missing = outlook.missing_reasons?.length ? outlook.missing_reasons.join(' / ') : null
+  return (
+    <div className="mt-4 rounded-lg border border-sky-400/25 bg-sky-400/[0.07] p-3 text-sky-100">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <TrendingUp className="h-4 w-4" />
+          <span className="text-sm font-semibold">TWII Optimistic Target</span>
+        </div>
+        <span className="rounded-full border border-current/25 px-2 py-0.5 text-[10px] uppercase">
+          {outlook.confidence}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Base</div>
+          <div className="font-mono text-base font-semibold tabular-nums">{base}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Optimistic</div>
+          <div className="font-mono text-base font-semibold tabular-nums">{target}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{outlook.horizon_trading_days}D Upside</div>
+          <div className="font-mono text-base font-semibold tabular-nums">{upside}</div>
+        </div>
+      </div>
+      <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
+        {missing ?? outlook.target_basis}
+      </div>
+    </div>
+  )
+}
+
 export default function MarketRiskPanel() {
   const [risk, setRisk] = useState<MarketRisk | null>(null)
   const [loading, setLoading] = useState(true)
@@ -352,6 +409,7 @@ export default function MarketRiskPanel() {
             <div className="font-mono text-xs text-muted-foreground">run_date={risk.regimeState?.runDate ?? risk.date}</div>
             <div className="font-mono text-xs text-muted-foreground">generated={formatTwDateTimeShort(packetGeneratedAt)}</div>
           </div>
+          {risk.marketOutlook && <MarketOutlookCard outlook={risk.marketOutlook} />}
           <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {groups.map((group) => (
               <FactorCard key={group.id} group={group} />

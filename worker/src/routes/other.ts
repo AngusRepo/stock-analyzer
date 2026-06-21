@@ -39,6 +39,7 @@ import {
   loadMarketRegimeFactorPacket,
   upsertMarketRegimeFactorPacket,
 } from '../lib/marketRegimeFactorPacket'
+import { buildMarketOptimisticOutlook } from '../lib/marketOutlook'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
 import { getAdaptiveParamsForRegime } from '../lib/adaptiveConfig'
@@ -584,7 +585,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v6-null-safe-factor-packet'
+  const cacheKey = 'market:risk:latest:v7-market-outlook'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -637,8 +638,13 @@ market.get('/risk', async (c) => {
     factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
   }
   const contextFactors = factorPacket?.factors ?? legacyContextFactors
+  const marketOutlook = buildMarketOptimisticOutlook({
+    marketRiskRow: row,
+    regimeState,
+    factorPacket,
+  })
   const packetSummary = factorPacket
-    ? `V4 weighted factors: ${factorPacket.factors.map((item) => `${item.label} ${item.value}`).join(' / ')}`
+    ? `V4 weighted factors: ${factorPacket.factors.map((item) => `${item.label} ${item.value}`).join(' / ')} | ${marketOutlook.summary}`
     : row.risk_summary
 
   const data = {
@@ -668,6 +674,7 @@ market.get('/risk', async (c) => {
       transitionGuard: regimeState.transition_guard,
       monitors: regimeState.monitors,
     } : null,
+    marketOutlook,
     factorPacket,
     contextFactors,
   }

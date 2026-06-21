@@ -8,6 +8,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.local_prod_ready_audit import (
+    ARTIFACT_LIFECYCLE_REPAIR_PACKET,
+    ARTIFACT_LIFECYCLE_REPAIR_PACKET_DEPENDENCIES,
     CUTOVER_PACKET_FRESHNESS_DEPENDENCIES,
     _production_cutover_packet_checks,
     build_local_prod_ready_audit,
@@ -37,6 +39,70 @@ def _write_cutover_freshness_dependencies(root: Path) -> None:
             _write(path, json.dumps({"status": "pass"}))
         else:
             _write(path, "local test evidence fixture\n")
+
+
+def _touch_after_dependencies(root: Path, artifact_rel_path: str, dependency_rel_paths: tuple[str, ...]) -> None:
+    artifact_path = root / artifact_rel_path
+    dependency_mtimes = [
+        (root / rel_path).stat().st_mtime
+        for rel_path in dependency_rel_paths
+        if (root / rel_path).exists()
+    ]
+    if not dependency_mtimes:
+        return
+    latest_dependency_mtime = max(dependency_mtimes)
+    os.utime(artifact_path, (latest_dependency_mtime + 1, latest_dependency_mtime + 1))
+
+
+def _write_artifact_lifecycle_repair_packet_fixture(root: Path) -> None:
+    for rel_path in ARTIFACT_LIFECYCLE_REPAIR_PACKET_DEPENDENCIES:
+        path = root / rel_path
+        if path.exists():
+            continue
+        if rel_path.endswith(".json"):
+            _write(path, json.dumps({"schema_version": "stockvision-production-retrain-release-evidence-v1"}))
+        else:
+            _write(path, "local artifact lifecycle repair fixture\n")
+    packet_path = root / ARTIFACT_LIFECYCLE_REPAIR_PACKET
+    _write(
+        packet_path,
+        json.dumps({
+            "schema_version": "artifact-lifecycle-repair-packet-v1",
+            "production_mutation_allowed": False,
+            "summary": {
+                "production_pointer_fail_closed_repairs": ["PatchTST", "iTransformer"],
+                "offline_pass_pending_release": ["DLinear", "ExtraTrees", "LightGBM", "XGBoost"],
+            },
+            "actions": [
+                {
+                    "model_name": "PatchTST",
+                    "root_cause": "production_pointer_updated_despite_cpcv_coverage_contract_drift",
+                    "production_mutation_allowed": False,
+                    "requires_wei_approval": True,
+                },
+                {
+                    "model_name": "iTransformer",
+                    "root_cause": "production_pointer_updated_despite_true_performance_fail",
+                    "production_mutation_allowed": False,
+                    "requires_wei_approval": True,
+                },
+                *[
+                    {
+                        "model_name": model,
+                        "root_cause": "offline_pass_candidate_not_released_to_model_pool",
+                        "production_mutation_allowed": False,
+                        "requires_wei_approval": True,
+                    }
+                    for model in ["DLinear", "ExtraTrees", "LightGBM", "XGBoost"]
+                ],
+            ],
+        }),
+    )
+    _touch_after_dependencies(
+        root,
+        ARTIFACT_LIFECYCLE_REPAIR_PACKET,
+        ARTIFACT_LIFECYCLE_REPAIR_PACKET_DEPENDENCIES,
+    )
 
 
 def _write_remote_preflight_fixture(root: Path) -> None:
@@ -828,6 +894,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write_cutover_freshness_dependencies(tmp_path)
     _write_remote_preflight_fixture(tmp_path)
     _write_production_cutover_packet_fixture(tmp_path)
+    _write_artifact_lifecycle_repair_packet_fixture(tmp_path)
     _write_formal137_repair_validator_fixture(tmp_path)
     _write(
         tmp_path / "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json",
@@ -847,6 +914,11 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         }),
     )
     _write_production_cutover_packet_fixture(tmp_path)
+    _touch_after_dependencies(
+        tmp_path,
+        "ml-service/benchmark_results/production_cutover_packet_20260618.json",
+        CUTOVER_PACKET_FRESHNESS_DEPENDENCIES,
+    )
 
     audit = build_local_prod_ready_audit(tmp_path)
 

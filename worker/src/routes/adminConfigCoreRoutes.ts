@@ -100,6 +100,61 @@ adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
   })
 })
 
+adminConfigCoreRoutes.get('/api/admin/config/repair-plan', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+
+  const { buildTradingConfigRepairPlan } = await import('../lib/tradingConfig')
+  const plan = await buildTradingConfigRepairPlan(c.env.KV)
+  return c.json({
+    ...plan,
+    production_effect: false,
+  })
+})
+
+adminConfigCoreRoutes.post('/api/admin/config/repair-critical-defaults', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => ({}))
+  const dryRun = body?.dry_run !== false
+  const { buildTradingConfigRepairPlan, repairTradingConfigOperationalDefaults } = await import('../lib/tradingConfig')
+
+  if (dryRun) {
+    const plan = await buildTradingConfigRepairPlan(c.env.KV)
+    return c.json({
+      success: true,
+      mode: 'dry_run',
+      production_effect: false,
+      would_write: plan.needsRepair,
+      ...plan,
+    })
+  }
+
+  if (c.req.header('X-Confirm-Trading-Config') !== 'true') {
+    return c.json({
+      error: 'X-Confirm-Trading-Config=true required to write trading:config operational defaults',
+      production_effect: false,
+    }, 400)
+  }
+
+  try {
+    const result = await repairTradingConfigOperationalDefaults(c.env.KV)
+    return c.json({
+      success: true,
+      mode: result.written ? 'persisted' : 'no_op',
+      production_effect: result.written,
+      ...result,
+    })
+  } catch (error: any) {
+    return c.json({
+      error: 'trading_config_repair_failed',
+      detail: error?.message ?? String(error),
+      production_effect: false,
+    }, 409)
+  }
+})
+
 adminConfigCoreRoutes.get('/api/admin/risk-config', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError

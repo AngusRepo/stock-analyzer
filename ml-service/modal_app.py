@@ -661,20 +661,29 @@ def retrain_orchestrator(payload: dict) -> dict:
             lifecycle_t0 = time.time()
 
             def _base_artifact_payload(model_name: str) -> dict:
-                return {
+                promote_to_active = payload.get("artifact_lifecycle_promote_to_active", False)
+                if not isinstance(promote_to_active, bool):
+                    raise RuntimeError("artifact_lifecycle_promote_to_active must be an explicit boolean")
+                artifact_payload = {
                     "gcs_prefix": gcs_prefix,
                     "batch_count": batch_count,
                     "output_model_version": candidate_version,
-                    "promote_to_active": True,
+                    "promote_to_active": promote_to_active,
                     "run_date": run_date,
                     "as_of_date": payload.get("as_of_date"),
                     "max_prep_stale_days": payload.get("max_prep_stale_days"),
                     "label_horizon_days": selection_params.get("label_horizon_days"),
-                    "promotion_reason": (
-                        f"formal artifact lifecycle target={model_name} "
-                        f"run_id={run_id or candidate_version}"
-                    ),
                 }
+                if promote_to_active:
+                    artifact_payload["promotion_reason"] = (
+                        payload.get("artifact_lifecycle_promotion_reason")
+                        or payload.get("promotion_reason")
+                        or (
+                            f"formal artifact lifecycle target={model_name} "
+                            f"run_id={run_id or candidate_version}"
+                        )
+                    )
+                return artifact_payload
 
             def _sequence_seq_len_for_target(model_name: str) -> int:
                 key = f"{model_name.lower()}_seq_len"

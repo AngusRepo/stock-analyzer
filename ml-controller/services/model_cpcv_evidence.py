@@ -32,6 +32,90 @@ def _finite_or_none(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _clamp_ratio(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _finite_ratio_values(rows: list[dict[str, Any]], key: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        if key not in row:
+            continue
+        value = _as_float(row.get(key), math.nan)
+        if math.isfinite(value):
+            values.append(_clamp_ratio(value))
+    return values
+
+
+def _coverage_stats(rows: list[dict[str, Any]], policy: dict[str, Any]) -> dict[str, Any]:
+    coverage_values = _finite_ratio_values(rows, "coverage")
+    coverage_mean = mean(coverage_values) if coverage_values else 0.0
+    stats: dict[str, Any] = {
+        "coverage_mean": coverage_mean,
+        "coverage_gate_value": coverage_mean,
+        "coverage_gate_semantics": "coverage_mean",
+    }
+
+    for key, out_key in (
+        ("fold_share", "fold_share_mean"),
+        ("sampled_coverage", "sampled_coverage_mean"),
+        ("dataset_coverage", "dataset_coverage_mean"),
+        ("date_coverage", "date_coverage_mean"),
+        ("symbol_coverage", "symbol_coverage_mean"),
+        ("node_coverage", "node_coverage_mean"),
+        ("edge_coverage", "edge_coverage_mean"),
+    ):
+        values = _finite_ratio_values(rows, key)
+        if values:
+            stats[out_key] = mean(values)
+
+    coverage_mode = str(policy.get("coverage_mode") or "").strip().lower()
+    if coverage_mode != "sequence_window":
+        return stats
+
+    explicit_gate_keys = (
+        "coverage_gate_value",
+        "sequence_window_coverage",
+        "valid_series_coverage",
+        "union_oos_coverage",
+        "oos_coverage",
+    )
+    for key in explicit_gate_keys:
+        values = _finite_ratio_values(rows, key)
+        if values:
+            stats["coverage_gate_value"] = max(values)
+            stats["coverage_gate_semantics"] = key
+            return stats
+
+    sampled_values = _finite_ratio_values(rows, "sampled_coverage")
+    if sampled_values:
+        stats["coverage_gate_value"] = mean(sampled_values)
+        stats["coverage_gate_semantics"] = "sampled_coverage_mean"
+        return stats
+
+    fold_share_values = _finite_ratio_values(rows, "fold_share")
+    if fold_share_values:
+        stats["coverage_gate_value"] = _clamp_ratio(sum(fold_share_values))
+        stats["coverage_gate_semantics"] = "fold_share_sum_capped"
+        return stats
+
+    # Compatibility for legacy sequence artifacts that stored each fold's
+    # OOS partition share in `coverage` instead of prediction completeness.
+    min_coverage = _as_float(policy.get("min_coverage"), 0.0)
+    min_folds = max(1, _as_int(policy.get("min_folds"), 1))
+    coverage_sum = sum(coverage_values)
+    if (
+        len(coverage_values) >= min_folds
+        and coverage_mean < min_coverage
+        and min_coverage <= coverage_sum <= 1.05
+    ):
+        stats["coverage_gate_value"] = _clamp_ratio(coverage_sum)
+        stats["coverage_gate_semantics"] = "legacy_coverage_fold_share_sum_capped"
+        return stats
+
+    return stats
+
+
 def _rank(values: list[float]) -> list[float]:
     indexed = sorted(enumerate(values), key=lambda item: item[1])
     ranks = [0.0] * len(values)
@@ -155,13 +239,17 @@ def build_model_cpcv_evidence(
                 "edge_coverage",
                 "date_coverage",
                 "symbol_coverage",
+                "coverage_gate_value",
+                "sequence_window_coverage",
+                "valid_series_coverage",
+                "union_oos_coverage",
+                "oos_coverage",
             ):
                 if key in fold:
                     normalized[key] = fold.get(key)
             rows.append(normalized)
 
     ic_values = [row["oos_ic"] for row in rows]
-    coverage_values = [row["coverage"] for row in rows]
     folds = len(rows)
     sample_count = sum(int(row.get("test_rows") or 0) for row in rows)
     p = _policy(
@@ -185,7 +273,9 @@ def build_model_cpcv_evidence(
         else 0.0
     )
     min_test_rows = min((row["test_rows"] for row in rows), default=0)
-    coverage_mean = mean(coverage_values) if coverage_values else 0.0
+    coverage = _coverage_stats(rows, p)
+    coverage_mean = _as_float(coverage.get("coverage_mean"))
+    coverage_gate_value = _as_float(coverage.get("coverage_gate_value"))
 
     failed_gates: list[str] = []
     if folds < _as_int(p["min_folds"]):
@@ -198,11 +288,11 @@ def build_model_cpcv_evidence(
         failed_gates.append("cpcv_positive_fold_ratio")
     if ic_std > _as_float(p["max_oos_ic_std"]):
         failed_gates.append("cpcv_ic_instability")
-    if coverage_mean < _as_float(p["min_coverage"]):
+    if coverage_gate_value < _as_float(p["min_coverage"]):
         failed_gates.append("cpcv_coverage")
 
     decision = "PASS" if not failed_gates else "FAIL"
-    return {
+    evidence = {
         "schema_version": MODEL_CPCV_EVIDENCE_SCHEMA_VERSION,
         "model": model,
         "method": "purged_cpcv_rank_ic",
@@ -215,6 +305,8 @@ def build_model_cpcv_evidence(
         "positive_fold_ratio": round(positive_ratio, 6),
         "min_test_rows": min_test_rows,
         "coverage_mean": round(coverage_mean, 6),
+        "coverage_gate_value": round(coverage_gate_value, 6),
+        "coverage_gate_semantics": coverage.get("coverage_gate_semantics"),
         "family": p.get("family"),
         "regime": p.get("regime"),
         "stage": stage,
@@ -223,6 +315,11 @@ def build_model_cpcv_evidence(
         "policy": p,
         "fold_metrics": rows,
     }
+    for key, value in coverage.items():
+        if key in evidence or value is None:
+            continue
+        evidence[key] = round(value, 6) if isinstance(value, float) else value
+    return evidence
 
 
 def build_foundation_forecast_validation_evidence(

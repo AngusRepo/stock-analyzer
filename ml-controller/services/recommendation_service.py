@@ -1577,6 +1577,19 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     if forecast < min_forecast:
         row["promotion_blocked_reason"] = "negative_or_below_min_forecast"
         return False
+    try:
+        ml_edge = float(_score_v2_components_from_row(row).get("mlEdge") or 0.0)
+    except (TypeError, ValueError):
+        ml_edge = 0.0
+    try:
+        min_ml_edge = float(ranking_config.get("promoteMinMlEdge", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        min_ml_edge = 0.0
+    if ml_edge <= min_ml_edge:
+        row["promotion_blocked_reason"] = "missing_formal_ml_edge"
+        row["promotion_blocked_ml_edge"] = ml_edge
+        row["promotion_blocked_min_ml_edge"] = min_ml_edge
+        return False
     return True
 
 

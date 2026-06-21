@@ -484,6 +484,59 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
     assert captured["cleanup_params"] == ["2026-04-27", 1]
 
 
+def test_update_recommendations_clears_stale_alpha_selected_for_non_buy(monkeypatch):
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements), "changes_total": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "execute",
+        lambda *_args, **_kwargs: {"meta": {"changes": 0}},
+    )
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "query",
+        lambda *_args, **_kwargs: [{"stock_id": 1}],
+    )
+
+    updated = update_recommendations_in_d1([
+        {
+            "date": "2026-04-27",
+            "stock_id": 1,
+            "symbol": "2885",
+            "name": "Yuanta",
+            "sector": "Finance",
+            "industry": "Securities",
+            "chip_score": 12.0,
+            "tech_score": 20.0,
+            "ml_score": 25.0,
+            "score": 57.0,
+            "signal": "HOLD",
+            "confidence": 0.60,
+            "has_buy_signal": 0,
+            "reason": "not selected",
+            "watch_points": ["watch"],
+            "current_price": 30.0,
+            "score_seed_inputs": _score_seed_inputs(),
+            "score_components": _score_components(),
+            "alpha_allocation": {
+                "engine": "sparse_tangent_inverse_risk",
+                "selected": True,
+                "allocation_weight": 0.25,
+            },
+        }
+    ], "2026-04-27")
+
+    assert updated == 1
+    alpha_allocation = json.loads(captured["statements"][0][1][-5])
+    assert alpha_allocation["selected"] is False
+    assert alpha_allocation["stale_selection_cleared_reason"] == "final_signal_not_buy"
+
+
 def test_update_recommendations_in_d1_fails_when_no_seed_rows_exist(monkeypatch):
     monkeypatch.setattr(recommendation_service.d1_client, "query", lambda *_args, **_kwargs: [])
 

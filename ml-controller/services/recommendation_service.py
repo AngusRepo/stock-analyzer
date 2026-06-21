@@ -2912,6 +2912,10 @@ def update_recommendations_in_d1(
 
     statements: list[tuple[str, list[Any]]] = []
     for idx, r in enumerate(recommendations, start=1):
+        is_buy_signal = (
+            str(r.get("signal") or "").upper() == "BUY"
+            and int(r.get("has_buy_signal") or 0) == 1
+        )
         score_seed_inputs = _score_v2_seed_inputs(r)
         chip_flow_seed, replaced_chip_seed = _sanitize_non_finite(score_seed_inputs["chipFlowSeed40"])
         technical_seed, replaced_technical_seed = _sanitize_non_finite(score_seed_inputs["technicalSeed30"])
@@ -2927,6 +2931,12 @@ def update_recommendations_in_d1(
         watch_points, replaced_watch = _sanitize_non_finite(r.get("watch_points") or [])
         alpha_context, replaced_alpha_context = _sanitize_non_finite(r.get("alpha_context"))
         alpha_allocation, replaced_alpha_allocation = _sanitize_non_finite(r.get("alpha_allocation"))
+        if not is_buy_signal and isinstance(alpha_allocation, dict) and alpha_allocation.get("selected"):
+            alpha_allocation = {
+                **alpha_allocation,
+                "selected": False,
+                "stale_selection_cleared_reason": "final_signal_not_buy",
+            }
         ml_vote_summary, replaced_ml_vote_summary = _sanitize_non_finite(r.get("ml_vote_summary"))
         score_components, replaced_score_components = _sanitize_non_finite(r.get("score_components"))
         if isinstance(score_components, dict) and score_components.get("version") == SCORE_V2_VERSION:
@@ -3059,6 +3069,16 @@ def delete_filtered_recommendations(filtered_symbols: list[str], run_date: str) 
                        'ml_filter:preserved_screener_seed_not_buy'
                      )
                      ELSE json_array('ml_filter:preserved_screener_seed_not_buy')
+                   END,
+                   alpha_allocation = CASE
+                     WHEN json_valid(alpha_allocation) THEN json_set(
+                       alpha_allocation,
+                       '$.selected',
+                       0,
+                       '$.stale_selection_cleared_reason',
+                       'ml_filter_preserved_non_buy'
+                     )
+                     ELSE alpha_allocation
                    END
              WHERE date = ? AND symbol = ?
             """.strip(),

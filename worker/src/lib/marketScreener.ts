@@ -1409,8 +1409,20 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
       if (csRankRaw != null) {
         const rank = field.direction === 'lower_is_better' ? 1 - csRankRaw : csRankRaw
         const key = rankKey('finlabCs', field.signalKey)
-        raw.factorSignals[key] = Math.round(rank * 10000) / 10000
+        const rankValue = Math.round(rank * 10000) / 10000
+        raw.factorSignals[key] = rankValue
         telemetry.fieldCoverage[key] = (telemetry.fieldCoverage[key] ?? 0) + 1
+        if (field.rawField === 'marginBalance') {
+          for (const alias of [
+            'formal137MarginBalanceRank',
+            'margin_balance_rank',
+            'marginBalanceRank',
+            'margin_balance_normalized',
+          ]) {
+            raw.factorSignals[alias] = rankValue
+            telemetry.fieldCoverage[alias] = (telemetry.fieldCoverage[alias] ?? 0) + 1
+          }
+        }
       }
       const csZScore = directedZScore(value, sortedByField.get(field.rawField) ?? [], field.direction)
       if (csZScore != null) {

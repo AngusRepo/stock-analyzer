@@ -1,0 +1,29 @@
+{
+  "schema_version": "stockvision-formal137-p0-p10-cutover-checklist-v1",
+  "decision_effect": "local_cutover_order_contract_only",
+  "production_mutation_allowed": false,
+  "required_order": [
+    "local_unit_fixture_pass",
+    "2026_06_18_local_prod_parity_report_pass",
+    "active_11_research_8_diversity_backtest_comparison_report_pass",
+    "wei_approve_deploy",
+    "deploy",
+    "wei_approve_specific_date_replay",
+    "specific_date_replay",
+    "observe_next_natural_evening_chain"
+  ],
+  "forbidden_without_explicit_wei_approval": [
+    "deploy",
+    "production_replay_job",
+    "commit",
+    "push",
+    "retrain",
+    "real_trading"
+  ],
+  "approval_gates": {
+    "deploy": "Wei explicit approval required",
+    "specific_date_replay": "Wei explicit approval required",
+    "retrain": "Wei explicit approval required",
+    "commit_push": "Wei explicit approval required"
+  }
+}

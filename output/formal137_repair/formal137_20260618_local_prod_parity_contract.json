@@ -1,0 +1,47 @@
+{
+  "schema_version": "stockvision-formal137-local-prod-parity-contract-v1",
+  "baseline_date": "2026-06-18",
+  "decision_effect": "local_parity_harness_contract_only",
+  "production_mutation_allowed": false,
+  "production_replay_executed": false,
+  "requires_wei_approval_before_replay": true,
+  "source_of_truth": {
+    "universe": "same 2026-06-18 production D1 universe",
+    "strategy_specs": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
+    "feature_contract": "data/feature_registry/formal137_production_feature_contract_v1.json",
+    "regression_baseline": "output/formal137_repair/formal137_20260618_regression_baseline.json"
+  },
+  "target_strategies_first_wave": [
+    "alpha_miner_pymoo_nsga3_novelty_0081",
+    "alpha_miner_pymoo_nsga3_novelty_0187",
+    "alpha_miner_pymoo_nsga3_novelty_0193"
+  ],
+  "target_scope_after_first_wave": "active_11",
+  "factor_coverage_gate": {
+    "required_feature_coverage_min": 0.95,
+    "missing_reason_required": true,
+    "features": [
+      "KLOW2",
+      "KSFT",
+      "KSFT2",
+      "CNTD_20",
+      "CNTN_20",
+      "margin_balance",
+      "us_sentiment_score",
+      "l1_monthlyRevenueMoM",
+      "ma10_bias",
+      "return_5d"
+    ]
+  },
+  "parity_thresholds": {
+    "factor_value_abs_diff_max": 1e-9,
+    "score_abs_diff_max": 1e-9,
+    "matched_symbols_jaccard_min": 0.99
+  },
+  "semantic_drift_gates": {
+    "production_must_not_score_raw_margin_balance": true,
+    "production_must_not_score_constant_us_sentiment_score": true,
+    "required_feature_missing_must_no_match": true,
+    "research_backtest_scope_must_not_be_confused_with_active_backtest_scope": true
+  }
+}

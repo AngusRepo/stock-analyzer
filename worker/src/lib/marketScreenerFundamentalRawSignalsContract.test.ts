@@ -82,6 +82,12 @@ assert(
   'FinLab-style normalization should expose quality/value/sector-relative composite evidence',
 )
 assert(
+  normalizationBlock.includes('formal137MarginBalanceRank') &&
+  normalizationBlock.includes('margin_balance_rank') &&
+  normalizationBlock.includes('margin_balance_normalized'),
+  'FinLab-style normalization should expose normalized margin-balance aliases for formal137 strategy specs',
+)
+assert(
   normalizationBlock.includes('raw.factorSignals') &&
   !normalizationBlock.includes('.score +=') &&
   !normalizationBlock.includes('.score -='),

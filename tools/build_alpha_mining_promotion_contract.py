@@ -167,6 +167,7 @@ def build_contract() -> dict[str, Any]:
                 "strategy_mining_runs",
                 "strategy_mining_candidates",
                 "strategy_backtest_results",
+                "active_strategy_backtest_results",
                 "strategy_similarity_matrix",
                 "strategy_promotion_ledger",
             ],

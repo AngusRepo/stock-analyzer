@@ -92,6 +92,7 @@ def build_validation_payload() -> dict[str, Any]:
             "CREATE TABLE IF NOT EXISTS strategy_mining_runs",
             "CREATE TABLE IF NOT EXISTS strategy_mining_candidates",
             "CREATE TABLE IF NOT EXISTS strategy_backtest_results",
+            "CREATE TABLE IF NOT EXISTS active_strategy_backtest_results",
             "CREATE TABLE IF NOT EXISTS strategy_similarity_matrix",
             "CREATE TABLE IF NOT EXISTS strategy_promotion_ledger",
             "real_trading_effect TEXT NOT NULL DEFAULT 'none'",

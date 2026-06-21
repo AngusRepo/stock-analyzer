@@ -407,6 +407,41 @@ def _confirm_raw_candidate_id(confirm: dict[str, Any]) -> str:
     return raw[len("alpha_miner_") :] if raw.startswith("alpha_miner_") else raw
 
 
+def _candidate_factor_key(row: dict[str, Any]) -> tuple[str, ...]:
+    factors = row.get("factor_ids") if isinstance(row.get("factor_ids"), list) else []
+    return tuple(sorted(str(factor) for factor in factors if str(factor)))
+
+
+def _deduped_finlab_confirm(report: dict[str, Any]) -> list[dict[str, Any]]:
+    candidate_by_raw = {
+        str(row.get("candidate_id")): row
+        for row in report.get("rows") or []
+        if isinstance(row, dict) and row.get("candidate_id")
+    }
+    best_by_factor_key: dict[tuple[str, ...], dict[str, Any]] = {}
+    passthrough: list[dict[str, Any]] = []
+
+    def score(confirm: dict[str, Any]) -> tuple[float, float, float]:
+        return (
+            _safe_float(confirm.get("monthly_sharpe")) or -999.0,
+            _safe_float(confirm.get("cagr")) or -999.0,
+            _safe_float(confirm.get("calmar")) or -999.0,
+        )
+
+    for confirm in report.get("finlab_confirm") or []:
+        if not isinstance(confirm, dict):
+            continue
+        raw_id = _confirm_raw_candidate_id(confirm)
+        key = _candidate_factor_key(candidate_by_raw.get(raw_id) or {})
+        if not key:
+            passthrough.append(confirm)
+            continue
+        current = best_by_factor_key.get(key)
+        if current is None or score(confirm) > score(current):
+            best_by_factor_key[key] = confirm
+    return [*passthrough, *best_by_factor_key.values()]
+
+
 def _ranked_rows(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     def key(row: dict[str, Any]) -> tuple[int, float]:
         ok = 1 if row.get("status") == "ok" else 0
@@ -534,7 +569,7 @@ def _persist_backtests(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
     }
     statements: list[tuple[str, list[Any]]] = []
     config = report.get("config") or {}
-    for confirm in report.get("finlab_confirm") or []:
+    for confirm in _deduped_finlab_confirm(report):
         if not isinstance(confirm, dict):
             continue
         raw_id = _confirm_raw_candidate_id(confirm)

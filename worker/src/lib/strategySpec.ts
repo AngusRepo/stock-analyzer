@@ -222,6 +222,7 @@ const STRATEGY_OWNER_TYPES = new Set<StrategyOwnerType>(['strategy', 'feature', 
 const STRATEGY_PROMOTION_STATUSES = new Set<StrategyPromotionStatus>(['production', 'candidate', 'research', 'retired'])
 
 function finiteNumber(value: unknown): number | null {
+  if (value == null || value === '') return null
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n : null
 }
@@ -519,11 +520,41 @@ function signalValue(raw: StrategyRawSignals, signalPath: string): unknown {
   return cursor
 }
 
+function marginBalanceFeatureRefValue(raw: StrategyRawSignals): unknown {
+  for (const signal of [
+    'factorSignals.formal137MarginBalanceRank',
+    'factorSignals.margin_balance_rank',
+    'factorSignals.marginBalanceRank',
+    'factorSignals.margin_balance_normalized',
+    'factorSignals.finlabCsMarginBalanceRank',
+  ]) {
+    const value = signalValue(raw, signal)
+    if (finiteNumber(value) != null) return value
+  }
+  return null
+}
+
+function usSentimentScoreFeatureRefValue(raw: StrategyRawSignals): unknown {
+  for (const signal of [
+    'factorSignals.formal137UsSentimentScoreRank',
+    'factorSignals.us_sentiment_score_rank',
+    'factorSignals.usSentimentScoreRank',
+    'factorSignals.us_sentiment_score_normalized',
+  ]) {
+    const value = signalValue(raw, signal)
+    if (finiteNumber(value) != null) return value
+  }
+  return null
+}
+
 function featureRefValue(raw: StrategyRawSignals, term: StrategyFeatureRefTerm): unknown {
+  const featureRef = cleanText(term.featureRef)
+  if (featureRef === 'margin_balance') return marginBalanceFeatureRefValue(raw)
+  if (featureRef === 'us_sentiment_score') return usSentimentScoreFeatureRefValue(raw)
+
   const explicitSignal = cleanText(term.signal)
   if (explicitSignal) return signalValue(raw, explicitSignal)
 
-  const featureRef = cleanText(term.featureRef)
   if (!featureRef) return null
   const direct = signalValue(raw, featureRef)
   if (finiteNumber(direct) != null) return direct
@@ -563,15 +594,31 @@ function featureRefValue(raw: StrategyRawSignals, term: StrategyFeatureRefTerm):
     CNTN_20: ['factorSignals.CNTN_20', 'technicalIndicators.CNTN_20'],
     ma10_bias: ['ma10Bias', 'factorSignals.ma10_bias', 'factorSignals.ma10Bias', 'technicalIndicators.ma10Bias'],
     return_5d: ['return5d', 'factorSignals.return_5d', 'factorSignals.return5d', 'technicalIndicators.return5d'],
-    margin_balance: ['marginBalance', 'factorSignals.margin_balance', 'factorSignals.marginBalance'],
     advance_ratio: ['factorSignals.advance_ratio', 'factorSignals.advanceRatio'],
-    us_sentiment_score: ['factorSignals.us_sentiment_score', 'factorSignals.usSentimentScore'],
   }
   for (const alias of aliases[featureRef] ?? []) {
     const value = signalValue(raw, alias)
     if (finiteNumber(value) != null) return value
   }
   return null
+}
+
+function featureRefLabel(term: StrategyFeatureRefTerm): string {
+  return cleanText(term.featureRef) || cleanText(term.signal) || 'unknown'
+}
+
+function missingRequiredFeatureRefs(raw: StrategyRawSignals, dsl?: StrategyFeatureRefDsl): string[] {
+  if (!dsl) return []
+  const missing: string[] = []
+  for (const term of dsl.all ?? []) {
+    if (finiteNumber(featureRefValue(raw, term)) == null) missing.push(featureRefLabel(term))
+  }
+  for (const term of dsl.weightedScore?.terms ?? []) {
+    const weight = finiteNumber(term.weight) ?? 1
+    if (weight <= 0) continue
+    if (finiteNumber(featureRefValue(raw, term)) == null) missing.push(featureRefLabel(term))
+  }
+  return [...new Set(missing)]
 }
 
 type StrategyComparisonCondition = Pick<StrategySignalCondition, 'op' | 'value'>
@@ -630,7 +677,8 @@ function meetsFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeatureRefDsl
     for (const term of weighted.terms ?? []) {
       const value = finiteNumber(featureRefValue(raw, term))
       const weight = finiteNumber(term.weight) ?? 1
-      if (value == null || weight <= 0) continue
+      if (weight <= 0) continue
+      if (value == null) return false
       score += value * weight
       weightSum += weight
     }
@@ -697,6 +745,11 @@ export function assessCandidateAgainstStrategySpecs(
     if (!meetsMinimum(scores.chipFlow, t.minChipScore)) continue
     if (!meetsMinimum(scores.technicalStructure, t.minTechScore)) continue
     if (!meetsMinimum(scores.momentumScore, t.minMomentumScore)) continue
+    const missingFeatureRefs = missingRequiredFeatureRefs(raw, t.featureRefs)
+    if (missingFeatureRefs.length) {
+      watchPoints.push(`strategy_spec_missing_required_feature_refs:${spec.id}:${missingFeatureRefs.join('|')}`)
+      continue
+    }
     if (!meetsRawSignalThresholds(raw, t)) continue
 
     matches.push({

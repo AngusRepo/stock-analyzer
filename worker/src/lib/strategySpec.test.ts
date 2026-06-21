@@ -128,6 +128,161 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 
 {
   const assessment = assessCandidateAgainstStrategySpecs({
+    symbol: '3034',
+    current_price: 85,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      factorSignals: {
+        KLOW2: 0.9,
+        advance_ratio: 0.7,
+        CNTD_20: 0.8,
+      },
+    },
+  }, [{
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'alpha_miner_pymoo_nsga3_novelty_0081',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.7,
+      featureRefs: {
+        weightedScore: {
+          min: 0.62,
+          terms: [
+            { featureRef: 'KLOW2', signal: 'factorSignals.KLOW2', weight: 0.415128 },
+            { featureRef: 'advance_ratio', signal: 'factorSignals.advance_ratio', weight: 0.117772 },
+            { featureRef: 'CNTD_20', signal: 'factorSignals.CNTD_20', weight: 0.20684 },
+            { featureRef: 'KSFT', signal: 'factorSignals.KSFT', weight: 0.260259 },
+          ],
+        },
+      },
+    },
+  }])
+  assert(!assessment.matches.length, '0081 must fail closed when any positive-weight formal feature is missing')
+  assert(
+    assessment.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:alpha_miner_pymoo_nsga3_novelty_0081:KSFT')),
+    '0081 missing formal feature should be visible in watch points',
+  )
+}
+
+{
+  const assessment = assessCandidateAgainstStrategySpecs({
+    symbol: '2303',
+    current_price: 42,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      monthlyRevenueMoM: 0.3,
+      ma10Bias: 0.9,
+      return5d: 0.9,
+      factorSignals: {
+        monthlyRevenueMoM: 0.3,
+        ma10_bias: 0.9,
+        return_5d: 0.9,
+      },
+    },
+  }, [{
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'alpha_miner_pymoo_nsga3_novelty_0187',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.55,
+      featureRefs: {
+        weightedScore: {
+          min: 0.6,
+          terms: [
+            { featureRef: 'KSFT2', signal: 'factorSignals.KSFT2', weight: 0.31228 },
+            { featureRef: 'monthlyRevenueMoM', signal: 'factorSignals.monthlyRevenueMoM', weight: 0.266864 },
+            { featureRef: 'CNTN_20', signal: 'factorSignals.CNTN_20', weight: 0.224972 },
+            { featureRef: 'ma10_bias', signal: 'factorSignals.ma10_bias', weight: 0.085907 },
+            { featureRef: 'return_5d', signal: 'factorSignals.return_5d', weight: 0.109977 },
+          ],
+        },
+      },
+    },
+  }])
+  assert(!assessment.matches.length, '0187 must not match by reweighting partial evidence')
+  assert(
+    assessment.watchPoints.some((point) => point.includes('KSFT2') && point.includes('CNTN_20')),
+    '0187 missing formal features should be visible in watch points',
+  )
+}
+
+{
+  const spec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'alpha_miner_pymoo_nsga3_novelty_0193',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.55,
+      featureRefs: {
+        weightedScore: {
+          min: 0.58,
+          terms: [
+            { featureRef: 'us_sentiment_score', signal: 'factorSignals.us_sentiment_score', weight: 0.478671 },
+            { featureRef: 'margin_balance', signal: 'factorSignals.margin_balance', weight: 0.521329 },
+          ],
+        },
+      },
+    },
+  }
+  const rawOnly = assessCandidateAgainstStrategySpecs({
+    symbol: '2884',
+    current_price: 30,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      marginBalance: 68_793,
+      factorSignals: {
+        us_sentiment_score: 1,
+        margin_balance: 68_793,
+      },
+    },
+  }, [spec])
+  assert(!rawOnly.matches.length, '0193 must not score raw margin balance as a normalized feature')
+  assert(
+    rawOnly.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:alpha_miner_pymoo_nsga3_novelty_0193:') && point.includes('margin_balance')),
+    '0193 should expose missing normalized margin balance evidence',
+  )
+
+  const normalizedMarginOnly = assessCandidateAgainstStrategySpecs({
+    symbol: '2884',
+    current_price: 30,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      marginBalance: 68_793,
+      factorSignals: {
+        us_sentiment_score: 1,
+        margin_balance: 68_793,
+        finlabCsMarginBalanceRank: 0.7,
+      },
+    },
+  }, [spec])
+  assert(!normalizedMarginOnly.matches.length, '0193 must not score raw constant us sentiment as stock-selection evidence')
+  assert(
+    normalizedMarginOnly.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:alpha_miner_pymoo_nsga3_novelty_0193:us_sentiment_score')),
+    '0193 should expose missing normalized/non-constant us sentiment evidence',
+  )
+
+  const normalized = assessCandidateAgainstStrategySpecs({
+    symbol: '2884',
+    current_price: 30,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      marginBalance: 68_793,
+      factorSignals: {
+        us_sentiment_score: 1,
+        formal137UsSentimentScoreRank: 0.9,
+        margin_balance: 68_793,
+        finlabCsMarginBalanceRank: 0.7,
+      },
+    },
+  }, [spec])
+  assert(
+    normalized.matches.some((match) => match.specId === 'alpha_miner_pymoo_nsga3_novelty_0193'),
+    '0193 should match only when normalized margin and normalized/non-constant sentiment evidence are present',
+  )
+}
+
+{
+  const assessment = assessCandidateAgainstStrategySpecs({
     symbol: '2330',
     current_price: 900,
     raw_signals: {

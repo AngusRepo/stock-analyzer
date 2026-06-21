@@ -65,6 +65,24 @@ CREATE TABLE IF NOT EXISTS strategy_backtest_results (
   FOREIGN KEY(run_id) REFERENCES strategy_mining_runs(run_id)
 );
 
+CREATE TABLE IF NOT EXISTS active_strategy_backtest_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  strategy_scope TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'finlab_strategy_spec_backtest',
+  start_date TEXT,
+  end_date TEXT,
+  cagr REAL,
+  sharpe REAL,
+  max_drawdown REAL,
+  calmar REAL,
+  turnover REAL,
+  signal_status TEXT,
+  evidence_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS strategy_similarity_matrix (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,
@@ -103,6 +121,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_mining_candidates_run
   ON strategy_mining_candidates(run_id, promotion_state, validation_status);
 CREATE INDEX IF NOT EXISTS idx_strategy_backtest_results_candidate
   ON strategy_backtest_results(candidate_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_active_strategy_backtest_results_strategy
+  ON active_strategy_backtest_results(strategy_id, run_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_similarity_matrix_run
   ON strategy_similarity_matrix(run_id, similarity DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_promotion_ledger_candidate

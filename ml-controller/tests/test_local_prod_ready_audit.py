@@ -152,6 +152,22 @@ def _write_cutover_tool_sources(root: Path) -> None:
     )
 
 
+def _write_formal137_repair_validator_fixture(root: Path) -> None:
+    _write(
+        root / "tools/validate_formal137_repair_roadmap.py",
+        "\n".join([
+            "def build_report(root):",
+            "    return {",
+            "        'status': 'pass',",
+            "        'local_closure': 'done',",
+            "        'local_prod_ready': 'done',",
+            "        'failed_checks': [],",
+            "        'checks': [{'id': 'p0:baseline_non_mutating', 'status': 'pass'}],",
+            "    }",
+        ]),
+    )
+
+
 def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path):
     _write(
         tmp_path / "infra/gcp-scheduler-jobs.json",
@@ -333,7 +349,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         (
             '@router.post("/monthly_pymoo/run") STRATEGY_MINING_EXECUTION_ENABLED '
             'STRATEGY_MINING_BACKEND modal_client.strategy_mining_research '
-            'production_mutation_allowed research_only strategy_mining_runs strategy_promotion_ledger'
+            'production_mutation_allowed research_only strategy_mining_runs active_strategy_backtest_results strategy_promotion_ledger'
         ),
     )
     _write(
@@ -342,6 +358,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "CREATE TABLE IF NOT EXISTS strategy_mining_runs",
             "CREATE TABLE IF NOT EXISTS strategy_mining_candidates",
             "CREATE TABLE IF NOT EXISTS strategy_backtest_results",
+            "CREATE TABLE IF NOT EXISTS active_strategy_backtest_results",
             "CREATE TABLE IF NOT EXISTS strategy_similarity_matrix",
             "CREATE TABLE IF NOT EXISTS strategy_promotion_ledger",
             "real_trading_effect TEXT NOT NULL DEFAULT 'none'",
@@ -811,6 +828,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write_cutover_freshness_dependencies(tmp_path)
     _write_remote_preflight_fixture(tmp_path)
     _write_production_cutover_packet_fixture(tmp_path)
+    _write_formal137_repair_validator_fixture(tmp_path)
     _write(
         tmp_path / "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json",
         json.dumps({

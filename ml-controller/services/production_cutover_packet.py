@@ -92,7 +92,7 @@ REMOTE_PREFLIGHT_CHECKS = (
     {
         "id": "d1_strategy_mining_ledger_tables_exist",
         "check_type": "remote_read_only",
-        "expected": "strategy_mining_runs, strategy_mining_candidates, strategy_backtest_results, strategy_similarity_matrix, strategy_promotion_ledger exist in remote D1 after approved migration apply",
+        "expected": "strategy_mining_runs, strategy_mining_candidates, strategy_backtest_results, active_strategy_backtest_results, strategy_similarity_matrix, strategy_promotion_ledger exist in remote D1 after approved migration apply",
     },
     {
         "id": "ml_controller_strategy_mining_route_ready",

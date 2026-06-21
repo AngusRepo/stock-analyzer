@@ -156,6 +156,10 @@ const forecastData = {
     controller: 'OnlinePortfolioBandit',
     allocation_weight: 0.375,
     buy_signal_count: 8,
+    allocation_capacity: 8,
+    sector_concentration_cap: 0.5,
+    strategy_concentration_cap: 0.45,
+    family_concentration_cap: 0.4,
     return_history_coverage: 5,
     return_history_symbols: ['2330', '2454'],
     eligible_for_sparse: true,
@@ -197,6 +201,10 @@ const forecastData = {
   assert(allocation?.legacy_rank_topk_fallback_allowed === false, 'L4 sparse allocation must explicitly reject rank-topK fallback')
   assert(allocation?.selected === true, 'selected rows should remain visible')
   assert(allocation?.allocation_weight === 0.375, 'allocation weight should be normalized to a number')
+  assert(allocation?.allocation_capacity === 8, 'L4 sparse summary should expose allocation capacity')
+  assert(allocation?.sector_concentration_cap === 0.5, 'L4 sparse summary should expose sector concentration cap')
+  assert(allocation?.strategy_concentration_cap === 0.45, 'L4 sparse summary should expose strategy concentration cap')
+  assert(allocation?.family_concentration_cap === 0.4, 'L4 sparse summary should expose family concentration cap')
   assert(allocation?.return_history_symbol_count === 2, 'return history symbol coverage should be compacted')
   assert(allocation?.eligible_for_sparse === true, 'L4 sparse summary should expose candidate eligibility')
   assert(allocation?.allocation_rank === 1, 'L4 sparse summary should expose sparse capacity rank')

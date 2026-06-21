@@ -81,6 +81,7 @@ def validate(contract: dict[str, Any]) -> dict[str, Any]:
         "strategy_mining_runs",
         "strategy_mining_candidates",
         "strategy_backtest_results",
+        "active_strategy_backtest_results",
         "strategy_similarity_matrix",
         "strategy_promotion_ledger",
     } <= ledger_tables, "strategy_mining_ledger_tables_incomplete", errors)

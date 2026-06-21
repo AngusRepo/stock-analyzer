@@ -63,6 +63,10 @@ export interface SparseAllocationSummary {
   selected: boolean
   allocation_weight: number | null
   buy_signal_count: number | null
+  allocation_capacity: number | null
+  sector_concentration_cap: number | null
+  strategy_concentration_cap: number | null
+  family_concentration_cap: number | null
   return_history_coverage: number | null
   return_history_symbol_count: number | null
   eligible_for_sparse: boolean | null
@@ -454,6 +458,10 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
     selected: boolFromUnknown(allocation.selected),
     allocation_weight: finiteOrNull(allocation.allocation_weight),
     buy_signal_count: finiteOrNull(allocation.buy_signal_count),
+    allocation_capacity: finiteOrNull(allocation.allocation_capacity),
+    sector_concentration_cap: finiteOrNull(allocation.sector_concentration_cap),
+    strategy_concentration_cap: finiteOrNull(allocation.strategy_concentration_cap),
+    family_concentration_cap: finiteOrNull(allocation.family_concentration_cap),
     return_history_coverage: finiteOrNull(allocation.return_history_coverage),
     return_history_symbol_count: returnHistorySymbols.length || null,
     eligible_for_sparse: boolOrNull(allocation.eligible_for_sparse),

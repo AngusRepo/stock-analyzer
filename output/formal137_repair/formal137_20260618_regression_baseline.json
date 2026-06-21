@@ -1,0 +1,69 @@
+{
+  "schema_version": "stockvision-formal137-regression-baseline-v1",
+  "baseline_date": "2026-06-18",
+  "created_for": "formal137_p0_p10_local_repair_no_production_rerun",
+  "decision_effect": "local_regression_baseline_only",
+  "production_mutation_allowed": false,
+  "replay_rerun_allowed": false,
+  "deploy_allowed": false,
+  "commit_allowed": false,
+  "source_artifacts": {
+    "strategy_summary": "output/strategy_diversity_20260618/strategy_summary_2026-06-18.csv",
+    "strategy_pairwise": "output/strategy_diversity_20260618/strategy_pairwise_jaccard_corr_2026-06-18.csv",
+    "research_backtests": "output/strategy_diversity_20260618/strategy_mining_backtests_2026-06-17.csv"
+  },
+  "canonical_d1_data_baseline": {
+    "canonical_market_daily": {"latest_date": "2026-06-18", "rows": 2727},
+    "canonical_chip_daily": {"latest_date": "2026-06-18", "rows": 2651},
+    "canonical_institutional_amount_daily": {"latest_date": "2026-06-18", "rows": 14},
+    "canonical_fundamental_features": {"latest_date": "2026-06-02", "rows": 1964},
+    "canonical_revenue_monthly": {"latest_date": "2026-06-10", "rows": 2310}
+  },
+  "active_11_match_baseline": {
+    "universe_rows": 513,
+    "strategy_count": 11,
+    "jaccard_pair_count": 55,
+    "jaccard_avg": 0.1478,
+    "jaccard_max": 0.5356,
+    "jaccard_ge_0_8": 0,
+    "jaccard_ge_0_5": 2,
+    "known_bad_before_repair": {
+      "alpha_miner_pymoo_nsga3_novelty_0081": {
+        "matched_symbols": 0,
+        "reason": "required formal factors had zero production evidence coverage"
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0187": {
+        "matched_symbols": 117,
+        "reason": "weightedScore reweighted partial evidence after KSFT2/CNTN_20 were missing"
+      },
+      "alpha_miner_pymoo_nsga3_novelty_0193": {
+        "matched_symbols": 396,
+        "reason": "raw margin_balance and constant us_sentiment_score were scored as stock-selection evidence"
+      }
+    }
+  },
+  "research_8_backtest_baseline": {
+    "scope": "monthly_pymoo_finlab_confirm_top_n_research_only",
+    "candidate_count": 8,
+    "period": {"start_date": "2023-01-01", "end_date": "2026-06-17"},
+    "factor_jaccard_avg": 0.1271,
+    "known_duplicate_factor_sets": [
+      {
+        "left": "strategy-mining-2026-06-17-20260618191715__pymoo_nsga3_novelty_0260",
+        "right": "strategy-mining-2026-06-17-20260618191715__pymoo_nsga3_novelty_0108",
+        "factor_jaccard": 1.0,
+        "factor_ids": ["l1_brokerNetAmount5d", "tech_sar", "mom_9m"]
+      }
+    ]
+  },
+  "promotion_ledger_baseline": {
+    "rows": 0,
+    "reason": "DSR probabilities were below promotion threshold; pending-review challenger packets were not created"
+  },
+  "l4_allocation_baseline": {
+    "sparse_buy_count": 3,
+    "selected_symbols": ["2884", "2618", "2887"],
+    "capacity_policy": "maximum_capacity_not_minimum_fill",
+    "stale_hold_selected_repair_required": true
+  }
+}

@@ -1976,6 +1976,9 @@ def _apply_sparse_tangent_buy_selection(
     max_cluster_weight = float(
         _allocation_float(["max_cluster_weight", "maxClusterWeight"], max_weight) or max_weight
     )
+    sector_concentration_cap = _allocation_float(["sector_concentration_cap", "sectorConcentrationCap"], 0.5)
+    strategy_concentration_cap = _allocation_float(["strategy_concentration_cap", "strategyConcentrationCap"], 0.5)
+    family_concentration_cap = _allocation_float(["family_concentration_cap", "familyConcentrationCap"], 0.5)
     allocation_contract = {
         "engine": "sparse_tangent_inverse_risk",
         "allocation_method": "sparse_tangent_inverse_risk_final_allocation",
@@ -1987,6 +1990,11 @@ def _apply_sparse_tangent_buy_selection(
         "allows_empty_portfolio": True,
         "legacy_rank_topk_fallback_allowed": False,
         "buy_signal_count": buy_signal_count,
+        "allocation_capacity": buy_signal_count,
+        "sector_concentration_cap": sector_concentration_cap,
+        "strategy_concentration_cap": strategy_concentration_cap,
+        "family_concentration_cap": family_concentration_cap,
+        "diversity_loss_report_scope": "l3_to_l4_sparse_allocation_capacity_and_concentration",
     }
 
     eligible_rows = [
@@ -2145,6 +2153,9 @@ def _apply_sparse_tangent_buy_selection(
         "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),
         "cluster_penalty_applied": cluster_penalty_applied,
         "max_cluster_weight": max_cluster_weight,
+        "sector_concentration_cap": sector_concentration_cap,
+        "strategy_concentration_cap": strategy_concentration_cap,
+        "family_concentration_cap": family_concentration_cap,
         "unallocated_cash_weight": allocation_result.get("unallocated_cash_weight"),
         "similarity_component_count": similarity_evidence.get("component_count"),
         "effective_independent_count": similarity_evidence.get("effective_independent_count"),

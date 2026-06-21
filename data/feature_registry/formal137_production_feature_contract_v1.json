@@ -1,0 +1,115 @@
+{
+  "schema_version": "stockvision-formal137-production-feature-contract-v1",
+  "source_of_truth": "data/feature_registry/unified_feature_registry_v1.json",
+  "decision_effect": "local_contract_only",
+  "production_mutation_allowed": false,
+  "formal_pool_contract": {
+    "eligible_for_alpha_mining_total": 137,
+    "origin_pool_counts": {
+      "strategy95": 89,
+      "ml106": 48,
+      "finlab701": 0
+    },
+    "finlab701_policy": "not_alpha_mining_eligible_until_materialized_and_promoted_into_unified_registry"
+  },
+  "runtime_path_policy": {
+    "raw_scale_feature_refs_for_stock_selection_allowed": false,
+    "required_feature_missing_policy": "fail_closed_no_match_missing_required_factor",
+    "constant_cross_sectional_feature_policy": "fail_gate_without_normalized_non_constant_evidence"
+  },
+  "critical_runtime_features": [
+    {
+      "feature_id": "KLOW2",
+      "source": "stockvision_ml106",
+      "raw_path": "technicalIndicators.KLOW2",
+      "normalized_path": "factorSignals.KLOW2",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0081"]
+    },
+    {
+      "feature_id": "KSFT",
+      "source": "stockvision_ml106",
+      "raw_path": "technicalIndicators.KSFT",
+      "normalized_path": "factorSignals.KSFT",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0081"]
+    },
+    {
+      "feature_id": "KSFT2",
+      "source": "stockvision_ml106",
+      "raw_path": "technicalIndicators.KSFT2",
+      "normalized_path": "factorSignals.KSFT2",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0187"]
+    },
+    {
+      "feature_id": "CNTD_20",
+      "source": "stockvision_ml106",
+      "raw_path": "technicalIndicators.CNTD_20",
+      "normalized_path": "factorSignals.CNTD_20",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0081"]
+    },
+    {
+      "feature_id": "CNTN_20",
+      "source": "stockvision_ml106",
+      "raw_path": "technicalIndicators.CNTN_20",
+      "normalized_path": "factorSignals.CNTN_20",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0187"]
+    },
+    {
+      "feature_id": "margin_balance",
+      "source": "stockvision_ml106",
+      "raw_path": "marginBalance",
+      "normalized_path": "factorSignals.formal137MarginBalanceRank",
+      "accepted_aliases": [
+        "factorSignals.margin_balance_rank",
+        "factorSignals.marginBalanceRank",
+        "factorSignals.margin_balance_normalized",
+        "factorSignals.finlabCsMarginBalanceRank"
+      ],
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0193"],
+      "raw_scale_allowed": false
+    },
+    {
+      "feature_id": "us_sentiment_score",
+      "source": "stockvision_ml106",
+      "raw_path": "factorSignals.us_sentiment_score",
+      "normalized_path": "factorSignals.formal137UsSentimentScoreRank",
+      "accepted_aliases": [
+        "factorSignals.us_sentiment_score_rank",
+        "factorSignals.usSentimentScoreRank",
+        "factorSignals.us_sentiment_score_normalized"
+      ],
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0193"],
+      "constant_feature_gate": "fail_closed_without_normalized_non_constant_cross_sectional_evidence"
+    },
+    {
+      "feature_id": "l1_monthlyRevenueMoM",
+      "source": "stockvision_l1",
+      "raw_path": "monthlyRevenueMoM",
+      "normalized_path": "factorSignals.monthlyRevenueMoM",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0187"]
+    },
+    {
+      "feature_id": "ma10_bias",
+      "source": "stockvision_ml106",
+      "raw_path": "ma10Bias",
+      "normalized_path": "factorSignals.ma10_bias",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0187"]
+    },
+    {
+      "feature_id": "return_5d",
+      "source": "stockvision_ml106",
+      "raw_path": "return5d",
+      "normalized_path": "factorSignals.return_5d",
+      "direction": "higher_is_better",
+      "required_for": ["alpha_miner_pymoo_nsga3_novelty_0187"]
+    }
+  ]
+}

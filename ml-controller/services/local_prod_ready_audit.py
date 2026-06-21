@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -480,6 +481,7 @@ def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
                 "production_mutation_allowed",
                 "research_only",
                 "strategy_mining_runs",
+                "active_strategy_backtest_results",
                 "strategy_promotion_ledger",
             ),
             "roadmap:p8:monthly_strategy_mining_controller_surface",
@@ -509,6 +511,7 @@ def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
                 "CREATE TABLE IF NOT EXISTS strategy_mining_runs",
                 "CREATE TABLE IF NOT EXISTS strategy_mining_candidates",
                 "CREATE TABLE IF NOT EXISTS strategy_backtest_results",
+                "CREATE TABLE IF NOT EXISTS active_strategy_backtest_results",
                 "CREATE TABLE IF NOT EXISTS strategy_similarity_matrix",
                 "CREATE TABLE IF NOT EXISTS strategy_promotion_ledger",
                 "real_trading_effect TEXT NOT NULL DEFAULT 'none'",
@@ -1564,6 +1567,32 @@ def _production_cutover_packet_checks(root: Path) -> list[dict[str, Any]]:
     return checks
 
 
+def _formal137_repair_roadmap_checks(root: Path) -> list[dict[str, Any]]:
+    validator_path = root / "tools/validate_formal137_repair_roadmap.py"
+    if not validator_path.exists():
+        return [_check(
+            False,
+            "formal137:p0_p10_repair_validator_present",
+            "Formal137 P0-P10 repair validator exists",
+        )]
+    spec = importlib.util.spec_from_file_location("formal137_repair_validator", validator_path)
+    if spec is None or spec.loader is None:
+        return [_check(
+            False,
+            "formal137:p0_p10_repair_validator_loadable",
+            "Formal137 P0-P10 repair validator is importable",
+        )]
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    report = module.build_report(root)
+    failed = report.get("failed_checks") if isinstance(report.get("failed_checks"), list) else []
+    return [_check(
+        report.get("status") == "pass" and report.get("local_prod_ready") == "done" and not failed,
+        "formal137:p0_p10_repair_validator",
+        f"Formal137 P0-P10 local repair validator status={report.get('status')} failed={len(failed)}",
+    )]
+
+
 def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any]:
     root = repo_root or _repo_root()
     checks = [
@@ -1584,6 +1613,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         *_observability_checks(root),
         *_replay_checks(root),
         *_production_cutover_packet_checks(root),
+        *_formal137_repair_roadmap_checks(root),
     ]
     failed = [row for row in checks if row["status"] != "pass"]
     local_done = not failed
@@ -1602,6 +1632,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
             "p2_legacy_cleanup",
             "p3_model_pool_ui_observability",
             "finlab_p0_p9_l0_l125_l15_l4_raw_signal_portfolio_intelligence_closure",
+            "formal137_p0_p10_repair_no_partial_local_closure",
             "p12_production_cutover_preflight_packet_and_remote_readonly_audit",
         ],
         "local_closure": "done" if local_done else "blocked",

@@ -19,6 +19,7 @@ LEDGER_TABLES = {
     "strategy_mining_runs",
     "strategy_mining_candidates",
     "strategy_backtest_results",
+    "active_strategy_backtest_results",
     "strategy_similarity_matrix",
     "strategy_promotion_ledger",
 }
@@ -179,7 +180,8 @@ def _build_checks(root: Path, location: str, region: str) -> tuple[list[dict[str
     ledger_sql = (
         "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
         "('strategy_mining_runs','strategy_mining_candidates','strategy_backtest_results',"
-        "'strategy_similarity_matrix','strategy_promotion_ledger','strategy_spec_registry') ORDER BY name;"
+        "'active_strategy_backtest_results','strategy_similarity_matrix','strategy_promotion_ledger',"
+        "'strategy_spec_registry') ORDER BY name;"
     )
     ledger_run = _d1_query(root, ledger_sql)
     table_rows = _wrangler_results(ledger_run)

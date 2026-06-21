@@ -282,6 +282,58 @@ def test_build_artifact_records_from_no_challenger_active9_train_stage():
     assert offline["source"] == "train_stage"
 
 
+def test_train_stage_artifact_survives_unrelated_run_level_lifecycle_error():
+    payload = {
+        "run_id": "universal-20260619T090702-aac5f10a",
+        "run_date": "2026-06-18",
+        "is_monthly": True,
+        "candidate_version": "v20260619014016",
+        "status": "error",
+        "error": "artifact_lifecycle_failed",
+        "challenger_registrations": {},
+        "ic_summary": {
+            "LightGBM": 0.0912,
+        },
+        "stages": {
+            "train": {
+                "status": "ok",
+                "ic_tracking": {
+                    "LightGBM": {
+                        "oos_ic": 0.0912,
+                        "model_cpcv": {
+                            "decision": "PASS",
+                            "passed": True,
+                            "failed_gates": [],
+                            "oos_ic_mean": 0.131427,
+                            "positive_fold_ratio": 1.0,
+                        },
+                    },
+                },
+            },
+            "artifact_lifecycle": {
+                "status": "error",
+                "results": {
+                    "TimesFM": {
+                        "status": "error",
+                        "error": "timesfm_oos_evidence_missing",
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    by_model = {row["model_name"]: row for row in records}
+    assert by_model["LightGBM"]["artifact_id"] == "LightGBM:v20260619014016:monthly_release"
+    assert by_model["LightGBM"]["offline_gate_decision"] in {"PASS", "STRONG_PASS"}
+    assert "artifact_registration_failed" not in json.loads(by_model["LightGBM"]["offline_gate_failed_gates"])
+    offline = json.loads(by_model["LightGBM"]["offline_evidence_json"])
+    assert offline["source"] == "train_stage"
+    assert offline["callback_status"] == "error"
+    assert offline["registration"]["status"] == "registered"
+
+
 def test_timesfm_lifecycle_evidence_is_registered_instead_of_missing_oos_warning():
     payload = {
         "run_id": "timesfm25-oos-backfill",

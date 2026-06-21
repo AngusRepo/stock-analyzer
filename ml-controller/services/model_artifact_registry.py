@@ -497,6 +497,8 @@ def _train_stage_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[s
     stages = _nested_dict(payload_dict.get("stages"))
     train = _nested_dict(stages.get("train"))
     ic_tracking = _nested_dict(train.get("ic_tracking"))
+    train_status = str(train.get("status") or "").strip().lower()
+    train_stage_failed = train_status in {"error", "failed", "fail"}
     registrations: dict[str, dict[str, Any]] = {}
     for model_name, raw_metrics in ic_tracking.items():
         model_name = str(model_name)
@@ -505,8 +507,11 @@ def _train_stage_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[s
         metrics = _nested_dict(raw_metrics)
         model_cpcv = metrics.get("model_cpcv") if isinstance(metrics.get("model_cpcv"), dict) else None
         oos_ic = metrics.get("oos_ic") if metrics.get("oos_ic") is not None else metrics.get("ic")
+        model_status = str(metrics.get("status") or metrics.get("training_status") or "").strip().lower()
+        model_failed = model_status in {"error", "failed", "fail"}
+        registered = not train_stage_failed and not model_failed and bool(metrics or model_cpcv or oos_ic is not None)
         registrations[model_name] = {
-            "status": "registered" if payload_dict.get("status") == "completed" else "error",
+            "status": "registered" if registered else "error",
             "version": version,
             "gcs_path": model_artifact_path(model_name, version),
             "metadata_path": model_metadata_path(model_name, version),

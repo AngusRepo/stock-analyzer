@@ -1499,6 +1499,83 @@ def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
     assert pointer_params[4] == "LightGBM:vOld:monthly_release"
 
 
+def test_promotion_controller_allows_approved_offline_monthly_release_cutover(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.run_promotion_controller(
+        artifact_id="LightGBM:vFormal137:monthly_release",
+        registry_rows=[{
+            "artifact_id": "LightGBM:vFormal137:monthly_release",
+            "model_name": "LightGBM",
+            "version": "vFormal137",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "not_started",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+        }],
+        d1_pointers=[{
+            "model_name": "LightGBM",
+            "champion_version": "vOld",
+            "champion_artifact_id": "LightGBM:vOld:monthly_release",
+        }],
+        model_pool_versions={"LightGBM": "vOld"},
+        confirm=True,
+        approved=True,
+        approved_by="Wei",
+        reason="formal137_initial_cutover",
+        allow_offline_monthly_release=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["decision"] == "promote"
+    assert result["can_promote"] is True
+    assert result["evidence"]["offline_monthly_release_cutover"] is True
+    assert result["evidence"]["allow_offline_monthly_release"] is True
+    assert "live_gate_not_passed" not in result["evidence"]["blockers"]
+    assert len(executed) == 3
+
+
+def test_promotion_controller_offline_monthly_release_cutover_still_blocks_failed_offline_gate():
+    result = registry.run_promotion_controller(
+        artifact_id="PatchTST:vBad:monthly_release",
+        registry_rows=[{
+            "artifact_id": "PatchTST:vBad:monthly_release",
+            "model_name": "PatchTST",
+            "version": "vBad",
+            "candidate_type": "monthly_release",
+            "state": "offline_failed",
+            "offline_gate_decision": "FAIL",
+            "live_gate_status": "not_started",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": "{}",
+        }],
+        d1_pointers=[{
+            "model_name": "PatchTST",
+            "champion_version": "vOld",
+            "champion_artifact_id": "PatchTST:vOld:monthly_release",
+        }],
+        model_pool_versions={"PatchTST": "vOld"},
+        confirm=False,
+        approved=True,
+        approved_by="Wei",
+        reason="formal137_initial_cutover",
+        allow_offline_monthly_release=True,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["decision"] == "blocked"
+    assert result["can_promote"] is False
+    assert "offline_gate_failed" in result["evidence"]["blockers"]
+
+
 def test_promotion_controller_is_idempotent_when_pointer_already_promoted(monkeypatch):
     executed: list[dict[str, object]] = []
 

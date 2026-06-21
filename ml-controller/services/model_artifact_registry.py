@@ -2186,6 +2186,7 @@ def _promotion_row_decision(
     pointer: dict[str, Any] | None,
     champion_version: str | None,
     approved: bool,
+    allow_offline_monthly_release: bool = False,
 ) -> dict[str, Any]:
     """Evaluate the final promotion step against the current champion pointer.
 
@@ -2202,10 +2203,33 @@ def _promotion_row_decision(
         or str(artifact.get("approval_state") or "") == "required"
     )
     blockers: list[str] = []
+    offline_monthly_release_cutover = bool(
+        allow_offline_monthly_release
+        and approved
+        and candidate_type == "monthly_release"
+        and offline_decision in {"STRONG_PASS", "PASS"}
+    )
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
+    if offline_monthly_release_cutover:
+        hard_blocker_codes = {
+            "model_not_active_production_artifact",
+            "missing_current_champion",
+            "offline_gate_not_passed",
+        }
+        promotion_blockers = [
+            blocker
+            for blocker in promotion_blockers
+            if str(blocker.get("code") or "") in hard_blocker_codes
+            or str(blocker.get("code") or "").startswith("cpcv_")
+            or str(blocker.get("code") or "").startswith("foundation_")
+        ]
     if promotion_blockers:
         blockers.extend(_blocker_codes(promotion_blockers))
-    if live_status not in {"passed", "multi_evidence_passed"} and state not in {"approval_required", "approved"}:
+    if (
+        not offline_monthly_release_cutover
+        and live_status not in {"passed", "multi_evidence_passed"}
+        and state not in {"approval_required", "approved"}
+    ):
         blockers.append("live_gate_not_passed")
     if not champion_version:
         blockers.append("missing_current_champion")
@@ -2231,6 +2255,8 @@ def _promotion_row_decision(
         "offline_evidence": offline_evidence,
         "approval_required": approval_required,
         "approved": approved,
+        "allow_offline_monthly_release": allow_offline_monthly_release,
+        "offline_monthly_release_cutover": offline_monthly_release_cutover,
         "blockers": blockers,
         "blocker_details": promotion_blockers,
     }
@@ -2279,6 +2305,7 @@ def run_promotion_controller(
     approved: bool = False,
     approved_by: str | None = None,
     reason: str = "promotion_controller",
+    allow_offline_monthly_release: bool = False,
 ) -> dict[str, Any]:
     """Run final comparison and optionally update the champion pointer.
 
@@ -2326,6 +2353,7 @@ def run_promotion_controller(
         pointer=pointer,
         champion_version=champion_version,
         approved=approved,
+        allow_offline_monthly_release=allow_offline_monthly_release,
     )
     evidence = {
         **decision["evidence"],

@@ -444,6 +444,7 @@ class PromotionControllerRequest(BaseModel):
     approved: bool = False
     approved_by: str | None = None
     reason: str = "promotion_controller"
+    allow_offline_monthly_release: bool = False
 
 
 @router.post("/train_patchtst")
@@ -1587,6 +1588,7 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
             approved=req.approved,
             approved_by=req.approved_by,
             reason=req.reason,
+            allow_offline_monthly_release=req.allow_offline_monthly_release,
         )
         should_update_serving = req.confirm and (
             result.get("can_promote") is True

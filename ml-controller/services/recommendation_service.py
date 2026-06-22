@@ -2158,10 +2158,30 @@ def _apply_sparse_tangent_buy_selection(
     sector_concentration_cap = _allocation_float(["sector_concentration_cap", "sectorConcentrationCap"], 0.5)
     strategy_concentration_cap = _allocation_float(["strategy_concentration_cap", "strategyConcentrationCap"], 0.5)
     family_concentration_cap = _allocation_float(["family_concentration_cap", "familyConcentrationCap"], 0.5)
+
+    def _cap_final_weight_count(weights: dict[str, Any]) -> dict[str, float]:
+        cleaned: list[tuple[str, float]] = []
+        for symbol, raw_weight in weights.items():
+            symbol_text = str(symbol or "").strip()
+            if not symbol_text:
+                continue
+            try:
+                weight = float(raw_weight or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(weight) and weight > 0:
+                cleaned.append((symbol_text, weight))
+        capped = sorted(cleaned, key=lambda item: (-item[1], item[0]))[:buy_signal_count]
+        total = sum(weight for _symbol, weight in capped)
+        if total <= 0:
+            return {}
+        return {symbol: round(weight / total, 10) for symbol, weight in capped}
+
     allocation_contract = {
         "engine": "sparse_tangent_inverse_risk",
         "allocation_method": "sparse_tangent_inverse_risk_final_allocation",
         "input_scope": "post_l3_5_evidence_fusion_candidates",
+        "input_candidate_pool_policy": "full_eligible_pool_no_buy_signal_rank_gate",
         "selection_policy": "positive_expected_edge_sparse_weights_no_forced_fill",
         "capacity_policy": "maximum_capacity_not_minimum_fill",
         "max_capacity_not_target": True,
@@ -2170,6 +2190,7 @@ def _apply_sparse_tangent_buy_selection(
         "legacy_rank_topk_fallback_allowed": False,
         "buy_signal_count": buy_signal_count,
         "allocation_capacity": buy_signal_count,
+        "buy_signal_count_role": "maximum_selected_count_not_preallocation_rank_cut",
         "sector_concentration_cap": sector_concentration_cap,
         "strategy_concentration_cap": strategy_concentration_cap,
         "family_concentration_cap": family_concentration_cap,
@@ -2181,6 +2202,7 @@ def _apply_sparse_tangent_buy_selection(
         if _can_promote_ranking_candidate(row, ranking_config)
     ]
     eligible_row_ids = {id(row) for row in eligible_rows}
+    allocation_contract["allocation_candidate_pool_size"] = len(eligible_rows)
     controller = str(allocation.get("controller") or "OnlinePortfolioBandit").strip()
     for row in scored:
         had_buy_signal = str(row.get("signal") or "").upper() == "BUY" or int(row.get("has_buy_signal") or 0) == 1
@@ -2223,22 +2245,22 @@ def _apply_sparse_tangent_buy_selection(
                     "return_history_sample_std" if len(risk_history.get(symbol, []) or []) >= 2 else "daily_vol_floor"
                 ),
             }
-    ranked_candidates = sorted(
+    optimizer_candidates = sorted(
         [row for row in allocation_candidates if str(row.get("symbol") or "").strip()],
         key=lambda row: float(row.get("score") or 0.0),
         reverse=True,
-    )[:buy_signal_count]
+    )
     allocation_rank_by_symbol = {
         str(row.get("symbol") or "").strip(): idx + 1
-        for idx, row in enumerate(ranked_candidates)
+        for idx, row in enumerate(optimizer_candidates)
     }
-    ranked_symbols = set(allocation_rank_by_symbol)
+    optimizer_symbols = set(allocation_rank_by_symbol)
     positive_edge_count = sum(
-        1 for row in ranked_candidates
+        1 for row in optimizer_candidates
         if max(0.0, float(row.get("expected_return") or 0.0)) > 0.0
     )
     return_history_candidate_symbols = sorted(
-        symbol for symbol in ranked_symbols
+        symbol for symbol in optimizer_symbols
         if risk_history.get(symbol)
     )
     opb_packet: dict[str, Any] | None = None
@@ -2251,11 +2273,10 @@ def _apply_sparse_tangent_buy_selection(
                 candidates=allocation_candidates,
                 return_history=risk_history,
                 stage="L3_production_allocation_controller",
-                candidate_cap_limit=(
-                    None if allocation.get("allow_controller_candidate_cap") else buy_signal_count
-                ),
+                candidate_cap_limit=None,
             )
             weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
+            weights = _cap_final_weight_count(weights)
         except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
             logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
             weights = {}
@@ -2277,7 +2298,7 @@ def _apply_sparse_tangent_buy_selection(
         weights = dict(allocation_result.get("weights") or {})
     else:
         opb_similarity_symbols = sorted({
-            *[str(row.get("symbol") or "").strip() for row in ranked_candidates],
+            *[str(row.get("symbol") or "").strip() for row in optimizer_candidates],
             *[str(symbol or "").strip() for symbol in weights],
         })
         opb_similarity = similarity_components(
@@ -2318,7 +2339,16 @@ def _apply_sparse_tangent_buy_selection(
     }
     sparse_diagnostics_base = {
         "candidate_count": len(allocation_candidates),
-        "evaluated_candidate_count": len(ranked_candidates),
+        "evaluated_candidate_count": len(optimizer_candidates),
+        "candidate_pool_policy": allocation_result.get(
+            "candidate_pool_policy",
+            "full_eligible_pool_before_sparse_selection",
+        ),
+        "optimizer_evaluated_candidate_count": allocation_result.get(
+            "evaluated_candidate_count",
+            len(optimizer_candidates),
+        ),
+        "max_selected_count": allocation_result.get("max_selected_count", buy_signal_count),
         "allocation_capacity": buy_signal_count,
         "positive_edge_count": positive_edge_count,
         "selected_count": len(selected_symbols),
@@ -2381,16 +2411,23 @@ def _apply_sparse_tangent_buy_selection(
             selection_reason = "selected_positive_edge_sparse_weight"
         elif symbol and symbol not in candidate_evidence_by_symbol:
             selection_reason = "not_eligible_for_sparse_input"
-        elif rank is None:
-            selection_reason = "outside_sparse_capacity_rank"
         elif not positive_expected_edge:
             selection_reason = "no_positive_expected_edge"
+        elif cluster_penalty_applied:
+            selection_reason = "positive_edge_but_zero_weight_due_to_correlation"
         else:
-            selection_reason = "zero_sparse_weight_after_inverse_risk"
+            selection_reason = "positive_edge_but_zero_weight_due_to_better_alternative"
+        sparse_weight_state = (
+            "selected_positive_sparse_weight"
+            if selected and single_name_weight > 0
+            else "zero_sparse_weight_after_inverse_risk"
+        )
         cluster_evidence = cluster_evidence_by_symbol.get(symbol) or {}
         return {
             "eligible_for_sparse": symbol in candidate_evidence_by_symbol,
             "allocation_rank": rank,
+            "allocation_rank_policy": "diagnostic_only_not_capacity_gate",
+            "sparse_weight_state": sparse_weight_state,
             "expected_return": round(expected_return, 10),
             "expected_return_source": (evidence or {}).get("expected_return_source"),
             "positive_expected_edge": positive_expected_edge,
@@ -2604,6 +2641,9 @@ def write_predictions_to_d1(
             "timesfm_sidecar": _timesfm_sidecar_payload(data),
             "state_space_overlays": _state_space_overlay_payload(data),
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
+            "feature_schema": data.get("feature_schema"),
+            "feature_count": data.get("feature_count"),
+            "feature_version": data.get("feature_version"),
             "models": data.get("models"),
             "forecasts": data.get("forecasts"),
             "arf_features": data.get("arf_features"),
@@ -2834,6 +2874,117 @@ def write_layer3_formal_gate_audit(
 # ─────────────────────────────────────────────────────────────────────────────
 # 2026-04-19 ML_POOL Stage 2 helpers (per-model row writers)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def write_layer2_core_gate_audit(
+    *,
+    predictions: dict[str, dict],
+    screener_recs: list[dict],
+    run_date: str,
+    screener_run_id: str | None,
+    target_size: int | None = None,
+) -> int:
+    """Persist formal L2 pass/drop evidence into screener_funnel_items."""
+    run_id = str(screener_run_id or "").strip()
+    if not run_id:
+        logger.warning("[recommendation_service] L2 audit skipped: screener_run_id missing")
+        return 0
+
+    source_by_symbol = {
+        str(row.get("symbol") or "").strip(): row
+        for row in screener_recs or []
+        if row.get("symbol")
+    }
+    entries: list[tuple[str, dict, dict]] = []
+    for symbol, pred in (predictions or {}).items():
+        clean_symbol = str(symbol or "").strip()
+        if not clean_symbol or not isinstance(pred, dict):
+            continue
+        gate = pred.get("core_ml_gate")
+        if not isinstance(gate, dict):
+            continue
+        entries.append((clean_symbol, gate, source_by_symbol.get(clean_symbol) or {"symbol": clean_symbol}))
+
+    if not entries:
+        logger.info("[recommendation_service] L2 audit skipped: no core_ml_gate payloads")
+        return 0
+
+    def _rank_key(item: tuple[str, dict, dict]) -> tuple[int, str]:
+        try:
+            rank = int(item[1].get("rank") or 999999)
+        except (TypeError, ValueError):
+            rank = 999999
+        return rank, item[0]
+
+    statements: list[tuple[str, list[Any]]] = [
+        (
+            "DELETE FROM screener_funnel_items WHERE run_id = ? AND date = ? AND stage = ?",
+            [run_id, run_date, "layer2_coarse_ml_gate"],
+        )
+    ]
+
+    for idx, (symbol, gate, source_row) in enumerate(sorted(entries, key=_rank_key), start=1):
+        selected = bool(gate.get("selected"))
+        decision = "pass" if selected else "drop"
+        if selected:
+            reason_code = "l2_tree_rank_pass"
+        elif gate.get("score") is None:
+            reason_code = "l2_tree_score_missing"
+        else:
+            reason_code = "l2_tree_rank_not_selected"
+        evidence = {
+            "schema_version": "layer2_core_ml_gate_audit_v1",
+            "source": "daily_pipeline_v2.node_l2_core_gate",
+            "target_size": target_size if target_size is not None else gate.get("target_size"),
+            "upstream_count": gate.get("upstream_count"),
+            "rank": gate.get("rank"),
+            "score": gate.get("score"),
+            "models": gate.get("models") if isinstance(gate.get("models"), list) else [],
+        }
+        try:
+            score_before = float(source_row.get("score")) if source_row.get("score") is not None else None
+        except (TypeError, ValueError):
+            score_before = None
+        try:
+            score_after = float(gate.get("score")) if gate.get("score") is not None else None
+        except (TypeError, ValueError):
+            score_after = None
+        try:
+            rank = int(gate.get("rank") or idx)
+        except (TypeError, ValueError):
+            rank = idx
+
+        statements.append((
+            """
+            INSERT INTO screener_funnel_items
+              (run_id, date, symbol, name, stage, decision, reason_code,
+               score_before, score_after, rank, evidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.strip(),
+            [
+                run_id,
+                run_date,
+                symbol,
+                source_row.get("name"),
+                "layer2_coarse_ml_gate",
+                decision,
+                reason_code,
+                score_before,
+                score_after,
+                rank,
+                json.dumps(evidence, ensure_ascii=False),
+            ],
+        ))
+
+    d1_client.batch_execute(statements)
+    inserted = len(statements) - 1
+    logger.info(
+        "[recommendation_service] Wrote %s L2 core gate audit rows run_id=%s date=%s",
+        inserted,
+        run_id,
+        run_date,
+    )
+    return inserted
+
 
 # Models whose rank scores we want stored for alpha IC tracking.
 # State-space overlays explain regime/risk context rather than vote as alpha.

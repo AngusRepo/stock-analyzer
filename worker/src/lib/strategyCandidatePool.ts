@@ -146,6 +146,9 @@ export interface StrategyPool<T extends StrategyCandidatePoolCandidate = Strateg
   regime_scope: string[]
   regime_weight: number
   status: 'ready' | 'adaptive_near_match' | 'out_of_regime' | 'invalid_spec'
+  daily_match_status: 'strict_match' | 'strict_empty_threshold' | 'strict_empty_feature_ref' | 'shadow_near_match' | 'out_of_regime' | 'invalid_spec'
+  strict_match_count: number
+  near_match_count: number
   missing_evidence: string[]
   candidates: Array<StrategyPoolEntry<T>>
 }
@@ -204,6 +207,7 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     finlab_portfolio_intelligence_version?: string
     l15_router_version?: string
     l15_router_selection_order?: string
+    l15_router_slate_selection_policy?: string
     l15_router_ml_slate_count?: number
     l15_router_observe_only_count?: number
     l15_router_capacity_overflow_count?: number
@@ -397,6 +401,24 @@ function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: St
     }
   }
   return misses.length > 0 && misses.length <= 2 ? misses : null
+}
+
+function hasFeatureRefThresholdContract(spec: StrategySpec): boolean {
+  const featureRefs = spec.thresholds.featureRefs
+  if (!featureRefs) return false
+  return Boolean(
+    (featureRefs.weightedScore?.terms?.length ?? 0) > 0
+    || (featureRefs.all?.length ?? 0) > 0
+    || (featureRefs.any?.length ?? 0) > 0
+    || (featureRefs.not?.length ?? 0) > 0,
+  )
+}
+
+function mustFailClosedOnStrictFeatureRefs(spec: StrategySpec, evidenceRequirements: string[]): boolean {
+  if (!hasFeatureRefThresholdContract(spec)) return false
+  return spec.status === 'active'
+    || spec.promotionStatus === 'production'
+    || evidenceRequirements.includes('formal137')
 }
 
 function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
@@ -652,6 +674,9 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           regime_scope: spec.supportedRegimes.map(String),
           regime_weight: 0,
           status: 'invalid_spec',
+          daily_match_status: 'invalid_spec',
+          strict_match_count: 0,
+          near_match_count: 0,
           missing_evidence: missingEvidence,
           candidates: [],
         }
@@ -672,12 +697,17 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           regime_scope: spec.supportedRegimes.map(String),
           regime_weight: 0,
           status: 'out_of_regime',
+          daily_match_status: 'out_of_regime',
+          strict_match_count: 0,
+          near_match_count: 0,
           missing_evidence: ['regime_scope_mismatch'],
           candidates: [],
         }
       }
 
       let usedAdaptiveNearMatch = false
+      let strictEmptyMissingEvidence: string[] = []
+      const blockAdaptiveNearMatch = mustFailClosedOnStrictFeatureRefs(spec, evidenceRequirements)
       let entries = candidates
         .map((candidate) => {
           const assessment = assessCandidateAgainstStrategySpecs(strategyInputFromPoolCandidate(candidate), [spec])
@@ -708,8 +738,13 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         .sort((a, b) => b.strategy_score - a.strategy_score)
         .slice(0, Math.min(quota, costBudget))
         .map((entry, index) => ({ ...entry, rank: index + 1 }))
+      const strictMatchCount = entries.length
 
-      if (!entries.length && !spec.thresholds.dsl) {
+      if (!entries.length && blockAdaptiveNearMatch) {
+        strictEmptyMissingEvidence = ['strict_feature_ref_match_empty']
+      }
+
+      if (!entries.length && !blockAdaptiveNearMatch && !spec.thresholds.dsl) {
         usedAdaptiveNearMatch = true
         entries = candidates
           .map((candidate) => {
@@ -742,7 +777,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           .slice(0, Math.min(quota, costBudget))
           .map((entry, index) => ({ ...entry, rank: index + 1 }))
       }
-      if (!entries.length && spec.status !== 'active') {
+      if (!entries.length && !blockAdaptiveNearMatch && spec.status !== 'active') {
         usedAdaptiveNearMatch = true
         entries = candidates
           .map((candidate) => {
@@ -772,6 +807,14 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           .slice(0, Math.min(quota, costBudget))
           .map((entry, index) => ({ ...entry, rank: index + 1 }))
       }
+      const nearMatchCount = usedAdaptiveNearMatch ? entries.length : 0
+      const dailyMatchStatus: StrategyPool['daily_match_status'] = strictMatchCount > 0
+        ? 'strict_match'
+        : usedAdaptiveNearMatch && entries.length
+          ? 'shadow_near_match'
+          : blockAdaptiveNearMatch
+            ? 'strict_empty_feature_ref'
+            : 'strict_empty_threshold'
 
       return {
         strategy_id: spec.id,
@@ -787,7 +830,10 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         regime_scope: spec.supportedRegimes.map(String),
         regime_weight: rWeight,
         status: usedAdaptiveNearMatch && entries.length ? 'adaptive_near_match' : 'ready',
-        missing_evidence: usedAdaptiveNearMatch && entries.length ? ['strict_threshold_match_empty'] : [],
+        daily_match_status: dailyMatchStatus,
+        strict_match_count: strictMatchCount,
+        near_match_count: nearMatchCount,
+        missing_evidence: usedAdaptiveNearMatch && entries.length ? ['strict_threshold_match_empty'] : strictEmptyMissingEvidence,
         candidates: entries,
       }
     })
@@ -965,7 +1011,7 @@ function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
 ): T {
   const cloned = cloneCandidate(candidate)
   cloned.strategy_pool_decision = 'research_only_queue'
-  cloned.strategy_pool_reason = 'raw_signal_top_up_observe_after_strategy_quota'
+  cloned.strategy_pool_reason = 'raw_signal_top_up_observe_after_l15_adaptive_slate'
   cloned.strategy_pool_rank = rank
   cloned.strategy_pool_ids = []
   cloned.strategy_family_ids = []
@@ -977,7 +1023,7 @@ function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
   cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:raw_signal_top_up_observe'])
   cloned.strategy_watch_points = uniqueTexts([
     ...(cloned.strategy_watch_points ?? []),
-    'strategy_pool:raw_signal_top_up_observe_after_strategy_quota',
+    'strategy_pool:raw_signal_top_up_observe_after_l15_adaptive_slate',
     'strategy_pool:not_formal_l2_queue',
   ])
   return cloned
@@ -1060,6 +1106,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       finlab_portfolio_intelligence_version: routerPlan.portfolio_intelligence_version,
       l15_router_version: routerPlan.version,
       l15_router_selection_order: routerPlan.selection_order,
+      l15_router_slate_selection_policy: routerPlan.telemetry.slate_selection_policy,
       l15_router_ml_slate_count: routerPlan.telemetry.ml_slate_count,
       l15_router_observe_only_count: routerPlan.telemetry.observe_only_count,
       l15_router_capacity_overflow_count: routerPlan.telemetry.capacity_overflow_count,

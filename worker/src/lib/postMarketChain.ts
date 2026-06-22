@@ -148,23 +148,24 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
 
 async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
   const registry = await ensureMetaLearningResearchRegistry(env.KV)
+  const perPolicyTimeoutMs = Math.floor(TASK_EXECUTION_TIMEOUT_MS / 3)
   const neuralUcb = await runNeuralMetaShadow(env, {
     policyId: 'NeuralUCB',
     endDate: ctx.runDate,
     dryRun: false,
-    timeoutMs: 45_000,
+    timeoutMs: perPolicyTimeoutMs,
   })
   const neuralTs = await runNeuralMetaShadow(env, {
     policyId: 'NeuralTS',
     endDate: ctx.runDate,
     dryRun: false,
-    timeoutMs: 45_000,
+    timeoutMs: perPolicyTimeoutMs,
   })
   const neuCb = await runNeuralMetaShadow(env, {
     policyId: 'NeuCB',
     endDate: ctx.runDate,
     dryRun: false,
-    timeoutMs: 45_000,
+    timeoutMs: perPolicyTimeoutMs,
   })
   return [
     `registry_created=${registry.created.length}`,
@@ -247,7 +248,10 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
-    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), { critical: false }))
+    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), {
+      critical: false,
+      timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+    }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
     results.push(await logSkippedHistoricalTask(env, ctx, 'paper-intraday-cache-clear'))

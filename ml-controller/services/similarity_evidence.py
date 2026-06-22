@@ -191,6 +191,45 @@ def correlation_from_covariance(covariance: list[list[float]] | np.ndarray) -> n
     return np.clip(corr, -1.0, 1.0)
 
 
+def sample_return_correlation_matrix(
+    symbols: list[str],
+    return_history: dict[str, list[float]],
+    *,
+    min_observations: int = 3,
+) -> tuple[np.ndarray, str]:
+    clean_symbols = [_clean_symbol(symbol) for symbol in symbols if _clean_symbol(symbol)]
+    if not clean_symbols:
+        return np.empty((0, 0), dtype=float), "sample_returns_empty_universe"
+    correlation = np.eye(len(clean_symbols), dtype=float)
+    valid_symbols, matrix = aligned_return_matrix(
+        clean_symbols,
+        return_history,
+        min_observations=min_observations,
+    )
+    if len(valid_symbols) < 2 or matrix.shape[0] < min_observations:
+        return correlation, "sample_returns_insufficient_history"
+
+    sample = np.asarray(np.corrcoef(matrix, rowvar=False), dtype=float)
+    if sample.ndim == 0:
+        sample = np.asarray([[1.0]], dtype=float)
+    sample = np.nan_to_num(sample, nan=0.0, posinf=0.0, neginf=0.0)
+    sample = np.clip(sample, -1.0, 1.0)
+    order = {symbol: idx for idx, symbol in enumerate(clean_symbols)}
+    for left_valid, left_symbol in enumerate(valid_symbols):
+        left = order.get(left_symbol)
+        if left is None:
+            continue
+        for right_valid, right_symbol in enumerate(valid_symbols):
+            right = order.get(right_symbol)
+            if right is None:
+                continue
+            correlation[left, right] = 1.0 if left == right else float(sample[left_valid, right_valid])
+    source = "sample_returns"
+    if valid_symbols != clean_symbols:
+        source = "sample_returns_partial_history"
+    return correlation, source
+
+
 def adaptive_abs_corr_threshold(
     correlation: np.ndarray,
     *,
@@ -280,13 +319,18 @@ def similarity_components(
     )
     clean_symbols = covariance_packet["symbols"]
     covariance = covariance_packet["covariance"]
-    correlation = correlation_from_covariance(covariance)
+    covariance_correlation = correlation_from_covariance(covariance)
+    graph_correlation, correlation_method = sample_return_correlation_matrix(
+        clean_symbols,
+        return_history,
+        min_observations=min_observations,
+    )
     threshold, threshold_source = adaptive_abs_corr_threshold(
-        correlation,
+        graph_correlation,
         explicit_threshold=edge_threshold,
         quantile=threshold_quantile,
     )
-    graph = build_similarity_graph(clean_symbols, correlation, edge_threshold=threshold)
+    graph = build_similarity_graph(clean_symbols, graph_correlation, edge_threshold=threshold)
     graph_lib = _require_networkx()
     component_sets = list(graph_lib.connected_components(graph))
     order = {symbol: idx for idx, symbol in enumerate(clean_symbols)}
@@ -305,7 +349,7 @@ def similarity_components(
         cluster_corr_max = 0.0
         for left_pos, left in enumerate(member_indices):
             for right in member_indices[left_pos + 1:]:
-                cluster_corr_max = max(cluster_corr_max, abs(float(correlation[left, right])))
+                cluster_corr_max = max(cluster_corr_max, abs(float(graph_correlation[left, right])))
         exposure = sum(clean_weights.get(symbol, 0.0) for symbol in ordered_symbols)
         clusters.append({
             "cluster_id": cluster_id,
@@ -323,7 +367,9 @@ def similarity_components(
         "edge_count": int(graph.number_of_edges()),
         "component_count": len(clusters),
         "effective_independent_count": _effective_independent_count([cluster["cluster_size"] for cluster in clusters]),
-        "pairwise_corr_max": pairwise_abs_corr_max(correlation),
+        "pairwise_corr_max": pairwise_abs_corr_max(graph_correlation),
+        "correlation_method": correlation_method,
+        "covariance_pairwise_corr_max": pairwise_abs_corr_max(covariance_correlation),
         "edge_threshold": threshold,
         "edge_threshold_source": threshold_source,
         "threshold_quantile": round(float(threshold_quantile), 6),

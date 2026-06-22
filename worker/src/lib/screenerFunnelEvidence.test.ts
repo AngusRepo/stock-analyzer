@@ -51,6 +51,7 @@ function assert(condition: unknown, message: string): void {
         strategy_labeler_version: 'strategy-labeler-v1',
         finlab_portfolio_intelligence_version: 'finlab-portfolio-intelligence-v1',
         strategy_router_version: 'multi-strategy-ple-router-v1',
+        l15_router_slate_selection_policy: 'l15-adaptive-marginal-slate-builder-v1',
         strategy_router_decision: 'ml_slate',
         strategy_router_reason: 'l15_ple_router_selected_by_strategy_portfolio_evidence',
         strategy_router_components: {
@@ -59,6 +60,18 @@ function assert(condition: unknown, message: string): void {
           strategy_reliability: 0.74,
           strategy_crowding_score: 0.18,
           strategy_diversification_value: 0.82,
+          marginal_utility_score: 84.2,
+          marginal_selection_step: 1,
+          learned_strategy_edge: 9.1,
+          strategy_uniqueness_bonus: 7.4,
+          family_diversification_bonus: 5.2,
+          exploration_bonus: 0.8,
+          overlap_penalty: 1.1,
+          crowding_penalty: 0.9,
+          new_strategy_ratio: 1,
+          new_family_ratio: 1,
+          strategy_rank_ic: 0.12,
+          strategy_cluster_uniqueness: 0.91,
           teacher_alignment: 0.69,
         },
         strategy_portfolio_metric_source: 'strategy_reward_ledger+strategy_decision_log+backtest_results',
@@ -202,6 +215,8 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.router_scope === 'full_candidate_slate_to_diversified_ml_slate', 'Layer1.5 router must route the full slate into diversified ML slate')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.decision_policy === 'diversified_ml_slate_not_topk', 'Layer1.5 router must not be summarized as top-k ranking')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.selection_policy === 'quality_floor_max_capacity_no_forced_fill', 'Layer1.5 router must expose quality-floor max-capacity selection policy')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.slate_selection_policy === 'l15-adaptive-marginal-slate-builder-v1', 'Layer1.5 router must expose adaptive marginal slate selection policy')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.self_learning_loop === 'strategy_decision_log_to_strategy_reward_ledger_to_strategy_portfolio_metrics_to_l15_marginal_utility', 'Layer1.5 router must expose reward-ledger feedback loop')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.capacity_policy === 'max_only_no_minimum_no_topup', 'Layer1.5 router must expose max-only capacity policy')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.no_minimum_fill === true, 'Layer1.5 router must explicitly reject minimum fill')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.is_topk_ranker === false, 'Layer1.5 router must explicitly reject top-k ranker semantics')
@@ -220,7 +235,12 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_count === 1, 'Layer1.5 summary should count production strategy support')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.research_strategy_count === 1, 'Layer1.5 summary should keep research attribution separate')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.portfolio_metric_source === 'strategy_reward_ledger+strategy_decision_log+backtest_results', 'Layer1.25 FinLab-style metric source must remain visible')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.reward_feedback_source === 'strategy_reward_ledger+strategy_decision_log+backtest_results', 'Layer1.5 marginal utility must expose reward feedback source')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_prior_weight === 1.2, 'Layer1.25 strategy prior should remain unnormalized')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.marginal_utility_score === 84.2, 'Layer1.5 summary should expose marginal utility score')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.learned_strategy_edge === 9.1, 'Layer1.5 summary should expose learned strategy edge')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.new_strategy_ratio === 1, 'Layer1.5 summary should expose strategy novelty signal')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_rank_ic === 0.12, 'Layer1.5 summary should expose learned RankIC signal')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.schema_version === 'layer2_3ml_coarse_summary_v1', 'Layer2 3ML coarse evidence must expose a stable summary schema')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.decision_policy === 'three_ml_coarse_screen_not_final_ranker', 'Layer2 3ML coarse must not be summarized as final ranking')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.expected_model_count === 3, 'Layer2 3ML coarse should keep the 3-model contract')
@@ -365,13 +385,13 @@ function assert(condition: unknown, message: string): void {
       symbol: '8999',
       stage: 'layer1_strategy_breadth_gate',
       decision: 'observe',
-      reason_code: 'raw_signal_top_up_observe_after_strategy_quota',
+      reason_code: 'raw_signal_top_up_observe_after_l15_adaptive_slate',
       rank: 88,
       score_after: 54,
       evidence: JSON.stringify({
         strategy_pool_fallback_source: 'raw_signal_top_up',
         strategy_pool_decision: 'research_only_queue',
-        strategy_pool_reason: 'raw_signal_top_up_observe_after_strategy_quota',
+        strategy_pool_reason: 'raw_signal_top_up_observe_after_l15_adaptive_slate',
         formal_l2_queue: false,
         candidate_route_score: 41,
       }),

@@ -10,15 +10,22 @@ export interface AdaptiveMetaPolicyReplayRow {
   price_error_pct?: number | string | null
   actual_return_pct?: number | string | null
   trade_pnl_pct?: number | string | null
-  forecast_data?: string | null
+  rank_score?: number | string | null
+  model_ic?: number | string | null
+  coverage?: number | string | null
+  prediction_dispersion?: number | string | null
+  data_quality?: number | string | null
+  market_breadth?: number | string | null
+  sector_heat?: number | string | null
+  liquidity?: number | string | null
+  fill_quality?: number | string | null
+  regime?: string | number | null
+  volatility?: number | string | null
+  market_risk?: number | string | null
   market_risk_score?: number | string | null
   market_segment?: string | null
   recommendation_lane?: string | null
   has_buy_signal?: number | boolean | null
-  score_components?: string | null
-  ml_vote_summary?: string | null
-  alpha_context?: string | null
-  alpha_allocation?: string | null
 }
 
 export interface AdaptiveMetaPolicyReplayOptions {
@@ -91,15 +98,66 @@ export async function listAdaptiveMetaPolicyReplayRows(
       p.price_error_pct,
       p.actual_return_pct,
       p.trade_pnl_pct,
-      p.forecast_data,
+      COALESCE(
+        CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.rank_score') END,
+        CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.ensemble_v2.avg_rank') END,
+        p.direction_accuracy
+      ) AS rank_score,
       p.market_risk_score,
       dr.market_segment,
       dr.recommendation_lane,
       dr.has_buy_signal,
-      dr.score_components,
-      dr.ml_vote_summary,
-      dr.alpha_context,
-      dr.alpha_allocation
+      COALESCE(
+        CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.ic_4w_avg') END,
+        CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.model_ic') END,
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.model_ic') END
+      ) AS model_ic,
+      COALESCE(
+        CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.coverage') END,
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.ml_coverage') END
+      ) AS coverage,
+      COALESCE(
+        CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.dispersion.rawRankStd') END,
+        CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.raw_rank_std') END,
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.prediction_dispersion') END
+      ) AS prediction_dispersion,
+      COALESCE(
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.data_quality') END,
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.data_quality') END
+      ) AS data_quality,
+      COALESCE(
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.market_breadth') END,
+        CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.market_breadth') END
+      ) AS market_breadth,
+      COALESCE(
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.sector_heat') END,
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.sector_heat') END,
+        CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.sector_heat') END
+      ) AS sector_heat,
+      COALESCE(
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.liquidity') END,
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.liquidity_score') END,
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.liquidity') END
+      ) AS liquidity,
+      COALESCE(
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.fill_quality') END,
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.fill_quality') END
+      ) AS fill_quality,
+      COALESCE(
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.regime') END,
+        CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.regime') END
+      ) AS regime,
+      COALESCE(
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.volatility') END,
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.volatility_score') END,
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.volatility') END
+      ) AS volatility,
+      COALESCE(
+        p.market_risk_score,
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.market_risk') END,
+        CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.market_risk_score') END,
+        CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.market_risk') END
+      ) AS market_risk
     FROM predictions p
     LEFT JOIN stocks s ON s.id = p.stock_id
     LEFT JOIN daily_recommendations dr

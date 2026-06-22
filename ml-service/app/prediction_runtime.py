@@ -26,7 +26,7 @@ from .arf_aggregator import (
     save_arf,
 )
 from .ensemble import weighted_vote
-from .features import build_feature_matrix, close_or_adjusted, close_price, get_features, get_lgbm_features, safe_float
+from .features import FEATURE_SCHEMA, build_feature_matrix, close_or_adjusted, close_price, get_features, get_lgbm_features, safe_float
 from .linucb_bandit import build_context, compute_dynamic_alpha, linucb_select, load_bandit
 from .models import (
     run_dlinear,
@@ -871,7 +871,9 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "target2": result.target2,
         "models": result.models,
         "features_used": feature_names,
-        "feature_version": "v2_universal_regression",
+        "feature_schema": FEATURE_SCHEMA,
+        "feature_count": len(feature_names),
+        "feature_version": f"{FEATURE_SCHEMA}:{len(feature_names)}",
         "model_errors": model_errors if model_errors else None,
         "ic_weights": {k: round(v, 4) for k, v in effective_ic_weights.items()} if effective_ic_weights else None,
         "ic_weight_scope": market_segment or "GLOBAL",

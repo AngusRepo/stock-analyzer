@@ -562,6 +562,9 @@ function buildLayer15MultiStrategyRouterSummary(
   const components = evidence.strategy_router_components && typeof evidence.strategy_router_components === 'object'
     ? evidence.strategy_router_components as Record<string, unknown>
     : {}
+  const slateSelectionPolicy = evidence.l15_router_slate_selection_policy
+    ?? evidence.slate_selection_policy
+    ?? null
   const hasRouterEvidence = evidence.strategy_router_version
     || routeScore != null
     || eligibility != null
@@ -577,6 +580,10 @@ function buildLayer15MultiStrategyRouterSummary(
     router_scope: 'full_candidate_slate_to_diversified_ml_slate',
     decision_policy: 'diversified_ml_slate_not_topk',
     selection_policy: 'quality_floor_max_capacity_no_forced_fill',
+    slate_selection_policy: slateSelectionPolicy,
+    adaptive_slate_builder: slateSelectionPolicy,
+    self_learning_loop: 'strategy_decision_log_to_strategy_reward_ledger_to_strategy_portfolio_metrics_to_l15_marginal_utility',
+    reward_feedback_source: evidence.strategy_portfolio_metric_source ?? null,
     capacity_policy: 'max_only_no_minimum_no_topup',
     no_topup_policy_scope: 'formal_ml_slate_no_minimum_fill',
     observe_topup_policy: 'research_observe_only_never_formal_l2',
@@ -614,6 +621,18 @@ function buildLayer15MultiStrategyRouterSummary(
     strategy_reliability: normalizeScore01(components.strategy_reliability),
     strategy_crowding_score: normalizeScore01(components.strategy_crowding_score),
     strategy_diversification_value: normalizeScore01(components.strategy_diversification_value),
+    marginal_utility_score: toNullableNumber(components.marginal_utility_score),
+    marginal_selection_step: toNullableNumber(components.marginal_selection_step),
+    learned_strategy_edge: toNullableNumber(components.learned_strategy_edge),
+    strategy_uniqueness_bonus: toNullableNumber(components.strategy_uniqueness_bonus),
+    family_diversification_bonus: toNullableNumber(components.family_diversification_bonus),
+    exploration_bonus: toNullableNumber(components.exploration_bonus),
+    overlap_penalty: toNullableNumber(components.overlap_penalty),
+    crowding_penalty: toNullableNumber(components.crowding_penalty),
+    new_strategy_ratio: normalizeScore01(components.new_strategy_ratio),
+    new_family_ratio: normalizeScore01(components.new_family_ratio),
+    strategy_rank_ic: toNullableNumber(components.strategy_rank_ic),
+    strategy_cluster_uniqueness: normalizeScore01(components.strategy_cluster_uniqueness),
     teacher_alignment: normalizeScore01(components.teacher_alignment),
     portfolio_metric_source: evidence.strategy_portfolio_metric_source ?? null,
     portfolio_metric_status: evidence.strategy_portfolio_metric_status ?? null,

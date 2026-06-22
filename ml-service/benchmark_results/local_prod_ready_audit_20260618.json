@@ -410,7 +410,7 @@
     {
       "id": "roadmap:p2:l4_sparse_zero_selection_diagnostics",
       "status": "pass",
-      "detail": "L4 sparse allocation writes per-candidate diagnostics for selected and zero-selection outcomes"
+      "detail": "L4 sparse allocation writes per-candidate diagnostics, allows zero selection, and evaluates the full eligible pool before sparse allocation"
     },
     {
       "id": "roadmap:v4:shared_similarity_evidence",

@@ -28,6 +28,7 @@ import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidenceP
 import { coerceModalStrategySimilarityGraphEvidence, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'
 import type { StrategySpec } from './strategySpec'
+import { materializeFormal137UsSentimentScoreRank, type Formal137UsSentimentMaterializationTelemetry } from './formal137FeatureMaterialization'
 import {
   buildFinLabTaxonomyThemeSignals,
   refreshStockThemeFeaturesFromSignals,
@@ -707,6 +708,9 @@ interface FinLabStyleFactorNormalizationTelemetry {
   sectorFieldCoverage: Record<string, number>
   compositeCoverage: Record<string, number>
   allocationCoverage: Record<string, number>
+  specialFeatureMaterialization: {
+    usSentimentScore: Formal137UsSentimentMaterializationTelemetry
+  }
 }
 
 function buildStockData(
@@ -1364,6 +1368,18 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
     sectorFieldCoverage: {},
     compositeCoverage: {},
     allocationCoverage: {},
+    specialFeatureMaterialization: {
+      usSentimentScore: {
+        method: 'formal137_us_sentiment_cross_sectional_exposure_rank_v1',
+        universeCount: candidates.length,
+        sentimentCoverage: 0,
+        exposureEligibleCount: 0,
+        materializedCount: 0,
+        skippedNeutralCount: 0,
+        skippedConstantExposureCount: 0,
+        componentCoverage: {},
+      },
+    },
   }
   const sortedByField = new Map<keyof StrategyRawSignals, number[]>()
   for (const field of FINLAB_STYLE_NORMALIZATION_FIELDS) {
@@ -1512,6 +1528,7 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
 
   }
 
+  telemetry.specialFeatureMaterialization.usSentimentScore = materializeFormal137UsSentimentScoreRank(candidates)
   return telemetry
 }
 
@@ -2505,7 +2522,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     `cs=${JSON.stringify(finLabFactorNormalizationTelemetry.fieldCoverage)} ` +
     `sector=${JSON.stringify(finLabFactorNormalizationTelemetry.sectorFieldCoverage)} ` +
     `composite=${JSON.stringify(finLabFactorNormalizationTelemetry.compositeCoverage)} ` +
-    `allocation=${JSON.stringify(finLabFactorNormalizationTelemetry.allocationCoverage)}`,
+    `allocation=${JSON.stringify(finLabFactorNormalizationTelemetry.allocationCoverage)} ` +
+    `special=${JSON.stringify(finLabFactorNormalizationTelemetry.specialFeatureMaterialization)}`,
   )
   debugLog.push(
     `[Step 1d] L0 raw signal coverage audit: status=${l0RawSignalCoverageAudit.status} ` +
@@ -2628,6 +2646,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       l15_router_ml_slate_count: layer1BreadthPlan.telemetry.l15_router_ml_slate_count ?? null,
       l15_router_observe_only_count: layer1BreadthPlan.telemetry.l15_router_observe_only_count ?? null,
       l15_router_capacity_overflow_count: layer1BreadthPlan.telemetry.l15_router_capacity_overflow_count ?? null,
+      l15_router_slate_selection_policy: layer1BreadthPlan.telemetry.l15_router_slate_selection_policy ?? null,
       strategy_matrix_candidate_count: layer1BreadthPlan.telemetry.strategy_matrix_candidate_count ?? null,
       strategy_matrix_strategy_count: layer1BreadthPlan.telemetry.strategy_matrix_strategy_count ?? null,
       strategy_matrix_cell_count: layer1BreadthPlan.telemetry.strategy_matrix_cell_count ?? null,
@@ -2660,6 +2679,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       pool_status: strategySelectionPlan.pools.map((pool: any) => ({
         strategy_id: pool.strategy_id,
         status: pool.status,
+        daily_match_status: pool.daily_match_status,
+        strict_match_count: pool.strict_match_count,
+        near_match_count: pool.near_match_count,
         quota: pool.quota,
         candidates: pool.candidates.length,
         regime_scope: pool.regime_scope,
@@ -2696,6 +2718,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_labeler_version: (candidate as any).strategy_labeler_version ?? null,
           finlab_portfolio_intelligence_version: layer1BreadthPlan.telemetry.finlab_portfolio_intelligence_version ?? null,
           strategy_router_version: (candidate as any).strategy_router_version ?? null,
+          l15_router_slate_selection_policy: layer1BreadthPlan.telemetry.l15_router_slate_selection_policy ?? null,
           strategy_router_score: (candidate as any).strategy_router_score ?? null,
           strategy_router_decision: (candidate as any).strategy_router_decision ?? null,
           strategy_router_reason: (candidate as any).strategy_router_reason ?? null,
@@ -2781,6 +2804,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_labeler_version: (candidate as any).strategy_labeler_version ?? null,
           finlab_portfolio_intelligence_version: layer1BreadthPlan.telemetry.finlab_portfolio_intelligence_version ?? null,
           strategy_router_version: (candidate as any).strategy_router_version ?? null,
+          l15_router_slate_selection_policy: layer1BreadthPlan.telemetry.l15_router_slate_selection_policy ?? null,
           strategy_router_score: (candidate as any).strategy_router_score ?? null,
           strategy_router_decision: (candidate as any).strategy_router_decision ?? null,
           strategy_router_reason: (candidate as any).strategy_router_reason ?? null,
@@ -2853,6 +2877,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_labeler_version: entry.strategy_labeler_version ?? null,
           finlab_portfolio_intelligence_version: layer1BreadthPlan.telemetry.finlab_portfolio_intelligence_version ?? null,
           strategy_router_version: entry.strategy_router_version ?? null,
+          l15_router_slate_selection_policy: layer1BreadthPlan.telemetry.l15_router_slate_selection_policy ?? null,
           strategy_router_score: entry.strategy_router_score ?? null,
           strategy_router_decision: entry.strategy_router_decision ?? null,
           strategy_router_reason: entry.strategy_router_reason ?? null,
@@ -3973,6 +3998,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // Screener ?芾?鞎?seed chip/tech/price嚗L-enriched recommendations ??ml-controller ????
+  let themeRuntimeTelemetry: Record<string, unknown> = { status: 'not_started' }
+
   try {
     const recBatch = finalCandidates.map((c, i) => {
       const sc = c as any
@@ -4084,11 +4111,25 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
     try {
       const themeRuntime = await materializeScreenerThemeRuntime(env.DB, endDate, seedSymbols)
+      const themeRuntimeStatus = themeRuntime.signals > 0 && themeRuntime.features > 0
+        ? 'ok'
+        : themeRuntime.signals > 0
+          ? 'partial'
+          : 'empty'
+      themeRuntimeTelemetry = {
+        status: themeRuntimeStatus,
+        signals: themeRuntime.signals,
+        tags: themeRuntime.tags,
+        features: themeRuntime.features,
+      }
       debugLog.push(
-        `[DB] theme runtime materialized signals=${themeRuntime.signals} ` +
+        `[DB] theme runtime ${themeRuntimeStatus} signals=${themeRuntime.signals} ` +
         `tags=${themeRuntime.tags} features=${themeRuntime.features}`,
       )
     } catch (e) {
+      const error = e instanceof Error ? e.message : String(e)
+      themeRuntimeTelemetry = { status: 'error', error }
+      debugLog.push(`[DB] theme runtime materialization failed: ${error.slice(0, 180)}`)
       console.warn('[Screener v2] theme runtime materialization failed:', e)
     }
 
@@ -4225,6 +4266,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         mlShortlistSize: screenerPolicy.sizing.mlShortlistSize,
         emergingResearchSize: screenerPolicy.sizing.emergingResearchSize,
         strategyCandidatePool: strategySelectionTelemetry,
+        themeRuntime: themeRuntimeTelemetry,
         rawFundamentalSignals: rawFundamentalLoad.telemetry,
         fundamental_loader_error: l0RawSignalCoverageAudit.fundamental_loader_error,
         l0RawSignalCoverageAudit,

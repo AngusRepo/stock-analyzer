@@ -579,11 +579,15 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
     allocation = promoted[0]["alpha_allocation"]
     assert allocation["selection_reason"] == "selected_positive_edge_sparse_weight"
+    assert allocation["sparse_weight_state"] == "selected_positive_sparse_weight"
     assert allocation["expected_return"] == 0.03
     assert allocation["expected_return_source"] == "ml_forecast_pct"
     assert allocation["positive_expected_edge"] is True
     assert allocation["eligible_for_sparse"] is True
     assert allocation["allocation_rank"] == 1
+    assert allocation["allocation_rank_policy"] == "diagnostic_only_not_capacity_gate"
+    assert allocation["input_candidate_pool_policy"] == "full_eligible_pool_no_buy_signal_rank_gate"
+    assert allocation["buy_signal_count_role"] == "maximum_selected_count_not_preallocation_rank_cut"
     assert allocation["sparse_diagnostics"]["candidate_count"] == 1
     assert allocation["sparse_diagnostics"]["selected_count"] == 1
 
@@ -733,6 +737,54 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
     assert selected[0]["alpha_allocation"]["hard_minimum_fill"] is False
 
 
+def test_sparse_tangent_allocation_does_not_pre_cut_by_buy_signal_rank():
+    rows = [
+        {
+            "symbol": "1111",
+            "chip_score": 25.0,
+            "tech_score": 25.0,
+            "confidence": 0.80,
+            "signal": "HOLD",
+            "has_buy_signal": 0,
+            "score": 99.0,
+            "ml_forecast_pct": 0.001,
+            "score_components": _score_components(final_score=99.0, ml_edge=25.0),
+        },
+        {
+            "symbol": "2222",
+            "chip_score": 18.0,
+            "tech_score": 18.0,
+            "confidence": 0.78,
+            "signal": "HOLD",
+            "has_buy_signal": 0,
+            "score": 75.0,
+            "ml_forecast_pct": 0.05,
+            "score_components": _score_components(final_score=75.0, ml_edge=20.0),
+        },
+    ]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=2),
+    )
+
+    selected = [row for row in promoted if row.get("alpha_allocation", {}).get("selected")]
+    assert [row["symbol"] for row in selected] == ["2222"]
+    allocations = {row["symbol"]: row["alpha_allocation"] for row in promoted}
+    assert allocations["1111"]["selection_reason"] in {
+        "positive_edge_but_zero_weight_due_to_better_alternative",
+        "positive_edge_but_zero_weight_due_to_correlation",
+    }
+    assert allocations["1111"]["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk"
+    assert allocations["1111"]["allocation_rank"] == 1
+    assert allocations["1111"]["allocation_rank_policy"] == "diagnostic_only_not_capacity_gate"
+    assert allocations["2222"]["allocation_rank"] == 2
+    assert allocations["2222"]["sparse_weight_state"] == "selected_positive_sparse_weight"
+    assert allocations["2222"]["sparse_diagnostics"]["evaluated_candidate_count"] == 2
+    assert allocations["2222"]["sparse_diagnostics"]["optimizer_evaluated_candidate_count"] == 2
+
+
 def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge():
     rows = [
         {
@@ -775,6 +827,7 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
     assert all(allocation["hard_minimum_fill"] is False for allocation in allocations)
     assert all(allocation["selection_policy"] == "positive_expected_edge_sparse_weights_no_forced_fill" for allocation in allocations)
     assert all(allocation["selection_reason"] == "no_positive_expected_edge" for allocation in allocations)
+    assert all(allocation["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk" for allocation in allocations)
     assert all(allocation["expected_return"] == 0.0 for allocation in allocations)
     assert all(allocation["positive_expected_edge"] is False for allocation in allocations)
     assert all("single_name_weight" in allocation for allocation in allocations)

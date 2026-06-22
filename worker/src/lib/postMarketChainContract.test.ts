@@ -16,6 +16,10 @@ const verifyCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("const verifyCanContinue"),
   callbackRoutes.indexOf("if (body.task === 'verify-v2' && String(body.status) === 'error')"),
 )
+const metaShadowBlock = postMarketChain.slice(
+  postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
+  postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
+)
 
 assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback must be explicitly handled')
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
@@ -121,6 +125,11 @@ assert(
 assert(
   postMarketChain.includes("{ critical: false }"),
   'Neural meta-learning shadow evidence must be non-critical for the production post-verify closure',
+)
+assert(
+  metaShadowBlock.includes("'meta-learning-shadow', () => runMetaLearningShadowClosure") &&
+    metaShadowBlock.includes('timeoutMs: TASK_EXECUTION_TIMEOUT_MS'),
+  'Neural meta-learning shadow must be timeout-bounded so it cannot leave post-verify/evening-chain triggered',
 )
 assert(
   postMarketChain.includes('recordWorkerTaskComputeProfile'),

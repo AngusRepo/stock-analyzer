@@ -43,6 +43,8 @@ def test_similarity_evidence_uses_official_graph_and_ledoitwolf_without_selector
     assert evidence["evidence_only"] is True
     assert evidence["method"] == "networkx_connected_components_abs_correlation"
     assert evidence["covariance_method"] == "ledoit_wolf"
+    assert evidence["correlation_method"] == "sample_returns"
+    assert evidence["covariance_pairwise_corr_max"] >= 0
     assert evidence["component_count"] >= 1
     assert evidence["effective_independent_count"] > 0
     assert symbol_cluster_evidence("AAA", evidence)["cluster_id"] == symbol_cluster_evidence("BBB", evidence)["cluster_id"]

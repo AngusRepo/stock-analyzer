@@ -1,4 +1,10 @@
-import { buildFinLabTaxonomyThemeSignals, buildStockThemeFeatureRows, buildV41SourceCoverageRows } from './v41DataRuntime'
+import {
+  buildFinLabTaxonomyThemeSignals,
+  buildStockThemeFeatureRows,
+  buildV41SourceCoverageRows,
+  upsertStockThemeFeatures,
+  upsertThemeSignals,
+} from './v41DataRuntime'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -103,3 +109,57 @@ assert(officialCoverage?.rows === 3, 'official evidence rows should be visible i
 assert(officialCoverage?.entity_link_confidence === 0.96, 'source coverage must expose entity-link confidence')
 assert(irCoverage?.runtime_state === 'disabled', 'company IR should stay disabled until curated allowlist exists')
 assert(gdeltCoverage?.runtime_state === 'missing', 'missing formal-shadow GDELT should be fail-visible, not invisible')
+
+function makeThemeBatchDb() {
+  const batchSizes: number[] = []
+  const db = {
+    prepare(_sql: string) {
+      return {
+        bind(..._params: unknown[]) {
+          return this
+        },
+      }
+    },
+    async batch(statements: unknown[]) {
+      batchSizes.push(statements.length)
+      return []
+    },
+  } as unknown as D1Database
+  return { db, batchSizes }
+}
+
+void (async () => {
+  const generatedAt = '2026-06-22T18:00:00+08:00'
+  const themeRows = Array.from({ length: 121 }, (_, index) => ({
+    date: '2026-06-22',
+    concept: `concept-${index}`,
+    source: 'finlab_taxonomy',
+    score: 1,
+    evidence_count: 1,
+    symbols_json: '[]',
+    top_titles: '[]',
+    generated_at: generatedAt,
+  }))
+  const featureRows = Array.from({ length: 121 }, (_, index) => ({
+    date: '2026-06-22',
+    symbol: `${1000 + index}`,
+    concept: `concept-${index}`,
+    score: 1,
+    evidence_count: 1,
+    source_breakdown_json: '{}',
+    top_titles: '[]',
+    generated_at: generatedAt,
+  }))
+
+  const themeDb = makeThemeBatchDb()
+  const featureDb = makeThemeBatchDb()
+
+  await upsertThemeSignals(themeDb.db, themeRows)
+  await upsertStockThemeFeatures(featureDb.db, featureRows)
+
+  assert(themeDb.batchSizes.join(',') === '50,50,21', 'theme_signals upsert must chunk D1 batches')
+  assert(featureDb.batchSizes.join(',') === '50,50,21', 'stock_theme_features upsert must chunk D1 batches')
+})().catch((error) => {
+  console.error(error)
+  process.exit(1)
+})

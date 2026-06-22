@@ -25,6 +25,8 @@ scripts/optuna_signal.py — Optuna 搜尋最佳 Signal Threshold + Screener Wei
 import argparse
 import json
 import sys
+from typing import Any
+
 import numpy as np
 import polars as pl
 
@@ -75,6 +77,40 @@ def load_from_d1(db_url: str, token: str) -> tuple[pl.DataFrame, pl.DataFrame]:
 
 # ── Evaluation ───────────────────────────────────────────────────────────────
 
+def _normalize_direction(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text in {"up", "buy", "strong_buy", "long", "bullish"} or "buy" in text:
+        return "up"
+    if text in {"down", "sell", "strong_sell", "short", "bearish"} or "sell" in text:
+        return "down"
+    return None
+
+
+def _extract_model_directions(models: Any) -> list[str]:
+    if isinstance(models, dict):
+        items = models.values()
+    elif isinstance(models, list):
+        items = models
+    else:
+        return []
+
+    directions: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        direction = _normalize_direction(
+            item.get("direction")
+            or item.get("predicted_direction")
+            or item.get("signal")
+            or item.get("trade_signal")
+        )
+        if direction:
+            directions.append(direction)
+    return directions
+
+
 def simulate_signals(
     predictions: pl.DataFrame,
     confidence_threshold: float,
@@ -100,8 +136,8 @@ def simulate_signals(
 
         # Simulate consensus (approximate from model data)
         models = forecast.get("models", {})
-        if models:
-            directions = [m.get("direction", "up") for m in models.values() if isinstance(m, dict)]
+        directions = _extract_model_directions(models)
+        if directions:
             up_count = sum(1 for d in directions if d == "up")
             consensus = up_count / max(len(directions), 1)
         else:

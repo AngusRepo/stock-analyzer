@@ -223,11 +223,16 @@ def allocate_sparse_tangent_with_evidence(
     keep the existing diagonal variance-floor risk path instead of reverting to
     rank-topK. If positive edge is missing, return empty weights and keep cash.
     """
-    selected = _ranked_candidates(candidates, top_k)
-    symbols = [_symbol(row) for row in selected]
-    expected_returns = [max(0.0, _expected_return(row)) for row in selected]
+    # Production sparse allocation evaluates the full eligible candidate pool.
+    # `top_k` is a maximum final holding count, not a pre-optimization rank gate.
+    evaluated = sorted([row for row in candidates if _symbol(row)], key=_score, reverse=True)
+    symbols = [_symbol(row) for row in evaluated]
+    expected_returns = [max(0.0, _expected_return(row)) for row in evaluated]
     empty_evidence = {
         "weights": {},
+        "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
+        "evaluated_candidate_count": len(evaluated),
+        "max_selected_count": max(1, int(top_k)),
         "similarity_evidence": similarity_components(
             symbols,
             return_history,
@@ -280,6 +285,12 @@ def allocate_sparse_tangent_with_evidence(
             "unallocated_cash_weight": 1.0,
         }
     weights = _cap_and_renormalize(raw, max_weight=max_weight)
+    selected_cap = max(1, int(top_k))
+    if len(weights) > selected_cap:
+        weights = dict(
+            sorted(weights.items(), key=lambda item: (-item[1], item[0]))[:selected_cap]
+        )
+        weights = _cap_and_renormalize(weights, max_weight=max_weight)
     similarity = similarity_components(
         symbols,
         return_history,
@@ -305,6 +316,9 @@ def allocate_sparse_tangent_with_evidence(
     unallocated_cash_weight = round(max(0.0, 1.0 - sum(capped_weights.values())), 10)
     return {
         "weights": capped_weights,
+        "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
+        "evaluated_candidate_count": len(evaluated),
+        "max_selected_count": selected_cap,
         "similarity_evidence": {
             **similarity,
             "covariance_method": covariance_packet.get("covariance_method") or similarity.get("covariance_method"),

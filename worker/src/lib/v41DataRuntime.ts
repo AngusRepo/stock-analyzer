@@ -78,6 +78,14 @@ const V41_SOURCE_COVERAGE_ROLES: Record<string, Omit<SourceCoverageRow, 'rows' |
 
 export const V41_SOURCE_COVERAGE_ORDER = Object.keys(V41_SOURCE_COVERAGE_ROLES)
 
+const THEME_RUNTIME_D1_BATCH_SIZE = 50
+
+async function runThemeRuntimeBatches(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {
+  for (let i = 0; i < statements.length; i += THEME_RUNTIME_D1_BATCH_SIZE) {
+    await db.batch(statements.slice(i, i + THEME_RUNTIME_D1_BATCH_SIZE))
+  }
+}
+
 function parseJsonArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String)
   if (typeof value !== 'string' || !value.trim()) return []
@@ -280,7 +288,7 @@ export async function upsertThemeSignals(db: D1Database, rows: ThemeSignalRow[])
     row.decision_effect ?? null,
     row.generated_at,
   ))
-  await db.batch(statements)
+  await runThemeRuntimeBatches(db, statements)
   return rows.length
 }
 
@@ -308,7 +316,7 @@ export async function upsertStockThemeFeatures(db: D1Database, rows: StockThemeF
     row.top_titles,
     row.generated_at,
   ))
-  await db.batch(statements)
+  await runThemeRuntimeBatches(db, statements)
   return rows.length
 }
 

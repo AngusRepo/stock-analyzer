@@ -440,7 +440,7 @@ def _fallback_momentum(prices: np.ndarray, horizon: int, stock_id: int, reason: 
     dates = _add_trading_days(last_date, horizon)
     forecasts = _make_forecast_points(forecast_vals, std, dates)
 
-    print(f"[{MODEL_NAME}] fallback momentum due to: {reason}")
+    logger.debug("[%s] fallback momentum due to: %s", MODEL_NAME, reason)
     pred = ModelPrediction(
         model_name=MODEL_NAME,
         direction="up" if is_up else "down",

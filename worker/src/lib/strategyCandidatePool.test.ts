@@ -282,6 +282,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   })
   assert(plan.mlSlate.length <= 3, 'L1.5 router capacity is a maximum, not a minimum')
   assert(plan.telemetry.capacity_policy === 'max_only_no_minimum', 'L1.5 router must document no minimum top-up policy')
+  assert(plan.telemetry.slate_selection_policy === 'l15-adaptive-marginal-slate-builder-v1', 'L1.5 router must use adaptive marginal slate construction, not routeScore top-k truncation')
   assert(plan.telemetry.strategy_matrix_candidate_count === broadCandidates.length, 'L1 label matrix candidate count must follow runtime L0 universe size')
   assert(plan.telemetry.strategy_matrix_strategy_count === [broadSpec, nicheSpec].length, 'L1 label matrix strategy dimension must follow current strategy count')
   assert(plan.telemetry.strategy_matrix_cell_count === broadCandidates.length * [broadSpec, nicheSpec].length, 'L1 label matrix must cover runtime candidates x current strategies')
@@ -291,6 +292,9 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.mlSlate.some((candidate) => candidate.symbol === '6115'), 'FinLab-style portfolio intelligence should let niche multi-family support survive broad crowded labels')
   const niche = plan.mlSlate.find((candidate) => candidate.symbol === '6115') as any
   assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
+  assert(niche.strategy_router_reason === 'l15_adaptive_marginal_utility_selected', 'routed candidate should expose marginal-utility selection reason')
+  assert(niche.marginal_utility_score != null, 'L1.5 selected candidate should expose marginal utility score')
+  assert(niche.strategy_router_components?.marginal_utility_score != null, 'L1.5 selected candidate should persist marginal utility components')
   assert((niche.strategy_family_ids ?? []).length === 2, 'niche candidate should retain cross-family strategy evidence')
   assert(Object.keys(niche.strategy_hit_vector ?? {}).length === [broadSpec, nicheSpec].length, 'L1 labeler must expose full current-strategy matrix width')
   assert(niche.strategy_weak_label_vector?.broad_everything_v1 != null, 'L1 labeler must expose weak labels per strategy')
@@ -548,6 +552,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   }]
   const pools = buildStrategyCandidatePools(candidates.slice(0, 12), nearMatchSpecs, { regime: 'bull' })
   assert(pools[0].status === 'adaptive_near_match', 'empty strict pool should expose adaptive near-match status')
+  assert(pools[0].daily_match_status === 'shadow_near_match', 'near-match pool should be explicitly separated from daily strict matches')
+  assert(pools[0].strict_match_count === 0 && pools[0].near_match_count > 0, 'near-match pool should expose strict/near match counts')
   assert(pools[0].missing_evidence.includes('strict_threshold_match_empty'), 'adaptive near-match should be explicit evidence, not silent fallback')
   assert(
     pools[0].candidates[0]?.reason.startsWith('adaptive_near_match:'),
@@ -579,6 +585,59 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   }
   const pools = buildStrategyCandidatePools(candidates.slice(0, 12), [activeNoMatchSpec], { regime: 'bull' })
   assert(pools[0].candidates.length === 0, 'active production strategies should not produce adaptive empty-pool garbage')
+}
+
+{
+  const activeFormal137Spec = {
+    id: 'active_formal137_feature_ref_no_near_match_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Active formal137 feature ref strict test',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Active feature-ref strategies must fail closed when strict formal137 evidence is missing.',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 1.4,
+      featureRefs: {
+        weightedScore: {
+          min: 0.58,
+          terms: [
+            { featureRef: 'us_sentiment_score', signal: 'factorSignals.us_sentiment_score', weight: 0.48 },
+            { featureRef: 'margin_balance', signal: 'factorSignals.margin_balance', weight: 0.52 },
+          ],
+        },
+      },
+    },
+    candidatePolicy: { poolQuota: 8, costBudget: 8, evidenceRequirements: ['formal137'] },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const nearMissWithoutFormalSentiment = {
+    ...candidates[0],
+    symbol: '9919',
+    current_price: 30,
+    raw_signals: {
+      close: 30,
+      volumeExpansion20: 1.2,
+      marginBalance: 100,
+      factorSignals: {
+        us_sentiment_score: 1,
+        margin_balance: 100,
+        formal137MarginBalanceRank: 0.9,
+      },
+    },
+  }
+  const pools = buildStrategyCandidatePools([nearMissWithoutFormalSentiment], [activeFormal137Spec], { regime: 'bull' })
+  assert(pools[0].status === 'ready', 'active formal137 strict-empty pool should not be labeled adaptive_near_match')
+  assert(pools[0].daily_match_status === 'strict_empty_feature_ref', 'active formal137 strict-empty pool should expose daily strict feature-ref miss')
+  assert(pools[0].strict_match_count === 0 && pools[0].near_match_count === 0, 'active formal137 strict-empty pool should not count near-match rows')
+  assert(pools[0].candidates.length === 0, 'active formal137 feature-ref pool should fail closed instead of near-match filling')
+  assert(
+    pools[0].missing_evidence.includes('strict_feature_ref_match_empty'),
+    'active formal137 strict-empty pool should expose feature-ref missing evidence',
+  )
 }
 
 {
@@ -715,7 +774,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     coarseMlQueueSize: 2,
     regime: 'bull',
   })
-  const topUp = plan.breadthPool.find((candidate: any) => candidate.strategy_pool_reason === 'raw_signal_top_up_observe_after_strategy_quota') as any
+  const topUp = plan.breadthPool.find((candidate: any) => candidate.strategy_pool_reason === 'raw_signal_top_up_observe_after_l15_adaptive_slate') as any
   assert(topUp, 'empty strategy pools should still expose raw signals as Layer1 observe evidence')
   assert((topUp.strategy_pool_ids ?? []).length === 0, 'raw signal top-up must not masquerade as a registered production strategy id')
   assert(topUp.strategy_pool_fallback_source === 'raw_signal_top_up', 'raw signal top-up source should be explicit outside strategy ids')

@@ -18,6 +18,80 @@ function twDateString() {
   return twNow().toISOString().slice(0, 10)
 }
 
+type MlControllerProbeResult = {
+  ok: boolean
+  summary: string
+}
+
+function warmupTargetSummary(body: unknown): MlControllerProbeResult {
+  const targets = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, unknown>).targets
+    : null
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
+    return { ok: false, summary: 'targets=unknown' }
+  }
+
+  const entries = Object.entries(targets)
+  if (!entries.length) return { ok: false, summary: 'targets=empty' }
+
+  const parts = entries.map(([name, value]) => {
+    const record = value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {}
+    const status = typeof record.status === 'string' && record.status.trim()
+      ? record.status.trim()
+      : 'unknown'
+    return `${name}=${status}`
+  })
+
+  return {
+    ok: entries.every(([, value]) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+      return (value as Record<string, unknown>).status === 'ok'
+    }),
+    summary: parts.join(' '),
+  }
+}
+
+async function probeMlController(env: Bindings): Promise<string> {
+  if (!env.ML_CONTROLLER_URL) return 'ML-Controller:skip(no ML_CONTROLLER_URL)'
+
+  const headers = env.ML_CONTROLLER_SECRET ? { 'X-Controller-Token': env.ML_CONTROLLER_SECRET } : {}
+  let warmupNote = ''
+  try {
+    const warmup = await fetch(`${env.ML_CONTROLLER_URL}/warmup`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(45_000),
+    })
+    if (warmup.ok) {
+      const body = await warmup.json().catch(() => ({})) as any
+      const targets = warmupTargetSummary(body)
+      return targets.ok
+        ? `ML-Controller:ok warmup=ok ${targets.summary}`
+        : `ML-Controller:fail(warmup degraded ${targets.summary})`
+    }
+    warmupNote = `warmup_http=${warmup.status}`
+  } catch (e: any) {
+    warmupNote = `warmup_error=${e?.message ?? String(e)}`
+  }
+
+  try {
+    const res = await fetch(`${env.ML_CONTROLLER_URL}/health`, {
+      headers,
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!res.ok) return `ML-Controller:fail(${res.status}; ${warmupNote})`
+    const health = await res.json().catch(() => ({})) as any
+    const pipelineJob = health.pipelineJobConfigured ? 'ok' : 'missing'
+    const verifyJob = health.verifyJobConfigured ? 'ok' : 'missing'
+    const callback = health.callbackConfigured ? 'ok' : 'missing'
+    return `ML-Controller:ok health_fallback ${warmupNote} pipelineJob=${pipelineJob} verifyJob=${verifyJob} callback=${callback}`
+  } catch (e: any) {
+    return `ML-Controller:error(${warmupNote}; health_error=${e?.message ?? String(e)})`
+  }
+}
+
 export async function settlePaperT2(env: Bindings) {
   const today = twToday()
   const matured = await env.DB.prepare(
@@ -56,27 +130,7 @@ export async function runPreMarketWarmup(env: Bindings) {
     results.push('Frontend:skip(no PAGES_ORIGIN)')
   }
 
-  if (env.ML_CONTROLLER_URL) {
-    try {
-      const res = await fetch(`${env.ML_CONTROLLER_URL}/health`, {
-        headers: env.ML_CONTROLLER_SECRET ? { 'X-Controller-Token': env.ML_CONTROLLER_SECRET } : {},
-        signal: AbortSignal.timeout(15_000),
-      })
-      if (!res.ok) {
-        results.push(`ML-Controller:fail(${res.status})`)
-      } else {
-        const health = await res.json().catch(() => ({})) as any
-        const pipelineJob = health.pipelineJobConfigured ? 'ok' : 'missing'
-        const verifyJob = health.verifyJobConfigured ? 'ok' : 'missing'
-        const callback = health.callbackConfigured ? 'ok' : 'missing'
-        results.push(`ML-Controller:ok pipelineJob=${pipelineJob} verifyJob=${verifyJob} callback=${callback}`)
-      }
-    } catch (e: any) {
-      results.push(`ML-Controller:error(${e.message})`)
-    }
-  } else {
-    results.push('ML-Controller:skip(no ML_CONTROLLER_URL)')
-  }
+  results.push(await probeMlController(env))
 
   const proxyUrl = (env as any).SHIOAJI_PROXY_URL as string | undefined
   if (proxyUrl) {

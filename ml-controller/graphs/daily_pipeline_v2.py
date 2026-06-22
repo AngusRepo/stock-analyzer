@@ -65,6 +65,7 @@ from services.recommendation_service import (
     apply_sparse_tangent_allocation,
     load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
+    write_layer2_core_gate_audit,
     write_layer3_formal_gate_audit,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
@@ -2501,6 +2502,13 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
     stale_predictions_deleted = prune_predictions_outside_universe(list(stock_id_map.values()), run_date)
     predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map, run_date)
+    layer2_audit_rows = write_layer2_core_gate_audit(
+        predictions=state["predictions"],
+        screener_recs=state.get("screener_recs") or [],
+        run_date=run_date,
+        screener_run_id=state.get("screener_run_id"),
+        target_size=(state.get("l2_core_ml_gate_summary") or {}).get("target_size"),
+    )
     layer3_audit_rows = write_layer3_formal_gate_audit(
         predictions=state["predictions"],
         recommendations=state.get("final_recommendations") or [],
@@ -2563,6 +2571,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     metrics = {
         "predictions_written": predictions_written,
+        "layer2_core_gate_audit_rows": layer2_audit_rows,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
         "prediction_symbols": len(stock_id_map),
         "prediction_output_models": prediction_output_models,

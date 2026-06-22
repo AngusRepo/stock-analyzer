@@ -76,7 +76,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('loadSelectionHistoryFlags'), 'screener repeat/new-money history must be a reusable domain helper')
   assert(marketScreener.includes('dedupeScreenerCandidatesBySymbol'), 'screener must dedupe symbols before writing funnel counts and daily seeds')
   assert(marketScreener.includes('finalCandidates = dedupeScreenerCandidatesBySymbol'), 'tradable funnel count must use the deduped ML shortlist')
-  assert(marketScreener.includes('buildLayer1StrategyBreadthPlan'), 'L1 breadth pool must be strategy-quota driven from the full feature-enriched universe')
+  assert(marketScreener.includes('buildLayer1StrategyBreadthPlan'), 'L1 breadth pool must be driven by the L1.5 adaptive router from the full feature-enriched universe')
   assert(!marketScreener.includes('preRankPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)'), 'L1 breadth pool must not be pre-ranked by score top 200')
   assert(marketScreener.includes('layer1BreadthPool'), 'marketScreener should name the Layer1 breadth pool explicitly')
   assert(marketScreener.includes('passesLayer1TopUpQualityGuard'), 'post-overlay L1 top-up must not bypass raw strategy quality guards')

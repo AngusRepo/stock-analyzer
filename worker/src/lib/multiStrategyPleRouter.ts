@@ -17,6 +17,7 @@ import {
 export const STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'finlab-portfolio-intelligence-v1'
 export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-ple-router-v1'
+export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-adaptive-marginal-slate-builder-v1'
 export const ACTIVE_9_ML_TEACHERS = [
   'LightGBM',
   'XGBoost',
@@ -124,6 +125,9 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   strategy_router_decision?: StrategyRouterDecision
   strategy_router_reason?: string
   strategy_router_components?: MultiStrategyPleRouterComponents
+  marginal_utility_score?: number
+  marginal_utility_rank?: number
+  marginal_utility_components?: Record<string, number>
 }
 
 interface StrategyLabel {
@@ -183,6 +187,7 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     observe_only_count: number
     capacity_overflow_count: number
     capacity_policy: 'max_only_no_minimum'
+    slate_selection_policy: typeof L15_MARGINAL_SLATE_BUILDER_VERSION
     min_route_score: number
     min_route_score_source: 'config_explicit' | 'adaptive_route_score_distribution' | 'adaptive_no_active_scores'
     route_score_distribution: Record<'p10' | 'p25' | 'p50' | 'p75' | 'p90', number | null>
@@ -899,6 +904,173 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   return out
 }
 
+function averageStrategyMetric(
+  prior: StrategyPortfolioPriorSnapshot,
+  strategyIds: string[],
+  key: keyof StrategyPortfolioMetrics,
+  fallback = 0,
+): number {
+  const values = strategyIds
+    .map((strategyId) => finiteNumber(prior.strategy_metrics[strategyId]?.[key]))
+    .filter((value): value is number => value != null)
+  return average(values, fallback)
+}
+
+function averageClusterUniqueness(prior: StrategyPortfolioPriorSnapshot, strategyIds: string[]): number {
+  const values = strategyIds
+    .map((strategyId) => finiteNumber(prior.strategy_cluster_uniqueness_score[strategyId]))
+    .filter((value): value is number => value != null)
+  return average(values, 0.5)
+}
+
+function setIntersectionRatio(values: string[], selected: Set<string>): number {
+  const clean = uniqueTexts(values)
+  if (!clean.length) return 0
+  const hits = clean.filter((value) => selected.has(value)).length
+  return hits / clean.length
+}
+
+function setNewRatio(values: string[], selected: Set<string>): number {
+  const clean = uniqueTexts(values)
+  if (!clean.length) return 0
+  const fresh = clean.filter((value) => !selected.has(value)).length
+  return fresh / clean.length
+}
+
+function familyExposureShare(values: string[], selectedFamilyUsage: Record<string, number>, selectedCount: number): number {
+  const clean = uniqueTexts(values)
+  if (!clean.length || selectedCount <= 0) return 0
+  const exposure = clean.reduce((sum, familyId) => sum + (selectedFamilyUsage[familyId] ?? 0), 0)
+  return exposure / Math.max(1, selectedCount * clean.length)
+}
+
+function marginalUtilityForSlateCandidate<T extends StrategyCandidatePoolCandidate>(
+  candidate: T & MultiStrategyPleAnnotatedCandidate,
+  prior: StrategyPortfolioPriorSnapshot,
+  selected: Array<T & MultiStrategyPleAnnotatedCandidate>,
+): { score: number; components: Record<string, number> } {
+  const strategyIds = uniqueTexts(candidate.strategy_pool_ids ?? [])
+  const familyIds = uniqueTexts(candidate.strategy_family_ids ?? [])
+  const selectedStrategies = new Set(selected.flatMap((row) => row.strategy_pool_ids ?? []))
+  const selectedFamilies = new Set(selected.flatMap((row) => row.strategy_family_ids ?? []))
+  const selectedFamilyUsage = countBy(selected.flatMap((row) => row.strategy_family_ids ?? []))
+  const routeScore = finiteNumber(candidate.strategy_router_score) ?? 0
+  const riskAdjustedAffinity = finiteNumber(candidate.risk_adjusted_affinity) ?? 0
+  const diversity = finiteNumber(candidate.diversity_contribution) ?? 0
+  const uncertainty = finiteNumber(candidate.uncertainty) ?? 0
+  const avgPrior = averageStrategyMetric(prior, strategyIds, 'prior_weight', 1)
+  const avgReliability = averageStrategyMetric(prior, strategyIds, 'reliability', 0.5)
+  const avgCrowding = averageStrategyMetric(prior, strategyIds, 'crowding_score', 0)
+  const avgOverlap = averageStrategyMetric(prior, strategyIds, 'holding_overlap', 0)
+  const avgRankIc = averageStrategyMetric(prior, strategyIds, 'rank_ic', 0)
+  const avgUniqueness = averageClusterUniqueness(prior, strategyIds)
+  const sharedStrategyRatio = setIntersectionRatio(strategyIds, selectedStrategies)
+  const newStrategyRatio = setNewRatio(strategyIds, selectedStrategies)
+  const sharedFamilyRatio = setIntersectionRatio(familyIds, selectedFamilies)
+  const newFamilyRatio = setNewRatio(familyIds, selectedFamilies)
+  const familyShare = familyExposureShare(familyIds, selectedFamilyUsage, selected.length)
+  const base_route_score = routeScore * 0.56
+  const learned_strategy_edge = clamp(
+    (avgPrior * avgReliability * (1 - avgCrowding) * 9)
+    + Math.max(0, avgRankIc) * 14
+    + riskAdjustedAffinity * 0.06,
+    0,
+    18,
+  )
+  const strategy_uniqueness_bonus = clamp(newStrategyRatio * 8 + avgUniqueness * 4 + diversity * 4, 0, 16)
+  const family_diversification_bonus = clamp(newFamilyRatio * 7 + diversity * 3 - familyShare * 8, -8, 12)
+  const exploration_bonus = clamp(uncertainty * diversity * 4 + (newStrategyRatio > 0 ? uncertainty * 1.5 : 0), 0, 5)
+  const overlap_penalty = clamp(sharedStrategyRatio * 10 + sharedFamilyRatio * 5 + avgOverlap * 8, 0, 20)
+  const crowding_penalty = clamp(avgCrowding * 8 + familyShare * 6, 0, 16)
+  const score = round3(clamp(
+    base_route_score
+    + learned_strategy_edge
+    + strategy_uniqueness_bonus
+    + family_diversification_bonus
+    + exploration_bonus
+    - overlap_penalty
+    - crowding_penalty,
+    0,
+    100,
+  ))
+  return {
+    score,
+    components: {
+      base_route_score: round3(base_route_score),
+      learned_strategy_edge: round3(learned_strategy_edge),
+      strategy_uniqueness_bonus: round3(strategy_uniqueness_bonus),
+      family_diversification_bonus: round3(family_diversification_bonus),
+      exploration_bonus: round3(exploration_bonus),
+      overlap_penalty: round3(overlap_penalty),
+      crowding_penalty: round3(crowding_penalty),
+      shared_strategy_ratio: round3(sharedStrategyRatio),
+      new_strategy_ratio: round3(newStrategyRatio),
+      shared_family_ratio: round3(sharedFamilyRatio),
+      new_family_ratio: round3(newFamilyRatio),
+      selected_family_exposure_share: round3(familyShare),
+      strategy_reliability: round3(avgReliability),
+      strategy_crowding_score: round3(avgCrowding),
+      strategy_rank_ic: round3(avgRankIc),
+      strategy_cluster_uniqueness: round3(avgUniqueness),
+    },
+  }
+}
+
+function selectAdaptiveMarginalSlate<T extends StrategyCandidatePoolCandidate>(
+  candidates: Array<T & MultiStrategyPleAnnotatedCandidate>,
+  prior: StrategyPortfolioPriorSnapshot,
+  maxSlateSize: number,
+): {
+  selected: Array<T & MultiStrategyPleAnnotatedCandidate>
+  annotated: Array<T & MultiStrategyPleAnnotatedCandidate>
+} {
+  const remaining = [...candidates]
+  const selected: Array<T & MultiStrategyPleAnnotatedCandidate> = []
+  while (selected.length < maxSlateSize && remaining.length) {
+    let bestIndex = 0
+    let best = marginalUtilityForSlateCandidate(remaining[0], prior, selected)
+    for (let idx = 1; idx < remaining.length; idx += 1) {
+      const current = marginalUtilityForSlateCandidate(remaining[idx], prior, selected)
+      const currentRoute = finiteNumber(remaining[idx].strategy_router_score) ?? 0
+      const bestRoute = finiteNumber(remaining[bestIndex].strategy_router_score) ?? 0
+      if (
+        current.score > best.score
+        || (current.score === best.score && currentRoute > bestRoute)
+        || (current.score === best.score && currentRoute === bestRoute && cleanText(remaining[idx].symbol) < cleanText(remaining[bestIndex].symbol))
+      ) {
+        bestIndex = idx
+        best = current
+      }
+    }
+    const [candidate] = remaining.splice(bestIndex, 1)
+    selected.push({
+      ...candidate,
+      marginal_utility_score: best.score,
+      marginal_utility_rank: selected.length + 1,
+      marginal_utility_components: {
+        ...best.components,
+        marginal_selection_step: selected.length + 1,
+      },
+    })
+  }
+  const selectedSymbols = new Set(selected.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
+  const annotated = candidates.map((candidate) => {
+    if (selectedSymbols.has(cleanText(candidate.symbol).toUpperCase())) {
+      return selected.find((row) => cleanText(row.symbol).toUpperCase() === cleanText(candidate.symbol).toUpperCase()) ?? candidate
+    }
+    const evidence = marginalUtilityForSlateCandidate(candidate, prior, selected)
+    return {
+      ...candidate,
+      marginal_utility_score: evidence.score,
+      marginal_utility_components: {
+        ...evidence.components,
+        marginal_selection_step: 0,
+      },
+    }
+  })
+  return { selected, annotated }
+}
+
 export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCandidate>(
   candidates: T[],
   specs: StrategySpec[],
@@ -921,18 +1093,37 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   const annotated = states.map((state) => annotateCandidate(state, prior, maxSlateSize, minRouteScore, options))
   const routed = annotated
     .filter((candidate) => candidate.strategy_router_decision === 'ml_slate')
-    .sort((a, b) => (b.strategy_router_score ?? 0) - (a.strategy_router_score ?? 0))
-  const selectedSymbols = new Set(routed.slice(0, maxSlateSize).map((candidate) => cleanText(candidate.symbol).toUpperCase()))
-  const mlSlate = annotated
+  const marginalSlate = selectAdaptiveMarginalSlate(routed, prior, maxSlateSize)
+  const selectedSymbols = new Set(marginalSlate.selected.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
+  const marginalEvidenceBySymbol = new Map(
+    marginalSlate.annotated.map((candidate) => [cleanText(candidate.symbol).toUpperCase(), candidate]),
+  )
+  const annotatedWithMarginalEvidence = annotated.map((candidate) => {
+    const symbol = cleanText(candidate.symbol).toUpperCase()
+    return marginalEvidenceBySymbol.get(symbol) ?? candidate
+  })
+  const mlSlate = annotatedWithMarginalEvidence
     .filter((candidate) => selectedSymbols.has(cleanText(candidate.symbol).toUpperCase()))
-    .sort((a, b) => (b.strategy_router_score ?? 0) - (a.strategy_router_score ?? 0))
+    .sort((a, b) => (a.marginal_utility_rank ?? 999999) - (b.marginal_utility_rank ?? 999999))
     .map((candidate, index) => ({
       ...candidate,
       strategy_pool_rank: index + 1,
       strategy_router_decision: 'ml_slate' as const,
+      strategy_router_reason: 'l15_adaptive_marginal_utility_selected',
       strategy_pool_decision: 'ml_queue' as const,
+      strategy_pool_reason: 'l15_adaptive_marginal_utility_selected',
+      strategy_router_components: {
+        ...(candidate.strategy_router_components ?? {}),
+        ...(candidate.marginal_utility_components ?? {}),
+        marginal_utility_score: candidate.marginal_utility_score ?? 0,
+      } as MultiStrategyPleRouterComponents,
+      strategy_watch_points: uniqueTexts([
+        ...(candidate.strategy_watch_points ?? []),
+        `l15_marginal_utility_score:${(candidate.marginal_utility_score ?? 0).toFixed(3)}`,
+        `l15_marginal_utility_rank:${index + 1}`,
+      ]),
     }))
-  const observeOnly = annotated
+  const observeOnly = annotatedWithMarginalEvidence
     .filter((candidate) => {
       const symbol = cleanText(candidate.symbol).toUpperCase()
       return !selectedSymbols.has(symbol)
@@ -942,9 +1133,14 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
         return {
           ...candidate,
           strategy_router_decision: 'capacity_overflow' as const,
-          strategy_router_reason: 'l15_capacity_cap_not_minimum',
+          strategy_router_reason: 'l15_marginal_utility_not_selected_capacity_max',
           strategy_pool_decision: 'research_only_queue' as const,
-          strategy_pool_reason: 'l15_capacity_cap_not_minimum',
+          strategy_pool_reason: 'l15_marginal_utility_not_selected_capacity_max',
+          strategy_router_components: {
+            ...(candidate.strategy_router_components ?? {}),
+            ...(candidate.marginal_utility_components ?? {}),
+            marginal_utility_score: candidate.marginal_utility_score ?? 0,
+          } as MultiStrategyPleRouterComponents,
         }
       }
       return candidate
@@ -952,13 +1148,13 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   const strategyUsage = countBy(mlSlate.flatMap((candidate) => candidate.strategy_pool_ids ?? []))
   const familyUsage = countBy(mlSlate.flatMap((candidate) => candidate.strategy_family_ids ?? []) as StrategyFamilyId[])
   const metricStatusCounts = countBy(Object.values(prior.strategy_metric_status))
-  const routeScores = annotated
+  const routeScores = annotatedWithMarginalEvidence
     .filter((candidate) => (candidate.strategy_pool_ids ?? []).length > 0 && eligibleForMl(candidate))
     .map((candidate) => finiteNumber(candidate.strategy_router_score))
     .filter((score): score is number => score != null)
   const routeScoreAboveFloorCount = routeScores.filter((score) => score >= minRouteScore).length
-  const teacherAvailableCount = annotated.filter((candidate) => (candidate.strategy_router_components?.teacher_label_count ?? 0) > 0).length
-  const runtimeTeacherAvailableCount = annotated.filter((candidate) => (candidate.strategy_router_components?.runtime_teacher_evidence_count ?? 0) > 0).length
+  const teacherAvailableCount = annotatedWithMarginalEvidence.filter((candidate) => (candidate.strategy_router_components?.teacher_label_count ?? 0) > 0).length
+  const runtimeTeacherAvailableCount = annotatedWithMarginalEvidence.filter((candidate) => (candidate.strategy_router_components?.runtime_teacher_evidence_count ?? 0) > 0).length
 
   return {
     version: MULTI_STRATEGY_PLE_ROUTER_VERSION,
@@ -997,6 +1193,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       observe_only_count: observeOnly.length,
       capacity_overflow_count: observeOnly.filter((candidate) => candidate.strategy_router_decision === 'capacity_overflow').length,
       capacity_policy: 'max_only_no_minimum',
+      slate_selection_policy: L15_MARGINAL_SLATE_BUILDER_VERSION,
       min_route_score: minRouteScore,
       min_route_score_source: routeFloor.source,
       route_score_distribution: routeFloor.distribution,

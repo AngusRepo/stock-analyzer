@@ -61,6 +61,32 @@ def _seed_ready_evidence(root: Path, audit_payload: dict[str, object] | None = N
             },
         }),
     )
+    _write(
+        root / "ml-service/benchmark_results/artifact_lifecycle_repair_packet_20260621.json",
+        json.dumps({
+            "schema_version": "artifact-lifecycle-repair-packet-v1",
+            "decision_effect": "local_repair_plan_only",
+            "production_mutation_allowed": False,
+            "summary": {
+                "production_pointer_fail_closed_repairs": ["PatchTST", "iTransformer"],
+                "offline_pass_pending_release": ["DLinear", "ExtraTrees", "LightGBM", "XGBoost"],
+            },
+            "actions": [
+                {
+                    "model_name": "PatchTST",
+                    "root_cause": "production_pointer_updated_despite_cpcv_coverage_contract_drift",
+                    "production_mutation_allowed": False,
+                    "requires_wei_approval": True,
+                },
+                {
+                    "model_name": "iTransformer",
+                    "root_cause": "production_pointer_updated_despite_true_performance_fail",
+                    "production_mutation_allowed": False,
+                    "requires_wei_approval": True,
+                },
+            ],
+        }),
+    )
     _write(root / "data/feature_registry/unified_feature_registry_v1.json", json.dumps({"features": []}))
     _write(root / "data/feature_registry/feature_view_contract_v1.json", json.dumps({"status": "ok"}))
     _write(root / "data/feature_registry/ml_feature_selection_contract_v1.json", json.dumps({"status": "migration_required"}))

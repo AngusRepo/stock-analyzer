@@ -14,6 +14,7 @@
     "p3_model_pool_ui_observability",
     "finlab_p0_p9_l0_l125_l15_l4_raw_signal_portfolio_intelligence_closure",
     "formal137_p0_p10_repair_no_partial_local_closure",
+    "artifact_lifecycle_p0_p8_repair_no_partial_local_closure",
     "p12_production_cutover_preflight_packet_and_remote_readonly_audit"
   ],
   "local_closure": "done",
@@ -770,6 +771,36 @@
       "id": "roadmap:p12:remote_preflight_expected_checks",
       "status": "pass",
       "detail": "P12 remote preflight covers Scheduler, controller env, D1 ledger, strategy seed, and registry schema"
+    },
+    {
+      "id": "artifact_lifecycle:p6:repair_packet_present",
+      "status": "pass",
+      "detail": "P6 artifact lifecycle repair packet is present"
+    },
+    {
+      "id": "artifact_lifecycle:p6:repair_packet_fresh",
+      "status": "pass",
+      "detail": "P6 artifact lifecycle repair packet is newer than source evidence and builder"
+    },
+    {
+      "id": "artifact_lifecycle:p6:repair_packet_schema",
+      "status": "pass",
+      "detail": "P6 artifact lifecycle repair packet uses the expected schema"
+    },
+    {
+      "id": "artifact_lifecycle:p6:repair_packet_non_mutating",
+      "status": "pass",
+      "detail": "P6 repair packet is local-only and every action requires Wei approval"
+    },
+    {
+      "id": "artifact_lifecycle:p6:sequence_repair_actions",
+      "status": "pass",
+      "detail": "P6 repair packet separates PatchTST coverage-contract recompute from iTransformer true performance fail"
+    },
+    {
+      "id": "artifact_lifecycle:p6:offline_pass_pending_release_actions",
+      "status": "pass",
+      "detail": "P6 repair packet includes offline-pass candidates that need promotion-controller approval before release"
     },
     {
       "id": "formal137:p0_p10_repair_validator",

@@ -33,6 +33,11 @@
       "exists": true
     },
     {
+      "path": "ml-service/benchmark_results/artifact_lifecycle_repair_packet_20260621.json",
+      "required": true,
+      "exists": true
+    },
+    {
       "path": "output/feature_universe_triage/feature_registry_local_closure_20260617.json",
       "required": true,
       "exists": true

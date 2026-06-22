@@ -153,13 +153,17 @@ async function runLinUcbMultiplierReplayTask(c: any, endDate?: string): Promise<
     throw new Error('LinUCB multiplier replay evidence persistence requires X-Confirm-Meta-Learning:true')
   }
 
-  const { runLinUcbMultiplierReplay } = await import('./linucbMultiplierReplayRunner')
+  const {
+    LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT,
+    LINUCB_MULTIPLIER_REPLAY_DEFAULT_MAX_GRID_EVALS,
+    runLinUcbMultiplierReplay,
+  } = await import('./linucbMultiplierReplayRunner')
   const result = await runLinUcbMultiplierReplay(c.env, {
     startDate: c.req.query('start_date') || undefined,
     endDate,
-    limit: parseBoundedPositiveInt(c.req.query('limit'), 20000, 50000),
+    limit: parseBoundedPositiveInt(c.req.query('limit'), LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT, 50000),
     minDecisions: parseBoundedPositiveInt(c.req.query('min_decisions'), 30, 10000),
-    maxGridEvals: parseBoundedPositiveInt(c.req.query('max_grid_evals'), 96, 500),
+    maxGridEvals: parseBoundedPositiveInt(c.req.query('max_grid_evals'), LINUCB_MULTIPLIER_REPLAY_DEFAULT_MAX_GRID_EVALS, 500),
     recentLossWindow: parseBoundedPositiveInt(c.req.query('recent_loss_window'), 5, 60),
     persist,
   })

@@ -1,6 +1,9 @@
 import type { Bindings } from '../types'
 import { listAdaptiveMetaPolicyReplayRows } from './adaptiveMetaPolicyReplayRunner'
 
+export const LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT = 5000
+export const LINUCB_MULTIPLIER_REPLAY_DEFAULT_MAX_GRID_EVALS = 32
+
 export interface LinUcbMultiplierReplayOptions {
   startDate?: string
   endDate?: string
@@ -56,7 +59,7 @@ export async function runLinUcbMultiplierReplay(
   const rows = await listAdaptiveMetaPolicyReplayRows(env.DB, {
     startDate,
     endDate,
-    limit: options.limit ?? 20000,
+    limit: options.limit ?? LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT,
   })
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -67,7 +70,7 @@ export async function runLinUcbMultiplierReplay(
     body: JSON.stringify({
       rows,
       min_decisions: boundedInt(options.minDecisions, 30, 1, 10000),
-      max_grid_evals: boundedInt(options.maxGridEvals, 96, 1, 500),
+      max_grid_evals: boundedInt(options.maxGridEvals, LINUCB_MULTIPLIER_REPLAY_DEFAULT_MAX_GRID_EVALS, 1, 500),
       recent_loss_window: boundedInt(options.recentLossWindow, 5, 1, 60),
     }),
     signal: AbortSignal.timeout(options.timeoutMs ?? 300_000),

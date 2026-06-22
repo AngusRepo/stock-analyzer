@@ -180,7 +180,7 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
         "SELECT generated_at, direction_correct "
         "FROM predictions "
         "WHERE generated_at BETWEEN ? AND ? "
-        "  AND direction_correct IS NOT NULL "
+        "  AND direction_correct IN (0, 1) "
         "ORDER BY generated_at ASC",
         [start_date, end_date],
     )

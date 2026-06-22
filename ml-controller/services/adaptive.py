@@ -413,6 +413,49 @@ def resolve_adaptive_params_for_regime(params: dict | None, regime: object) -> d
     return base
 
 
+def _apply_ga_optimizer_effect(
+    *,
+    ga_optimizer_context: dict | None,
+    bandit_max_mult: float,
+) -> tuple[float, dict | None]:
+    if not isinstance(ga_optimizer_context, dict):
+        return bandit_max_mult, None
+
+    promotion = ga_optimizer_context.get("promotion")
+    promotion = promotion if isinstance(promotion, dict) else {}
+    effect_policy = ga_optimizer_context.get("effect_policy")
+    effect_policy = effect_policy if isinstance(effect_policy, dict) else {}
+    level = str(promotion.get("level") or "").upper()
+    status = str(ga_optimizer_context.get("status") or "").lower()
+    enabled = bool(effect_policy.get("enabled")) and status == "approved" and level in {"L3", "L4"}
+    cap = _as_float(effect_policy.get("max_bandit_max_mult"))
+    new_bandit_max_mult = bandit_max_mult
+    applied = False
+    if enabled and cap is not None and cap > 0:
+        new_bandit_max_mult = min(float(bandit_max_mult), float(cap))
+        applied = new_bandit_max_mult != bandit_max_mult
+
+    return new_bandit_max_mult, {
+        "schema_version": "ga-optimizer-adaptive-effect-v1",
+        "enabled": enabled,
+        "level": level or None,
+        "status": status or None,
+        "scope": effect_policy.get("scope"),
+        "mutates_trading_config": effect_policy.get("mutates_trading_config") is True,
+        "max_bandit_max_mult": cap,
+        "bandit_max_mult_before": bandit_max_mult,
+        "bandit_max_mult_after": new_bandit_max_mult,
+        "applied": applied,
+        "reason": (
+            "approved_l3_capped_bandit_effect"
+            if applied and level == "L3"
+            else "approved_context_no_numeric_cap"
+            if enabled
+            else "not_approved_production_context"
+        ),
+    }
+
+
 def compute_adaptive_params(
     risk_score: float,
     risk_level: str,
@@ -427,6 +470,7 @@ def compute_adaptive_params(
     active_9_quality_30d: float | None = None,
     active_9_samples_30d: int | None = None,
     active_9_model_count_30d: int | None = None,
+    ga_optimizer_context: dict | None = None,
 ) -> dict:
     """
     計算完整的自適應參數字典（可直接寫入 KV ml:adaptive_params）。
@@ -463,6 +507,17 @@ def compute_adaptive_params(
     pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d, L2)
     sl_tp_add       = compute_sltp_override(risk_level, L2)
     bandit          = compute_bandit_protection(losses_5d, total_5d, L2)
+    bandit_context = dict(bandit.get("bandit_context") or {})
+    if isinstance(ga_optimizer_context, dict):
+        ga_context = dict(ga_optimizer_context)
+        bandit_max_mult, ga_effect = _apply_ga_optimizer_effect(
+            ga_optimizer_context=ga_context,
+            bandit_max_mult=float(bandit["bandit_max_mult"]),
+        )
+        if ga_effect is not None:
+            ga_context["applied_effect"] = ga_effect
+            bandit["bandit_max_mult"] = bandit_max_mult
+        bandit_context["ga_optimizer"] = ga_context
     computed_at     = _tw_now()
     regime_overrides = compute_regime_overrides(
         conf_delta,
@@ -489,7 +544,7 @@ def compute_adaptive_params(
         "pf_quality_mult":       pf_quality_mult,
         "bandit_max_mult":       bandit["bandit_max_mult"],
         "bandit_force_explore":  bandit["bandit_force_explore"],
-        "bandit_context":        bandit.get("bandit_context"),
+        "bandit_context":        bandit_context,
         "computed_at":           computed_at,
         "market_risk_score":     risk_score,
         "recent_accuracy_30d":   round(accuracy_30d, 2),

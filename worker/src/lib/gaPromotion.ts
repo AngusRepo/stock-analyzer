@@ -140,7 +140,11 @@ export function evaluateGaPromotion(
   const autoPromoted = levelIndex(level) > levelIndex(previousLevel) && levelIndex(level) <= levelIndex('L2')
   const nextLevel = LEVEL_ORDER[levelIndex(level) + 1] ?? null
   const approvalRequiredForNextLevel = nextLevel != null && levelIndex(nextLevel) >= levelIndex('L3')
-  const canRequestNextLevel = level === 'L2' && approvalRequiredForNextLevel && missingEvidence.length === 0
+  const canRequestNextLevel =
+    nextLevel != null &&
+    levelIndex(level) >= levelIndex('L2') &&
+    approvalRequiredForNextLevel &&
+    missingEvidence.length === 0
   const status =
     pendingApprovalLevel ? 'approval_required'
       : level === 'L0' ? 'learning'

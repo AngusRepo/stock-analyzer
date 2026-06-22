@@ -279,7 +279,9 @@ def test_timesfm_gate_requires_coverage_but_observes_non_positive_effective_ic(m
     )
 
     assert allowed is True
-    assert meta["reason"] == "timesfm_gate_passed"
+    assert meta["reason"] == "timesfm_sidecar_only_direct_alpha_blocked"
+    assert meta["ensemble_contribution_allowed"] is False
+    assert meta["direct_alpha_blocked"] is True
     assert meta["sequence_contract_points"] == 128
 
     allowed, meta = daily_pipeline_v2._timesfm_sync_gate(
@@ -364,7 +366,9 @@ def test_timesfm_gate_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypatch
     )
 
     assert allowed is True
-    assert meta["reason"] == "timesfm_gate_passed"
+    assert meta["reason"] == "timesfm_sidecar_only_direct_alpha_blocked"
+    assert meta["ensemble_contribution_allowed"] is False
+    assert meta["direct_alpha_blocked"] is True
     assert meta["sequence_contract_points"] == 128
     assert meta["diagnostic"]["ic_source"] == "last_artifact_evidence.oos_ic"
     assert meta["diagnostic"]["ic_sample_count"] == 512

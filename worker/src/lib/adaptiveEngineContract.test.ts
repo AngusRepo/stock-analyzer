@@ -83,6 +83,30 @@ void (async () => {
       bandit_max_mult_low: 2.4,
     },
   }))
+  kv.store.set('optimizer:ga:latest', JSON.stringify({
+    source: 'ga_optimizer',
+    optimizer: 'GAOptimizer',
+    status: 'learning',
+    updated_at: '2026-06-22T08:00:00.000Z',
+    promotion: {
+      level: 'L3',
+      status: 'approved',
+      approved_level: 'L3',
+      nextLevel: 'L4',
+      canRequestNextLevel: true,
+      approvalRequiredForNextLevel: true,
+      evaluated_at: '2026-06-22T08:00:00.000Z',
+    },
+    best: {
+      score: 1.25,
+      metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+      gate: { passed: true, decision: 'PASS', failed_gates: [] },
+    },
+    best_alphaFramework: {
+      allocation: { weights: { bull: { trend_following: 0.55 } } },
+      riskOverlay: { highVolThreshold: 0.04 },
+    },
+  }))
 
   const originalFetch = globalThis.fetch
   let requestBody: any = null
@@ -130,10 +154,21 @@ void (async () => {
     assert(requestBody.accuracy.rows_30d[0].accuracy === 0.55, 'risk-assess rows_30d must carry per-model accuracy for the controller hook')
     assert(requestBody.adaptive_config.L2_formula.bandit_loss_thresh_high === 0.9, 'risk-assess payload must include champion L2_formula')
     assert(requestBody.adaptive_config.baseline_buy_signal_score === 0.51, 'risk-assess payload must include baseline buy score')
+    assert(requestBody.adaptive_config.ga_optimizer.status === 'approved', 'risk-assess payload must include GA optimizer promotion status')
+    assert(requestBody.adaptive_config.ga_optimizer.promotion.level === 'L3', 'risk-assess payload must include GA promotion level')
+    assert(requestBody.adaptive_config.ga_optimizer.runtime_role === 'approved_limited_production_meta_policy_context', 'GA L3 approval should remain limited production context')
+    assert(requestBody.adaptive_config.ga_optimizer.applies_to_trading_config === false, 'adaptive GA context must not mutate trading:config')
+    assert(requestBody.adaptive_config.ga_optimizer.effect_policy.enabled === true, 'approved L3 GA context should expose an enabled capped effect policy')
+    assert(requestBody.adaptive_config.ga_optimizer.effect_policy.max_bandit_max_mult === 1.25, 'approved L3 GA context should cap bandit exposure')
+    assert(requestBody.adaptive_config.ga_optimizer.effect_policy.mutates_trading_config === false, 'GA effect policy must not mutate trading:config')
+    assert(requestBody.adaptive_config.ga_optimizer.learned_alpha_framework.available === true, 'adaptive GA context should expose learned alphaFramework availability')
 
     const persisted = JSON.parse(kv.store.get('ml:adaptive_params') ?? '{}')
     assert(persisted.provenance.l2_formula_source === 'worker_trading_config', 'adaptive params provenance must preserve L2 formula source')
     assert(persisted.bandit_context.linucb_reward_ledger.reward_ledger_status === 'handled_by_post_verify_chain', 'post-verify chain should avoid duplicate ledger refresh')
+    assert(persisted.bandit_context.ga_optimizer.promotion.level === 'L3', 'adaptive params must persist GA optimizer context')
+    assert(persisted.bandit_context.ga_optimizer.applies_to_trading_config === false, 'persisted GA context must not imply direct trading config mutation')
+    assert(persisted.bandit_context.ga_optimizer.effect_policy.scope === 'limited_capped_meta_policy_context', 'persisted GA context should keep capped effect scope')
   } finally {
     globalThis.fetch = originalFetch
     invalidateAdaptiveCache()

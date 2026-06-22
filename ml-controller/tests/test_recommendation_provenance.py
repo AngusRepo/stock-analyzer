@@ -987,7 +987,7 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
     assert written == 2
 
 
-def test_write_predictions_to_d1_preserves_timesfm_per_model_forecast_pct(monkeypatch):
+def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
     captured = {}
@@ -1021,18 +1021,20 @@ def test_write_predictions_to_d1_preserves_timesfm_per_model_forecast_pct(monkey
         run_date="2026-06-14",
     )
 
-    timesfm_insert = [
+    timesfm_rows = [
         params
         for sql, params in captured["statements"]
         if "model_name" in sql and len(params) > 1 and params[1] == "TimesFM"
-    ][0]
-    payload = json.loads(timesfm_insert[5])
+    ]
+    ensemble_payload = json.loads(captured["statements"][2][1][4])
 
-    assert written == 2
-    assert payload["rank_score"] < 0.5
-    assert payload["forecast_pct"] == -0.0123
-    assert payload["forecast_pct_source"] == "timesfm.forecast_pct"
-    assert payload["model_signal"]["n_used"] == 1024
+    assert written == 1
+    assert timesfm_rows == []
+    assert ensemble_payload["timesfm"]["forecast_pct"] == -0.0123
+    assert ensemble_payload["timesfm"]["n_used"] == 1024
+    assert ensemble_payload["timesfm_sidecar"]["schema_version"] == "timesfm-l1-75-sidecar-v1"
+    assert ensemble_payload["timesfm_sidecar"]["direct_alpha_blocked"] is True
+    assert ensemble_payload["timesfm_sidecar"]["features"]["forecast_return"] == -0.0123
 
 
 def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monkeypatch):

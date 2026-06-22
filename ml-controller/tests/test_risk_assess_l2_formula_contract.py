@@ -53,6 +53,43 @@ def test_risk_assess_consumes_worker_l2_formula():
     assert params["threshold_components"]["effective_delta"] <= 0.04
 
 
+def test_risk_assess_preserves_ga_optimizer_adaptive_context():
+    response = post_risk_assess(
+        RiskAssessRequest(
+            date="2026-06-22",
+            market=MarketData(risk_score=30, risk_level="green"),
+            accuracy=AccuracyData(global_30d=0.60, rows_30d=[], rows_90d=[]),
+            trading=TradingData(losses_5d=0, total_5d=2),
+            adaptive_config=AdaptiveConfigData(
+                L2_formula={"bandit_max_mult_low": 2.4},
+                baseline_buy_signal_score=0.50,
+                ga_optimizer={
+                    "source": "optimizer:ga:latest",
+                    "status": "approved",
+                    "runtime_role": "approved_limited_production_meta_policy_context",
+                    "applies_to_trading_config": False,
+                    "promotion": {"level": "L3", "next_level": "L4"},
+                    "effect_policy": {
+                        "enabled": True,
+                        "scope": "limited_capped_meta_policy_context",
+                        "max_bandit_max_mult": 1.25,
+                        "mutates_trading_config": False,
+                    },
+                },
+            ),
+        )
+    )
+
+    ga = response["adaptive_params"]["bandit_context"]["ga_optimizer"]
+    assert ga["source"] == "optimizer:ga:latest"
+    assert ga["promotion"]["level"] == "L3"
+    assert ga["applies_to_trading_config"] is False
+    assert response["adaptive_params"]["bandit_max_mult"] == 1.25
+    assert ga["applied_effect"]["applied"] is True
+    assert ga["applied_effect"]["reason"] == "approved_l3_capped_bandit_effect"
+    assert ga["applied_effect"]["mutates_trading_config"] is False
+
+
 def test_risk_assess_confidence_hook_uses_active_9_only():
     response = post_risk_assess(
         RiskAssessRequest(

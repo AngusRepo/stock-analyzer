@@ -22,6 +22,120 @@ const ACTIVE_9_MODELS = [
   'TimesFM',
 ] as const
 
+function objectValue(value: unknown): Record<string, any> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, any>
+    : null
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function stringOrNull(value: unknown): string | null {
+  const text = String(value ?? '').trim()
+  return text ? text : null
+}
+
+function stringList(value: unknown, limit = 12): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, limit)
+    : []
+}
+
+async function loadGaOptimizerAdaptiveContext(kv: KVNamespace): Promise<Record<string, unknown>> {
+  let latest: Record<string, any> | null = null
+  try {
+    latest = objectValue(await kv.get('optimizer:ga:latest', 'json'))
+  } catch (error: any) {
+    return {
+      source: 'optimizer:ga:latest',
+      status: 'unavailable',
+      runtime_role: 'ga_learning_context_unavailable',
+      error: String(error?.message ?? error),
+      applies_to_trading_config: false,
+    }
+  }
+
+  if (!latest) {
+    return {
+      source: 'optimizer:ga:latest',
+      status: 'missing',
+      runtime_role: 'ga_learning_not_initialized',
+      applies_to_trading_config: false,
+    }
+  }
+
+  const promotion = objectValue(latest.promotion) ?? {}
+  const best = objectValue(latest.best) ?? {}
+  const metrics = objectValue(best.metrics) ?? {}
+  const gate = objectValue(best.gate) ?? {}
+  const candidate = objectValue(best.candidate) ?? {}
+  const candidateParams = objectValue(candidate.params) ?? {}
+  const learnedAlphaFramework = objectValue(latest.best_alphaFramework)
+    ?? objectValue(latest.bestAlphaFramework)
+    ?? objectValue(candidateParams.alphaFramework)
+  const level = stringOrNull(promotion.level) ?? 'L0'
+  const promotionStatus = stringOrNull(promotion.status) ?? stringOrNull(latest.status) ?? 'learning'
+  const approvedLevel = stringOrNull(promotion.approved_level)
+  const runtimeRole =
+    promotionStatus === 'approved' && level === 'L4'
+      ? 'approved_full_production_meta_policy_context'
+      : promotionStatus === 'approved' && level === 'L3'
+        ? 'approved_limited_production_meta_policy_context'
+        : promotion.approvalRequiredForNextLevel === true || promotion.canRequestNextLevel === true
+          ? 'promotion_review_candidate_context'
+          : 'shadow_learning_context'
+  const approvedProductionContext = promotionStatus === 'approved' && (level === 'L3' || level === 'L4')
+  const effectPolicy = {
+    enabled: approvedProductionContext,
+    scope: level === 'L4' && promotionStatus === 'approved'
+      ? 'full_production_meta_policy_ready_requires_explicit_release'
+      : level === 'L3' && promotionStatus === 'approved'
+        ? 'limited_capped_meta_policy_context'
+        : 'shadow_or_review_context_only',
+    max_bandit_max_mult: level === 'L3' && promotionStatus === 'approved' ? 1.25 : null,
+    mutates_trading_config: false,
+    requires_wei_approval: !(promotionStatus === 'approved' && (level === 'L3' || level === 'L4')),
+  }
+
+  return {
+    source: 'optimizer:ga:latest',
+    optimizer: stringOrNull(latest.optimizer) ?? 'GAOptimizer',
+    status: promotionStatus,
+    runtime_role: runtimeRole,
+    applies_to_trading_config: false,
+    requires_trading_config_review: true,
+    promotion: {
+      level,
+      approved_level: approvedLevel,
+      requested_level: stringOrNull(promotion.requested_level),
+      next_level: stringOrNull(promotion.nextLevel),
+      pending_approval_level: stringOrNull(promotion.pendingApprovalLevel),
+      approval_required_for_next_level: promotion.approvalRequiredForNextLevel === true,
+      can_request_next_level: promotion.canRequestNextLevel === true,
+      evaluated_at: stringOrNull(promotion.evaluated_at),
+    },
+    best: {
+      score: finiteNumberOrNull(best.score),
+      sharpe: finiteNumberOrNull(metrics.sharpe),
+      pbo: finiteNumberOrNull(metrics.pbo),
+      mdd_95th: finiteNumberOrNull(metrics.mdd_95th),
+      trade_count: finiteNumberOrNull(metrics.trade_count),
+      gate_passed: gate.passed === true,
+      gate_decision: stringOrNull(gate.decision),
+      failed_gates: stringList(gate.failed_gates),
+    },
+    learned_alpha_framework: {
+      available: learnedAlphaFramework != null,
+      top_level_sections: learnedAlphaFramework ? Object.keys(learnedAlphaFramework).sort() : [],
+    },
+    effect_policy: effectPolicy,
+    updated_at: stringOrNull(latest.updated_at),
+  }
+}
+
 async function queryAdaptiveInputs(env: { DB: D1Database }) {
   const riskRow = await env.DB.prepare(
     'SELECT risk_score, risk_level FROM market_risk ORDER BY date DESC LIMIT 1',
@@ -141,6 +255,7 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
   const inputs = await queryAdaptiveInputs(env)
   const current = await getAdaptiveParams(env.KV)
   const tradingConfig = await getTradingConfig(env.KV)
+  const gaOptimizerContext = await loadGaOptimizerAdaptiveContext(env.KV)
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
@@ -163,6 +278,7 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
       adaptive_config: {
         L2_formula: tradingConfig.L2_formula,
         baseline_buy_signal_score: tradingConfig.signal?.buySignalScore,
+        ga_optimizer: gaOptimizerContext,
       },
       current_version: current.version ?? 0,
     }),
@@ -202,6 +318,7 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
       ],
     },
     linucb_reward_ledger: ledgerContext,
+    ga_optimizer: gaOptimizerContext,
   }
 
   const summary = data.summary ?? 'Controller OK'

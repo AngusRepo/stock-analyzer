@@ -378,13 +378,15 @@ def _timesfm_sync_gate(
         }
     return True, {
         "allowed": True,
-        "reason": "timesfm_gate_passed",
+        "reason": "timesfm_sidecar_only_direct_alpha_blocked",
         "status": status,
         "coverage": coverage,
         "effective_weight": weight,
         "diagnostic": diagnostic,
         "sequence_contract_points": sequence_contract_points,
         "sequence_contract_mode": "per_symbol_subset",
+        "ensemble_contribution_allowed": False,
+        "direct_alpha_blocked": True,
     }
 
 

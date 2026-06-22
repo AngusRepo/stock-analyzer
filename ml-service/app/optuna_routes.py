@@ -258,7 +258,7 @@ def run_conformal_search(req: OptunaReq = Body(default=OptunaReq())):
     rows = d1_query("""
         SELECT direction_accuracy as confidence, direction_correct
         FROM predictions
-        WHERE direction_correct IS NOT NULL AND direction_accuracy IS NOT NULL
+        WHERE direction_correct IN (0, 1) AND direction_accuracy IS NOT NULL
         ORDER BY generated_at DESC LIMIT 2000
     """)
     if len(rows) < 50:

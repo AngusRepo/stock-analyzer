@@ -63,6 +63,7 @@ class TradingData(BaseModel):
 class AdaptiveConfigData(BaseModel):
     L2_formula: dict[str, Any] = Field(default_factory=dict)
     baseline_buy_signal_score: float | None = None
+    ga_optimizer: dict[str, Any] | None = None
 
 
 class RiskAssessRequest(BaseModel):
@@ -95,6 +96,7 @@ def post_risk_assess(req: RiskAssessRequest):
         active_9_quality_30d=req.accuracy.active_9_quality_30d,
         active_9_samples_30d=req.accuracy.active_9_samples_30d,
         active_9_model_count_30d=req.accuracy.active_9_model_count_30d,
+        ga_optimizer_context=req.adaptive_config.ga_optimizer,
     )
 
     sl_tp = params.get("sl_tp_override")

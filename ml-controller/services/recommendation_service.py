@@ -203,6 +203,163 @@ def _state_space_overlay_payload(data: dict) -> dict[str, Any] | None:
     }
 
 
+def _finite_float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _price_log_return(forecast_price: Any, reference_price: Any) -> float | None:
+    forecast = _finite_float_or_none(forecast_price)
+    reference = _finite_float_or_none(reference_price)
+    if forecast is None or reference is None or forecast <= 0 or reference <= 0:
+        return None
+    return math.log(forecast / reference)
+
+
+def _numeric_series_from_signal(signal: dict[str, Any]) -> list[float]:
+    for key in (
+        "forecast_return_path",
+        "forecast_pct_path",
+        "forecast_path_pct",
+        "path_pct",
+        "return_path",
+    ):
+        raw = signal.get(key)
+        if not isinstance(raw, list):
+            continue
+        values = [_finite_float_or_none(item) for item in raw]
+        values = [item for item in values if item is not None]
+        if values:
+            return values
+    return []
+
+
+def _series_curvature(values: list[float]) -> float | None:
+    if len(values) < 3:
+        return None
+    mid = len(values) // 2
+    return values[-1] - (2.0 * values[mid]) + values[0]
+
+
+def _quantile_width(signal: dict[str, Any]) -> float | None:
+    direct = _finite_float_or_none(signal.get("quantile_width"))
+    if direct is not None:
+        return direct
+
+    for lo_key, hi_key in (
+        ("q10", "q90"),
+        ("p10", "p90"),
+        ("forecast_p10", "forecast_p90"),
+        ("lower80", "upper80"),
+        ("lower95", "upper95"),
+    ):
+        lo = _finite_float_or_none(signal.get(lo_key))
+        hi = _finite_float_or_none(signal.get(hi_key))
+        if lo is not None and hi is not None:
+            return abs(hi - lo)
+
+    raw = signal.get("quantile_forecast") or signal.get("quantile_forecasts")
+    if isinstance(raw, list):
+        values = [_finite_float_or_none(item) for item in raw]
+        values = [item for item in values if item is not None]
+        if len(values) >= 2:
+            return max(values) - min(values)
+    return None
+
+
+def _timesfm_sidecar_payload(data: dict) -> dict[str, Any] | None:
+    """Build L1.75 TimesFM feature sidecar without restoring direct-alpha voting."""
+    signal = data.get("timesfm")
+    if not isinstance(signal, dict) or signal.get("error"):
+        return None
+
+    reference_price = (
+        data.get("entry_price")
+        or data.get("current_price")
+        or signal.get("current_price")
+        or signal.get("last_price")
+        or signal.get("input_price")
+    )
+    forecast_return = _finite_float_or_none(signal.get("forecast_pct"))
+    forecast_log_return = _price_log_return(signal.get("forecast_price"), reference_price)
+    if forecast_log_return is None and forecast_return is not None and forecast_return > -1.0:
+        forecast_log_return = math.log1p(forecast_return)
+
+    horizon = (
+        _finite_float_or_none(signal.get("horizon"))
+        or _finite_float_or_none(data.get("horizon"))
+        or 14.0
+    )
+    forecast_path = _numeric_series_from_signal(signal)
+    slope = forecast_return / horizon if forecast_return is not None and horizon and horizon > 0 else None
+
+    peer_returns: list[float] = []
+    for src_key in ("dlinear", "patchtst", "itransformer"):
+        peer_signal = data.get(src_key)
+        if not isinstance(peer_signal, dict):
+            continue
+        value = _finite_float_or_none(peer_signal.get("forecast_pct"))
+        if value is not None:
+            peer_returns.append(value)
+    dispersion_values = [value for value in [forecast_return, *peer_returns] if value is not None]
+    peer_mean = sum(peer_returns) / len(peer_returns) if peer_returns else None
+    forecast_dispersion = (
+        math.sqrt(sum((value - (sum(dispersion_values) / len(dispersion_values))) ** 2 for value in dispersion_values) / len(dispersion_values))
+        if len(dispersion_values) >= 2
+        else None
+    )
+    sign_flip_flag = None
+    if forecast_return is not None and peer_mean is not None:
+        sign_flip_flag = (forecast_return > 0 > peer_mean) or (forecast_return < 0 < peer_mean)
+
+    market_expected = _finite_float_or_none(
+        data.get("market_expected_return")
+        or signal.get("market_expected_return")
+        or signal.get("expected_market_return")
+    )
+    sector_expected = _finite_float_or_none(
+        data.get("sector_expected_return")
+        or signal.get("sector_expected_return")
+        or signal.get("expected_sector_return")
+    )
+
+    features = {
+        "forecast_return": forecast_return,
+        "forecast_log_return": forecast_log_return,
+        "forecast_slope": slope,
+        "forecast_curvature": _series_curvature(forecast_path),
+        "random_walk_residual": forecast_return,
+        "quantile_width": _quantile_width(signal),
+        "forecast_dispersion": forecast_dispersion,
+        "peer_sequence_mean_return": peer_mean,
+        "market_excess_return": (
+            forecast_return - market_expected
+            if forecast_return is not None and market_expected is not None
+            else None
+        ),
+        "sector_excess_return": (
+            forecast_return - sector_expected
+            if forecast_return is not None and sector_expected is not None
+            else None
+        ),
+        "sign_flip_flag": sign_flip_flag,
+    }
+
+    return {
+        "schema_version": "timesfm-l1-75-sidecar-v1",
+        "layer": "L1.75",
+        "source": "TimesFM",
+        "role": "feature_sidecar",
+        "direct_alpha_blocked": True,
+        "eligible_for_l2_feature_enrichment": True,
+        "features": features,
+        "raw_context": _per_model_signal_payload(data, "TimesFM"),
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ML score calculation (port from dailyRecommendation.ts:558-568)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1663,6 +1820,7 @@ _CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
     "learned_sequence": ("DLinear", "PatchTST", "iTransformer"),
     "foundation_sequence": ("TimesFM",),
 }
+_DIRECT_ALPHA_BLOCKED_MODELS = {"TimesFM"}
 
 _SEQUENCE_MODEL_SOURCE_KEYS: dict[str, str] = {
     "DLinear": "dlinear",
@@ -1696,6 +1854,8 @@ def _forecast_pct_to_rank_score(value: Any) -> float | None:
 
 
 def _model_rank_score(prediction: dict, model_name: str) -> float | None:
+    if model_name in _DIRECT_ALPHA_BLOCKED_MODELS:
+        return None
     if model_name in _SEQUENCE_MODEL_SOURCE_KEYS:
         signal = prediction.get(_SEQUENCE_MODEL_SOURCE_KEYS[model_name])
         if not isinstance(signal, dict):
@@ -1715,6 +1875,8 @@ def _positive_lifecycle_weights(prediction: dict) -> dict[str, float] | None:
     if isinstance(weights, dict):
         out: dict[str, float] = {}
         for name, raw in weights.items():
+            if str(name) in _DIRECT_ALPHA_BLOCKED_MODELS:
+                continue
             try:
                 value = float(raw)
             except (TypeError, ValueError):
@@ -1724,7 +1886,11 @@ def _positive_lifecycle_weights(prediction: dict) -> dict[str, float] | None:
         return out
     contributors = ev2.get("contributing_models")
     if isinstance(contributors, list):
-        return {str(name): 1.0 for name in contributors if str(name)}
+        return {
+            str(name): 1.0
+            for name in contributors
+            if str(name) and str(name) not in _DIRECT_ALPHA_BLOCKED_MODELS
+        }
     return None
 
 
@@ -2435,6 +2601,7 @@ def write_predictions_to_d1(
             "core_family_vote": data.get("core_family_vote"),
             "gnn": data.get("gnn"),
             "timesfm": data.get("timesfm"),
+            "timesfm_sidecar": _timesfm_sidecar_payload(data),
             "state_space_overlays": _state_space_overlay_payload(data),
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
             "models": data.get("models"),
@@ -2673,7 +2840,7 @@ def write_layer3_formal_gate_audit(
 _PER_MODEL_TRACKED = (
     "XGBoost", "ExtraTrees", "LightGBM",
     "TabM", "GNN",
-    "DLinear", "PatchTST", "iTransformer", "TimesFM",
+    "DLinear", "PatchTST", "iTransformer",
 )
 
 
@@ -2710,7 +2877,6 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
         ("dlinear",          "DLinear"),
         ("patchtst",         "PatchTST"),
         ("itransformer",     "iTransformer"),
-        ("timesfm",          "TimesFM"),
     )
     for src_key, model_name in _SRC_KEY_MODEL:
         sig = pred.get(src_key) or {}

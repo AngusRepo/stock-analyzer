@@ -595,6 +595,15 @@ export function buildEventsFromAdaptiveMeta(input: {
   const alphaCount = Array.isArray(metaLayer?.alpha_vote_models) ? metaLayer.alpha_vote_models.length : 0
   const overlays = Array.isArray(metaLayer?.state_space_overlays) ? metaLayer.state_space_overlays.map(String) : []
   const optimizers = Array.isArray(metaLayer?.meta_optimizers) ? metaLayer.meta_optimizers.map(String) : []
+  const banditContext = params.bandit_context && typeof params.bandit_context === 'object' && !Array.isArray(params.bandit_context)
+    ? params.bandit_context as Record<string, unknown>
+    : {}
+  const gaOptimizerRuntime = banditContext.ga_optimizer && typeof banditContext.ga_optimizer === 'object' && !Array.isArray(banditContext.ga_optimizer)
+    ? banditContext.ga_optimizer as Record<string, unknown>
+    : null
+  const gaSummary = gaOptimizerRuntime
+    ? `; ga=${String(gaOptimizerRuntime.status ?? 'unknown')}/${String(gaOptimizerRuntime.runtime_role ?? 'unknown')}`
+    : ''
 
   return [{
     id: eventId('adaptive_meta', 'adaptive_params', 'effective'),
@@ -606,7 +615,7 @@ export function buildEventsFromAdaptiveMeta(input: {
     title: 'Adaptive meta layer',
     summary: fallback
       ? `Adaptive params are fallback or legacy (source=${source}, regime=${regime}).`
-      : `Adaptive params resolved for regime=${regime}; alpha voters=${alphaCount}, overlays=${overlays.join(', ') || 'none'}.`,
+      : `Adaptive params resolved for regime=${regime}; alpha voters=${alphaCount}, overlays=${overlays.join(', ') || 'none'}${gaSummary}.`,
     owner: 'Adaptive Meta Layer',
     impact: fallback
       ? 'Regime-aware thresholds and LinUCB protection may not be active until risk-assess refreshes KV.'
@@ -621,6 +630,7 @@ export function buildEventsFromAdaptiveMeta(input: {
       threshold_components: params.threshold_components,
       bandit_max_mult: params.bandit_max_mult,
       bandit_context: params.bandit_context,
+      ga_optimizer_runtime: gaOptimizerRuntime,
       screener: params.screener,
       regime_overrides: params.regime_overrides,
       meta_layer: {

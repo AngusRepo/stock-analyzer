@@ -106,7 +106,10 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
 
   const { source, params, meta } = body
   const { getTradingConfig, setTradingConfig, validateTradingConfig, writeSandbox, mergeAlphaFrameworkConfig } = await import('../lib/tradingConfig')
-  const current = await getTradingConfig(c.env.KV)
+  const sourceName = String(source ?? '')
+  const current = ['feature_window', 'ga_optimizer', 'regime'].includes(sourceName)
+    ? {} as any
+    : await getTradingConfig(c.env.KV)
 
   let merged: any = current
   let updatedFields: string[] = []
@@ -311,8 +314,18 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     case 'ga_optimizer': {
       const now = new Date().toISOString()
       const previousRaw = await c.env.KV.get('optimizer:ga:latest', 'json').catch(() => null) as any
+      const previousPromotion = previousRaw?.promotion && typeof previousRaw.promotion === 'object'
+        ? previousRaw.promotion
+        : {}
+      const incomingPromotion = params?.promotion && typeof params.promotion === 'object'
+        ? params.promotion
+        : {}
       const learningState = {
         ...(params && typeof params === 'object' ? params : {}),
+        promotion: {
+          ...previousPromotion,
+          ...incomingPromotion,
+        },
         source: 'ga_optimizer',
         optimizer: params?.optimizer ?? 'GAOptimizer',
         status: params?.status ?? 'learning',
@@ -336,6 +349,10 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       const promotionKey = `optimizer:ga:promotion:${twToday()}:${Date.now()}`
 
       await c.env.KV.put(latestKey, JSON.stringify(learningState))
+      const latestReadback = await c.env.KV.get(latestKey, 'json').catch(() => null) as any
+      const latestReadbackOk = latestReadback?.source === 'ga_optimizer' &&
+        latestReadback?.optimizer === 'GAOptimizer' &&
+        latestReadback?.promotion?.evaluated_at === learningState.promotion.evaluated_at
       await c.env.KV.put(historyKey, JSON.stringify(learningState), { expirationTtl: 90 * 86400 })
       await c.env.KV.put(promotionKey, JSON.stringify({
         source: 'ga_optimizer',
@@ -345,6 +362,54 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         best_score: learningState.best?.score ?? meta?.best_score ?? null,
         pushed_at: now,
       }), { expirationTtl: 180 * 86400 })
+
+      let candidateRecord: Record<string, unknown> | null = null
+      let candidateEvidenceRecord: Record<string, unknown> | null = null
+      let candidateRecordError: string | null = null
+      try {
+        const {
+          buildGaOptimizerPolicyValidationEvidence,
+          recordGaParameterCandidate,
+          recordParameterCandidateEvidence,
+        } = await import('../lib/parameterCandidateRegistry')
+        candidateRecord = await recordGaParameterCandidate(c.env.DB, {
+          promotionKey,
+          runId: String(meta?.run_id ?? meta?.push_id ?? ''),
+          cadence: String(meta?.cadence ?? ''),
+          promotion: { ...promotion },
+          metadata: {
+            latest_key: latestKey,
+            history_key: historyKey,
+            audit_key: auditKey,
+            promotion_key: promotionKey,
+            meta: meta ?? null,
+            kv_readback_ok: latestReadbackOk,
+          },
+        })
+        if (
+          candidateRecord?.candidate_id &&
+          (promotion.canRequestNextLevel || promotion.pendingApprovalLevel || promotion.status === 'approved')
+        ) {
+          const evidence = buildGaOptimizerPolicyValidationEvidence({
+            learningState,
+            promotion: { ...promotion },
+            latestKey,
+            historyKey,
+            promotionKey,
+            kvReadbackOk: latestReadbackOk,
+            candidateId: String(candidateRecord.candidate_id),
+          })
+          candidateEvidenceRecord = await recordParameterCandidateEvidence(c.env.DB, {
+            candidateId: String(candidateRecord.candidate_id),
+            evidenceType: 'ga_optimizer_policy_packet_validation',
+            evidence,
+          })
+        }
+      } catch (error: any) {
+        candidateRecordError = error?.message ?? String(error)
+        console.warn('[OptunaPush] GA parameter candidate D1 record failed:', candidateRecordError)
+      }
+
       await c.env.KV.put(auditKey, JSON.stringify({
         target: 'production_meta_optimizer_learning_state',
         source: 'ga_optimizer',
@@ -353,6 +418,10 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         history_key: historyKey,
         promotion_key: promotionKey,
         promotion,
+        candidate_record: candidateRecord,
+        candidate_evidence_record: candidateEvidenceRecord,
+        candidate_record_error: candidateRecordError,
+        kv_readback_ok: latestReadbackOk,
         pushed_at: now,
       }), { expirationTtl: 30 * 86400 })
 
@@ -369,6 +438,10 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         source: 'ga_optimizer',
         updatedKeys: [latestKey, historyKey, promotionKey],
         audit_key: auditKey,
+        kv_readback_ok: latestReadbackOk,
+        candidate_record: candidateRecord,
+        candidate_evidence_record: candidateEvidenceRecord,
+        candidate_record_error: candidateRecordError,
         promotion,
         notification_channel: notificationChannel,
         message: 'GAOptimizer production learning state updated; trading:config unchanged until gated promotion approval.',

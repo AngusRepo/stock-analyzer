@@ -7,7 +7,6 @@ _SRC_KEY_MODEL = (
     ("dlinear", "DLinear"),
     ("patchtst", "PatchTST"),
     ("itransformer", "iTransformer"),
-    ("timesfm", "TimesFM"),
 )
 _MODEL_STATUS_ALLOWED = {"active", "degraded", "challenger", "retired"}
 

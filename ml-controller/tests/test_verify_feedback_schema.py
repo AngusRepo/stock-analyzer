@@ -90,7 +90,7 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
 
     assert result is not None
     assert result["bind"][0] == "neutral"
-    assert result["bind"][4] == -1
+    assert result["bind"][4] is None
     assert result["bind"][8] == pytest.approx(0.05)
     assert result["arf"] is None
 

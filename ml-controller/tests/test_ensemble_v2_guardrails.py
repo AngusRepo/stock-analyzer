@@ -89,6 +89,26 @@ def test_attach_ensemble_v2_can_use_alpha_alternate_models_when_feature_models_f
     assert ev2["weight_total"] > 0
 
 
+def test_attach_ensemble_v2_keeps_timesfm_as_sidecar_not_direct_alpha():
+    pred = {
+        "rank_scores": {},
+        "dlinear": {"forecast_pct": 0.01},
+        "timesfm": {"forecast_pct": 0.20},
+    }
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"DLinear": "active", "TimesFM": "active"},
+        ic_weights={"DLinear": 0.03, "TimesFM": 0.50},
+        degraded_dampening=1.0,
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["contributing_models"] == ["DLinear"]
+    assert "TimesFM" not in ev2["weights"]
+    assert ev2["avg_rank"] < 0.55
+
+
 def test_attach_ensemble_v2_does_not_count_state_space_overlays_as_alpha_votes():
     pred = {
         "rank_scores": {},

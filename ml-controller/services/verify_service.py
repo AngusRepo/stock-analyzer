@@ -103,7 +103,7 @@ def load_pending_predictions(
         SELECT p.*, s.symbol, s.market
         FROM predictions p
         JOIN stocks s ON p.stock_id = s.id
-        WHERE (p.direction_correct IS NULL OR p.actual_return_pct IS NULL)
+        WHERE (p.verified_at IS NULL OR p.actual_return_pct IS NULL)
           AND p.prediction_date BETWEEN ? AND ?
           AND s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
           AND p.forecast_data IS NOT NULL
@@ -273,7 +273,7 @@ def verify_single_prediction(
                 predicted_price,
                 actual_direction,
                 actual_price,
-                -1,
+                None,
                 price_error_pct,
                 market_risk.get("risk_level"),
                 market_risk.get("risk_score"),

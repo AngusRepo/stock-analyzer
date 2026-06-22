@@ -77,6 +77,28 @@ function assert(condition: unknown, message: string): void {
   }, { promotion: { level: 'L2' } })
   assert(approved.level === 'L3', 'approved L3 request should advance to L3')
   assert(approved.status === 'approved', 'approved production level should be explicit')
+  assert(approved.nextLevel === 'L4', 'approved L3 should expose L4 as the next level')
+  assert(approved.canRequestNextLevel === true, 'approved L3 should be able to request L4 approval')
+  assert(approved.nextAction.includes('Ready to request Wei approval for L4'), 'approved L3 should expose the concrete L4 request action')
   assert(formatGaPromotionNotification({ best: { score: 1.1 } }, approved).includes('L3'), 'notification should include promotion level')
   assert(formatGaPromotionNotification({ best: { score: 1.1 } }, approved).includes('missing=none'), 'notification should include missing evidence summary')
+}
+
+{
+  const full = evaluateGaPromotion({
+    best_alphaFramework: { allocation: { weights: {} } },
+    best: {
+      score: 1.1,
+      metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
+      gate: { passed: true, checks: { pbo: true, monte_carlo_mdd_95th: true } },
+    },
+    history: [
+      { generation: 0, best_score: 1.0 },
+      { generation: 1, best_score: 1.1 },
+    ],
+    promotion: { requested_level: 'L4', approved_level: 'L4' },
+  }, { promotion: { level: 'L3' } })
+  assert(full.level === 'L4', 'approved L4 request should advance to full production config')
+  assert(full.status === 'approved', 'approved L4 should be explicit')
+  assert(full.nextLevel === null, 'L4 should complete the GA promotion ladder')
 }

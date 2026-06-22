@@ -62,5 +62,8 @@ def push_optuna_result(
         raise RuntimeError(f"Worker push failed: HTTP {resp.status_code}: {resp.text}")
 
     result = resp.json()
-    logger.info(f"[KVPusher] {source} pushed OK: {len(result.get('updatedFields', []))} fields")
+    updated = result.get("updatedFields")
+    if not updated:
+        updated = result.get("updatedKeys", [])
+    logger.info(f"[KVPusher] {source} pushed OK: {len(updated)} updated entries")
     return result

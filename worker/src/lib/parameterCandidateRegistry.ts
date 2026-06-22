@@ -207,9 +207,12 @@ export async function recordGaParameterCandidate(
   },
 ): Promise<{ candidate_id: string; status: ParameterCandidateStatus }> {
   const level = String(input.promotion?.level ?? input.promotion?.approved_level ?? '').trim()
-  const status: ParameterCandidateStatus = input.promotion?.approvalRequiredForNextLevel
-    ? 'APPROVAL_REQUIRED'
-    : 'SHADOW_COLLECTING'
+  const promotionStatus = String(input.promotion?.status ?? '').trim().toLowerCase()
+  const status: ParameterCandidateStatus = promotionStatus === 'approved' && (level === 'L3' || level === 'L4')
+    ? 'PROD_ACTIVE'
+    : input.promotion?.approvalRequiredForNextLevel
+      ? 'APPROVAL_REQUIRED'
+      : 'SHADOW_COLLECTING'
   return recordParameterCandidateFromSandbox(db, {
     source: 'ga_optimizer',
     candidateId: `parameter:ga_optimizer:${sanitizeIdPart(input.promotionKey ?? input.runId ?? String(Date.now()))}`,
@@ -223,6 +226,104 @@ export async function recordGaParameterCandidate(
       mutates_trading_config: false,
     },
   })
+}
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as JsonRecord
+    : {}
+}
+
+function boolValue(value: unknown): boolean {
+  return value === true || String(value ?? '').toUpperCase() === 'PASS'
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? '').trim()).filter(Boolean)
+    : []
+}
+
+export function buildGaOptimizerPolicyValidationEvidence(input: {
+  learningState: JsonRecord
+  promotion: JsonRecord
+  latestKey: string
+  historyKey?: string | null
+  promotionKey?: string | null
+  kvReadbackOk?: boolean
+  candidateId?: string | null
+}): JsonRecord {
+  const learningState = recordValue(input.learningState)
+  const promotion = recordValue(input.promotion)
+  const best = recordValue(learningState.best)
+  const gate = recordValue(best.gate ?? learningState.gate)
+  const metrics = recordValue(best.metrics ?? learningState.metrics)
+  const bestCandidate = recordValue(best.candidate)
+  const bestCandidateParams = recordValue(bestCandidate.params)
+  const learnedAlphaFramework = recordValue(
+    learningState.best_alphaFramework ??
+    learningState.bestAlphaFramework ??
+    bestCandidateParams.alphaFramework,
+  )
+  const missingEvidence = stringArray(promotion.missingEvidence)
+  const level = String(promotion.level ?? '').trim() || 'L0'
+  const nextLevel = String(promotion.nextLevel ?? '').trim() || null
+  const pendingApprovalLevel = String(promotion.pendingApprovalLevel ?? '').trim() || null
+  const targetLevel = pendingApprovalLevel ?? nextLevel ?? level
+  const checks = {
+    policy_candidate: Object.keys(learnedAlphaFramework).length > 0,
+    primary_gate: boolValue(gate.passed) || boolValue(gate.decision),
+    stable_history: !missingEvidence.includes('stable_history'),
+    pbo_mc_cost_governance: !missingEvidence.includes('pbo_mc_cost_governance'),
+    kv_readback: input.kvReadbackOk === true,
+    sandbox_config_required: false,
+    mutates_trading_config: false,
+  }
+  const pass = checks.policy_candidate &&
+    checks.primary_gate &&
+    checks.stable_history &&
+    checks.pbo_mc_cost_governance &&
+    checks.kv_readback &&
+    missingEvidence.length === 0 &&
+    ['L3', 'L4'].includes(String(targetLevel))
+
+  return {
+    schema_version: 'ga-optimizer-policy-validation-v1',
+    source: 'ga_optimizer',
+    validator: 'ga_specific_policy_packet',
+    candidate_id: input.candidateId ?? null,
+    decision: pass ? 'PASS' : 'FAIL',
+    validation_status: pass ? 'PROMOTION_READY' : 'EVIDENCE_INSUFFICIENT',
+    validation_packet: {
+      schema_version: 'ga-optimizer-promotion-packet-v1',
+      decision: pass ? 'PASS' : 'FAIL',
+      source: 'ga_optimizer',
+      target_level: targetLevel,
+      current_level: level,
+      latest_key: input.latestKey,
+      history_key: input.historyKey ?? null,
+      promotion_key: input.promotionKey ?? null,
+      sandbox_config_required: false,
+      mutates_trading_config: false,
+      wei_approval_required: ['L3', 'L4'].includes(String(targetLevel)),
+      learned_alpha_framework_sections: Object.keys(learnedAlphaFramework).sort(),
+      metrics: {
+        score: best.score ?? null,
+        sharpe: metrics.sharpe ?? null,
+        pbo: metrics.pbo ?? null,
+        mdd_95th: metrics.mdd_95th ?? null,
+        trade_count: metrics.trade_count ?? null,
+      },
+      checks,
+      missing_evidence: missingEvidence,
+      blocked_reason: pass ? null : 'ga_policy_packet_evidence_incomplete',
+    },
+    gate: {
+      decision: pass ? 'PASS' : 'FAIL',
+      validation_packet: { decision: pass ? 'PASS' : 'FAIL' },
+      checks,
+    },
+  }
 }
 
 export async function recordParameterCandidateEvidence(

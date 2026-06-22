@@ -31,6 +31,14 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
         state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
         meta_optimizers: ['GAOptimizer'],
       },
+      bandit_context: {
+        ga_optimizer: {
+          status: 'approved',
+          runtime_role: 'approved_limited_production_meta_policy_context',
+          applies_to_trading_config: false,
+          promotion: { level: 'L3' },
+        },
+      },
     },
   })
 
@@ -38,7 +46,9 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(events[0].severity === 'ok', 'v2 adaptive meta payload should be ok')
   assert(events[0].domain === 'adaptive_meta', 'adaptive meta should have a dedicated OBS domain')
   assert(events[0].summary.includes('regime=volatile'), 'adaptive meta event should expose effective regime')
+  assert(events[0].summary.includes('ga=approved/approved_limited_production_meta_policy_context'), 'adaptive meta event should expose GA runtime wiring')
   assert((events[0].evidence.meta_layer as any).alpha_vote_count === 9, 'adaptive meta evidence should expose 9 alpha voters')
+  assert((events[0].evidence as any).ga_optimizer_runtime.applies_to_trading_config === false, 'adaptive meta evidence should preserve GA no-trading-config boundary')
 }
 
 {

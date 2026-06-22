@@ -129,7 +129,7 @@ def load_alpha_outcome_rows(limit: int = 1000) -> list[dict]:
              AND forecast_data LIKE '%alpha_context%'
              AND (
                trade_pnl_r IS NOT NULL OR trade_pnl_pct IS NOT NULL
-               OR actual_return_pct IS NOT NULL OR direction_correct IS NOT NULL
+               OR actual_return_pct IS NOT NULL OR direction_correct IN (0, 1)
              )
            ORDER BY generated_at DESC
            LIMIT ?""",

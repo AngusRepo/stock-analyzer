@@ -221,7 +221,7 @@ function buildRichContext(rich?: RichContext): string {
   }
 
   if (rich.recentPredictions?.length) {
-    const verified = rich.recentPredictions.filter(p => p.direction_correct !== null)
+    const verified = rich.recentPredictions.filter(p => p.direction_correct === 0 || p.direction_correct === 1)
     if (verified.length) {
       const correctCount = verified.filter(p => p.direction_correct === 1).length
       parts.push(`\n\n【近期預測戰績】最近 ${verified.length} 次驗證：${correctCount} 次正確（${((correctCount/verified.length)*100).toFixed(0)}%）`)

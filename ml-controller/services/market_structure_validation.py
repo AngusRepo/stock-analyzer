@@ -193,7 +193,7 @@ def load_market_structure_rows(limit: int = 1000) -> list[dict[str, Any]]:
              AND p.forecast_data LIKE '%structure_detail%'
              AND (
                p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL
-               OR p.trade_pnl_r IS NOT NULL OR p.direction_correct IS NOT NULL
+               OR p.trade_pnl_r IS NOT NULL OR p.direction_correct IN (0, 1)
              )
            ORDER BY p.generated_at DESC
            LIMIT ?""",

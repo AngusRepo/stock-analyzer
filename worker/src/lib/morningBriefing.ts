@@ -124,7 +124,10 @@ export async function generateMorningBriefing(env: Bindings): Promise<string> {
   }
 
   const channel = await sendReportToChannels(env as any, embeds, `Morning briefing ${twToday}`)
-  return `Morning briefing sent to ${channel}; state=${pendingState.state} active=${pendingState.active_count}/${pendingState.total_count}; evidence=${evidenceLine}`
+  const delivery = channel === 'not_sent:no_channel_configured'
+    ? 'not delivered: no_channel_configured'
+    : `sent to ${channel}`
+  return `Morning briefing ${delivery}; state=${pendingState.state} active=${pendingState.active_count}/${pendingState.total_count}; evidence=${evidenceLine}`
 }
 
 function fmtPct(v: number | null | undefined): string {

@@ -116,6 +116,21 @@ const forecastData = {
     weight_hhi: 0.18,
     zero_weight_models: ['DLinear'],
   },
+  timesfm_sidecar: {
+    schema_version: 'timesfm-l1-75-sidecar-v1',
+    layer: 'L1.75',
+    role: 'feature_sidecar',
+    direct_alpha_blocked: true,
+    eligible_for_l2_feature_enrichment: false,
+    l2_feature_input_active: false,
+    l2_feature_input_blocked_reason: 'requires_formal137_registry_retrain_release',
+    current_allowed_use: ['diagnostic', 'uncertainty_context', 'risk_sidecar'],
+    features: {
+      forecast_return: -0.0123,
+      forecast_slope: -0.0009,
+      quantile_width: 0.034,
+    },
+  },
 }
 
 {
@@ -127,18 +142,18 @@ const forecastData = {
     { model_name: 'ResidualMLP::challenger', forecast_data: { rank_score: 0.9 } },
   ])
 
-  assert(summary?.total === 9, 'ML vote denominator must stay aligned with the new production alpha voters')
+  assert(summary?.total === 8, 'ML vote denominator must exclude TimesFM sidecar from direct alpha voters')
   assert(summary?.reported === 2, 'state-space overlays and challengers must not count as reported alpha votes')
   assert(summary?.forecastPct === 1.2, 'Worker card contract must expose forecastPct as display percent points')
-  assert(summary?.activeWeightCount === 9, 'active weight count must ignore overlays and shadow models')
+  assert(summary?.activeWeightCount === 8, 'active weight count must ignore overlays, shadow models, and TimesFM sidecar')
   assert(summary?.zeroWeightModels?.length === 0, 'all alpha models have positive lifecycle weights in this fixture')
 }
 
 {
   const diagnostics = buildMlDiagnostics(forecastData)
 
-  assert(diagnostics?.totalAlphaModels === 9, 'diagnostics must use the new production alpha voters')
-  assert(diagnostics?.activeWeightCount === 9, 'active weights must ignore overlays and challenger models')
+  assert(diagnostics?.totalAlphaModels === 8, 'diagnostics must use direct-alpha voters only')
+  assert(diagnostics?.activeWeightCount === 8, 'active weights must ignore overlays, challenger models, and TimesFM sidecar')
   assert(diagnostics?.icWeightScope === 'tpex', 'diagnostics should expose the lane-aware IC scope')
   assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic', 'forecast calibration method should be visible to UI')
   assert((diagnostics?.rankSignalThresholds as any)?.buyThreshold === 0.58, 'dynamic rank thresholds should be visible to UI')
@@ -147,6 +162,13 @@ const forecastData = {
   assert(diagnostics?.dispersion.mergeCompression === 0.62, 'rank compression should be visible to UI')
   assert(diagnostics?.zeroWeightModels?.[0] === 'DLinear', 'zero weight root-cause list should be visible to UI')
   assert(diagnostics?.validationBlockedModels?.[0] === 'DLinear', 'CPCV/PBO blocked models should be visible to UI')
+  assert(diagnostics?.timesfmSidecar?.layer === 'L1.75', 'TimesFM should remain visible only as an L1.75 sidecar diagnostic')
+  assert(diagnostics?.timesfmSidecar?.directAlphaBlocked === true, 'TimesFM sidecar must expose direct-alpha blocked status')
+  assert(diagnostics?.timesfmSidecar?.eligibleForL2FeatureEnrichment === false, 'TimesFM must not claim L2 enrichment eligibility before formal137/retrain/release')
+  assert(diagnostics?.timesfmSidecar?.l2FeatureInputActive === false, 'TimesFM must not claim active L2 feature input before formal137/retrain/release')
+  assert(diagnostics?.timesfmSidecar?.l2FeatureInputBlockedReason === 'requires_formal137_registry_retrain_release', 'TimesFM L2 blocked reason should be visible')
+  assert(diagnostics?.timesfmSidecar?.currentAllowedUse.includes('risk_sidecar'), 'TimesFM allowed-use scope should be visible')
+  assert(diagnostics?.timesfmSidecar?.populatedFeatureCount === 3, 'TimesFM sidecar should expose populated feature count')
 }
 
 {

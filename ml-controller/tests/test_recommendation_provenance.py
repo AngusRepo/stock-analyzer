@@ -1087,6 +1087,8 @@ def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeyp
     assert ensemble_payload["timesfm"]["n_used"] == 1024
     assert ensemble_payload["timesfm_sidecar"]["schema_version"] == "timesfm-l1-75-sidecar-v1"
     assert ensemble_payload["timesfm_sidecar"]["direct_alpha_blocked"] is True
+    assert ensemble_payload["timesfm_sidecar"]["l2_feature_input_active"] is False
+    assert ensemble_payload["timesfm_sidecar"]["l2_feature_input_blocked_reason"] == "requires_formal137_registry_retrain_release"
     assert ensemble_payload["timesfm_sidecar"]["features"]["forecast_return"] == -0.0123
 
 

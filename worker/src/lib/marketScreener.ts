@@ -28,7 +28,12 @@ import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidenceP
 import { coerceModalStrategySimilarityGraphEvidence, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'
 import type { StrategySpec } from './strategySpec'
-import { materializeFormal137UsSentimentScoreRank, type Formal137UsSentimentMaterializationTelemetry } from './formal137FeatureMaterialization'
+import {
+  materializeFormal137FeatureAliases,
+  materializeFormal137UsSentimentScoreRank,
+  type Formal137FeatureAliasMaterializationTelemetry,
+  type Formal137UsSentimentMaterializationTelemetry,
+} from './formal137FeatureMaterialization'
 import {
   buildFinLabTaxonomyThemeSignals,
   refreshStockThemeFeaturesFromSignals,
@@ -709,6 +714,7 @@ interface FinLabStyleFactorNormalizationTelemetry {
   compositeCoverage: Record<string, number>
   allocationCoverage: Record<string, number>
   specialFeatureMaterialization: {
+    featureAliases: Formal137FeatureAliasMaterializationTelemetry
     usSentimentScore: Formal137UsSentimentMaterializationTelemetry
   }
 }
@@ -1369,6 +1375,12 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
     compositeCoverage: {},
     allocationCoverage: {},
     specialFeatureMaterialization: {
+      featureAliases: {
+        method: 'formal137_feature_alias_materialization_v1',
+        universeCount: candidates.length,
+        materializedCount: 0,
+        aliasCoverage: {},
+      },
       usSentimentScore: {
         method: 'formal137_us_sentiment_cross_sectional_exposure_rank_v1',
         universeCount: candidates.length,
@@ -1528,6 +1540,7 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
 
   }
 
+  telemetry.specialFeatureMaterialization.featureAliases = materializeFormal137FeatureAliases(candidates)
   telemetry.specialFeatureMaterialization.usSentimentScore = materializeFormal137UsSentimentScoreRank(candidates)
   return telemetry
 }
@@ -2974,14 +2987,48 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       }
       // (b) ???sector_flow ??撅?taxonomy quadrant
       const { results: qRows } = await env.DB.prepare(
-        `SELECT sector, classification, quadrant, rs_ratio, rs_momentum, turnover_share_delta FROM sector_flow
+        `SELECT sector, classification, quadrant, rs_ratio, rs_momentum, turnover_share_delta,
+                rotation_score, rotation_regime, rotation_hysteresis, rotation_velocity,
+                rotation_acceleration, quadrant_age, transition_path, rotation_window
+           FROM sector_flow
          WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
            AND quadrant IS NOT NULL
+           AND rs_ratio IS NOT NULL
+           AND rs_momentum IS NOT NULL
            AND date = (SELECT MAX(date) FROM sector_flow
                        WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-                         AND quadrant IS NOT NULL)`
-      ).all<{ sector: string; classification: string; quadrant: string; rs_ratio: number | null; rs_momentum: number | null; turnover_share_delta: number | null }>()
-      const themeQuadrant = new Map<string, { quadrant: string; rsRatio: number; rsMomentum: number; turnoverShareDelta: number }>()
+                         AND rs_ratio IS NOT NULL
+                         AND rs_momentum IS NOT NULL)`
+      ).all<{
+        sector: string
+        classification: string
+        quadrant: string
+        rs_ratio: number | null
+        rs_momentum: number | null
+        turnover_share_delta: number | null
+        rotation_score: number | null
+        rotation_regime: string | null
+        rotation_hysteresis: string | null
+        rotation_velocity: number | null
+        rotation_acceleration: number | null
+        quadrant_age: number | null
+        transition_path: string | null
+        rotation_window: number | null
+      }>()
+      const themeQuadrant = new Map<string, {
+        quadrant: string
+        rsRatio: number
+        rsMomentum: number
+        turnoverShareDelta: number
+        rotationScore: number | null
+        rotationRegime: string | null
+        rotationHysteresis: string | null
+        rotationVelocity: number | null
+        rotationAcceleration: number | null
+        quadrantAge: number | null
+        transitionPath: string | null
+        rotationWindow: number | null
+      }>()
       for (const r of qRows ?? []) {
         const classification = String(r.classification || '').trim()
         const sector = String(r.sector || '').trim()
@@ -2991,6 +3038,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           rsRatio: Number(r.rs_ratio ?? 100),
           rsMomentum: Number(r.rs_momentum ?? 0),
           turnoverShareDelta: Number(r.turnover_share_delta ?? 0),
+          rotationScore: r.rotation_score == null ? null : Number(r.rotation_score),
+          rotationRegime: r.rotation_regime == null ? null : String(r.rotation_regime),
+          rotationHysteresis: r.rotation_hysteresis == null ? null : String(r.rotation_hysteresis),
+          rotationVelocity: r.rotation_velocity == null ? null : Number(r.rotation_velocity),
+          rotationAcceleration: r.rotation_acceleration == null ? null : Number(r.rotation_acceleration),
+          quadrantAge: r.quadrant_age == null ? null : Number(r.quadrant_age),
+          transitionPath: r.transition_path == null ? null : String(r.transition_path),
+          rotationWindow: r.rotation_window == null ? null : Number(r.rotation_window),
         })
       }
       const latestThemeUniverse = new Set(themeQuadrant.keys())
@@ -3016,7 +3071,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           })
           continue
         }
-        const { quadrant: q, rsRatio, rsMomentum, turnoverShareDelta } = overlay
+        const {
+          quadrant: q,
+          rsRatio,
+          rsMomentum,
+          turnoverShareDelta,
+          rotationScore,
+          rotationRegime,
+          rotationHysteresis,
+          rotationVelocity,
+          rotationAcceleration,
+          quadrantAge,
+          transitionPath,
+          rotationWindow,
+        } = overlay
         let adjustment = 0
         let reasonCode = 'rrg_overlay_neutral'
         if (q === 'Leading' && rsRatio >= 100 && rsMomentum >= 0) {
@@ -3031,6 +3099,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         } else if (q === 'Lagging') {
           adjustment = Math.max(-6, Math.min(-2, Number(rrgCfg.laggingPenalty ?? -4)))
           reasonCode = 'rrg_overlay_lagging_risk'
+        }
+        const rotationAdjustment = Number.isFinite(rotationScore)
+          ? Math.max(-3, Math.min(3, Number(rotationScore) * 3))
+          : 0
+        if (rotationAdjustment !== 0) {
+          adjustment += rotationAdjustment
+          reasonCode = rotationRegime ? `rrg_rotation_${rotationRegime}` : reasonCode
         }
         let turnoverShareAdjustment = 0
         if ((q === 'Leading' || q === 'Improving') && turnoverShareDelta >= 0.002) {
@@ -3063,6 +3138,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
               rsRatio,
               rsMomentum,
               turnoverShareDelta,
+              rotationScore,
+              rotationRegime,
+              rotationHysteresis,
+              rotationVelocity,
+              rotationAcceleration,
+              quadrantAge,
+              transitionPath,
+              rotationWindow,
+              rotationAdjustment,
               turnoverShareAdjustment,
               adjustment,
             },

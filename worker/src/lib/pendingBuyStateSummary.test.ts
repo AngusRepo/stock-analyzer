@@ -84,3 +84,22 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   assert(summary.state === 'expired', 'expired-only run should be explicit')
   assert(summary.label === '已過期', 'expired should have zh-TW label')
 }
+
+{
+  const summary = buildPendingBuyStateSummary([], {
+    status: 'ready',
+    debate_status: 'completed',
+    candidate_count: 0,
+    empty_reason: 'empty_after_soft_risk',
+    filter_audit: {
+      version: 'pending_buy_filter_audit_v1',
+      initial_buy_signals: 5,
+      final_candidates: 0,
+      rrg_lagging_soft_downgrade: 5,
+    },
+  })
+
+  assert(summary.state === 'empty_after_soft_risk', 'soft-risk empty runs should be explicit')
+  assert(summary.total_count === 5, 'total count should include initial L4 buy signals from filter audit')
+  assert(summary.label === '軟性風險後無候選', 'soft-risk empty runs should have zh-TW label')
+}

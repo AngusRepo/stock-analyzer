@@ -5,6 +5,10 @@ interface Formal137RawSignals {
   return20d?: NullableNumber
   volumeExpansion20?: NullableNumber
   ma10Bias?: NullableNumber
+  advanceRatio?: NullableNumber
+  advance_ratio?: NullableNumber
+  marginBalance?: NullableNumber
+  margin_balance?: NullableNumber
   technicalIndicators?: Record<string, NullableNumber>
   factorSignals?: Record<string, NullableNumber>
 }
@@ -22,6 +26,13 @@ export interface Formal137UsSentimentMaterializationTelemetry {
   skippedNeutralCount: number
   skippedConstantExposureCount: number
   componentCoverage: Record<string, number>
+}
+
+export interface Formal137FeatureAliasMaterializationTelemetry {
+  method: 'formal137_feature_alias_materialization_v1'
+  universeCount: number
+  materializedCount: number
+  aliasCoverage: Record<string, number>
 }
 
 const US_SENTIMENT_ALIASES = ['us_sentiment_score', 'usSentimentScore'] as const
@@ -75,6 +86,133 @@ function rawSentimentScore(raw: Formal137RawSignals): number | null {
     if (value != null) return value
   }
   return null
+}
+
+const FORMAL137_ALIAS_SOURCES: Record<string, Array<(raw: Formal137RawSignals) => unknown>> = {
+  KLOW2: [
+    (raw) => raw.factorSignals?.KLOW2,
+    (raw) => raw.technicalIndicators?.KLOW2,
+  ],
+  KSFT: [
+    (raw) => raw.factorSignals?.KSFT,
+    (raw) => raw.technicalIndicators?.KSFT,
+  ],
+  KSFT2: [
+    (raw) => raw.factorSignals?.KSFT2,
+    (raw) => raw.technicalIndicators?.KSFT2,
+  ],
+  CNTD_20: [
+    (raw) => raw.factorSignals?.CNTD_20,
+    (raw) => raw.technicalIndicators?.CNTD_20,
+  ],
+  CNTN_20: [
+    (raw) => raw.factorSignals?.CNTN_20,
+    (raw) => raw.technicalIndicators?.CNTN_20,
+  ],
+  advance_ratio: [
+    (raw) => raw.factorSignals?.advance_ratio,
+    (raw) => raw.factorSignals?.advanceRatio,
+    (raw) => raw.advance_ratio,
+    (raw) => raw.advanceRatio,
+  ],
+  advanceRatio: [
+    (raw) => raw.factorSignals?.advanceRatio,
+    (raw) => raw.factorSignals?.advance_ratio,
+    (raw) => raw.advanceRatio,
+    (raw) => raw.advance_ratio,
+  ],
+  ma10_bias: [
+    (raw) => raw.factorSignals?.ma10_bias,
+    (raw) => raw.factorSignals?.ma10Bias,
+    (raw) => raw.technicalIndicators?.ma10Bias,
+    (raw) => raw.ma10Bias,
+  ],
+  return_5d: [
+    (raw) => raw.factorSignals?.return_5d,
+    (raw) => raw.factorSignals?.return5d,
+    (raw) => raw.technicalIndicators?.return5d,
+    (raw) => raw.return5d,
+  ],
+  margin_balance: [
+    (raw) => raw.factorSignals?.margin_balance,
+    (raw) => raw.factorSignals?.marginBalance,
+    (raw) => raw.margin_balance,
+    (raw) => raw.marginBalance,
+  ],
+  marginBalance: [
+    (raw) => raw.factorSignals?.marginBalance,
+    (raw) => raw.factorSignals?.margin_balance,
+    (raw) => raw.marginBalance,
+    (raw) => raw.margin_balance,
+  ],
+  formal137MarginBalanceRank: [
+    (raw) => raw.factorSignals?.formal137MarginBalanceRank,
+    (raw) => raw.factorSignals?.margin_balance_rank,
+    (raw) => raw.factorSignals?.marginBalanceRank,
+    (raw) => raw.factorSignals?.margin_balance_normalized,
+    (raw) => raw.factorSignals?.finlabCsMarginBalanceRank,
+  ],
+  margin_balance_rank: [
+    (raw) => raw.factorSignals?.margin_balance_rank,
+    (raw) => raw.factorSignals?.formal137MarginBalanceRank,
+    (raw) => raw.factorSignals?.marginBalanceRank,
+    (raw) => raw.factorSignals?.margin_balance_normalized,
+    (raw) => raw.factorSignals?.finlabCsMarginBalanceRank,
+  ],
+  marginBalanceRank: [
+    (raw) => raw.factorSignals?.marginBalanceRank,
+    (raw) => raw.factorSignals?.formal137MarginBalanceRank,
+    (raw) => raw.factorSignals?.margin_balance_rank,
+    (raw) => raw.factorSignals?.margin_balance_normalized,
+    (raw) => raw.factorSignals?.finlabCsMarginBalanceRank,
+  ],
+  margin_balance_normalized: [
+    (raw) => raw.factorSignals?.margin_balance_normalized,
+    (raw) => raw.factorSignals?.formal137MarginBalanceRank,
+    (raw) => raw.factorSignals?.margin_balance_rank,
+    (raw) => raw.factorSignals?.marginBalanceRank,
+    (raw) => raw.factorSignals?.finlabCsMarginBalanceRank,
+  ],
+}
+
+function firstFiniteSource(raw: Formal137RawSignals, sources: Array<(raw: Formal137RawSignals) => unknown>): number | null {
+  for (const source of sources) {
+    const value = finiteNumber(source(raw))
+    if (value != null) return value
+  }
+  return null
+}
+
+export function materializeFormal137FeatureAliases<T extends Formal137MaterializationCandidate>(
+  candidates: T[],
+): Formal137FeatureAliasMaterializationTelemetry {
+  const telemetry: Formal137FeatureAliasMaterializationTelemetry = {
+    method: 'formal137_feature_alias_materialization_v1',
+    universeCount: candidates.length,
+    materializedCount: 0,
+    aliasCoverage: {},
+  }
+
+  for (const candidate of candidates) {
+    const raw = candidate.raw_signals
+    if (!raw) continue
+    let touched = false
+    raw.factorSignals = { ...(raw.factorSignals ?? {}) }
+    for (const [alias, sources] of Object.entries(FORMAL137_ALIAS_SOURCES)) {
+      const existing = finiteNumber(raw.factorSignals[alias])
+      if (existing != null) {
+        telemetry.aliasCoverage[alias] = (telemetry.aliasCoverage[alias] ?? 0) + 1
+        continue
+      }
+      const value = firstFiniteSource(raw, sources)
+      if (value == null) continue
+      raw.factorSignals[alias] = value
+      telemetry.aliasCoverage[alias] = (telemetry.aliasCoverage[alias] ?? 0) + 1
+      touched = true
+    }
+    if (touched) telemetry.materializedCount += 1
+  }
+  return telemetry
 }
 
 function sentimentDirection(score: number): 1 | -1 | 0 {

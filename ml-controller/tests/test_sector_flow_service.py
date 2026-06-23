@@ -31,13 +31,13 @@ def test_load_stock_tags_uses_finlab_taxonomy_with_stock_tags_overlay(monkeypatc
     def fake_query(sql, params=None):
         if "FROM finlab_taxonomy_tags" in sql:
             return [
-                {"tag": "AI伺服器", "symbol": "2330"},
-                {"tag": "AI伺服器", "symbol": "2382"},
+                {"tag": "AI_SERVER", "symbol": "2330"},
+                {"tag": "AI_SERVER", "symbol": "2382"},
             ]
         if "FROM stock_tags" in sql:
             return [
-                {"tag": "AI伺服器", "symbol": "2382"},
-                {"tag": "高速傳輸", "symbol": "3665"},
+                {"tag": "AI_SERVER", "symbol": "2382"},
+                {"tag": "MEMORY", "symbol": "3665"},
             ]
         return []
 
@@ -45,8 +45,8 @@ def test_load_stock_tags_uses_finlab_taxonomy_with_stock_tags_overlay(monkeypatc
 
     tags = sector_flow_service._load_stock_tags("industry_theme")
 
-    assert tags["AI伺服器"] == ["2330", "2382"]
-    assert tags["高速傳輸"] == ["3665"]
+    assert tags["AI_SERVER"] == ["2330", "2382"]
+    assert tags["MEMORY"] == ["3665"]
 
 
 def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
@@ -61,7 +61,7 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
     written = sector_flow_service.write_sector_flow(
         [
             RrgPoint(
-                sector="電子代工",
+                sector="PASSIVE_COMPONENT",
                 rs_ratio=101.2,
                 rs_momentum=0.4,
                 quadrant="Leading",
@@ -71,12 +71,43 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
         ],
         "industry",
         "2026-04-30",
-        {"電子代工": {"foreign_net": -0.0142, "trust_net": -0.3681, "dealer_net": -0.0499, "total_net": -0.4322}},
+        {
+            "PASSIVE_COMPONENT": {
+                "foreign_net": -0.0142,
+                "trust_net": -0.3681,
+                "dealer_net": -0.0499,
+                "total_net": -0.4322,
+            }
+        },
     )
 
     assert written == 1
+    sql = captured["statements"][0][0]
+    assert "rotation_velocity" in sql
+    assert "rotation_score" in sql
+    assert "rotation_regime" in sql
+    assert "rrg_tail_json" in sql
     params = captured["statements"][0][1]
     assert params[-3:] == [-0.0142, -0.3681, -0.4322]
+
+
+def test_load_rrg_history_builds_per_sector_tail(monkeypatch):
+    def fake_query(sql, params=None):
+        assert "rrg_tail_json" not in sql
+        assert params == ["industry", "industry", "2026-06-20", 60]
+        return [
+            {"sector": "AI", "date": "2026-06-18", "rs_ratio": 98.2, "rs_momentum": 0.6, "quadrant": "Improving"},
+            {"sector": "AI", "date": "2026-06-19", "rs_ratio": 101.0, "rs_momentum": 1.2, "quadrant": "Leading"},
+            {"sector": "Bad", "date": "2026-06-19", "rs_ratio": 97.0, "rs_momentum": None, "quadrant": "Leading"},
+        ]
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+
+    history = sector_flow_service._load_rrg_history("industry", "2026-06-20")
+
+    assert len(history["AI"]) == 2
+    assert history["AI"][0].quadrant == "Improving"
+    assert history["Bad"][0].quadrant == "Leading"
 
 
 def test_write_sector_flow_stock_details_refreshes_current_date(monkeypatch):
@@ -139,3 +170,5 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     assert "industry_theme" in captured_tag_types
     assert "industry_theme" in captured_classifications
     assert "industry_theme" in summary
+    assert "rotation_regimes" in summary["industry_theme"]
+    assert "with_rotation" in summary["industry_theme"]

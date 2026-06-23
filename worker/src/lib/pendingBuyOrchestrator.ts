@@ -81,6 +81,14 @@ interface QuadrantInfo {
   quadrant: string
   rs_ratio: number
   rs_momentum: number
+  rotation_score?: number | null
+  rotation_regime?: string | null
+  rotation_hysteresis?: string | null
+  rotation_velocity?: number | null
+  rotation_acceleration?: number | null
+  quadrant_age?: number | null
+  transition_path?: string | null
+  rotation_window?: number | null
 }
 
 interface QuadrantFilterLogEntry {
@@ -90,7 +98,31 @@ interface QuadrantFilterLogEntry {
   classification?: string
   quadrant: string
   action: string
+  stage?: string
+  reason_code?: string
+  rs_ratio?: number
+  rs_momentum?: number
+  risk_multiplier?: number
+  details?: Record<string, unknown>
   momentum_dir?: string
+}
+
+interface PendingBuyFilterAuditSummary {
+  version: 'pending_buy_filter_audit_v1'
+  initial_buy_signals: number
+  board_reject: number
+  cooldown_reject: number
+  missing_entry: number
+  score_v2_missing: number
+  alpha_skip: number
+  rrg_unmapped_neutral: number
+  rrg_lagging_soft_downgrade: number
+  rrg_weakening_downgrade: number
+  rrg_pass: number
+  gap_reject: number
+  final_candidates: number
+  debate_pending: number
+  debate_completed: number
 }
 
 interface AlphaForecastContext {
@@ -182,6 +214,87 @@ function alphaWatchPoint(ctx: AlphaForecastContext | null): string | null {
   const risk = ctx.risk_overlay ?? {}
   const sizing = clampNumber(ctx.sizing_multiplier, 0.25, 1.25, 1.0)
   return `Alpha bucket: ${ctx.edge_bucket ?? 'unknown'}, regime=${ctx.regime ?? 'unknown'}, sizing x${sizing.toFixed(2)}, risk=${risk.volatility_level ?? 'n/a'}/${risk.liquidity_level ?? 'n/a'}`
+}
+
+function newFilterAuditSummary(initialBuySignals: number): PendingBuyFilterAuditSummary {
+  return {
+    version: 'pending_buy_filter_audit_v1',
+    initial_buy_signals: initialBuySignals,
+    board_reject: 0,
+    cooldown_reject: 0,
+    missing_entry: 0,
+    score_v2_missing: 0,
+    alpha_skip: 0,
+    rrg_unmapped_neutral: 0,
+    rrg_lagging_soft_downgrade: 0,
+    rrg_weakening_downgrade: 0,
+    rrg_pass: 0,
+    gap_reject: 0,
+    final_candidates: 0,
+    debate_pending: 0,
+    debate_completed: 0,
+  }
+}
+
+type PendingBuyFilterAuditCounter = Exclude<keyof PendingBuyFilterAuditSummary, 'version'>
+
+function incAudit(summary: PendingBuyFilterAuditSummary, key: PendingBuyFilterAuditCounter): void {
+  summary[key] = Number(summary[key] ?? 0) + 1
+}
+
+function inferEmptyReason(summary: PendingBuyFilterAuditSummary): string | undefined {
+  if (summary.final_candidates > 0) return undefined
+  if (summary.initial_buy_signals <= 0) return 'no_buy_recommendations'
+  const hardRejects = summary.board_reject + summary.cooldown_reject + summary.missing_entry + summary.score_v2_missing + summary.alpha_skip + summary.gap_reject
+  if (hardRejects >= summary.initial_buy_signals) return 'empty_after_hard_safety'
+  return 'empty_after_soft_risk'
+}
+
+function isMissingAuditTableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /no such table: pending_buy_filter_audit/i.test(message)
+}
+
+async function persistPendingBuyFilterAudit(
+  env: Bindings,
+  runId: number | null,
+  tradeDate: string,
+  sourceRecoDate: string,
+  entries: QuadrantFilterLogEntry[],
+): Promise<void> {
+  if (!runId || entries.length === 0) return
+  try {
+    for (const entry of entries) {
+      await env.DB.prepare(
+        `INSERT INTO pending_buy_filter_audit
+          (run_id, trade_date, source_reco_date, symbol, name, stage, action, reason_code,
+           theme, classification, quadrant, rs_ratio, rs_momentum, risk_multiplier, details_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      ).bind(
+        runId,
+        tradeDate,
+        sourceRecoDate,
+        entry.symbol,
+        entry.name,
+        entry.stage ?? 'morning_setup',
+        entry.action,
+        entry.reason_code ?? entry.action,
+        entry.theme,
+        entry.classification ?? null,
+        entry.quadrant,
+        entry.rs_ratio ?? null,
+        entry.rs_momentum ?? null,
+        entry.risk_multiplier ?? null,
+        entry.details ? JSON.stringify(entry.details) : null,
+      ).run()
+    }
+  } catch (error) {
+    if (isMissingAuditTableError(error)) {
+      console.warn('[MorningSetup] pending_buy_filter_audit table missing; KV meta still carries filter_audit summary')
+      return
+    }
+    throw error
+  }
 }
 
 function calcRiskPct(
@@ -428,17 +541,22 @@ async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<s
 
     const { results: quadrantRows } = await db.prepare(
       `SELECT sector, classification, rs_ratio, rs_momentum, quadrant
+              , rotation_score, rotation_regime, rotation_hysteresis, rotation_velocity
+              , rotation_acceleration, quadrant_age, transition_path, rotation_window
          FROM sector_flow
         WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
           AND quadrant IS NOT NULL
+          AND rs_ratio IS NOT NULL
+          AND rs_momentum IS NOT NULL
           AND date = (
             SELECT MAX(date)
               FROM sector_flow
              WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-               AND quadrant IS NOT NULL
+               AND rs_ratio IS NOT NULL
+               AND rs_momentum IS NOT NULL
           )`,
     ).all<any>()
-    const themeQuadrants = new Map<string, { quadrant: string; rs_ratio: number; rs_momentum: number }>()
+    const themeQuadrants = new Map<string, Omit<QuadrantInfo, 'theme' | 'classification'>>()
     for (const row of quadrantRows ?? []) {
       const classification = String(row.classification || '').trim()
       const sector = String(row.sector || '').trim()
@@ -447,6 +565,14 @@ async function loadQuadrantMap(db: D1Database, symbols: string[]): Promise<Map<s
         quadrant: row.quadrant,
         rs_ratio: Number(row.rs_ratio),
         rs_momentum: Number(row.rs_momentum),
+        rotation_score: row.rotation_score == null ? null : Number(row.rotation_score),
+        rotation_regime: row.rotation_regime == null ? null : String(row.rotation_regime),
+        rotation_hysteresis: row.rotation_hysteresis == null ? null : String(row.rotation_hysteresis),
+        rotation_velocity: row.rotation_velocity == null ? null : Number(row.rotation_velocity),
+        rotation_acceleration: row.rotation_acceleration == null ? null : Number(row.rotation_acceleration),
+        quadrant_age: row.quadrant_age == null ? null : Number(row.quadrant_age),
+        transition_path: row.transition_path == null ? null : String(row.transition_path),
+        rotation_window: row.rotation_window == null ? null : Number(row.rotation_window),
       })
     }
     const themeUniverse = new Set(themeQuadrants.keys())
@@ -523,8 +649,8 @@ async function persistPendingBuys(
   tradeDate: string,
   pendingBuys: PendingBuy[],
   meta?: Record<string, unknown>,
-): Promise<void> {
-  await replacePendingBuyState(env, {
+): Promise<number | null> {
+  const runId = await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate: typeof meta?.prev_day === 'string' ? String(meta.prev_day) : null,
     status: (meta?.status as any) ?? 'ready',
@@ -552,6 +678,7 @@ async function persistPendingBuys(
       console.warn('[PendingBuyOrchestrator] paper attribution sidecar failed:', error)
     })
   }
+  return runId
 }
 
 export async function checkCircuitBreakers(
@@ -736,11 +863,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
     applyRecommendationProvenance(buyRecs)
+    const filterAudit = newFilterAuditSummary(buyRecs.length)
     if (buyRecs.length === 0) {
       await persistPendingBuys(env, pendingDate, [], {
         status: 'empty',
         reason: 'no_buy_recommendations',
         prev_day: sourceRecoDate,
+        filter_audit: filterAudit,
+        empty_reason: 'no_buy_recommendations',
       })
       return
     }
@@ -826,11 +956,39 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           theme: board.boardType,
           quadrant: board.tradabilityTier,
           action: `BOARD_${board.reason}`,
+          stage: 'hard_safety',
+          reason_code: `BOARD_${board.reason}`,
+          details: { market: rec.market, latest_open: rec.latest_open, latest_avg_price: rec.latest_avg_price },
         })
+        incAudit(filterAudit, 'board_reject')
         continue
       }
-      if (cooldownSet.has(rec.symbol)) continue
-      if (!rec.ml_entry_price || rec.ml_entry_price <= 0) continue
+      if (cooldownSet.has(rec.symbol)) {
+        quadrantFilterLog.push({
+          symbol: rec.symbol,
+          name: rec.name ?? rec.symbol,
+          theme: 'cooldown',
+          quadrant: 'cooldown',
+          action: 'COOLDOWN_REJECT',
+          stage: 'hard_safety',
+          reason_code: 'COOLDOWN_REJECT',
+        })
+        incAudit(filterAudit, 'cooldown_reject')
+        continue
+      }
+      if (!rec.ml_entry_price || rec.ml_entry_price <= 0) {
+        quadrantFilterLog.push({
+          symbol: rec.symbol,
+          name: rec.name ?? rec.symbol,
+          theme: 'entry_price',
+          quadrant: 'missing',
+          action: 'ML_ENTRY_PRICE_MISSING',
+          stage: 'hard_safety',
+          reason_code: 'ML_ENTRY_PRICE_MISSING',
+        })
+        incAudit(filterAudit, 'missing_entry')
+        continue
+      }
       const forecastData = parsePredictionForecastData(rec.forecast_data)
       const alphaContext = parseAlphaContext(forecastData)
       const sparseAllocation = buildSparseAllocationSummary(rec.alpha_allocation)
@@ -843,7 +1001,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           theme: 'score_v2',
           quadrant: 'missing',
           action: 'SCORE_V2_MISSING',
+          stage: 'hard_safety',
+          reason_code: 'SCORE_V2_MISSING',
         })
+        incAudit(filterAudit, 'score_v2_missing')
         continue
       }
       const executionRole = 'l4_sparse_final_buy'
@@ -855,21 +1016,56 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           theme: alphaContext.edge_bucket ?? 'alpha',
           quadrant: alphaContext.regime ?? 'unknown',
           action: 'ALPHA_SKIP',
+          stage: 'hard_safety',
+          reason_code: 'ALPHA_SKIP',
+          details: { flags: alphaContext.risk_overlay?.flags ?? [] },
         })
+        incAudit(filterAudit, 'alpha_skip')
         continue
       }
 
       const quadrant = quadrantMap.get(rec.symbol)
+      let debateVerdict = 'PENDING'
+      let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
+      const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
+      riskPct *= alphaSizing
+      const softRiskWatchPoints: string[] = []
+      const rotationDetails = quadrant ? {
+        rotation_score: quadrant.rotation_score ?? null,
+        rotation_regime: quadrant.rotation_regime ?? null,
+        rotation_hysteresis: quadrant.rotation_hysteresis ?? null,
+        rotation_velocity: quadrant.rotation_velocity ?? null,
+        rotation_acceleration: quadrant.rotation_acceleration ?? null,
+        quadrant_age: quadrant.quadrant_age ?? null,
+        transition_path: quadrant.transition_path ?? null,
+        rotation_window: quadrant.rotation_window ?? null,
+      } : undefined
+      if (quadrant?.rotation_regime) {
+        softRiskWatchPoints.push(
+          `rrg_rotation_model:${quadrant.rotation_regime}:score=${Number(quadrant.rotation_score ?? 0).toFixed(3)}:path=${quadrant.transition_path ?? quadrant.quadrant}:hysteresis=${quadrant.rotation_hysteresis ?? 'unknown'}`,
+        )
+      }
       if (quadrant?.quadrant === 'Lagging') {
+        riskPct *= downgradeMultiplier
+        softRiskWatchPoints.push(
+          `rrg_soft_overlay:Lagging:risk_multiplier=${downgradeMultiplier.toFixed(2)}:debate_required=true`,
+        )
         quadrantFilterLog.push({
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
           classification: quadrant.classification,
           quadrant: quadrant.quadrant,
-          action: 'REJECT',
+          action: 'SOFT_DOWNGRADE_DEBATE_REQUIRED',
+          stage: 'soft_risk_overlay',
+          reason_code: 'RRG_LAGGING_SOFT_RISK',
+          rs_ratio: quadrant.rs_ratio,
+          rs_momentum: quadrant.rs_momentum,
+          risk_multiplier: downgradeMultiplier,
+          momentum_dir: quadrant.rs_momentum >= 0 ? 'up' : 'down',
+          details: rotationDetails,
         })
-        continue
+        incAudit(filterAudit, 'rrg_lagging_soft_downgrade')
       } else if (quadrant?.quadrant === 'Unmapped') {
         quadrantFilterLog.push({
           symbol: rec.symbol,
@@ -878,25 +1074,34 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'RRG_UNMAPPED_NEUTRAL',
+          stage: 'soft_risk_overlay',
+          reason_code: 'RRG_UNMAPPED_NEUTRAL',
+          details: rotationDetails,
         })
+        incAudit(filterAudit, 'rrg_unmapped_neutral')
       }
 
-      let debateVerdict = 'PENDING'
-      let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
-      const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
-      riskPct *= alphaSizing
       if (quadrant?.quadrant === 'Weakening') {
-        debateVerdict = 'DOWNGRADE'
         riskPct *= downgradeMultiplier
+        softRiskWatchPoints.push(
+          `rrg_soft_overlay:Weakening:risk_multiplier=${downgradeMultiplier.toFixed(2)}:debate_required=true`,
+        )
         quadrantFilterLog.push({
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: quadrant.theme,
           classification: quadrant.classification,
           quadrant: quadrant.quadrant,
-          action: 'DOWNGRADE',
+          action: 'SOFT_DOWNGRADE_DEBATE_REQUIRED',
+          stage: 'soft_risk_overlay',
+          reason_code: 'RRG_WEAKENING_DOWNGRADE',
+          rs_ratio: quadrant.rs_ratio,
+          rs_momentum: quadrant.rs_momentum,
+          risk_multiplier: downgradeMultiplier,
+          details: rotationDetails,
         })
-      } else if (quadrant) {
+        incAudit(filterAudit, 'rrg_weakening_downgrade')
+      } else if (quadrant && quadrant.quadrant !== 'Lagging' && quadrant.quadrant !== 'Unmapped') {
         quadrantFilterLog.push({
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
@@ -904,8 +1109,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           classification: quadrant.classification,
           quadrant: quadrant.quadrant,
           action: 'PASS',
+          stage: 'soft_risk_overlay',
+          reason_code: 'RRG_PASS',
+          rs_ratio: quadrant.rs_ratio,
+          rs_momentum: quadrant.rs_momentum,
           momentum_dir: quadrant.rs_momentum >= 0 ? 'up' : 'down',
+          details: rotationDetails,
         })
+        incAudit(filterAudit, 'rrg_pass')
       }
 
       let adjustedEntry = rec.ml_entry_price
@@ -948,7 +1159,21 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         if (holidayGapDays >= 3 && nightDropPct > 1.0) {
           const impliedGap = nightDropPct / 100
           const gapThreshold = cfg.circuit.preMarketGapThreshold ?? 0.05
-          if (impliedGap > gapThreshold) continue
+          if (impliedGap > gapThreshold) {
+            quadrantFilterLog.push({
+              symbol: rec.symbol,
+              name: rec.name ?? rec.symbol,
+              theme: 'pre_market_gap',
+              classification: quadrant?.classification,
+              quadrant: quadrant?.quadrant ?? 'unknown',
+              action: 'PRE_MARKET_GAP_REJECT',
+              stage: 'hard_safety',
+              reason_code: 'PRE_MARKET_GAP_REJECT',
+              details: { implied_gap: impliedGap, threshold: gapThreshold, taifex_change_pct: nightDropPct },
+            })
+            incAudit(filterAudit, 'gap_reject')
+            continue
+          }
           const chasePct = Math.min(impliedGap, gapThreshold)
           const gapBuffer = cfg.position.gapChaseBuffer ?? 0.995
           const newEntry = Math.round(adjustedEntry * (1 + chasePct) * gapBuffer * 100) / 100
@@ -1010,6 +1235,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
             buildMlVoteWatchPoint(mlVoteSummary),
             buildL4SparseAllocationWatchPoint(sparseAllocation),
           ].filter(Boolean) as string[]),
+          ...softRiskWatchPoints,
           ...entryWatchPoints,
         ],
         debate_verdict: debateVerdict,
@@ -1023,14 +1249,21 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       if (pendingBuys.length >= pendingBuyLimit) break
     }
 
-    await persistPendingBuys(env, pendingDate, pendingBuys, {
+    filterAudit.final_candidates = pendingBuys.length
+    filterAudit.debate_pending = pendingBuys.filter((item) => (item.debate_status ?? 'pending') === 'pending').length
+    filterAudit.debate_completed = pendingBuys.filter((item) => (item.debate_status ?? 'pending') === 'completed').length
+    const emptyReason = inferEmptyReason(filterAudit)
+    const runId = await persistPendingBuys(env, pendingDate, pendingBuys, {
       status: 'ready',
       count: pendingBuys.length,
       prev_day: prevDay,
       final_buy_limit: pendingBuyLimit,
       execution_pool_limit: pendingBuyLimit,
       execution_pool_policy: 'l4_sparse_final_buy_only',
+      filter_audit: filterAudit,
+      empty_reason: emptyReason,
     })
+    await persistPendingBuyFilterAudit(env, runId, pendingDate, sourceRecoDate, quadrantFilterLog)
 
     if (quadrantFilterLog.length > 0) {
       await env.KV.put(

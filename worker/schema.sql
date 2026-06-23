@@ -478,9 +478,23 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   llm_summary     TEXT,     -- LLM 生成的族群分析
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   classification TEXT DEFAULT 'industry',
+  rs_ratio        REAL,
+  rs_momentum     REAL,
+  quadrant        TEXT,
+  rotation_velocity REAL,
+  rotation_acceleration REAL,
+  quadrant_age    INTEGER,
+  transition_path TEXT,
+  rotation_score  REAL,
+  rotation_regime TEXT,
+  rotation_hysteresis TEXT,
+  rotation_window INTEGER,
+  rrg_tail_json   TEXT,
   UNIQUE(date, sector, classification)
 );
 CREATE INDEX IF NOT EXISTS idx_sector_flow_date ON sector_flow(date DESC, total_net DESC);
+CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_regime ON sector_flow(date, classification, rotation_regime);
+CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_score ON sector_flow(date, classification, rotation_score DESC);
 
 CREATE TABLE IF NOT EXISTS screener_funnel_runs (
   run_id          TEXT PRIMARY KEY,

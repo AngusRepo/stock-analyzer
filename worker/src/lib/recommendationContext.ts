@@ -39,6 +39,19 @@ export interface MlDiagnosticsSummary {
     mergeCompression: number | null
     weightHhi: number | null
   }
+  timesfmSidecar: {
+    schemaVersion: string | null
+    layer: string | null
+    role: string | null
+    directAlphaBlocked: boolean
+    eligibleForL2FeatureEnrichment: boolean
+    l2FeatureInputActive: boolean
+    l2FeatureInputBlockedReason: string | null
+    currentAllowedUse: string[]
+    featureKeys: string[]
+    populatedFeatureCount: number
+    features: Record<string, unknown>
+  } | null
 }
 
 export interface SparseAllocationSummary {
@@ -135,7 +148,7 @@ export interface MlVoteThresholdPolicy {
   modelVoteRegimeAdjustments?: Record<string, number>
 }
 
-export const ALPHA_PREDICTION_MODEL_NAMES = [
+export const DIRECT_ALPHA_VOTE_MODEL_NAMES = [
   'LightGBM',
   'XGBoost',
   'ExtraTrees',
@@ -144,10 +157,18 @@ export const ALPHA_PREDICTION_MODEL_NAMES = [
   'DLinear',
   'PatchTST',
   'iTransformer',
+] as const
+
+export const TIMESFM_SIDECAR_MODEL_NAMES = [
   'TimesFM',
 ] as const
 
-const TRACKED_MODEL_NAMES = [...ALPHA_PREDICTION_MODEL_NAMES]
+export const ALPHA_PREDICTION_MODEL_NAMES = [
+  ...DIRECT_ALPHA_VOTE_MODEL_NAMES,
+  ...TIMESFM_SIDECAR_MODEL_NAMES,
+] as const
+
+const TRACKED_MODEL_NAMES = [...DIRECT_ALPHA_VOTE_MODEL_NAMES]
 const TRACKED_MODEL_NAME_SET = new Set<string>(TRACKED_MODEL_NAMES)
 const DEFAULT_SPARSE_ALLOCATION_CONTROLLER = 'OnlinePortfolioBandit'
 
@@ -249,6 +270,33 @@ function cleanTextOrNull(value: unknown): string | null {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
+}
+
+function buildTimesFmSidecarDiagnostics(data: Record<string, any> | null): MlDiagnosticsSummary['timesfmSidecar'] {
+  const sidecar = data?.timesfm_sidecar && typeof data.timesfm_sidecar === 'object'
+    ? data.timesfm_sidecar as Record<string, any>
+    : null
+  if (!sidecar) return null
+  const features = sidecar.features && typeof sidecar.features === 'object'
+    ? sidecar.features as Record<string, unknown>
+    : {}
+  const currentAllowedUse = Array.isArray(sidecar.current_allowed_use)
+    ? sidecar.current_allowed_use.map(String).filter(Boolean)
+    : []
+  const featureKeys = Object.keys(features).sort()
+  return {
+    schemaVersion: typeof sidecar.schema_version === 'string' ? sidecar.schema_version : null,
+    layer: typeof sidecar.layer === 'string' ? sidecar.layer : null,
+    role: typeof sidecar.role === 'string' ? sidecar.role : null,
+    directAlphaBlocked: boolFromUnknown(sidecar.direct_alpha_blocked),
+    eligibleForL2FeatureEnrichment: boolFromUnknown(sidecar.eligible_for_l2_feature_enrichment),
+    l2FeatureInputActive: boolFromUnknown(sidecar.l2_feature_input_active),
+    l2FeatureInputBlockedReason: cleanTextOrNull(sidecar.l2_feature_input_blocked_reason),
+    currentAllowedUse,
+    featureKeys,
+    populatedFeatureCount: featureKeys.filter((key) => features[key] !== null && features[key] !== undefined && features[key] !== '').length,
+    features,
+  }
 }
 
 function resolveVoteThresholds(
@@ -354,7 +402,7 @@ export function buildMlVoteSummary(
     forecastPct,
     activeWeightCount,
     zeroWeightModels,
-    contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models : [],
+    contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models.filter(isTrackedAlphaModelName) : [],
     reason: typeof data?.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
     thresholds,
   }
@@ -414,6 +462,7 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
       mergeCompression: finiteOrNull(dispersion.merge_compression),
       weightHhi: finiteOrNull(dispersion.weight_hhi),
     },
+    timesfmSidecar: buildTimesFmSidecarDiagnostics(data),
   }
 }
 

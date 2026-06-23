@@ -1,5 +1,7 @@
 export type PendingBuyVisibleState =
   | 'empty'
+  | 'empty_after_hard_safety'
+  | 'empty_after_soft_risk'
   | 'halted'
   | 'error'
   | 'base_ready'
@@ -21,6 +23,8 @@ export interface PendingBuyStateMeta {
   debate_status?: string
   candidate_count?: number
   error_message?: string
+  empty_reason?: string
+  filter_audit?: Record<string, unknown>
   execution_counts?: Record<string, number>
   debate_counts?: Record<string, number>
 }
@@ -75,8 +79,14 @@ function terminalStateLabel(
   const { filled, skipped, cancelled, expired, rejected } = executionCounts
   if (filled > 0 && skipped + cancelled + expired + rejected === 0) return { state: 'filled', label: '已成交' }
   if (expired > 0 && filled + skipped + cancelled + rejected === 0) return { state: 'expired', label: '已過期' }
-  if (filled === 0 && expired === 0 && skipped + cancelled + rejected > 0) return { state: 'skipped', label: '已跳過' }
-  return { state: 'closed', label: '已收斂' }
+  if (filled === 0 && expired === 0 && skipped + cancelled + rejected > 0) return { state: 'skipped', label: '已跳過/已拒絕' }
+  return { state: 'closed', label: '已結束' }
+}
+
+function filterAuditInitialBuySignals(meta: PendingBuyStateMeta | null | undefined): number {
+  const audit = meta?.filter_audit
+  if (!audit || typeof audit !== 'object') return 0
+  return num((audit as Record<string, unknown>).initial_buy_signals)
 }
 
 export function buildPendingBuyStateSummary(
@@ -86,7 +96,7 @@ export function buildPendingBuyStateSummary(
   const executionCounts = normalizeExecutionCounts(meta?.execution_counts, activeItems)
   const debateCounts = normalizeDebateCounts(meta?.debate_counts, activeItems)
   const terminalCount = executionCounts.filled + executionCounts.skipped + executionCounts.cancelled + executionCounts.expired + executionCounts.rejected
-  const totalCount = Math.max(num(meta?.candidate_count), activeItems.length + terminalCount)
+  const totalCount = Math.max(num(meta?.candidate_count), activeItems.length + terminalCount, filterAuditInitialBuySignals(meta))
   const runStatus = meta?.status ?? (activeItems.length > 0 ? 'ready' : 'empty')
   const debateStatus = meta?.debate_status ?? (debateCounts.pending > 0 ? 'pending' : 'completed')
 
@@ -125,6 +135,12 @@ export function buildPendingBuyStateSummary(
   } else if (activeItems.length > 0) {
     state = 'ready_to_execute'
     label = 'Ready / 等待執行'
+  } else if (meta?.empty_reason === 'empty_after_hard_safety') {
+    state = 'empty_after_hard_safety'
+    label = '硬性風控後無候選'
+  } else if (meta?.empty_reason === 'empty_after_soft_risk') {
+    state = 'empty_after_soft_risk'
+    label = '軟性風險後無候選'
   } else if (totalCount > 0) {
     state = 'base_ready'
     label = 'Base ready'

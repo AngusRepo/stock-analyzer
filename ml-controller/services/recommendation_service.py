@@ -354,7 +354,10 @@ def _timesfm_sidecar_payload(data: dict) -> dict[str, Any] | None:
         "source": "TimesFM",
         "role": "feature_sidecar",
         "direct_alpha_blocked": True,
-        "eligible_for_l2_feature_enrichment": True,
+        "eligible_for_l2_feature_enrichment": False,
+        "l2_feature_input_active": False,
+        "l2_feature_input_blocked_reason": "requires_formal137_registry_retrain_release",
+        "current_allowed_use": ["diagnostic", "uncertainty_context", "risk_sidecar"],
         "features": features,
         "raw_context": _per_model_signal_payload(data, "TimesFM"),
     }

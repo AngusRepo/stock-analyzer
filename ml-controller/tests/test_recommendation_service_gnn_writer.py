@@ -85,6 +85,9 @@ def test_timesfm_sidecar_builds_l1_75_features_without_alpha_role():
     assert payload["layer"] == "L1.75"
     assert payload["role"] == "feature_sidecar"
     assert payload["direct_alpha_blocked"] is True
+    assert payload["eligible_for_l2_feature_enrichment"] is False
+    assert payload["l2_feature_input_active"] is False
+    assert payload["l2_feature_input_blocked_reason"] == "requires_formal137_registry_retrain_release"
     features = payload["features"]
     assert features["forecast_return"] == -0.012
     assert features["forecast_log_return"] < 0

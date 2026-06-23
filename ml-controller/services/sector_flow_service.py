@@ -15,11 +15,12 @@ Mapping:
     stock_tags.tag_type = 'industry' → sector_flow.classification = 'industry'
 """
 from __future__ import annotations
+import json
 import logging
 from typing import Literal, Optional, TypedDict
 
 from services import d1_client
-from services._rrg_calculator import build_rrg_point, RrgPoint
+from services._rrg_calculator import build_rotation_model, build_rrg_point, RrgHistoryPoint, RrgPoint
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +404,51 @@ def _load_prev_rs_ratios(
     }
 
 
+def _as_quadrant(value: object):
+    text = str(value or "").strip()
+    return text if text in {"Leading", "Weakening", "Lagging", "Improving"} else None
+
+
+def _load_rrg_history(
+    classification: Classification,
+    as_of_date: str,
+    *,
+    tail_window: int = 60,
+) -> dict[str, list[RrgHistoryPoint]]:
+    """Load per-sector RRG tail history before the current date."""
+    sql = """
+    SELECT sector, date, rs_ratio, rs_momentum, quadrant
+    FROM sector_flow
+    WHERE classification = ?
+      AND rs_ratio IS NOT NULL
+      AND date IN (
+        SELECT date
+        FROM sector_flow
+        WHERE classification = ? AND rs_ratio IS NOT NULL AND date < ?
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT ?
+      )
+    ORDER BY sector ASC, date ASC
+    """
+    rows = d1_client.query(sql, [classification, classification, as_of_date, int(tail_window)])
+    out: dict[str, list[RrgHistoryPoint]] = {}
+    for row in rows:
+        sector = str(row.get("sector") or "").strip()
+        date = str(row.get("date") or "").strip()
+        if not sector or not date:
+            continue
+        out.setdefault(sector, []).append(
+            RrgHistoryPoint(
+                date=date,
+                rs_ratio=row.get("rs_ratio"),
+                rs_momentum=row.get("rs_momentum"),
+                quadrant=_as_quadrant(row.get("quadrant")),
+            )
+        )
+    return out
+
+
 def compute_sector_flow_for_tag_type(
     tag_type: TagType,
     as_of_date: str,
@@ -416,6 +462,7 @@ def compute_sector_flow_for_tag_type(
     twii_ret = _load_twii_return_5d(as_of_date)
     classification = _tag_type_to_classification(tag_type)
     prev_rs = _load_prev_rs_ratios(classification, as_of_date)
+    rrg_history = _load_rrg_history(classification, as_of_date)
 
     points: list[RrgPoint] = []
     for tag, members in tag_members.items():
@@ -425,6 +472,12 @@ def compute_sector_flow_for_tag_type(
             member_returns=member_returns,
             benchmark_return_5d=twii_ret,
             prev_rs_ratio=prev_rs.get(tag),
+        )
+        pt = build_rotation_model(
+            pt,
+            rrg_history.get(tag, []),
+            as_of_date=as_of_date,
+            tail_window=20,
         )
         points.append(pt)
 
@@ -468,12 +521,26 @@ def write_sector_flow(
         }
         statements.append((
             """
-            INSERT INTO sector_flow (date, sector, classification, rs_ratio, rs_momentum, quadrant, stock_count, foreign_net, trust_net, total_net)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sector_flow (
+              date, sector, classification, rs_ratio, rs_momentum, quadrant,
+              rotation_velocity, rotation_acceleration, quadrant_age, transition_path,
+              rotation_score, rotation_regime, rotation_hysteresis, rotation_window, rrg_tail_json,
+              stock_count, foreign_net, trust_net, total_net
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, sector, classification) DO UPDATE SET
               rs_ratio = excluded.rs_ratio,
               rs_momentum = excluded.rs_momentum,
               quadrant = excluded.quadrant,
+              rotation_velocity = excluded.rotation_velocity,
+              rotation_acceleration = excluded.rotation_acceleration,
+              quadrant_age = excluded.quadrant_age,
+              transition_path = excluded.transition_path,
+              rotation_score = excluded.rotation_score,
+              rotation_regime = excluded.rotation_regime,
+              rotation_hysteresis = excluded.rotation_hysteresis,
+              rotation_window = excluded.rotation_window,
+              rrg_tail_json = excluded.rrg_tail_json,
               stock_count = excluded.stock_count,
               foreign_net = excluded.foreign_net,
               trust_net = excluded.trust_net,
@@ -486,6 +553,15 @@ def write_sector_flow(
                 pt.rs_ratio,
                 pt.rs_momentum,
                 pt.quadrant,
+                pt.rotation_velocity,
+                pt.rotation_acceleration,
+                pt.quadrant_age,
+                pt.transition_path,
+                pt.rotation_score,
+                pt.rotation_regime,
+                pt.rotation_hysteresis,
+                pt.rotation_window,
+                json.dumps(pt.rrg_tail, ensure_ascii=False, sort_keys=True),
                 pt.member_count,
                 round(float(flow.get("foreign_net") or 0.0), 4),
                 round(float(flow.get("trust_net") or 0.0), 4),
@@ -531,14 +607,19 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
             tag_flows = _aggregate_tag_cash_flows(tag_members, symbol_flows)
             written = write_sector_flow(pts, classification, as_of_date, tag_flows)
             counts = {"Leading": 0, "Weakening": 0, "Lagging": 0, "Improving": 0}
+            regimes: dict[str, int] = {}
             for p in pts:
                 if p.quadrant:
                     counts[p.quadrant] = counts.get(p.quadrant, 0) + 1
+                if p.rotation_regime:
+                    regimes[p.rotation_regime] = regimes.get(p.rotation_regime, 0) + 1
             summary[tag_type] = {
                 "total_tags": len(pts),
                 "with_rs": sum(1 for p in pts if p.rs_ratio is not None),
+                "with_rotation": sum(1 for p in pts if p.rotation_score is not None),
                 "written": written,
                 "quadrants": counts,
+                "rotation_regimes": regimes,
             }
             if tag_type == "concept":
                 summary[tag_type]["stock_details_written"] = write_sector_flow_stock_details(

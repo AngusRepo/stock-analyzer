@@ -116,6 +116,20 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     'morning setup pending buys should persist L4 sparse allocation weight evidence for execution sizing',
   )
   assert(
+    pendingBuyOrchestrator.includes('pending_buy_filter_audit') &&
+      pendingBuyOrchestrator.includes('filter_audit: filterAudit') &&
+      pendingBuyOrchestrator.includes('empty_reason: emptyReason'),
+    'morning setup should persist filter audit evidence for empty-after-filter diagnosis',
+  )
+  assert(
+    pendingBuyOrchestrator.includes("reason_code: 'RRG_LAGGING_SOFT_RISK'") &&
+      pendingBuyOrchestrator.includes("action: 'SOFT_DOWNGRADE_DEBATE_REQUIRED'") &&
+      pendingBuyOrchestrator.includes('rrg_lagging_soft_downgrade') &&
+      pendingBuyOrchestrator.includes('debate_required=true') &&
+      !pendingBuyOrchestrator.includes("action: 'REJECT'"),
+    'RRG Lagging must be a soft risk/debate overlay, not a hard reject in morning setup',
+  )
+  assert(
     pendingBuyOrchestrator.includes('formatEntryPriceModelV2WatchPoint(buildEntryPriceModelV2FromOhlcvPlan(ohlcvEntryPlan))'),
     'morning setup pending buys should persist Entry Model V2 daily proxy evidence beside the OHLCV trade plan',
   )

@@ -13,6 +13,9 @@ from services._rrg_calculator import (
     classify_quadrant,
     compute_theme_return,
     build_rrg_point,
+    build_rotation_model,
+    RrgHistoryPoint,
+    RrgPoint,
 )
 
 
@@ -66,10 +69,10 @@ def test_classify_improving():
     assert classify_quadrant(98.0, 0.0) == "Improving"
 
 
-def test_classify_none_momentum_treated_as_zero():
+def test_classify_none_momentum_is_not_rrg_evidence():
     # V1: `mom = s.rs_momentum ?? 0`. rs=102 + mom None → treat mom=0 → Leading
-    assert classify_quadrant(102.0, None) == "Leading"
-    assert classify_quadrant(98.0, None) == "Improving"
+    assert classify_quadrant(102.0, None) is None
+    assert classify_quadrant(98.0, None) is None
 
 
 def test_theme_return_below_min_members():
@@ -122,11 +125,83 @@ def test_build_rrg_point_no_prev_rs():
     assert approx(pt.rs_ratio, 100.98)
     assert pt.rs_momentum is None  # no prev → no mom
     # mom None → classify treats as 0 → rs>=100+mom=0 → Leading
-    assert pt.quadrant == "Leading"
+    assert pt.quadrant is None
 
 
 # ── V1 JS-replication fixtures ────────────────────────────────────────────────
 # Manually computed from V1 formula to guarantee bit-level parity
+
+def test_rotation_model_detects_improving_to_leading_breakout():
+    pt = build_rrg_point(
+        sector="AI Server",
+        member_returns=[0.05, 0.04, 0.06],
+        benchmark_return_5d=0.01,
+        prev_rs_ratio=100.5,
+    )
+    enriched = build_rotation_model(
+        pt,
+        [
+            RrgHistoryPoint("2026-06-16", 96.0, -1.4, "Lagging"),
+            RrgHistoryPoint("2026-06-17", 98.2, 0.6, "Improving"),
+            RrgHistoryPoint("2026-06-18", 99.6, 1.1, "Improving"),
+        ],
+        as_of_date="2026-06-19",
+    )
+
+    assert enriched.quadrant == "Leading"
+    assert enriched.transition_path == "Lagging->Improving->Leading"
+    assert enriched.quadrant_age == 1
+    assert enriched.rotation_hysteresis == "transition_pending"
+    assert enriched.rotation_regime == "improving_to_leading_breakout"
+    assert enriched.rotation_score is not None and enriched.rotation_score > 0.5
+    assert enriched.rotation_velocity is not None and enriched.rotation_velocity > 0
+    assert enriched.rotation_window == 4
+
+
+def test_rotation_model_marks_persistent_weakening_as_distribution_risk():
+    pt = RrgPoint(
+        sector="Memory",
+        rs_ratio=103.0,
+        rs_momentum=-1.0,
+        quadrant="Weakening",
+        member_count=3,
+        theme_return_5d=0.005,
+    )
+    enriched = build_rotation_model(
+        pt,
+        [
+            RrgHistoryPoint("2026-06-16", 104.5, 1.2, "Leading"),
+            RrgHistoryPoint("2026-06-17", 103.8, -0.4, "Weakening"),
+            RrgHistoryPoint("2026-06-18", 103.2, -0.8, "Weakening"),
+        ],
+        as_of_date="2026-06-19",
+    )
+
+    assert enriched.quadrant == "Weakening"
+    assert enriched.quadrant_age >= 3
+    assert enriched.rotation_hysteresis == "confirmed"
+    assert enriched.rotation_regime == "leading_to_weakening_distribution"
+    assert enriched.rotation_score is not None and enriched.rotation_score < 0
+
+
+def test_rotation_model_requires_current_momentum_evidence():
+    pt = build_rrg_point(
+        sector="NewTheme",
+        member_returns=[0.02, 0.03, 0.04],
+        benchmark_return_5d=0.02,
+        prev_rs_ratio=None,
+    )
+    enriched = build_rotation_model(
+        pt,
+        [RrgHistoryPoint("2026-06-18", 99.0, 0.4, "Improving")],
+        as_of_date="2026-06-19",
+    )
+
+    assert enriched.rotation_regime == "insufficient_rotation_evidence"
+    assert enriched.rotation_hysteresis == "insufficient"
+    assert enriched.rotation_window == 0
+    assert enriched.rrg_tail == []
+
 
 V1_FIXTURES = [
     # (theme_ret, twii_ret, expected_rs)

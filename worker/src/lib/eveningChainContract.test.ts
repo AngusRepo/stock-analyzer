@@ -53,6 +53,12 @@ assert(
   'evening-chain must refresh FinLab canonical data first, then continue through queue callback only after canonical readiness is verified',
 )
 assert(
+  updateOrchestrator.includes('rowsOnTarget') &&
+    updateOrchestrator.includes('stat.latestDate < targetDate') &&
+    updateOrchestrator.includes('target_rows='),
+  'historical evening-chain replay must validate target-date canonical rows instead of failing when a newer canonical date already exists',
+)
+assert(
   updateOrchestrator.includes('runQueueUpdate(env, twDate, force)'),
   'force rerun must bypass the queue-update lock, not only the bulk-fetch lock',
 )

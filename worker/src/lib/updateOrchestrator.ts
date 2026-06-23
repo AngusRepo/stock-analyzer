@@ -52,32 +52,39 @@ function isFinLabCanonicalReadinessError(error: unknown): boolean {
 async function finLabCanonicalTableStats(
   db: D1Database,
   table: string,
-): Promise<{ table: string; latestDate: string | null; rowsOnLatest: number }> {
+  targetDate: string,
+): Promise<{ table: string; latestDate: string | null; rowsOnLatest: number; rowsOnTarget: number }> {
   const latest = await db.prepare(`SELECT MAX(date) AS latest_date FROM ${table}`).first<{ latest_date: string | null }>()
   const latestDate = latest?.latest_date ?? null
-  if (!latestDate) return { table, latestDate: null, rowsOnLatest: 0 }
+  if (!latestDate) return { table, latestDate: null, rowsOnLatest: 0, rowsOnTarget: 0 }
   const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE date = ?`).bind(latestDate).first<{ count: number }>()
-  return { table, latestDate, rowsOnLatest: Number(row?.count ?? 0) }
+  const target = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE date = ?`).bind(targetDate).first<{ count: number }>()
+  return {
+    table,
+    latestDate,
+    rowsOnLatest: Number(row?.count ?? 0),
+    rowsOnTarget: Number(target?.count ?? 0),
+  }
 }
 
 async function assertFinLabCanonicalDailyReady(db: D1Database, targetDate: string): Promise<string> {
   const stats = await Promise.all(
-    FINLAB_CANONICAL_DAILY_CHECKS.map((check) => finLabCanonicalTableStats(db, check.table)),
+    FINLAB_CANONICAL_DAILY_CHECKS.map((check) => finLabCanonicalTableStats(db, check.table, targetDate)),
   )
   const errors: string[] = []
   for (const stat of stats) {
     const check = FINLAB_CANONICAL_DAILY_CHECKS.find((item) => item.table === stat.table)!
-    if (stat.latestDate !== targetDate) {
-      errors.push(`${stat.table} latest=${stat.latestDate ?? 'none'} expected=${targetDate}`)
+    if (!stat.latestDate || stat.latestDate < targetDate) {
+      errors.push(`${stat.table} latest=${stat.latestDate ?? 'none'} before expected=${targetDate}`)
     }
-    if (stat.rowsOnLatest < check.minRows) {
-      errors.push(`${stat.table} rows=${stat.rowsOnLatest}/${check.minRows}`)
+    if (stat.rowsOnTarget < check.minRows) {
+      errors.push(`${stat.table} target_rows=${stat.rowsOnTarget}/${check.minRows} date=${targetDate}`)
     }
   }
   if (errors.length) {
     throw new Error(`FinLab canonical daily not ready: ${errors.join('; ')}`)
   }
-  return `FinLab canonical ready for ${targetDate}: ${stats.map((row) => `${row.table}=${row.rowsOnLatest}`).join(' ')}`
+  return `FinLab canonical ready for ${targetDate}: ${stats.map((row) => `${row.table}=${row.rowsOnTarget}`).join(' ')}`
 }
 
 async function scheduleSourceReadinessRetry(

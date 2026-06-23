@@ -59,6 +59,12 @@ assert(
   'historical evening-chain replay must validate target-date canonical rows instead of failing when a newer canonical date already exists',
 )
 assert(
+  updateOrchestrator.includes('isHistoricalReplayDate') &&
+    updateOrchestrator.includes('historical replay canonical already ready') &&
+    updateOrchestrator.includes('historical replay skipped FinLab backfill'),
+  'historical evening-chain replay must skip duplicate FinLab backfill when target-date canonical data is already ready',
+)
+assert(
   updateOrchestrator.includes('runQueueUpdate(env, twDate, force)'),
   'force rerun must bypass the queue-update lock, not only the bulk-fetch lock',
 )

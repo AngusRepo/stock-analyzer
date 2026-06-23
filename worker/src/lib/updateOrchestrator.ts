@@ -49,6 +49,14 @@ function isFinLabCanonicalReadinessError(error: unknown): boolean {
   return /FinLab canonical daily not ready/i.test(message)
 }
 
+function currentTaipeiDate(): string {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
+function isHistoricalReplayDate(date: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) && date < currentTaipeiDate()
+}
+
 async function finLabCanonicalTableStats(
   db: D1Database,
   table: string,
@@ -580,6 +588,21 @@ async function continueAfterFinLabBackfill(
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
+  if (force && runDate && isHistoricalReplayDate(twDate)) {
+    try {
+      const canonicalSummary = await assertFinLabCanonicalDailyReady(env.DB, twDate)
+      await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+        status: 'skipped',
+        summary: `historical replay canonical already ready; skipped duplicate FinLab backfill; ${canonicalSummary}`,
+        duration_ms: 0,
+        run_date: twDate,
+      })
+      const continuation = await continueAfterFinLabBackfill(env, twDate, force, `historical-replay-${twDate}`)
+      return `triggered evening-chain: historical replay skipped FinLab backfill; ${continuation}`
+    } catch (e) {
+      if (!isFinLabCanonicalReadinessError(e)) throw e
+    }
+  }
   const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, { continueEveningChain: true }))
   const finlabStatus = classifySchedulerSummary(finlabSummary)
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {

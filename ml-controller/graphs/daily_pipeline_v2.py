@@ -58,8 +58,8 @@ from services.state_space_series import (
     enrich_state_space_series_with_long_history,
 )
 from services.recommendation_service import (
-    apply_core_family_rank,
-    apply_core_ml_gate,
+    apply_core_family_evidence,
+    apply_core_ml_evidence,
     build_return_history_from_payloads,
     filter_and_score_recommendations,
     apply_sparse_tangent_allocation,
@@ -441,7 +441,7 @@ def _payloads_for_symbols(payloads: list[dict], symbols: list[str]) -> list[dict
     ]
 
 
-def _attach_l2_core_ml_gate(
+def _attach_l2_core_ml_evidence(
     predictions: dict[str, dict],
     *,
     target_size: int,
@@ -466,29 +466,54 @@ def _attach_l2_core_ml_gate(
         row = dict(prediction or {})
         rank = rank_by_symbol.get(symbol)
         score = score_by_symbol.get(symbol)
-        row["core_ml_gate"] = {
-            "schema_version": "core_ml_gate_v2",
-            "source": "l2_tree_rank",
+        evidence = {
+            "schema_version": "core_ml_evidence_v1",
+            "legacy_schema_version": "core_ml_gate_v2",
+            "source": "l2_tree_evidence",
             "stage": "L2",
+            "selection_role": "evidence_only_l3_formal_inference_queue",
+            "final_recommendation_gate": False,
             "selected": symbol in selected_set,
+            "l3_formal_inference_selected": symbol in selected_set,
             "rank": rank,
             "target_size": target_size,
             "upstream_count": upstream_count,
             "score": round(float(score), 6) if score is not None else None,
             "models": models_by_symbol.get(symbol, []),
         }
+        row["core_ml_evidence"] = evidence
+        row["core_ml_gate"] = evidence
         gated[symbol] = row
 
     summary = {
-        "schema_version": "l2_core_ml_gate_v1",
-        "source": "l2_tree_rank",
+        "schema_version": "l2_core_ml_evidence_v1",
+        "legacy_schema_version": "l2_core_ml_gate_v1",
+        "source": "l2_tree_evidence",
+        "selection_role": "evidence_only_l3_formal_inference_queue",
+        "final_recommendation_gate": False,
         "target_size": target_size,
         "upstream_count": upstream_count,
         "scored_count": len(scored),
+        "l3_formal_inference_count": len(selected_symbols),
+        "l3_formal_inference_symbols": selected_symbols,
         "selected_count": len(selected_symbols),
         "selected_symbols": selected_symbols,
     }
     return gated, selected_symbols, summary
+
+
+def _attach_l2_core_ml_gate(
+    predictions: dict[str, dict],
+    *,
+    target_size: int,
+    upstream_count: int,
+) -> tuple[dict[str, dict], list[str], dict]:
+    """Deprecated compatibility wrapper; L2 now emits evidence, not a gate."""
+    return _attach_l2_core_ml_evidence(
+        predictions,
+        target_size=target_size,
+        upstream_count=upstream_count,
+    )
 
 
 # ?????????????????????????????????????????????????????????????????????????????
@@ -517,13 +542,14 @@ class PipelineStateV2(TypedDict, total=False):
     payloads: list[dict]                    # PredictPayload as dict
     predictions: dict                       # symbol ??ml result
     l2_predictions: dict                     # symbol -> cheap tree-only L2 result
-    l2_selected_symbols: list[str]           # symbols admitted by L2 core_ml_gate
-    l2_core_ml_gate_summary: dict            # L2 coarse gate audit summary
+    l2_selected_symbols: list[str]           # symbols admitted to L3 formal inference queue
+    l2_core_ml_evidence_summary: dict        # L2 coarse evidence audit summary
+    l2_core_ml_gate_summary: dict            # Legacy alias for L2 coarse evidence summary
     l3_payloads: list[dict]                  # reduced payloads sent to L3 formal ML
     l3_predictions: dict                     # symbol -> formal L3 merged result
-    final_recommendations: list[dict]       # after filter + scoring + ranking
-    layer2_recommendation_symbols: list[str] # symbols entering formal L3 family rank
-    layer3_formal_gate_target_size: int      # L3 target size used for audit persistence
+    final_recommendations: list[dict]       # after filter + scoring + allocation
+    layer2_recommendation_symbols: list[str] # symbols entering formal L3 family evidence
+    layer3_formal_gate_target_size: int      # legacy audit field; now equals L3 evidence input count
     sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
@@ -1304,37 +1330,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         # avg_rank desc, force BUY regardless of absolute threshold. Confidence
         # override gives downstream (paper.ts morning-setup SQL + debate prompt)
         # the margin they need to distinguish promoted signals from edge HOLDs.
-        top_k_enabled = bool(
+        # Retired path: detect stale config only; never force BUY from rank/top-K.
+        legacy_topk_requested = bool(
             ev2_cfg.get("allowLegacyTopKOverride", False)
-            and ev2_cfg.get("topKOverrideEnabled", False)
+            or ev2_cfg.get("topKOverrideEnabled", False)
         )
-        top_k_count = int(ev2_cfg.get("topKCount", 3))
-        top_k_conf = float(ev2_cfg.get("topKConfidenceOverride", 0.72))
-        if top_k_enabled and top_k_count > 0:
-            ranked = sorted(
-                ((sym, v) for sym, v in pred_map.items() if "ensemble_v2" in v),
-                key=lambda kv: kv[1]["ensemble_v2"].get("avg_rank", 0.0),
-                reverse=True,
+        if legacy_topk_requested:
+            logger.warning(
+                "[Pipeline V2] legacy_topk_override_retired: config requested top-K override, "
+                "but sparse allocator is the final owner and forced BUY is disabled"
             )
-            forced: list[str] = []
-            for sym, v in ranked[:top_k_count]:
-                ev2 = v["ensemble_v2"]
-                cur = ev2.get("signal")
-                if cur in ("BUY", "STRONG_BUY"):
-                    continue  # natural buy signal; leave as-is
-                ev2["signal_raw"] = cur  # preserve pre-override for audit
-                ev2["signal_source_raw"] = ev2.get("signal_source", "ensemble_v2")
-                ev2["signal"] = "BUY"
-                ev2["confidence_override"] = top_k_conf
-                ev2["confidence"] = max(float(ev2.get("confidence", 0.0) or 0.0), top_k_conf)
-                ev2["signal_source"] = "ensemble_v2_topk_policy"
-                ev2["topk_forced"] = True
-                forced.append(sym)
-            if forced:
-                logger.info(
-                    f"[Pipeline V2] ensemble_v2 top-K override forced BUY on "
-                    f"{len(forced)}/{top_k_count} stocks (conf={top_k_conf}): {forced}"
-                )
     else:
         logger.info("[Pipeline V2] Ensemble V2 skip (model_pool.json not initialized)")
 
@@ -1412,7 +1417,7 @@ async def node_l2_cheap_ml_predict(state: PipelineStateV2) -> dict:
 
 
 async def node_l2_core_gate(state: PipelineStateV2) -> dict:
-    """Attach core_ml_gate and reduce the payload set before L3 formal ML."""
+    """Attach L2 tree evidence and build the bounded L3 formal inference queue."""
     from services.trading_config_loader import load_merged_trading_config_with_contract
 
     cfg_result = load_merged_trading_config_with_contract()
@@ -1429,7 +1434,7 @@ async def node_l2_core_gate(state: PipelineStateV2) -> dict:
         trading_cfg,
     )
     l2_predictions = dict(state.get("l2_predictions") or state.get("predictions") or {})
-    gated_predictions, selected_symbols, summary = _attach_l2_core_ml_gate(
+    gated_predictions, selected_symbols, summary = _attach_l2_core_ml_evidence(
         l2_predictions,
         target_size=target_size,
         upstream_count=len(state.get("screener_recs") or []),
@@ -1437,7 +1442,7 @@ async def node_l2_core_gate(state: PipelineStateV2) -> dict:
     l3_payloads = _payloads_for_symbols(state.get("payloads") or [], selected_symbols)
     summary["l3_payload_count"] = len(l3_payloads)
     logger.info(
-        "[Pipeline V2] L2 core_ml_gate selected %s/%s candidates (target=%s)",
+        "[Pipeline V2] L2 tree evidence queued %s/%s candidates for L3 formal inference (target=%s)",
         len(selected_symbols),
         len(state.get("screener_recs") or []),
         target_size,
@@ -1446,6 +1451,7 @@ async def node_l2_core_gate(state: PipelineStateV2) -> dict:
         "l2_predictions": gated_predictions,
         "predictions": gated_predictions,
         "l2_selected_symbols": selected_symbols,
+        "l2_core_ml_evidence_summary": summary,
         "l2_core_ml_gate_summary": summary,
         "l3_payloads": l3_payloads,
     }
@@ -1474,10 +1480,11 @@ async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
     merged_predictions = dict(l2_predictions)
     for symbol, row in l3_predictions.items():
         base = dict(l2_predictions.get(symbol) or {})
-        core_ml_gate = base.get("core_ml_gate")
+        core_ml_evidence = base.get("core_ml_evidence") or base.get("core_ml_gate")
         merged = {**base, **row}
-        if core_ml_gate is not None:
-            merged["core_ml_gate"] = core_ml_gate
+        if core_ml_evidence is not None:
+            merged["core_ml_evidence"] = core_ml_evidence
+            merged["core_ml_gate"] = core_ml_evidence
         merged["prediction_stage"] = "L3"
         merged_predictions[symbol] = merged
 
@@ -1621,26 +1628,24 @@ def _resolve_coarse_ml_gate_target(
     return min(input_count, ratio_target)
 
 
+def _resolve_core_family_evidence_target(
+    input_count: int,
+    screener_sizing: dict[str, Any],
+    trading_config: dict[str, Any] | None = None,
+) -> int:
+    """Resolve Layer 3 evidence count; no longer a capacity gate."""
+    if input_count <= 0:
+        return 0
+    return int(input_count)
+
+
 def _resolve_core_family_rank_target(
     input_count: int,
     screener_sizing: dict[str, Any],
     trading_config: dict[str, Any] | None = None,
 ) -> int:
-    """Resolve Layer 3 keep count from the post-L2 candidate count."""
-    if input_count <= 0:
-        return 0
-    config = trading_config if isinstance(trading_config, dict) else {}
-    raw = config.get("screener") if isinstance(config.get("screener"), dict) else {}
-    try:
-        keep_ratio = float(
-            raw.get("coreFamilyKeepRatio", raw.get("core_family_keep_ratio", 0.75)) or 0.75
-        )
-    except (TypeError, ValueError):
-        keep_ratio = 0.75
-    keep_ratio = max(0.25, min(1.0, keep_ratio))
-    ratio_target = max(1, math.ceil(input_count * keep_ratio))
-    configured_target = int(screener_sizing.get("core_family_rank_size") or ratio_target)
-    return min(input_count, ratio_target, max(1, configured_target))
+    """Deprecated compatibility wrapper; Layer 3 no longer rank-truncates."""
+    return _resolve_core_family_evidence_target(input_count, screener_sizing, trading_config)
 
 
 def _coerce_ic_value(value: Any) -> float | None:
@@ -2149,6 +2154,21 @@ def _attach_ensemble_v2(
     thresholds = _rank_signal_thresholds(ev2_cfg, adaptive_params)
     adaptive_threshold_delta, adaptive_threshold_meta = _adaptive_threshold_delta(adaptive_params)
     effective_cfg = {**(ev2_cfg or {}), **thresholds}
+    if isinstance(adaptive_params, dict):
+        allocator_policy = (
+            adaptive_params.get("model_allocator")
+            or adaptive_params.get("allocator_policy")
+            or adaptive_params.get("modelAllocatorPolicy")
+        )
+        if isinstance(allocator_policy, dict):
+            effective_cfg["allocatorPolicy"] = allocator_policy
+        learning_policy = (
+            adaptive_params.get("model_allocator_learning_policy")
+            or adaptive_params.get("allocator_learning_policy")
+            or adaptive_params.get("learning_weight_policy")
+        )
+        if isinstance(learning_policy, dict):
+            effective_cfg["allocatorLearningPolicy"] = learning_policy
     if bundle:
         effective_cfg["observedIcModels"] = [
             name for name, diag in (bundle.get("diagnostics") or {}).items()
@@ -2370,7 +2390,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         screener_sizing,
         trading_cfg,
     )
-    final = apply_core_ml_gate(
+    final = apply_core_ml_evidence(
         final,
         state["predictions"],
         fallback_size=core_ml_target_size,
@@ -2378,29 +2398,29 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     layer2_symbols = [str(row.get("symbol") or "") for row in final if row.get("symbol")]
     layer2_count = len(final)
     logger.info(
-        "[Pipeline V2] Layer2 core_ml_gate kept %s/%s candidates (target=%s)",
+        "[Pipeline V2] Layer2 core_ml_evidence attached to %s/%s candidates (l3_queue_target=%s)",
         layer2_count,
         len(screener_recs),
         core_ml_target_size,
     )
-    core_family_target_size = _resolve_core_family_rank_target(
+    core_family_target_size = _resolve_core_family_evidence_target(
         layer2_count,
         screener_sizing,
         trading_cfg,
     )
-    final = apply_core_family_rank(
+    final = apply_core_family_evidence(
         final,
         state["predictions"],
         target_size=core_family_target_size,
         require_lifecycle_weights=True,
     )
     active_family_counts = [
-        int(((row.get("core_family_vote") or {}).get("active_family_count") or 0))
+        int(((row.get("core_family_evidence") or row.get("core_family_vote") or {}).get("active_family_count") or 0))
         for row in final
     ]
     logger.info(
-        "[Pipeline V2] Layer3 core_family_vote ranked %s/%s candidates "
-        "(target=%s, active_family_counts=%s)",
+        "[Pipeline V2] Layer3 core_family_evidence attached to %s/%s candidates "
+        "(evidence_count=%s, active_family_counts=%s)",
         len(final),
         len(state["predictions"]),
         core_family_target_size,
@@ -2507,7 +2527,11 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         screener_recs=state.get("screener_recs") or [],
         run_date=run_date,
         screener_run_id=state.get("screener_run_id"),
-        target_size=(state.get("l2_core_ml_gate_summary") or {}).get("target_size"),
+        target_size=(
+            state.get("l2_core_ml_evidence_summary")
+            or state.get("l2_core_ml_gate_summary")
+            or {}
+        ).get("target_size"),
     )
     layer3_audit_rows = write_layer3_formal_gate_audit(
         predictions=state["predictions"],

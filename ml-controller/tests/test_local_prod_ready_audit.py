@@ -324,7 +324,9 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "const L3_FORMAL_MODELS = ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']",
             "const ACTIVE_9_ML_TEACHER_MODELS = [...L2_COARSE_MODELS, ...L3_FORMAL_MODELS]",
             "layer2_3ml_coarse_summary_v1 layer3_6ml_formal_summary_v1",
-            "three_ml_coarse_screen_not_final_ranker six_ml_formal_family_vote_not_topk",
+            "three_ml_coarse_evidence_l3_queue_not_final_ranker six_ml_formal_family_vote_not_topk",
+            "core_ml_evidence",
+            "formal_l2_evidence",
             "expected_teacher_count teacher_label_scope",
             "layer1_strategy_labeler_summary_v1",
             "layer125_finlab_portfolio_intelligence_summary_v1",
@@ -376,7 +378,101 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/lib/adaptiveMetaPolicyReplayRunner.ts",
-        "LightGBM XGBoost ExtraTrees TabM GNN DLinear PatchTST iTransformer TimesFM p.verified_at IS NOT NULL active_models: [...ACTIVE_MODELS]",
+        "\n".join([
+            "LightGBM XGBoost ExtraTrees TabM GNN DLinear PatchTST iTransformer TimesFM p.verified_at IS NOT NULL active_models: [...ACTIVE_MODELS]",
+            "allocator_candidate=${report.allocator_policy_candidate?.status ?? 'none'}",
+            "production_effect: false",
+            "mutation_allowed: false",
+            "real_trading_allowed: false",
+            "meta:adaptive_policy_replay:latest",
+        ]),
+    )
+    _write(
+        tmp_path / "worker/src/lib/linucbMultiplierReplayRunner.ts",
+        "\n".join([
+            "adaptive_candidate=${report.adaptive_params_candidate?.status ?? 'none'}",
+            "allocator_candidate=${report.allocator_policy_candidate?.status ?? 'none'}",
+            "production_effect: false",
+            "mutation_allowed: false",
+            "real_trading_allowed: false",
+            "meta:linucb_multiplier_replay:latest",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/app/linucb_multiplier_replay.py",
+        "\n".join([
+            'ADAPTIVE_CANDIDATE_SCHEMA_VERSION = "adaptive-params-candidate-v1"',
+            'ALLOCATOR_LEARNING_CANDIDATE_SCHEMA_VERSION = "allocator-learning-policy-candidate-v1"',
+            '"candidate_type": "linucb_bandit_l2_constants"',
+            '"candidate_type": "linucb_model_learning_weight_multipliers"',
+            '"adaptive_params_candidate": adaptive_params_candidate',
+            '"allocator_policy_candidate": allocator_policy_candidate',
+            '"requires_wei_approval": True',
+            '"allowed_target": "ml:adaptive_params.bandit_l2_constants"',
+            '"allowed_target": "ml:adaptive_params.model_allocator.learning_weight_policy"',
+            '"proposed_production_effect": "capped_production_effect"',
+            '"proposed_production_effect": "learning_weight_only"',
+        ]),
+    )
+    _write(
+        tmp_path / "ml-controller/services/ensemble_v2.py",
+        "\n".join([
+            "model-allocator-learning-ledger-v1",
+            '"production_weight"',
+            '"learning_weight"',
+            '"reject_reason"',
+            '"learning_policy_effect"',
+            '"production_effect": False',
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/app/adaptive_meta_policy_replay.py",
+        "\n".join([
+            'ALLOCATOR_CANDIDATE_SCHEMA_VERSION = "allocator-policy-candidate-v1"',
+            "ALLOCATOR_POLICY_CAP = 0.15",
+            '"candidate_type": "family_allocator_model_weight_multipliers"',
+            '"model_weight_multipliers": model_weight_multipliers',
+            '"risk_off_cash_bias":',
+            '"allowed_target": "ml:adaptive_params.model_allocator"',
+            '"requires_wei_approval": True',
+            '"proposed_production_effect": "capped_production_effect"',
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/app/ensemble.py",
+        "\n".join([
+            "def score_to_signal(",
+            "def rank_to_signal(*args: Any, **kwargs: Any) -> EnsembleResult:",
+            "Deprecated compatibility alias for score_to_signal",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-controller/services/portfolio_allocation.py",
+        "\n".join([
+            "def _expected_return(row: dict[str, Any]) -> float:",
+            "explicit = row.get(\"expected_return\")",
+            "explicit = row.get(\"predicted_return\")",
+            "return 0.0",
+        ]),
+    )
+    _write(
+        tmp_path / "ml-controller/services/recommendation_service.py",
+        "\n".join([
+            '"schema_version": "canonical_chip_evidence_v2"',
+            '"brokerEvidenceStatus": broker_evidence_status',
+            '"brokerFlowUsed": True',
+            '"materialized_bullish_broker_chip_evidence"',
+            '"materialized_bearish_broker_chip_evidence"',
+        ]),
+    )
+    _write(
+        tmp_path / "ml-service/app/prediction_runtime.py",
+        "\n".join([
+            "from .ensemble import load_ic_weights, merge_with_time_series, score_to_signal",
+            "result = score_to_signal(",
+            '"score_signal_thresholds"',
+            '"score_scores"',
+        ]),
     )
     _write(
         tmp_path / "worker/src/lib/adaptiveEngineContract.test.ts",
@@ -467,11 +563,18 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         "\n".join([
             "sparse_tangent_inverse_risk_final_allocation DEFAULT_SPARSE_ALLOCATION_CONTROLLER = 'OnlinePortfolioBandit'",
             "selection_reason sparse_diagnostics expected_return_source risk_estimate_source positive_expected_edge",
+            "scoreSignalThresholds",
+            "ev2.score_signal_thresholds",
+            "rankSignalThresholds: scoreSignalThresholds",
         ]),
     )
     _write(
         tmp_path / "ml-controller/services/recommendation_service.py",
         "\n".join([
+            'pred.get("core_ml_evidence") or pred.get("core_ml_gate")',
+            '"schema_version": "layer2_core_ml_evidence_audit_v1"',
+            '"legacy_schema_version": "layer2_core_ml_gate_audit_v1"',
+            '"source": "daily_pipeline_v2.node_l2_core_evidence"',
             "selection_reason",
             "selected_positive_edge_sparse_weight",
             "no_positive_expected_edge",
@@ -495,6 +598,25 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "drawdown_state",
             "live_backtest_divergence",
             "turnover_pressure",
+            '"schema_version": "canonical_chip_evidence_v2"',
+            '"brokerEvidenceStatus": broker_evidence_status',
+            '"brokerFlowUsed": True',
+            '"materialized_bullish_broker_chip_evidence"',
+            '"materialized_bearish_broker_chip_evidence"',
+        ]),
+    )
+    _write(
+        tmp_path / "ml-controller/graphs/daily_pipeline_v2.py",
+        "\n".join([
+            "def _attach_l2_core_ml_evidence",
+            '"schema_version": "core_ml_evidence_v1"',
+            '"legacy_schema_version": "core_ml_gate_v2"',
+            'row["core_ml_evidence"] = evidence',
+            'row["core_ml_gate"] = evidence',
+            "Deprecated compatibility wrapper; L2 now emits evidence, not a gate.",
+            "legacy_topk_override_retired",
+            "forced BUY is disabled",
+            "Retired path: detect stale config only; never force BUY from rank/top-K.",
         ]),
     )
     _write(
@@ -626,7 +748,9 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "const L3_FORMAL_MODELS = ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']",
             "const ACTIVE_9_ML_TEACHER_MODELS = [...L2_COARSE_MODELS, ...L3_FORMAL_MODELS]",
             "layer2_3ml_coarse_summary_v1 layer3_6ml_formal_summary_v1",
-            "three_ml_coarse_screen_not_final_ranker six_ml_formal_family_vote_not_topk",
+            "three_ml_coarse_evidence_l3_queue_not_final_ranker six_ml_formal_family_vote_not_topk",
+            "core_ml_evidence",
+            "formal_l2_evidence",
             "expected_teacher_count teacher_label_scope",
             "layer1_strategy_labeler_summary_v1",
             "layer125_finlab_portfolio_intelligence_summary_v1",

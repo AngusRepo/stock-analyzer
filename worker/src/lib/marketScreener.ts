@@ -1921,16 +1921,29 @@ export function scoreMultiFactor(
   marketReturn5d: number,
   latestClose: number,
   config?: TradingConfig,
-): { base_score: number; chip_score: number; tech_score: number; momentum_score: number; score_components: string; reasons: string[] } {
+): {
+  base_score: number
+  chip_score: number
+  tech_score: number
+  momentum_score: number
+  score_components: string
+  reasons: string[]
+  chip_evidence: Record<string, unknown>
+} {
   const sc = config?.screener
   const reasons: string[] = []
   const latest = prices[prices.length - 1]
 
   // ?? P0-1: 蝐Ⅳ??(0-40) ???函撠?靘?瘨憭批???榆 ??
   let chip_score = 0
+  let canonicalBrokerSummary: BrokerFlowSummary | null = null
+  let canonicalBrokerScore = 0
+  let chipEvidenceStatus = 'missing_chip_evidence'
+  let chipEvidenceSource = 'none'
   if (chipDates) {
     const brokerSummary = summarizeBrokerFlowChip(chipDates, prices, latestClose)
-    const isEmergingBrokerFlow = brokerSummary && brokerSummary.marketSegment.toUpperCase() === 'EMERGING'
+    canonicalBrokerSummary = brokerSummary
+    const isEmergingBrokerFlow = false
     if (isEmergingBrokerFlow) {
       const scoredBroker = scoreBrokerFlowChip(brokerSummary)
       chip_score = scoredBroker.score
@@ -1982,7 +1995,52 @@ export function scoreMultiFactor(
       else if (consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
     }
   }
+  if (canonicalBrokerSummary) {
+    const scoredBroker = scoreBrokerFlowChip(canonicalBrokerSummary)
+    canonicalBrokerScore = scoredBroker.score
+    if (canonicalBrokerScore > chip_score) {
+      reasons.push(...scoredBroker.reasons)
+      reasons.push(`broker_flow:${canonicalBrokerSummary.latestSource} net=${Math.round(canonicalBrokerSummary.netShares5d)} source_date=${canonicalBrokerSummary.latestDate}`)
+    }
+    chip_score = Math.max(chip_score, canonicalBrokerScore)
+    chipEvidenceStatus = chip_score > 0 ? 'materialized_chip_evidence' : 'materialized_neutral_or_bearish_chip_evidence'
+    chipEvidenceSource = 'canonical_chip_daily+canonical_broker_flow_daily'
+  } else if (chipDates?.size) {
+    chipEvidenceStatus = chip_score > 0 ? 'materialized_institutional_only' : 'materialized_neutral_or_bearish_institutional_only'
+    chipEvidenceSource = 'canonical_chip_daily'
+  }
   chip_score = clamp(chip_score, 0, 40)
+  const chip_evidence: Record<string, unknown> = {
+    schema_version: 'canonical_chip_evidence_v2',
+    evidenceStatus: chipEvidenceStatus,
+    evidence_status: chipEvidenceStatus,
+    source: chipEvidenceSource,
+    scoringPolicy: 'institutional_plus_all_segment_broker_flow_max_score',
+    scoring_policy: 'institutional_plus_all_segment_broker_flow_max_score',
+    brokerFlowUsed: canonicalBrokerSummary != null,
+    brokerEvidenceStatus: canonicalBrokerSummary == null
+      ? 'missing'
+      : canonicalBrokerSummary.estimatedAmount5d > 0 && canonicalBrokerScore > 0
+        ? 'present_bullish'
+        : canonicalBrokerSummary.estimatedAmount5d < 0
+          ? 'present_bearish'
+          : 'present_neutral',
+    broker: canonicalBrokerSummary
+      ? {
+          score40: Math.round(clamp(canonicalBrokerScore, 0, 40) * 10) / 10,
+          netShares5d: Math.round(canonicalBrokerSummary.netShares5d),
+          estimatedAmount5d: Math.round(canonicalBrokerSummary.estimatedAmount5d),
+          turnoverIntensity5d: canonicalBrokerSummary.turnoverIntensity5d == null
+            ? null
+            : Math.round(canonicalBrokerSummary.turnoverIntensity5d * 10000) / 10000,
+          brokerCount: canonicalBrokerSummary.latestBrokerCount,
+          concentration: canonicalBrokerSummary.latestConcentration,
+          marketSegment: canonicalBrokerSummary.marketSegment,
+          source: canonicalBrokerSummary.latestSource,
+          sourceDate: canonicalBrokerSummary.latestDate,
+        }
+      : null,
+  }
 
   // ?? P0-2: ?銵 (0-30) ??頞典?釭嚗??鞎瑁?⊥?隞嗆遛????
   let tech_score = 0
@@ -2108,6 +2166,7 @@ export function scoreMultiFactor(
     chipScore40: chip_score,
     techScore30: tech_score,
     momentumScore20: momentum_score,
+    chipEvidence: chip_evidence,
     reasons,
   })
   const base_score = scoreV2.finalScore ?? scoreV2.total
@@ -2118,6 +2177,7 @@ export function scoreMultiFactor(
     momentum_score,
     score_components: JSON.stringify(scoreV2),
     reasons,
+    chip_evidence,
   } as {
     base_score: number
     chip_score: number
@@ -2125,6 +2185,7 @@ export function scoreMultiFactor(
     momentum_score: number
     score_components: string
     reasons: string[]
+    chip_evidence: Record<string, unknown>
   }
 }
 

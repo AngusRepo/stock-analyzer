@@ -85,6 +85,10 @@ const forecastData = {
     forecast_calibration_sample_count: 1880,
     forecast_calibration_bin_samples: 91,
     ic_weight_scope: 'tpex',
+    score_signal_thresholds: {
+      buyThreshold: 0.6,
+      sellThreshold: 0.4,
+    },
     rank_signal_thresholds: {
       buyThreshold: 0.58,
       sellThreshold: 0.42,
@@ -107,6 +111,13 @@ const forecastData = {
       KalmanFilter: 0.5,
       MarkovSwitching: 0.5,
       ResidualMLP: 0.5,
+    },
+    allocator_learning_ledger: {
+      schema_version: 'model-allocator-learning-ledger-v1',
+      model_states: {
+        XGBoost: { state: 'production', production_weight: 0.2, learning_weight: 0.2, reject_reason: null },
+        DLinear: { state: 'learning_only', production_weight: 0, learning_weight: 0.01, reject_reason: 'no_positive_production_weight' },
+      },
     },
   },
   dispersion_diagnostics: {
@@ -147,6 +158,7 @@ const forecastData = {
   assert(summary?.forecastPct === 1.2, 'Worker card contract must expose forecastPct as display percent points')
   assert(summary?.activeWeightCount === 8, 'active weight count must ignore overlays, shadow models, and TimesFM sidecar')
   assert(summary?.zeroWeightModels?.length === 0, 'all alpha models have positive lifecycle weights in this fixture')
+  assert((summary?.allocatorLearningLedger as any)?.schema_version === 'model-allocator-learning-ledger-v1', 'ML vote summary should expose allocator learning ledger')
 }
 
 {
@@ -156,7 +168,8 @@ const forecastData = {
   assert(diagnostics?.activeWeightCount === 8, 'active weights must ignore overlays, challenger models, and TimesFM sidecar')
   assert(diagnostics?.icWeightScope === 'tpex', 'diagnostics should expose the lane-aware IC scope')
   assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic', 'forecast calibration method should be visible to UI')
-  assert((diagnostics?.rankSignalThresholds as any)?.buyThreshold === 0.58, 'dynamic rank thresholds should be visible to UI')
+  assert((diagnostics?.scoreSignalThresholds as any)?.buyThreshold === 0.6, 'dynamic score thresholds should be visible to UI')
+  assert((diagnostics?.rankSignalThresholds as any)?.buyThreshold === 0.6, 'legacy rank threshold field should mirror score thresholds')
   assert(diagnostics?.forecastCalibration.sampleCount === 1880, 'forecast calibration sample count should be visible to UI')
   assert(diagnostics?.dispersion.rawRankStd === 0.073, 'rank dispersion should be visible to UI')
   assert(diagnostics?.dispersion.mergeCompression === 0.62, 'rank compression should be visible to UI')
@@ -169,6 +182,7 @@ const forecastData = {
   assert(diagnostics?.timesfmSidecar?.l2FeatureInputBlockedReason === 'requires_formal137_registry_retrain_release', 'TimesFM L2 blocked reason should be visible')
   assert(diagnostics?.timesfmSidecar?.currentAllowedUse.includes('risk_sidecar'), 'TimesFM allowed-use scope should be visible')
   assert(diagnostics?.timesfmSidecar?.populatedFeatureCount === 3, 'TimesFM sidecar should expose populated feature count')
+  assert((diagnostics?.allocatorLearningLedger as any)?.model_states?.DLinear?.state === 'learning_only', 'diagnostics should expose per-model learning/reject state')
 }
 
 {

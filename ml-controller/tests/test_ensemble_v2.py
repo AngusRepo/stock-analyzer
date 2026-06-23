@@ -130,3 +130,66 @@ def test_attach_ensemble_v2_marks_uncalibrated_forecast_as_none():
     ev2 = pred["ensemble_v2"]
     assert ev2["forecast_pct"] is None
     assert ev2["forecast_pct_source"] == "uncalibrated_rank_score"
+
+
+def test_attach_ensemble_v2_applies_only_capped_approved_allocator_policy():
+    pred = {"rank_scores": {"XGBoost": 0.9, "LightGBM": 0.6}}
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"XGBoost": "active", "LightGBM": "active"},
+        ic_weights={"XGBoost": 0.1, "LightGBM": 0.1},
+        degraded_dampening=1.0,
+        ev2_cfg={
+            "allocatorPolicy": {
+                "approved": True,
+                "production_effect": "capped_production_effect",
+                "model_multiplier_cap": 0.15,
+                "model_weight_multipliers": {"XGBoost": 2.0, "LightGBM": 0.1},
+                "policy_id": "linucb-approved-test",
+            }
+        },
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["allocator_policy_effect"]["applied"] is True
+    assert ev2["allocator_policy_effect"]["multipliers"] == {"XGBoost": 1.15, "LightGBM": 0.85}
+    assert ev2["weights"] == {"LightGBM": 0.085, "XGBoost": 0.115}
+
+
+def test_attach_ensemble_v2_emits_full_allocator_learning_ledger():
+    pred = {
+        "rank_scores": {
+            "XGBoost": 0.9,
+            "LightGBM": 0.6,
+            "TimesFM": 0.99,
+        }
+    }
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"XGBoost": "active", "LightGBM": "active", "TimesFM": "active"},
+        ic_weights={"XGBoost": 0.1, "LightGBM": -0.1, "TimesFM": 0.9},
+        degraded_dampening=1.0,
+        ev2_cfg={
+            "allocatorLearningPolicy": {
+                "policy_id": "linucb-learning-test",
+                "model_learning_multipliers": {"LightGBM": 1.5},
+                "learning_weight_cap": 0.50,
+            }
+        },
+    )
+
+    ev2 = pred["ensemble_v2"]
+    ledger = ev2["allocator_learning_ledger"]
+    assert ledger["schema_version"] == "model-allocator-learning-ledger-v1"
+    assert ev2["weights"] == {"XGBoost": 0.1, "LightGBM": 0.0}
+    assert ledger["model_states"]["XGBoost"]["state"] == "production"
+    assert ledger["model_states"]["XGBoost"]["production_weight"] == 0.1
+    assert ledger["model_states"]["LightGBM"]["state"] == "learning_only"
+    assert ledger["model_states"]["LightGBM"]["production_weight"] == 0.0
+    assert ledger["model_states"]["LightGBM"]["learning_weight"] == 0.015
+    assert ledger["model_states"]["TimesFM"]["state"] == "rejected"
+    assert ledger["model_states"]["TimesFM"]["reject_reason"] == "direct_alpha_blocked_sidecar_only"
+    assert ledger["learning_policy_effect"]["applied"] is True
+    assert ledger["learning_policy_effect"]["production_effect"] is False

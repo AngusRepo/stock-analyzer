@@ -368,7 +368,7 @@ async def predict_endpoint(req: PredictRequest, request: Request):
     return predict_stock_v2(req)
 
 
-# 2.0 predict path: regression models + IC-weighted `rank_to_signal`.
+# 2.0 predict path: regression models + IC-weighted `score_to_signal`.
 # Shared logic should keep converging toward `prediction_runtime.py`.
 
 _MODEL_NAMES_V2 = [
@@ -385,11 +385,11 @@ _MODEL_NAMES_V2 = [
 
 
 def predict_stock_v2(req: PredictRequest) -> dict:
-    """2.0 predict path using regression models from GCS and `rank_to_signal()`."""
+    """2.0 predict path using regression models from GCS and `score_to_signal()`."""
     # Differences from predict_stock (1.0):
     # - target_col="target_rank" instead of "target_dir"
     # - loads universal regression models (stock_id=0)
-    # - uses `.predict()` rank output and `rank_to_signal()`
+    # - uses `.predict()` score output and `score_to_signal()`
     # - no per-stock retrain fallback
     from .prediction_runtime import predict_stock_v2 as _predict_stock_v2
 

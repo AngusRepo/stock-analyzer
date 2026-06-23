@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 
-def test_rank_to_signal_blocks_equal_weight_when_ic_is_cold_start():
-    from app.ensemble import rank_to_signal
+def test_score_to_signal_blocks_equal_weight_when_ic_is_cold_start():
+    from app.ensemble import score_to_signal
 
-    result = rank_to_signal(
+    result = score_to_signal(
         rank_scores={"XGBoost": 0.74, "LightGBM": 0.70, "ExtraTrees": 0.66},
         current_price=100.0,
         atr=2.0,
@@ -19,10 +19,10 @@ def test_rank_to_signal_blocks_equal_weight_when_ic_is_cold_start():
     assert result.forecast_pct == 0.0
 
 
-def test_rank_to_signal_stays_neutral_when_all_observed_ic_is_negative():
-    from app.ensemble import rank_to_signal
+def test_score_to_signal_stays_neutral_when_all_observed_ic_is_negative():
+    from app.ensemble import score_to_signal
 
-    result = rank_to_signal(
+    result = score_to_signal(
         rank_scores={"XGBoost": 0.9, "LightGBM": 0.8},
         current_price=100.0,
         atr=2.0,
@@ -31,6 +31,28 @@ def test_rank_to_signal_stays_neutral_when_all_observed_ic_is_negative():
 
     assert result.signal == "HOLD"
     assert result.forecast_pct == 0.0
+
+
+def test_rank_to_signal_alias_remains_for_compatibility():
+    from app.ensemble import rank_to_signal, score_to_signal
+
+    legacy = rank_to_signal(
+        rank_scores={"XGBoost": 0.74},
+        current_price=100.0,
+        atr=2.0,
+        ic_weights={"XGBoost": 0.2},
+        buy_threshold=0.70,
+    )
+    current = score_to_signal(
+        rank_scores={"XGBoost": 0.74},
+        current_price=100.0,
+        atr=2.0,
+        ic_weights={"XGBoost": 0.2},
+        buy_threshold=0.70,
+    )
+
+    assert legacy.signal == current.signal
+    assert legacy.forecast_pct == current.forecast_pct
 
 
 def test_load_ic_weights_uses_model_pool_only(monkeypatch):

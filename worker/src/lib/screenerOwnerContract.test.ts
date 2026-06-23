@@ -188,7 +188,7 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(screenerFunnelEvidence.includes('observe_only_top_up'), 'L1.5 router summary must expose observe-only top-up rows explicitly')
   assert(screenerFunnelEvidence.includes('layer3_formal_ml_gate'), 'funnel evidence summary must include Layer 3 formal ML evidence')
   assert(screenerFunnelEvidence.includes('layer2_3ml_coarse_summary_v1'), 'funnel evidence summary must expose stable L2 3ML coarse schema')
-  assert(screenerFunnelEvidence.includes('three_ml_coarse_screen_not_final_ranker'), 'L2 3ML coarse must stay a coarse screen, not final ranker')
+  assert(screenerFunnelEvidence.includes('three_ml_coarse_evidence_l3_queue_not_final_ranker'), 'L2 3ML coarse must stay evidence/L3 queue, not final ranker')
   assert(screenerFunnelEvidence.includes('layer3_6ml_formal_summary_v1'), 'funnel evidence summary must expose stable L3 6ML formal schema')
   assert(screenerFunnelEvidence.includes('six_ml_formal_family_vote_not_topk'), 'L3 6ML formal must stay family-vote evidence, not top-k')
   assert(screenerFunnelEvidence.includes("'LightGBM', 'XGBoost', 'ExtraTrees'"), 'L2 3ML model ids must stay visible in the funnel summary contract')

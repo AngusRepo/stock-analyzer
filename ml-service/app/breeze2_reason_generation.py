@@ -10,6 +10,17 @@ import re
 
 REPORT_SCHEMA_VERSION = "breeze2-reason-generation-v1"
 DEFAULT_MODEL_ID = "MediaTek-Research/Llama-Breeze2-3B-Instruct-v0_1"
+REQUIRED_TRADE_PLAN_FIELDS = (
+    "bias",
+    "entry",
+    "risk",
+    "target",
+    "invalidation",
+    "positionSizing",
+    "timeHorizon",
+    "catalyst",
+    "noTradeCondition",
+)
 
 
 def _utc_now() -> str:
@@ -84,7 +95,7 @@ def build_breeze2_reason_generation_prompt(payload: dict[str, Any]) -> str:
         "請使用繁體中文，語氣像專業投資平台的研究摘要。\n"
         "限制：只能產生研究摘要，不得下單、不得要求真實交易、不得改寫系統狀態。\n"
         "輸出必須是 JSON array；每個元素格式："
-        '{"symbol":"2330","reason":"80到140字理由","tradePlan":{"bias":"判斷","entry":"進場條件","risk":"失效/風控","target":"目標區"},"watchPoints":["觀察1","觀察2","觀察3"]}。\n'
+        '{"symbol":"2330","reason":"80到140字理由","tradePlan":{"bias":"判斷","entry":"進場條件","risk":"失效/風控","target":"目標區","invalidation":"失效價/條件","positionSizing":"部位風險","timeHorizon":"持有期","catalyst":"催化因子","noTradeCondition":"不交易條件"},"watchPoints":["觀察1","觀察2","觀察3"]}。\n'
         "tradePlan 是研究用交易計畫，不得要求真實下單；只能根據 canonical candidate payload 判讀。\n"
         "watchPoints 最多 3 條，每條要具體、可觀察，優先包含價量、籌碼、技術或風險觸發條件。\n"
         f"run_date={run_date}\n"
@@ -100,11 +111,22 @@ def _trade_plan_from_item(item: dict[str, Any]) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, str] = {}
-    for key in ("bias", "entry", "risk", "target", "invalidation", "positionSizing"):
-        text = _clean_text(raw.get(key) or raw.get(key.lower()), 180)
+    aliases = {
+        "positionSizing": ("positionSizing", "position_sizing", "sizing", "size"),
+        "timeHorizon": ("timeHorizon", "time_horizon", "horizon", "holdingPeriod"),
+        "noTradeCondition": ("noTradeCondition", "no_trade_condition", "noTrade", "skipCondition"),
+    }
+    for key in REQUIRED_TRADE_PLAN_FIELDS:
+        candidates = aliases.get(key, (key, key.lower()))
+        text = _clean_text(next((raw.get(alias) for alias in candidates if raw.get(alias)), ""), 180)
         if text:
             out[key] = text
     return out
+
+
+def _missing_trade_plan_fields(entry: dict[str, Any]) -> list[str]:
+    plan = entry.get("tradePlan") if isinstance(entry.get("tradePlan"), dict) else {}
+    return [field for field in REQUIRED_TRADE_PLAN_FIELDS if not _clean_text(plan.get(field), 220)]
 
 
 def parse_breeze2_reason_generation_text(text: str) -> dict[str, dict[str, Any]]:
@@ -136,6 +158,10 @@ def parse_breeze2_reason_generation_text(text: str) -> dict[str, dict[str, Any]]
             "tradePlan": _trade_plan_from_item(item),
             "watchPoints": points,
         }
+        missing = _missing_trade_plan_fields(out[symbol])
+        out[symbol]["tradePlanStatus"] = "valid" if not missing else "plan_invalid_needs_repair"
+        out[symbol]["tradePlanMissingFields"] = missing
+        out[symbol]["tradePlanRequiredFields"] = list(REQUIRED_TRADE_PLAN_FIELDS)
     return out
 
 
@@ -149,6 +175,19 @@ def _fallback_trade_plan(candidate: dict[str, Any]) -> dict[str, str]:
         "risk": "若 ML、籌碼或技術任一主構面轉弱，降低部位或撤回追價。",
         "target": alpha or "以上方壓力與 Alpha/日線結構上緣作研究目標區，不視為保證價位。",
     }
+
+
+def _complete_trade_plan(plan: dict[str, str], candidate: dict[str, Any]) -> dict[str, str]:
+    points = [_clean_text(point, 180) for point in _as_list(candidate.get("watch_points")) if str(point).strip()]
+    market_structure = next((point for point in points if point.startswith("Market structure:")), "")
+    alpha = next((point for point in points if point.startswith("Alpha bucket:")), "")
+    completed = dict(plan)
+    completed.setdefault("invalidation", "Invalid if system stop, support, ML edge, or Score V2 evidence fails.")
+    completed.setdefault("positionSizing", "Cap by sparse allocator weight and single-trade risk budget.")
+    completed.setdefault("timeHorizon", "Short swing horizon; refresh after the next evidence update.")
+    completed.setdefault("catalyst", alpha or market_structure or "Needs continuation in chip, volume, or theme evidence.")
+    completed.setdefault("noTradeCondition", "Skip if price gaps beyond plan, liquidity is weak, risk is blocked, or evidence decays.")
+    return completed
 
 
 def build_fallback_breeze2_reason_generation(
@@ -172,7 +211,7 @@ def build_fallback_breeze2_reason_generation(
         reasons[symbol] = {
             "source": "breeze2_generation_fallback",
             "reason": f"Breeze2 shadow fallback：{name} 以 Score V2、籌碼與技術結構作研究摘要候選；ML={ml_edge}, 籌碼={chip_flow}, 技術={tech}。",
-            "tradePlan": _fallback_trade_plan(candidate),
+            "tradePlan": _complete_trade_plan(_fallback_trade_plan(candidate), candidate),
             "watchPoints": [
                 "觀察 Score V2 的 ML、籌碼、技術三項是否同步轉強",
                 "若量能或法人籌碼沒有延續，降低追價權重",

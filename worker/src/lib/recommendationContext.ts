@@ -9,6 +9,7 @@ export interface MlVoteSummary {
   activeWeightCount: number
   zeroWeightModels?: string[]
   contributingModels?: string[]
+  allocatorLearningLedger?: Record<string, unknown> | null
   reason: string | null
   thresholds?: {
     bullish: number
@@ -25,6 +26,7 @@ export interface MlDiagnosticsSummary {
   contributingModels: string[]
   validationBlockedModels: string[]
   icWeightScope: string | null
+  scoreSignalThresholds: Record<string, unknown> | null
   rankSignalThresholds: Record<string, unknown> | null
   forecastCalibration: {
     method: string | null
@@ -52,6 +54,7 @@ export interface MlDiagnosticsSummary {
     populatedFeatureCount: number
     features: Record<string, unknown>
   } | null
+  allocatorLearningLedger: Record<string, unknown> | null
 }
 
 export interface SparseAllocationSummary {
@@ -284,6 +287,7 @@ function buildTimesFmSidecarDiagnostics(data: Record<string, any> | null): MlDia
     ? sidecar.current_allowed_use.map(String).filter(Boolean)
     : []
   const featureKeys = Object.keys(features).sort()
+
   return {
     schemaVersion: typeof sidecar.schema_version === 'string' ? sidecar.schema_version : null,
     layer: typeof sidecar.layer === 'string' ? sidecar.layer : null,
@@ -403,6 +407,9 @@ export function buildMlVoteSummary(
     activeWeightCount,
     zeroWeightModels,
     contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models.filter(isTrackedAlphaModelName) : [],
+    allocatorLearningLedger: data?.ensemble_v2?.allocator_learning_ledger && typeof data.ensemble_v2.allocator_learning_ledger === 'object'
+      ? data.ensemble_v2.allocator_learning_ledger as Record<string, unknown>
+      : null,
     reason: typeof data?.ensemble_v2?.reason === 'string' ? data.ensemble_v2.reason : null,
     thresholds,
   }
@@ -436,6 +443,11 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
     .filter(([, detail]) => String((detail as any)?.validation_status ?? '').toUpperCase() === 'FAIL')
     .map(([name]) => name)
     .filter(isTrackedAlphaModelName)
+  const scoreSignalThresholds = ev2.score_signal_thresholds && typeof ev2.score_signal_thresholds === 'object'
+    ? ev2.score_signal_thresholds
+    : ev2.rank_signal_thresholds && typeof ev2.rank_signal_thresholds === 'object'
+      ? ev2.rank_signal_thresholds
+      : null
 
   return {
     totalAlphaModels: TRACKED_MODEL_NAMES.length,
@@ -444,9 +456,8 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
     contributingModels,
     validationBlockedModels,
     icWeightScope: typeof ev2.ic_weight_scope === 'string' ? ev2.ic_weight_scope : null,
-    rankSignalThresholds: ev2.rank_signal_thresholds && typeof ev2.rank_signal_thresholds === 'object'
-      ? ev2.rank_signal_thresholds
-      : null,
+    scoreSignalThresholds,
+    rankSignalThresholds: scoreSignalThresholds,
     forecastCalibration: {
       method: typeof ev2.forecast_calibration_method === 'string' ? ev2.forecast_calibration_method : null,
       source: typeof ev2.forecast_pct_source === 'string' ? ev2.forecast_pct_source : null,
@@ -463,6 +474,9 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
       weightHhi: finiteOrNull(dispersion.weight_hhi),
     },
     timesfmSidecar: buildTimesFmSidecarDiagnostics(data),
+    allocatorLearningLedger: ev2.allocator_learning_ledger && typeof ev2.allocator_learning_ledger === 'object'
+      ? ev2.allocator_learning_ledger as Record<string, unknown>
+      : null,
   }
 }
 

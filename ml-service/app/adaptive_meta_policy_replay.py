@@ -19,6 +19,7 @@ from .neural_meta_bandit import NeuralMetaBanditConfig, train_neural_meta_bandit
 
 
 SCHEMA_VERSION = "adaptive-meta-policy-replay-v1"
+ALLOCATOR_CANDIDATE_SCHEMA_VERSION = "allocator-policy-candidate-v1"
 CONTEXT_VERSION = "meta-context-v2-python"
 ARM_NAMES = (
     "tree_family",
@@ -39,6 +40,13 @@ ACTIVE_MODEL_TO_ARM = {
     "itransformer": "time_series_family",
     "timesfm": "time_series_family",
 }
+ARM_TO_ACTIVE_MODELS = {
+    "tree_family": ("LightGBM", "XGBoost", "ExtraTrees"),
+    "tabular_neural_family": ("TabM",),
+    "graph_family": ("GNN",),
+    "time_series_family": ("DLinear", "PatchTST", "iTransformer", "TimesFM"),
+}
+ALLOCATOR_POLICY_CAP = 0.15
 CONTEXT_FEATURES = (
     "model_ic",
     "coverage",
@@ -560,6 +568,87 @@ def _selection_score(summary: dict[str, Any]) -> float:
     return round(score, 8)
 
 
+def _approval_candidate_status(status: str) -> str:
+    return "candidate_requires_approval" if status == "pass" else "research_only_failed_gate"
+
+
+def _family_multiplier_from_share(share: float, equal_share: float) -> float:
+    if equal_share <= 0:
+        return 1.0
+    # Convert learned family preference into a bounded exposure tilt. The
+    # production consumer clips again, so the packet remains safe even if
+    # future callers pass a larger cap by mistake.
+    relative_edge = (float(share) - equal_share) / equal_share
+    return round(1.0 + _clamp(relative_edge, -1.0, 1.0) * ALLOCATOR_POLICY_CAP, 6)
+
+
+def _build_allocator_policy_candidate(
+    *,
+    status: str,
+    best: dict[str, Any] | None,
+    gates: list[dict[str, Any]],
+    sample_windows: int,
+    date_start: str,
+    date_end: str,
+) -> dict[str, Any] | None:
+    if not best:
+        return None
+    action_counts = best.get("action_counts")
+    if not isinstance(action_counts, dict):
+        return None
+    total_actions = sum(int(count or 0) for count in action_counts.values())
+    if total_actions <= 0:
+        return None
+
+    allocator_arms = tuple(ARM_TO_ACTIVE_MODELS)
+    equal_share = 1.0 / len(allocator_arms)
+    family_weight_multipliers: dict[str, float] = {}
+    for arm in allocator_arms:
+        share = int(action_counts.get(arm, 0) or 0) / total_actions
+        family_weight_multipliers[arm] = _family_multiplier_from_share(share, equal_share)
+
+    model_weight_multipliers: dict[str, float] = {}
+    for arm, models in ARM_TO_ACTIVE_MODELS.items():
+        for model in models:
+            model_weight_multipliers[model] = family_weight_multipliers[arm]
+
+    do_nothing_share = int(action_counts.get("do_nothing", 0) or 0) / total_actions
+    policy_id = f"adaptive-meta-{date_end}-{str(best.get('method') or 'unknown').lower()}"
+    return {
+        "schema_version": ALLOCATOR_CANDIDATE_SCHEMA_VERSION,
+        "policy_id": policy_id,
+        "candidate_type": "family_allocator_model_weight_multipliers",
+        "source": "adaptive_meta_policy_replay",
+        "status": _approval_candidate_status(status),
+        "approved": False,
+        "approval_status": "not_submitted",
+        "approved_level": None,
+        "requires_wei_approval": True,
+        "production_effect": False,
+        "proposed_production_effect": "capped_production_effect",
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
+        "allowed_target": "ml:adaptive_params.model_allocator",
+        "model_multiplier_cap": ALLOCATOR_POLICY_CAP,
+        "production_cap": ALLOCATOR_POLICY_CAP,
+        "family_weight_multipliers": family_weight_multipliers,
+        "model_weight_multipliers": model_weight_multipliers,
+        "risk_off_cash_bias": round(float(do_nothing_share), 8),
+        "method": best.get("method"),
+        "evidence": {
+            "sample_windows": sample_windows,
+            "date_start": date_start,
+            "date_end": date_end,
+            "selection_score": best.get("selection_score"),
+            "average_reward": best.get("average_reward"),
+            "mean_oracle_regret": best.get("mean_oracle_regret"),
+            "action_concentration": best.get("action_concentration"),
+            "action_counts": action_counts,
+            "gates": gates,
+        },
+    }
+
+
 def run_adaptive_meta_policy_replay(
     rows: Iterable[dict[str, Any]],
     *,
@@ -685,6 +774,14 @@ def run_adaptive_meta_policy_replay(
         },
     ]
     status = "pass" if all(gate["passed"] for gate in gates) else "fail"
+    allocator_policy_candidate = _build_allocator_policy_candidate(
+        status=status,
+        best=best,
+        gates=gates,
+        sample_windows=len(samples),
+        date_start=samples[0].date,
+        date_end=samples[-1].date,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "context_version": CONTEXT_VERSION,
@@ -712,6 +809,7 @@ def run_adaptive_meta_policy_replay(
         "ranking": ranking,
         "best_ranked_method": best["method"] if best else None,
         "recommended_method": best["method"] if status == "pass" and best else None,
+        "allocator_policy_candidate": allocator_policy_candidate,
         "gates": gates,
         "sample_preview": [
             {

@@ -89,22 +89,22 @@ def test_l2_l3_targets_are_proportional_to_upstream_counts():
     _install_daily_pipeline_import_stubs()
     from graphs.daily_pipeline_v2 import (  # noqa: E402
         _resolve_coarse_ml_gate_target,
-        _resolve_core_family_rank_target,
+        _resolve_core_family_evidence_target,
     )
 
     trading_config = {"screener": {"coarseMlKeepRatio": 0.75, "coreFamilyKeepRatio": 0.75}}
-    sizing = {"core_family_rank_size": 80}
+    sizing = {"core_family_evidence_size": 80}
 
     l2_target = _resolve_coarse_ml_gate_target(70, sizing, trading_config)
-    l3_target = _resolve_core_family_rank_target(l2_target, sizing, trading_config)
+    l3_target = _resolve_core_family_evidence_target(l2_target, sizing, trading_config)
 
     assert l2_target == 53
-    assert l3_target == 40
+    assert l3_target == 53
 
 
-def test_l2_core_gate_selects_by_tree_rank_only():
+def test_l2_core_ml_evidence_queues_l3_formal_inference_by_tree_score_only():
     _install_daily_pipeline_import_stubs()
-    from graphs.daily_pipeline_v2 import _attach_l2_core_ml_gate  # noqa: E402
+    from graphs.daily_pipeline_v2 import _attach_l2_core_ml_evidence  # noqa: E402
 
     predictions = {
         "2330": {"rank_scores": {"LightGBM": 0.80, "XGBoost": 0.70, "ExtraTrees": 0.90, "TabM": 0.10}},
@@ -112,51 +112,65 @@ def test_l2_core_gate_selects_by_tree_rank_only():
         "2454": {"rank_scores": {"TabM": 1.00}},
     }
 
-    gated, selected, summary = _attach_l2_core_ml_gate(
+    gated, selected, summary = _attach_l2_core_ml_evidence(
         predictions,
         target_size=1,
         upstream_count=3,
     )
 
     assert selected == ["2330"]
-    assert gated["2330"]["core_ml_gate"]["selected"] is True
-    assert gated["2317"]["core_ml_gate"]["selected"] is False
-    assert gated["2454"]["core_ml_gate"]["selected"] is False
-    assert gated["2330"]["core_ml_gate"]["models"] == ["LightGBM", "XGBoost", "ExtraTrees"]
+    assert gated["2330"]["core_ml_evidence"]["selected"] is True
+    assert gated["2330"]["core_ml_evidence"]["l3_formal_inference_selected"] is True
+    assert gated["2330"]["core_ml_evidence"]["final_recommendation_gate"] is False
+    assert gated["2330"]["core_ml_gate"] == gated["2330"]["core_ml_evidence"]
+    assert gated["2317"]["core_ml_evidence"]["selected"] is False
+    assert gated["2454"]["core_ml_evidence"]["selected"] is False
+    assert gated["2330"]["core_ml_evidence"]["models"] == ["LightGBM", "XGBoost", "ExtraTrees"]
+    assert summary["schema_version"] == "l2_core_ml_evidence_v1"
     assert summary["scored_count"] == 2
+    assert summary["selection_role"] == "evidence_only_l3_formal_inference_queue"
+    assert summary["final_recommendation_gate"] is False
 
 
-def test_l2_core_gate_does_not_fallback_to_score_rank_when_gate_evidence_missing():
-    from services.recommendation_service import apply_core_ml_gate  # noqa: E402
+def test_l2_core_ml_evidence_does_not_truncate_sparse_allocator_pool():
+    from services.recommendation_service import apply_core_ml_evidence  # noqa: E402
 
     recommendations = [
         {"symbol": "2330", "score": 99.0},
         {"symbol": "2317", "score": 98.0},
     ]
 
-    assert apply_core_ml_gate(recommendations, {}, fallback_size=1) == []
-    assert apply_core_ml_gate(
+    result = apply_core_ml_evidence(recommendations, {}, fallback_size=1)
+    assert [row["symbol"] for row in result] == ["2330", "2317"]
+    assert all("core_ml_evidence:missing_l2_tree_prediction" in row["watch_points"] for row in result)
+
+    result = apply_core_ml_evidence(
         recommendations,
-        {"2330": {"core_ml_gate": {"selected": False, "rank": 1, "target_size": 1}}},
+        {"2330": {"core_ml_evidence": {"selected": False, "rank": 1, "target_size": 1}}},
         fallback_size=1,
-    ) == []
+    )
+    assert [row["symbol"] for row in result] == ["2330", "2317"]
+    assert result[0]["core_ml_evidence"]["final_recommendation_gate"] is False
+    assert result[0]["core_ml_gate"] == result[0]["core_ml_evidence"]
 
 
-def test_core_family_rank_does_not_fallback_to_score_rank_when_family_evidence_missing():
-    from services.recommendation_service import apply_core_family_rank  # noqa: E402
+def test_core_family_evidence_does_not_truncate_when_family_evidence_missing():
+    from services.recommendation_service import apply_core_family_evidence  # noqa: E402
 
     recommendations = [
         {"symbol": "2330", "score": 99.0},
         {"symbol": "2317", "score": 98.0},
     ]
 
-    assert apply_core_family_rank(
+    result = apply_core_family_evidence(
         recommendations,
         {},
         target_size=1,
         strict=False,
         require_lifecycle_weights=True,
-    ) == []
+    )
+    assert [row["symbol"] for row in result] == ["2330", "2317"]
+    assert all(row["core_family_evidence"]["selection_role"] == "evidence_only_not_capacity_gate" for row in result)
 
 
 def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypatch):
@@ -187,6 +201,7 @@ def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypa
             "2330": {
                 "symbol": "2330",
                 "rank_scores": {"LightGBM": 0.8, "XGBoost": 0.7, "ExtraTrees": 0.9},
+                "core_ml_evidence": {"selected": True, "rank": 1, "target_size": 1},
                 "core_ml_gate": {"selected": True, "rank": 1, "target_size": 1},
                 "feature_version": "l2_tree_predict_v1",
                 "prediction_stage": "L2",
@@ -194,6 +209,7 @@ def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypa
             "2317": {
                 "symbol": "2317",
                 "rank_scores": {"LightGBM": 0.4, "XGBoost": 0.5, "ExtraTrees": 0.45},
+                "core_ml_evidence": {"selected": False, "rank": 2, "target_size": 1},
                 "core_ml_gate": {"selected": False, "rank": 2, "target_size": 1},
                 "feature_version": "l2_tree_predict_v1",
                 "prediction_stage": "L2",
@@ -205,6 +221,7 @@ def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypa
 
     assert observed_payload_symbols == [["2330"]]
     assert result["predictions"]["2330"]["prediction_stage"] == "L3"
+    assert result["predictions"]["2330"]["core_ml_evidence"] == {"selected": True, "rank": 1, "target_size": 1}
     assert result["predictions"]["2330"]["core_ml_gate"] == {"selected": True, "rank": 1, "target_size": 1}
     assert result["predictions"]["2330"]["feature_version"] == "l2_tree_predict_v1"
     assert result["predictions"]["2317"]["prediction_stage"] == "L2"

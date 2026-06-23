@@ -99,7 +99,6 @@ function pickLastFormalLayer2Step(steps: ScreenerFunnelStep[]): ScreenerFunnelSt
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i]
     if (step.stage !== 'layer2_coarse_ml_gate') continue
-    if (step.decision !== 'pass') continue
     if (step.evidence?.worker_seed_only === true) continue
     return step
   }
@@ -470,7 +469,9 @@ function buildLayer2CoarseMlSummary(
   if (!source) return null
   const evidence = source.evidence ?? {}
   const workerSeedOnly = evidence.worker_seed_only === true
-  const formalPass = Boolean(layer2 && layer2.decision === 'pass' && !workerSeedOnly)
+  const formalEvidence = Boolean(layer2 && !workerSeedOnly)
+  const finalRecommendationGate = evidence.final_recommendation_gate === true
+  const l3QueueSelected = evidence.l3_formal_inference_selected === true
   return {
     schema_version: 'layer2_3ml_coarse_summary_v1',
     source: 'screener_funnel_items',
@@ -478,15 +479,20 @@ function buildLayer2CoarseMlSummary(
     model_scope: 'l2_3ml_coarse',
     expected_models: [...L2_COARSE_MODELS],
     expected_model_count: L2_COARSE_MODELS.length,
-    decision_policy: 'three_ml_coarse_screen_not_final_ranker',
+    decision_policy: 'three_ml_coarse_evidence_l3_queue_not_final_ranker',
     model_family_deweight_policy: 'tree_family_correlation_cap_l2_coarse',
     correlation_cap_policy: 'l2_model_family_correlation_cap',
     diversity_loss_report_scope: 'l1_to_l2_strategy_family_retention',
-    capacity_policy: 'max_only_no_minimum_no_topup',
-    formal_l2_queue: evidence.formal_l2_queue === true || formalPass,
-    formal_l2_pass: formalPass,
+    capacity_policy: 'l3_inference_cost_queue_only_no_sparse_allocator_shrink',
+    final_recommendation_gate: finalRecommendationGate,
+    formal_l2_queue: evidence.formal_l2_queue === true || l3QueueSelected,
+    l3_formal_inference_selected: l3QueueSelected,
+    core_ml_evidence: formalEvidence,
+    core_ml_evidence_schema_version: typeof evidence.schema_version === 'string' ? evidence.schema_version : null,
+    formal_l2_evidence: formalEvidence,
+    formal_l2_pass: false,
     worker_seed_only: workerSeedOnly,
-    decision: formalPass ? source.decision : 'queue_seed_observe',
+    decision: formalEvidence ? source.decision : 'queue_seed_observe',
     reason_code: source.reason_code,
     rank: source.rank,
     score_after: toNullableNumber(source.score_after),

@@ -602,7 +602,7 @@ def _require_predict_v2_config_contract(req: PredictRequest) -> None:
 
 def predict_stock_v2(req: PredictRequest) -> dict:
     """2.0 predict: universal regression models + IC-weighted rank ensemble."""
-    from .ensemble import load_ic_weights, merge_with_time_series, rank_to_signal
+    from .ensemble import load_ic_weights, merge_with_time_series, score_to_signal
     from .model_store import load_model
     from .model_pool import load_pool as _load_pool
 
@@ -842,7 +842,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         for key, value in runtime_options.items()
         if key not in _BATCH_RUNTIME_OPTION_KEYS
     }
-    result = rank_to_signal(
+    result = score_to_signal(
         rank_scores=rank_scores,
         current_price=current_price,
         atr=atr,
@@ -877,8 +877,10 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         "model_errors": model_errors if model_errors else None,
         "ic_weights": {k: round(v, 4) for k, v in effective_ic_weights.items()} if effective_ic_weights else None,
         "ic_weight_scope": market_segment or "GLOBAL",
+        "score_signal_thresholds": {k: round(float(v), 4) for k, v in rank_thresholds.items()},
         "rank_signal_thresholds": {k: round(float(v), 4) for k, v in rank_thresholds.items()},
         "model_pool_status": model_pool_status if pool_snapshot else None,
+        "score_scores": {k: round(float(v), 6) for k, v in rank_scores.items()},
         "rank_scores": {k: round(float(v), 6) for k, v in rank_scores.items()},
         "time_series_signals": time_series_signals if time_series_signals else None,
         "state_space_overlays": state_space_overlays if state_space_overlays else None,

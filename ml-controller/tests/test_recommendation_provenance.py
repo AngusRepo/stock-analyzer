@@ -360,6 +360,10 @@ def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
     assert row["score"] == pytest.approx(row["score_components"]["finalScore"])
     assert row["score_components"]["seedComponents"]["chipFlowSeed40"] == pytest.approx(16.0)
     assert row["score_components"]["chipEvidence"]["source"] == "finlab.rotc_broker_transactions"
+    assert row["score_components"]["chipEvidence"]["evidence_status"] == "materialized_bullish_broker_chip_evidence"
+    assert row["score_components"]["chipEvidence"]["evidenceStatus"] == "materialized_bullish_broker_chip_evidence"
+    assert row["score_components"]["chipEvidence"]["brokerEvidenceStatus"] == "present_bullish"
+    assert row["score_components"]["chipEvidence"]["brokerFlowUsed"] is True
     assert row["score_components"]["chipEvidence"]["broker_net_amount_5d_billion"] == pytest.approx(0.013395)
 
 

@@ -169,7 +169,7 @@ def apply_rank_stacker(
     ic_weights: dict[str, float] | None = None,
     min_eval_ic: float = 0.0,
 ) -> tuple[dict[str, float], dict[str, float], dict]:
-    """Append a validated v2 rank stacker score for rank_to_signal."""
+    """Append a validated v2 stacker score for score_to_signal."""
     scores_out = dict(rank_scores)
     weights_out = dict(ic_weights or {})
     if not bundle or bundle.get("target_type") != "rank":

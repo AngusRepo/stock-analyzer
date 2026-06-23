@@ -97,3 +97,37 @@ def test_linucb_multiplier_replay_is_read_only_and_ranks_candidates():
     assert report["baseline"]["candidate"]["bandit_max_mult_low"] == 2.5
     assert report["ranking"][0]["decisions"] == 12 * 4
     assert report["best_candidate"]
+    learning_candidate = report["allocator_policy_candidate"]
+    assert learning_candidate["schema_version"] == "allocator-learning-policy-candidate-v1"
+    assert learning_candidate["candidate_type"] == "linucb_model_learning_weight_multipliers"
+    assert learning_candidate["production_effect"] is False
+    assert learning_candidate["proposed_production_effect"] == "learning_weight_only"
+    assert learning_candidate["allowed_target"] == "ml:adaptive_params.model_allocator.learning_weight_policy"
+    assert set(learning_candidate["model_learning_multipliers"]) == {
+        "LightGBM",
+        "XGBoost",
+        "ExtraTrees",
+        "TabM",
+        "GNN",
+        "DLinear",
+        "PatchTST",
+        "iTransformer",
+        "TimesFM",
+    }
+
+    candidate = report["adaptive_params_candidate"]
+    assert candidate["schema_version"] == "adaptive-params-candidate-v1"
+    assert candidate["candidate_type"] == "linucb_bandit_l2_constants"
+    assert candidate["approved"] is False
+    assert candidate["mutation_allowed"] is False
+    assert candidate["production_effect"] is False
+    assert candidate["proposed_production_effect"] == "capped_production_effect"
+    assert candidate["requires_wei_approval"] is True
+    assert candidate["allowed_target"] == "ml:adaptive_params.bandit_l2_constants"
+    assert set(candidate["adaptive_params_patch"]) == {
+        "bandit_loss_thresh_high",
+        "bandit_loss_thresh_med",
+        "bandit_max_mult_high",
+        "bandit_max_mult_med",
+        "bandit_max_mult_low",
+    }

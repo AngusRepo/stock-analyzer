@@ -39,6 +39,8 @@ function replaySummary(report: Record<string, any>, sourceRows: number): string 
   return [
     `linucb_multiplier_replay status=${report.status ?? 'unknown'}`,
     `allowed_use=${report.allowed_use ?? 'unknown'}`,
+    `adaptive_candidate=${report.adaptive_params_candidate?.status ?? 'none'}`,
+    `allocator_candidate=${report.allocator_policy_candidate?.status ?? 'none'}`,
     `source_rows=${sourceRows}`,
     `prepared_rows=${report.prepared_rows ?? 0}`,
     `candidates=${report.candidate_count ?? 0}`,

@@ -84,6 +84,23 @@ void (async () => {
         best_ranked_method: 'NeuralUCB',
         recommended_method: null,
         sample_windows: 10,
+        allocator_policy_candidate: {
+          schema_version: 'allocator-policy-candidate-v1',
+          candidate_type: 'family_allocator_model_weight_multipliers',
+          status: 'candidate_requires_approval',
+          approved: false,
+          mutation_allowed: false,
+          production_effect: false,
+          proposed_production_effect: 'capped_production_effect',
+          allowed_target: 'ml:adaptive_params.model_allocator',
+          model_multiplier_cap: 0.15,
+          model_weight_multipliers: {
+            LightGBM: 1.15,
+            XGBoost: 1.15,
+            ExtraTrees: 1.15,
+            TabM: 0.85,
+          },
+        },
         gates: [{ name: 'min_windows', passed: true }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch
@@ -109,9 +126,12 @@ void (async () => {
       assert(result.production_effect === false, 'replay must be marked non-production')
       assert(result.mutation_allowed === false, 'replay must be marked mutation-forbidden')
       assert(result.real_trading_allowed === false, 'replay must be marked real-trading forbidden')
+      assert(result.allocator_policy_candidate?.status === 'candidate_requires_approval', 'adaptive replay evidence must preserve allocator policy candidate packet')
+      assert(result.summary.includes('allocator_candidate=candidate_requires_approval'), 'summary must expose allocator candidate status for OBS triage')
       assert(writes.some((row) => row.key === 'meta:adaptive_policy_replay:latest'), 'persisted replay must write latest evidence key')
       assert(writes.some((row) => row.key === 'meta:adaptive_policy_replay:2026-06-08'), 'persisted replay must write date evidence key')
       assert(writes.every((row) => row.key.startsWith('meta:adaptive_policy_replay:')), 'adaptive replay must only persist evidence keys')
+      assert(writes.some((row) => JSON.parse(row.value).allocator_policy_candidate?.candidate_type === 'family_allocator_model_weight_multipliers'), 'persisted replay evidence must include allocator candidate packet')
       assert(!writes.some((row) => row.key === 'trading:config' || row.key === 'ml:adaptive_params'), 'adaptive replay must not mutate live config keys')
     } finally {
       globalThis.fetch = originalFetch

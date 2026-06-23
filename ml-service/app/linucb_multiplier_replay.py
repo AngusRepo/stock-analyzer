@@ -30,6 +30,8 @@ from .linucb_bandit import ARM_NAMES, LinUCBBandit, build_context
 
 
 SCHEMA_VERSION = "linucb-multiplier-replay-v1"
+ADAPTIVE_CANDIDATE_SCHEMA_VERSION = "adaptive-params-candidate-v1"
+ALLOCATOR_LEARNING_CANDIDATE_SCHEMA_VERSION = "allocator-learning-policy-candidate-v1"
 ACTIVE_MODEL_NAMES = tuple(name for name in ARM_NAMES if name != "DoNothing")
 BASELINE_BANDIT_L2 = {
     "bandit_loss_thresh_high": 0.60,
@@ -45,6 +47,7 @@ DEFAULT_SEARCH_SPACE = {
     "bandit_max_mult_med": [1.50, 2.00, 2.30],
     "bandit_max_mult_low": [2.00, 2.50, 3.00],
 }
+LINUCB_CANDIDATE_KEYS = tuple(BASELINE_BANDIT_L2)
 
 
 @dataclass(frozen=True)
@@ -300,6 +303,132 @@ def replay_candidate(rows: list[PreparedRow], candidate: dict[str, float], confi
     }
 
 
+def _approval_candidate_status(status: str) -> str:
+    return "candidate_requires_approval" if status == "pass" else "research_only_failed_gate"
+
+
+def _build_adaptive_params_candidate(
+    *,
+    status: str,
+    best: dict[str, Any] | None,
+    baseline: dict[str, Any] | None,
+    gates: list[dict[str, Any]],
+    prepared_rows: int,
+) -> dict[str, Any] | None:
+    if not best or not isinstance(best.get("candidate"), dict):
+        return None
+    patch = {
+        key: round(float(best["candidate"][key]), 6)
+        for key in LINUCB_CANDIDATE_KEYS
+        if key in best["candidate"]
+    }
+    if set(patch) != set(LINUCB_CANDIDATE_KEYS):
+        return None
+    baseline_patch = (
+        dict(baseline.get("candidate") or {})
+        if isinstance(baseline, dict)
+        else {key: round(float(value), 6) for key, value in BASELINE_BANDIT_L2.items()}
+    )
+    return {
+        "schema_version": ADAPTIVE_CANDIDATE_SCHEMA_VERSION,
+        "candidate_type": "linucb_bandit_l2_constants",
+        "source": "linucb_multiplier_replay",
+        "status": _approval_candidate_status(status),
+        "approved": False,
+        "approval_status": "not_submitted",
+        "approved_level": None,
+        "requires_wei_approval": True,
+        "production_effect": False,
+        "proposed_production_effect": "capped_production_effect",
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
+        "allowed_target": "ml:adaptive_params.bandit_l2_constants",
+        "adaptive_params_patch": patch,
+        "baseline_patch": baseline_patch,
+        "effect_policy": {
+            "scope": "linucb_bandit_multiplier_l2_constants",
+            "production_effect": "capped_production_effect",
+            "mutates_trading_config": False,
+            "requires_approved_level": "L3",
+            "numeric_bounds": {
+                "bandit_loss_thresh_high": [0.0, 1.0],
+                "bandit_loss_thresh_med": [0.0, 1.0],
+                "bandit_max_mult_high": [1.0, 2.0],
+                "bandit_max_mult_med": [1.0, 2.5],
+                "bandit_max_mult_low": [1.0, 3.0],
+            },
+        },
+        "evidence": {
+            "prepared_rows": prepared_rows,
+            "selection_score": best.get("selection_score"),
+            "average_reward": best.get("average_reward"),
+            "average_pnl": best.get("average_pnl"),
+            "action_concentration": best.get("action_concentration"),
+            "action_counts": best.get("action_counts"),
+            "gates": gates,
+        },
+    }
+
+
+def _model_learning_multipliers_from_counts(action_counts: dict[str, Any] | None) -> dict[str, float]:
+    counts = {
+        model: int((action_counts or {}).get(model, 0) or 0)
+        for model in ACTIVE_MODEL_NAMES
+    }
+    total = sum(counts.values())
+    if total <= 0:
+        return {model: 1.0 for model in ACTIVE_MODEL_NAMES}
+    equal_share = 1.0 / max(1, len(ACTIVE_MODEL_NAMES))
+    out: dict[str, float] = {}
+    for model, count in counts.items():
+        share = count / total
+        relative_edge = (share - equal_share) / equal_share
+        out[model] = round(1.0 + _clamp(relative_edge, -1.0, 1.0) * 0.50, 6)
+    return out
+
+
+def _build_allocator_learning_policy_candidate(
+    *,
+    status: str,
+    best: dict[str, Any] | None,
+    gates: list[dict[str, Any]],
+    prepared_rows: int,
+) -> dict[str, Any] | None:
+    if not best:
+        return None
+    action_counts = best.get("action_counts")
+    if not isinstance(action_counts, dict):
+        return None
+    policy_id = f"linucb-learning-{str(best.get('selection_score') or 'na')}"
+    return {
+        "schema_version": ALLOCATOR_LEARNING_CANDIDATE_SCHEMA_VERSION,
+        "policy_id": policy_id,
+        "candidate_type": "linucb_model_learning_weight_multipliers",
+        "source": "linucb_multiplier_replay",
+        "status": _approval_candidate_status(status),
+        "approved": False,
+        "approval_status": "not_submitted",
+        "approved_level": None,
+        "requires_wei_approval": True,
+        "production_effect": False,
+        "proposed_production_effect": "learning_weight_only",
+        "mutation_allowed": False,
+        "real_trading_allowed": False,
+        "allowed_target": "ml:adaptive_params.model_allocator.learning_weight_policy",
+        "learning_weight_cap": 0.50,
+        "model_learning_multipliers": _model_learning_multipliers_from_counts(action_counts),
+        "evidence": {
+            "prepared_rows": prepared_rows,
+            "selection_score": best.get("selection_score"),
+            "average_reward": best.get("average_reward"),
+            "average_pnl": best.get("average_pnl"),
+            "action_concentration": best.get("action_concentration"),
+            "action_counts": action_counts,
+            "gates": gates,
+        },
+    }
+
+
 def run_linucb_multiplier_replay(
     rows: Iterable[dict[str, Any]],
     *,
@@ -358,6 +487,19 @@ def run_linucb_multiplier_replay(
         },
     ]
     status = "pass" if all(gate["passed"] for gate in gates) else "fail"
+    adaptive_params_candidate = _build_adaptive_params_candidate(
+        status=status,
+        best=best,
+        baseline=baseline,
+        gates=gates,
+        prepared_rows=len(prepared),
+    )
+    allocator_policy_candidate = _build_allocator_learning_policy_candidate(
+        status=status,
+        best=best,
+        gates=gates,
+        prepared_rows=len(prepared),
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _utc_now(),
@@ -373,6 +515,8 @@ def run_linucb_multiplier_replay(
         "active_models": list(ACTIVE_MODEL_NAMES),
         "baseline": baseline,
         "best_candidate": best["candidate"] if best else None,
+        "adaptive_params_candidate": adaptive_params_candidate,
+        "allocator_policy_candidate": allocator_policy_candidate,
         "candidate_count": len(candidate_list),
         "ranking": ranking,
         "gates": gates,

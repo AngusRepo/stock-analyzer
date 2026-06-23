@@ -63,7 +63,7 @@ def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
     drop_params = captured[2][1]
     assert pass_params[2] == "2330"
     assert pass_params[5] == "pass"
-    assert pass_params[6] == "formal_family_rank_pass"
+    assert pass_params[6] == "formal_family_evidence_pass"
     assert pass_params[8] == 0.81
     assert drop_params[2] == "2317"
     assert drop_params[5] == "drop"
@@ -71,6 +71,8 @@ def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
 
     evidence = json.loads(pass_params[10])
     assert evidence["schema_version"] == "layer3_formal_ml_gate_audit_v1"
+    assert evidence["source"] == "daily_pipeline_v2.apply_core_family_evidence"
+    assert evidence["selection_role"] == "evidence_only_not_capacity_gate"
     assert evidence["target_size"] == 1
     assert evidence["layer2_count"] == 2
     assert evidence["active_families"] == ["tree", "graph", "time_series"]

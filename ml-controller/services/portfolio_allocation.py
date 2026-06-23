@@ -39,7 +39,7 @@ def _expected_return(row: dict[str, Any]) -> float:
         explicit = row.get("predicted_return")
     if explicit is not None:
         return _to_float(explicit, 0.0)
-    return max(0.0, (_score(row) - 50.0) / 5000.0)
+    return 0.0
 
 
 def _sample_variance(values: list[float]) -> float:

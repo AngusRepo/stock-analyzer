@@ -1007,7 +1007,7 @@ class MLPredictionsCache:
 
     confidence is read from `direction_accuracy` column (set at INSERT time
     by recommendation_service to ml result["confidence"], which is the
-    rank_to_signal output for the feature-model ensemble; post-Migration C this
+    score_to_signal output for the feature-model ensemble; post-Migration C this
     is the same value, ensemble_v2.avg_rank delta is small until time-series
     IC accumulates). Stage 4 follow-up may add ensemble_v2_confidence column.
     """

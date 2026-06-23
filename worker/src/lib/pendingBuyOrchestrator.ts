@@ -629,7 +629,7 @@ function applyRecommendationProvenance(buyRecs: BuyRecommendationRow[]): void {
       let provenance: string | null = null
       if (signalSource === 'sparse_tangent_inverse_risk') {
         provenance =
-          `Signal Provenance (sparse tangent): BUY selected by sparse_tangent_inverse_risk allocation after ML family rank (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
+          `Signal Provenance (sparse tangent): BUY selected by sparse_tangent_inverse_risk allocation after ML family evidence (ensemble_v2.signal=${ensembleSignal}, avg_rank=${avgRankText}). ` +
           'Judge on allocation evidence, risk budget and execution feasibility.'
       } else if (/BUY/i.test(rec.signal ?? '') && ensembleSignal !== 'unknown' && !/BUY/i.test(ensembleSignal)) {
         provenance =

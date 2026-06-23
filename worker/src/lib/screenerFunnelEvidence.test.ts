@@ -99,17 +99,23 @@ function assert(condition: unknown, message: string): void {
     {
       symbol: '2330',
       stage: 'layer2_coarse_ml_gate',
-      decision: 'pass',
-      reason_code: 'formal_l2_3ml_coarse_pass',
+      decision: 'observe',
+      reason_code: 'l2_tree_evidence_l3_queue_selected',
       rank: 6,
       score_after: 72,
-      evidence: JSON.stringify({ coarse_ml_queue_size: 80, core_ml_shortlist_size: 35 }),
+      evidence: JSON.stringify({
+        coarse_ml_queue_size: 80,
+        core_ml_shortlist_size: 35,
+        selection_role: 'evidence_only_l3_formal_inference_queue',
+        final_recommendation_gate: false,
+        l3_formal_inference_selected: true,
+      }),
     },
     {
       symbol: '2330',
       stage: 'layer3_formal_ml_gate',
       decision: 'pass',
-      reason_code: 'formal_family_rank_pass',
+      reason_code: 'formal_family_evidence_pass',
       rank: 4,
       score_before: 72,
       score_after: 0.81,
@@ -242,10 +248,13 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.new_strategy_ratio === 1, 'Layer1.5 summary should expose strategy novelty signal')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_rank_ic === 0.12, 'Layer1.5 summary should expose learned RankIC signal')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.schema_version === 'layer2_3ml_coarse_summary_v1', 'Layer2 3ML coarse evidence must expose a stable summary schema')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.decision_policy === 'three_ml_coarse_screen_not_final_ranker', 'Layer2 3ML coarse must not be summarized as final ranking')
+  assert((summary?.evidence.layer2_3ml_coarse as any)?.decision_policy === 'three_ml_coarse_evidence_l3_queue_not_final_ranker', 'Layer2 3ML coarse must not be summarized as final ranking')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.expected_model_count === 3, 'Layer2 3ML coarse should keep the 3-model contract')
   assert(((summary?.evidence.layer2_3ml_coarse as any)?.expected_models ?? []).join(',') === 'LightGBM,XGBoost,ExtraTrees', 'Layer2 3ML coarse model ids must stay visible')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_pass === true, 'Layer2 formal pass must be explicit when controller evidence passes')
+  assert((summary?.evidence.layer2_3ml_coarse as any)?.core_ml_evidence === true, 'Layer2 core ML evidence flag must be explicit when controller evidence exists')
+  assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_evidence === true, 'Layer2 formal evidence must be explicit when controller evidence exists')
+  assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_pass === false, 'Layer2 formal evidence must not be exposed as final recommendation pass')
+  assert((summary?.evidence.layer2_3ml_coarse as any)?.final_recommendation_gate === false, 'Layer2 coarse queue must not be a final recommendation gate')
   assert((summary?.evidence.layer2_coarse_ml as any)?.coarse_ml_queue_size === 80, 'Layer2 coarse ML evidence must be summarized')
   assert((summary?.evidence.layer3_6ml_formal as any)?.schema_version === 'layer3_6ml_formal_summary_v1', 'Layer3 6ML formal evidence must expose a stable summary schema')
   assert((summary?.evidence.layer3_6ml_formal as any)?.decision_policy === 'six_ml_formal_family_vote_not_topk', 'Layer3 formal ML must be family-vote evidence, not top-k')
@@ -455,6 +464,7 @@ function assert(condition: unknown, message: string): void {
 
   const summary = summaries.get('2330')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.worker_seed_only === true, 'worker seed should be explicit in the Layer2 3ML summary')
+  assert((summary?.evidence.layer2_3ml_coarse as any)?.core_ml_evidence === false, 'worker seed must not claim controller core ML evidence')
   assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_pass === false, 'worker seed must not become a formal L2 pass')
   assert(!summary?.evidence.layer2_coarse_ml, 'worker seed must not be summarized as formal L2 coarse ML pass')
   assert((summary?.evidence.layer15_ml_slate_queue as any)?.downstream_stage === 'layer2_coarse_ml_gate', 'L1.5 slate queue should expose the downstream L2 owner')

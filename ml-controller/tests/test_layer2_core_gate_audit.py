@@ -6,7 +6,7 @@ from services import recommendation_service
 from services.recommendation_service import write_layer2_core_gate_audit
 
 
-def test_write_layer2_core_gate_audit_persists_pass_and_drop(monkeypatch):
+def test_write_layer2_core_gate_audit_persists_core_ml_evidence_only_l3_queue(monkeypatch):
     captured = []
 
     def fake_batch_execute(statements):
@@ -18,7 +18,7 @@ def test_write_layer2_core_gate_audit_persists_pass_and_drop(monkeypatch):
     inserted = write_layer2_core_gate_audit(
         predictions={
             "2330": {
-                "core_ml_gate": {
+                "core_ml_evidence": {
                     "selected": True,
                     "rank": 1,
                     "target_size": 1,
@@ -28,7 +28,7 @@ def test_write_layer2_core_gate_audit_persists_pass_and_drop(monkeypatch):
                 },
             },
             "2317": {
-                "core_ml_gate": {
+                "core_ml_evidence": {
                     "selected": False,
                     "rank": 2,
                     "target_size": 1,
@@ -54,16 +54,20 @@ def test_write_layer2_core_gate_audit_persists_pass_and_drop(monkeypatch):
     pass_params = captured[1][1]
     drop_params = captured[2][1]
     assert pass_params[2] == "2330"
-    assert pass_params[5] == "pass"
-    assert pass_params[6] == "l2_tree_rank_pass"
+    assert pass_params[5] == "observe"
+    assert pass_params[6] == "l2_tree_evidence_l3_queue_selected"
     assert pass_params[8] == 0.81
     assert drop_params[2] == "2317"
-    assert drop_params[5] == "drop"
-    assert drop_params[6] == "l2_tree_rank_not_selected"
+    assert drop_params[5] == "observe"
+    assert drop_params[6] == "l2_tree_evidence_not_in_l3_cost_queue"
 
     evidence = json.loads(pass_params[10])
-    assert evidence["schema_version"] == "layer2_core_ml_gate_audit_v1"
-    assert evidence["source"] == "daily_pipeline_v2.node_l2_core_gate"
+    assert evidence["schema_version"] == "layer2_core_ml_evidence_audit_v1"
+    assert evidence["legacy_schema_version"] == "layer2_core_ml_gate_audit_v1"
+    assert evidence["source"] == "daily_pipeline_v2.node_l2_core_evidence"
+    assert evidence["selection_role"] == "evidence_only_l3_formal_inference_queue"
+    assert evidence["final_recommendation_gate"] is False
+    assert evidence["l3_formal_inference_selected"] is True
     assert evidence["target_size"] == 1
     assert evidence["upstream_count"] == 2
     assert evidence["models"] == ["LightGBM", "XGBoost", "ExtraTrees"]

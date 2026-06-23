@@ -96,6 +96,23 @@ def test_sparse_tangent_allocation_returns_cluster_and_covariance_evidence():
     assert result["similarity_evidence"]["pairwise_corr_max"] >= 0
 
 
+def test_sparse_tangent_allocation_does_not_convert_score_to_expected_return():
+    result = allocate_sparse_tangent_with_evidence(
+        [
+            {"symbol": "AAA", "score": 99},
+            {"symbol": "BBB", "score": 98},
+        ],
+        _history(),
+        top_k=2,
+        max_weight=0.8,
+    )
+
+    assert result["weights"] == {}
+    assert result["candidate_pool_policy"] == "full_eligible_pool_before_sparse_selection"
+    assert result["evaluated_candidate_count"] == 2
+    assert result["unallocated_cash_weight"] == 1.0
+
+
 def test_hdbscan_research_audit_is_shadow_only_and_not_a_selector():
     result = hdbscan_research_audit(
         [

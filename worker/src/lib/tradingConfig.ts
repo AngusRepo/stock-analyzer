@@ -284,7 +284,7 @@ export interface TradingConfig {
   // to signal="BUY" regardless of absolute threshold (industry-standard
   // top-K selection for compressed-distribution regression outputs).
   //
-  // Threshold schema mirrors ml-service/app/ensemble.rank_to_signal kwargs so
+  // Threshold schema mirrors ml-service/app/ensemble.score_to_signal kwargs so
   // Optuna search can tune both paths uniformly in future (#28b Tier 1).
   ensemble_v2: {
     strongBuyThreshold: number       // 絕對 STRONG_BUY 門檻（預設 0.85）
@@ -292,7 +292,7 @@ export interface TradingConfig {
     sellThreshold: number            // 絕對 SELL 門檻（預設 0.30）
     strongSellThreshold: number      // 絕對 STRONG_SELL 門檻（預設 0.15）
     topKOverrideEnabled: boolean     // Top-K 補救開關（預設 false，legacy rollback only）
-    allowLegacyTopKOverride: boolean // rollback-only guard; sparse tangent is production owner
+    allowLegacyTopKOverride: boolean // retired compatibility guard; sparse allocator is production owner
     topKCount: number                // 強制 BUY 的 top-K 數（預設 3，對齊 ranking.topK）
     topKConfidenceOverride: number   // Top-K 強制 BUY 時的 confidence（預設 0.72）
   }

@@ -407,7 +407,7 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
 
     When ensemble_v2 is enabled and present, downstream scoring/reasoning/storage
     should read signal/confidence/forecast from ensemble_v2 instead of the legacy
-    rank_to_signal path. This keeps filter, score, and displayed signal aligned.
+    score_to_signal path. This keeps filter, score, and displayed signal aligned.
     """
     if not ml:
         return {
@@ -455,7 +455,7 @@ def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | No
 
     Returns the signal string (uppercase) used for downstream BUY/SELL filter.
     If ensemble_v2 absent or use_ensemble_v2=False → falls back to legacy
-    feature-model rank_to_signal output. When time-series models have
+    feature-model score_to_signal output. When time-series models have
     no IC data yet, ensemble_v2 weight for them = 0 → ensemble_v2.signal is
     mathematically equivalent to legacy signal, so migration is no-op until
     IC tracker accumulates time-series IC (Stage 2 cron, ~3-4 weeks).
@@ -608,6 +608,11 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
                 name for name in (ev2.get("contributing_models") or [])
                 if name in tracked
             ],
+            "allocatorLearningLedger": (
+                ev2.get("allocator_learning_ledger")
+                if isinstance(ev2.get("allocator_learning_ledger"), dict)
+                else None
+            ),
             "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
         }
 
@@ -663,6 +668,11 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         "source": ev2.get("signal_source") or (ml or {}).get("signal_source") or "unknown",
         "signalRaw": ev2.get("signal_raw") or (ml or {}).get("signal_raw"),
         "contributingModels": ev2.get("contributing_models") or [],
+        "allocatorLearningLedger": (
+            ev2.get("allocator_learning_ledger")
+            if isinstance(ev2.get("allocator_learning_ledger"), dict)
+            else None
+        ),
         "familyVote": ev2.get("family_vote") if isinstance(ev2.get("family_vote"), dict) else None,
     }
 
@@ -1202,6 +1212,49 @@ def _latest_broker_chip(chips: list[dict]) -> dict:
     return {}
 
 
+def _broker_chip_seed40(
+    *,
+    broker_net_amount_5d_billion: float,
+    broker_count_latest: Any = None,
+    concentration_latest: Any = None,
+) -> float:
+    amount = float(broker_net_amount_5d_billion or 0.0) * 1e8
+    if amount > 0:
+        amount_score = max(4.0, min(18.0, math.log10(1 + abs(amount) / 1_000_000) * 4.5))
+        intensity_score = max(0.0, min(14.0, float(broker_net_amount_5d_billion or 0.0) * 80.0))
+        broker_count = _float_or_none(broker_count_latest)
+        breadth_score = 3.0 if broker_count is None else max(1.0, min(6.0, math.log2(max(1.0, broker_count)) * 1.2))
+        concentration = _float_or_none(concentration_latest)
+        concentration_penalty = 0.0
+        if concentration is not None:
+            if concentration > 0.85:
+                concentration_penalty = 5.0
+            elif concentration > 0.65:
+                concentration_penalty = 3.0
+        score = amount_score + intensity_score + breadth_score - concentration_penalty
+    elif amount > -1_000_000:
+        score = 2.0
+    else:
+        sell_pressure = max(2.0, min(10.0, math.log10(1 + abs(amount) / 1_000_000) * 2.5))
+        score = max(0.0, 6.0 - sell_pressure)
+    return _round1(max(0.0, min(40.0, score)))
+
+
+def _canonical_chip_evidence_status(
+    *,
+    broker_rows: int,
+    broker_net_amount_5d_billion: float,
+    broker_seed40: float,
+) -> tuple[str, str]:
+    if broker_rows <= 0:
+        return "missing", "broker_missing_or_not_materialized"
+    if broker_net_amount_5d_billion > 0 and broker_seed40 > 0:
+        return "present_bullish", "materialized_bullish_broker_chip_evidence"
+    if broker_net_amount_5d_billion < 0:
+        return "present_bearish", "materialized_bearish_broker_chip_evidence"
+    return "present_neutral", "materialized_neutral_broker_chip_evidence"
+
+
 def _format_abs_cash_billion(value: float) -> str:
     abs_value = abs(value)
     if 0 < abs_value < 0.01:
@@ -1504,13 +1557,6 @@ def filter_and_score_recommendations(
                 except Exception as e:
                     logger.debug(f"[reco] persona_score failed for {symbol}: {e}")
 
-        total_score = round((
-            score_seed_inputs["chipFlowSeed40"]
-            + score_seed_inputs["technicalSeed30"]
-            + score_seed_inputs["mlEdgeSeed30"]
-            + score_seed_inputs["personaAlphaSeed"]
-        ) * 10) / 10
-
         payload = payload_by_sym.get(symbol, {})
         raw_stock_meta = payload.get("stock_meta", {}) if payload else {}
         if not raw_stock_meta:
@@ -1549,15 +1595,56 @@ def filter_and_score_recommendations(
         )
         chip_evidence = None
         if broker_rows > 0:
+            broker_seed40 = _broker_chip_seed40(
+                broker_net_amount_5d_billion=broker_net_amount_5d,
+                broker_count_latest=latest_broker.get("broker_count"),
+                concentration_latest=latest_broker.get("broker_concentration"),
+            )
+            broker_evidence_status, evidence_status = _canonical_chip_evidence_status(
+                broker_rows=broker_rows,
+                broker_net_amount_5d_billion=broker_net_amount_5d,
+                broker_seed40=broker_seed40,
+            )
+            previous_chip_seed40 = float(score_seed_inputs["chipFlowSeed40"] or 0.0)
+            if broker_seed40 > previous_chip_seed40:
+                score_seed_inputs["chipFlowSeed40"] = broker_seed40
             chip_evidence = {
+                "schema_version": "canonical_chip_evidence_v2",
+                "evidence_status": evidence_status,
+                "evidenceStatus": evidence_status,
+                "brokerEvidenceStatus": broker_evidence_status,
+                "scoring_policy": "max_existing_screener_or_broker_flow_seed",
+                "scoringPolicy": "max_existing_screener_or_broker_flow_seed",
                 "source": latest_broker.get("chip_source") or "finlab.rotc_broker_transactions",
                 "source_date": latest_broker.get("date"),
+                "sourceDate": latest_broker.get("date"),
+                "brokerFlowUsed": True,
                 "broker_net_amount_5d_billion": broker_net_amount_5d,
                 "broker_net_shares_5d": broker_net_shares_5d,
                 "broker_count_latest": latest_broker.get("broker_count"),
                 "concentration_latest": latest_broker.get("broker_concentration"),
+                "broker_chip_seed40": broker_seed40,
+                "previous_chip_seed40": previous_chip_seed40,
+                "chip_seed_override_applied": broker_seed40 > previous_chip_seed40,
                 "as_of_date": latest_broker.get("as_of_date"),
             }
+        else:
+            chip_evidence = {
+                "schema_version": "canonical_chip_evidence_v2",
+                "evidence_status": "broker_missing_or_not_materialized",
+                "evidenceStatus": "broker_missing_or_not_materialized",
+                "brokerEvidenceStatus": "missing",
+                "scoring_policy": "existing_screener_chip_seed_only",
+                "scoringPolicy": "existing_screener_chip_seed_only",
+                "brokerFlowUsed": False,
+            }
+
+        total_score = round((
+            score_seed_inputs["chipFlowSeed40"]
+            + score_seed_inputs["technicalSeed30"]
+            + score_seed_inputs["mlEdgeSeed30"]
+            + score_seed_inputs["personaAlphaSeed"]
+        ) * 10) / 10
 
         # ML model votes from prediction
         ml_models_total = 0
@@ -1782,38 +1869,58 @@ def build_return_history_from_payloads(payloads: list[dict], *, lookback: int | 
     return history
 
 
+def apply_core_ml_evidence(
+    recommendations: list[dict],
+    predictions: dict[str, dict],
+    *,
+    fallback_size: int | None = None,
+) -> list[dict]:
+    """Attach Layer 2 tree evidence without gating sparse allocator input."""
+    enriched: list[dict] = []
+    for row in recommendations:
+        row = dict(row)
+        evidence = (
+            (predictions.get(str(row.get("symbol") or "")) or {}).get("core_ml_evidence")
+            or (predictions.get(str(row.get("symbol") or "")) or {}).get("core_ml_gate")
+            or {}
+        )
+        if isinstance(evidence, dict) and evidence:
+            evidence = {
+                **evidence,
+                "selection_role": evidence.get("selection_role") or "evidence_only_l3_formal_inference_queue",
+                "final_recommendation_gate": False,
+            }
+            row["core_ml_evidence"] = evidence
+            row["core_ml_gate"] = evidence
+            row["watch_points"] = [
+                *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
+                (
+                    "core_ml_evidence:"
+                    f"rank={evidence.get('rank')}/{evidence.get('target_size')}:"
+                    f"l3_queue={bool(evidence.get('l3_formal_inference_selected', evidence.get('selected')))}"
+                ),
+            ]
+        else:
+            row["watch_points"] = [
+                *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
+                "core_ml_evidence:missing_l2_tree_prediction",
+            ]
+        enriched.append(row)
+    return enriched
+
+
 def apply_core_ml_gate(
     recommendations: list[dict],
     predictions: dict[str, dict],
     *,
     fallback_size: int | None = None,
 ) -> list[dict]:
-    """Keep only rows selected by the Layer 2 coarse ML gate."""
-    selected_ranks: dict[str, int] = {}
-    for symbol, pred in (predictions or {}).items():
-        gate = pred.get("core_ml_gate") if isinstance(pred, dict) else None
-        if not isinstance(gate, dict) or not gate.get("selected"):
-            continue
-        try:
-            rank = int(gate.get("rank") or 999_999)
-        except (TypeError, ValueError):
-            rank = 999_999
-        selected_ranks[str(symbol)] = rank
-    if not selected_ranks:
-        return []
-
-    gated = [
-        row for row in recommendations
-        if str(row.get("symbol") or "") in selected_ranks
-    ]
-    for row in gated:
-        gate = (predictions.get(str(row.get("symbol") or "")) or {}).get("core_ml_gate") or {}
-        row["core_ml_gate"] = gate
-        row["watch_points"] = [
-            *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
-            f"core_ml_gate:{gate.get('rank')}/{gate.get('target_size')}",
-        ]
-    return sorted(gated, key=lambda row: selected_ranks.get(str(row.get("symbol") or ""), 999_999))
+    """Deprecated alias for apply_core_ml_evidence; no sparse-allocation gate."""
+    return apply_core_ml_evidence(
+        recommendations,
+        predictions,
+        fallback_size=fallback_size,
+    )
 
 
 _CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
@@ -1897,12 +2004,12 @@ def _positive_lifecycle_weights(prediction: dict) -> dict[str, float] | None:
     return None
 
 
-def build_core_family_vote(
+def build_core_family_evidence(
     prediction: dict | None,
     *,
     require_lifecycle_weights: bool = False,
 ) -> dict[str, Any]:
-    """Layer 3 formal family vote from lifecycle-positive production outputs."""
+    """Layer 3 formal family evidence from lifecycle-positive production outputs."""
     pred = prediction if isinstance(prediction, dict) else {}
     lifecycle_weights = _positive_lifecycle_weights(pred)
     families: dict[str, dict[str, Any]] = {}
@@ -1975,8 +2082,9 @@ def build_core_family_vote(
 
     family_score = sum(family_scores) / len(family_scores) if family_scores else 0.0
     return {
-        "schema_version": "core_family_vote_v1",
-        "rank_source": "formal_core_family_vote",
+        "schema_version": "core_family_evidence_v1",
+        "evidence_source": "formal_core_family_evidence",
+        "rank_source": "deprecated_formal_core_family_vote",
         "family_score": round(family_score, 6),
         "active_family_count": len(active_families),
         "active_families": active_families,
@@ -1993,11 +2101,28 @@ def build_core_family_vote(
     }
 
 
-def _merge_core_family_vote_evidence(row: dict, vote: dict[str, Any], rank: int, target_size: int) -> None:
-    row["core_family_vote"] = vote
+def build_core_family_vote(
+    prediction: dict | None,
+    *,
+    require_lifecycle_weights: bool = False,
+) -> dict[str, Any]:
+    """Backward-compatible alias; new callers should use core family evidence."""
+    return build_core_family_evidence(
+        prediction,
+        require_lifecycle_weights=require_lifecycle_weights,
+    )
+
+
+def _merge_core_family_evidence(row: dict, evidence: dict[str, Any]) -> None:
+    row["core_family_evidence"] = evidence
+    row["core_family_vote"] = evidence
     row["watch_points"] = [
         *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
-        f"core_family_rank:{rank}/{target_size}:score={vote.get('family_score')}",
+        (
+            "core_family_evidence:"
+            f"families={evidence.get('active_family_count')}:"
+            f"score={evidence.get('family_score')}"
+        ),
     ]
 
     summary = row.get("ml_vote_summary")
@@ -2008,23 +2133,71 @@ def _merge_core_family_vote_evidence(row: dict, vote: dict[str, Any], rank: int,
             summary = {"text": row.get("ml_vote_summary")}
     if not isinstance(summary, dict):
         summary = {}
-    summary["coreFamilyVote"] = {
-        "schema_version": vote.get("schema_version"),
-        "family_score": vote.get("family_score"),
-        "active_family_count": vote.get("active_family_count"),
-        "active_families": vote.get("active_families"),
-        "effective_model_vote_count": vote.get("effective_model_vote_count"),
-        "duplicate_model_groups": vote.get("duplicate_model_groups"),
-        "inactive_formal_models": vote.get("inactive_formal_models"),
+    evidence_summary = {
+        "schema_version": evidence.get("schema_version"),
+        "family_score": evidence.get("family_score"),
+        "active_family_count": evidence.get("active_family_count"),
+        "active_families": evidence.get("active_families"),
+        "effective_model_vote_count": evidence.get("effective_model_vote_count"),
+        "duplicate_model_groups": evidence.get("duplicate_model_groups"),
+        "inactive_formal_models": evidence.get("inactive_formal_models"),
+        "selection_role": "evidence_only_not_capacity_gate",
     }
+    summary["coreFamilyEvidence"] = evidence_summary
+    summary["coreFamilyVote"] = evidence_summary
     row["ml_vote_summary"] = summary
 
     components = row.get("score_components")
     if isinstance(components, str):
         components = _parse_score_components_payload(components) or {"raw": row.get("score_components")}
     if isinstance(components, dict):
-        components["coreFamilyVote"] = vote
+        components["coreFamilyEvidence"] = evidence
+        components["coreFamilyVote"] = evidence
         row["score_components"] = components
+
+
+def apply_core_family_evidence(
+    recommendations: list[dict],
+    predictions: dict[str, dict],
+    *,
+    target_size: int | None = None,
+    min_active_families: int = 2,
+    strict: bool = True,
+    require_lifecycle_weights: bool = False,
+) -> list[dict]:
+    """Attach Layer 3 family evidence without ranking or truncating the candidate pool."""
+    if not recommendations:
+        return []
+
+    enriched: list[dict] = []
+    insufficient: list[str] = []
+    for row in recommendations:
+        symbol = str(row.get("symbol") or "")
+        pred = predictions.get(symbol) if isinstance(predictions, dict) else None
+        evidence = build_core_family_evidence(pred, require_lifecycle_weights=require_lifecycle_weights)
+        evidence["min_active_families"] = int(min_active_families)
+        evidence["evidence_status"] = (
+            "sufficient_family_breadth"
+            if int(evidence.get("active_family_count") or 0) >= int(min_active_families)
+            else "insufficient_family_breadth"
+        )
+        evidence["selection_role"] = "evidence_only_not_capacity_gate"
+        if isinstance(pred, dict):
+            pred["core_family_evidence"] = evidence
+            pred["core_family_vote"] = evidence
+        if int(evidence.get("active_family_count") or 0) < min_active_families:
+            insufficient.append(symbol)
+        enriched_row = {**row, "core_family_evidence": evidence, "core_family_vote": evidence}
+        _merge_core_family_evidence(enriched_row, evidence)
+        enriched.append(enriched_row)
+
+    if strict and insufficient and len(insufficient) == len(recommendations):
+        logger.warning(
+            "core_family_evidence_all_insufficient: %s/%s rows lack production family breadth",
+            len(insufficient),
+            len(recommendations),
+        )
+    return enriched
 
 
 def apply_core_family_rank(
@@ -2036,43 +2209,15 @@ def apply_core_family_rank(
     strict: bool = True,
     require_lifecycle_weights: bool = False,
 ) -> list[dict]:
-    """Rank Layer 2 shortlist with formal family votes and persist evidence."""
-    if not recommendations:
-        return []
-    safe_target = target_size or len(recommendations)
-    safe_target = max(1, min(80, int(safe_target)))
-
-    ranked_rows: list[tuple[float, float, dict]] = []
-    insufficient: list[str] = []
-    for row in recommendations:
-        symbol = str(row.get("symbol") or "")
-        pred = predictions.get(symbol) if isinstance(predictions, dict) else None
-        vote = build_core_family_vote(pred, require_lifecycle_weights=require_lifecycle_weights)
-        if isinstance(pred, dict):
-            pred["core_family_vote"] = vote
-        if int(vote.get("active_family_count") or 0) < min_active_families:
-            insufficient.append(symbol)
-            continue
-        ranked_rows.append((
-            float(vote.get("family_score") or 0.0),
-            float(row.get("score") or 0.0),
-            {**row, "core_family_vote": vote},
-        ))
-
-    if strict and insufficient and len(insufficient) == len(recommendations):
-        raise ValueError(
-            "core_family_rank_requires_2_active_families: "
-            f"{len(insufficient)}/{len(recommendations)} rows lack production family breadth"
-        )
-    if not ranked_rows:
-        return []
-
-    ranked_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    selected = [row for _, _, row in ranked_rows[:safe_target]]
-    for idx, row in enumerate(selected, start=1):
-        row["rank"] = idx
-        _merge_core_family_vote_evidence(row, row["core_family_vote"], idx, safe_target)
-    return selected
+    """Deprecated alias for apply_core_family_evidence; no rank/capacity cutoff."""
+    return apply_core_family_evidence(
+        recommendations,
+        predictions,
+        target_size=target_size,
+        min_active_families=min_active_families,
+        strict=strict,
+        require_lifecycle_weights=require_lifecycle_weights,
+    )
 
 
 def _allocation_method(policy: dict) -> str:
@@ -2637,7 +2782,8 @@ def write_predictions_to_d1(
             "signal_source": ev2_signal_source if (use_ev2 and ev2_signal) else "legacy",
             "alpha_context": data.get("alpha_context"),
             "alpha_allocation": data.get("alpha_allocation"),
-            "core_ml_gate": data.get("core_ml_gate"),
+            "core_ml_evidence": data.get("core_ml_evidence") or data.get("core_ml_gate"),
+            "core_ml_gate": data.get("core_ml_gate") or data.get("core_ml_evidence"),
             "core_family_vote": data.get("core_family_vote"),
             "gnn": data.get("gnn"),
             "timesfm": data.get("timesfm"),
@@ -2803,25 +2949,29 @@ def write_layer3_formal_gate_audit(
         vote = {}
         ev2 = {}
         if isinstance(pred, dict):
-            vote = pred.get("core_family_vote") if isinstance(pred.get("core_family_vote"), dict) else {}
+            vote = pred.get("core_family_evidence") if isinstance(pred.get("core_family_evidence"), dict) else {}
+            if not vote:
+                vote = pred.get("core_family_vote") if isinstance(pred.get("core_family_vote"), dict) else {}
             ev2 = pred.get("ensemble_v2") if isinstance(pred.get("ensemble_v2"), dict) else {}
-        decision = "pass" if final_row else "drop"
         active_family_count = int((vote or {}).get("active_family_count") or 0)
-        if decision == "pass":
-            reason_code = "formal_family_rank_pass"
-        elif not isinstance(pred, dict):
+        if not isinstance(pred, dict):
+            decision = "drop"
             reason_code = "formal_family_prediction_missing"
         elif not ev2:
+            decision = "drop"
             reason_code = "formal_family_ensemble_v2_missing"
         elif active_family_count < 2:
+            decision = "drop"
             reason_code = "formal_family_insufficient_active_families"
         else:
-            reason_code = "formal_family_rank_not_selected"
+            decision = "pass"
+            reason_code = "formal_family_evidence_pass"
 
         evidence = {
             "schema_version": "layer3_formal_ml_gate_audit_v1",
-            "source": "daily_pipeline_v2.apply_core_family_rank",
+            "source": "daily_pipeline_v2.apply_core_family_evidence",
             "target_size": target_size,
+            "selection_role": "evidence_only_not_capacity_gate",
             "layer2_count": len(symbols),
             "active_family_count": active_family_count,
             "active_families": (vote or {}).get("active_families") or [],
@@ -2886,7 +3036,7 @@ def write_layer2_core_gate_audit(
     screener_run_id: str | None,
     target_size: int | None = None,
 ) -> int:
-    """Persist formal L2 pass/drop evidence into screener_funnel_items."""
+    """Persist formal L2 tree evidence and L3 inference queue membership."""
     run_id = str(screener_run_id or "").strip()
     if not run_id:
         logger.warning("[recommendation_service] L2 audit skipped: screener_run_id missing")
@@ -2902,13 +3052,13 @@ def write_layer2_core_gate_audit(
         clean_symbol = str(symbol or "").strip()
         if not clean_symbol or not isinstance(pred, dict):
             continue
-        gate = pred.get("core_ml_gate")
-        if not isinstance(gate, dict):
+        evidence_payload = pred.get("core_ml_evidence") or pred.get("core_ml_gate")
+        if not isinstance(evidence_payload, dict):
             continue
-        entries.append((clean_symbol, gate, source_by_symbol.get(clean_symbol) or {"symbol": clean_symbol}))
+        entries.append((clean_symbol, evidence_payload, source_by_symbol.get(clean_symbol) or {"symbol": clean_symbol}))
 
     if not entries:
-        logger.info("[recommendation_service] L2 audit skipped: no core_ml_gate payloads")
+        logger.info("[recommendation_service] L2 audit skipped: no core_ml_evidence payloads")
         return 0
 
     def _rank_key(item: tuple[str, dict, dict]) -> tuple[int, str]:
@@ -2927,21 +3077,25 @@ def write_layer2_core_gate_audit(
 
     for idx, (symbol, gate, source_row) in enumerate(sorted(entries, key=_rank_key), start=1):
         selected = bool(gate.get("selected"))
-        decision = "pass" if selected else "drop"
+        decision = "observe"
         if selected:
-            reason_code = "l2_tree_rank_pass"
+            reason_code = "l2_tree_evidence_l3_queue_selected"
         elif gate.get("score") is None:
-            reason_code = "l2_tree_score_missing"
+            reason_code = "l2_tree_evidence_score_missing"
         else:
-            reason_code = "l2_tree_rank_not_selected"
+            reason_code = "l2_tree_evidence_not_in_l3_cost_queue"
         evidence = {
-            "schema_version": "layer2_core_ml_gate_audit_v1",
-            "source": "daily_pipeline_v2.node_l2_core_gate",
+            "schema_version": "layer2_core_ml_evidence_audit_v1",
+            "legacy_schema_version": "layer2_core_ml_gate_audit_v1",
+            "source": "daily_pipeline_v2.node_l2_core_evidence",
+            "selection_role": "evidence_only_l3_formal_inference_queue",
+            "final_recommendation_gate": False,
             "target_size": target_size if target_size is not None else gate.get("target_size"),
             "upstream_count": gate.get("upstream_count"),
             "rank": gate.get("rank"),
             "score": gate.get("score"),
             "models": gate.get("models") if isinstance(gate.get("models"), list) else [],
+            "l3_formal_inference_selected": bool(gate.get("l3_formal_inference_selected", gate.get("selected"))),
         }
         try:
             score_before = float(source_row.get("score")) if source_row.get("score") is not None else None

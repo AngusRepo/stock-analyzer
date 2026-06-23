@@ -71,3 +71,26 @@ def test_adaptive_meta_policy_replay_compares_all_candidates_read_only():
     assert set(report["methods"]) == {"LinUCB", "NeuralUCB", "NeuralTS", "NeuCB"}
     assert [row["method"] for row in report["ranking"]]
     assert report["baselines"]["best_fixed_hindsight"]["note"].startswith("hindsight")
+
+    candidate = report["allocator_policy_candidate"]
+    assert candidate["schema_version"] == "allocator-policy-candidate-v1"
+    assert candidate["candidate_type"] == "family_allocator_model_weight_multipliers"
+    assert candidate["approved"] is False
+    assert candidate["mutation_allowed"] is False
+    assert candidate["production_effect"] is False
+    assert candidate["proposed_production_effect"] == "capped_production_effect"
+    assert candidate["requires_wei_approval"] is True
+    assert candidate["allowed_target"] == "ml:adaptive_params.model_allocator"
+    assert candidate["model_multiplier_cap"] == 0.15
+    assert set(candidate["model_weight_multipliers"]) == {
+        "LightGBM",
+        "XGBoost",
+        "ExtraTrees",
+        "TabM",
+        "GNN",
+        "DLinear",
+        "PatchTST",
+        "iTransformer",
+        "TimesFM",
+    }
+    assert all(0.85 <= mult <= 1.15 for mult in candidate["model_weight_multipliers"].values())

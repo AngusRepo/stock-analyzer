@@ -626,7 +626,7 @@ def merge_with_time_series(
     return merged, weights
 
 
-def rank_to_signal(
+def score_to_signal(
     rank_scores: dict[str, float],
     current_price: float,
     atr: float,
@@ -761,3 +761,8 @@ def rank_to_signal(
         reasoning=reasoning,
         signal_strength=strength,
     )
+
+
+def rank_to_signal(*args: Any, **kwargs: Any) -> EnsembleResult:
+    """Deprecated compatibility alias for score_to_signal."""
+    return score_to_signal(*args, **kwargs)

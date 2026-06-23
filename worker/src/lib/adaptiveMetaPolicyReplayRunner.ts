@@ -178,6 +178,7 @@ function replaySummary(report: Record<string, any>, sourceRows: number): string 
   return [
     `adaptive_meta_replay status=${report.status ?? 'unknown'}`,
     `allowed_use=${report.allowed_use ?? 'unknown'}`,
+    `allocator_candidate=${report.allocator_policy_candidate?.status ?? 'none'}`,
     `best=${report.best_ranked_method ?? 'none'}`,
     `recommended=${report.recommended_method ?? 'none'}`,
     `source_rows=${sourceRows}`,

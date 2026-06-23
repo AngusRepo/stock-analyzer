@@ -76,7 +76,28 @@ def test_generate_recommendation_reasons_prompt_uses_canonical_payload_and_trade
     captured: dict[str, str] = {}
 
     async def fake_call_gemini(user_prompt: str, n_candidates: int, timeout: float):
-        captured["prompt"] = user_prompt
+        if "invalid_items=" not in user_prompt:
+            captured["prompt"] = user_prompt
+        if "invalid_items=" in user_prompt:
+            captured["repair_prompt"] = user_prompt
+            return json.dumps([
+                {
+                    "symbol": "2330",
+                    "reason": "Score V2 reason",
+                    "tradePlan": {
+                        "bias": "bullish",
+                        "entry": "頧撥蝣箄?",
+                        "risk": "use system stop",
+                        "target": "take profit near resistance",
+                        "invalidation": "breaks support",
+                        "positionSizing": "cap by allocator weight",
+                        "timeHorizon": "3-10 sessions",
+                        "catalyst": "chip and volume continuation",
+                        "noTradeCondition": "skip gap-up chase",
+                    },
+                    "watchPoints": ["risk"],
+                }
+            ])
         return json.dumps([
             {
                 "symbol": "2330",
@@ -93,8 +114,12 @@ def test_generate_recommendation_reasons_prompt_uses_canonical_payload_and_trade
 
     assert result["2330"]["reason"] == "Score V2 reason"
     assert result["2330"]["provider"] == "gemini"
+    assert result["2330"]["tradePlanStatus"] == "valid"
+    assert result["2330"]["tradePlanRepairAttempted"] is True
     assert result["2330"]["tradePlan"]["entry"] == "轉強確認"
     assert "canonical_candidate_payload=" in captured["prompt"]
+    assert "tradePlan_required_fields=" in captured["prompt"]
+    assert "invalid_items=" in captured["repair_prompt"]
     assert '"schema_version":"stockvision-canonical-candidate-payload-v1"' in captured["prompt"]
     assert '"score_components"' in captured["prompt"]
     assert '"finalScore":88' in captured["prompt"]

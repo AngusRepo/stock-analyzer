@@ -8,6 +8,17 @@ _SRC_KEY_MODEL = (
     ("patchtst", "PatchTST"),
     ("itransformer", "iTransformer"),
 )
+_FORMAL_ALPHA_MODELS = (
+    "LightGBM",
+    "XGBoost",
+    "ExtraTrees",
+    "TabM",
+    "GNN",
+    "DLinear",
+    "PatchTST",
+    "iTransformer",
+)
+_DIRECT_ALPHA_BLOCKED_MODELS = {"TimesFM"}
 _MODEL_STATUS_ALLOWED = {"active", "degraded", "challenger", "retired"}
 
 
@@ -102,6 +113,195 @@ def _cold_start_weight(status: str, degraded_dampening: float) -> float:
     return 1.0
 
 
+def _allocator_policy_from_cfg(ev2_cfg: dict | None) -> dict:
+    cfg = ev2_cfg or {}
+    policy = cfg.get("allocatorPolicy") or cfg.get("modelAllocatorPolicy") or {}
+    return policy if isinstance(policy, dict) else {}
+
+
+def _allocator_learning_policy_from_cfg(ev2_cfg: dict | None) -> dict:
+    cfg = ev2_cfg or {}
+    policy = (
+        cfg.get("allocatorLearningPolicy")
+        or cfg.get("modelAllocatorLearningPolicy")
+        or cfg.get("learningPolicy")
+        or {}
+    )
+    if isinstance(policy, dict):
+        return policy
+    allocator_policy = _allocator_policy_from_cfg(cfg)
+    nested = allocator_policy.get("learning_weight_policy") if isinstance(allocator_policy, dict) else None
+    return nested if isinstance(nested, dict) else {}
+
+
+def _allocator_policy_approved(policy: dict) -> bool:
+    status = str(policy.get("status") or policy.get("approval_status") or "").lower()
+    effect = str(policy.get("production_effect") or policy.get("effect") or "").lower()
+    approved_level = str(policy.get("approved_level") or policy.get("level") or "").upper()
+    return (
+        policy.get("approved") is True
+        or status in {"approved", "production_approved", "capped_production_approved"}
+        or approved_level in {"L3", "L4"}
+    ) and effect in {"capped", "capped_production_effect", "capped_production", "true", "1"}
+
+
+def _allocator_policy_multipliers(policy: dict) -> dict[str, float]:
+    raw = (
+        policy.get("model_weight_multipliers")
+        or policy.get("multipliers")
+        or policy.get("modelMultipliers")
+        or {}
+    )
+    return raw if isinstance(raw, dict) else {}
+
+
+def _allocator_learning_multipliers(policy: dict) -> dict[str, float]:
+    raw = (
+        policy.get("model_learning_multipliers")
+        or policy.get("learning_weight_multipliers")
+        or policy.get("modelLearningMultipliers")
+        or {}
+    )
+    return raw if isinstance(raw, dict) else {}
+
+
+def _apply_allocator_policy(weights: dict[str, float], ev2_cfg: dict | None) -> tuple[dict[str, float], dict]:
+    policy = _allocator_policy_from_cfg(ev2_cfg)
+    if not policy:
+        return weights, {"applied": False, "reason": "missing_allocator_policy"}
+    if not _allocator_policy_approved(policy):
+        return weights, {"applied": False, "reason": "allocator_policy_not_approved_for_capped_production"}
+    try:
+        cap = abs(float(policy.get("production_cap", policy.get("model_multiplier_cap", 0.15)) or 0.15))
+    except (TypeError, ValueError):
+        cap = 0.15
+    cap = max(0.0, min(0.15, cap))
+    low = 1.0 - cap
+    high = 1.0 + cap
+    multipliers = _allocator_policy_multipliers(policy)
+    adjusted: dict[str, float] = {}
+    applied: dict[str, float] = {}
+    for name, weight in weights.items():
+        try:
+            raw_mult = float(multipliers.get(name, 1.0))
+        except (TypeError, ValueError):
+            raw_mult = 1.0
+        mult = max(low, min(high, raw_mult))
+        adjusted[name] = max(0.0, float(weight or 0.0) * mult)
+        if abs(mult - 1.0) > 1e-12:
+            applied[name] = round(mult, 6)
+    return adjusted, {
+        "applied": bool(applied),
+        "effect": "capped_production_effect",
+        "cap": cap,
+        "multipliers": applied,
+        "policy_id": policy.get("policy_id") or policy.get("id"),
+        "source": policy.get("source") or "adaptive_params.model_allocator",
+    }
+
+
+def _build_allocator_learning_ledger(
+    *,
+    merged: dict[str, float],
+    model_status: dict,
+    ic_weights: dict,
+    base_weights: dict[str, float],
+    production_weights: dict[str, float],
+    allocator_policy_effect: dict,
+    ev2_cfg: dict | None,
+) -> dict:
+    cfg = ev2_cfg or {}
+    learning_policy = _allocator_learning_policy_from_cfg(cfg)
+    learning_multipliers = _allocator_learning_multipliers(learning_policy)
+    try:
+        learning_cap = abs(float(learning_policy.get("learning_weight_cap", 0.50) or 0.50))
+    except (TypeError, ValueError):
+        learning_cap = 0.50
+    learning_cap = max(0.0, min(1.0, learning_cap))
+    low = 1.0 - learning_cap
+    high = 1.0 + learning_cap
+    try:
+        learning_floor = float(cfg.get("learningWeightFloor", 0.01) or 0.01)
+    except (TypeError, ValueError):
+        learning_floor = 0.01
+    learning_floor = max(0.0, min(0.05, learning_floor))
+
+    models = list(dict.fromkeys([*_FORMAL_ALPHA_MODELS, *merged.keys(), *_DIRECT_ALPHA_BLOCKED_MODELS]))
+    states: dict[str, dict] = {}
+    applied_learning: dict[str, float] = {}
+    for name in models:
+        status = _weight_status(model_status, name)
+        rank_score = merged.get(name)
+        production_weight = max(0.0, float(production_weights.get(name, 0.0) or 0.0))
+        base_weight = max(0.0, float(base_weights.get(name, 0.0) or 0.0))
+        blocked_direct_alpha = name in _DIRECT_ALPHA_BLOCKED_MODELS
+        if blocked_direct_alpha:
+            learning_weight = 0.0
+            state = "rejected"
+            reject_reason = "direct_alpha_blocked_sidecar_only"
+        elif production_weight > 0:
+            learning_weight = production_weight
+            state = "production"
+            reject_reason = None
+        elif status == "retired":
+            learning_weight = 0.0
+            state = "rejected"
+            reject_reason = "retired_model_status"
+        elif rank_score is None:
+            learning_weight = 0.0
+            state = "rejected"
+            reject_reason = "missing_model_evidence"
+        else:
+            learning_weight = max(learning_floor, base_weight)
+            state = "learning_only"
+            reject_reason = "no_positive_production_weight"
+
+        try:
+            raw_multiplier = float(learning_multipliers.get(name, 1.0))
+        except (TypeError, ValueError):
+            raw_multiplier = 1.0
+        multiplier = max(low, min(high, raw_multiplier))
+        if learning_weight > 0 and abs(multiplier - 1.0) > 1e-12:
+            learning_weight *= multiplier
+            applied_learning[name] = round(multiplier, 6)
+
+        try:
+            observed_ic = float(ic_weights.get(name)) if ic_weights.get(name) is not None else None
+        except (TypeError, ValueError):
+            observed_ic = None
+
+        states[name] = {
+            "state": state,
+            "model_status": status,
+            "production_weight": round(production_weight, 6),
+            "learning_weight": round(max(0.0, learning_weight), 6),
+            "reject_reason": reject_reason,
+            "rank_score": None if rank_score is None else round(float(rank_score), 6),
+            "observed_ic": None if observed_ic is None else round(observed_ic, 6),
+            "direct_alpha_blocked": blocked_direct_alpha,
+        }
+
+    return {
+        "schema_version": "model-allocator-learning-ledger-v1",
+        "source": "ensemble_v2",
+        "scope": "model_allocator_candidate_allocator_exposure_allocator_learning_ledger",
+        "model_states": states,
+        "production_weight_total": round(sum(row["production_weight"] for row in states.values()), 6),
+        "learning_weight_total": round(sum(row["learning_weight"] for row in states.values()), 6),
+        "production_policy_effect": allocator_policy_effect,
+        "learning_policy_effect": {
+            "applied": bool(applied_learning),
+            "effect": "learning_weight_only",
+            "cap": learning_cap,
+            "multipliers": applied_learning,
+            "policy_id": learning_policy.get("policy_id") or learning_policy.get("id"),
+            "source": learning_policy.get("source") or "adaptive_params.model_allocator.learning_weight_policy",
+            "production_effect": False,
+        },
+        "regime_context": cfg.get("regimeContext") or cfg.get("regime_context") or {},
+    }
+
+
 def attach_ensemble_v2(
     pred: dict,
     model_status: dict,
@@ -110,7 +310,17 @@ def attach_ensemble_v2(
     ev2_cfg: dict | None = None,
 ) -> None:
     feat_ranks = pred.get("rank_scores") or {}
-    merged: dict[str, float] = dict(feat_ranks)
+    merged: dict[str, float] = {}
+    for name, score in dict(feat_ranks).items():
+        model_name = str(name)
+        if model_name in _DIRECT_ALPHA_BLOCKED_MODELS:
+            continue
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric_score):
+            merged[model_name] = numeric_score
     for src_key, model_name in _SRC_KEY_MODEL:
         sig = pred.get(src_key) or {}
         if sig.get("forecast_pct") is None:
@@ -120,7 +330,7 @@ def attach_ensemble_v2(
         return
 
     observed_ic_models = set((ev2_cfg or {}).get("observedIcModels") or [])
-    weights = {
+    base_weights = {
         name: _compute_lifecycle_weight(
             _weight_status(model_status, name),
             ic_weights.get(name, 0.0),
@@ -128,6 +338,16 @@ def attach_ensemble_v2(
         )
         for name in merged
     }
+    weights, allocator_policy_effect = _apply_allocator_policy(base_weights, ev2_cfg)
+    allocator_learning_ledger = _build_allocator_learning_ledger(
+        merged=merged,
+        model_status=model_status,
+        ic_weights=ic_weights,
+        base_weights=base_weights,
+        production_weights=weights,
+        allocator_policy_effect=allocator_policy_effect,
+        ev2_cfg=ev2_cfg,
+    )
     weight_total = sum(weights.values())
 
     if weight_total <= 0:
@@ -137,6 +357,16 @@ def attach_ensemble_v2(
                 name: _cold_start_weight(_weight_status(model_status, name), degraded_dampening)
                 for name in merged
             }
+            weights, allocator_policy_effect = _apply_allocator_policy(weights, ev2_cfg)
+            allocator_learning_ledger = _build_allocator_learning_ledger(
+                merged=merged,
+                model_status=model_status,
+                ic_weights=ic_weights,
+                base_weights=base_weights,
+                production_weights=weights,
+                allocator_policy_effect=allocator_policy_effect,
+                ev2_cfg=ev2_cfg,
+            )
             weight_total = sum(weights.values())
         if weight_total > 0:
             avg = sum(merged[name] * weights[name] for name in merged) / weight_total
@@ -167,6 +397,8 @@ def attach_ensemble_v2(
                 "weight_total": round(weight_total, 6),
                 "reason": "cold_start_equal_weight",
                 "weight_formula": "cold_start_equal_weight_until_ic_available",
+                "allocator_policy_effect": allocator_policy_effect,
+                "allocator_learning_ledger": allocator_learning_ledger,
                 **_forecast_fields(avg, ev2_cfg),
             }
             return
@@ -182,6 +414,8 @@ def attach_ensemble_v2(
             "weight_total": 0.0,
             "reason": "no_positive_lifecycle_weight",
             "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded",
+            "allocator_policy_effect": allocator_policy_effect,
+            "allocator_learning_ledger": allocator_learning_ledger,
         }
         return
 
@@ -211,6 +445,8 @@ def attach_ensemble_v2(
         "contributing_models": sorted([name for name, weight in weights.items() if weight > 0]),
         "weights": {k: round(v, 6) for k, v in weights.items()},
         "weight_total": round(weight_total, 6),
-        "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded",
+        "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded * capped_allocator_multiplier",
+        "allocator_policy_effect": allocator_policy_effect,
+        "allocator_learning_ledger": allocator_learning_ledger,
         **_forecast_fields(avg, ev2_cfg),
     }

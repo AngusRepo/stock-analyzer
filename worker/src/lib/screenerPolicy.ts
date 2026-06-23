@@ -1,5 +1,5 @@
 import type { AdaptiveParams } from './adaptiveConfig'
-import { buildPartialScreenerScoreV2 } from './scoreV2Taxonomy'
+import { buildPartialScreenerScoreV2, readScoreV2Snapshot } from './scoreV2Taxonomy'
 import type { TradingConfig } from './tradingConfig'
 
 export interface ScreenerSizingPolicy {
@@ -144,14 +144,23 @@ function calibrateComponent(
 }
 
 function syncScoreV2Payload(candidate: ScreenerScoreCandidate): number {
+  const existing = readScoreV2Snapshot(candidate)
   const payload = buildPartialScreenerScoreV2({
     chipScore40: candidate.chip_score,
     techScore30: candidate.tech_score,
     momentumScore20: candidate.momentum_score ?? 0,
+    chipEvidence: existing?.chipEvidence ?? null,
     reasons: candidate.reason ? [candidate.reason] : [],
   })
   candidate.score_components = JSON.stringify(payload)
   return payload.finalScore ?? payload.total
+}
+
+function hasMaterializedChipEvidence(candidate: ScreenerScoreCandidate): boolean {
+  const evidence = readScoreV2Snapshot(candidate)?.chipEvidence ?? {}
+  const status = String((evidence as any).evidenceStatus ?? (evidence as any).evidence_status ?? '').trim()
+  if (!status) return true
+  return !status.startsWith('missing') && !status.includes('not_materialized')
 }
 
 export function applyScreenerScoreCalibration<T extends ScreenerScoreCandidate>(
@@ -181,7 +190,10 @@ function calibrateCandidates<T extends ScreenerScoreCandidate>(
   pool: T[],
   policy: ScreenerScoreCalibrationPolicy,
 ): void {
-  const chipValues = pool.map(c => finiteNumber(c.chip_score) ?? 0)
+  const chipValues = pool
+    .filter(hasMaterializedChipEvidence)
+    .map(c => finiteNumber(c.chip_score))
+    .filter((value): value is number => value !== null)
   const techValues = pool.map(c => finiteNumber(c.tech_score) ?? 0)
   const momentumValues = pool.map(c => finiteNumber(c.momentum_score) ?? 0)
 
@@ -189,7 +201,9 @@ function calibrateCandidates<T extends ScreenerScoreCandidate>(
     const rawChip = finiteNumber(c.chip_score) ?? 0
     const rawTech = finiteNumber(c.tech_score) ?? 0
     const rawMomentum = finiteNumber(c.momentum_score) ?? 0
-    const chip = calibrateComponent(rawChip, chipValues, 40, policy)
+    const chip = chipValues.length > 1 && hasMaterializedChipEvidence(c)
+      ? calibrateComponent(rawChip, chipValues, 40, policy)
+      : rawChip
     const tech = calibrateComponent(rawTech, techValues, 30, policy)
     const momentum = calibrateComponent(rawMomentum, momentumValues, 20, policy)
     c.chip_score = chip

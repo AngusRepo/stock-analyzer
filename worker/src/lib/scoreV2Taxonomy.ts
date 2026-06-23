@@ -23,6 +23,7 @@ export interface ScoreV2Input {
   fundamentalQuality?: unknown
   newsTheme?: unknown
   technicalBreakdown?: ScoreV2TechnicalBreakdown | null
+  chipEvidence?: Record<string, unknown> | null
   riskFlags?: string[]
   reasons?: string[]
 }
@@ -31,6 +32,7 @@ export interface PartialScreenerScoreV2Input {
   chipScore40?: unknown
   techScore30?: unknown
   momentumScore20?: unknown
+  chipEvidence?: Record<string, unknown> | null
   reasons?: string[]
 }
 
@@ -208,6 +210,7 @@ export function buildScoreV2Components(input: ScoreV2Input): ScoreV2Payload {
     components,
     total,
     ...(technicalBreakdown ? { technicalBreakdown } : {}),
+    ...(input.chipEvidence ? { chipEvidence: input.chipEvidence } : {}),
     riskFlags: [...new Set((input.riskFlags ?? []).map(String).filter(Boolean))],
     reasons: [...new Set((input.reasons ?? []).map(String).filter(Boolean))],
   }
@@ -276,6 +279,7 @@ export function buildPartialScreenerScoreV2(input: PartialScreenerScoreV2Input):
     technicalBreakdown: {
       volumeConfirmation,
     },
+    chipEvidence: input.chipEvidence,
     reasons: input.reasons,
   })
 }

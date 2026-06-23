@@ -39,6 +39,19 @@ SYSTEM_PROMPT = """你是台股投資研究助理，負責為每日推薦清單�
 """
 
 
+REQUIRED_TRADE_PLAN_FIELDS = (
+    "bias",
+    "entry",
+    "risk",
+    "target",
+    "invalidation",
+    "positionSizing",
+    "timeHorizon",
+    "catalyst",
+    "noTradeCondition",
+)
+
+
 def _number(value: Any, fallback: float = 0.0) -> float:
     try:
         number = float(value)
@@ -288,11 +301,38 @@ def _trade_plan_from_item(item: dict[str, Any]) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, str] = {}
-    for key in ("bias", "entry", "risk", "target", "invalidation", "positionSizing"):
-        text = _clean_text(raw.get(key) or raw.get(key.lower()), max_len=180)
+    aliases = {
+        "positionSizing": ("positionSizing", "position_sizing", "sizing", "size"),
+        "timeHorizon": ("timeHorizon", "time_horizon", "horizon", "holdingPeriod"),
+        "noTradeCondition": ("noTradeCondition", "no_trade_condition", "noTrade", "skipCondition"),
+    }
+    for key in REQUIRED_TRADE_PLAN_FIELDS:
+        candidates = aliases.get(key, (key, key.lower()))
+        text = _clean_text(next((raw.get(alias) for alias in candidates if raw.get(alias)), ""), max_len=180)
         if text:
             out[key] = text
     return out
+
+
+def _missing_trade_plan_fields(entry: dict[str, Any]) -> list[str]:
+    plan = entry.get("tradePlan") if isinstance(entry.get("tradePlan"), dict) else {}
+    return [field for field in REQUIRED_TRADE_PLAN_FIELDS if not _clean_text(plan.get(field), max_len=220)]
+
+
+def _mark_trade_plan_status(reasons: dict[str, dict], *, repair_attempted: bool = False) -> dict[str, list[str]]:
+    invalid: dict[str, list[str]] = {}
+    for symbol, entry in reasons.items():
+        missing = _missing_trade_plan_fields(entry)
+        entry["tradePlanRequiredFields"] = list(REQUIRED_TRADE_PLAN_FIELDS)
+        entry["tradePlanRepairAttempted"] = repair_attempted or bool(entry.get("tradePlanRepairAttempted"))
+        if missing:
+            entry["tradePlanStatus"] = "plan_invalid_after_repair" if entry["tradePlanRepairAttempted"] else "plan_invalid_needs_repair"
+            entry["tradePlanMissingFields"] = missing
+            invalid[symbol] = missing
+        else:
+            entry["tradePlanStatus"] = "valid"
+            entry["tradePlanMissingFields"] = []
+    return invalid
 
 
 def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
@@ -331,13 +371,34 @@ def _parse_reasons(raw: str, n_candidates: int) -> dict[str, dict]:
     return result
 
 
+def _build_trade_plan_repair_prompt(
+    canonical_payload: dict[str, Any],
+    parsed_reasons: dict[str, dict],
+    invalid: dict[str, list[str]],
+) -> str:
+    repair_items = {
+        symbol: {
+            "missingFields": fields,
+            "current": parsed_reasons.get(symbol, {}),
+        }
+        for symbol, fields in invalid.items()
+    }
+    return (
+        "Repair the StockVision tradePlan JSON only for symbols with missing fields. "
+        "Return a JSON array. Keep the same symbol, reason, and watchPoints when present. "
+        "Do not add new candidates. Fill only missing tradePlan fields. "
+        f"Required tradePlan fields={list(REQUIRED_TRADE_PLAN_FIELDS)}. "
+        f"canonical_payload={json.dumps(canonical_payload, ensure_ascii=False, separators=(',', ':'))}. "
+        f"invalid_items={json.dumps(repair_items, ensure_ascii=False, separators=(',', ':'))}."
+    )
+
+
 async def generate_recommendation_reasons_from_payloads(
     canonical_candidate_payloads: list[dict[str, Any]],
     top_themes: Optional[list[str]] = None,
     timeout: float = 60.0,
     max_attempts: int = 3,
 ) -> dict[str, dict]:
-    _ = max_attempts
     if not canonical_candidate_payloads:
         return {}
     if not GEMINI_API_KEY:
@@ -348,6 +409,7 @@ async def generate_recommendation_reasons_from_payloads(
     user_prompt = (
         f"請為以下 {len(canonical_candidate_payloads)} 檔候選股票撰寫 Gemini 3.5 Flash 獨立交易計畫。\n"
         "只能使用 canonical_candidate_payload；不要讀取或推測 legacy score/ml_score/chip_score 欄位。\n"
+        f"tradePlan_required_fields={json.dumps(list(REQUIRED_TRADE_PLAN_FIELDS), ensure_ascii=False)}\n"
         f"canonical_candidate_payload={json.dumps(canonical_payload, ensure_ascii=False, separators=(',', ':'))}"
     )
 
@@ -357,6 +419,27 @@ async def generate_recommendation_reasons_from_payloads(
         return {}
 
     result = _parse_reasons(raw, len(canonical_candidate_payloads))
+    invalid = _mark_trade_plan_status(result, repair_attempted=False)
+    if invalid and max_attempts > 1:
+        repair_prompt = _build_trade_plan_repair_prompt(canonical_payload, result, invalid)
+        repair_raw = await _call_gemini(repair_prompt, len(invalid), min(timeout, 45.0))
+        if repair_raw is not None:
+            repaired = _parse_reasons(repair_raw, len(invalid))
+            _mark_trade_plan_status(repaired, repair_attempted=True)
+            for symbol, entry in repaired.items():
+                if symbol in invalid:
+                    entry["tradePlanRepairAttempted"] = True
+                    if not _missing_trade_plan_fields(entry):
+                        original = result.get(symbol, {})
+                        original_plan = original.get("tradePlan") if isinstance(original.get("tradePlan"), dict) else {}
+                        repaired_plan = entry.get("tradePlan") if isinstance(entry.get("tradePlan"), dict) else {}
+                        result[symbol] = {
+                            **entry,
+                            **original,
+                            "tradePlan": {**repaired_plan, **original_plan},
+                            "tradePlanRepairAttempted": True,
+                        }
+        _mark_trade_plan_status(result, repair_attempted=True)
     logger.info("[llm_reason] Generated %s/%s Gemini reasons", len(result), len(canonical_candidate_payloads))
     return result
 

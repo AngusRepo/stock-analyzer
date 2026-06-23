@@ -238,6 +238,21 @@
       "detail": "L2 is 3ML coarse and L3 is 6ML formal family evidence, not a single top-k ranker"
     },
     {
+      "id": "roadmap:p0:l2_core_ml_evidence_active_name",
+      "status": "pass",
+      "detail": "Daily pipeline emits canonical core_ml_evidence and keeps core_ml_gate only as a compatibility alias"
+    },
+    {
+      "id": "roadmap:p6:legacy_topk_override_retired",
+      "status": "pass",
+      "detail": "Daily pipeline permanently retires legacy top-K forced BUY and keeps rank-like outputs as evidence only"
+    },
+    {
+      "id": "roadmap:p0:l2_core_ml_evidence_audit_schema",
+      "status": "pass",
+      "detail": "Layer2 D1 audit persists evidence-only schema while retaining legacy schema metadata"
+    },
+    {
       "id": "roadmap:p0:l3_family_view",
       "status": "pass",
       "detail": "Model Pool exposes L3 by Tree/TabM/Sequence/GNN family semantics"
@@ -361,6 +376,61 @@
       "id": "roadmap:p2:active9_artifact_promotion_blocker",
       "status": "pass",
       "detail": "artifact promotion blocks non-active-9 models from production selection"
+    },
+    {
+      "id": "roadmap:p5:linucb_replay_adaptive_params_candidate",
+      "status": "pass",
+      "detail": "LinUCB replay emits approval-gated adaptive_params and allocator learning-weight candidates without direct production mutation"
+    },
+    {
+      "id": "roadmap:p4:full_allocator_learning_ledger",
+      "status": "pass",
+      "detail": "Ensemble V2 emits per-model production/learning/rejected allocator learning ledger"
+    },
+    {
+      "id": "roadmap:p5:adaptive_meta_allocator_policy_candidate",
+      "status": "pass",
+      "detail": "Adaptive Meta replay emits a capped allocator_policy candidate with Wei approval required"
+    },
+    {
+      "id": "roadmap:p5:linucb_runner_evidence_only_candidate_persistence",
+      "status": "pass",
+      "detail": "LinUCB replay runner preserves candidate evidence while only writing meta replay keys"
+    },
+    {
+      "id": "roadmap:p5:adaptive_meta_runner_evidence_only_candidate_persistence",
+      "status": "pass",
+      "detail": "Adaptive Meta replay runner preserves allocator candidate evidence while only writing meta replay keys"
+    },
+    {
+      "id": "roadmap:p5:score_to_signal_active_name_with_legacy_alias",
+      "status": "pass",
+      "detail": "ML service active signal translation is named score_to_signal with rank_to_signal kept only as a compatibility alias"
+    },
+    {
+      "id": "roadmap:p7:sparse_allocator_no_score_expected_return_fallback",
+      "status": "pass",
+      "detail": "Sparse allocator utility does not convert score/rank into expected return fallback"
+    },
+    {
+      "id": "roadmap:p1_p2:canonical_chip_broker_status_materialized",
+      "status": "pass",
+      "detail": "Recommendation score_components materialize canonical chip/broker evidence status instead of hiding present evidence behind chip_score=0"
+    },
+    {
+      "id": "roadmap:p5:prediction_runtime_uses_score_to_signal",
+      "status": "pass",
+      "detail": "Prediction runtime calls score_to_signal and emits score_* aliases for UI/OBS"
+    },
+    {
+      "id": "roadmap:p5:prediction_runtime_no_legacy_rank_to_signal_call",
+      "status": "pass",
+      "detail": "Prediction runtime no longer imports or calls rank_to_signal"
+    },
+    {
+      "id": "roadmap:p5:worker_ml_diagnostics_score_threshold_alias",
+      "status": "pass",
+      "detail": "Worker ML diagnostics prefers score_signal_thresholds while preserving the legacy UI field"
     },
     {
       "id": "roadmap:p2:alpha_mining_similarity_matrix_only_fail_closed",

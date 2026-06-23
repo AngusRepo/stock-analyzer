@@ -131,11 +131,17 @@ def resolve_controller_screener_sizing(
         80,
     )
 
-    explicit_core_family_raw = _first_present(raw, "coreFamilyRankSize", "core_family_rank_size")
+    explicit_core_family_raw = _first_present(
+        raw,
+        "coreFamilyEvidenceSize",
+        "core_family_evidence_size",
+        "coreFamilyRankSize",
+        "core_family_rank_size",
+    )
     if explicit_core_family_raw is None:
-        core_family_rank_size = ml_shortlist_size
+        core_family_evidence_size = ml_shortlist_size
     else:
-        core_family_rank_size = min(
+        core_family_evidence_size = min(
             _positive_int(explicit_core_family_raw, ml_shortlist_size, 15, 80),
             coarse_ml_queue_size,
         )
@@ -145,6 +151,7 @@ def resolve_controller_screener_sizing(
         "coarse_ml_queue_size": coarse_ml_queue_size,
         "coarse_ml_keep_ratio": coarse_ml_keep_ratio,
         "ml_shortlist_size": ml_shortlist_size,
-        "core_family_rank_size": core_family_rank_size,
+        "core_family_evidence_size": core_family_evidence_size,
+        "core_family_rank_size": core_family_evidence_size,
         "emerging_research_size": emerging_research_size,
     }

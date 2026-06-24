@@ -1272,13 +1272,22 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "model_cpcv": model_cpcv_evidence_by_model.get(model_name),
             }
             model_extra_meta = dict(extra_meta)
-            model_extra_meta.update(
-                build_model_feature_policy_metadata(
-                    model_name,
-                    feature_names,
-                    selection_evidence=model_selection_evidence,
-                )
+            feature_policy_meta = build_model_feature_policy_metadata(
+                model_name,
+                feature_names,
+                selection_evidence=model_selection_evidence,
             )
+            if req.feature_release_mode == "timesfm_l175_l2_feature_release":
+                feature_policy = dict(feature_policy_meta.get("feature_policy") or {})
+                feature_policy.update({
+                    "feature_policy_type": "formal137_timesfm_l175_feature_release",
+                    "feature_source": "prep.full_formal137_plus_timesfm_l175",
+                    "selection_required": False,
+                    "note": "TimesFM L1.75 feature release retrains tree artifacts on full formal137 + L1.75 sidecar columns.",
+                })
+                feature_policy_meta["feature_policy"] = feature_policy
+                model_selection_evidence["feature_release_mode"] = req.feature_release_mode
+            model_extra_meta.update(feature_policy_meta)
             if req.output_model_version and not walk_forward_mode and gcs_prefix == "universal":
                 model_path = _save_universal_versioned_model(
                     bucket=bucket,

@@ -316,6 +316,15 @@ def test_universal_prep_includes_timesfm_l175_materialized_columns():
     assert "available = [c for c in candidate_feature_cols if c in pooled.columns]" in source
 
 
+def test_timesfm_l175_feature_release_metadata_policy_is_explicit():
+    source = (Path(__file__).resolve().parent.parent / "app" / "universal_training.py").read_text(encoding="utf-8")
+
+    assert 'req.feature_release_mode == "timesfm_l175_l2_feature_release"' in source
+    assert '"feature_policy_type": "formal137_timesfm_l175_feature_release"' in source
+    assert '"feature_source": "prep.full_formal137_plus_timesfm_l175"' in source
+    assert '"selection_required": False' in source
+
+
 def test_universal_lifecycle_normalization_does_not_register_legacy_challengers():
     req = UniversalTrainRequest(gcs_prefix="universal")
 

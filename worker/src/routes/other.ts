@@ -28,6 +28,7 @@ import {
   buildMlDiagnostics,
   buildMlVoteSummary,
   compactRecommendationForCard,
+  DIRECT_ALPHA_VOTE_MODEL_NAMES,
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
@@ -1355,6 +1356,10 @@ recommendations.get('/daily', async (c) => {
     const alphaAllocation = forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null
     const l4SparseAllocation = buildSparseAllocationSummary(alphaAllocation)
     const persistedMlVoteSummary = parsePredictionForecastData(r.ml_vote_summary)
+    const active8PersistedMlVoteSummary = persistedMlVoteSummary
+      && Number(persistedMlVoteSummary.total ?? 0) <= DIRECT_ALPHA_VOTE_MODEL_NAMES.length
+      ? persistedMlVoteSummary
+      : null
     const persistedScoreComponents = parsePredictionForecastData(r.score_components)
     const screenerFunnel = screenerFunnelBySymbol.get(String(r.symbol ?? '').trim()) ?? null
     const screenerFunnelEvidenceBase = screenerFunnel?.evidence
@@ -1411,7 +1416,7 @@ recommendations.get('/daily', async (c) => {
       alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
       alpha_allocation: alphaAllocation,
       l4_sparse_allocation: l4SparseAllocation,
-      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? persistedMlVoteSummary,
+      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? active8PersistedMlVoteSummary,
       ml_diagnostics: buildMlDiagnostics(forecastData),
       score_components: scoreComponents,
       chip_evidence: emergingBrokerEvidence,

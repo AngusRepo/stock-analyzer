@@ -87,6 +87,12 @@ function assert(condition: unknown, message: string): void {
         candidate_route_score: 79,
         ml_slate_eligibility: 0.79,
         source_universe_count: 486,
+        soft_capacity_baseline: 120,
+        adaptive_target_size: 148,
+        adaptive_capacity_max: 160,
+        adaptive_capacity_policy: 'soft_baseline_adaptive_ceiling_no_forced_fill',
+        adaptive_capacity_reason: 'adaptive_expand_above_soft_baseline_for_diversity',
+        adaptive_capacity_eligible_count: 176,
         family_exposure: { TREND_RECLAIM_CONTINUATION: 1 },
         diversity_contribution: 0.82,
         risk_adjusted_affinity: 76,
@@ -228,7 +234,10 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.selection_policy === 'quality_floor_max_capacity_no_forced_fill', 'Layer1.5 router must expose quality-floor max-capacity selection policy')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.slate_selection_policy === 'l15-adaptive-marginal-slate-builder-v1', 'Layer1.5 router must expose adaptive marginal slate selection policy')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.self_learning_loop === 'strategy_decision_log_to_strategy_reward_ledger_to_strategy_portfolio_metrics_to_l15_marginal_utility', 'Layer1.5 router must expose reward-ledger feedback loop')
-  assert((summary?.evidence.layer15_multi_strategy_router as any)?.capacity_policy === 'max_only_no_minimum_no_topup', 'Layer1.5 router must expose max-only capacity policy')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.capacity_policy === 'soft_baseline_adaptive_ceiling_no_forced_fill', 'Layer1.5 router must expose soft baseline adaptive capacity policy')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.soft_capacity_baseline === 120, 'Layer1.5 summary should expose soft capacity baseline')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.adaptive_target_size === 148, 'Layer1.5 summary should expose adaptive target size')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.adaptive_capacity_reason === 'adaptive_expand_above_soft_baseline_for_diversity', 'Layer1.5 summary should explain adaptive expansion')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.no_minimum_fill === true, 'Layer1.5 router must explicitly reject minimum fill')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.is_topk_ranker === false, 'Layer1.5 router must explicitly reject top-k ranker semantics')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.output_scope === 'candidate_route_score_ml_slate_eligibility_family_exposure_diversity_risk_uncertainty', 'Layer1.5 router must expose router output scope')

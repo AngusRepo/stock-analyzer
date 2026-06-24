@@ -916,7 +916,18 @@ function scoreComponentValue(rec: any, key: string): number {
   return Number.isFinite(row?.value) ? Number(row?.value) : 0
 }
 
+function expectsFormalMlVote(rec: any): boolean {
+  const lane = String(rec?.recommendation_lane ?? '').toLowerCase()
+  if (lane === 'emerging_watchlist' || lane === 'research_only') return false
+  const signal = String(rec?.signal ?? '').trim()
+  if (!signal) return false
+  const hardGate = parseObject(rec?.l05_hard_gate)
+  if (hardGate?.ml_slate_allowed === false) return false
+  return true
+}
+
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
+  if (!expectsFormalMlVote(rec)) return null
   const persisted = parseObject(rec.ml_vote_summary)
   if (persisted && Number(persisted.total ?? 0) <= DIRECT_ALPHA_VOTE_MODEL_NAMES.length) {
     const persistedCoreFamilyVote = parseObject(persisted.coreFamilyVote ?? persisted.core_family_vote)
@@ -976,6 +987,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
 }
 
 function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
+  if (!expectsFormalMlVote(rec)) return null
   const persisted = parseObject(rec.ml_diagnostics)
   const forecast = parseForecastData(rec.prediction_forecast_data)
   if (persisted) {
@@ -1031,6 +1043,7 @@ function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
 }
 
 function mlMetadataGapText(rec: any, summary: MlVoteSummary | null): string | null {
+  if (!expectsFormalMlVote(rec)) return null
   const mlScore = scoreComponentValue(rec, 'mlEdge')
   if (!Number.isFinite(mlScore) || mlScore <= 0) return null
   const reported = Number(summary?.reported ?? 0)
@@ -1050,7 +1063,7 @@ function formatMlVoteSummary(summary: MlVoteSummary | null): string | null {
   const missing = Number(summary.missing ?? Math.max(0, total - bullish - bearish - Number(summary.flat ?? 0)))
   const reported = Number(summary.reported ?? total - missing)
   if (reported <= 0 || bullish + bearish + Number(summary.flat ?? 0) <= 0) {
-    return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
+    return `L3 ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
   }
   const forecastPct = displayForecastPct(summary)
   const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)
@@ -1072,7 +1085,7 @@ function formatMlVoteSummaryReadable(summary: MlVoteSummary | null): string | nu
   const reported = Number(summary.reported ?? bullish + bearish + flat)
   const missing = Number(summary.missing ?? Math.max(0, total - reported))
   if (reported <= 0 || bullish + bearish + flat <= 0) {
-    return `ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
+    return `L3 ML 投票資料不足（${Math.max(0, reported)}/${total} 回報）`
   }
   const forecastPct = displayForecastPct(summary)
   const forecast = typeof forecastPct === 'number' && Number.isFinite(forecastPct)

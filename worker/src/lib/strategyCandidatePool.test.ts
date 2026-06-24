@@ -229,6 +229,60 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
+  const broadCandidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 36 }, (_, index) => ({
+    symbol: `${6200 + index}`,
+    name: `Adaptive ${index}`,
+    industry: index % 3 === 0 ? 'AI' : index % 3 === 1 ? 'Power' : 'Finance',
+    score_components: scoreV2Payload({ finalScore: 58 + (index % 5), chipFlow: 18, technicalStructure: 19, momentumScore: 8 }),
+    raw_signals: rawSignalPayload({
+      closeAboveMa20Pct: 0.04 + (index % 4) * 0.005,
+      volumeExpansion20: 1.25,
+      return20d: 0.045,
+      foreignTrustNet5d: 500 + index,
+      brokerCount: 5,
+      revenueGrowthYoY: 10,
+      monthlyRevenueYoY: 12,
+      roe: 10,
+    }),
+    current_price: 30 + index,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+  }))
+  const broadSpec = {
+    id: 'adaptive_soft_capacity_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Adaptive soft capacity',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    familyId: 'TREND_RECLAIM_CONTINUATION' as const,
+    variantId: 'adaptive_soft_capacity_v1',
+    ownerType: 'strategy' as const,
+    promotionStatus: 'production' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Soft capacity should adapt above baseline when route evidence is broad.',
+    thresholds: { minPrice: 10, minCloseAboveMa20Pct: 0.01 },
+    candidatePolicy: { poolQuota: 20, costBudget: 20 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+
+  const plan = buildLayer1StrategyBreadthPlan(broadCandidates, [broadSpec], {
+    targetSize: 12,
+    coarseMlQueueSize: 8,
+    regime: 'bull',
+  })
+
+  assert((plan.telemetry as any).soft_capacity_baseline === 12, 'L1.5 targetSize should be a soft baseline, not a hard top-k cap')
+  assert((plan.telemetry as any).adaptive_capacity_policy === 'soft_baseline_adaptive_ceiling_no_forced_fill', 'L1.5 capacity policy should document adaptive ceiling semantics')
+  assert(Number((plan.telemetry as any).adaptive_target_size) > 12, 'L1.5 should expand above soft baseline when broad quality-floor evidence exists')
+  assert(plan.breadthPool.length === Number((plan.telemetry as any).adaptive_target_size), 'L1.5 breadth pool should follow adaptive target size')
+  assert((plan.telemetry as any).strategy_matrix_candidate_count === broadCandidates.length, 'soft capacity must not reduce full-universe strategy labeling scope')
+  assert((plan.telemetry as any).strategy_matrix_cell_count === broadCandidates.length, 'single-strategy matrix should still evaluate every candidate')
+  assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_decision === 'ml_queue'), 'adaptive expansion should remain formal strategy evidence, not raw score top-up')
+}
+
+{
   const broadCandidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 16 }, (_, index) => ({
     symbol: `${6100 + index}`,
     name: `Broad ${index}`,

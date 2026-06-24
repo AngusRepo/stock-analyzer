@@ -198,6 +198,15 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
   telemetry: {
     selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe'
     target_size: number
+    soft_capacity_baseline?: number
+    adaptive_target_size?: number
+    adaptive_capacity_min_reference?: number
+    adaptive_capacity_max?: number
+    adaptive_capacity_policy?: string
+    adaptive_capacity_reason?: string
+    adaptive_capacity_eligible_count?: number
+    adaptive_capacity_source_universe_count?: number
+    breadth_evidence_target_size?: number
     coarse_ml_queue_size: number
     coarse_ml_target_size: number
     strategy_selected_count: number
@@ -1052,26 +1061,47 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     baseTotalBudget: Math.min(basePolicy.baseTotalBudget, targetSize),
     normalTotalCap: Math.max(basePolicy.normalTotalCap, targetSize),
     lowLoadTotalCap: Math.max(basePolicy.lowLoadTotalCap, targetSize),
-    hardTotalCap: Math.max(basePolicy.hardTotalCap, targetSize),
+    hardTotalCap: Math.max(basePolicy.hardTotalCap, Math.ceil(targetSize * 4 / 3)),
   }
-  const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
-    regime: options.regime,
-    strategyWeights: options.strategyWeights,
-    policy,
-    capacity: { requestedTotalCap: targetSize },
-    mlQueueCapOverride: targetSize,
-  })
-  const routerPlan = buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
-    maxSlateSize: targetSize,
+  const provisionalRouterPlan = buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
+    maxSlateSize: policy.hardTotalCap,
     regime: options.regime,
     strategyWeights: options.strategyWeights,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
     strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
     runtimeTeacherEvidence: options.runtimeTeacherEvidence,
   })
+  const adaptiveCapacity = resolveLayer15SoftCapacity({
+    baseline: targetSize,
+    coarseMlQueueSize,
+    hardTotalCap: policy.hardTotalCap,
+    sourceUniverseCount: featureEnrichedUniverse.length,
+    routeScoreAboveFloorCount: provisionalRouterPlan.telemetry.route_score_above_floor_count,
+    activeLabeledCandidateCount: provisionalRouterPlan.telemetry.active_labeled_candidates,
+    matchedCandidateCount: provisionalRouterPlan.telemetry.matched_candidates,
+  })
+  const adaptiveTargetSize = adaptiveCapacity.target
+  const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
+    regime: options.regime,
+    strategyWeights: options.strategyWeights,
+    policy,
+    capacity: { requestedTotalCap: Math.max(1, adaptiveTargetSize) },
+    mlQueueCapOverride: Math.max(1, adaptiveTargetSize),
+  })
+  const routerPlan = adaptiveTargetSize > 0 && adaptiveTargetSize < adaptiveCapacity.max
+    ? buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
+        maxSlateSize: adaptiveTargetSize,
+        regime: options.regime,
+        strategyWeights: options.strategyWeights,
+        strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+        strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
+        runtimeTeacherEvidence: options.runtimeTeacherEvidence,
+      })
+    : provisionalRouterPlan
 
   const selectedSymbols = new Set(routerPlan.mlSlate.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
-  const strategySelected = routerPlan.mlSlate.slice(0, targetSize)
+  const strategySelected = adaptiveTargetSize > 0 ? routerPlan.mlSlate.slice(0, adaptiveTargetSize) : []
+  const breadthEvidenceTargetSize = Math.max(adaptiveTargetSize, Math.min(targetSize, featureEnrichedUniverse.length))
   const topUp = featureEnrichedUniverse
     .filter((candidate) => {
       const symbol = cleanText(candidate.symbol).toUpperCase()
@@ -1081,10 +1111,10 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       return true
     })
     .sort((a, b) => rawSignalFallbackValue(b) - rawSignalFallbackValue(a))
-    .slice(0, Math.max(0, targetSize - strategySelected.length))
+    .slice(0, Math.max(0, breadthEvidenceTargetSize - strategySelected.length))
     .map((candidate, index) => annotateLayer1TopUp(candidate, strategySelected.length + index + 1))
 
-  const breadthPool = [...strategySelected, ...topUp].slice(0, targetSize)
+  const breadthPool = [...strategySelected, ...topUp].slice(0, breadthEvidenceTargetSize)
   const formalCoarseQueue = strategySelected
 
   return {
@@ -1096,7 +1126,16 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     selection,
     telemetry: {
       selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe',
-      target_size: targetSize,
+      target_size: adaptiveTargetSize,
+      soft_capacity_baseline: adaptiveCapacity.baseline,
+      adaptive_target_size: adaptiveTargetSize,
+      adaptive_capacity_min_reference: adaptiveCapacity.minReference,
+      adaptive_capacity_max: adaptiveCapacity.max,
+      adaptive_capacity_policy: adaptiveCapacity.policy,
+      adaptive_capacity_reason: adaptiveCapacity.reason,
+      adaptive_capacity_eligible_count: adaptiveCapacity.eligibleAboveFloor,
+      adaptive_capacity_source_universe_count: adaptiveCapacity.sourceUniverseCount,
+      breadth_evidence_target_size: breadthEvidenceTargetSize,
       coarse_ml_queue_size: formalCoarseQueue.length,
       coarse_ml_target_size: coarseMlQueueSize,
       strategy_selected_count: strategySelected.length,
@@ -1138,5 +1177,66 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       strategy_portfolio_metric_source: options.strategyPortfolioMetricSource,
       strategy_portfolio_metric_count: Object.keys(options.strategyPortfolioMetrics ?? {}).length,
     },
+  }
+}
+
+interface Layer15SoftCapacityDecision {
+  policy: 'soft_baseline_adaptive_ceiling_no_forced_fill'
+  baseline: number
+  minReference: number
+  max: number
+  target: number
+  eligibleAboveFloor: number
+  sourceUniverseCount: number
+  reason: string
+}
+
+function resolveLayer15SoftCapacity(input: {
+  baseline: number
+  coarseMlQueueSize: number
+  hardTotalCap: number
+  sourceUniverseCount: number
+  routeScoreAboveFloorCount?: number | null
+  activeLabeledCandidateCount?: number | null
+  matchedCandidateCount?: number | null
+}): Layer15SoftCapacityDecision {
+  const baseline = Math.max(1, Math.round(input.baseline))
+  const sourceUniverseCount = Math.max(0, Math.round(input.sourceUniverseCount))
+  const hardTotalCap = Math.max(baseline, Math.round(input.hardTotalCap))
+  const adaptiveMax = Math.min(hardTotalCap, Math.max(baseline, Math.ceil(baseline * 4 / 3)))
+  const qualityFloorEligible = finiteNumber(input.routeScoreAboveFloorCount)
+  const activeLabeled = finiteNumber(input.activeLabeledCandidateCount)
+  const matched = finiteNumber(input.matchedCandidateCount)
+  const eligibleAboveFloor = Math.max(0, Math.round(
+    qualityFloorEligible ?? activeLabeled ?? matched ?? sourceUniverseCount,
+  ))
+  const boundedEligible = Math.min(sourceUniverseCount || eligibleAboveFloor, eligibleAboveFloor)
+  let target = 0
+  let reason = 'no_quality_floor_pass_no_forced_fill'
+
+  if (boundedEligible > 0 && boundedEligible < baseline) {
+    target = boundedEligible
+    reason = 'quality_floor_below_soft_baseline_no_forced_fill'
+  } else if (boundedEligible === baseline) {
+    target = baseline
+    reason = 'quality_floor_matches_soft_baseline'
+  } else if (boundedEligible > baseline) {
+    const overflow = boundedEligible - baseline
+    const expansion = Math.min(adaptiveMax - baseline, Math.ceil(overflow * 0.5))
+    target = baseline + Math.max(0, expansion)
+    reason = expansion > 0
+      ? 'adaptive_expand_above_soft_baseline_for_diversity'
+      : 'soft_baseline_capacity_sufficient'
+  }
+
+  return {
+    policy: 'soft_baseline_adaptive_ceiling_no_forced_fill',
+    baseline,
+    minReference: Math.max(1, Math.min(baseline, Math.round(input.coarseMlQueueSize))),
+    max: Math.min(adaptiveMax, sourceUniverseCount || adaptiveMax),
+    target: Math.min(target, sourceUniverseCount || target),
+    eligibleAboveFloor: boundedEligible,
+    sourceUniverseCount,
+    reason,
   }
 }

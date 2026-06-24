@@ -2639,6 +2639,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const strategySourceUniverse = featureEnrichedUniverse
   let layer1BreadthPool: ScoredCandidate[] = []
   let layer2CoarseQueueSeed: ScoredCandidate[] = []
+  let layer1AdaptiveTargetSize = screenerPolicy.sizing.candidatePoolSize
   let overlayEligibleSymbols = new Set<string>()
   let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
   let runtimeStrategySpecs: StrategySpec[] = []
@@ -2698,6 +2699,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     strategySelectionPlan = layer1BreadthPlan.selection
     layer1BreadthPool = layer1BreadthPlan.breadthPool as ScoredCandidate[]
     layer2CoarseQueueSeed = layer1BreadthPlan.coarseQueue as ScoredCandidate[]
+    layer1AdaptiveTargetSize = Number(layer1BreadthPlan.telemetry.adaptive_target_size ?? layer1BreadthPlan.telemetry.target_size ?? screenerPolicy.sizing.candidatePoolSize)
     overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
     strategySelectionTelemetry = {
       version: layer1BreadthPlan.version,
@@ -2721,6 +2723,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       l15_router_observe_only_count: layer1BreadthPlan.telemetry.l15_router_observe_only_count ?? null,
       l15_router_capacity_overflow_count: layer1BreadthPlan.telemetry.l15_router_capacity_overflow_count ?? null,
       l15_router_slate_selection_policy: layer1BreadthPlan.telemetry.l15_router_slate_selection_policy ?? null,
+      l15_soft_capacity_baseline: layer1BreadthPlan.telemetry.soft_capacity_baseline ?? null,
+      l15_adaptive_target_size: layer1BreadthPlan.telemetry.adaptive_target_size ?? null,
+      l15_adaptive_capacity_max: layer1BreadthPlan.telemetry.adaptive_capacity_max ?? null,
+      l15_adaptive_capacity_policy: layer1BreadthPlan.telemetry.adaptive_capacity_policy ?? null,
+      l15_adaptive_capacity_reason: layer1BreadthPlan.telemetry.adaptive_capacity_reason ?? null,
+      l15_adaptive_capacity_eligible_count: layer1BreadthPlan.telemetry.adaptive_capacity_eligible_count ?? null,
       strategy_matrix_candidate_count: layer1BreadthPlan.telemetry.strategy_matrix_candidate_count ?? null,
       strategy_matrix_strategy_count: layer1BreadthPlan.telemetry.strategy_matrix_strategy_count ?? null,
       strategy_matrix_cell_count: layer1BreadthPlan.telemetry.strategy_matrix_cell_count ?? null,
@@ -2764,7 +2772,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     }
     debugLog.push(
       `[Step 2c] layer1_breadth=${layer1BreadthPlan.version} source=${source} ` +
-      `source_universe=${strategySourceUniverse.length} layer1=${layer1BreadthPool.length}/${screenerPolicy.sizing.candidatePoolSize} ` +
+      `source_universe=${strategySourceUniverse.length} layer1=${layer1BreadthPool.length}/${layer1AdaptiveTargetSize} baseline=${screenerPolicy.sizing.candidatePoolSize} ` +
       `coarse_seed=${layer2CoarseQueueSeed.length} keep_ratio=${screenerPolicy.sizing.coarseMlKeepRatio} core_ml=${maxCandidates} ` +
       `research_only=${strategySelectionPlan.researchOnlyQueue.length} overflow=${strategySelectionPlan.telemetry.overflow_count} ` +
       `cap=${strategySelectionPlan.capacity.mlQueueCap}/${strategySelectionPlan.capacity.totalCap} mode=${strategySelectionPlan.capacity.mode} ` +
@@ -2837,7 +2845,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           strategy_position_weight_vector: (candidate as any).strategy_position_weight_vector ?? null,
           strategy_overlap_vector: (candidate as any).strategy_overlap_vector ?? null,
           strategy_family_affinity: (candidate as any).strategy_family_affinity ?? null,
-          target_size: screenerPolicy.sizing.candidatePoolSize,
+          target_size: layer1BreadthPlan.telemetry.target_size,
+          soft_capacity_baseline: layer1BreadthPlan.telemetry.soft_capacity_baseline ?? null,
+          adaptive_target_size: layer1BreadthPlan.telemetry.adaptive_target_size ?? null,
+          adaptive_capacity_max: layer1BreadthPlan.telemetry.adaptive_capacity_max ?? null,
+          adaptive_capacity_policy: layer1BreadthPlan.telemetry.adaptive_capacity_policy ?? null,
+          adaptive_capacity_reason: layer1BreadthPlan.telemetry.adaptive_capacity_reason ?? null,
+          adaptive_capacity_eligible_count: layer1BreadthPlan.telemetry.adaptive_capacity_eligible_count ?? null,
           coarse_ml_queue_size_legacy: screenerPolicy.sizing.coarseMlQueueSize,
           coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
           core_ml_shortlist_size: screenerPolicy.sizing.mlShortlistSize,
@@ -3699,7 +3713,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     industryCount.set(c.industry, cnt + 1)
     return true
   })
-  const selectionTargetSize = screenerPolicy.sizing.candidatePoolSize
+  const selectionTargetSize = Math.max(0, Math.round(layer1AdaptiveTargetSize))
   const dynamicThemeCap = Number((sc as any).maxPerIndustryTheme ?? Math.max(3, Math.ceil(selectionTargetSize * 0.18)))
   const dynamicSubindustryCap = Number((sc as any).maxPerSubindustry ?? Math.max(2, Math.ceil(selectionTargetSize * 0.14)))
   const beforeTaxonomyCap = afterIndustryLimit.length
@@ -3716,10 +3730,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const corrWindow = (sc as any).correlationWindow ?? 60
   try {
     // Only deduplicate the active policy pool to keep the Worker bounded.
-    const top50 = afterIndustryLimit.slice(0, screenerPolicy.sizing.candidatePoolSize)
+    const top50 = afterIndustryLimit.slice(0, selectionTargetSize)
     afterIndustryLimit = [
       ...(await deduplicateByCorrelation(top50, env.DB, corrThreshold, corrWindow)) as ScoredCandidate[],
-      ...afterIndustryLimit.slice(screenerPolicy.sizing.candidatePoolSize),
+      ...afterIndustryLimit.slice(selectionTargetSize),
     ]
   } catch (e) {
     console.warn('[Screener v2] Correlation dedup failed:', e)
@@ -3727,10 +3741,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // 5d: top N ?芣嚗trategy pool 撌脣 Step 2c嚗??函′蝭拙??RG/?駁???摰???
   let finalCandidates = dedupeScreenerCandidatesBySymbol(
-    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, screenerPolicy.sizing.candidatePoolSize) as ScreenerCandidate[], runtimeStrategySpecs),
+    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, selectionTargetSize) as ScreenerCandidate[], runtimeStrategySpecs),
   )
   if (layer1BreadthPool.length > 0) {
-    const layer1TargetSize = screenerPolicy.sizing.candidatePoolSize
+    const layer1TargetSize = selectionTargetSize
     const updatedBySymbol = new Map(scored.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
     const layer1Queue = layer2CoarseQueueSeed
       .filter((candidate) => {
@@ -3821,6 +3835,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       raw_signal_observe_count: topUpCandidates.length,
       selected_after_overlay_count: selectedCandidates.length,
       l1_seed_count: selectedCandidates.length,
+      l15_soft_capacity_baseline: screenerPolicy.sizing.candidatePoolSize,
+      l15_adaptive_target_size: layer1TargetSize,
       core_ml_shortlist_size: maxCandidates,
     }
     debugLog.push(
@@ -3838,10 +3854,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       raw_signal_observe_count: 0,
       selected_after_overlay_count: 0,
       l1_seed_count: 0,
+      l15_soft_capacity_baseline: screenerPolicy.sizing.candidatePoolSize,
+      l15_adaptive_target_size: selectionTargetSize,
       core_ml_shortlist_size: maxCandidates,
       layer1_breadth_blocked_reason: 'no_formal_strategy_or_observe_evidence',
     }
-    debugLog.push(`[Step 5] layer1 breadth empty; blocked score-ranked L1 fallback ${screenerPolicy.sizing.candidatePoolSize}`)
+    debugLog.push(`[Step 5] layer1 breadth empty; blocked score-ranked L1 fallback ${selectionTargetSize} baseline=${screenerPolicy.sizing.candidatePoolSize}`)
   }
   const step5Msg = `[Step 5] ${scored.length} 瑼????璆凌${maxPerIndustry} ??${afterIndustryLimit.length} 瑼???coarse ${coarseQueueSize} ??${finalCandidates.length} 瑼???core target ${maxCandidates}`
   debugLog.push(step5Msg)
@@ -3860,7 +3878,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const afterDedupSet = new Set(afterIndustryLimit.map(c => c.symbol))
   const removedByDedup = afterIndustryLimit.filter(c => !afterDedupSet.has(c.symbol))
   // 鋡急?瑞?
-  const truncated = afterIndustryLimit.slice(screenerPolicy.sizing.candidatePoolSize)
+  const truncated = afterIndustryLimit.slice(selectionTargetSize)
   const emergingMaxCandidates = screenerPolicy.sizing.emergingResearchSize
   const emergingResearchCandidates: ScreenerCandidate[] = []
   const emergingData = buildStockData(emergingResearchPrices, allChips)
@@ -4041,6 +4059,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_matrix_matched_candidate_count: layer1Telemetry.strategy_matrix_matched_candidate_count ?? null,
       strategy_matrix_active_labeled_candidate_count: layer1Telemetry.strategy_matrix_active_labeled_candidate_count ?? null,
       l1_breadth_seed_size: finalCandidates.length,
+      soft_capacity_baseline: layer1Telemetry.soft_capacity_baseline ?? screenerPolicy.sizing.candidatePoolSize,
+      adaptive_target_size: layer1Telemetry.adaptive_target_size ?? layer1AdaptiveTargetSize,
+      adaptive_capacity_max: layer1Telemetry.adaptive_capacity_max ?? null,
+      adaptive_capacity_policy: layer1Telemetry.adaptive_capacity_policy ?? null,
+      adaptive_capacity_reason: layer1Telemetry.adaptive_capacity_reason ?? null,
+      adaptive_capacity_eligible_count: layer1Telemetry.adaptive_capacity_eligible_count ?? null,
       layer2_owner: 'ml-controller',
       layer2_coarse_queue_size_legacy: coarseQueueSize,
       layer2_coarse_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
@@ -4062,6 +4086,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         coarse_ml_queue_size_legacy: coarseQueueSize,
         coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
         core_ml_shortlist_size: maxCandidates,
+        soft_capacity_baseline: layer1Telemetry.soft_capacity_baseline ?? screenerPolicy.sizing.candidatePoolSize,
+        adaptive_target_size: layer1Telemetry.adaptive_target_size ?? layer1AdaptiveTargetSize,
+        adaptive_capacity_max: layer1Telemetry.adaptive_capacity_max ?? null,
+        adaptive_capacity_policy: layer1Telemetry.adaptive_capacity_policy ?? null,
+        adaptive_capacity_reason: layer1Telemetry.adaptive_capacity_reason ?? null,
+        adaptive_capacity_eligible_count: layer1Telemetry.adaptive_capacity_eligible_count ?? null,
         strategy_pool_ids: sc.strategy_pool_ids ?? [],
         strategy_family_ids: sc.strategy_family_ids ?? [],
         strategy_variant_ids: sc.strategy_variant_ids ?? [],

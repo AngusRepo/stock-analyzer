@@ -155,15 +155,15 @@ function assert(condition: unknown, message: string): void {
     id: 'model-upgrade-timesfm-p7-model-upgrade-track-v1',
     version: 'research-registry-v1',
     status: 'running',
-    hypothesis: 'TimesFM production_slot_member monitor config-backed serving and OOS evidence.',
+    hypothesis: 'TimesFM l2_feature_sidecar_member monitor config-backed serving and OOS evidence.',
     source_refs: ['strategy-lab-ui', 'model-upgrade-track'],
-    strategy_spec_ids: ['model_family_production_slot_member_v1'],
+    strategy_spec_ids: ['model_family_l2_feature_sidecar_member_v1'],
     data_slice: {
       start_date: '2026-04-01',
-      lane: 'production_slot_member',
+      lane: 'l2_feature_sidecar_member',
     },
-    metrics: ['production_artifact', 'forecast_validation', 'walk_forward', 'cost_profile', 'positive_ic'],
-    follow_up: ['monitor production slot health'],
+    metrics: ['production_artifact', 'forecast_validation', 'walk_forward', 'cost_profile', 'l2_feature_release'],
+    follow_up: ['monitor L2 sidecar health'],
     approval_gate: {
       can_research: true,
       can_generate_patch_or_report: true,
@@ -178,6 +178,6 @@ function assert(condition: unknown, message: string): void {
 
   const benchmarkSteps = plan.steps.filter((step) => step.kind === 'model_benchmark')
   const walkForward = plan.steps.find((step) => step.kind === 'walk_forward')
-  assert(benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'TimesFM', 'TimesFM production slot must not infer TimesFM25 benchmark candidate')
+  assert(benchmarkSteps.map((step) => step.body.candidate_id).join(',') === 'TimesFM', 'TimesFM L2 sidecar must not infer TimesFM25 benchmark candidate')
   assert((walkForward?.body.models as string[]).join(',') === 'TimesFM', 'TimesFM walk-forward must stay scoped to TimesFM')
 }

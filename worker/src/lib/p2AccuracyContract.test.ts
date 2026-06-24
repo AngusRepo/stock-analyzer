@@ -57,7 +57,7 @@ async function run(): Promise<void> {
     )
     assert(result?.halt !== true, 'available model_accuracy evidence should avoid hard halt')
     assert(result?.buyConfThreshold === DEFAULT_TRADING_CONFIG.circuit.drawdownRaisedConf)
-    assert(String(result?.reason ?? '').includes('model_accuracy.active9'))
+    assert(String(result?.reason ?? '').includes('model_accuracy.active8'))
   }
 
   {
@@ -67,7 +67,7 @@ async function run(): Promise<void> {
       DEFAULT_TRADING_CONFIG,
       deps,
     )
-    assert(result === null, 'healthy active-9 model_accuracy should pass P2')
+    assert(result === null, 'healthy Active-8 direct-alpha model_accuracy should pass P2')
   }
 }
 

@@ -72,11 +72,11 @@ assert(
     timesfmL175Sidecar.includes('"eligible_for_l2_feature_enrichment": active') &&
     timesfmL175Sidecar.includes('"l2_feature_input_active": active') &&
     timesfmL175Sidecar.includes('requires_formal137_registry_retrain_release') &&
-    recommendationCard.includes('L2/L3 Direct ML + L1.75 Sidecar') &&
+    recommendationCard.includes('L2 TimesFM + L3 Direct ML') &&
     recommendationCard.includes('L2 input') &&
     recommendationCard.includes('L2 block formal137/retrain/release') &&
     recommendationCard.includes('TimesFM direct alpha blocked'),
-  'P4 must remove TimesFM from direct ML vote display and expose it as an L1.75 sidecar diagnostic without falsely claiming active L2 feature input',
+  'P4 must remove TimesFM from direct ML vote display and expose it as an L2 sidecar diagnostic without falsely claiming direct alpha input',
 )
 
 assert(

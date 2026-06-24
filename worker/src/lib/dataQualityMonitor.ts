@@ -107,7 +107,6 @@ export const EXPECTED_V2_MODELS = [
   'DLinear',
   'PatchTST',
   'iTransformer',
-  'TimesFM',
 ] as const
 
 export const DATA_QUALITY_EOD_READY_MINUTE_TW = 18 * 60 + 30

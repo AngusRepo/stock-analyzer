@@ -1307,6 +1307,7 @@ recommendations.get('/daily', async (c) => {
              'diversity_cooldown',
              'layer1_strategy_breadth_gate',
              'l15_ml_slate_queue',
+             'layer2_timesfm_enrichment',
              'layer2_coarse_ml_gate',
              'layer3_formal_ml_gate',
              'l1_candidate_seed_after_overlay',

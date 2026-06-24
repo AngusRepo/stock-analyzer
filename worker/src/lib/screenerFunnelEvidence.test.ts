@@ -91,24 +91,29 @@ function assert(condition: unknown, message: string): void {
         diversity_contribution: 0.82,
         risk_adjusted_affinity: 76,
         uncertainty: 0.18,
-        runtime_teacher_evidence: { LightGBM: 0.8, GNN: 0.7, TimesFM: 0.62 },
+        runtime_teacher_evidence: { LightGBM: 0.8, GNN: 0.7 },
         runtime_teacher_evidence_source: 'historical_verified_cache',
-        ml_teacher_labels: { LightGBM: 0.8, GNN: 0.7, TimesFM: 0.62 },
+        ml_teacher_labels: { LightGBM: 0.8, GNN: 0.7 },
       }),
     },
     {
       symbol: '2330',
-      stage: 'layer2_coarse_ml_gate',
+      stage: 'layer2_timesfm_enrichment',
       decision: 'observe',
-      reason_code: 'l2_tree_evidence_l3_queue_selected',
+      reason_code: 'timesfm_l2_feature_input_active',
       rank: 6,
       score_after: 72,
       evidence: JSON.stringify({
-        coarse_ml_queue_size: 80,
-        core_ml_shortlist_size: 35,
-        selection_role: 'evidence_only_l3_formal_inference_queue',
+        schema_version: 'l2_timesfm_enrichment_evidence_v1',
+        sidecar_schema_version: 'timesfm-l1-75-sidecar-v1',
+        selection_role: 'feature_enrichment_not_gate',
         final_recommendation_gate: false,
         l3_formal_inference_selected: true,
+        direct_alpha_blocked: true,
+        l2_feature_input_active: true,
+        l2_feature_schema_version: 'formal137+timesfm_l175',
+        populated_feature_count: 11,
+        current_allowed_use: ['l2_feature_enrichment'],
       }),
     },
     {
@@ -123,8 +128,8 @@ function assert(condition: unknown, message: string): void {
         schema_version: 'layer3_formal_ml_gate_audit_v1',
         active_family_count: 3,
         active_families: ['tree', 'graph', 'time_series'],
-        contributing_models: ['LightGBM', 'GNN', 'TimesFM'],
-        weights: { LightGBM: 0.5, GNN: 0.3, TimesFM: 0.2 },
+        contributing_models: ['LightGBM', 'XGBoost', 'GNN', 'DLinear'],
+        weights: { LightGBM: 0.35, XGBoost: 0.25, GNN: 0.25, DLinear: 0.15 },
       }),
     },
     {
@@ -230,9 +235,9 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.teacher_label_scope === 'training_teacher_labels_offline_runtime_teacher_evidence_optional', 'Layer1.5 router must expose offline training labels vs optional runtime teacher evidence scope')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.runtime_teacher_evidence_policy === 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency', 'Layer1.5 runtime teacher evidence must not depend on same-day L2/L3')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.runtime_teacher_evidence_source === 'historical_verified_cache', 'Layer1.5 should expose runtime teacher evidence source')
-  assert((summary?.evidence.layer15_multi_strategy_router as any)?.expected_teacher_count === 9, 'Layer1.5 router must keep 9ML teacher-label contract')
-  assert(((summary?.evidence.layer15_multi_strategy_router as any)?.expected_teacher_models ?? []).join(',') === 'LightGBM,XGBoost,ExtraTrees,TabM,GNN,DLinear,PatchTST,iTransformer,TimesFM', 'Layer1.5 expected teacher models must include L2/L3 9ML')
-  assert((summary?.evidence.layer15_multi_strategy_router as any)?.teacher_label_count === 3, 'Layer1.5 router should count available teacher labels')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.expected_teacher_count === 8, 'Layer1.5 router must keep 8ML teacher-label contract')
+  assert(((summary?.evidence.layer15_multi_strategy_router as any)?.expected_teacher_models ?? []).join(',') === 'LightGBM,XGBoost,ExtraTrees,TabM,GNN,DLinear,PatchTST,iTransformer', 'Layer1.5 expected teacher models must include active L3 8ML')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.teacher_label_count === 2, 'Layer1.5 router should count available teacher labels')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.no_topup_policy_scope === 'formal_ml_slate_no_minimum_fill', 'Layer1.5 no-topup policy must scope to formal ML slate')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.observe_topup_policy === 'research_observe_only_never_formal_l2', 'Layer1 observe top-up policy must stay research/observe only')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.formal_l2_queue === true, 'L1.5 selected candidate must declare formal L2 queue eligibility')
@@ -247,23 +252,22 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.learned_strategy_edge === 9.1, 'Layer1.5 summary should expose learned strategy edge')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.new_strategy_ratio === 1, 'Layer1.5 summary should expose strategy novelty signal')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_rank_ic === 0.12, 'Layer1.5 summary should expose learned RankIC signal')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.schema_version === 'layer2_3ml_coarse_summary_v1', 'Layer2 3ML coarse evidence must expose a stable summary schema')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.decision_policy === 'three_ml_coarse_evidence_l3_queue_not_final_ranker', 'Layer2 3ML coarse must not be summarized as final ranking')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.expected_model_count === 3, 'Layer2 3ML coarse should keep the 3-model contract')
-  assert(((summary?.evidence.layer2_3ml_coarse as any)?.expected_models ?? []).join(',') === 'LightGBM,XGBoost,ExtraTrees', 'Layer2 3ML coarse model ids must stay visible')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.core_ml_evidence === true, 'Layer2 core ML evidence flag must be explicit when controller evidence exists')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_evidence === true, 'Layer2 formal evidence must be explicit when controller evidence exists')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_pass === false, 'Layer2 formal evidence must not be exposed as final recommendation pass')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.final_recommendation_gate === false, 'Layer2 coarse queue must not be a final recommendation gate')
-  assert((summary?.evidence.layer2_coarse_ml as any)?.coarse_ml_queue_size === 80, 'Layer2 coarse ML evidence must be summarized')
-  assert((summary?.evidence.layer3_6ml_formal as any)?.schema_version === 'layer3_6ml_formal_summary_v1', 'Layer3 6ML formal evidence must expose a stable summary schema')
-  assert((summary?.evidence.layer3_6ml_formal as any)?.decision_policy === 'six_ml_formal_family_vote_not_topk', 'Layer3 formal ML must be family-vote evidence, not top-k')
-  assert((summary?.evidence.layer3_6ml_formal as any)?.expected_model_count === 6, 'Layer3 formal should keep the 6-model contract')
-  assert(((summary?.evidence.layer3_6ml_formal as any)?.expected_models ?? []).join(',') === 'TabM,GNN,DLinear,PatchTST,iTransformer,TimesFM', 'Layer3 formal model ids must stay visible')
-  assert((summary?.evidence.layer3_6ml_formal as any)?.active_l3_model_count === 2, 'Layer3 formal summary should count active L3 contributors separately from L2 contributors')
+  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.schema_version === 'layer2_timesfm_enrichment_summary_v1', 'Layer2 TimesFM evidence must expose a stable summary schema')
+  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.decision_policy === 'timesfm_sequence_sidecar_feature_enrichment_not_selector', 'Layer2 TimesFM must not be summarized as selector/ranker')
+  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.expected_model_count === 1, 'Layer2 TimesFM should keep the 1-model sidecar contract')
+  assert(((summary?.evidence.layer2_timesfm_enrichment as any)?.expected_models ?? []).join(',') === 'TimesFM', 'Layer2 TimesFM model id must stay visible')
+  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.final_recommendation_gate === false, 'Layer2 TimesFM must not be a final recommendation gate')
+  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.l3_formal_inference_selected === true, 'Layer2 TimesFM must not shrink the L3 queue')
+  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.l2_feature_input_active === true, 'Layer2 TimesFM feature input must be visible')
+  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.populated_feature_count === 11, 'Layer2 TimesFM feature coverage must be summarized')
+  assert((summary?.evidence.layer3_8ml_formal as any)?.schema_version === 'layer3_8ml_formal_summary_v1', 'Layer3 8ML formal evidence must expose a stable summary schema')
+  assert((summary?.evidence.layer3_8ml_formal as any)?.decision_policy === 'eight_ml_formal_family_evidence_not_topk', 'Layer3 formal ML must be family evidence, not top-k')
+  assert((summary?.evidence.layer3_8ml_formal as any)?.expected_model_count === 8, 'Layer3 formal should keep the 8-model contract')
+  assert(((summary?.evidence.layer3_8ml_formal as any)?.expected_models ?? []).join(',') === 'LightGBM,XGBoost,ExtraTrees,TabM,GNN,DLinear,PatchTST,iTransformer', 'Layer3 formal model ids must stay visible')
+  assert((summary?.evidence.layer3_8ml_formal as any)?.active_l3_model_count === 4, 'Layer3 formal summary should count active L3 contributors')
   assert((summary?.evidence.layer3_formal_ml as any)?.active_family_count === 3, 'Layer3 formal ML evidence must be summarized')
   assert((summary?.evidence.layer35_evidence_fusion as any)?.schema_version === 'layer35_evidence_fusion_v1', 'Layer3.5 evidence fusion must expose a stable summary schema')
-  assert((summary?.evidence.layer35_evidence_fusion as any)?.fusion_method === 'strategy_router_vs_9ml_formal_family_evidence_calibration', 'Layer3.5 fusion must expose strategy-vs-9ML calibration method')
+  assert((summary?.evidence.layer35_evidence_fusion as any)?.fusion_method === 'strategy_router_vs_8ml_formal_family_evidence_calibration', 'Layer3.5 fusion must expose strategy-vs-8ML calibration method')
   assert((summary?.evidence.layer35_evidence_fusion as any)?.input_scope === 'layer15_route_score_layer3_formal_family_score_uncertainty_active_family_count', 'Layer3.5 fusion must expose input scope')
   assert((summary?.evidence.layer35_evidence_fusion as any)?.decision_policy === 'observe_only_no_hard_shrink', 'Layer3.5 evidence fusion must not hard-shrink candidates')
   assert((summary?.evidence.layer35_evidence_fusion as any)?.selection_policy === 'no_candidate_drop_no_topk_no_minimum_fill', 'Layer3.5 evidence fusion must not drop/top-k/fill candidates')
@@ -458,15 +462,14 @@ function assert(condition: unknown, message: string): void {
       reason_code: 'ml_slate_queue_seed_from_l1_5_router',
       rank: 3,
       score_after: 70,
-      evidence: JSON.stringify({ worker_seed_only: true, downstream_owner: 'ml-controller', downstream_stage: 'layer2_coarse_ml_gate' }),
+      evidence: JSON.stringify({ worker_seed_only: true, downstream_owner: 'ml-controller', downstream_stage: 'layer2_timesfm_enrichment' }),
     },
   ])
 
   const summary = summaries.get('2330')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.worker_seed_only === true, 'worker seed should be explicit in the Layer2 3ML summary')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.core_ml_evidence === false, 'worker seed must not claim controller core ML evidence')
-  assert((summary?.evidence.layer2_3ml_coarse as any)?.formal_l2_pass === false, 'worker seed must not become a formal L2 pass')
+  assert(!summary?.evidence.layer2_timesfm_enrichment, 'worker seed must not be summarized as formal L2 TimesFM evidence')
+  assert(!summary?.evidence.layer2_3ml_coarse, 'worker seed must not preserve legacy L2 tree summary')
   assert(!summary?.evidence.layer2_coarse_ml, 'worker seed must not be summarized as formal L2 coarse ML pass')
-  assert((summary?.evidence.layer15_ml_slate_queue as any)?.downstream_stage === 'layer2_coarse_ml_gate', 'L1.5 slate queue should expose the downstream L2 owner')
+  assert((summary?.evidence.layer15_ml_slate_queue as any)?.downstream_stage === 'layer2_timesfm_enrichment', 'L1.5 slate queue should expose the downstream L2 owner')
   assert((summary?.evidence.layer2_queue_seed as any)?.worker_seed_only === true, 'worker seed should stay visible as queue seed evidence')
 }

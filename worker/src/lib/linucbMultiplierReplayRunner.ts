@@ -92,7 +92,7 @@ export async function runLinUcbMultiplierReplay(
       start_date: startDate,
       end_date: endDate,
       source_rows: rows.length,
-      source: 'predictions_active_9_verified_rows',
+      source: 'predictions_active_8_verified_rows',
     },
   }
   const persist = options.persist === true

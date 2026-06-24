@@ -185,11 +185,33 @@ def attach_timesfm_foundation_evidence_to_followup_payload(
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
 ) -> dict[str, Any]:
     stages = payload_dict.get("stages") if isinstance(payload_dict.get("stages"), dict) else {}
+    l2_release = stages.setdefault("timesfm_l2_feature_release", {})
+    if not isinstance(l2_release, dict):
+        l2_release = {}
+        stages["timesfm_l2_feature_release"] = l2_release
+    l2_results = l2_release.setdefault("results", {})
+    if not isinstance(l2_results, dict):
+        l2_results = {}
+        l2_release["results"] = l2_results
+
     lifecycle = stages.get("artifact_lifecycle") if isinstance(stages.get("artifact_lifecycle"), dict) else {}
-    results = lifecycle.get("results") if isinstance(lifecycle.get("results"), dict) else {}
-    timesfm = results.get("TimesFM") if isinstance(results.get("TimesFM"), dict) else None
+    lifecycle_results = lifecycle.get("results") if isinstance(lifecycle.get("results"), dict) else {}
+    legacy_timesfm = (
+        lifecycle_results.pop("TimesFM", None)
+        if isinstance(lifecycle_results.get("TimesFM"), dict)
+        else None
+    )
+    if legacy_timesfm is not None and "TimesFM" not in l2_results:
+        l2_results["TimesFM"] = {
+            **legacy_timesfm,
+            "candidate_type": "timesfm_l175_l2_feature_release",
+            "release_stage": "timesfm_l2_feature_release",
+            "direct_alpha_blocked": True,
+        }
+
+    timesfm = l2_results.get("TimesFM") if isinstance(l2_results.get("TimesFM"), dict) else None
     if not isinstance(timesfm, dict):
-        return {"attempted": False, "updated": False, "reason": "timesfm_lifecycle_result_missing"}
+        return {"attempted": False, "updated": False, "reason": "timesfm_l2_feature_release_result_missing"}
 
     metrics = timesfm.get("metrics") if isinstance(timesfm.get("metrics"), dict) else {}
     has_oos = timesfm.get("oos_ic") is not None or metrics.get("oos_ic") is not None

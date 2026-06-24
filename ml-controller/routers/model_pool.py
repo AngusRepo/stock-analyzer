@@ -8,7 +8,7 @@ Legacy ML_POOL Stage 1+:
   GET  /model_pool/status           -> read model_pool.json
   POST /model_pool/promote/{name}   -> retired; artifact_registry owns promotion
   POST /model_pool/retire/{name}    -> manual active -> retired
-  POST /model_pool/promote_check    -> cleans legacy challenger residue, no active-9 promotion
+  POST /model_pool/promote_check    -> cleans legacy challenger residue, no Active-8 direct-alpha promotion
 """
 from __future__ import annotations
 import logging
@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import modal_client
-from services.active9_dataset_policy import ACTIVE_ALPHA_MODELS, RETIRED_ALPHA_MODELS
+from services.active_model_policy import ACTIVE_ALPHA_MODELS, MODEL_POOL_REQUIRED_MODELS, RETIRED_ALPHA_MODELS
 from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/model_pool", tags=["model_pool"])
 ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
+MODEL_POOL_REQUIRED_MODEL_SET = set(MODEL_POOL_REQUIRED_MODELS)
 RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 
 
@@ -563,13 +564,13 @@ class RegisterChallengerRequest(BaseModel):
 async def register_challenger(req: RegisterChallengerRequest):
     """Legacy challenger registration endpoint.
 
-    Active-9 model promotion is owned by artifact_registry promotion gates.
+    Active-8 direct-alpha model promotion is owned by artifact_registry promotion gates.
     This endpoint is fail-closed for active/retired alpha production slots so
     legacy model_pool challenger state cannot re-enter the new flow.
     """
     if not req.confirm:
         raise HTTPException(status_code=400, detail="register_challenger requires confirm=true")
-    if req.model_name in ACTIVE_ALPHA_MODEL_SET or req.model_name in RETIRED_ALPHA_MODEL_SET:
+    if req.model_name in MODEL_POOL_REQUIRED_MODEL_SET or req.model_name in RETIRED_ALPHA_MODEL_SET:
         raise HTTPException(
             status_code=410,
             detail=(
@@ -1020,7 +1021,7 @@ async def promote_check(req: PromoteCheckRequest):
     legacy_model_names = [
         name
         for name in list((pool.get("models") or {}).keys())
-        if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET
+        if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET
     ]
 
     # Family balance baseline: count current active alpha predictors per family.
@@ -1045,7 +1046,7 @@ async def promote_check(req: PromoteCheckRequest):
             "transition": "delete_legacy_residue",
             "from": "model_pool.models",
             "to": None,
-            "reason": "non-active-9 alpha model residue removed from canonical model_pool",
+            "reason": "non-required model residue removed from canonical model_pool",
         })
 
     for name, entry in pool.get("models", {}).items():
@@ -1307,7 +1308,7 @@ async def promote_check(req: PromoteCheckRequest):
         )
 
     # Apply transitions if requested. Lifecycle event audit rows are intentionally
-    # not written; the active-9 surface is artifact, evidence, and pointer state.
+    # not written; the Active-8 direct-alpha surface is artifact, evidence, and pointer state.
     applied_count = 0
     if req.apply:
         def _audit(_action: dict, _from_status: str | None, _to_status: str | None) -> None:
@@ -1685,7 +1686,7 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
             raise HTTPException(status_code=404, detail="model_pool.json not found")
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         for name, entry in (pool.get("models") or {}).items():
-            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+            if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET:
                 continue
             version = entry.get("version")
             if version:
@@ -1710,7 +1711,7 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
 
 @router.get("/lineage")
 async def lineage():
-    """Return active-9 model_pool lineage pointers."""
+    """Return required model_pool lineage pointers."""
     try:
         import json as _json
         from google.cloud import storage
@@ -1723,7 +1724,7 @@ async def lineage():
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
         out: dict[str, dict] = {}
         for name, entry in (pool.get("models") or {}).items():
-            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
+            if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET:
                 continue
             version = entry.get("version")
             artifact_path = entry.get("gcs_path") or (version and _model_artifact_path(name, version))

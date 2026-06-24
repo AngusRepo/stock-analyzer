@@ -488,8 +488,9 @@ def predict_stock(req: PredictRequest) -> dict:
 
 
 _FEATURE_MODEL_NAMES_V2 = ["LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"]
-_TIME_SERIES_MODEL_NAMES_V2 = ["DLinear", "PatchTST", "iTransformer", "TimesFM"]
+_TIME_SERIES_MODEL_NAMES_V2 = ["DLinear", "PatchTST", "iTransformer"]
 _STATE_SPACE_OVERLAY_NAMES_V2 = ["KalmanFilter", "MarkovSwitching"]
+_L2_FEATURE_SIDECAR_NAMES = ["TimesFM"]
 _SHADOW_CHALLENGER_MODEL_NAMES = ["ResidualMLP"]
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 _BATCH_FEATURE_RANK_SCORES_KEY = "__batch_feature_rank_scores"
@@ -522,11 +523,27 @@ def _require_model_pool_contract(pool: Any, *, stage: str = "predict_v2") -> tup
         raise ModelPoolContractError(
             f"{stage}: missing model_pool.models entries: {', '.join(missing)}"
         )
+    sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
+    missing_sidecars = [
+        name
+        for name in _L2_FEATURE_SIDECAR_NAMES
+        if not isinstance(sidecars.get(name), dict) and not isinstance(pool_models.get(name), dict)
+    ]
+    if missing_sidecars:
+        raise ModelPoolContractError(
+            f"{stage}: missing model_pool.l2_feature_sidecars entries: {', '.join(missing_sidecars)}"
+        )
     invalid = [
         f"{name}={pool_models[name].get('status')}"
         for name in _MODEL_NAMES_V2
         if str(pool_models[name].get("status") or "").strip() not in _MODEL_POOL_ALLOWED_STATUSES
     ]
+    invalid.extend(
+        f"{name}={(sidecars.get(name) or pool_models.get(name) or {}).get('status')}"
+        for name in _L2_FEATURE_SIDECAR_NAMES
+        if str(((sidecars.get(name) or pool_models.get(name) or {}).get("status") or "")).strip()
+        not in _MODEL_POOL_ALLOWED_STATUSES
+    )
     if invalid:
         raise ModelPoolContractError(
             f"{stage}: invalid model_pool lifecycle status: {', '.join(invalid)}"
@@ -744,7 +761,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         ts_model_fns = [
             ("DLinear", lambda: run_dlinear(adj_prices_arr, req.horizon)),
         ]
-        for missing_sequence in ("PatchTST", "iTransformer", "TimesFM"):
+        for missing_sequence in ("PatchTST", "iTransformer"):
             model_errors.append(f"{missing_sequence}: production predictor requires artifact-backed batch serving")
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {}

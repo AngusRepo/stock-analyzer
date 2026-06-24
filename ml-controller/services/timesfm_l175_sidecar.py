@@ -1,7 +1,7 @@
-"""TimesFM L1.75 feature-sidecar contract.
+"""TimesFM L2 feature-sidecar contract.
 
 TimesFM is blocked from direct alpha voting. This module turns its forecast
-into auditable sidecar features that can enter L2 only after a versioned
+into auditable sidecar features that can enter L3 only after a versioned
 retrain/release policy is approved.
 """
 
@@ -219,7 +219,7 @@ def build_timesfm_l175_sidecar(
 
     return {
         "schema_version": "timesfm-l1-75-sidecar-v1",
-        "layer": "L1.75",
+        "layer": "L2",
         "source": "TimesFM",
         "role": "feature_sidecar",
         "direct_alpha_blocked": True,

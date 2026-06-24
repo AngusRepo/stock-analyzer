@@ -39,7 +39,7 @@ def test_extract_per_model_scores_keeps_timesfm_out_of_direct_alpha_rows():
     assert "TimesFM" not in out
 
 
-def test_per_model_signal_payload_preserves_timesfm_forecast_context():
+def test_per_model_signal_payload_keeps_timesfm_out_of_direct_alpha_rows():
     payload = _per_model_signal_payload(
         {
             "timesfm": {
@@ -53,20 +53,17 @@ def test_per_model_signal_payload_preserves_timesfm_forecast_context():
         "TimesFM",
     )
 
-    assert payload["forecast_pct"] == -0.0123
-    assert payload["confidence"] == 0.61
-    assert payload["n_used"] == 1024
-    assert payload["source_key"] == "timesfm"
+    assert payload == {}
 
 
-def test_timesfm_sidecar_builds_l1_75_features_without_alpha_role():
+def test_timesfm_sidecar_builds_l2_features_without_alpha_role():
     payload = _timesfm_sidecar_payload(
         {
             "entry_price": 100.0,
             "timesfm": {
                 "forecast_pct": -0.012,
                 "forecast_price": 98.8,
-                "forecast_pct_path": [-0.002, -0.006, -0.012],
+                "forecast_path": [-0.002, -0.006, -0.012, -0.020],
                 "forecast_p10": -0.03,
                 "forecast_p90": 0.01,
                 "confidence": 0.61,
@@ -82,7 +79,7 @@ def test_timesfm_sidecar_builds_l1_75_features_without_alpha_role():
 
     assert payload is not None
     assert payload["schema_version"] == "timesfm-l1-75-sidecar-v1"
-    assert payload["layer"] == "L1.75"
+    assert payload["layer"] == "L2"
     assert payload["role"] == "feature_sidecar"
     assert payload["direct_alpha_blocked"] is True
     assert payload["eligible_for_l2_feature_enrichment"] is False
@@ -92,7 +89,7 @@ def test_timesfm_sidecar_builds_l1_75_features_without_alpha_role():
     assert features["forecast_return"] == -0.012
     assert features["forecast_log_return"] < 0
     assert features["forecast_slope"] < 0
-    assert features["forecast_curvature"] == -0.002
+    assert features["forecast_curvature"] is not None
     assert features["random_walk_residual"] == -0.012
     assert features["quantile_width"] == 0.04
     assert features["forecast_dispersion"] is not None

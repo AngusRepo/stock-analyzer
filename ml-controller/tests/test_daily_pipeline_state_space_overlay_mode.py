@@ -87,7 +87,7 @@ def _feature_prediction(symbol: str = "2330") -> dict:
     }
 
 
-def _active9_status(overrides: dict[str, str] | None = None) -> dict[str, str]:
+def _model_pool_status(overrides: dict[str, str] | None = None) -> dict[str, str]:
     status = {
         "LightGBM": "retired",
         "XGBoost": "retired",
@@ -126,7 +126,7 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None, state_
         daily_pipeline_v2,
         "_load_model_pool_versions",
         lambda: (
-            _active9_status({"KalmanFilter": "active", "MarkovSwitching": "active"}),
+            _model_pool_status({"KalmanFilter": "active", "MarkovSwitching": "active"}),
             {"KalmanFilter": "v1", "MarkovSwitching": "v1"},
             {},
             True,
@@ -251,7 +251,7 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
         daily_pipeline_v2,
         "_load_model_pool_versions",
         lambda: (
-            _active9_status({"GNN": "active"}),
+            _model_pool_status({"GNN": "active"}),
             {"GNN": "v1"},
             {},
             True,
@@ -266,10 +266,10 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
     assert result["modal_wait_telemetry"]["stage_timings"]["gnn_graphsage_universal_predict"]["required_alpha"] is True
 
 
-def test_timesfm_gate_requires_coverage_but_observes_non_positive_effective_ic(monkeypatch):
+def test_timesfm_gate_requires_coverage_and_blocks_direct_alpha(monkeypatch):
     monkeypatch.setenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", "128")
     series = [{"symbol": "2330", "prices": list(range(260))}]
-    pool = {"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04, "last_ic_sample_count": 50}}}
+    pool = {"l2_feature_sidecars": {"TimesFM": {"status": "active", "version": "v1"}}}
 
     allowed, meta = daily_pipeline_v2._timesfm_sync_gate(
         model_status={"TimesFM": "active"},
@@ -279,21 +279,10 @@ def test_timesfm_gate_requires_coverage_but_observes_non_positive_effective_ic(m
     )
 
     assert allowed is True
-    assert meta["reason"] == "timesfm_sidecar_only_direct_alpha_blocked"
+    assert meta["reason"] == "timesfm_l2_sidecar_sequence_contract_ok"
     assert meta["ensemble_contribution_allowed"] is False
     assert meta["direct_alpha_blocked"] is True
     assert meta["sequence_contract_points"] == 128
-
-    allowed, meta = daily_pipeline_v2._timesfm_sync_gate(
-        model_status={"TimesFM": "active"},
-        pool={"models": {"TimesFM": {"status": "active", "ic_4w_avg": -0.05, "last_ic_sample_count": 80}}},
-        ev2_cfg={},
-        sequence_series=series,
-    )
-
-    assert allowed is True
-    assert meta["reason"] == "timesfm_observation_only_non_positive_effective_ic"
-    assert meta["ensemble_contribution_allowed"] is False
     assert meta["effective_weight"] == 0.0
 
     short_series = [{"symbol": "2330", "prices": list(range(60))}]
@@ -332,28 +321,24 @@ def test_timesfm_gate_requires_coverage_but_observes_non_positive_effective_ic(m
 def test_timesfm_gate_requires_artifact_sequence_contract_when_active(monkeypatch):
     monkeypatch.delenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", raising=False)
 
-    with pytest.raises(RuntimeError, match="TimesFM active model missing gcs_path/version"):
+    with pytest.raises(RuntimeError, match="TimesFM L2 sidecar missing gcs_path/version"):
         daily_pipeline_v2._timesfm_sync_gate(
             model_status={"TimesFM": "active"},
-            pool={"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04}}},
+            pool={"l2_feature_sidecars": {"TimesFM": {"status": "active"}}},
             ev2_cfg={},
             sequence_series=[],
         )
 
 
-def test_timesfm_gate_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypatch):
+def test_timesfm_gate_accepts_l2_sidecar_sequence_contract(monkeypatch):
     monkeypatch.setenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", "128")
     series = [{"symbol": "2330", "prices": list(range(128))}]
     pool = {
-        "models": {
+        "l2_feature_sidecars": {
             "TimesFM": {
                 "status": "active",
-                "last_ic_status": "awaiting_live_ic",
-                "last_artifact_evidence": {
-                    "oos_ic": 0.04900895,
-                    "oos_samples": 512,
-                    "source": "timesfm25_migration_supported_contexts_context_128",
-                },
+                "version": "v1",
+                "role": "l2_feature_sidecar",
             }
         }
     }
@@ -366,12 +351,11 @@ def test_timesfm_gate_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypatch
     )
 
     assert allowed is True
-    assert meta["reason"] == "timesfm_sidecar_only_direct_alpha_blocked"
+    assert meta["reason"] == "timesfm_l2_sidecar_sequence_contract_ok"
     assert meta["ensemble_contribution_allowed"] is False
     assert meta["direct_alpha_blocked"] is True
     assert meta["sequence_contract_points"] == 128
-    assert meta["diagnostic"]["ic_source"] == "last_artifact_evidence.oos_ic"
-    assert meta["diagnostic"]["ic_sample_count"] == 512
+    assert meta["diagnostic"]["source"] == "l2_feature_sidecar"
 
 
 def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
@@ -397,7 +381,7 @@ def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
         daily_pipeline_v2,
         "_load_model_pool_versions",
         lambda: (
-            _active9_status({"TimesFM": "active"}),
+            _model_pool_status({"TimesFM": "active"}),
             {"TimesFM": "v1"},
             {},
             True,
@@ -412,11 +396,11 @@ def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
             1.0,
             {},
             True,
-            {"models": {"TimesFM": {"status": "active", "ic_4w_avg": 0.04, "last_ic_sample_count": 80}}},
+            {"l2_feature_sidecars": {"TimesFM": {"status": "active", "version": "v1"}}},
         ),
     )
 
-    result = _run(daily_pipeline_v2.node_ml_predict({
+    result = _run(daily_pipeline_v2.node_l2_timesfm_enrich({
         "payloads": [
             _payload("2330", price_count=65),
             _payload("2317", price_count=20),
@@ -424,9 +408,9 @@ def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
     }))
 
     assert calls == [{"symbols": ["2330"], "sequence_contract_points": 60}]
-    assert "timesfm" in result["predictions"]["2330"]
-    assert "timesfm" not in result["predictions"]["2317"]
-    gate = result["modal_wait_telemetry"]["timesfm_gate"]
+    assert "2330" in result["timesfm_l2_sidecars"]
+    assert "2317" not in result["timesfm_l2_sidecars"]
+    gate = result["timesfm_l2_summary"]["gate"]
     assert gate["allowed"] is True
     assert gate["coverage"]["usable"] == 1
     assert gate["coverage"]["excluded_count"] == 1
@@ -451,7 +435,7 @@ def test_sequence_family_models_use_sequence_contract_subset(monkeypatch):
         daily_pipeline_v2,
         "_load_model_pool_versions",
         lambda: (
-            _active9_status({"DLinear": "active"}),
+            _model_pool_status({"DLinear": "active"}),
             {"DLinear": "v1"},
             {},
             True,

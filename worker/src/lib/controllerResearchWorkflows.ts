@@ -730,7 +730,6 @@ const ACTIVE_WEEKLY_DRIFT_MODEL_NAMES = new Set([
   'DLinear',
   'PatchTST',
   'iTransformer',
-  'TimesFM',
 ])
 
 const MODEL_GROUP_BY_NAME: Record<string, string | null> = {
@@ -742,7 +741,6 @@ const MODEL_GROUP_BY_NAME: Record<string, string | null> = {
   DLinear: 'dlinear',
   PatchTST: 'patchtst',
   iTransformer: null,
-  TimesFM: null,
 }
 
 const FORMAL_ARTIFACT_LIFECYCLE_BY_NAME: Record<string, string> = {
@@ -750,7 +748,6 @@ const FORMAL_ARTIFACT_LIFECYCLE_BY_NAME: Record<string, string> = {
   GNN: 'graphsage_full_universe_artifact_retrain_registration',
   PatchTST: 'sequence_artifact_retrain_registration',
   iTransformer: 'sequence_artifact_retrain_registration',
-  TimesFM: 'foundation_forecast_validation_config_refresh',
 }
 
 function isWeeklyDriftTarget(model: Record<string, any>): boolean {
@@ -835,13 +832,12 @@ export async function triggerRetrain(env: Bindings, forceMonthly: boolean, taskI
     limit: 2500,
     force_monthly: forceMonthly,
     train_model_groups: ['tree', 'dlinear', 'patchtst'],
-    artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer', 'TimesFM'],
+    artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer'],
     artifact_lifecycle_contracts: {
       GNN: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.GNN,
       TabM: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.TabM,
       PatchTST: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.PatchTST,
       iTransformer: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.iTransformer,
-      TimesFM: FORMAL_ARTIFACT_LIFECYCLE_BY_NAME.TimesFM,
     },
     trigger_source: forceMonthly ? 'worker_monthly_retrain' : 'worker_retrain',
   }

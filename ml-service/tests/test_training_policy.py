@@ -234,8 +234,8 @@ def test_model_cpcv_cost_multiplier_is_visible_in_validation_metadata():
         "TabM",
         "GNN",
         "iTransformer",
-        "TimesFM",
     }
+    assert set(metadata["model_cpcv_cost_estimate"]["l2_feature_sidecar_targets"]) == {"TimesFM"}
     assert metadata["model_cpcv_cost_estimate"]["sequence_models"]["DLinear"]["default_method"] == (
         "sequence_oos_fold_rank_ic"
     )
@@ -365,7 +365,7 @@ def test_universal_training_policy_accepts_payload_group_string():
 def test_artifact_lifecycle_targets_suppress_duplicate_train_groups():
     groups, suppressed = dedupe_train_groups_for_artifact_lifecycle(
         ["tree", "dlinear", "patchtst"],
-        ["GNN", "PatchTST", "iTransformer", "TimesFM"],
+        ["GNN", "PatchTST", "iTransformer"],
     )
 
     assert groups == ["tree", "dlinear"]
@@ -458,7 +458,7 @@ def test_retired_ft_transformer_filter_does_not_force_full_feature_pool():
     assert should_force_full_feature_pool(None) is False
 
 
-def test_model_feature_policy_contract_covers_refactored_alpha_slots():
+def test_model_feature_policy_contract_covers_active8_and_timesfm_sidecar():
     expected = {
         "LightGBM",
         "XGBoost",
@@ -479,6 +479,8 @@ def test_model_feature_policy_contract_covers_refactored_alpha_slots():
     assert feature_policy_for_model("PatchTST").feature_source == "sequence_records.close_only"
     assert feature_policy_for_model("iTransformer").feature_source == "sequence_records.close_only"
     assert feature_policy_for_model("TimesFM").feature_source == "sequence_records.close_only"
+    assert feature_policy_for_model("TimesFM").selection_owner == "timesfm_l2_sidecar_release"
+    assert feature_policy_for_model("TimesFM").feature_policy_type == "timesfm_l2_feature_sidecar_artifact_required"
 
 
 def test_feature_selection_governance_has_no_planned_p3_methods_left():

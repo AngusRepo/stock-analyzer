@@ -271,6 +271,13 @@ type Layer2CoarseMlSummary = {
   reason_code?: string | null
   coarse_queue_size?: number | string | null
   core_ml_shortlist_size?: number | string | null
+  l3_formal_inference_selected?: boolean | number | string | null
+  direct_alpha_blocked?: boolean | number | string | null
+  l2_feature_input_active?: boolean | number | string | null
+  l2_feature_input_blocked_reason?: string | null
+  l2_feature_schema_version?: string | null
+  populated_feature_count?: number | string | null
+  current_allowed_use?: string[]
 }
 
 type Layer3FormalMlSummary = {
@@ -390,7 +397,7 @@ const ALPHA_PREDICTION_MODEL_NAMES = [
 
 const DIRECT_ALPHA_VOTE_MODEL_SET = new Set<string>(DIRECT_ALPHA_VOTE_MODEL_NAMES)
 const DIRECT_ALPHA_VOTE_MODEL_LABEL = DIRECT_ALPHA_VOTE_MODEL_NAMES.join(' / ')
-const TIMESFM_SIDECAR_LABEL = 'TimesFM L1.75 sidecar'
+const TIMESFM_SIDECAR_LABEL = 'TimesFM L2 sidecar'
 
 function normalizeModelName(raw: unknown): string {
   const value = String(raw ?? '').trim()
@@ -551,35 +558,44 @@ function strategyPortfolioIntelligenceFromRec(rec: any): StrategyPortfolioIntell
 function mlStackEvidenceFromRec(rec: any): { coarse: Layer2CoarseMlSummary | null; formal: Layer3FormalMlSummary | null } | null {
   const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
   if (!funnelEvidence) return null
-  const coarse = parseObject(funnelEvidence.layer2_3ml_coarse)
+  const coarse = parseObject(funnelEvidence.layer2_timesfm_enrichment)
+    ?? parseObject(funnelEvidence.layer2_3ml_coarse)
     ?? parseObject(funnelEvidence.layer2_coarse_ml)
     ?? parseObject(funnelEvidence.layer2_queue_seed)
-  const formal = parseObject(funnelEvidence.layer3_6ml_formal)
+  const formal = parseObject(funnelEvidence.layer3_8ml_formal)
+    ?? parseObject(funnelEvidence.layer3_6ml_formal)
     ?? parseObject(funnelEvidence.layer3_formal_ml)
   if (!coarse && !formal) return null
   return {
     coarse: coarse
       ? {
-          schema_version: coarse.schema_version ?? 'layer2_3ml_coarse_summary_v1',
-          decision_policy: coarse.decision_policy ?? 'three_ml_coarse_screen_not_final_ranker',
+          schema_version: coarse.schema_version ?? 'layer2_timesfm_enrichment_summary_v1',
+          decision_policy: coarse.decision_policy ?? 'timesfm_sequence_sidecar_feature_enrichment_not_selector',
           capacity_policy: coarse.capacity_policy ?? 'max_only_no_minimum_no_topup',
-          expected_models: Array.isArray(coarse.expected_models) ? coarse.expected_models.map(String) : ['LightGBM', 'XGBoost', 'ExtraTrees'],
-          expected_model_count: coarse.expected_model_count ?? 3,
+          expected_models: Array.isArray(coarse.expected_models) ? coarse.expected_models.map(String) : ['TimesFM'],
+          expected_model_count: coarse.expected_model_count ?? 1,
           formal_l2_pass: coarse.formal_l2_pass ?? (coarse.worker_seed_only === true ? false : coarse.decision === 'pass'),
           worker_seed_only: coarse.worker_seed_only ?? false,
           decision: coarse.decision ?? null,
           reason_code: coarse.reason_code ?? null,
           coarse_queue_size: coarse.coarse_queue_size ?? coarse.coarse_ml_queue_size ?? null,
           core_ml_shortlist_size: coarse.core_ml_shortlist_size ?? null,
+          l3_formal_inference_selected: coarse.l3_formal_inference_selected ?? null,
+          direct_alpha_blocked: coarse.direct_alpha_blocked ?? null,
+          l2_feature_input_active: coarse.l2_feature_input_active ?? null,
+          l2_feature_input_blocked_reason: coarse.l2_feature_input_blocked_reason ?? null,
+          l2_feature_schema_version: coarse.l2_feature_schema_version ?? null,
+          populated_feature_count: coarse.populated_feature_count ?? null,
+          current_allowed_use: Array.isArray(coarse.current_allowed_use) ? coarse.current_allowed_use.map(String) : [],
         }
       : null,
     formal: formal
       ? {
-          schema_version: formal.schema_version ?? 'layer3_6ml_formal_summary_v1',
-          decision_policy: formal.decision_policy ?? 'six_ml_formal_family_vote_not_topk',
+          schema_version: formal.schema_version ?? 'layer3_8ml_formal_summary_v1',
+          decision_policy: formal.decision_policy ?? 'eight_ml_formal_family_evidence_not_topk',
           capacity_policy: formal.capacity_policy ?? 'evidence_only_no_minimum_fill',
-          expected_models: Array.isArray(formal.expected_models) ? formal.expected_models.map(String) : ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM'],
-          expected_model_count: formal.expected_model_count ?? 6,
+          expected_models: Array.isArray(formal.expected_models) ? formal.expected_models.map(String) : ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'],
+          expected_model_count: formal.expected_model_count ?? 8,
           decision: formal.decision ?? null,
           reason_code: formal.reason_code ?? null,
           formal_family_score: formal.formal_family_score ?? formal.score_after ?? formal.family_score ?? null,
@@ -1122,7 +1138,7 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
     const l2Active = boolFromValue(timesFmSidecar.l2FeatureInputActive)
     const l2BlockedReason = String(timesFmSidecar.l2FeatureInputBlockedReason ?? '')
     const directBlocked = boolFromValue(timesFmSidecar.directAlphaBlocked)
-    chips.push(`${timesFmSidecar.layer ?? 'L1.75'} TimesFM sidecar`)
+    chips.push(`${timesFmSidecar.layer ?? 'L2'} TimesFM sidecar`)
     chips.push(`TimesFM features ${Number.isFinite(featureCount) ? featureCount : 0}`)
     chips.push(`L2 input ${l2Active ? 'ACTIVE' : 'PENDING'}`)
     if (!l2Active && l2BlockedReason.includes('formal137')) chips.push('L2 block formal137/retrain/release')
@@ -1154,7 +1170,7 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
       </div>
       {warnings.length > 0 && (
         <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
-          {warnings.join('；')}。這代表該模型有回報 raw rank，但目前不被 ensemble 採信或只給探索底權重，原因通常是 segment IC、lifecycle 或 validation gate 不足。
+          {warnings.join('；')}。
         </p>
       )}
     </div>
@@ -1398,7 +1414,7 @@ function EvidenceFusionBlock({ fusion }: { fusion: Layer35FusionSummary | null }
         <MetricPill label="action" value={String(fusion.recommended_action ?? '-').replace(/_/g, ' ')} />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.fusion_method ?? 'strategy_router_vs_9ml_formal_family_evidence_calibration'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.fusion_method ?? 'strategy_router_vs_8ml_formal_family_evidence_calibration'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.input_scope ?? 'layer15_route_score_layer3_formal_family_score_uncertainty_active_family_count'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.decision_policy ?? 'observe_only_no_hard_shrink'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{fusion.selection_policy ?? 'no_candidate_drop_no_topk_no_minimum_fill'}</span>
@@ -1561,25 +1577,25 @@ function MlStackEvidenceBlock({
   formal: Layer3FormalMlSummary | null
 }) {
   if (!coarse && !formal) return null
-  const l2FormalPass = boolFromValue(coarse?.formal_l2_pass)
+  const l2FeatureActive = boolFromValue(coarse?.l2_feature_input_active)
   const workerSeedOnly = boolFromValue(coarse?.worker_seed_only)
-  const l2Models = coarse?.expected_models?.length ? coarse.expected_models.join(' / ') : 'LightGBM / XGBoost / ExtraTrees'
-  const formalModelList = (formal?.expected_models?.length ? formal.expected_models : ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'])
+  const l2Models = coarse?.expected_models?.length ? coarse.expected_models.join(' / ') : 'TimesFM'
+  const formalModelList = (formal?.expected_models?.length ? formal.expected_models : ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'])
     .filter((model) => normalizeModelName(model) !== 'TimesFM')
-  const l3Models = formalModelList.length ? formalModelList.join(' / ') : 'TabM / GNN / DLinear / PatchTST / iTransformer'
+  const l3Models = formalModelList.length ? formalModelList.join(' / ') : 'LightGBM / XGBoost / ExtraTrees / TabM / GNN / DLinear / PatchTST / iTransformer'
   const l3ContributorList = (formal?.contributing_models ?? []).filter((model) => normalizeModelName(model) !== 'TimesFM')
   const l3Contributors = l3ContributorList.length ? l3ContributorList.join(' / ') : 'no formal contributors reported'
 
   return (
     <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-violet-700 dark:text-violet-300">L2/L3 Direct ML + L1.75 Sidecar</span>
-        <span className="font-mono text-[11px] text-muted-foreground">L2 3ML coarse + L3 formal direct alpha; TimesFM sidecar only</span>
+        <span className="font-medium text-violet-700 dark:text-violet-300">L2 TimesFM + L3 Direct ML</span>
+        <span className="font-mono text-[11px] text-muted-foreground">L2 feature sidecar; L3 8ML formal direct alpha</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
-        <MetricPill label="L2 expected" value={countText(coarse?.expected_model_count ?? 3)} />
-        <MetricPill label="L2 formal pass" value={l2FormalPass ? 'PASS' : workerSeedOnly ? 'seed only' : 'WAIT'} />
-        <MetricPill label="L3 direct expected" value={countText(formalModelList.length || 5)} />
+        <MetricPill label="L2 expected" value={countText(coarse?.expected_model_count ?? 1)} />
+        <MetricPill label="L2 feature input" value={l2FeatureActive ? 'ACTIVE' : workerSeedOnly ? 'seed only' : 'PENDING'} />
+        <MetricPill label="L3 direct expected" value={countText(formalModelList.length || 8)} />
         <MetricPill label="L3 active" value={countText(formal?.active_l3_model_count ?? formal?.contributing_model_count)} />
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -1587,8 +1603,8 @@ function MlStackEvidenceBlock({
         <MetricPill label="active families" value={countText(formal?.active_family_count)} />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{coarse?.decision_policy ?? 'three_ml_coarse_screen_not_final_ranker'}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{formal?.decision_policy ?? 'six_ml_formal_family_vote_not_topk'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{coarse?.decision_policy ?? 'timesfm_sequence_sidecar_feature_enrichment_not_selector'}</span>
+        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{formal?.decision_policy ?? 'eight_ml_formal_family_evidence_not_topk'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">L2 {l2Models}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">L3 {l3Models}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{TIMESFM_SIDECAR_LABEL}</span>
@@ -1678,94 +1694,6 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
       </div>
     </div>
   )
-}
-
-function reasonTextFromValue(raw: unknown): string | null {
-  if (!raw) return null
-  if (typeof raw === 'string') {
-    const text = raw.trim()
-    return text ? translateRecommendationReason(text) : null
-  }
-  if (typeof raw !== 'object' || Array.isArray(raw)) return null
-  const obj = raw as Record<string, any>
-  return reasonTextFromValue(obj.reason ?? obj.text ?? obj.summary ?? obj.recommendation_reason)
-}
-
-function breeze2WatchPointSummary(point: string): string | null {
-  const body = point.replace(/^breeze2:/i, '').trim()
-  if (!body) return null
-  const context = body.match(/^([a-z_]+)\s+/i)?.[1]
-  const fact = body.match(/\bfact=([0-9.]+)/i)?.[1]
-  const hype = body.match(/\bhype=([0-9.]+)/i)?.[1]
-  const quality = body.match(/\bquality=([0-9.]+)/i)?.[1]
-  const flags = body.match(/\bflags=([^ ]+)/i)?.[1]
-  const contextLabel: Record<string, string> = {
-    candidate_context: '候選脈絡',
-    watchlist_context: '觀察名單脈絡',
-    human_review: '需人工複核',
-    insufficient_evidence: '佐證不足',
-  }
-  const parts = [
-    context ? contextLabel[context] ?? context.replace(/_/g, ' ') : null,
-    fact ? `事實支撐 ${Number(fact).toFixed(2)}` : null,
-    hype ? `題材熱度 ${Number(hype).toFixed(2)}` : null,
-    quality ? `來源品質 ${Number(quality).toFixed(2)}` : null,
-    flags && flags !== 'none' ? `旗標 ${flags.replace(/_/g, ' ')}` : null,
-  ].filter(Boolean)
-  return parts.length ? `Breeze2 影子線：${parts.join('；')}。` : null
-}
-
-function breeze2ReasonFromRec(rec: any): string | null {
-  const scoreV2 = scoreV2PayloadFromRec(rec)
-  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
-  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
-  const breezeWatchPoint = normalizeWatchPoints(rec.watch_points).find((point) => point.startsWith('breeze2:'))
-  const breezeWatchSummary = breezeWatchPoint ? breeze2WatchPointSummary(breezeWatchPoint) : null
-  return reasonTextFromValue(rec.breeze2_reason_shadow)
-    ?? reasonTextFromValue(rec.breeze2_reason)
-    ?? reasonTextFromValue(rec.breeze2_shadow_reason)
-    ?? reasonTextFromValue(reasonVariants?.breeze2 ?? reasonVariants?.Breeze2)
-    ?? reasonTextFromValue(variants?.breeze2 ?? variants?.Breeze2)
-    ?? breezeWatchSummary
-}
-
-function geminiVariantReasonFromRec(rec: any): string | null {
-  const scoreV2 = scoreV2PayloadFromRec(rec)
-  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
-  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
-  return reasonTextFromValue(rec.gemini_reason)
-    ?? reasonTextFromValue(rec.gemini_reason_shadow)
-    ?? reasonTextFromValue(reasonVariants?.gemini ?? reasonVariants?.Gemini)
-    ?? reasonTextFromValue(variants?.gemini ?? variants?.Gemini)
-}
-
-const TRADE_PLAN_LABELS: Record<string, string> = {
-  bias: '判斷',
-  entry: '進場',
-  risk: '風控',
-  target: '目標',
-  invalidation: '失效',
-  positionSizing: '部位',
-  summary: '摘要',
-}
-
-function tradePlanLinesFromValue(raw: unknown): string[] {
-  if (!raw) return []
-  if (typeof raw === 'string') {
-    const text = compactLine(raw)
-    return text ? [text] : []
-  }
-  const obj = parseObject(raw)
-  if (!obj) return []
-  const plan = parseObject(obj.tradePlan) ?? parseObject(obj.trade_plan) ?? obj
-  return Object.entries(plan)
-    .map(([key, value]) => {
-      const text = typeof value === 'string' || typeof value === 'number'
-        ? compactLine(String(value))
-        : ''
-      return text ? `${TRADE_PLAN_LABELS[key] ?? key}：${text}` : null
-    })
-    .filter((line): line is string => Boolean(line))
 }
 
 function planPrice(value: unknown): string | null {
@@ -1860,75 +1788,6 @@ function TradePlanRow({ row }: { row: TradePlanReadRow }) {
         {row.value}
       </span>
       <span className="text-xs leading-relaxed text-muted-foreground">{row.note}</span>
-    </div>
-  )
-}
-
-function ProviderReasonCompare({
-  geminiReason,
-  geminiTradePlan,
-  geminiWatchPoints,
-  breeze2Reason,
-  breeze2TradePlan,
-  breeze2WatchPoints,
-}: {
-  geminiReason: string
-  geminiTradePlan: string[]
-  geminiWatchPoints: string[]
-  breeze2Reason: string | null
-  breeze2TradePlan: string[]
-  breeze2WatchPoints: string[]
-}) {
-  const geminiPoints = geminiWatchPoints.filter(Boolean).slice(0, 3)
-  const breezePoints = breeze2WatchPoints.filter(Boolean).slice(0, 3)
-  const geminiPlan = geminiTradePlan.filter(Boolean).slice(0, 4)
-  const breezePlan = breeze2TradePlan.filter(Boolean).slice(0, 4)
-  return (
-    <div className="mt-3 grid gap-2 sm:grid-cols-2">
-      <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.05] p-3">
-        <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">Gemini 3.5 Flash</p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{geminiReason}</p>
-        {geminiPlan.length > 0 && (
-          <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/90">
-            {geminiPlan.map((line, index) => (
-              <p key={`gemini-plan-${index}`}>{line}</p>
-            ))}
-          </div>
-        )}
-        {geminiPoints.length > 0 && (
-          <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
-            {geminiPoints.map((point, index) => (
-              <li key={`gemini-${index}`} className="flex gap-1.5">
-                <span className="mt-0.5 text-blue-500">•</span>
-                <span>{normalizeWatchPoint(point)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-      <div className="rounded-md border border-emerald-500/20 bg-emerald-500/[0.05] p-3">
-        <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">Breeze2</p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          {breeze2Reason ?? 'Breeze2 尚未回寫逐檔中文總結；目前正式資料只有模型流程指標，還不能和 Gemini 做逐字理由比較。'}
-        </p>
-        {breezePlan.length > 0 && (
-          <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/90">
-            {breezePlan.map((line, index) => (
-              <p key={`breeze2-plan-${index}`}>{line}</p>
-            ))}
-          </div>
-        )}
-        {breezePoints.length > 0 && (
-          <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground/85">
-            {breezePoints.map((point, index) => (
-              <li key={`breeze2-${index}`} className="flex gap-1.5">
-                <span className="mt-0.5 text-emerald-500">•</span>
-                <span>{normalizeWatchPoint(point)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
     </div>
   )
 }
@@ -2259,42 +2118,6 @@ function chipPlanNote(rec: any): string {
   return '籌碼來源不足，不能把法人流向當主要理由。'
 }
 
-function geminiReasonForCompare(rec: any, reason: string): string {
-  const variant = geminiVariantReasonFromRec(rec)
-  if (variant) return variant
-  const clean = compactLine(reason)
-  if (!clean || clean.startsWith('Score V2 ')) {
-    const signal = rec.signal ? `訊號 ${rec.signal}` : '訊號待確認'
-    return `Gemini 逐檔理由尚未回寫；目前只保留 ${signal} 與 Score V2 結構化資料，避免把分數摘要偽裝成投資建議。`
-  }
-  return clean
-}
-
-function reasonVariantWatchPoints(rec: any, provider: 'gemini' | 'breeze2'): string[] {
-  const scoreV2 = scoreV2PayloadFromRec(rec)
-  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
-  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
-  const entry = parseObject(reasonVariants?.[provider])
-    ?? parseObject(reasonVariants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
-    ?? parseObject(variants?.[provider])
-    ?? parseObject(variants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
-  const points = normalizeWatchPoints(entry?.watchPoints ?? entry?.watch_points)
-  if (points.length > 0) return points
-  if (provider === 'gemini') return displayWatchPoints(normalizeWatchPoints(rec.watch_points)).slice(0, 3)
-  return []
-}
-
-function reasonVariantTradePlan(rec: any, provider: 'gemini' | 'breeze2'): string[] {
-  const scoreV2 = scoreV2PayloadFromRec(rec)
-  const reasonVariants = parseObject(scoreV2?.reasonVariants) ?? parseObject(scoreV2?.reason_variants)
-  const variants = parseObject(rec.reason_variants) ?? parseObject(rec.llm_reason_variants)
-  const entry = parseObject(reasonVariants?.[provider])
-    ?? parseObject(reasonVariants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
-    ?? parseObject(variants?.[provider])
-    ?? parseObject(variants?.[provider === 'gemini' ? 'Gemini' : 'Breeze2'])
-  return tradePlanLinesFromValue(entry)
-}
-
 function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
   const vm = buildScoreBreakdownViewModel(rec)
   const ml = vm.rows.find((row) => row.key === 'mlEdge')?.value ?? 0
@@ -2432,7 +2255,6 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
   const priceRows = inlineRows.length > 0 ? inlineRows : (fetchedRows as any[])
   const plan = buildOhlcvTradePlanContext(rec, context, priceRows)
   const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
-  const breeze2Reason = breeze2ReasonFromRec(rec)
   const latestClose = zones.latest
   const resistance = zones.resistance
   const support = zones.support
@@ -2447,11 +2269,6 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
     atrDefense ? `ATR 防守 ${atrDefense}` : null,
   ].filter(Boolean).join('，')
   const tradePlanRows = buildFocusedTradePlanRows(rec, context, plan)
-  const geminiReason = geminiReasonForCompare(rec, reason)
-  const geminiTradePlan = reasonVariantTradePlan(rec, 'gemini')
-  const geminiWatchPoints = reasonVariantWatchPoints(rec, 'gemini')
-  const breeze2TradePlan = reasonVariantTradePlan(rec, 'breeze2')
-  const breeze2WatchPoints = reasonVariantWatchPoints(rec, 'breeze2')
 
   return (
     <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
@@ -2460,7 +2277,7 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
         推薦理由 / Alpha 交易計劃
       </p>
       <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground/85">
-        StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生交易計劃；Gemini 與 Breeze2 只負責旁路文字解讀，不決定進出場。
+        StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生交易計劃。
       </p>
       <div className="grid gap-2">
         <KLinePlanSketch rec={rec} priceRows={priceRows} isLoading={isLoading} plan={plan} />
@@ -2488,14 +2305,6 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
           ]}
         />
       </div>
-      <ProviderReasonCompare
-        geminiReason={geminiReason}
-        geminiTradePlan={geminiTradePlan}
-        geminiWatchPoints={geminiWatchPoints}
-        breeze2Reason={breeze2Reason}
-        breeze2TradePlan={breeze2TradePlan}
-        breeze2WatchPoints={breeze2WatchPoints}
-      />
     </div>
   )
 }

@@ -172,13 +172,13 @@ def test_load_ic_weights_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypa
         def download_as_text(self):
             return json.dumps({
                 "models": {
-                    "TimesFM": {
+                    "iTransformer": {
                         "status": "active",
                         "last_ic_status": "awaiting_live_ic",
                         "last_artifact_evidence": {
                             "oos_ic": 0.04900895,
                             "oos_samples": 512,
-                            "source": "timesfm25_migration_supported_contexts_context_128",
+                            "source": "itransformer_artifact_oos",
                         },
                     }
                 }
@@ -197,4 +197,4 @@ def test_load_ic_weights_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypa
 
     weights = ensemble.load_ic_weights()
 
-    assert 0.047 < weights["TimesFM"] < 0.049
+    assert 0.047 < weights["iTransformer"] < 0.049

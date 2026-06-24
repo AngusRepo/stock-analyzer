@@ -2,7 +2,7 @@
 
 This module deliberately does not call the FinLab API. It hydrates already
 materialized backfill artifacts into the `sequence_records_v2` contract consumed
-by DLinear, PatchTST, iTransformer, and TimesFM benchmarks/training.
+by DLinear, PatchTST, iTransformer, and the TimesFM L2 sidecar.
 """
 
 from __future__ import annotations

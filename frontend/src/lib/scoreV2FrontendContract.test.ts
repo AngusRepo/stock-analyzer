@@ -63,7 +63,7 @@ assert(
   'Recommendation card should display Score V2 points instead of normalized 0.xx ratios',
 )
 
-for (const model of ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']) {
+for (const model of ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']) {
   assert(recommendationCard.includes(`'${model}'`), `Recommendation card active model pool should include ${model}`)
 }
 
@@ -86,12 +86,12 @@ assert(
   'Recommendation card should surface Layer3 core family vote evidence in the ML badge',
 )
 
-for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '風控規則', 'Gemini 3.5 Flash', 'Breeze2', 'Alpha 規則引擎']) {
+for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '風控規則', 'Alpha 規則引擎']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should render: ${text}`)
 }
 
-for (const text of ['reasonVariantTradePlan', 'tradePlanLinesFromValue', 'geminiTradePlan', 'breeze2TradePlan', 'tradePlan']) {
-  assert(recommendationCard.includes(text), `Recommendation card should render independent provider trade plans: ${text}`)
+for (const text of ['Gemini 3.5 Flash', 'Breeze2', 'ProviderReasonCompare', 'geminiTradePlan', 'breeze2TradePlan']) {
+  assert(!scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should not render provider shadow copy: ${text}`)
 }
 
 assert(!scoreBreakdown.includes('方案 A | 突破追價'), 'Recommendation card should not render plan A copy')
@@ -157,8 +157,8 @@ for (const text of [
   'function layerTraceRowsFromRec',
   'L0-L4 / screener_funnel_evidence',
   'layer0_universe_features',
-  'layer2_3ml_coarse',
-  'layer3_6ml_formal',
+  'layer2_timesfm_enrichment',
+  'layer3_8ml_formal',
   'layer4_sparse_allocation',
 ]) {
   assert(pipelinePage.includes(text), `pipeline page should render flow-tracking layer evidence: ${text}`)

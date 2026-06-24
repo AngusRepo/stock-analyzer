@@ -41,11 +41,19 @@ function assert(condition: unknown, message: string): void {
 {
   const productionSlots = listModelUpgradeCandidates('production_slot_member')
   const ids = productionSlots.map((candidate) => candidate.id).sort().join(',')
-  assert(ids === 'DLinear,GNN,PatchTST,TabM,TimesFM,iTransformer', `production slot targets mismatch: ${ids}`)
+  assert(ids === 'DLinear,GNN,PatchTST,TabM,iTransformer', `production slot targets mismatch: ${ids}`)
   assert(productionSlots.every((candidate) => candidate.can_predict), 'production slot targets must be prediction-capable')
   assert(productionSlots.every((candidate) => candidate.can_vote), 'production slot targets must be vote-capable')
   assert(productionSlots.every((candidate) => candidate.vote_weight > 0), 'production slot targets must have nominal vote weight')
   assert(productionSlots.every((candidate) => candidate.evidence_required.includes('production_artifact')), 'production slots must require production_artifact evidence')
+}
+
+{
+  const sidecars = listModelUpgradeCandidates('l2_feature_sidecar_member')
+  const timesfm = sidecars.find((candidate) => candidate.id === 'TimesFM')
+  assert(timesfm, 'TimesFM should move to the L2 feature sidecar track')
+  assert(timesfm!.can_predict && !timesfm!.can_vote && timesfm!.vote_weight === 0, 'TimesFM sidecar must predict/enrich features without direct alpha vote')
+  assert(timesfm!.evidence_required.includes('l2_feature_release'), 'TimesFM sidecar must require L2 feature release evidence')
 }
 
 {

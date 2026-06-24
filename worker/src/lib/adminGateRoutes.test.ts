@@ -106,6 +106,10 @@ class FakeStatement {
     return {} as T
   }
 
+  async run(): Promise<{ success: true; meta: Record<string, never> }> {
+    return { success: true, meta: {} }
+  }
+
   async all<T = unknown>(): Promise<{ results: T[] }> {
     const sql = this.sql
     if (sql.includes('FROM predictions')) {
@@ -138,6 +142,104 @@ class FakeStatement {
         results: [
           { symbol: '2330', name: '台積電', sector: '半導體', industry: '半導體業', score: 70, chip_score: 25, tech_score: 22, momentum_score: 10, current_price: 900 },
           { symbol: '9999', name: '弱勢股', sector: '其他', industry: '其他', score: 30, chip_score: 2, tech_score: 2, momentum_score: 1, current_price: 20 },
+        ] as T[],
+      }
+    }
+    if (sql.includes('FROM strategy_spec_registry')) {
+      return {
+        results: [
+          {
+            strategy_id: 'trend_following_seed_v1',
+            version: 'strategy-spec-v1',
+            name: 'Trend following seed',
+            status: 'active',
+            owner: 'strategy',
+            alpha_bucket: 'trend_following',
+            family_id: 'TREND_RECLAIM_CONTINUATION',
+            variant_id: 'ma_macd_adx_reclaim_v1',
+            owner_type: 'strategy',
+            promotion_status: 'production',
+            supported_regimes_json: JSON.stringify(['bull', 'sideways', 'volatile']),
+            thesis: 'Select stocks with durable price structure and trend continuation evidence before ML ranking.',
+            thresholds_json: JSON.stringify({
+              minPrice: 10,
+              minCloseAboveMa20Pct: 0,
+              minCloseAboveMa60Pct: -0.02,
+              minVolumeExpansion20: 0.9,
+              minReturn20d: 0,
+            }),
+            candidate_policy_json: JSON.stringify({
+              poolQuota: 14,
+              costBudget: 18,
+              evidenceRequirements: ['raw_price_structure', 'raw_volume', 'raw_momentum'],
+              maxMlShare: 0.24,
+            }),
+            risk_notes_json: JSON.stringify(['test runtime spec']),
+            source_refs_json: JSON.stringify(['default_strategy_specs']),
+            created_by: 'p5_strategy_governance',
+            created_at: '2026-04-30T00:00:00Z',
+            updated_at: '2026-04-30T00:00:00Z',
+          },
+        ] as T[],
+      }
+    }
+    if (sql.includes('FROM screener_funnel_items')) {
+      return {
+        results: [
+          {
+            symbol: '2330',
+            name: 'TSMC',
+            sector: 'Semiconductor',
+            industry: 'Semiconductor',
+            score_components: JSON.stringify({ finalScore: 70, chipScore: 25, techScore: 22, momentumScore: 10 }),
+            current_price: 900,
+            funnel_evidence: JSON.stringify({
+              raw_signals: {
+                close_above_ma20_pct: 0.03,
+                close_above_ma60_pct: 0.08,
+                volume_expansion_20: 1.3,
+                return_20d: 0.06,
+                closeAboveMa20Pct: 0.03,
+                closeAboveMa60Pct: 0.08,
+                volumeExpansion20: 1.3,
+                return20d: 0.06,
+                technicalIndicators: {
+                  macdHist: 0.2,
+                  adx14: 24,
+                  diTrend: 1,
+                },
+              },
+            }),
+            funnel_score: 70,
+            funnel_rank: 1,
+          },
+          {
+            symbol: '2317',
+            name: 'Hon Hai',
+            sector: 'Electronics',
+            industry: 'EMS',
+            score_components: JSON.stringify({ finalScore: 64, chipScore: 20, techScore: 20, momentumScore: 8 }),
+            current_price: 160,
+            funnel_evidence: JSON.stringify({
+              raw_signals: {
+                close_above_ma20_pct: 0.02,
+                close_above_ma60_pct: 0.04,
+                volume_expansion_20: 1.1,
+                return_20d: 0.04,
+                closeAboveMa20Pct: 0.02,
+                closeAboveMa60Pct: 0.04,
+                volumeExpansion20: 1.1,
+                return20d: 0.04,
+                technicalIndicators: {
+                  macdHist: 0.1,
+                  adx14: 22,
+                  diTrend: 1,
+                },
+              },
+            }),
+            funnel_score: 64,
+            funnel_rank: 2,
+          },
         ] as T[],
       }
     }
@@ -221,7 +323,7 @@ void (async () => {
     assert(res.status === 200, 'strategy dry-run route should allow service token')
     const body = await res.json() as any
     assert(body.mode === 'dry_run', 'strategy dry-run should not mutate state')
-    assert(body.source === 'daily_recommendations', 'strategy dry-run should read daily recommendations by default')
+    assert(body.source === 'screener_funnel_scoring_pass', 'strategy dry-run should read screener funnel scoring-pass candidates by default')
     assert(body.candidate_count === 2, 'strategy dry-run should load fake recommendation candidates')
     assert(body.results.some((result: any) => result.matched >= 1), 'strategy dry-run should report matches')
   }
@@ -471,7 +573,7 @@ void (async () => {
         assert(candidateIds.has(id), `model upgrade status should include full P7 track candidate ${id}`)
       }
       const timesFmRow = statusBody.candidates.find((row: any) => row.candidate_id === 'TimesFM')
-      assert(timesFmRow?.stage === 'production_slot_member', 'TimesFM should remain the single active production slot for the 2.5 runtime')
+      assert(timesFmRow?.stage === 'l2_feature_sidecar_member', 'TimesFM should remain the single active L2 sidecar slot for the 2.5 runtime')
       assert(!candidateIds.has('TimesFM25'), 'TimesFM25 migration benchmark must not appear as a tenth active model-upgrade candidate')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'track_only' && row.requires_experiment_registry === false), 'non-experiment tracks should be visible as track_only')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'ready_for_review'), 'model upgrade status should surface review-ready evidence after batch run')

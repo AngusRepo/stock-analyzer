@@ -1,12 +1,12 @@
 """
-payload_builder.py — Build PredictRequest payloads from D1
+payload_builder.py ??Build PredictRequest payloads from D1
 2026-04-07 LangGraph A+B refactor
 
 Direct port of worker/src/index.ts:1013-1173 (runMLAndRisk's market_env + per-stock loop).
 
-Key optimization: instead of N stocks × 8 queries (worker did this serially per stock),
+Key optimization: instead of N stocks ? 8 queries (worker did this serially per stock),
 we issue ~10 bulk queries that pull data for ALL active stocks at once, then group
-in-memory. Reduces D1 round-trips from ~270 (33 stocks × 8) to ~10.
+in-memory. Reduces D1 round-trips from ~270 (33 stocks ? 8) to ~10.
 """
 from __future__ import annotations
 import logging
@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from services import d1_client, kv_client
 from services.adaptive import resolve_adaptive_params_for_regime
-from services.active9_dataset_policy import daily_price_history_limit, daily_price_lookback_years
+from services.active_model_policy import daily_price_history_limit, daily_price_lookback_years
 from services.market_regime_state import resolve_market_regime_contract
 from services.market_segment_policy import policy_for_segment
 from services.model_lifecycle_policy import resolve_degraded_dampening
@@ -67,9 +67,9 @@ def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, floa
         return {}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Data shapes (match worker payload schema 1:1)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def _load_current_regime_label() -> str | None:
     contract = resolve_market_regime_contract(kv_client)
@@ -96,7 +96,7 @@ def load_effective_adaptive_params() -> dict:
 
 @dataclass
 class MarketEnv:
-    """共用 market environment — 對應 worker line 1124-1147"""
+    """?梁 market environment ??撠? worker line 1124-1147"""
     risk_score: float = 50.0
     risk_level: str = "medium"
     twii_return_1d: float = 0.0
@@ -121,7 +121,7 @@ class MarketEnv:
 
 @dataclass
 class PredictPayload:
-    """單股 PredictRequest payload — 對應 ml-service/app/main.py:69-87 PredictRequest schema"""
+    """?株 PredictRequest payload ??撠? ml-service/app/main.py:69-87 PredictRequest schema"""
     stock_id: int
     symbol: str
     prices: list[dict] = field(default_factory=list)
@@ -150,9 +150,9 @@ class PredictPayload:
     runtime_options: dict = field(default_factory=dict)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Shared market env loader (one-shot, all stocks share)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, float], dict]:
     """
@@ -163,7 +163,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
 
     Maps to worker/src/index.ts:1013-1075.
     """
-    # ── 1. Latest market_risk row ───────────────────────────────────────────
+    # ?? 1. Latest market_risk row ???????????????????????????????????????????
     risk_rows = d1_client.query(
         "SELECT date, risk_level, risk_score, risk_summary "
         "FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 1",
@@ -171,7 +171,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     )
     risk_row = risk_rows[0] if risk_rows else {}
 
-    # ── 2. TAIEX 25 days for twii returns ───────────────────────────────────
+    # ?? 2. TAIEX 25 days for twii returns ???????????????????????????????????
     twii_rows = d1_client.query(
         "SELECT date, close FROM stock_prices "
         "WHERE stock_id=(SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') LIMIT 1) "
@@ -187,13 +187,13 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         twii_ma20 = twii_arr[-1] if twii_arr else 0.0
     twii_bias_20d = (twii_arr[-1] - twii_ma20) / twii_ma20 if twii_arr and twii_ma20 else 0.0
 
-    # ── 3. Market history (from market_risk + 0050 ETF fallback) ─────────────
-    # market_risk 只有 ~15 天（3/23 起），但 retrain 需要 3 年歷史。
-    # Fallback: 用 0050 ETF close 反算 market_return_1d/5d/bias_20d。
-    # 0050 跟 TWII 相關性 >0.99，是合理的大盤 proxy。
+    # ?? 3. Market history (from market_risk + 0050 ETF fallback) ?????????????
+    # market_risk ?芣? ~15 憭抬?3/23 韏瘀?嚗? retrain ?閬?3 撟湔風?脯?
+    # Fallback: ??0050 ETF close ?? market_return_1d/5d/bias_20d??
+    # 0050 頝?TWII ?賊???>0.99嚗???之??proxy??
     history_map: dict[str, dict] = {}
 
-    # 3a. market_risk 真值（有的日期用這個）
+    # 3a. market_risk ?潘????交??券?
     history_rows = d1_client.query(
         "SELECT date, risk_score, risk_level, twii_bias as market_bias_20d, twii_close, "
         "       foreign_consecutive_sell, foreign_net_5d, limit_down_count, limit_down_pct, "
@@ -219,7 +219,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             "adl_trend_numeric": adl_trend_map.get(str(row.get("adl_trend") or "flat"), 0.0),
         }
 
-    # 3b-pre. US market signals 歷史（VIX 用於 risk_score 計算）
+    # 3b-pre. US market signals 甇瑕嚗IX ?冽 risk_score 閮?嚗?
     us_history_by_date: dict[str, dict] = {}
     us_rows = d1_client.query(
         "SELECT date, vix_close, hy_spread, hy_spread_chg, sox_return, gspc_return, dxy_return, sentiment "
@@ -245,8 +245,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         [run_date],
     )
 
-    # 3c. ADL (Advance/Decline Line) — 每日上漲家數 - 下跌家數的累積
-    # 從全市場 stock_prices 算，不依賴 market_risk 表
+    # 3c. ADL (Advance/Decline Line) ??瘥銝撞摰嗆 - 銝?摰嗆?敞蝛?
+    # 敺撣 stock_prices 蝞?銝?鞈?market_risk 銵?
     adl_rows = d1_client.query(
         "SELECT date, "
         "  SUM(CASE WHEN close > prev_close THEN 1 ELSE 0 END) as advances, "
@@ -259,7 +259,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         "GROUP BY date ORDER BY date ASC",
         [run_date],
     )
-    # 累積 ADL + 5d trend + advance_ratio
+    # 蝝舐? ADL + 5d trend + advance_ratio
     adl_by_date: dict[str, tuple[float, float]] = {}  # {date: (adl_value, adl_trend_numeric)}
     advance_ratio_by_date: dict[str, float] = {}  # {date: advance_ratio}
     if adl_rows:
@@ -304,8 +304,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             breadth_by_date[row["date"]] = (ld_count, ld_pct)
         logger.info(f"[payload_builder] Breadth computed for {len(breadth_by_date)} dates")
 
-    # bull_alignment: 需要 MA 資料，從 0050 ETF 的趨勢作 proxy
-    # 0050 在 MA20 之上 = 大盤多頭排列 proxy (1.0 or 0.0)
+    # bull_alignment: ?閬?MA 鞈?嚗? 0050 ETF ?隅?Ｖ? proxy
+    # 0050 ??MA20 銋? = 憭抒憭?? proxy (1.0 or 0.0)
     bull_by_date: dict[str, float] = {}
     if etf_rows and len(etf_rows) >= 20:
         for i in range(20, len(etf_rows)):
@@ -318,7 +318,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         for i, row in enumerate(etf_rows):
             date_str = row["date"]
             if date_str in history_map:
-                # market_risk 有真值，但補上 computed fields if missing
+                # market_risk ???潘?雿?銝?computed fields if missing
                 adl_val, adl_trend = adl_by_date.get(date_str, (0, 0))
                 ld_count, ld_pct = breadth_by_date.get(date_str, (0, 0))
                 if history_map[date_str].get("adl_value", 0) == 0:
@@ -340,7 +340,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
                 bias_20d = 0
             adl_val, adl_trend = adl_by_date.get(date_str, (0, 0))
             ld_count, ld_pct = breadth_by_date.get(date_str, (0, 0))
-            # ── Compute risk_score from available data (mirrors Worker calcRiskScore) ──
+            # ?? Compute risk_score from available data (mirrors Worker calcRiskScore) ??
             _rs = 0
             _vix_row = us_history_by_date.get(date_str, {})
             _vix = _vix_row.get("vix_close")
@@ -379,7 +379,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             }
         logger.info(f"[payload_builder] Market history: {len(history_rows)} from market_risk + {len(etf_rows)} from 0050 ETF = {len(history_map)} total dates")
 
-    # ── 3e. Merge US signals + advance_ratio into history_map (Wave 2 time-series) ──
+    # ?? 3e. Merge US signals + advance_ratio into history_map (Wave 2 time-series) ??
     us_sent_map = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
     merged_us = 0
     for date_str, us_data in us_history_by_date.items():
@@ -403,10 +403,10 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     if merged_us:
         logger.info(f"[payload_builder] Merged {merged_us} US signal dates + {len(advance_ratio_by_date)} advance_ratio dates into history_map")
 
-    # ── 4. US leading signals (KV us:leading:{date}) ────────────────────────
+    # ?? 4. US leading signals (KV us:leading:{date}) ????????????????????????
     us_signal = kv_client.get_json(f"us:leading:{run_date}", default={}) or {}
 
-    # ── 5. Latest market_breadth ────────────────────────────────────────────
+    # ?? 5. Latest market_breadth ????????????????????????????????????????????
     try:
         breadth_rows = d1_client.query(
             "SELECT date, advance_ratio, bull_alignment_pct "
@@ -418,10 +418,10 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         breadth_rows = []
     latest_breadth = breadth_rows[0] if breadth_rows else {}
 
-    # ── 6. Adaptive params from KV ──────────────────────────────────────────
+    # ?? 6. Adaptive params from KV ??????????????????????????????????????????
     adaptive_params = load_effective_adaptive_params()
 
-    # ── 7. Trading config → barrier_params ──────────────────────────────────
+    # ?? 7. Trading config ??barrier_params ??????????????????????????????????
     from services.trading_config_loader import load_merged_trading_config_with_contract
     cfg_result = load_merged_trading_config_with_contract()
     trading_cfg = cfg_result.config
@@ -439,7 +439,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     # 8. Lifecycle weights from model_pool.json (single source of truth).
     lifecycle_weights = _load_lifecycle_weights_from_model_pool(trading_cfg)
 
-    # ── Build MarketEnv ─────────────────────────────────────────────────────
+    # ?? Build MarketEnv ?????????????????????????????????????????????????????
     market_env = MarketEnv(
         risk_score=risk_row.get("risk_score") or 50,
         risk_level=risk_row.get("risk_level") or "medium",
@@ -461,9 +461,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     return market_env, adaptive_params, barrier_params, lifecycle_weights, trading_cfg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Bulk per-stock loaders — pull active stocks in D1-safe chunks
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
+# Bulk per-stock loaders ??pull active stocks in D1-safe chunks
+# ?????????????????????????????????????????????????????????????????????????????
 
 D1_IN_CLAUSE_CHUNK_SIZE = 80
 
@@ -487,10 +487,10 @@ def _d1_bind_chunks(values: list, size: int = D1_IN_CLAUSE_CHUNK_SIZE) -> list[l
 def _bulk_load_prices(stock_ids: list[int], limit: int | None = None) -> dict[int, list[dict]]:
     """
     Load last `limit` rows of stock_prices for each stock_id.
-    Returns: {stock_id: [{date, close, high, low, open, volume}, ...]} (oldest→newest).
+    Returns: {stock_id: [{date, close, high, low, open, volume}, ...]} (oldest?ewest).
 
     D1 doesn't support window functions efficiently, so we pull all rows for the
-    relevant date range then group in-memory. Active-9 policy defaults to a
+    relevant date range then group in-memory. Active-8 direct-alpha policy defaults to a
     five-year / 1280-row cap so long rolling features remain available.
     """
     if not stock_ids:
@@ -752,7 +752,7 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
     Per-stock margin / shareholding / revenue / fundamentals (latest 1 row each).
     Returns: {stock_id: {margin_balance, short_ratio, retail_pct, revenue_yoy, revenue_mom, eps, roe, pe, pb, dividend_yield}}
 
-    Worker did 4 separate queries per stock — we do 4 bulk queries total.
+    Worker did 4 separate queries per stock ??we do 4 bulk queries total.
     """
     if not stock_ids:
         return {}
@@ -777,8 +777,8 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
             out[sid]["margin_balance"] = r.get("margin_balance")
             out[sid]["short_ratio"] = r.get("short_ratio")
 
-    # margin: 5 days ago (offset 5 from latest) — too complex bulk; do nullable fallback
-    # Skip for now; worker behavior is non-blocking (catch → null)
+    # margin: 5 days ago (offset 5 from latest) ??too complex bulk; do nullable fallback
+    # Skip for now; worker behavior is non-blocking (catch ??null)
 
     # shareholding: latest retail_pct
     sh_rows: list[dict] = []
@@ -869,9 +869,9 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
     return out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Public API
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def _normalize_market(value: Any) -> str:
     text = str(value or "").strip().upper()
@@ -1061,7 +1061,7 @@ def build_payloads(
     """
     Build PredictPayload list for all active stocks.
 
-    Strategy: bulk-load all per-stock data in ~10 queries (vs 8 × N stocks),
+    Strategy: bulk-load all per-stock data in ~10 queries (vs 8 ? N stocks),
     then assemble payloads in-memory.
     """
     if not active_stocks:
@@ -1071,7 +1071,7 @@ def build_payloads(
     symbols = [s["symbol"] for s in active_stocks]
     logger.info(f"[payload_builder] Building payloads for {len(stock_ids)} active stocks")
 
-    # ── Bulk load all per-stock data ────────────────────────────────────────
+    # ?? Bulk load all per-stock data ????????????????????????????????????????
     prices_by_id = _bulk_load_prices(stock_ids)
     indicators_by_id = _bulk_load_indicators(stock_ids)
     chips_by_sym = _bulk_load_chips(symbols)
@@ -1079,7 +1079,7 @@ def build_payloads(
     real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
     misc_by_id = _bulk_load_per_stock_misc(stock_ids, {int(s["id"]): str(s["symbol"]) for s in active_stocks})
 
-    # ── Stock meta: sector encoding + cross-sectional features ──────────────
+    # ?? Stock meta: sector encoding + cross-sectional features ??????????????
     # Sector tags
     tag_rows = d1_client.query(
         "SELECT symbol, tag FROM stock_tags WHERE tag_type='industry'"
@@ -1093,7 +1093,7 @@ def build_payloads(
     sector_enc = {s: i for i, s in enumerate(all_sectors)}
 
     # Per-stock returns for cross-sectional features
-    stock_returns: dict[str, tuple[float, float]] = {}  # symbol → (r1d, r5d)
+    stock_returns: dict[str, tuple[float, float]] = {}  # symbol ??(r1d, r5d)
     for stock in active_stocks:
         px = prices_by_id.get(stock["id"], [])
         if len(px) >= 6:
@@ -1117,7 +1117,7 @@ def build_payloads(
             sum(r[1] for r in rets) / len(rets),
         )
 
-    # ── Assemble payloads ───────────────────────────────────────────────────
+    # ?? Assemble payloads ???????????????????????????????????????????????????
     payloads: list[PredictPayload] = []
     base_env = asdict(market_env)
     for stock in active_stocks:

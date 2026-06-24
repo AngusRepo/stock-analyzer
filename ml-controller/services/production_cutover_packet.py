@@ -111,14 +111,14 @@ REMOTE_PREFLIGHT_CHECKS = (
         "expected": "PatchTST and iTransformer production artifact slots point to NeuralForecast-backed zip artifacts",
     },
     {
-        "id": "timesfm_active_slot_uses_25_config",
+        "id": "timesfm_l2_sidecar_uses_25_config",
         "check_type": "remote_read_only",
-        "expected": "TimesFM production slot config references google/timesfm-2.5-200m-pytorch and max_context >= 1024",
+        "expected": "TimesFM L2 sidecar config references google/timesfm-2.5-200m-pytorch and max_context >= 1024",
     },
     {
-        "id": "active9_model_pool_has_no_retired_champion",
+        "id": "active8_model_pool_has_no_retired_champion",
         "check_type": "remote_read_only",
-        "expected": "production model_pool champion set contains only the active-9 ML families",
+        "expected": "production model_pool champion set contains only the Active-8 direct-alpha ML families",
     },
     {
         "id": "challenger_cleanup_scope_is_explicit",

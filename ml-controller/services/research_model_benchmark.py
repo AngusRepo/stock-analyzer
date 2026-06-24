@@ -68,7 +68,7 @@ BENCHMARK_CANDIDATES: dict[str, BenchmarkCandidateSpec] = {
         runtime_package="timesfm",
         adapter_module="app.research_benchmarks.timesfm_adapter",
         expected_evidence=("oos_ic", "forecast_validation", "cost_sensitivity", "data_slice_report"),
-        notes="TimesFM production slot benchmark; active serving uses the TimesFM 2.5 config-backed runtime.",
+        notes="TimesFM L2 sidecar benchmark; active serving uses the TimesFM 2.5 config-backed runtime and does not vote as direct alpha.",
     ),
 }
 

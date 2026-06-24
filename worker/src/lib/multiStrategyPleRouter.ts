@@ -18,7 +18,7 @@ export const STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'finlab-portfolio-intelligence-v1'
 export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-ple-router-v1'
 export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-adaptive-marginal-slate-builder-v1'
-export const ACTIVE_9_ML_TEACHERS = [
+export const ACTIVE_8_ML_TEACHERS = [
   'LightGBM',
   'XGBoost',
   'ExtraTrees',
@@ -27,7 +27,6 @@ export const ACTIVE_9_ML_TEACHERS = [
   'DLinear',
   'PatchTST',
   'iTransformer',
-  'TimesFM',
 ] as const
 
 export type StrategyRouterDecision = 'ml_slate' | 'observe_only' | 'research_only' | 'capacity_overflow'

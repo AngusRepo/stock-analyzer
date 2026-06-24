@@ -23,7 +23,7 @@ const dashboardReadRoutes = fs.readFileSync(
 
 assert(page.includes('ModelPoolNewFlowWorkbench'), 'Model Pool must render the new L2/L3 cockpit')
 assert(page.includes('PromotionQueuePanelV2'), 'Model Pool must keep promotion and parameter governance')
-assert(!page.includes('UpgradeTrackPanelV2'), 'Model Pool must not duplicate active-9 details outside the operating matrix')
+assert(!page.includes('UpgradeTrackPanelV2'), 'Model Pool must not duplicate active-8 details outside the operating matrix')
 assert(page.includes('!isRetiredModelName(name)'), 'Model Pool must filter retired ML from the main surface')
 assert(!page.includes('{false &&'), 'Model Pool must not hide retired UI in a false render branch')
 assert(page.includes('ModelPoolWorkbenchSnapshot'), 'Model Pool must render from a complete evidence snapshot instead of partial query hydration')
@@ -34,7 +34,7 @@ assert(!page.includes('refetchInterval: 60_000'), 'Model Pool must not let indep
 
 assert(!workbench.includes("from 'lightweight-charts'"), 'Model Pool cockpit must not use the unclear fake timeline chart')
 assert(workbench.includes('Grafana-style model operations'), 'Model Pool cockpit must expose the Grafana-style operations header')
-assert(workbench.includes('Fleet status'), 'Model Pool cockpit must show active-9 fleet status cells')
+assert(workbench.includes('Fleet status'), 'Model Pool cockpit must show active-8 fleet status cells')
 assert(workbench.includes('Evidence matrix'), 'Model Pool cockpit must show weekly IC, OOS, live, PBO/CPCV, and champion compare in one matrix')
 assert(workbench.includes('fleetToneFromMatrix'), 'Fleet status must be derived from the same gate tones used by the Evidence matrix')
 assert(workbench.includes("requiredGateLabels = new Set(['OOS IC', 'LIVE IC', 'PBO/CPCV', 'COMPARE'])"), 'Fleet status must summarize required matrix gate cells')
@@ -55,9 +55,9 @@ assert(workbench.includes("label: 'LIVE IC'") && workbench.includes('daily rolli
 assert(workbench.includes('Missing evidence'), 'Evidence table must expose missing evidence chips')
 assert(page.includes('modelPoolSnapshot!.statusRows'), 'Model Pool page must pass model-upgrade status rows from the stable snapshot into the cockpit')
 assert(workbench.includes('modelUpgradeStatusReady?: boolean'), 'Model Pool cockpit must accept model-upgrade status readiness')
-assert(workbench.includes("const rawStatus = release?.state ?? model?.status ?? 'no_data'"), 'Model Pool cockpit must derive active-9 status from artifact registry state')
+assert(workbench.includes("const rawStatus = release?.state ?? model?.status ?? 'no_data'"), 'Model Pool cockpit must derive active-8 status from artifact registry state')
 assert(workbench.includes('statusRow: modelUpgradeStatusReady ? statusRow : undefined'), 'Model-upgrade status rows must be limited to drilldown diagnosis after snapshot hydration')
-assert(!workbench.includes('evidence_status_syncing'), 'Model Pool cockpit must not let model-upgrade status feed create active-9 gate blockers')
+assert(!workbench.includes('evidence_status_syncing'), 'Model Pool cockpit must not let model-upgrade status feed create active-8 gate blockers')
 assert(!workbench.includes('evidence_not_ready'), 'Model Pool cockpit must not mark production artifacts blocked by Strategy Lab research backlog')
 assert(!workbench.includes("const rawStatus = statusRow?.registry_status ?? model?.status ?? 'no_data'"), 'Model Pool cockpit must not use an unguarded lineage-active status fallback')
 assert(workbench.includes('no selected weekly/monthly candidate is waiting for champion comparison'), 'COMPARE must render N/R when no candidate exists instead of reusing champion pointer readiness')
@@ -69,7 +69,7 @@ assert(workbench.includes('whitespace-pre-line') && !workbench.includes('block t
 assert(workbench.includes('Evidence table'), 'Model Pool cockpit must keep dense registry evidence table')
 assert(workbench.includes('Research diagnosis'), 'Selected-model drilldown must expose root cause and next action for research states')
 assert(workbench.includes('Candidate release funnel'), 'Selected-model drilldown must show the candidate release readiness funnel')
-assert(workbench.includes('L2 coarse -> L3 family'), 'Model Pool cockpit must show the L2/L3 ownership split')
+assert(workbench.includes('TimesFM L2 sidecar -> L3 active-8 family'), 'Model Pool cockpit must show the L2 sidecar / L3 active-8 ownership split')
 assert(workbench.includes('candidate gate, not current prod artifact'), 'Candidate release panel must clarify it is not judging the already-serving prod artifact')
 assert(workbench.includes('Candidate vs current champion'), 'Candidate release readiness must expose the selected candidate artifact against the current champion baseline')
 assert(workbench.includes('evaluation_pending') && workbench.includes('no completed evaluation run'), 'Research state diagnostics must explain evaluation_pending root cause')
@@ -77,13 +77,14 @@ assert(workbench.includes('needs_attention') && workbench.includes('evidence is 
 assert(workbench.includes('Artifact compare'), 'Evidence table must show candidate-vs-champion artifact comparison instead of duplicating PBO/CPCV')
 assert(workbench.includes('OOS IC delta') && workbench.includes('metricDetail'), 'Candidate compare must expose candidate-vs-champion metric deltas')
 assert(workbench.includes('registry, dataset, pointer, candidate compare, promotion pressure, and missing evidence'), 'Model Pool cockpit must show dataset, pointer, candidate compare, promotion pressure, and missing evidence in the evidence table')
-assert(!workbench.includes(['Snapshot', 'of the active-9 evidence chain'].join(' ')), 'Model Pool cockpit must remove the unclear snapshot copy')
+assert(!workbench.includes(['Snapshot', 'of the active-8 evidence chain'].join(' ')), 'Model Pool cockpit must remove the unclear snapshot copy')
 
-for (const id of ['TabM', 'GNN', 'iTransformer', 'TimesFM']) {
+for (const id of ['TabM', 'GNN', 'iTransformer']) {
   assert(track.includes(`id: '${id}'`), `${id} must be listed as production_slot_member`)
   assert(workbench.includes(id), `${id} must appear in the L3 model cockpit`)
 }
-assert(track.includes('TimesFM 2.5 L3 active slot'), 'TimesFM production slot must be labeled as TimesFM 2.5')
+assert(track.includes("id: 'TimesFM'") && track.includes("stage: 'l2_feature_sidecar_member'"), 'TimesFM must be listed as an L2 feature sidecar member')
+assert(track.includes('TimesFM 2.5 L2 sidecar'), 'TimesFM sidecar must be labeled as TimesFM 2.5 L2 sidecar')
 assert(!track.includes("id: 'TimesFM25'"), 'TimesFM25 migration benchmark must not appear as a visible active-flow candidate')
 
 for (const retired of ['FT-Transformer', 'FTTransformer', 'Chronos', 'Chronos2ZeroShot', 'Chronos2LoRA']) {
@@ -97,7 +98,7 @@ assert(!track.includes("id: 'Chronos2ZeroShot'"), 'Chronos2ZeroShot must not be 
 assert(!track.includes("id: 'Chronos2LoRA'"), 'Chronos2LoRA must not be a visible production candidate')
 assert(track.includes('production_slot_member'), 'L3 targets must be formal production slots')
 assert(!track.includes('benchmark-only'), 'L3 target candidates must not be described as benchmark-only')
-assert(track.includes('formal L3 slot wiring'), 'TimesFM evidence must require formal L3 slot wiring')
+assert(track.includes('L2 feature release'), 'TimesFM evidence must require L2 feature release wiring')
 assert(track.includes("stage: 'meta_optimizer'"), 'GAOptimizer must be a meta optimizer')
 assert(track.includes("stage: 'state_space_overlay'"), 'Kalman/Markov must stay overlays')
 

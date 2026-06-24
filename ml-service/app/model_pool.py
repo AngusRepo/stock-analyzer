@@ -1,5 +1,5 @@
 """
-model_pool.py — ML_POOL Stage 1 GCS versioning + state machine.
+model_pool.py ??ML_POOL Stage 1 GCS versioning + state machine.
 
 2026-04-19 ML_POOL Plan A Stage 1:
   - Versioned GCS layout: universal/{model_name}/v{N}.{ext}
@@ -7,9 +7,9 @@ model_pool.py — ML_POOL Stage 1 GCS versioning + state machine.
     challenger / degraded / retired per model.
   - 4-state machine (per ML_POOL_ARCHITECTURE.md):
       challenger (shadow, vote=0)
-      → active   (vote=1.0 × ic_weight × regime_mult)
-      → degraded (vote=0.1)
-      → retired  (vote=0)
+      ??active   (vote=1.0 ? ic_weight ? regime_mult)
+      ??degraded (vote=0.1)
+      ??retired  (vote=0)
 
   This module provides the data-layer primitives (read/write/transition).
   Stage 2-4 build the state-transition logic (weekly IC tracker, promote
@@ -39,13 +39,16 @@ Schema (model_pool.json):
   }
 }
 
-9 alpha models managed by the refactored L3 family pool:
+8 alpha models managed by the refactored L3 family pool:
   Tree family:
     LightGBM / XGBoost / ExtraTrees
   Tabular neural / graph targets:
     TabM / GNN
   Time-series family:
-    DLinear / PatchTST / iTransformer / TimesFM
+    DLinear / PatchTST / iTransformer
+
+L2 feature sidecar:
+  TimesFM
 
 Retired alpha models:
   CatBoost / FT-Transformer / Chronos / Chronos2ZeroShot / Chronos2LoRA
@@ -79,6 +82,9 @@ ALPHA_PREDICTION_MODELS = (
     "DLinear",
     "PatchTST",
     "iTransformer",
+)
+
+TIMESFM_L2_SIDECAR_MODELS = (
     "TimesFM",
 )
 
@@ -111,10 +117,10 @@ META_OPTIMIZERS = {
 
 RESEARCH_BENCHMARK_MODELS = {}
 
-# 9 alpha prediction model slots managed by ML_POOL.
+# 8 direct alpha prediction model slots managed by ML_POOL.
 # State-space overlays and meta optimizers live in separate namespaces below.
 MANAGED_MODELS = {
-    # name → (model_type, balance_family, gcs_extension)
+    # name ??(model_type, balance_family, gcs_extension)
     "LightGBM":         ("tree_feature",               "tree",        "joblib"),
     "XGBoost":          ("tree_feature",               "tree",        "joblib"),
     "ExtraTrees":       ("tree_feature",               "tree",        "joblib"),
@@ -123,7 +129,10 @@ MANAGED_MODELS = {
     "DLinear":          ("time_series_learnable",      "time_series", "pt"),
     "PatchTST":         ("time_series_neuralforecast_patchtst", "time_series", "zip"),
     "iTransformer":     ("time_series_neuralforecast_itransformer", "time_series", "zip"),
-    "TimesFM":          ("time_series_foundation",     "time_series", "json"),
+}
+
+L2_FEATURE_SIDECARS = {
+    "TimesFM":          ("time_series_foundation",     "timesfm_l2", "json"),
 }
 
 # Family balance guards for active alpha predictors:
@@ -131,8 +140,8 @@ MIN_ACTIVE_PER_FAMILY = {
     "tree": 2,
     "tabular": 1,
     "graph": 1,
-    "feature":     3,    # ≥3 of 5 feature models must stay active
-    "time_series": 2,    # ≥2 of 3 time-series must stay active
+    "feature":     3,    # ?? of 5 feature models must stay active
+    "time_series": 2,    # ?? of 3 time-series must stay active
 }
 
 # State-space hyperparameter schema/template. Serving must load the concrete
@@ -153,12 +162,12 @@ DEFAULT_STATE_SPACE_HYPERPARAMS = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # GCS path helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def gcs_path_for(model_name: str, version: str) -> str:
-    """e.g. ('XGBoost', 'v1') → 'universal/xgboost/v1.joblib'"""
+    """e.g. ('XGBoost', 'v1') ??'universal/xgboost/v1.joblib'"""
     if model_name in DEFAULT_STATE_SPACE_HYPERPARAMS:
         folder = "kalman" if model_name == "KalmanFilter" else "markov_switching"
         return f"{GCS_STATE_SPACE_PREFIX}/{folder}/hyperparams_{version}.json"
@@ -166,9 +175,15 @@ def gcs_path_for(model_name: str, version: str) -> str:
         _model_type, _family, ext = EXPERIMENTAL_CHALLENGER_MODELS[model_name]
         folder = model_name.lower().replace("-", "_")
         return f"experimental_shadow/{folder}/{version}.{ext}"
-    if model_name not in MANAGED_MODELS:
-        raise ValueError(f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}")
-    _, _, ext = MANAGED_MODELS[model_name]
+    if model_name in L2_FEATURE_SIDECARS:
+        _, _, ext = L2_FEATURE_SIDECARS[model_name]
+    elif model_name in MANAGED_MODELS:
+        _, _, ext = MANAGED_MODELS[model_name]
+    else:
+        raise ValueError(
+            f"Unknown model {model_name}; managed: {list(MANAGED_MODELS)}, "
+            f"sidecars: {list(L2_FEATURE_SIDECARS)}"
+        )
     folder = model_name.lower().replace("-", "_")
     return f"universal/{folder}/{version}.{ext}"
 
@@ -179,16 +194,16 @@ def gcs_metadata_path_for(model_name: str, version: str) -> str:
     return f"universal/{folder}/metadata_{version}.json"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Pool I/O
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def load_pool() -> Optional[dict]:
     """Load current model_pool.json from GCS. None if missing."""
     global _POOL_CACHE, _POOL_CACHE_LOADED_AT
     ttl = int(os.environ.get("MODEL_POOL_CACHE_TTL_SECONDS", "300") or "300")
     if _POOL_CACHE is not None and time.time() - _POOL_CACHE_LOADED_AT < max(0, ttl):
-        return sanitize_pool_active9(json.loads(json.dumps(_POOL_CACHE)))
+        return sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
     try:
         bucket = _get_bucket()
         blob = bucket.blob(GCS_POOL_KEY)
@@ -196,7 +211,7 @@ def load_pool() -> Optional[dict]:
             return None
         _POOL_CACHE = json.loads(blob.download_as_text().lstrip("\ufeff"))
         _POOL_CACHE_LOADED_AT = time.time()
-        return sanitize_pool_active9(json.loads(json.dumps(_POOL_CACHE)))
+        return sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
     except Exception as e:
         logger.warning(f"[ModelPool] Load failed: {e}")
         return None
@@ -205,7 +220,7 @@ def load_pool() -> Optional[dict]:
 def save_pool(pool: dict) -> None:
     """Write model_pool.json to GCS with updated last_updated timestamp."""
     global _POOL_CACHE, _POOL_CACHE_LOADED_AT
-    pool = sanitize_pool_active9(pool)
+    pool = sanitize_pool_active_alpha(pool)
     pool["last_updated"] = datetime.now(timezone.utc).isoformat()
     bucket = _get_bucket()
     bucket.blob(GCS_POOL_KEY).upload_from_string(
@@ -217,12 +232,12 @@ def save_pool(pool: dict) -> None:
     logger.info(f"[ModelPool] Saved {GCS_POOL_KEY} ({len(pool.get('models', {}))} models)")
 
 
-def sanitize_pool_active9(pool: dict | None) -> dict:
+def sanitize_pool_active_alpha(pool: dict | None) -> dict:
     """Drop retired alpha-model residue from model_pool models.
 
     State overlays, shadow models, meta optimizers, and research benchmarks are
     separate namespaces; only direct alpha prediction models are constrained to
-    active-9.
+    Active-8 direct-alpha.
     """
 
     if not isinstance(pool, dict):
@@ -232,6 +247,18 @@ def sanitize_pool_active9(pool: dict | None) -> dict:
     if not isinstance(models, dict):
         cloned["models"] = {}
         return cloned
+    sidecars = cloned.setdefault("l2_feature_sidecars", {})
+    if not isinstance(sidecars, dict):
+        sidecars = {}
+        cloned["l2_feature_sidecars"] = sidecars
+    legacy_timesfm = models.get("TimesFM")
+    if isinstance(legacy_timesfm, dict) and "TimesFM" not in sidecars:
+        sidecars["TimesFM"] = {
+            **legacy_timesfm,
+            "role": "l2_feature_sidecar",
+            "direct_prediction": False,
+            "vote_weight": 0.0,
+        }
     cloned["models"] = {
         name: models[name]
         for name in ALPHA_PREDICTION_MODELS
@@ -245,13 +272,14 @@ def init_default_pool() -> dict:
 
     Used by /model_pool/init endpoint when bootstrapping. Subsequent retrain
     calls add new versions as challengers (Stage 3). Stage 1 itself doesn't
-    set up any challenger — only declares "we have a versioned baseline".
+    set up any challenger ??only declares "we have a versioned baseline".
     """
     today = datetime.now(timezone.utc).date().isoformat()
     pool = {
         "schema_version": SCHEMA_VERSION,
         "last_updated": datetime.now(timezone.utc).isoformat(),
         "models": {},
+        "l2_feature_sidecars": {},
         "shadow_models": {},
         "state_overlays": {},
         "meta_optimizers": {},
@@ -271,6 +299,18 @@ def init_default_pool() -> dict:
             "weekly_ic": [],
             "ic_4w_avg": None,
             "consecutive_negative_weeks": 0,
+        }
+    for name, (model_type, balance_family, _ext) in L2_FEATURE_SIDECARS.items():
+        pool["l2_feature_sidecars"][name] = {
+            "status": "active",
+            "version": "v1",
+            "gcs_path": gcs_path_for(name, "v1"),
+            "model_type": model_type,
+            "balance_family": balance_family,
+            "role": "l2_feature_sidecar",
+            "direct_prediction": False,
+            "vote_weight": 0.0,
+            "promoted_at": today,
         }
     for name, (model_type, balance_family, _ext) in EXPERIMENTAL_CHALLENGER_MODELS.items():
         pool["shadow_models"][name] = {
@@ -311,9 +351,9 @@ def init_default_pool() -> dict:
     return pool
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Per-model accessors
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def get_active_version(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
     """Return active version string ('v3') or None if model retired/absent."""
@@ -342,7 +382,7 @@ def get_active_path(model_name: str, pool: Optional[dict] = None) -> Optional[st
 
 
 def get_status_filter(status: str) -> float:
-    """Pure status → on/off filter. NOT a final weight (use compute_weight).
+    """Pure status ??on/off filter. NOT a final weight (use compute_weight).
 
     Returns 1.0 for active/degraded (model still inferring), 0.0 for
     challenger/retired (shadow or stopped).
@@ -361,10 +401,10 @@ def compute_weight(
     pool: Optional[dict] = None,
     degraded_dampening: float = 0.1,
 ) -> float:
-    """ML_POOL ensemble weight = max(0, ic) × status_filter × dampening.
+    """ML_POOL ensemble weight = max(0, ic) ? status_filter ? dampening.
 
     2026-04-19 R1+R3 hybrid (replaces hardcoded 0.0/0.1/1.0 lifecycle multipliers):
-      - **R3 (continuous IC-based)**: IC drives weight directly; IC<0 → 0.
+      - **R3 (continuous IC-based)**: IC drives weight directly; IC<0 ??0.
         Industry standard for cases with clear ground truth (IC).
       - **R1 (KV-driven dampening)**: degraded_dampening defaults to 0.1
         so degraded models remain diagnostic but no longer behave as active.
@@ -374,7 +414,7 @@ def compute_weight(
 
     Status semantics:
       active:     pure IC weight
-      degraded:   IC × degraded_dampening (default 0.1)
+      degraded:   IC ? degraded_dampening (default 0.1)
       challenger: 0 (shadow predict only)
       retired:    0 (excluded)
 
@@ -387,15 +427,15 @@ def compute_weight(
                           Future: Optuna-searchable post #31 Mode B.
 
     Returns:
-      Effective ensemble weight (≥ 0).
+      Effective ensemble weight (??0).
     """
     pool = pool or load_pool()
     if not pool:
-        # No pool → backward-compat: pure IC weight
+        # No pool ??backward-compat: pure IC weight
         return max(0.0, ic_value)
     entry = pool.get("models", {}).get(model_name)
     if not entry:
-        return max(0.0, ic_value)  # unknown model → assume active
+        return max(0.0, ic_value)  # unknown model ??assume active
 
     status = entry.get("status", "active")
     status_filter = get_status_filter(status)
@@ -407,9 +447,9 @@ def compute_weight(
     return base
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Stage 3 challenger helpers (shadow mode)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def get_shadow_challenger_path(model_name: str, pool: Optional[dict] = None) -> Optional[str]:
     """Return the registered ResidualMLP experimental shadow path."""
@@ -431,12 +471,12 @@ def register_challenger(
 ) -> dict:
     """Retired legacy challenger writer.
 
-    Active-9 artifacts are versioned candidates owned by artifact_registry and
+    Active-8 direct-alpha artifacts are versioned candidates owned by artifact_registry and
     promotion_controller. Experimental predictors must use
     register_shadow_challenger() instead.
     """
     raise ValueError(
-        "legacy model_pool challenger registration is disabled for active-9; "
+        "legacy model_pool challenger registration is disabled for Active-8 direct-alpha; "
         "use artifact_registry monthly_release/weekly_drift candidates and "
         "promotion_controller. For experimental shadow predictors use "
         "register_shadow_challenger()."
@@ -494,12 +534,12 @@ def discard_challenger(model_name: str, pool: Optional[dict] = None, save: bool 
     return entry
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Stage 6 state-space helpers (per-stock state, shared hyperparams)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def state_space_hyperparams_path(model_name: str, version: str = "v1") -> str:
-    """e.g. ('KalmanFilter', 'v1') → 'per_stock_state_space/kalman/hyperparams_v1.json'
+    """e.g. ('KalmanFilter', 'v1') ??'per_stock_state_space/kalman/hyperparams_v1.json'
 
     State-space models follow the per_stock_state_space/ folder convention to
     distinguish them from universal/ (where alpha-model pooled artifacts live).
@@ -545,7 +585,7 @@ def save_state_space_hyperparams(model_name: str, hyperparams: dict, version: st
     if missing:
         raise ValueError(f"Missing hyperparam keys for {model_name}: {missing}")
     if extra:
-        # Allow extras but warn — accommodates future schema migration
+        # Allow extras but warn ??accommodates future schema migration
         logger.warning(f"[ModelPool] Unexpected hyperparam keys for {model_name}: {extra}")
 
     bucket = _get_bucket()
@@ -565,9 +605,9 @@ def save_state_space_hyperparams(model_name: str, hyperparams: dict, version: st
     return path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Migration helper (Stage 1 bootstrap)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def list_legacy_artifacts() -> list[dict]:
     """Legacy artifact migration is intentionally disabled."""

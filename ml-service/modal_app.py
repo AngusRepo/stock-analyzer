@@ -1196,22 +1196,6 @@ def predict_batch_v2(payload: dict) -> dict:
 
 
 @app.function(
-    cpu=2,
-    memory=4096,
-    timeout=300,
-    min_containers=0,
-    scaledown_window=900,
-    max_containers=4,
-)
-def predict_l2_tree_batch(payload: dict) -> dict:
-    """Cheap L2 coarse gate: LightGBM/XGBoost/ExtraTrees only."""
-    _setup_env()
-    from app.batch_prediction import predict_l2_tree_batch as _predict_l2_tree_batch
-
-    return _predict_l2_tree_batch(payload.get("payloads") or [])
-
-
-@app.function(
     cpu=1,
     memory=2048,
     timeout=300,
@@ -2160,7 +2144,7 @@ def train_itransformer_universal(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_itransformer_universal"}
 
 
-# L3 sequence family: TimesFM config-backed batch predict.
+# L2 feature sidecar: TimesFM config-backed batch predict.
 @app.function(
     gpu="L4",
     memory=8192,

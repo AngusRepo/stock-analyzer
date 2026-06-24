@@ -90,7 +90,7 @@ def test_risk_assess_preserves_ga_optimizer_adaptive_context():
     assert ga["applied_effect"]["mutates_trading_config"] is False
 
 
-def test_risk_assess_confidence_hook_uses_active_9_only():
+def test_risk_assess_confidence_hook_uses_active_8_only():
     response = post_risk_assess(
         RiskAssessRequest(
             date="2026-06-08",
@@ -121,7 +121,7 @@ def test_risk_assess_confidence_hook_uses_active_9_only():
 
     params = response["adaptive_params"]
     hook = params["ml_confidence_hook"]
-    assert hook["status"] == "active_9_rows_quality"
+    assert hook["status"] == "active_8_rows_quality"
     assert hook["model_quality_30d"] == 0.70
     assert hook["sample_count_30d"] == 200
     assert hook["active_model_count_30d"] == 2

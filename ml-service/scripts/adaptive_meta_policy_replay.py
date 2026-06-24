@@ -25,7 +25,6 @@ ACTIVE_MODELS = (
     "DLinear",
     "PatchTST",
     "iTransformer",
-    "TimesFM",
 )
 
 

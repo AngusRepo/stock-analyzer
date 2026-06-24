@@ -444,14 +444,6 @@ def _normalise_lifecycle_registration(
     has_artifact = bool(artifact_path or saved or metadata)
     status = "registered" if raw_status in {"ok", "registered", ""} and has_artifact else raw_status or "unknown"
     promoted_to_active = bool(pool_update and str(pool_update.get("new_version") or "") == version)
-    if (
-        not promoted_to_active
-        and model_name == "TimesFM"
-        and raw_status in {"ok", "registered", ""}
-        and str(raw_result.get("artifact_type") or "") == "foundation_forecast_config"
-        and has_artifact
-    ):
-        promoted_to_active = True
 
     registration: dict[str, Any] = {
         "status": status,
@@ -488,6 +480,8 @@ def _lifecycle_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[str
     results = _nested_dict(lifecycle.get("results"))
     registrations: dict[str, dict[str, Any]] = {}
     for model_name, raw_result in results.items():
+        if str(model_name) == "TimesFM":
+            continue
         registration = _normalise_lifecycle_registration(
             payload_dict=payload_dict,
             model_name=str(model_name),
@@ -495,6 +489,27 @@ def _lifecycle_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[str
         )
         if registration is not None:
             registrations[str(model_name)] = registration
+    return registrations
+
+
+def _timesfm_l2_feature_release_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    stages = _nested_dict(payload_dict.get("stages"))
+    release_stage = _nested_dict(stages.get("timesfm_l2_feature_release"))
+    results = _nested_dict(release_stage.get("results"))
+    registrations: dict[str, dict[str, Any]] = {}
+    raw_result = results.get("TimesFM")
+    if not isinstance(raw_result, dict):
+        return registrations
+    registration = _normalise_lifecycle_registration(
+        payload_dict=payload_dict,
+        model_name="TimesFM",
+        raw_result=raw_result,
+    )
+    if registration is not None:
+        registration["release_stage"] = "timesfm_l2_feature_release"
+        registration["candidate_type"] = "timesfm_l175_l2_feature_release"
+        registration["direct_alpha_blocked"] = True
+        registrations["TimesFM"] = registration
     return registrations
 
 
@@ -577,7 +592,7 @@ def _artifact_record_from_registration(
         "current_production"
         if promoted_to_active
         else "blocked_offline_gate_failed"
-        if promotion_blocked_by_offline_gate
+        if promotion_blocked_by_offline_gate or (offline_feature_release_candidate_type and not offline_gate_passed)
         else "eligible_pending_approval"
         if eligible_pending_approval
         else "not_evaluated"
@@ -650,10 +665,12 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     registrations = payload_dict.get("challenger_registrations") or {}
     train_stage_registrations = _train_stage_registrations(payload_dict)
     lifecycle_registrations = _lifecycle_registrations(payload_dict)
+    timesfm_l2_feature_release_registrations = _timesfm_l2_feature_release_registrations(payload_dict)
     if not version or (
         (not isinstance(registrations, dict) or not registrations)
         and not train_stage_registrations
         and not lifecycle_registrations
+        and not timesfm_l2_feature_release_registrations
     ):
         return []
 
@@ -699,6 +716,16 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
             candidate_type=candidate_type,
             now=now,
             source="artifact_lifecycle",
+        )
+        out_by_id[record["artifact_id"]] = record
+    for model_name, raw_registration in timesfm_l2_feature_release_registrations.items():
+        record = _artifact_record_from_registration(
+            payload_dict=payload_dict,
+            model_name=model_name,
+            raw_registration=raw_registration,
+            candidate_type="timesfm_l175_l2_feature_release",
+            now=now,
+            source="timesfm_l2_feature_release",
         )
         out_by_id[record["artifact_id"]] = record
     return list(out_by_id.values())
@@ -1218,8 +1245,8 @@ def _non_production_artifact_context(
     model_name = str((row or {}).get("model_name") or "unknown")
     return {
         "root_cause": "model_not_active_production_artifact",
-        "impact": "Artifact is retained for audit evidence, but cannot enter active-9 selection, live shadow, or promotion.",
-        "next_action": "Archive or leave as historical evidence; use the active-9 model artifact lane for production candidates.",
+        "impact": "Artifact is retained for audit evidence, but cannot enter active-8 direct-alpha selection, live shadow, or promotion.",
+        "next_action": "Archive or leave as historical evidence; use the active-8 direct-alpha model artifact lane for production candidates.",
         "affected_downstream": ["artifact_registry", "model_pool_ui"],
         "scheduler_dependency": [],
         "evidence_status": "suppressed",
@@ -1473,8 +1500,8 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
     if model_name and not is_production_artifact_model(model_name):
         add(
             "model_not_active_production_artifact",
-            "Model is not in the active-9 production artifact set",
-            "Keep this artifact as historical/research evidence; production promotion must use an active-9 model.",
+            "Model is not in the active-8 direct-alpha production artifact set",
+            "Keep this artifact as historical/research evidence; production promotion must use an active-8 direct-alpha model.",
         )
 
     if live_status not in {"passed", "multi_evidence_passed", "rolling_ic_passed"} and state != "live_gate_passed":
@@ -1839,7 +1866,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "weekly_drift_candidate": weekly_context,
             },
             "policy": {
-                "monthly": "select latest non-legacy active-9 monthly artifact only if offline_passed or stronger",
+                "monthly": "select latest non-legacy active-8 direct-alpha monthly artifact only if offline_passed or stronger",
                 "weekly": "select only non-legacy offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
                 "serving_release_artifact": "latest monthly_release artifact already marked production; audit evidence only, not a candidate queue slot",
                 "live_shadow_slots": {

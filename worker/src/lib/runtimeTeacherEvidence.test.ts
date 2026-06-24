@@ -46,9 +46,9 @@ async function main(): Promise<void> {
     assert(result.telemetry.source === 'predictions_per_model_latest_verified_before_run_date', 'loader source must be explicit')
     assert(result.telemetry.input_scope === 'previous_trading_day_or_latest_verified_teacher_cache', 'loader must document historical cache scope')
     assert(result.telemetry.runtime_teacher_evidence_scope === 'daily_optional_historical_cache_not_same_day_l2_l3_dependency', 'runtime evidence must not depend on same-day L2/L3')
-    assert(result.telemetry.label_count === 3, 'loader should count usable labels')
+    assert(result.telemetry.label_count === 2, 'loader should count usable direct-alpha labels only')
     assert(result.labels['2330'].LightGBM === 0.82, 'loader should keep latest sorted model score per symbol/model')
-    assert(result.labels['2330'].TimesFM === 0.63, 'loader should parse forecast_data.rank_score when direction_accuracy is absent')
+    assert(result.labels['2330'].TimesFM == null, 'loader must keep TimesFM out of direct runtime teacher labels')
     assert(result.labels['2317'].XGBoost === 0.77, 'loader should normalize percentage-like rank scores')
     const sql = String((fakeDb as any).lastSql)
     const args = (fakeDb as any).lastArgs as unknown[]

@@ -95,7 +95,7 @@ def should_force_model_pool_challenger(
 ) -> bool:
     """Backward-compatible alias for older callers.
 
-    The active-9 flow no longer writes model_pool challenger slots; this helper
+    The Active-8 direct-alpha flow no longer writes model_pool challenger slots; this helper
     only decides whether a universal train needs an artifact candidate version.
     """
 
@@ -489,15 +489,15 @@ MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
     "TimesFM": ModelFeaturePolicy(
         model="TimesFM",
         family="foundation_time_series",
-        feature_policy_type="foundation_time_series_artifact_required",
+        feature_policy_type="timesfm_l2_feature_sidecar_artifact_required",
         feature_source="sequence_records.close_only",
-        selection_owner="artifact_registration_preflight",
+        selection_owner="timesfm_l2_sidecar_release",
         selection_required=False,
         uses_missingness_mask=False,
         requires_schema_parity=True,
         mergeable_oos=False,
-        allowed_selection_methods=("forecast_validation", "production_artifact", "positive_ic"),
-        note="TimesFM is a formal L3 foundation sequence production slot; serving is artifact-backed and fails closed when forecast evidence is missing.",
+        allowed_selection_methods=("timesfm_l2_feature_release", "forecast_validation", "production_artifact"),
+        note="TimesFM is an L2 feature sidecar; serving is config-backed and contributes enriched features before active-8 L3 direct-alpha models.",
     ),
 }
 
@@ -583,7 +583,7 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
             "feature_policy_type": "formal137_timesfm_l175_feature_release",
             "feature_source": "prep.full_formal137_plus_timesfm_l175",
             "selection_required": False,
-            "note": "TimesFM L1.75 feature release retrains tree artifacts on full formal137 + L1.75 sidecar columns.",
+            "note": "TimesFM L2 feature release retrains tree artifacts on full formal137 + timesfm_l175 sidecar columns.",
         }
     payload["feature_policy"] = feature_policy
     return payload

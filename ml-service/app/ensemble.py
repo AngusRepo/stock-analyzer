@@ -591,7 +591,7 @@ def merge_with_time_series(
 
     Args:
       feature_rank_scores: {name: rank 0~1} from tree/TabM/GNN models
-      time_series_signals: {name: {forecast_pct, ...}} for DLinear/PatchTST/iTransformer/TimesFM
+      time_series_signals: {name: {forecast_pct, ...}} for DLinear/PatchTST/iTransformer
         (key absent or value None → that model contributes nothing)
       ic_weights: {name: IC} (Grinold-Kahn). Missing IC contributes zero.
       model_status: {name: "active"|"degraded"|"challenger"|"retired"} from

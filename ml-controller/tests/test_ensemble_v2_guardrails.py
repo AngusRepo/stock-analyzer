@@ -441,7 +441,7 @@ def test_daily_pipeline_pool_and_ic_requires_model_pool_blob(monkeypatch):
         daily_pipeline_v2._load_pool_and_ic()
 
 
-def test_daily_pipeline_pool_and_ic_requires_active9_model_entries(monkeypatch):
+def test_daily_pipeline_pool_and_ic_requires_required_model_entries(monkeypatch):
     import json
     import sys
     import types
@@ -475,7 +475,7 @@ def test_daily_pipeline_pool_and_ic_requires_active9_model_entries(monkeypatch):
     monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
     monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
 
-    with pytest.raises(RuntimeError, match="missing active-9 model entries"):
+    with pytest.raises(RuntimeError, match="missing required model entries"):
         daily_pipeline_v2._load_pool_and_ic()
 
 

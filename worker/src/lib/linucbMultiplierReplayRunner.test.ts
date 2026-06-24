@@ -98,7 +98,7 @@ void (async () => {
 
     assert(fetchUrl === 'https://ml.example.com/meta-learning/linucb-multiplier-replay', 'runner must call LinUCB multiplier replay endpoint')
     assert(fetchHeaders.get('X-Service-Token') === 'service-secret', 'runner must pass service token when configured')
-    assert(fetchBody.rows.length === 1, 'runner must send verified active-9 rows')
+    assert(fetchBody.rows.length === 1, 'runner must send verified Active-8 direct-alpha rows')
     assert(fetchBody.min_decisions === 12, 'runner must pass bounded min_decisions')
     assert(fetchBody.max_grid_evals === 24, 'runner must pass bounded max_grid_evals')
     assert(fetchBody.recent_loss_window === 7, 'runner must pass bounded recent_loss_window')

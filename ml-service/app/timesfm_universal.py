@@ -1,4 +1,4 @@
-"""Config-backed TimesFM batch serving for L3 sequence family."""
+"""Config-backed TimesFM batch serving for the L2 feature sidecar."""
 
 from __future__ import annotations
 

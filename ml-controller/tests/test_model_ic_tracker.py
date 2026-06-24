@@ -26,7 +26,6 @@ def test_tracked_model_names_follow_refactored_l3_pool():
         "DLinear",
         "PatchTST",
         "iTransformer",
-        "TimesFM",
     )
     assert EXPERIMENTAL_SHADOW_MODELS == ("ResidualMLP",)
     tracked = tracked_model_names()

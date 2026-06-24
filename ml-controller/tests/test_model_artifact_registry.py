@@ -109,7 +109,7 @@ def test_disabled_legacy_challenger_registration_does_not_create_artifact_row():
             "DLinear": {
                 "status": "disabled",
                 "version": "v20260614010101",
-                "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+                "reason": "legacy_model_pool_challenger_disabled_for_active8_artifact_registry_flow",
             },
         },
     }
@@ -300,15 +300,13 @@ def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets
     records = registry.build_artifact_records_from_retrain_followup(payload)
 
     by_model = {row["model_name"]: row for row in records}
-    assert set(by_model) == {"TabM", "GNN", "iTransformer", "TimesFM"}
+    assert set(by_model) == {"TabM", "GNN", "iTransformer"}
     assert by_model["TabM"]["artifact_id"] == "TabM:v20260612165347:monthly_release"
     assert by_model["TabM"]["candidate_type"] == "monthly_release"
     assert by_model["TabM"]["state"] == "production"
     assert by_model["TabM"]["evaluation_baseline_version"] == "vOldTabM"
     assert by_model["GNN"]["state"] == "offline_passed_weak"
     assert by_model["iTransformer"]["state"] == "offline_failed"
-    assert by_model["TimesFM"]["state"] == "production"
-    assert by_model["TimesFM"]["artifact_path"] == "universal/timesfm/v20260612T160113_timesfm25_ctx1024.json"
     offline = json.loads(by_model["TabM"]["offline_evidence_json"])
     assert offline["source"] == "artifact_lifecycle"
     assert offline["production_cutover_source"] == "artifact_lifecycle"
@@ -366,7 +364,7 @@ def test_lifecycle_pool_update_cannot_promote_offline_failed_artifact():
     assert offline["production_cutover_source"] is None
 
 
-def test_build_artifact_records_from_no_challenger_active9_train_stage():
+def test_build_artifact_records_from_no_challenger_active8_train_stage():
     payload = {
         "run_id": "universal-20260615T124432-3f2c0c79",
         "run_date": "2026-06-15",
@@ -485,7 +483,7 @@ def test_train_stage_artifact_survives_unrelated_run_level_lifecycle_error():
     assert offline["registration"]["status"] == "registered"
 
 
-def test_timesfm_lifecycle_evidence_is_registered_instead_of_missing_oos_warning():
+def test_timesfm_l2_feature_release_evidence_is_registered_instead_of_missing_oos_warning():
     payload = {
         "run_id": "timesfm25-oos-backfill",
         "run_date": "2026-06-14",
@@ -493,7 +491,7 @@ def test_timesfm_lifecycle_evidence_is_registered_instead_of_missing_oos_warning
         "candidate_version": "v20260612T160113_timesfm25_ctx1024",
         "status": "completed",
         "stages": {
-            "artifact_lifecycle": {
+            "timesfm_l2_feature_release": {
                 "status": "ok",
                 "results": {
                     "TimesFM": {
@@ -529,14 +527,16 @@ def test_timesfm_lifecycle_evidence_is_registered_instead_of_missing_oos_warning
 
     assert len(records) == 1
     row = records[0]
-    assert row["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:monthly_release"
+    assert row["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:timesfm_l175_l2_feature_release"
+    assert row["candidate_type"] == "timesfm_l175_l2_feature_release"
     assert row["state"] == "offline_failed"
     assert row["offline_gate_decision"] == "FAIL"
     assert row["promotion_decision"] == "blocked_offline_gate_failed"
     offline = json.loads(row["offline_evidence_json"])
     assert offline["gate"]["metrics"]["oos_ic"] == -0.001443
     assert offline["gate"]["metrics"]["model_cpcv_decision"] == "FAIL"
-    assert offline["artifact_lifecycle_promoted_to_active_requested"] is True
+    assert offline["source"] == "timesfm_l2_feature_release"
+    assert offline["artifact_lifecycle_promoted_to_active_requested"] is False
     assert offline["artifact_lifecycle_promoted_to_active_effective"] is False
     assert "oos_ic_missing_from_callback" not in offline["gate"]["warnings"]
 
@@ -861,7 +861,7 @@ def test_offline_gate_embeds_foundation_sequence_policy():
         ic_summary={"TimesFM": 0.01},
     )
 
-    assert gate["policy"]["family"] == "foundation_sequence"
+    assert gate["policy"]["family"] == "l2_feature_sidecar"
     assert gate["policy"]["pbo"]["required"] is False
     assert gate["policy"]["pbo"]["max_pbo"] is None
     assert gate["policy"]["cpcv"]["owner"] == "foundation_forecast_validation"
@@ -970,9 +970,9 @@ def test_promotion_blockers_enforce_timesfm_foundation_validation_policy():
         },
     }
     row = {
-        "artifact_id": "TimesFM:v20260615_timesfm25:monthly_release",
+        "artifact_id": "TimesFM:v20260615_timesfm25:timesfm_l175_l2_feature_release",
         "model_name": "TimesFM",
-        "candidate_type": "monthly_release",
+        "candidate_type": "timesfm_l175_l2_feature_release",
         "state": "live_gate_passed",
         "offline_gate_decision": "STRONG_PASS",
         "live_gate_status": "passed",
@@ -1014,7 +1014,7 @@ def test_candidate_selection_keeps_legacy_shadowing_weekly_out_of_selected_slot(
     assert "XGBoost:vW:weekly_drift" in model["archive_candidates"]
 
 
-def test_candidate_selection_prefers_new_active9_monthly_over_legacy_shadowing():
+def test_candidate_selection_prefers_new_active8_monthly_over_legacy_shadowing():
     selection = registry.build_candidate_selection([
         {
             "artifact_id": "ExtraTrees:vOld:monthly_release",
@@ -1188,7 +1188,7 @@ def test_promotion_queue_includes_backend_owned_action_context():
     assert "promotion_controller" in row["action_context"]["affected_downstream"]
 
 
-def test_update_live_gate_from_ic_ignores_active_model_challenger_rows(monkeypatch):
+def test_update_live_gate_from_ic_ignores_active8_challenger_rows(monkeypatch):
     executed: list[dict[str, object]] = []
 
     def fake_query(sql, params=None, timeout=60.0):
@@ -1264,7 +1264,7 @@ def test_update_live_gate_from_ic_ignores_retired_model_challenger_rows(monkeypa
     assert executed == []
 
 
-def test_candidate_selection_suppresses_non_active9_artifact_models():
+def test_candidate_selection_suppresses_non_active8_artifact_models():
     selection = registry.build_candidate_selection([
         {
             "artifact_id": "CatBoost:vM:monthly_release",
@@ -1293,7 +1293,7 @@ def test_candidate_selection_suppresses_non_active9_artifact_models():
     assert selection["suppressed"][0]["action_context"]["evidence_status"] == "suppressed"
 
 
-def test_build_promotion_queue_suppresses_non_active9_artifact_models():
+def test_build_promotion_queue_suppresses_non_active8_artifact_models():
     queue = registry.build_promotion_queue(
         [
             {
@@ -1317,7 +1317,7 @@ def test_build_promotion_queue_suppresses_non_active9_artifact_models():
     assert queue["suppressed"][0]["reason"] == "model_not_active_production_artifact"
 
 
-def test_promotion_controller_blocks_non_active9_artifact_models():
+def test_promotion_controller_blocks_non_active8_artifact_models():
     result = registry.run_promotion_controller(
         artifact_id="CatBoost:vM:monthly_release",
         registry_rows=[{
@@ -1902,7 +1902,7 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
     assert entry["promotion_controller"]["artifact_id"] == "PatchTST:vNew:weekly_drift"
 
 
-def test_apply_promoted_artifact_to_model_pool_rejects_non_active9_artifacts():
+def test_apply_promoted_artifact_to_model_pool_rejects_non_active8_artifacts():
     pool = {
         "models": {
             "CatBoost": {

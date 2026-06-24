@@ -1,7 +1,7 @@
 """Read-only replay for LinUCB multiplier L2 constants.
 
 This validates the five `bandit_*` L2 constants against historical verified
-active-9 prediction rows. It reuses the production LinUCB multiplier function
+Active-8 direct-alpha prediction rows. It reuses the production LinUCB multiplier function
 in memory and never reads or writes the live GCS bandit state.
 """
 
@@ -522,6 +522,6 @@ def run_linucb_multiplier_replay(
         "gates": gates,
         "notes": [
             "Read-only replay; does not read or write live LinUCB GCS state.",
-            "Uses verified active-9 per-model prediction rows and production LinUCBBandit multiplier conversion.",
+            "Uses verified Active-8 direct-alpha per-model prediction rows and production LinUCBBandit multiplier conversion.",
         ],
     }

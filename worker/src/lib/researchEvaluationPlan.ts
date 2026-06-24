@@ -92,6 +92,7 @@ function wantsModelBenchmark(record: ResearchExperimentRecord): boolean {
     'patchtst',
     'neuralforecast',
     'production_slot_member',
+    'l2_feature_sidecar_member',
     'production_artifact_required',
     'tabm',
     'gnn',
@@ -108,13 +109,15 @@ function benchmarkCandidateIds(record: ResearchExperimentRecord): ModelUpgradeCa
     ...cleanStringArray(dataSlice.benchmark_candidates),
     ...cleanStringArray(dataSlice.shadow_candidates),
     ...cleanStringArray(dataSlice.production_slot_candidates),
+    ...cleanStringArray(dataSlice.l2_feature_sidecar_candidates),
     ...cleanStringArray(dataSlice.artifact_required_candidates),
   ])
   const productionSlots = listModelUpgradeCandidates('production_slot_member')
+  const l2Sidecars = listModelUpgradeCandidates('l2_feature_sidecar_member')
   const artifactRequired = listModelUpgradeCandidates('production_artifact_required')
   const benchmarkOnly = listModelUpgradeCandidates('benchmark_only')
   const shadowChallengers = listModelUpgradeCandidates('shadow_challenger')
-  const eligible = [...productionSlots, ...artifactRequired, ...benchmarkOnly, ...shadowChallengers]
+  const eligible = [...productionSlots, ...l2Sidecars, ...artifactRequired, ...benchmarkOnly, ...shadowChallengers]
   if (!requested.size) {
     const haystack = [
       record.id,

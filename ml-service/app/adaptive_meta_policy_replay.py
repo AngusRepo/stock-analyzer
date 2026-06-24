@@ -38,13 +38,12 @@ ACTIVE_MODEL_TO_ARM = {
     "dlinear": "time_series_family",
     "patchtst": "time_series_family",
     "itransformer": "time_series_family",
-    "timesfm": "time_series_family",
 }
 ARM_TO_ACTIVE_MODELS = {
     "tree_family": ("LightGBM", "XGBoost", "ExtraTrees"),
     "tabular_neural_family": ("TabM",),
     "graph_family": ("GNN",),
-    "time_series_family": ("DLinear", "PatchTST", "iTransformer", "TimesFM"),
+    "time_series_family": ("DLinear", "PatchTST", "iTransformer"),
 }
 ALLOCATOR_POLICY_CAP = 0.15
 CONTEXT_FEATURES = (

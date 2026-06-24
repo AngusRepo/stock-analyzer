@@ -10,7 +10,7 @@ interface AdaptiveEngineEnv {
   ML_CONTROLLER_SECRET?: string
 }
 
-const ACTIVE_9_MODELS = [
+const ACTIVE_8_MODELS = [
   'LightGBM',
   'XGBoost',
   'ExtraTrees',
@@ -19,7 +19,6 @@ const ACTIVE_9_MODELS = [
   'DLinear',
   'PatchTST',
   'iTransformer',
-  'TimesFM',
 ] as const
 
 function objectValue(value: unknown): Record<string, any> | null {
@@ -141,15 +140,15 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
     'SELECT risk_score, risk_level FROM market_risk ORDER BY date DESC LIMIT 1',
   ).first<{ risk_score: number; risk_level: string }>()
 
-  const active9Placeholders = ACTIVE_9_MODELS.map(() => '?').join(', ')
+  const active8Placeholders = ACTIVE_8_MODELS.map(() => '?').join(', ')
   const accGlobal = await env.DB.prepare(`
     SELECT CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS avg_acc,
            SUM(total_count) AS sample_count,
            COUNT(DISTINCT model_name) AS model_count
     FROM model_accuracy
     WHERE period='30d' AND total_count >= 3
-      AND model_name IN (${active9Placeholders})
-  `).bind(...ACTIVE_9_MODELS).first<{ avg_acc: number | null; sample_count: number | null; model_count: number | null }>()
+      AND model_name IN (${active8Placeholders})
+  `).bind(...ACTIVE_8_MODELS).first<{ avg_acc: number | null; sample_count: number | null; model_count: number | null }>()
 
   const { results: rows30d } = await env.DB.prepare(`
     SELECT model_name,
@@ -160,9 +159,9 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
                 ELSE NULL END AS profit_factor
     FROM model_accuracy
     WHERE period='30d'
-      AND model_name IN (${active9Placeholders})
+      AND model_name IN (${active8Placeholders})
     GROUP BY model_name
-  `).bind(...ACTIVE_9_MODELS).all<any>().catch(() => ({ results: [] as any[] }))
+  `).bind(...ACTIVE_8_MODELS).all<any>().catch(() => ({ results: [] as any[] }))
 
   const { results: rows90d } = await env.DB.prepare(`
     SELECT model_name,
@@ -173,9 +172,9 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
                 ELSE NULL END AS profit_factor
     FROM model_accuracy
     WHERE period='90d'
-      AND model_name IN (${active9Placeholders})
+      AND model_name IN (${active8Placeholders})
     GROUP BY model_name
-  `).bind(...ACTIVE_9_MODELS).all<any>().catch(() => ({ results: [] as any[] }))
+  `).bind(...ACTIVE_8_MODELS).all<any>().catch(() => ({ results: [] as any[] }))
 
   const fiveDaysAgo = new Date(Date.now() + 8 * 3600_000 - 5 * 86_400_000).toISOString().slice(0, 10)
   const { results: recentSellRows } = await env.DB.prepare(`
@@ -189,8 +188,8 @@ async function queryAdaptiveInputs(env: { DB: D1Database }) {
     riskScore: riskRow?.risk_score ?? 50,
     riskLevel: riskRow?.risk_level ?? 'medium',
     accuracy30d: accGlobal?.avg_acc ?? 0.6,
-    active9Samples30d: accGlobal?.sample_count ?? 0,
-    active9ModelCount30d: accGlobal?.model_count ?? 0,
+    active8Samples30d: accGlobal?.sample_count ?? 0,
+    active8ModelCount30d: accGlobal?.model_count ?? 0,
     rows30d: rows30d ?? [],
     rows90d: rows90d ?? [],
     losses5d: recentOrders.losses,
@@ -269,8 +268,8 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
       accuracy: {
         global_30d: inputs.accuracy30d,
         active_9_quality_30d: inputs.accuracy30d,
-        active_9_samples_30d: inputs.active9Samples30d,
-        active_9_model_count_30d: inputs.active9ModelCount30d,
+        active_9_samples_30d: inputs.active8Samples30d,
+        active_9_model_count_30d: inputs.active8ModelCount30d,
         rows_30d: inputs.rows30d,
         rows_90d: inputs.rows90d,
       },

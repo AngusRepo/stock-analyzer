@@ -19,7 +19,7 @@ MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "DLinear": "learned_sequence",
     "PatchTST": "learned_sequence",
     "iTransformer": "learned_sequence",
-    "TimesFM": "foundation_sequence",
+    "TimesFM": "l2_feature_sidecar",
 }
 
 
@@ -48,8 +48,8 @@ def model_family_for(model_name: str, family: str | None = None) -> str:
         normalized = family.lower()
         if normalized in {"time_series", "time_series_linear_current", "time_series_transformer_neuralforecast"}:
             return "learned_sequence"
-        if normalized in {"foundation_time_series", "foundation_time_series_timesfm25"}:
-            return "foundation_sequence"
+        if normalized in {"foundation_time_series", "foundation_time_series_timesfm25", "timesfm_l2"}:
+            return "l2_feature_sidecar"
         if normalized in {"tabular", "tabular_deep_learning", "tabular_deep"}:
             return "tabular_neural"
         if normalized in {"tree", "tree_feature_lightgbm", "tree_feature_xgboost", "tree_feature_extratrees"}:

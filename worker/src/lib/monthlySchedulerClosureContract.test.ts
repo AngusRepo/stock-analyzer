@@ -36,9 +36,9 @@ assert(followup.includes('"retrain"'), 'non-monthly retrain followup must still 
 assert(followup.includes('champion_pointer_reconcile'), 'retrain followup must reconcile champion pointers after artifact lifecycle cutover')
 assert(followup.includes('_backfill_champion_pointers_after_cutover'), 'artifact lifecycle cutover must not require manual champion pointer backfill')
 assert(
-  workflows.includes("artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer', 'TimesFM']") &&
+  workflows.includes("artifact_lifecycle_targets: ['GNN', 'TabM', 'PatchTST', 'iTransformer']") &&
     workflows.includes("train_model_groups: ['tree', 'dlinear', 'patchtst']") &&
-    workflows.includes('foundation_forecast_validation_config_refresh') &&
+    !workflows.includes('foundation_forecast_validation_config_refresh') &&
     workflows.includes('sequence_artifact_retrain_registration'),
-  'monthly retrain must explicitly separate trainable groups from formal artifact lifecycle targets including PatchTST, iTransformer, and TimesFM',
+  'monthly retrain must keep TimesFM out of formal artifact lifecycle targets; TimesFM belongs to the L2 sidecar feature-release path',
 )

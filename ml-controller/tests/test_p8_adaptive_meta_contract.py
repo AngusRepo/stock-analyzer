@@ -46,7 +46,6 @@ def test_adaptive_params_expose_p8_governance_metadata():
         "DLinear",
         "PatchTST",
         "iTransformer",
-        "TimesFM",
     ]
     assert meta["state_space_overlays"] == ["KalmanFilter", "MarkovSwitching"]
     assert meta["meta_optimizers"] == ["GAOptimizer"]

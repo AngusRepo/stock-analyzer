@@ -19,7 +19,6 @@ ALPHA_VOTE_MODELS = [
     "DLinear",
     "PatchTST",
     "iTransformer",
-    "TimesFM",
 ]
 STATE_SPACE_OVERLAYS = ["KalmanFilter", "MarkovSwitching"]
 META_OPTIMIZERS = ["GAOptimizer"]
@@ -86,12 +85,12 @@ def build_ml_confidence_hook(
     provided_quality = _as_float(active_9_quality_30d)
     if provided_quality is not None:
         quality = _clip(provided_quality, 0.0, 1.0)
-        status = "active_9_worker_quality"
+        status = "active_8_worker_quality"
         sample_count = _as_int(active_9_samples_30d, total_samples)
         model_count = _as_int(active_9_model_count_30d, len(active_models_seen))
     elif total_samples > 0:
         quality = _clip(weighted_accuracy / total_samples, 0.0, 1.0)
-        status = "active_9_rows_quality"
+        status = "active_8_rows_quality"
         sample_count = total_samples
         model_count = len(active_models_seen)
     else:
@@ -101,7 +100,7 @@ def build_ml_confidence_hook(
         model_count = 0
 
     return {
-        "source": "model_accuracy_30d_active_9_verified_rows",
+        "source": "model_accuracy_30d_active_8_verified_rows",
         "status": status,
         "model_quality_30d": round(quality, 4),
         "sample_count_30d": int(sample_count),

@@ -14,7 +14,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from services.active9_dataset_policy import (
+from services.active_model_policy import (
     daily_sequence_target_points,
     long_history_sequence_enabled,
     long_history_sequence_prefix,

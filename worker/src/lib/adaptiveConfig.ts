@@ -58,9 +58,8 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     'DLinear',
     'PatchTST',
     'iTransformer',
-    'TimesFM',
   ],
-  formal_layer3_slots: ['DLinear', 'PatchTST', 'TabM', 'GNN', 'iTransformer', 'TimesFM'],
+  formal_layer3_slots: ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'],
   state_space_overlays: ['KalmanFilter', 'MarkovSwitching'],
   meta_optimizers: ['GAOptimizer'],
   adaptive_components: {

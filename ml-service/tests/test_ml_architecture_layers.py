@@ -11,8 +11,8 @@ def test_alpha_prediction_pool_excludes_state_space_overlays():
         "DLinear",
         "PatchTST",
         "iTransformer",
-        "TimesFM",
     )
+    assert tuple(model_pool.TIMESFM_L2_SIDECAR_MODELS) == ("TimesFM",)
     assert tuple(model_pool.RETIRED_ALPHA_MODELS) == (
         "CatBoost",
         "FT-Transformer",
@@ -34,11 +34,15 @@ def test_shadow_and_meta_layers_are_not_active_alpha_models():
     assert "GAOptimizer" not in model_pool.EXPERIMENTAL_CHALLENGER_MODELS
     assert "ResidualMLP" not in model_pool.MANAGED_MODELS
     assert "GNN" in model_pool.MANAGED_MODELS
+    assert "TimesFM" not in model_pool.MANAGED_MODELS
+    assert "TimesFM" in model_pool.L2_FEATURE_SIDECARS
 
 
 def test_default_pool_bootstraps_only_active_alpha_models():
     pool = model_pool.init_default_pool()
     assert set(pool["models"]) == set(model_pool.ALPHA_PREDICTION_MODELS)
+    assert set(pool["l2_feature_sidecars"]) == {"TimesFM"}
+    assert pool["l2_feature_sidecars"]["TimesFM"]["direct_prediction"] is False
     assert set(pool["shadow_models"]) == {"ResidualMLP"}
     assert set(pool["meta_optimizers"]) == {"GAOptimizer"}
     assert all(entry["status"] == "active" for entry in pool["models"].values())
@@ -76,7 +80,7 @@ def test_shadow_challenger_registration_excludes_ga_optimizer():
         raise AssertionError("GAOptimizer must not register as shadow predictor")
 
 
-def test_active9_legacy_challenger_registration_is_disabled():
+def test_active8_legacy_challenger_registration_is_disabled():
     pool = model_pool.init_default_pool()
 
     try:
@@ -85,7 +89,7 @@ def test_active9_legacy_challenger_registration_is_disabled():
         assert "legacy model_pool challenger registration is disabled" in str(exc)
         assert "artifact_registry" in str(exc)
     else:
-        raise AssertionError("active-9 models must not register legacy challengers")
+        raise AssertionError("active-8 models must not register legacy challengers")
 
     assert "challenger" not in pool["models"]["LightGBM"]
 
@@ -102,9 +106,13 @@ def test_model_pool_sanitizer_drops_legacy_alpha_residue_but_keeps_meta_layers()
     pool["models"]["FT-Transformer"] = {"status": "active", "version": "legacy"}
     pool["models"]["Chronos"] = {"status": "degraded", "version": "legacy"}
 
-    sanitized = model_pool.sanitize_pool_active9(pool)
+    pool["models"]["TimesFM"] = {"status": "active", "version": "legacy", "gcs_path": "universal/timesfm/legacy.json"}
+
+    sanitized = model_pool.sanitize_pool_active_alpha(pool)
 
     assert set(sanitized["models"]) == set(model_pool.ALPHA_PREDICTION_MODELS)
+    assert "TimesFM" not in sanitized["models"]
+    assert sanitized["l2_feature_sidecars"]["TimesFM"]["role"] == "l2_feature_sidecar"
     assert "CatBoost" not in sanitized["models"]
     assert "FT-Transformer" not in sanitized["models"]
     assert "Chronos" not in sanitized["models"]

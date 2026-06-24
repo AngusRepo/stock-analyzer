@@ -229,7 +229,7 @@ export default function StrategyFamilyWorkbench({ specs, dryRun, learning, exper
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-amber-300">L1 Strategy Family Cockpit</p>
           <h2 className="mt-1 text-base font-semibold text-[#f2ead8]">全市場 strategy-hit breadth，不做 raw top-up 正式補滿</h2>
           <p className="mt-2 max-w-4xl text-xs leading-5 text-[#9aa7bd]">
-            這頁只管理 L1 family / variant 與 strategy-learning；L2 coarse、L3 family ML 與參數晉升在 Model Pool，單次 run path 在流程追蹤。
+            這頁只管理 L1 family / variant 與 strategy-learning；L2 TimesFM sidecar、L3 active-8 ML 與參數晉升在 Model Pool，單次 run path 在 Pipeline Trace。
           </p>
         </div>
         <div className="grid grid-cols-4 gap-2 text-[11px]">

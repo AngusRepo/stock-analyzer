@@ -179,7 +179,7 @@ def build_suppressed_legacy_challenger_registrations(
         suppressed[model_name] = {
             "status": "disabled",
             "version": candidate_version,
-            "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+            "reason": "legacy_model_pool_challenger_disabled_for_active8_artifact_registry_flow",
         }
     return suppressed
 

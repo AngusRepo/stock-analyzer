@@ -378,7 +378,7 @@ function ModelUpgradeLaunchpad({
           ))}
         </div>
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3 text-xs leading-5 text-slate-400">
-          這裡只建立 Strategy Lab experiment 與 evaluation packet。TabM/GNN/iTransformer/TimesFM 是 L3 production target；缺 production artifact、OOS IC 與 serving parity 前不可投票。
+          這裡只建立 Strategy Lab experiment 與 evaluation packet。TabM/GNN/iTransformer 是 L3 production target；TimesFM 是 L2 feature sidecar，缺 feature-release/OOS/coverage evidence 前不可作為 L3 input。
         </div>
       </CardContent>
     </Card>
@@ -1403,10 +1403,10 @@ export default function StrategyLabPage() {
       const today = new Date().toISOString().slice(0, 10)
       const res = await strategyLabApi.createExperiment({
         id: `model-family-benchmark-${today.replace(/-/g, '')}`,
-        hypothesis: 'model_family_upgrade：評估 TabM、GNN、iTransformer、TimesFM 是否值得取得 L3 family vote 權重，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
+        hypothesis: 'model_family_upgrade：評估 TabM、GNN、iTransformer 是否值得取得 L3 family vote 權重；TimesFM 僅評估 L2 feature-sidecar release，並比較 OOS IC、CPCV/PBO、成本敏感度與資料切片穩定性。',
         strategySpecIds: ['model_family_benchmark_v1'],
         metrics: ['oos_ic', 'cpcv_pbo', 'cost_sensitivity', 'data_slice_report', 'latency_cost'],
-        followUp: ['run model family dry-run', 'inspect upgrade report', 'decide promote to L3 production weight gate or reject'],
+        followUp: ['run model family dry-run', 'inspect upgrade report', 'decide promote active-8 L3 production weight gate or keep TimesFM as L2 sidecar evidence only'],
         sourceRefs: ['strategy-lab-ui', 'model-upgrade-track'],
         dataSlice: {
           benchmark_candidates: ['TabM', 'GNN', 'iTransformer', 'TimesFM'],

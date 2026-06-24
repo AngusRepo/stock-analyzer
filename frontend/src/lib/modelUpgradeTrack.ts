@@ -1,5 +1,6 @@
 export type ModelUpgradeStage =
   | 'production_slot_member'
+  | 'l2_feature_sidecar_member'
   | 'production_artifact_required'
   | 'shadow_challenger'
   | 'benchmark_only'
@@ -8,7 +9,7 @@ export type ModelUpgradeStage =
   | 'state_space_overlay'
 
 export type ModelUpgradeLayer =
-  | 'L2 coarse'
+  | 'L2 feature sidecar'
   | 'L3 core family'
   | 'L4 allocator'
   | 'meta'
@@ -26,12 +27,6 @@ export type ModelUpgradeCandidate = {
   canVote: boolean
 }
 
-export const MODEL_POOL_L2_COARSE_MODEL_IDS = [
-  'LightGBM',
-  'XGBoost',
-  'ExtraTrees',
-] as const
-
 export const MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS = [
   'LightGBM',
   'XGBoost',
@@ -41,10 +36,13 @@ export const MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS = [
   'DLinear',
   'PatchTST',
   'iTransformer',
-  'TimesFM',
 ] as const
 
 export const MODEL_POOL_FORMAL_L3_SLOT_IDS = MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS
+
+export const MODEL_POOL_L2_FEATURE_SIDECAR_IDS = [
+  'TimesFM',
+] as const
 
 export const MODEL_POOL_RETIRED_MODEL_IDS = [
   'CatBoost',
@@ -76,10 +74,10 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     id: 'LightGBM',
     stage: 'production_slot_member',
     family: 'tree_family',
-    layer: 'L2 coarse',
-    titleZh: 'LightGBM L2/L3 active slot',
-    roleZh: 'Tree coarse gate member and L3 tree-family alpha voter. It remains active only with artifact, verified rows, and live/OOS IC evidence.',
-    roleEn: 'Tree coarse gate member and L3 tree-family alpha voter.',
+    layer: 'L3 core family',
+    titleZh: 'LightGBM L3 active slot',
+    roleZh: 'L3 tree-family direct-alpha voter. It remains active only with artifact, verified rows, and live/OOS IC evidence.',
+    roleEn: 'L3 tree-family direct-alpha voter.',
     requiredEvidence: CORE_ARTIFACT_EVIDENCE,
     canVote: true,
   },
@@ -87,10 +85,10 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     id: 'XGBoost',
     stage: 'production_slot_member',
     family: 'tree_family',
-    layer: 'L2 coarse',
-    titleZh: 'XGBoost L2/L3 active slot',
-    roleZh: 'Tree coarse gate member and L3 tree-family alpha voter. It should not be grouped with retired CatBoost.',
-    roleEn: 'Tree coarse gate member and L3 tree-family alpha voter.',
+    layer: 'L3 core family',
+    titleZh: 'XGBoost L3 active slot',
+    roleZh: 'L3 tree-family direct-alpha voter. It should not be grouped with retired CatBoost.',
+    roleEn: 'L3 tree-family direct-alpha voter.',
     requiredEvidence: CORE_ARTIFACT_EVIDENCE,
     canVote: true,
   },
@@ -98,10 +96,10 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     id: 'ExtraTrees',
     stage: 'production_slot_member',
     family: 'tree_family',
-    layer: 'L2 coarse',
-    titleZh: 'ExtraTrees L2/L3 active slot',
-    roleZh: 'Tree coarse gate member and diversity guard for the active tree family.',
-    roleEn: 'Tree coarse gate member and diversity guard.',
+    layer: 'L3 core family',
+    titleZh: 'ExtraTrees L3 active slot',
+    roleZh: 'L3 tree-family direct-alpha voter and diversity guard for the active tree family.',
+    roleEn: 'L3 tree-family direct-alpha voter and diversity guard.',
     requiredEvidence: CORE_ARTIFACT_EVIDENCE,
     canVote: true,
   },
@@ -162,14 +160,14 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
   },
   {
     id: 'TimesFM',
-    stage: 'production_slot_member',
+    stage: 'l2_feature_sidecar_member',
     family: 'sequence_family',
-    layer: 'L3 core family',
-    titleZh: 'TimesFM 2.5 L3 active slot',
-    roleZh: 'Foundation time-series branch backed by the TimesFM 2.5 config artifact. It uses forecast evidence and verified IC before receiving positive sequence-family weight.',
-    roleEn: 'L3 TimesFM 2.5 foundation time-series production slot.',
-    requiredEvidence: ['production artifact', 'TimesFM 2.5 config', 'verified rows', 'formal L3 slot wiring', 'forecast OOS IC', 'walk-forward', 'cost report', 'slice stability'],
-    canVote: true,
+    layer: 'L2 feature sidecar',
+    titleZh: 'TimesFM 2.5 L2 sidecar',
+    roleZh: 'Foundation time-series branch backed by the TimesFM 2.5 config artifact. It enriches formal137+timesfm_l175 features before L3 8ML and never votes as direct alpha.',
+    roleEn: 'L2 TimesFM 2.5 feature sidecar.',
+    requiredEvidence: ['production artifact', 'TimesFM 2.5 config', 'verified rows', 'L2 feature release', 'forecast OOS IC', 'walk-forward', 'cost report', 'slice stability'],
+    canVote: false,
   },
   {
     id: 'LinUCB',
@@ -263,6 +261,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
 
 export const MODEL_UPGRADE_STAGE_LABELS: Record<ModelUpgradeStage, string> = {
   production_slot_member: 'production L3 slot',
+  l2_feature_sidecar_member: 'L2 feature sidecar',
   production_artifact_required: 'production target blocked by missing artifact',
   shadow_challenger: 'shadow evidence only',
   benchmark_only: 'research benchmark',

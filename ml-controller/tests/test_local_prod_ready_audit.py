@@ -306,11 +306,12 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         "\n".join([
             "adaptive-meta-policy-replay linucb-multiplier-replay",
             "const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])",
-            "const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer', 'TimesFM'])",
+            "const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer'])",
+            "const L2_SIDECAR_MODELS = new Set(['TimesFM'])",
             "const GRAPH_MODELS = new Set(['GNN'])",
             "const TABULAR_NEURAL_MODELS = new Set(['TabM'])",
-            "function modelFamily(name: string): 'Tree' | 'TabM' | 'Sequence' | 'GNN' | 'Other' { return 'Tree' }",
-            "Fleet status Meta boundary Active-9 confidence hook LinUCB, NeuralUCB, NeuralTS, and NeuCB",
+            "function modelFamily(name: string): 'Tree' | 'TabM' | 'Sequence' | 'GNN' | 'Sidecar' | 'Other' { return 'Tree' }",
+            "Fleet status Meta boundary Active-8 confidence hook LinUCB, NeuralUCB, NeuralTS, and NeuCB",
         ]),
     )
     _write(
@@ -320,13 +321,11 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write(
         tmp_path / "worker/src/lib/screenerFunnelEvidence.ts",
         "\n".join([
-            "const L2_COARSE_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees']",
-            "const L3_FORMAL_MODELS = ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']",
-            "const ACTIVE_9_ML_TEACHER_MODELS = [...L2_COARSE_MODELS, ...L3_FORMAL_MODELS]",
-            "layer2_3ml_coarse_summary_v1 layer3_6ml_formal_summary_v1",
-            "three_ml_coarse_evidence_l3_queue_not_final_ranker six_ml_formal_family_vote_not_topk",
-            "core_ml_evidence",
-            "formal_l2_evidence",
+            "const L2_TIMESFM_MODELS = ['TimesFM']",
+            "const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']",
+            "const ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS = [...L3_FORMAL_MODELS]",
+            "layer2_timesfm_enrichment_summary_v1 layer3_8ml_formal_summary_v1",
+            "timesfm_sequence_sidecar_feature_enrichment_not_selector eight_ml_formal_family_evidence_not_topk",
             "expected_teacher_count teacher_label_scope",
             "layer1_strategy_labeler_summary_v1",
             "layer125_finlab_portfolio_intelligence_summary_v1",
@@ -345,7 +344,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "stage: 'l15_ml_slate_queue'",
             "worker_seed_only: true",
             "downstream_owner: 'ml-controller'",
-            "downstream_stage: 'layer2_coarse_ml_gate'",
+            "downstream_stage: 'layer2_timesfm_enrichment'",
         ]),
     )
     _write(
@@ -368,10 +367,10 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         "OnlinePortfolioBandit: 'production allocator controller for sparse_tangent_inverse_risk knobs; production-capable without replacing the final weight engine",
     )
     _write(
-        tmp_path / "ml-controller/services/active9_dataset_policy.py",
+        tmp_path / "ml-controller/services/active_model_policy.py",
         "\n".join([
             "ACTIVE_ALPHA_MODELS",
-            "LightGBM XGBoost ExtraTrees TabM GNN DLinear PatchTST iTransformer TimesFM",
+            "LightGBM XGBoost ExtraTrees TabM GNN DLinear PatchTST iTransformer TimesFM MODEL_POOL_REQUIRED_MODELS TIMESFM_L2_SIDECAR_MODELS",
             "RETIRED_ALPHA_MODELS",
             "CatBoost FT-Transformer Chronos",
         ]),
@@ -379,7 +378,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write(
         tmp_path / "worker/src/lib/adaptiveMetaPolicyReplayRunner.ts",
         "\n".join([
-            "LightGBM XGBoost ExtraTrees TabM GNN DLinear PatchTST iTransformer TimesFM p.verified_at IS NOT NULL active_models: [...ACTIVE_MODELS]",
+            "LightGBM XGBoost ExtraTrees TabM GNN DLinear PatchTST iTransformer p.verified_at IS NOT NULL active_models: [...ACTIVE_MODELS]",
             "allocator_candidate=${report.allocator_policy_candidate?.status ?? 'none'}",
             "production_effect: false",
             "mutation_allowed: false",
@@ -476,7 +475,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/lib/adaptiveEngineContract.test.ts",
-        "active_9_quality_30d LightGBM TabM iTransformer TimesFM !allBinds.includes('CatBoost')",
+        "active_9_quality_30d LightGBM TabM iTransformer !allBinds.includes('TimesFM') !allBinds.includes('CatBoost')",
     )
     _write(
         tmp_path / "ml-controller/tests/test_model_ic_tracker.py",
@@ -544,7 +543,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "ml-controller/services/model_artifact_registry.py",
-        "active-9 production artifact set production promotion must use an active-9 model",
+        "active-8 direct-alpha production artifact set production promotion must use an active-8 direct-alpha model",
     )
     _write(
         tmp_path / "worker/src/routes/paper.ts",
@@ -571,10 +570,10 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write(
         tmp_path / "ml-controller/services/recommendation_service.py",
         "\n".join([
-            'pred.get("core_ml_evidence") or pred.get("core_ml_gate")',
-            '"schema_version": "layer2_core_ml_evidence_audit_v1"',
-            '"legacy_schema_version": "layer2_core_ml_gate_audit_v1"',
-            '"source": "daily_pipeline_v2.node_l2_core_evidence"',
+            "write_layer2_timesfm_enrichment_audit",
+            '"schema_version": "l2_timesfm_enrichment_evidence_v1"',
+            '"source": "timesfm_l2_sidecar"',
+            '"selection_role": "feature_enrichment_not_gate"',
             "selection_reason",
             "selected_positive_edge_sparse_weight",
             "no_positive_expected_edge",
@@ -608,12 +607,10 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write(
         tmp_path / "ml-controller/graphs/daily_pipeline_v2.py",
         "\n".join([
-            "def _attach_l2_core_ml_evidence",
-            '"schema_version": "core_ml_evidence_v1"',
-            '"legacy_schema_version": "core_ml_gate_v2"',
-            'row["core_ml_evidence"] = evidence',
-            'row["core_ml_gate"] = evidence',
-            "Deprecated compatibility wrapper; L2 now emits evidence, not a gate.",
+            "def node_l2_timesfm_enrich",
+            "TimesFM L2 sidecar",
+            'g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")',
+            "apply_l2_timesfm_evidence",
             "legacy_topk_override_retired",
             "forced BUY is disabled",
             "Retired path: detect stale config only; never force BUY from rank/top-K.",
@@ -699,7 +696,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "stage: 'l15_ml_slate_queue'",
             "worker_seed_only: true",
             "downstream_owner: 'ml-controller'",
-            "downstream_stage: 'layer2_coarse_ml_gate'",
+            "downstream_stage: 'layer2_timesfm_enrichment'",
             "buildStrategySimilarityEvidencePayload",
             "'/l125/strategy_similarity_evidence'",
             "coerceModalStrategySimilarityGraphEvidence",
@@ -744,12 +741,11 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write(
         tmp_path / "worker/src/lib/screenerFunnelEvidence.ts",
         "\n".join([
-            "const L2_COARSE_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees']",
-            "const L3_FORMAL_MODELS = ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']",
-            "const ACTIVE_9_ML_TEACHER_MODELS = [...L2_COARSE_MODELS, ...L3_FORMAL_MODELS]",
-            "layer2_3ml_coarse_summary_v1 layer3_6ml_formal_summary_v1",
-            "three_ml_coarse_evidence_l3_queue_not_final_ranker six_ml_formal_family_vote_not_topk",
-            "core_ml_evidence",
+            "const L2_TIMESFM_MODELS = ['TimesFM']",
+            "const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']",
+            "const ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS = [...L3_FORMAL_MODELS]",
+            "layer2_timesfm_enrichment_summary_v1 layer3_8ml_formal_summary_v1",
+            "timesfm_sequence_sidecar_feature_enrichment_not_selector eight_ml_formal_family_evidence_not_topk",
             "formal_l2_evidence",
             "expected_teacher_count teacher_label_scope",
             "layer1_strategy_labeler_summary_v1",
@@ -792,7 +788,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "worker/src/routes/other.ts",
-        "strategy_portfolio_intelligence_health 'l15_ml_slate_queue' 'layer2_coarse_ml_gate'",
+        "strategy_portfolio_intelligence_health 'l15_ml_slate_queue' 'layer2_timesfm_enrichment'",
     )
     _write(
         tmp_path / "tools/finlab_v4_remote_backfill.py",

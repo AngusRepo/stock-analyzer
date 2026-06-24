@@ -46,9 +46,9 @@ void (async () => {
     assert(!state.sql?.includes('      dr.ml_vote_summary,\n'), 'replay source must not send raw ml_vote_summary payloads')
     assert(!state.sql?.includes('      dr.alpha_context,\n'), 'replay source must not send raw alpha_context payloads')
     assert(!state.sql?.includes('      dr.alpha_allocation\n'), 'replay source must not send raw alpha_allocation payloads')
-    assert(state.binds?.includes('TabM'), 'active-9 replay source must include TabM')
-    assert(state.binds?.includes('iTransformer'), 'active-9 replay source must include iTransformer')
-    assert(state.binds?.includes('TimesFM'), 'active-9 replay source must include TimesFM')
+    assert(state.binds?.includes('TabM'), 'active-8 replay source must include TabM')
+    assert(state.binds?.includes('iTransformer'), 'active-8 replay source must include iTransformer')
+    assert(!state.binds?.includes('TimesFM'), 'active-8 replay source must keep TimesFM out of direct alpha replay')
     assert(state.binds?.at(-1) === 12, 'D1 replay query limit must be bounded and bound as last parameter')
   }
 
@@ -120,7 +120,7 @@ void (async () => {
 
       assert(fetchUrl === 'https://ml.example.com/meta-learning/adaptive-policy-replay', 'runner must call the adaptive replay endpoint')
       assert(fetchHeaders.get('X-Service-Token') === 'service-secret', 'runner must pass service token when configured')
-      assert(fetchBody.rows.length === 1, 'runner must send active-9 verified rows to ML service')
+      assert(fetchBody.rows.length === 1, 'runner must send Active-8 direct-alpha verified rows to ML service')
       assert(fetchBody.min_ic_samples === 5, 'runner must send bounded default min_ic_samples')
       assert(result.mode === 'persisted_evidence', 'persisted mode should be explicit')
       assert(result.production_effect === false, 'replay must be marked non-production')

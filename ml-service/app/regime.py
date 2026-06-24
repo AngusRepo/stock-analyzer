@@ -30,7 +30,7 @@ DEFAULT_REGIME_CONFIG = {
 }
 REGIME_CONFIG = DEFAULT_REGIME_CONFIG  # runtime alias, overridden by regime_config_override
 
-PRICE_MODEL_NAMES   = {"DLinear", "PatchTST", "iTransformer", "TimesFM"}
+PRICE_MODEL_NAMES   = {"DLinear", "PatchTST", "iTransformer"}
 FEATURE_MODEL_NAMES = {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
 
 

@@ -81,7 +81,7 @@ for (const requiredText of [
   'L2 block formal137/retrain/release',
   'not delivered: no_channel_configured',
   'sent to not_sent:no_channel_configured',
-  'L1.75 TimesFM sidecar',
+  'L2 TimesFM sidecar',
   'ML vote denominator should be 8 direct-alpha models',
 ]) {
   assert(

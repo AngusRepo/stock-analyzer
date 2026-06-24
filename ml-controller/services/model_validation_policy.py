@@ -1,4 +1,4 @@
-"""Adaptive validation policy resolver for active-9 model evidence gates."""
+"""Adaptive validation policy resolver for Active-8 direct-alpha model evidence gates."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "DLinear": "learned_sequence",
     "PatchTST": "learned_sequence",
     "iTransformer": "learned_sequence",
-    "TimesFM": "foundation_sequence",
+    "TimesFM": "l2_feature_sidecar",
 }
 
 _RESEARCH_STAGE_NAMES = {"research", "research_benchmark", "benchmark", "model_upgrade"}
@@ -31,7 +31,7 @@ _FAMILY_PBO_BASE: dict[str, float] = {
     "tabular_neural": 0.46,
     "graph": 0.44,
     "learned_sequence": 0.43,
-    "foundation_sequence": 0.40,
+    "l2_feature_sidecar": 0.40,
 }
 
 _FAMILY_PBO_FLOOR: dict[str, float] = {
@@ -39,7 +39,7 @@ _FAMILY_PBO_FLOOR: dict[str, float] = {
     "tabular_neural": 0.20,
     "graph": 0.18,
     "learned_sequence": 0.18,
-    "foundation_sequence": 0.16,
+    "l2_feature_sidecar": 0.16,
 }
 
 _MODEL_PBO_COMPLEXITY_ADJUSTMENT: dict[str, float] = {
@@ -53,6 +53,8 @@ _MODEL_PBO_COMPLEXITY_ADJUSTMENT: dict[str, float] = {
     "iTransformer": -0.060,
     "TimesFM": -0.040,
 }
+
+_FOUNDATION_FORECAST_FAMILIES = {"foundation_sequence", "l2_feature_sidecar"}
 
 
 def _as_float(value: Any, default: float | None = None) -> float | None:
@@ -80,8 +82,8 @@ def model_family_for(model_name: str, family: str | None = None) -> str:
         normalized = family.lower()
         if normalized in {"time_series", "time_series_linear_current", "time_series_transformer_neuralforecast"}:
             return "learned_sequence"
-        if normalized in {"foundation_time_series", "foundation_time_series_timesfm25"}:
-            return "foundation_sequence"
+        if normalized in {"foundation_time_series", "foundation_time_series_timesfm25", "timesfm_l2"}:
+            return "l2_feature_sidecar"
         if normalized in {"tabular", "tabular_deep_learning", "tabular_deep"}:
             return "tabular_neural"
         if normalized in {"tree", "tree_feature_lightgbm", "tree_feature_xgboost", "tree_feature_extratrees"}:
@@ -132,6 +134,7 @@ def _family_min_rows(family: str, stage: str, sample_count: int | None) -> int:
             "graph": 30,
             "learned_sequence": 30,
             "foundation_sequence": 30,
+            "l2_feature_sidecar": 30,
         }.get(family, 40)
     else:
         base = {
@@ -140,6 +143,7 @@ def _family_min_rows(family: str, stage: str, sample_count: int | None) -> int:
             "graph": 60,
             "learned_sequence": 90,
             "foundation_sequence": 30,
+            "l2_feature_sidecar": 30,
         }.get(family, 80)
     if not sample_count:
         return base
@@ -148,7 +152,7 @@ def _family_min_rows(family: str, stage: str, sample_count: int | None) -> int:
 
 
 def _family_min_folds(family: str, stage: str, sample_count: int | None) -> int:
-    if family == "foundation_sequence" and stage != "research_benchmark":
+    if family in _FOUNDATION_FORECAST_FAMILIES and stage != "research_benchmark":
         return 1
     if stage == "research_benchmark":
         return 3
@@ -159,7 +163,7 @@ def _family_min_folds(family: str, stage: str, sample_count: int | None) -> int:
 
 def _coverage_policy(family: str, stage: str, coverage_mode: str | None) -> dict[str, Any]:
     mode = str(coverage_mode or "").strip().lower()
-    if family == "foundation_sequence":
+    if family in _FOUNDATION_FORECAST_FAMILIES:
         if mode in {"sample_complete", "sampled", "sampled_benchmark"} or stage == "research_benchmark":
             return {
                 "mode": "sample_complete",
@@ -213,6 +217,7 @@ def _resolve_oos_ic_floor(
         "graph": 0.016,
         "learned_sequence": 0.014,
         "foundation_sequence": 0.010,
+        "l2_feature_sidecar": 0.010,
     }.get(family, 0.012)
     evidence_buffer = round(family_buffer * risk, 6)
     if stage == "promotion" and reference > 0:
@@ -221,7 +226,7 @@ def _resolve_oos_ic_floor(
     else:
         min_oos_ic = 0.0
         comparison = "positive_rank_ic_floor"
-    if family == "foundation_sequence":
+    if family in _FOUNDATION_FORECAST_FAMILIES:
         comparison = "forecast_validation_rank_ic_floor" if reference <= 0 else comparison
     return {
         "comparison": comparison,
@@ -244,7 +249,7 @@ def _resolve_live_ic_policy(
 ) -> dict[str, Any]:
     risk = _regime_risk_multiplier(regime)
     base_samples = 80 if stage == "research_benchmark" else 150
-    if family == "foundation_sequence":
+    if family in _FOUNDATION_FORECAST_FAMILIES:
         base_samples = 50 if stage == "research_benchmark" else 120
     elif family == "graph":
         base_samples = 100 if stage == "research_benchmark" else 180
@@ -271,7 +276,7 @@ def _resolve_pbo_policy(
 ) -> dict[str, Any]:
     trials = max(1, int(search_trials or 1))
     selection_run = trials > 1
-    if family == "foundation_sequence" and not selection_run:
+    if family in _FOUNDATION_FORECAST_FAMILIES and not selection_run:
         return {
             "required": False,
             "reason": "single_config_foundation_forecast_validated_by_forecast_outcome_evidence",
@@ -403,6 +408,7 @@ def resolve_model_validation_policy(
             "graph": 0.28,
             "learned_sequence": 0.26,
             "foundation_sequence": 0.30,
+            "l2_feature_sidecar": 0.30,
         }.get(resolved_family, 0.25)
         * risk,
         0.18,
@@ -429,7 +435,7 @@ def resolve_model_validation_policy(
         "cpcv": {
             "owner": (
                 "foundation_forecast_validation"
-                if resolved_family == "foundation_sequence" and resolved_stage != "research_benchmark"
+                if resolved_family in _FOUNDATION_FORECAST_FAMILIES and resolved_stage != "research_benchmark"
                 else "family_specific_cpcv"
             ),
             "min_folds": min_folds,

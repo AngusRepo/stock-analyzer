@@ -1,5 +1,5 @@
 """
-recommendation_service.py — Compute recommendations + write D1
+recommendation_service.py ??Compute recommendations + write D1
 2026-04-07 LangGraph A+B refactor
 
 Direct port of worker/src/lib/dailyRecommendation.ts:540-758 core logic:
@@ -40,7 +40,7 @@ from services.alpha_framework import (
     normalize_alpha_policy,
     regime_aware_allocate,
 )
-from services.active9_dataset_policy import gnn_return_history_lookback
+from services.active_model_policy import gnn_return_history_lookback
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
 from services.portfolio_allocation import allocate_sparse_tangent_with_evidence
@@ -272,7 +272,7 @@ def _quantile_width(signal: dict[str, Any]) -> float | None:
 
 
 def _timesfm_sidecar_payload(data: dict) -> dict[str, Any] | None:
-    """Build L1.75 TimesFM feature sidecar without restoring direct-alpha voting."""
+    """Build L2 TimesFM feature sidecar without restoring direct-alpha voting."""
     stock_meta = data.get("stock_meta") if isinstance(data.get("stock_meta"), dict) else {}
     existing = stock_meta.get("timesfm_l175_sidecar") if isinstance(stock_meta, dict) else None
     if isinstance(existing, dict):
@@ -285,9 +285,9 @@ def _timesfm_sidecar_payload(data: dict) -> dict[str, Any] | None:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # ML score calculation (port from dailyRecommendation.ts:558-568)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> float:
     """Compute ml_score 0-30 from actual model evidence.
@@ -368,17 +368,17 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Filter + score (port from dailyRecommendation.ts:541-613)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def _effective_signal(ml: dict | None, use_ensemble_v2: bool = True) -> str | None:
-    """ML_POOL Plan A migration helper — prefer ensemble_v2.signal over legacy signal.
+    """ML_POOL Plan A migration helper ??prefer ensemble_v2.signal over legacy signal.
 
     Returns the signal string (uppercase) used for downstream BUY/SELL filter.
-    If ensemble_v2 absent or use_ensemble_v2=False → falls back to legacy
+    If ensemble_v2 absent or use_ensemble_v2=False ??falls back to legacy
     feature-model score_to_signal output. When time-series models have
-    no IC data yet, ensemble_v2 weight for them = 0 → ensemble_v2.signal is
+    no IC data yet, ensemble_v2 weight for them = 0 ??ensemble_v2.signal is
     mathematically equivalent to legacy signal, so migration is no-op until
     IC tracker accumulates time-series IC (Stage 2 cron, ~3-4 weeks).
     """
@@ -408,34 +408,30 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     signal = str(eff_ml.get("signal") or "").upper()
     source = str(eff_ml.get("signal_source") or "")
     forecast_raw = eff_ml.get("forecast_pct")
-    forecast_text = (
-        "預期報酬校準不足"
-        if forecast_raw is None
-        else f"{float(forecast_raw) * 100:+.1f}%"
-    )
+    forecast_text = "forecast unavailable" if forecast_raw is None else f"{float(forecast_raw) * 100:+.1f}%"
     ev2 = (ml or {}).get("ensemble_v2") or {}
 
     contributors = ev2.get("contributing_models") or []
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
-        return "V2 模型池暫無正 IC 權重，先以觀望處理，等待 verify/IC 樣本補齊"
+        return "V2 ensemble has no positive active weight; keep verifying IC evidence."
     if contributors:
-        label = "看多" if "BUY" in signal else "觀望" if signal == "HOLD" else "偏空"
-        return f"V2 模型池{label}（{len(contributors)} 模型有權重，校準預期 {forecast_text}）"
+        label = "buy" if "BUY" in signal else "hold" if signal == "HOLD" else "sell"
+        return f"V2 ensemble {label}: {len(contributors)} contributing models, forecast {forecast_text}."
 
     total = legacy_counts.get("total", 0)
     up = legacy_counts.get("up", 0)
     down = legacy_counts.get("down", 0)
     if total <= 0:
-        return "ML 資料不足"
+        return "ML evidence unavailable"
     if "BUY" in signal:
-        return f"ML 看多（{up}/{total} 看漲，校準預期 {forecast_text}）"
+        return f"ML buy: {up}/{total} models point up, forecast {forecast_text}."
     if signal == "HOLD":
         if up > down:
-            return f"ML 觀望（{up}/{total} 偏多但共識未達門檻）"
+            return f"ML hold: {up}/{total} models lean up but signal stayed below buy threshold."
         if down > up:
-            return f"ML 觀望（{down}/{total} 偏空，暫不追價）"
-        return f"ML 觀望（多空分歧 {up}/{down}）"
-    return "ML 偏空"
+            return f"ML hold: {down}/{total} models lean down, no positive edge."
+        return f"ML hold: mixed direction {up}/{down}."
+    return "ML sell"
 
 
 def _forecast_fraction_to_pct(raw: Any) -> float | None:
@@ -454,7 +450,7 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
     tracked = [
         "XGBoost", "ExtraTrees", "LightGBM",
         "TabM", "GNN",
-        "DLinear", "PatchTST", "iTransformer", "TimesFM",
+        "DLinear", "PatchTST", "iTransformer",
     ]
     weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
     active_weight_count = 0
@@ -490,7 +486,6 @@ def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -
         ("dlinear", "DLinear"),
         ("patchtst", "PatchTST"),
         ("itransformer", "iTransformer"),
-        ("timesfm", "TimesFM"),
     ):
         sig = (ml or {}).get(src_key) or {}
         try:
@@ -618,14 +613,14 @@ def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy:
             "key": "bucket_bonus",
             "label": "Edge bucket",
             "value": round(bucket_bonus, 2),
-            "explain": "策略型態基礎加分，例如突破/波動擴張通常比防守累積更積極。",
+            "explain": "Adds the configured score bonus for the ML edge bucket.",
         })
     if regime_delta is not None:
         details.append({
             "key": "regime_weight",
             "label": "Regime weight",
             "value": round(regime_delta, 2),
-            "explain": "目前大盤 regime 對這種策略型態的順逆風調整。",
+            "explain": "Applies the market-regime weight adjustment.",
         })
     if risk_penalty:
         flag_text = ", ".join(str(flag) for flag in risk_flags) if risk_flags else "risk_overlay"
@@ -634,7 +629,7 @@ def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy:
             "label": "Risk overlay",
             "value": -round(risk_penalty, 2),
             "flags": risk_flags,
-            "explain": f"風控扣分，觸發旗標：{flag_text}。",
+            "explain": f"Subtracts the configured risk-overlay penalty for {flag_text}.",
         })
     return details
 
@@ -1180,8 +1175,8 @@ def _canonical_chip_evidence_status(
 def _format_abs_cash_billion(value: float) -> str:
     abs_value = abs(value)
     if 0 < abs_value < 0.01:
-        return f"{round(abs_value * 10000):.0f}萬"
-    return f"{abs_value:.2f}億"
+        return f"TWD {abs_value * 100:.1f}m"
+    return f"TWD {abs_value:.2f}e8"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -1312,14 +1307,14 @@ def build_reason(s: dict) -> str:
     broker_cash_5d = _score_number(s.get("broker_net_amount_5d"))
     if market_segment == "EMERGING" and broker_rows > 0:
         chip_context = (
-            f"興櫃券商分點近5日{_format_abs_cash_billion(broker_cash_5d)}"
+            f"emerging broker flow {_format_abs_cash_billion(broker_cash_5d)}"
             f", broker_count={s.get('broker_count_latest', 'N/A')}"
         )
     elif market_segment == "EMERGING":
         chip_context = "emerging broker flow evidence unavailable"
     else:
         net_amount = _score_number(s.get("foreign_net_5d")) + _score_number(s.get("trust_net_5d")) + _score_number(s.get("dealer_net_5d"))
-        chip_context = f"法人5日淨額 {net_amount:.1f} 億"
+        chip_context = f"listed institutional net flow 5d {net_amount:.1f}e8"
 
     technical_parts: list[str] = []
     rsi = _first_float(s.get("rsi14"))
@@ -1357,43 +1352,43 @@ def build_watch_points(s: dict) -> list[str]:
     forecast_pct = float(s.get("ml_forecast_pct") or 0.0)
 
     if rsi > 80:
-        points.append("RSI 過熱，避免追高")
+        points.append("RSI above 80; watch for overheated momentum.")
     elif rsi > 75:
-        points.append("RSI 偏熱，留意短線震盪")
+        points.append("RSI above 75; confirm follow-through before adding risk.")
     if float(s.get("macd_hist") or 0.0) < 0 and float(s.get("current_price") or 0.0) > float(s.get("ma20") or 0.0):
-        points.append("價格站上月線但 MACD 偏弱，需確認量能延續")
+        points.append("Price is above MA20 but MACD histogram is negative; momentum confirmation is weak.")
     adx = _float_or_none(s.get("adx14"))
     vmd = _float_or_none(s.get("volume_momentum_divergence_13_27_10"))
     if adx is not None and adx < 15:
-        points.append("ADX 顯示趨勢強度不足，避免只看突破追價")
+        points.append("ADX below 15; trend strength is limited.")
     if vmd is not None and vmd < 0:
-        points.append("量能動量偏離轉弱，需確認資金熱度是否降溫")
+        points.append("Volume momentum divergence is negative; confirm demand before entry.")
     if float(s.get("foreign_net_5d") or 0.0) < 0:
-        points.append("外資近 5 日偏賣，籌碼需再確認")
+        points.append("Foreign net flow is negative over 5d.")
     if float(s.get("trust_net_5d") or 0.0) < 0 < float(s.get("foreign_net_5d") or 0.0):
-        points.append("外資與投信方向不一致")
+        points.append("Trust flow conflicts with foreign buying; chip confirmation is mixed.")
     market_segment = str(s.get("market_segment") or "").upper()
     broker_rows = int(s.get("broker_rows") or 0)
     if market_segment == "EMERGING" and broker_rows > 0:
-        points.append("興櫃籌碼採 FinLab 券商分點流；不可與上市櫃三大法人直接同比")
+        points.append("Emerging-market chip evidence uses FinLab broker flow; validate liquidity and broker concentration.")
     elif market_segment == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
-        points.append("興櫃券商分點資料不足；暫不以三大法人語意判讀")
+        points.append("Emerging-market chip evidence is limited; rely more on price, volume, and ML confirmation.")
     if "BUY" in sig and forecast_pct < 0:
-        points.append("ML 訊號與預期報酬矛盾，禁止直接追價")
+        points.append("BUY signal has a negative forecast; require stronger confirmation.")
     elif conf < 0.45:
-        points.append("ML 信心偏低，僅能觀察")
+        points.append("ML confidence is below 0.45; treat as low-conviction evidence.")
     elif sig == "HOLD":
-        points.append("ML 尚未形成買進共識")
+        points.append("ML signal is HOLD; wait for stronger evidence before promotion.")
     if not points:
-        points.append("留意盤前大盤、量能與開盤價是否支持進場")
+        points.append("No major risk flags detected; continue monitoring price, volume, and ML evidence.")
     return points
 
 
 def filter_and_score_recommendations(
     screener_recs: list[dict],
-    predictions: dict[str, dict],   # symbol → ml result from ml-service
+    predictions: dict[str, dict],   # symbol ??ml result from ml-service
     payloads: list[dict],            # PredictPayload as dict (for reason data)
-    persona_opinions: dict | None = None,  # symbol → {trust:{...}, retail:{...}}
+    persona_opinions: dict | None = None,  # symbol ??{trust:{...}, retail:{...}}
     persona_weight: float = 1.0,   # 0 = disable, 1 = default, 0.5 = shadow mode
     regime_label: str | None = None,
     regime_surface: dict | None = None,
@@ -1405,13 +1400,13 @@ def filter_and_score_recommendations(
 
     For each screener_rec:
       1. Look up matching prediction
-      2. Filter SELL/NO_SIGNAL → drop
+      2. Filter SELL/NO_SIGNAL ??drop
       3. Compute ml_score, persona_score, total_score
       4. Build template reason / watchPoints
       5. Return updated row dict
 
     persona_score integration (Batch B):
-      - Reads persona_opinions[symbol] → {trust, retail}
+      - Reads persona_opinions[symbol] ??{trust, retail}
       - compute_persona_score maps to [-20, +20] scalar
       - Multiplied by persona_weight (KV-driven dial for rollout safety)
       - Stored as Score V2 alphaAdjustment before finalScore is persisted
@@ -1424,7 +1419,7 @@ def filter_and_score_recommendations(
     # ML_POOL Plan A migration (2026-04-19): toggle which signal drives the
     # BUY/SELL gate. Default True = use ensemble_v2 formal alpha slots
     # with lifecycle weights). KV override:
-    # trading:config.mlPool.useEnsembleV2=false → fall back to legacy feature-model signal.
+    # trading:config.mlPool.useEnsembleV2=false ??fall back to legacy feature-model signal.
     use_ev2 = _is_use_ensemble_v2()
 
     # Lazy-import persona helpers so this module stays import-safe even if
@@ -1459,7 +1454,7 @@ def filter_and_score_recommendations(
         if score_seed_inputs is None:
             raise ValueError(f"Score V2 screener score_components required for {symbol}")
 
-        # Persona score (Batch B: 投信/散戶 augmentation)
+        # Persona score (Batch B: ?縑/?? augmentation)
         persona_score = 0.0
         persona_applied = None  # for downstream reason text
         if _persona_helpers is not None and persona_opinions:
@@ -1714,9 +1709,9 @@ def filter_and_score_recommendations(
     return final, sell_count
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # Hybrid Ranking promotion (port from dailyRecommendation.ts:639-697)
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def _signal_tier(sig: Optional[str]) -> float:
     if not sig:
@@ -1791,58 +1786,80 @@ def build_return_history_from_payloads(payloads: list[dict], *, lookback: int | 
     return history
 
 
-def apply_core_ml_evidence(
+def _l2_timesfm_sidecar_from_prediction(prediction: dict | None) -> dict[str, Any] | None:
+    pred = prediction if isinstance(prediction, dict) else {}
+    stock_meta = pred.get("stock_meta") if isinstance(pred.get("stock_meta"), dict) else {}
+    candidates = [
+        stock_meta.get("timesfm_l175_sidecar"),
+        stock_meta.get("timesfm_l2_sidecar"),
+        pred.get("timesfm_sidecar"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate:
+            return {**candidate, "layer": "L2"}
+    return None
+
+
+def _l2_timesfm_evidence_from_sidecar(sidecar: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(sidecar, dict) or not sidecar:
+        return None
+    features = sidecar.get("features") if isinstance(sidecar.get("features"), dict) else {}
+    return {
+        "schema_version": "l2_timesfm_enrichment_evidence_v1",
+        "source": "timesfm_l2_sidecar",
+        "stage": "L2",
+        "selection_role": "feature_enrichment_not_gate",
+        "final_recommendation_gate": False,
+        "l3_formal_inference_selected": True,
+        "direct_alpha_blocked": bool(sidecar.get("direct_alpha_blocked", True)),
+        "sidecar_schema_version": sidecar.get("schema_version"),
+        "sidecar_layer": "L2",
+        "role": sidecar.get("role") or "feature_sidecar",
+        "eligible_for_l2_feature_enrichment": bool(sidecar.get("eligible_for_l2_feature_enrichment")),
+        "l2_feature_input_active": bool(sidecar.get("l2_feature_input_active")),
+        "l2_feature_input_blocked_reason": sidecar.get("l2_feature_input_blocked_reason"),
+        "l2_feature_schema_version": sidecar.get("l2_feature_schema_version"),
+        "l2_feature_names": sidecar.get("l2_feature_names") if isinstance(sidecar.get("l2_feature_names"), list) else [],
+        "current_allowed_use": sidecar.get("current_allowed_use") if isinstance(sidecar.get("current_allowed_use"), list) else [],
+        "populated_feature_count": sum(
+            1 for value in features.values()
+            if value is not None and value != ""
+        ),
+    }
+
+
+def apply_l2_timesfm_evidence(
     recommendations: list[dict],
     predictions: dict[str, dict],
     *,
     fallback_size: int | None = None,
 ) -> list[dict]:
-    """Attach Layer 2 tree evidence without gating sparse allocator input."""
+    """Attach Layer 2 TimesFM enrichment evidence without gating L3/L4 input."""
+    _ = fallback_size
     enriched: list[dict] = []
     for row in recommendations:
         row = dict(row)
-        evidence = (
-            (predictions.get(str(row.get("symbol") or "")) or {}).get("core_ml_evidence")
-            or (predictions.get(str(row.get("symbol") or "")) or {}).get("core_ml_gate")
-            or {}
-        )
-        if isinstance(evidence, dict) and evidence:
-            evidence = {
-                **evidence,
-                "selection_role": evidence.get("selection_role") or "evidence_only_l3_formal_inference_queue",
-                "final_recommendation_gate": False,
-            }
-            row["core_ml_evidence"] = evidence
-            row["core_ml_gate"] = evidence
+        pred = predictions.get(str(row.get("symbol") or "")) or {}
+        sidecar = _l2_timesfm_sidecar_from_prediction(pred)
+        evidence = _l2_timesfm_evidence_from_sidecar(sidecar)
+        if evidence:
+            row["l2_timesfm_evidence"] = evidence
+            row["timesfm_sidecar"] = sidecar
             row["watch_points"] = [
                 *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
                 (
-                    "core_ml_evidence:"
-                    f"rank={evidence.get('rank')}/{evidence.get('target_size')}:"
-                    f"l3_queue={bool(evidence.get('l3_formal_inference_selected', evidence.get('selected')))}"
+                    "l2_timesfm_evidence:"
+                    f"active={bool(evidence.get('l2_feature_input_active'))}:"
+                    f"features={evidence.get('populated_feature_count')}"
                 ),
             ]
         else:
             row["watch_points"] = [
                 *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
-                "core_ml_evidence:missing_l2_tree_prediction",
+                "l2_timesfm_evidence:missing_sidecar",
             ]
         enriched.append(row)
     return enriched
-
-
-def apply_core_ml_gate(
-    recommendations: list[dict],
-    predictions: dict[str, dict],
-    *,
-    fallback_size: int | None = None,
-) -> list[dict]:
-    """Deprecated alias for apply_core_ml_evidence; no sparse-allocation gate."""
-    return apply_core_ml_evidence(
-        recommendations,
-        predictions,
-        fallback_size=fallback_size,
-    )
 
 
 _CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
@@ -1850,7 +1867,6 @@ _CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
     "tabular_neural": ("TabM",),
     "graph": ("GNN",),
     "learned_sequence": ("DLinear", "PatchTST", "iTransformer"),
-    "foundation_sequence": ("TimesFM",),
 }
 _DIRECT_ALPHA_BLOCKED_MODELS = {"TimesFM"}
 
@@ -1858,7 +1874,6 @@ _SEQUENCE_MODEL_SOURCE_KEYS: dict[str, str] = {
     "DLinear": "dlinear",
     "PatchTST": "patchtst",
     "iTransformer": "itransformer",
-    "TimesFM": "timesfm",
 }
 
 
@@ -2653,9 +2668,9 @@ def apply_sparse_tangent_allocation(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # D1 writers
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 
 def write_predictions_to_d1(
     predictions: dict[str, dict],
@@ -2708,7 +2723,6 @@ def write_predictions_to_d1(
             "core_ml_gate": data.get("core_ml_gate") or data.get("core_ml_evidence"),
             "core_family_vote": data.get("core_family_vote"),
             "gnn": data.get("gnn"),
-            "timesfm": data.get("timesfm"),
             "timesfm_sidecar": _timesfm_sidecar_payload(data),
             "state_space_overlays": _state_space_overlay_payload(data),
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
@@ -2832,6 +2846,88 @@ def write_predictions_to_d1(
     return inserted_rows
 
 
+def write_layer2_timesfm_enrichment_audit(
+    *,
+    predictions: dict[str, dict],
+    screener_recs: list[dict],
+    run_date: str | None,
+    screener_run_id: str | None,
+) -> int:
+    """Persist L2 TimesFM sidecar enrichment evidence into screener_funnel_items."""
+    if not run_date or not screener_run_id:
+        return 0
+    statements: list[tuple[str, list[Any]]] = [
+        (
+            "DELETE FROM screener_funnel_items WHERE run_id=? AND date=? AND stage='layer2_timesfm_enrichment'",
+            [screener_run_id, run_date],
+        )
+    ]
+    prediction_by_symbol = predictions if isinstance(predictions, dict) else {}
+    for idx, source_row in enumerate(screener_recs or [], start=1):
+        symbol = str(source_row.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        pred = prediction_by_symbol.get(symbol) if isinstance(prediction_by_symbol.get(symbol), dict) else {}
+        sidecar = _l2_timesfm_sidecar_from_prediction(pred)
+        evidence = _l2_timesfm_evidence_from_sidecar(sidecar)
+        if evidence:
+            if evidence.get("l2_feature_input_active"):
+                reason_code = "timesfm_l2_feature_input_active"
+            elif evidence.get("l2_feature_input_blocked_reason"):
+                reason_code = str(evidence.get("l2_feature_input_blocked_reason"))
+            else:
+                reason_code = "timesfm_l2_sidecar_observe"
+        else:
+            evidence = {
+                "schema_version": "l2_timesfm_enrichment_evidence_v1",
+                "source": "timesfm_l2_sidecar",
+                "stage": "L2",
+                "selection_role": "feature_enrichment_not_gate",
+                "final_recommendation_gate": False,
+                "l3_formal_inference_selected": True,
+                "direct_alpha_blocked": True,
+                "evidence_status": "missing_sidecar",
+            }
+            reason_code = "timesfm_l2_sidecar_missing"
+
+        try:
+            score_before = float(source_row.get("score")) if source_row.get("score") is not None else None
+        except (TypeError, ValueError):
+            score_before = None
+
+        statements.append((
+            """
+            INSERT INTO screener_funnel_items
+              (run_id, date, symbol, name, stage, decision, reason_code,
+               score_before, score_after, rank, evidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.strip(),
+            [
+                screener_run_id,
+                run_date,
+                symbol,
+                source_row.get("name"),
+                "layer2_timesfm_enrichment",
+                "observe",
+                reason_code,
+                score_before,
+                None,
+                idx,
+                json.dumps(evidence, ensure_ascii=False),
+            ],
+        ))
+
+    d1_client.batch_execute(statements)
+    inserted = len(statements) - 1
+    logger.info(
+        "[recommendation_service] Wrote %s L2 TimesFM enrichment audit rows run_id=%s date=%s",
+        inserted,
+        screener_run_id,
+        run_date,
+    )
+    return inserted
+
+
 def write_layer3_formal_gate_audit(
     *,
     predictions: dict[str, dict],
@@ -2946,124 +3042,9 @@ def write_layer3_formal_gate_audit(
     return inserted
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????????????????????????
 # 2026-04-19 ML_POOL Stage 2 helpers (per-model row writers)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def write_layer2_core_gate_audit(
-    *,
-    predictions: dict[str, dict],
-    screener_recs: list[dict],
-    run_date: str,
-    screener_run_id: str | None,
-    target_size: int | None = None,
-) -> int:
-    """Persist formal L2 tree evidence and L3 inference queue membership."""
-    run_id = str(screener_run_id or "").strip()
-    if not run_id:
-        logger.warning("[recommendation_service] L2 audit skipped: screener_run_id missing")
-        return 0
-
-    source_by_symbol = {
-        str(row.get("symbol") or "").strip(): row
-        for row in screener_recs or []
-        if row.get("symbol")
-    }
-    entries: list[tuple[str, dict, dict]] = []
-    for symbol, pred in (predictions or {}).items():
-        clean_symbol = str(symbol or "").strip()
-        if not clean_symbol or not isinstance(pred, dict):
-            continue
-        evidence_payload = pred.get("core_ml_evidence") or pred.get("core_ml_gate")
-        if not isinstance(evidence_payload, dict):
-            continue
-        entries.append((clean_symbol, evidence_payload, source_by_symbol.get(clean_symbol) or {"symbol": clean_symbol}))
-
-    if not entries:
-        logger.info("[recommendation_service] L2 audit skipped: no core_ml_evidence payloads")
-        return 0
-
-    def _rank_key(item: tuple[str, dict, dict]) -> tuple[int, str]:
-        try:
-            rank = int(item[1].get("rank") or 999999)
-        except (TypeError, ValueError):
-            rank = 999999
-        return rank, item[0]
-
-    statements: list[tuple[str, list[Any]]] = [
-        (
-            "DELETE FROM screener_funnel_items WHERE run_id = ? AND date = ? AND stage = ?",
-            [run_id, run_date, "layer2_coarse_ml_gate"],
-        )
-    ]
-
-    for idx, (symbol, gate, source_row) in enumerate(sorted(entries, key=_rank_key), start=1):
-        selected = bool(gate.get("selected"))
-        decision = "observe"
-        if selected:
-            reason_code = "l2_tree_evidence_l3_queue_selected"
-        elif gate.get("score") is None:
-            reason_code = "l2_tree_evidence_score_missing"
-        else:
-            reason_code = "l2_tree_evidence_not_in_l3_cost_queue"
-        evidence = {
-            "schema_version": "layer2_core_ml_evidence_audit_v1",
-            "legacy_schema_version": "layer2_core_ml_gate_audit_v1",
-            "source": "daily_pipeline_v2.node_l2_core_evidence",
-            "selection_role": "evidence_only_l3_formal_inference_queue",
-            "final_recommendation_gate": False,
-            "target_size": target_size if target_size is not None else gate.get("target_size"),
-            "upstream_count": gate.get("upstream_count"),
-            "rank": gate.get("rank"),
-            "score": gate.get("score"),
-            "models": gate.get("models") if isinstance(gate.get("models"), list) else [],
-            "l3_formal_inference_selected": bool(gate.get("l3_formal_inference_selected", gate.get("selected"))),
-        }
-        try:
-            score_before = float(source_row.get("score")) if source_row.get("score") is not None else None
-        except (TypeError, ValueError):
-            score_before = None
-        try:
-            score_after = float(gate.get("score")) if gate.get("score") is not None else None
-        except (TypeError, ValueError):
-            score_after = None
-        try:
-            rank = int(gate.get("rank") or idx)
-        except (TypeError, ValueError):
-            rank = idx
-
-        statements.append((
-            """
-            INSERT INTO screener_funnel_items
-              (run_id, date, symbol, name, stage, decision, reason_code,
-               score_before, score_after, rank, evidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """.strip(),
-            [
-                run_id,
-                run_date,
-                symbol,
-                source_row.get("name"),
-                "layer2_coarse_ml_gate",
-                decision,
-                reason_code,
-                score_before,
-                score_after,
-                rank,
-                json.dumps(evidence, ensure_ascii=False),
-            ],
-        ))
-
-    d1_client.batch_execute(statements)
-    inserted = len(statements) - 1
-    logger.info(
-        "[recommendation_service] Wrote %s L2 core gate audit rows run_id=%s date=%s",
-        inserted,
-        run_id,
-        run_date,
-    )
-    return inserted
-
+# ?????????????????????????????????????????????????????????????????????????????
 
 # Models whose rank scores we want stored for alpha IC tracking.
 # State-space overlays explain regime/risk context rather than vote as alpha.
@@ -3079,7 +3060,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
 
     For 5 feature models: read pred["rank_scores"][model_name] (raw 0~1
       from predict_stock_v2).
-    For 3 time-series alpha predictors: sigmoid-map .forecast_pct → 0~1
+    For 3 time-series alpha predictors: sigmoid-map .forecast_pct ??0~1
       (mirror of pipeline_v2._ts_to_rank with scale=12).
 
     Returns formal active/family slots that have a usable score in the dict.
@@ -3094,7 +3075,7 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
                 out[name] = float(v)
             except (TypeError, ValueError):
                 pass
-    # Time-series alpha predictors: forecast_pct → sigmoid rank.
+    # Time-series alpha predictors: forecast_pct ??sigmoid rank.
     if "GNN" not in out:
         gnn_payload = pred.get("gnn") if isinstance(pred.get("gnn"), dict) else {}
         v = gnn_payload.get("rank_score")
@@ -3125,7 +3106,6 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
         "DLinear": "dlinear",
         "PatchTST": "patchtst",
         "iTransformer": "itransformer",
-        "TimesFM": "timesfm",
     }.get(model_name)
     if not source_key:
         return {}

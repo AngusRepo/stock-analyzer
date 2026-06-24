@@ -24,7 +24,7 @@ from services.production_cutover_packet import (
 SCHEMA_VERSION = "stockvision-local-prod-ready-audit-v2"
 ROADMAP_SCOPE_VERSION = "planscope-full-session-root-2026-06-14"
 
-ACTIVE_9 = (
+ACTIVE_8_DIRECT_ALPHA = (
     "LightGBM",
     "XGBoost",
     "ExtraTrees",
@@ -33,7 +33,13 @@ ACTIVE_9 = (
     "DLinear",
     "PatchTST",
     "iTransformer",
-    "TimesFM",
+)
+
+TIMESFM_L2_SIDECAR = ("TimesFM",)
+
+MODEL_POOL_REQUIRED_MODELS = (
+    *ACTIVE_8_DIRECT_ALPHA,
+    *TIMESFM_L2_SIDECAR,
 )
 
 RETIRED_MODELS = (
@@ -288,18 +294,20 @@ def _worker_runtime_pin_checks(root: Path) -> list[dict[str, Any]]:
 def _model_track_checks() -> list[dict[str, Any]]:
     manifest = build_research_benchmark_manifest("local-prod-ready-audit")
     checks: list[dict[str, Any]] = []
-    for name in ACTIVE_9:
+    for name in ACTIVE_8_DIRECT_ALPHA:
         entry = manifest.get(name)
         checks.append(_check(
             isinstance(entry, dict) and entry.get("status") == "production_slot_member",
-            f"active9_track:{name}",
-            "active-9 model is a production_slot_member in the backend track",
+            f"active8_track:{name}",
+            "active direct-alpha model is a production_slot_member in the backend track",
         ))
     timesfm = manifest.get("TimesFM")
     checks.append(_check(
-        isinstance(timesfm, dict) and timesfm.get("model_type") == "foundation_time_series_timesfm25",
-        "active9_track:TimesFM:timesfm25",
-        "TimesFM production slot is backed by the TimesFM 2.5 runtime/config, not a separate TimesFM25 voter",
+        isinstance(timesfm, dict)
+        and timesfm.get("status") == "l2_feature_sidecar_member"
+        and timesfm.get("model_type") == "foundation_time_series_timesfm25",
+        "timesfm_l2_sidecar_track:TimesFM:timesfm25",
+        "TimesFM is backed by the TimesFM 2.5 runtime/config as an L2 feature sidecar, not a direct L3 voter",
     ))
     return checks
 
@@ -322,71 +330,58 @@ def _semantic_boundary_checks(root: Path) -> list[dict[str, Any]]:
             "ml-controller/tests/test_optuna_script_contracts.py",
             ("adaptive_l2", "not in OPTUNA_SCRIPT_CONTRACTS", "optuna_adaptive_l2.py"),
             "roadmap:p0:adaptive_l2_name_boundary",
-            "legacy adaptive_l2 formula constants remain separated from new L2 coarse ML gate/search naming",
+            "legacy adaptive_l2 formula constants remain separated from TimesFM L2 feature sidecar naming",
         ),
         _check_text_contains(
             root,
             "worker/src/lib/screenerFunnelEvidence.ts",
             (
-                "const L2_COARSE_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees']",
-                "const L3_FORMAL_MODELS = ['TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer', 'TimesFM']",
-                "layer2_3ml_coarse_summary_v1",
-                "layer3_6ml_formal_summary_v1",
-                "three_ml_coarse_evidence_l3_queue_not_final_ranker",
-                "six_ml_formal_family_vote_not_topk",
-                "core_ml_evidence",
-                "formal_l2_evidence",
+                "const L2_TIMESFM_MODELS = ['TimesFM']",
+                "const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']",
+                "ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS",
+                "layer2_timesfm_enrichment_summary_v1",
+                "layer3_8ml_formal_summary_v1",
+                "timesfm_sequence_sidecar_feature_enrichment_not_selector",
+                "eight_ml_formal_family_evidence_not_topk",
             ),
             "roadmap:p0:l2_l3_semantics",
-            "L2 is 3ML coarse and L3 is 6ML formal family evidence, not a single top-k ranker",
+            "L2 is TimesFM feature enrichment and L3 is 8ML formal family evidence, not a single top-k ranker",
         ),
         _check_text_contains(
             root,
             "ml-controller/graphs/daily_pipeline_v2.py",
             (
-                "def _attach_l2_core_ml_evidence",
-                "\"schema_version\": \"core_ml_evidence_v1\"",
-                "\"legacy_schema_version\": \"core_ml_gate_v2\"",
-                "row[\"core_ml_evidence\"] = evidence",
-                "row[\"core_ml_gate\"] = evidence",
-                "Deprecated compatibility wrapper; L2 now emits evidence, not a gate.",
+                "node_l2_timesfm_enrich",
+                "TimesFM L2 sidecar",
+                "g.add_edge(\"l2_timesfm_enrich\",   \"l3_formal_predict\")",
+                "apply_l2_timesfm_evidence",
             ),
-            "roadmap:p0:l2_core_ml_evidence_active_name",
-            "Daily pipeline emits canonical core_ml_evidence and keeps core_ml_gate only as a compatibility alias",
-        ),
-        _check_text_contains(
-            root,
-            "ml-controller/graphs/daily_pipeline_v2.py",
-            (
-                "legacy_topk_override_retired",
-                "forced BUY is disabled",
-                "Retired path: detect stale config only; never force BUY from rank/top-K.",
-            ),
-            "roadmap:p6:legacy_topk_override_retired",
-            "Daily pipeline permanently retires legacy top-K forced BUY and keeps rank-like outputs as evidence only",
+            "roadmap:p0:l2_timesfm_active_name",
+            "Daily pipeline runs TimesFM as L2 feature enrichment before full-slate L3 formal inference",
         ),
         _check_text_contains(
             root,
             "ml-controller/services/recommendation_service.py",
             (
-                "pred.get(\"core_ml_evidence\") or pred.get(\"core_ml_gate\")",
-                "\"schema_version\": \"layer2_core_ml_evidence_audit_v1\"",
-                "\"legacy_schema_version\": \"layer2_core_ml_gate_audit_v1\"",
-                "\"source\": \"daily_pipeline_v2.node_l2_core_evidence\"",
+                "write_layer2_timesfm_enrichment_audit",
+                "\"schema_version\": \"l2_timesfm_enrichment_evidence_v1\"",
+                "\"source\": \"timesfm_l2_sidecar\"",
+                "\"selection_role\": \"feature_enrichment_not_gate\"",
             ),
-            "roadmap:p0:l2_core_ml_evidence_audit_schema",
-            "Layer2 D1 audit persists evidence-only schema while retaining legacy schema metadata",
+            "roadmap:p0:l2_timesfm_enrichment_audit_schema",
+            "Layer2 D1 audit persists TimesFM feature-enrichment evidence, not tree shortlist gate rows",
         ),
         _check_text_contains(
             root,
             "frontend/src/components/model-pool/ModelPoolNewFlowWorkbench.tsx",
             (
                 "const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])",
-                "const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer', 'TimesFM'])",
+                "const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer'])",
+                "const L2_SIDECAR_MODELS = new Set(['TimesFM'])",
                 "const GRAPH_MODELS = new Set(['GNN'])",
                 "const TABULAR_NEURAL_MODELS = new Set(['TabM'])",
                 "function modelFamily",
-                "'Tree' | 'TabM' | 'Sequence' | 'GNN' | 'Other'",
+                "'Tree' | 'TabM' | 'Sequence' | 'GNN' | 'Sidecar' | 'Other'",
             ),
             "roadmap:p0:l3_family_view",
             "Model Pool exposes L3 by Tree/TabM/Sequence/GNN family semantics",
@@ -427,28 +422,28 @@ def _semantic_boundary_checks(root: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _active9_data_chain_checks(root: Path) -> list[dict[str, Any]]:
+def _active8_data_chain_checks(root: Path) -> list[dict[str, Any]]:
     return [
         _check_text_contains(
             root,
-            "ml-controller/services/active9_dataset_policy.py",
-            (*ACTIVE_9, *RETIRED_MODELS, "ACTIVE_ALPHA_MODELS", "RETIRED_ALPHA_MODELS"),
-            "roadmap:p1:active9_dataset_policy",
-            "active-9 dataset policy includes all production slots and retired model exclusions",
+            "ml-controller/services/active_model_policy.py",
+            (*ACTIVE_8_DIRECT_ALPHA, *TIMESFM_L2_SIDECAR, *RETIRED_MODELS, "ACTIVE_ALPHA_MODELS", "MODEL_POOL_REQUIRED_MODELS", "TIMESFM_L2_SIDECAR_MODELS", "RETIRED_ALPHA_MODELS"),
+            "roadmap:p1:active8_dataset_policy",
+            "active-8 direct-alpha dataset policy keeps TimesFM as required L2 sidecar and retired model exclusions",
         ),
         _check_text_contains(
             root,
             "worker/src/lib/adaptiveMetaPolicyReplayRunner.ts",
-            (*ACTIVE_9, "p.verified_at IS NOT NULL", "active_models: [...ACTIVE_MODELS]"),
-            "roadmap:p1:active9_verified_replay_source",
-            "adaptive meta replay uses verified active-9 prediction rows only",
+            (*ACTIVE_8_DIRECT_ALPHA, "p.verified_at IS NOT NULL", "active_models: [...ACTIVE_MODELS]"),
+            "roadmap:p1:active8_verified_replay_source",
+            "adaptive meta replay uses verified active-8 direct-alpha prediction rows only",
         ),
         _check_text_contains(
             root,
             "worker/src/lib/adaptiveEngineContract.test.ts",
-            ("active_9_quality_30d", "LightGBM", "TabM", "iTransformer", "TimesFM", "!allBinds.includes('CatBoost')"),
-            "roadmap:p1:active9_confidence_hook",
-            "adaptive confidence hook is scoped to active-9 evidence and excludes retired CatBoost",
+            ("active_9_quality_30d", "LightGBM", "TabM", "iTransformer", "!allBinds.includes('TimesFM')", "!allBinds.includes('CatBoost')"),
+            "roadmap:p1:active8_confidence_hook",
+            "adaptive confidence hook is scoped to active-8 direct-alpha evidence and excludes TimesFM/CatBoost",
         ),
         _check_text_contains(
             root,
@@ -460,9 +455,9 @@ def _active9_data_chain_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "worker/src/lib/screenerFunnelEvidence.ts",
-            ("ACTIVE_9_ML_TEACHER_MODELS", "expected_teacher_count", "teacher_label_scope"),
-            "roadmap:p1:active9_teacher_labels",
-            "PLE/Listwise router evidence expects active-9 teacher labels without fake backfill",
+            ("ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS", "expected_teacher_count", "teacher_label_scope"),
+            "roadmap:p1:active8_teacher_labels",
+            "PLE/Listwise router evidence expects active-8 direct-alpha teacher labels without fake backfill",
         ),
     ]
 
@@ -644,9 +639,9 @@ def _replay_and_promotion_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "ml-controller/services/model_artifact_registry.py",
-            ("active-9 production artifact set", "production promotion must use an active-9 model"),
-            "roadmap:p2:active9_artifact_promotion_blocker",
-            "artifact promotion blocks non-active-9 models from production selection",
+            ("active-8 direct-alpha production artifact set", "production promotion must use an active-8 direct-alpha model"),
+            "roadmap:p2:active8_artifact_promotion_blocker",
+            "artifact promotion blocks non-active-8 direct-alpha models from production selection",
         ),
     ]
 
@@ -1186,7 +1181,7 @@ def _l15_l2_owner_boundary_checks(root: Path) -> list[dict[str, Any]]:
                 "stage: 'l15_ml_slate_queue'",
                 "worker_seed_only: true",
                 "downstream_owner: 'ml-controller'",
-                "downstream_stage: 'layer2_coarse_ml_gate'",
+                "downstream_stage: 'layer2_timesfm_enrichment'",
             ),
             "roadmap:p3:l15_ml_slate_queue_stage",
             "Worker persists L1.5 ML slate queue as a pre-controller queue, not formal L2",
@@ -1194,9 +1189,9 @@ def _l15_l2_owner_boundary_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_regex_absent(
             root,
             "worker/src/lib/marketScreener.ts",
-            r"\bstage:\s*['\"]layer2_coarse_ml_gate['\"]",
+            r"\bstage:\s*['\"]layer2_timesfm_enrichment['\"]",
             "roadmap:p3:worker_not_formal_l2_owner",
-            "Worker screener must not write formal layer2_coarse_ml_gate stage rows",
+            "Worker screener must not write formal layer2_timesfm_enrichment stage rows",
         ),
         _check_text_contains(
             root,
@@ -1213,7 +1208,7 @@ def _l15_l2_owner_boundary_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "worker/src/routes/other.ts",
-            ("'l15_ml_slate_queue'", "'layer2_coarse_ml_gate'"),
+            ("'l15_ml_slate_queue'", "'layer2_timesfm_enrichment'"),
             "roadmap:p3:daily_api_reads_l15_and_l2",
             "daily recommendation API reads both L1.5 slate queue and formal L2 evidence",
         ),
@@ -1262,9 +1257,9 @@ def _observability_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "frontend/src/components/model-pool/ModelPoolNewFlowWorkbench.tsx",
-            ("Fleet status", "Meta boundary", "Active-9 confidence hook", "LinUCB, NeuralUCB, NeuralTS, and NeuCB"),
+            ("Fleet status", "Meta boundary", "Active-8 confidence hook", "LinUCB, NeuralUCB, NeuralTS, and NeuCB"),
             "roadmap:p3:model_pool_evidence_ui",
-            "Model Pool UI surfaces active-9 fleet health and meta-policy evidence boundaries",
+            "Model Pool UI surfaces active-8 direct-alpha fleet health and meta-policy evidence boundaries",
         ),
     ]
 
@@ -1860,7 +1855,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         *_model_track_checks(),
         *_ui_contract_checks(root),
         *_semantic_boundary_checks(root),
-        *_active9_data_chain_checks(root),
+        *_active8_data_chain_checks(root),
         *_optuna_scheduler_checks(root),
         *_replay_and_promotion_checks(root),
         *_allocator_learning_candidate_checks(root),
@@ -1883,7 +1878,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         "roadmap_scope": "full_session_root",
         "audit_scope": [
             "p0_source_of_truth_semantics",
-            "p1_active9_data_chain",
+            "p1_active8_data_chain",
             "p1_optuna_adaptive_search_scheduler",
             "p1_mode_b_confidence_bandit_replay",
             "p2_opb_l4_allocation",

@@ -6,19 +6,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import payload_builder  # noqa: E402
-from services import active9_dataset_policy  # noqa: E402
+from services import active_model_policy  # noqa: E402
 
 
-def test_active9_dataset_policy_defaults_match_core_windows(monkeypatch):
+def test_active_model_policy_defaults_match_core_windows(monkeypatch):
     monkeypatch.delenv("STOCKVISION_DAILY_PRICE_LOOKBACK_YEARS", raising=False)
     monkeypatch.delenv("STOCKVISION_DAILY_PRICE_HISTORY_LIMIT", raising=False)
     monkeypatch.delenv("STOCKVISION_DAILY_SEQUENCE_TARGET_POINTS", raising=False)
     monkeypatch.delenv("STOCKVISION_GNN_RETURN_HISTORY_LOOKBACK", raising=False)
 
-    assert active9_dataset_policy.daily_price_lookback_years() == 5
-    assert active9_dataset_policy.daily_price_history_limit() == 1280
-    assert active9_dataset_policy.daily_sequence_target_points() == 1024
-    assert active9_dataset_policy.gnn_return_history_lookback() == 252
+    assert active_model_policy.daily_price_lookback_years() == 5
+    assert active_model_policy.daily_price_history_limit() == 1280
+    assert active_model_policy.daily_sequence_target_points() == 1024
+    assert active_model_policy.gnn_return_history_lookback() == 252
+    assert len(active_model_policy.ACTIVE_ALPHA_MODELS) == 8
+    assert "TimesFM" not in active_model_policy.ACTIVE_ALPHA_MODELS
+    assert "TimesFM" in active_model_policy.MODEL_POOL_REQUIRED_MODELS
 
 
 def test_payload_builder_uses_policy_lookback_and_truncates_explicit_limit(monkeypatch):

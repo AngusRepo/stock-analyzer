@@ -136,8 +136,11 @@ def test_attach_timesfm_foundation_evidence_to_followup_payload(monkeypatch):
 
     result = evidence.attach_timesfm_foundation_evidence_to_followup_payload(payload)
 
-    timesfm = payload["stages"]["artifact_lifecycle"]["results"]["TimesFM"]
+    assert "TimesFM" not in payload["stages"]["artifact_lifecycle"]["results"]
+    timesfm = payload["stages"]["timesfm_l2_feature_release"]["results"]["TimesFM"]
     assert result["updated"] is True
+    assert timesfm["candidate_type"] == "timesfm_l175_l2_feature_release"
+    assert timesfm["direct_alpha_blocked"] is True
     assert timesfm["oos_ic"] == 0.123456
     assert timesfm["metrics"]["oos_samples"] == 88
     assert timesfm["model_cpcv"]["decision"] == "PASS"

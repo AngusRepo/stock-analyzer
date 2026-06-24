@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
-  MODEL_POOL_L2_COARSE_MODEL_IDS,
   MODEL_POOL_PRODUCTION_SLOT_IDS,
   MODEL_POOL_RETIRED_MODEL_IDS,
   MODEL_UPGRADE_CANDIDATES,
@@ -36,16 +35,16 @@ type ModelPoolNewFlowWorkbenchProps = {
 const RETIRED_MODELS = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
 const ACTIVE_ALPHA_MODELS = new Set<string>(MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS)
 const PRODUCTION_SLOT_MODELS = new Set<string>(MODEL_POOL_PRODUCTION_SLOT_IDS)
-const COARSE_MODELS = new Set<string>(MODEL_POOL_L2_COARSE_MODEL_IDS)
 const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])
-const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer', 'TimesFM'])
+const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer'])
+const L2_SIDECAR_MODELS = new Set(['TimesFM'])
 const GRAPH_MODELS = new Set(['GNN'])
 const TABULAR_NEURAL_MODELS = new Set(['TabM'])
 
 const ADAPTIVE_EVIDENCE_STEPS = [
   {
-    label: 'Active-9 confidence hook',
-    detail: 'Risk thresholds and PF quality use active-9 verified model_accuracy only; retired models stay out of confidence and quality multipliers.',
+    label: 'Active-8 confidence hook',
+    detail: 'Risk thresholds and PF quality use active-8 direct-alpha verified model_accuracy only; retired models and TimesFM sidecar stay out of confidence and quality multipliers.',
     tone: 'ok' as const,
   },
   {
@@ -156,8 +155,9 @@ function toneFromStatus(status?: string | null): WorkstationTone {
   return 'neutral'
 }
 
-function modelFamily(name: string, model?: ModelPoolLineageModel): 'Tree' | 'TabM' | 'Sequence' | 'GNN' | 'Other' {
+function modelFamily(name: string, model?: ModelPoolLineageModel): 'Tree' | 'TabM' | 'Sequence' | 'GNN' | 'Sidecar' | 'Other' {
   const family = `${model?.balance_family ?? ''} ${model?.model_type ?? ''}`.toLowerCase()
+  if (L2_SIDECAR_MODELS.has(name) || family.includes('sidecar') || family.includes('timesfm_l2')) return 'Sidecar'
   if (TREE_MODELS.has(name) || family.includes('tree') || family.includes('boost')) return 'Tree'
   if (TABULAR_NEURAL_MODELS.has(name) || family.includes('tabm') || family.includes('tabular_neural')) return 'TabM'
   if (GRAPH_MODELS.has(name) || family.includes('graph') || family.includes('gnn')) return 'GNN'
@@ -465,7 +465,7 @@ function liveGateCell(candidateId: string, liveStatus: string | null | undefined
     return {
       value: 'N/R',
       detail: 'no shadow gate',
-      title: `${candidateId}: active-9 does not use ML shadow/challenger ownership; live parity evidence is not required for this artifact state.`,
+      title: `${candidateId}: active-8 direct-alpha flow does not use ML shadow/challenger ownership; live parity evidence is not required for this artifact state.`,
       tone: 'info' as WorkstationTone,
     }
   }
@@ -473,7 +473,7 @@ function liveGateCell(candidateId: string, liveStatus: string | null | undefined
     return {
       value: 'OBSERVE',
       detail: 'parity only',
-      title: `${candidateId}: source returned "${raw}". In the active-9 flow this is live/parity evidence only, not an ML shadow or challenger owner.`,
+      title: `${candidateId}: source returned "${raw}". In the active-8 direct-alpha flow this is live/parity evidence only, not an ML shadow or challenger owner.`,
       tone: 'info' as WorkstationTone,
     }
   }
@@ -673,7 +673,7 @@ function researchStatusDiagnosis(record: GrafanaModelRecord) {
     ...(statusRow?.artifact_intent_missing_fields ?? []),
   ])
   const nextAction = statusRow?.next_action ?? record.nextAction
-  let rootCause = 'Active-9 artifact registry is the source of truth for this cockpit; Strategy Lab research status is diagnostic only.'
+  let rootCause = 'Active-8 direct-alpha artifact registry is the source of truth for this cockpit; Strategy Lab research status is diagnostic only.'
 
   if (status === 'experiment_missing') {
     rootCause = 'No matching Strategy Lab / research experiment is registered for this model lane.'
@@ -690,7 +690,7 @@ function researchStatusDiagnosis(record: GrafanaModelRecord) {
   } else if (status === 'rejected') {
     rootCause = 'The research lane was rejected or archived; create a new candidate experiment if needed.'
   } else if (status === 'track_only') {
-    rootCause = 'This production slot is tracked inside the active-9 flow and does not need a separate research experiment gate.'
+    rootCause = 'This production slot is tracked inside the active-8 direct-alpha flow and does not need a separate research experiment gate.'
   }
 
   return {
@@ -859,8 +859,8 @@ function buildGrafanaRecord({
     missingEvidence: [],
     nextAction: promotionRows[0]?.next_action ?? pointerRow?.next_action ?? (
       artifactOk
-        ? 'active-9 artifact registry evidence loaded; wait for a new candidate before final compare.'
-        : 'register or backfill the active-9 model artifact.'
+        ? 'active-8 direct-alpha artifact registry evidence loaded; wait for a new candidate before final compare.'
+        : 'register or backfill the active-8 direct-alpha model artifact.'
     ),
     history,
   }
@@ -937,7 +937,7 @@ function GrafanaDashboardHeader({
       <div className="flex flex-col gap-3 border-b border-[#2d3a49] px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
         <div>
           <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#f0c365]">Grafana-style model operations</p>
-          <h2 className="mt-1 font-['Space_Grotesk'] text-[28px] font-semibold tracking-[0.01em] text-[#f4efe4]">Active-9 Model Pool</h2>
+          <h2 className="mt-1 font-['Space_Grotesk'] text-[28px] font-semibold tracking-[0.01em] text-[#f4efe4]">Active-8 Model Pool</h2>
         </div>
         <div className="flex flex-wrap items-center gap-2 font-mono text-[12px] uppercase tracking-[0.08em] text-[#a7b5c8]">
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">env prod</span>
@@ -996,7 +996,7 @@ function FleetStatusStrip({
   onSelectModel: (modelId: string) => void
 }) {
   return (
-    <GrafanaPanel title="Fleet status" kicker="compact active-9 state cells">
+    <GrafanaPanel title="Fleet status" kicker="compact active-8 direct-alpha state cells">
       <div className="grid gap-2 bg-[#0b1118] p-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9">
         {records.map((record) => {
           const isSelected = selectedModelId === record.candidate.id
@@ -1339,7 +1339,7 @@ function EvidenceTablePanel({
 
 function MetaBoundaryPanel() {
   return (
-    <GrafanaPanel title="Meta boundary" kicker="evidence only outside active-9 alpha vote">
+    <GrafanaPanel title="Meta boundary" kicker="evidence only outside active-8 direct-alpha vote">
       <div className="grid gap-2 bg-[#0b1118] p-3 md:grid-cols-2 xl:grid-cols-4">
         {ADAPTIVE_EVIDENCE_STEPS.map((step) => (
           <div key={step.label} className="rounded-xl border border-[#263247] bg-[#0c1219] p-3">
@@ -1372,7 +1372,6 @@ export default function ModelPoolNewFlowWorkbench({
   )
   const byName = useMemo(() => new Map(liveModels), [liveModels])
   const serving = useMemo(() => liveModels.filter(([, model]) => isServing(model)), [liveModels])
-  const coarse = useMemo(() => [...COARSE_MODELS].map((name) => [name, byName.get(name)] as const), [byName])
   const activeSlots = useMemo(
     () => MODEL_UPGRADE_CANDIDATES.filter((candidate) => PRODUCTION_SLOT_MODELS.has(candidate.id)),
     [],
@@ -1412,7 +1411,7 @@ export default function ModelPoolNewFlowWorkbench({
   return (
     <WorkstationPanel
       title="Model Ops Dashboard"
-      kicker="Grafana-style fleet monitoring for L2 coarse -> L3 family model registry"
+      kicker="Grafana-style fleet monitoring for TimesFM L2 sidecar -> L3 active-8 family registry"
     >
       <GrafanaDashboardHeader
         records={grafanaRecords}
@@ -1454,7 +1453,7 @@ export default function ModelPoolNewFlowWorkbench({
 
       <div className="border-t border-[#263247] bg-[#071018] p-4 text-[15px] leading-6 text-[#a7b5c8]">
         Parameter search and allocator/meta proposals stay in Promotion & Parameter Governance.
-        This cockpit is only the L2/L3 model evidence surface: active slots, artifacts, verified rows,
+        This cockpit is only the L2 TimesFM sidecar and L3 active-8 evidence surface: active slots, artifacts, verified rows,
         blockers, and champion pointer readiness.
       </div>
     </WorkstationPanel>

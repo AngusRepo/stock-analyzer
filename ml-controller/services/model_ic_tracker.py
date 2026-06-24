@@ -19,7 +19,6 @@ ALPHA_PREDICTION_MODELS = (
     "DLinear",
     "PatchTST",
     "iTransformer",
-    "TimesFM",
 )
 
 EXPERIMENTAL_SHADOW_MODELS = (

@@ -22,7 +22,7 @@ from .artifact_runtime_versions import load_joblib_with_artifact_health, sklearn
 
 logger = logging.getLogger(__name__)
 
-# ── GCS 初始化（lazy，避免本機測試時也要裝 google-cloud）──────────────────────
+# ?? GCS ????lazy嚗?璈葫閰行?銋?鋆?google-cloud嚗??????????????????????
 _bucket = None
 _MODEL_LOAD_CACHE: dict[tuple[str, str | None], tuple[Any, dict]] = {}
 _MODEL_CACHE_STATS = {
@@ -56,7 +56,7 @@ def _get_bucket():
         from google.cloud import storage
         client = storage.Client()
         _bucket = client.bucket(bucket_name)
-        # 確認 bucket 存在
+        # 蝣箄? bucket 摮
         if not _bucket.exists():
             _bucket = client.create_bucket(bucket_name, location="asia-east1")
             logger.info(f"[ModelStore] Created bucket: {bucket_name}")
@@ -72,7 +72,7 @@ def _get_bucket():
     return _bucket
 
 
-# ── 儲存模型 ──────────────────────────────────────────────────────────────────
+# ?? ?脣?璅∪? ??????????????????????????????????????????????????????????????????
 def save_model(
     stock_id: int,
     model_name: str,
@@ -85,8 +85,8 @@ def save_model(
     skip_weekly_backup: bool = False,                   # 2026-04-18 #32: walk-forward wf/w{id}/* doesn't need weekly
 ) -> bool:
     """
-    序列化模型並上傳到 GCS
-    model_name: active-9 production artifact model name, for example 'LightGBM' | 'XGBoost' | 'ExtraTrees'
+    摨??芋?蒂銝??GCS
+    model_name: Active-8 direct-alpha production artifact model name, for example 'LightGBM' | 'XGBoost' | 'ExtraTrees'
     feature_medians: training-time per-feature median, used by predict_stock_v2
                      for name-based alignment when a feature is missing at predict time
     gcs_prefix:      Override default path. If None: 'universal' (stock_id=0) or str(stock_id).
@@ -101,7 +101,7 @@ def save_model(
     try:
         import joblib
 
-        # 序列化到記憶體
+        # 摨??閮擃?
         buf = io.BytesIO()
         joblib.dump(model, buf)
         buf.seek(0)
@@ -115,7 +115,7 @@ def save_model(
         blob = bucket.blob(blob_path)
         blob.upload_from_file(buf, content_type="application/octet-stream")
 
-        # 寫 metadata
+        # 撖?metadata
         artifact_sha = "sha256:" + hashlib.sha256(buf.getvalue()).hexdigest()
         extra = dict(extra_metadata or {})
         training_run_id = str(
@@ -138,7 +138,7 @@ def save_model(
         meta_blob = bucket.blob(f"{prefix}/metadata_{model_name.lower()}.json")
         meta_blob.upload_from_string(json.dumps(meta, ensure_ascii=False), content_type="application/json")
 
-        # 每週備份（方便回溯）— walk-forward 不需要，因為 gcs_prefix 已是 window-versioned
+        # 瘥勗?隞踝??嫣噶?滲嚗?walk-forward 銝?閬?? gcs_prefix 撌脫 window-versioned
         if not skip_weekly_backup:
             week_key = datetime.now(timezone.utc).strftime("%Y-W%W")
             weekly_blob = bucket.blob(f"{prefix}/weekly/{week_key}/{model_name.lower()}.joblib")
@@ -153,7 +153,7 @@ def save_model(
         return False
 
 
-# ── 載入模型 ──────────────────────────────────────────────────────────────────
+# ?? 頛璅∪? ??????????????????????????????????????????????????????????????????
 def load_model(
     stock_id: int,
     model_name: str,
@@ -161,17 +161,17 @@ def load_model(
     explicit_path: str | None = None,  # 2026-04-19 Stage 3: challenger override
 ) -> tuple[Any | None, dict | None]:
     """
-    從 GCS 載入已訓練的模型和 metadata
-    回傳 (model, metadata) 或 (None, None)
+    敺?GCS 頛撌脰?蝺渡?璅∪???metadata
+    ? (model, metadata) ??(None, None)
 
     Path resolution priority:
       1. explicit_path:  full GCS path override (Stage 3 challenger uses this).
                          metadata read from sibling 'metadata_v{N}.json' if present.
-      2. gcs_prefix:     walk-forward override e.g. 'walk_forward/w0' →
+      2. gcs_prefix:     walk-forward override e.g. 'walk_forward/w0' ??
                          '{prefix}/{model_name.lower()}.joblib'
       3. ML_POOL pool:   when stock_id=0 and no overrides, require active version
                          from model_pool.json; missing pool/artifact fails closed
-      5. Per-stock:      stock_id != 0 → '{stock_id}/{model_name.lower()}.joblib'
+      5. Per-stock:      stock_id != 0 ??'{stock_id}/{model_name.lower()}.joblib'
     """
     bucket = _get_bucket()
     if bucket is None:
@@ -186,7 +186,7 @@ def load_model(
         if explicit_path is not None:
             blob_path = explicit_path
             # Derive sibling metadata path: e.g. universal/xgboost/v2.joblib
-            #   → universal/xgboost/metadata_v2.json
+            #   ??universal/xgboost/metadata_v2.json
             try:
                 folder, fname = explicit_path.rsplit("/", 1)
                 stem, _ext = fname.rsplit(".", 1)
@@ -255,14 +255,14 @@ def load_model(
 
         if cacheable:
             _MODEL_CACHE_STATS["misses"] += 1
-        # 下載到記憶體
+        # 銝??啗??園?
         buf = io.BytesIO()
         blob.download_to_file(buf)
         _MODEL_CACHE_STATS["gcs_downloads"] += 1
         buf.seek(0)
         model, artifact_health = load_joblib_with_artifact_health(buf, artifact_name=blob_path)
 
-        # 載入 metadata
+        # 頛 metadata
         metadata = {}
         if meta_path:
             meta_blob = bucket.blob(meta_path)
@@ -330,7 +330,7 @@ def load_model(
 
 def is_model_fresh(metadata: dict | None, max_age_days: int = 8) -> bool:
     """
-    判斷模型是否夠新（預設 8 天，確保每週重訓後不會用舊模型）
+    ?斗璅∪??臬憭嚗?閮?8 憭抬?蝣箔?瘥梢?閮?銝??刻?璅∪?嚗?
     """
     if not metadata:
         return False
@@ -347,8 +347,8 @@ def is_model_fresh(metadata: dict | None, max_age_days: int = 8) -> bool:
 
 def feature_names_match(metadata: dict | None, current_features: list[str]) -> bool:
     """
-    確認模型訓練時用的 feature list 和現在一致
-    如果不一致（例如新增了大盤特徵），需要重新訓練
+    蝣箄?璅∪?閮毀???feature list ??其???
+    憒?銝??湛?靘??啣?鈭之?斤敺蛛?嚗?閬??啗?蝺?
     """
     if not metadata:
         return False
@@ -356,7 +356,7 @@ def feature_names_match(metadata: dict | None, current_features: list[str]) -> b
     return sorted(stored) == sorted(current_features)
 
 
-# ── 清理舊備份（保留最近 12 週）─────────────────────────────────────────────
+# ?? 皜???隞踝?靽??餈?12 ?梧??????????????????????????????????????????????
 def cleanup_old_weekly(stock_id: int, keep_weeks: int = 12) -> None:
     bucket = _get_bucket()
     if bucket is None:

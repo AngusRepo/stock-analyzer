@@ -1,8 +1,8 @@
-"""Active-9 dataset and model-pool policy.
+"""Active direct-alpha dataset and model-pool policy.
 
 The daily production path has one source of truth for lookback windows so
-tree/tabular, graph, sequence, and foundation models do not silently drift back
-to short legacy payloads.
+tree/tabular, graph, sequence, and TimesFM sidecar models do not silently drift
+back to short legacy payloads.
 """
 
 from __future__ import annotations
@@ -19,7 +19,13 @@ ACTIVE_ALPHA_MODELS = (
     "DLinear",
     "PatchTST",
     "iTransformer",
-    "TimesFM",
+)
+
+TIMESFM_L2_SIDECAR_MODELS = ("TimesFM",)
+
+MODEL_POOL_REQUIRED_MODELS = (
+    *ACTIVE_ALPHA_MODELS,
+    *TIMESFM_L2_SIDECAR_MODELS,
 )
 
 RETIRED_ALPHA_MODELS = (
@@ -53,7 +59,7 @@ def daily_price_history_limit() -> int:
 
 
 def daily_sequence_target_points() -> int:
-    """Shared close-only history target for L3 sequence/foundation predictors."""
+    """Shared close-only history target for L3 sequence and L2 TimesFM predictors."""
 
     return _env_int("STOCKVISION_DAILY_SEQUENCE_TARGET_POINTS", 1024, min_value=128, max_value=2048)
 
@@ -75,4 +81,3 @@ def long_history_sequence_prefix() -> str:
 def long_history_sequence_enabled() -> bool:
     raw = os.environ.get("STOCKVISION_LONG_HISTORY_SEQUENCE_ENABLED", "1")
     return str(raw).strip().lower() not in {"0", "false", "off", "disabled", "no"}
-

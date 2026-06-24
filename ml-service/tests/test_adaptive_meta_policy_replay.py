@@ -91,6 +91,5 @@ def test_adaptive_meta_policy_replay_compares_all_candidates_read_only():
         "DLinear",
         "PatchTST",
         "iTransformer",
-        "TimesFM",
     }
     assert all(0.85 <= mult <= 1.15 for mult in candidate["model_weight_multipliers"].values())

@@ -381,7 +381,7 @@ export default function ModelPoolPage() {
         <WorkstationPageTitle
           kicker="Model registry"
           title="Model Pool"
-          description="Registry, lineage, active-9 evidence, adaptive replay, promotion queue, and champion pointer governance. L1 strategy diversity stays in Strategy Lab; single-run tracing stays in Pipeline Trace."
+          description="Registry, lineage, L2 TimesFM sidecar、L3 active-8 ML evidence, adaptive replay, promotion queue, and champion pointer governance. L1 strategy diversity stays in Strategy Lab; single-run tracing stays in Pipeline Trace."
           action={
             <div className="flex flex-wrap items-center gap-2">
               {modelPoolSnapshotReady && modelPoolFetching && <WorkstationPill tone="info">refreshing snapshot</WorkstationPill>}

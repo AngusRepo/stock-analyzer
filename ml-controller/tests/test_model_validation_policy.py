@@ -18,7 +18,7 @@ def test_timesfm_single_official_config_uses_forecast_validation_without_pbo():
         sample_count=512,
     )
 
-    assert policy["family"] == "foundation_sequence"
+    assert policy["family"] == "l2_feature_sidecar"
     assert policy["cpcv"]["owner"] == "foundation_forecast_validation"
     assert policy["pbo"]["required"] is False
     assert policy["pbo"]["method"] == "not_required_for_single_official_config"

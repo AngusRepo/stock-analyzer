@@ -9,7 +9,7 @@ import {
   resolveStrategyCapacityBudget,
   type StrategyCandidatePoolCandidate,
 } from './strategyCandidatePool'
-import { ACTIVE_9_ML_TEACHERS, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
+import { ACTIVE_8_ML_TEACHERS, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
 import { coerceModalStrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 
 function assert(condition: unknown, message: string): void {
@@ -323,8 +323,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
-  assert(ACTIVE_9_ML_TEACHERS.length === 9, 'L1.5 router must preserve 9ML teacher-label contract')
-  assert(ACTIVE_9_ML_TEACHERS.includes('LightGBM') && ACTIVE_9_ML_TEACHERS.includes('TimesFM'), '9ML teacher-label contract must keep L2/L3 model families visible')
+  assert(ACTIVE_8_ML_TEACHERS.length === 8, 'L1.5 router must preserve 8ML teacher-label contract')
+  assert(ACTIVE_8_ML_TEACHERS.includes('LightGBM') && !ACTIVE_8_ML_TEACHERS.includes('TimesFM' as any), '8ML teacher-label contract must keep TimesFM out of direct teachers')
 
   const strongCandidate: StrategyCandidatePoolCandidate = {
     symbol: '7701',
@@ -373,7 +373,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     maxSlateSize: 2,
     regime: 'bull',
     runtimeTeacherEvidence: {
-      '7701': { LightGBM: 0.8, XGBoost: 0.75, ExtraTrees: 0.72, TabM: 0.7, GNN: 0.68, DLinear: 0.66, PatchTST: 0.64, iTransformer: 0.62, TimesFM: 0.6 },
+      '7701': { LightGBM: 0.8, XGBoost: 0.75, ExtraTrees: 0.72, TabM: 0.7, GNN: 0.68, DLinear: 0.66, PatchTST: 0.64, iTransformer: 0.62 },
     },
     strategyPortfolioMetrics: {
       reliable_low_corr_v1: {
@@ -417,7 +417,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.telemetry.min_route_score_source === 'adaptive_route_score_distribution', 'L1.5 should not silently default to hardcoded 20 when minRouteScore is absent')
   assert(plan.telemetry.teacher_label_available_count === 1, 'L1.5 telemetry should count candidates with teacher evidence')
   assert(plan.telemetry.teacher_label_missing_count === 1, 'L1.5 telemetry should count candidates missing teacher evidence')
-  assert(reliable.strategy_router_components.teacher_alignment > crowded.strategy_router_components.teacher_alignment, 'teacher labels should improve router evidence without replacing 9ML')
+  assert(reliable.strategy_router_components.teacher_alignment > crowded.strategy_router_components.teacher_alignment, 'teacher labels should improve router evidence without replacing 8ML')
   assert(crowded.strategy_router_components.teacher_alignment === 0, 'missing teacher labels must not receive neutral 0.5 alignment')
   assert(crowded.strategy_router_components.teacher_alignment_contribution === 0, 'missing teacher labels must not add route-score contribution')
   assert(crowded.strategy_router_components.teacher_alignment_missing === 1, 'missing teacher labels must be explicit telemetry')

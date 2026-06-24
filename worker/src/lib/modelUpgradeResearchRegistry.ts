@@ -124,28 +124,34 @@ function seedInputForCandidate(candidate: ModelUpgradeCandidate): Parameters<typ
   const isShadow = candidate.stage === 'shadow_challenger'
   const isArtifactRequired = candidate.stage === 'production_artifact_required'
   const isProductionSlot = candidate.stage === 'production_slot_member'
+  const isL2Sidecar = candidate.stage === 'l2_feature_sidecar_member'
   return {
     id: `model-upgrade-${candidate.id.toLowerCase()}-${P7_MODEL_UPGRADE_TRACK_VERSION}`,
-    status: isShadow || isProductionSlot ? 'running' : 'queued',
+    status: isShadow || isProductionSlot || isL2Sidecar ? 'running' : 'queued',
     hypothesis: isProductionSlot
       ? `${candidate.id} production_slot_member: monitor artifact-backed serving, OOS IC, lifecycle weight, cost profile, and serving parity.`
+      : isL2Sidecar
+      ? `${candidate.id} l2_feature_sidecar_member: monitor config-backed serving, L2 feature release, OOS IC, cost profile, and feature parity.`
       : isArtifactRequired
       ? `${candidate.id} production_artifact_required: run dry-run evaluation for artifact, OOS IC, CPCV/PBO, cost profile, and serving parity before production activation.`
       : isBenchmark
       ? `${candidate.id} model_benchmark: use Strategy Lab dry-run to evaluate ${candidate.family} as benchmark-only evidence before any shadow challenger promotion.`
       : `${candidate.id} shadow evaluation: run Strategy Lab shadow evidence checks for OOS IC, CPCV/PBO, cost profile, and data-slice readiness before any production vote.`,
     sourceRefs: ['strategy-lab-ui', 'model-upgrade-track', P7_MODEL_UPGRADE_TRACK_VERSION],
-    strategySpecIds: [isProductionSlot ? 'model_family_production_slot_member_v1' : isArtifactRequired ? 'model_family_production_artifact_required_v1' : isBenchmark ? 'model_family_benchmark_v1' : 'model_family_shadow_v1'],
+    strategySpecIds: [isProductionSlot ? 'model_family_production_slot_member_v1' : isL2Sidecar ? 'model_family_l2_feature_sidecar_member_v1' : isArtifactRequired ? 'model_family_production_artifact_required_v1' : isBenchmark ? 'model_family_benchmark_v1' : 'model_family_shadow_v1'],
     dataSlice: {
       start_date: '2025-01-01',
-      lane: isProductionSlot ? 'production_slot_member' : isArtifactRequired ? 'production_artifact_required' : isShadow ? 'tradable_shadow' : 'research_benchmark',
+      lane: isProductionSlot ? 'production_slot_member' : isL2Sidecar ? 'l2_feature_sidecar_member' : isArtifactRequired ? 'production_artifact_required' : isShadow ? 'tradable_shadow' : 'research_benchmark',
       benchmark_candidates: (isBenchmark || isArtifactRequired) ? [candidate.id] : [],
       shadow_candidates: isShadow ? [candidate.id] : [],
       production_slot_candidates: isProductionSlot ? [candidate.id] : [],
+      l2_feature_sidecar_candidates: isL2Sidecar ? [candidate.id] : [],
       production_mutation_allowed: false,
     },
     metrics: isProductionSlot
       ? ['production_artifact', 'oos_ic', 'lifecycle_weight', 'serving_parity', 'cost_profile']
+      : isL2Sidecar
+      ? ['production_artifact', 'timesfm_config', 'l2_feature_release', 'oos_ic', 'cost_profile']
       : isArtifactRequired
       ? ['production_artifact', 'oos_ic', 'cpcv_pbo', 'cost_profile', 'serve_feature_parity']
       : isBenchmark
@@ -153,6 +159,8 @@ function seedInputForCandidate(candidate: ModelUpgradeCandidate): Parameters<typ
       : ['shadow_rank_ic', 'oos_ic', 'cpcv_pbo', 'cost_profile', 'data_slice_report'],
     followUp: isProductionSlot
       ? ['monitor production slot health', 'inspect missing artifact or IC blockers', 'do not mutate serving without Wei approval']
+      : isL2Sidecar
+      ? ['monitor L2 sidecar health', 'inspect feature release and IC blockers', 'do not move TimesFM into direct alpha without Wei approval']
       : isArtifactRequired
       ? ['run artifact-required dry-run plan', 'inspect artifact and IC blockers', 'request Wei approval before production activation']
       : isBenchmark
@@ -168,6 +176,7 @@ export async function ensureModelUpgradeResearchRegistry(
   assertOwnerCanOwn('research', 'experiment_registry')
   const candidates = [
     ...listModelUpgradeCandidates('production_slot_member'),
+    ...listModelUpgradeCandidates('l2_feature_sidecar_member'),
     ...listModelUpgradeCandidates('production_artifact_required'),
     ...listModelUpgradeCandidates('shadow_challenger'),
     ...listModelUpgradeCandidates('benchmark_only'),

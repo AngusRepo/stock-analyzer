@@ -1,4 +1,4 @@
-"""Run read-only before/after benchmark pairs for active-9 runtime upgrades.
+"""Run read-only before/after benchmark pairs for Active-8 direct-alpha runtime upgrades.
 
 This script never promotes artifacts and never writes model_pool state. It expects either
 payload.sequence_records or a GCS-backed payload understood by app.research_benchmarks.common.

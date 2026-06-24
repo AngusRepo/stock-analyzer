@@ -1,4 +1,4 @@
-import { ACTIVE_9_ML_TEACHERS } from './multiStrategyPleRouter'
+import { ACTIVE_8_ML_TEACHERS } from './multiStrategyPleRouter'
 
 const D1_IN_CHUNK_SIZE = 40
 
@@ -90,7 +90,7 @@ function baseTelemetry(input: {
     labeled_symbol_count: 0,
     missing_symbol_count: input.requestedSymbolCount,
     label_count: 0,
-    teacher_model_count: ACTIVE_9_ML_TEACHERS.length,
+    teacher_model_count: ACTIVE_8_ML_TEACHERS.length,
   }
 }
 
@@ -123,7 +123,7 @@ export async function loadRuntimeTeacherEvidence(
     for (let offset = 0; offset < requestedSymbols.length; offset += D1_IN_CHUNK_SIZE) {
       const chunk = requestedSymbols.slice(offset, offset + D1_IN_CHUNK_SIZE)
       const symbolPlaceholders = chunk.map(() => '?').join(',')
-      const modelPlaceholders = ACTIVE_9_ML_TEACHERS.map(() => '?').join(',')
+      const modelPlaceholders = ACTIVE_8_ML_TEACHERS.map(() => '?').join(',')
       const verifiedClause = verifiedOnly ? 'AND p.verified_at IS NOT NULL' : ''
       const result = await db.prepare(`
         SELECT s.symbol,
@@ -148,7 +148,7 @@ export async function loadRuntimeTeacherEvidence(
                   p.id DESC
       `).bind(
         ...chunk,
-        ...ACTIVE_9_ML_TEACHERS,
+        ...ACTIVE_8_ML_TEACHERS,
         runDate,
         runDate,
         `-${lookbackDays} days`,
@@ -158,7 +158,7 @@ export async function loadRuntimeTeacherEvidence(
       for (const row of rows) {
         const symbol = normalizeSymbol(row.symbol)
         const modelName = cleanText(row.model_name)
-        if (!symbol || !ACTIVE_9_ML_TEACHERS.includes(modelName as typeof ACTIVE_9_ML_TEACHERS[number])) continue
+        if (!symbol || !ACTIVE_8_ML_TEACHERS.includes(modelName as typeof ACTIVE_8_ML_TEACHERS[number])) continue
         labels[symbol] ??= {}
         if (labels[symbol][modelName] != null) continue
         const score = rowTeacherScore(row)

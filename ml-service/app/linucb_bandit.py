@@ -347,7 +347,7 @@ def linucb_select(
     Example:
         multipliers = linucb_select("bear", garch_vol=2.5, current_price=100,
                                     market_risk_score=0.7, bandit=bandit)
-        # {"XGBoost": 1.8, "TimesFM": 0.4, ...}
+        # {"XGBoost": 1.8, "DLinear": 0.4, ...}
     """
     _ap = adaptive_params or {}
     max_mult      = float(_ap.get("bandit_max_mult",      2.5))

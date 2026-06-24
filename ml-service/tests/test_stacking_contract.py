@@ -125,7 +125,6 @@ def test_default_v2_rank_model_order_covers_alpha_prediction_models_only():
         "DLinear",
         "PatchTST",
         "iTransformer",
-        "TimesFM",
     ]
 
 

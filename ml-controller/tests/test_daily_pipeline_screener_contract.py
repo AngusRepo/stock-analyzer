@@ -85,73 +85,55 @@ def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():
     assert universe[0]["eligible_for_execution"] is True
 
 
-def test_l2_l3_targets_are_proportional_to_upstream_counts():
-    _install_daily_pipeline_import_stubs()
-    from graphs.daily_pipeline_v2 import (  # noqa: E402
-        _resolve_coarse_ml_gate_target,
-        _resolve_core_family_evidence_target,
-    )
+def test_l2_timesfm_replaces_tree_gate_without_split_target():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
-    trading_config = {"screener": {"coarseMlKeepRatio": 0.75, "coreFamilyKeepRatio": 0.75}}
-    sizing = {"core_family_evidence_size": 80}
-
-    l2_target = _resolve_coarse_ml_gate_target(70, sizing, trading_config)
-    l3_target = _resolve_core_family_evidence_target(l2_target, sizing, trading_config)
-
-    assert l2_target == 53
-    assert l3_target == 53
+    assert "_resolve_coarse_ml_gate_target" not in source
+    assert "_attach_l2_core_ml_evidence" not in source
+    assert "PIPELINE_L2_L3_SPLIT_ENABLED" not in source
+    assert "modal_client.l2_tree_batch_predict" not in source
+    assert 'g.add_node("l2_timesfm_enrich"' in source
+    assert 'g.add_edge("build_payloads",      "l2_timesfm_enrich")' in source
+    assert 'g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")' in source
 
 
-def test_l2_core_ml_evidence_queues_l3_formal_inference_by_tree_score_only():
-    _install_daily_pipeline_import_stubs()
-    from graphs.daily_pipeline_v2 import _attach_l2_core_ml_evidence  # noqa: E402
-
-    predictions = {
-        "2330": {"rank_scores": {"LightGBM": 0.80, "XGBoost": 0.70, "ExtraTrees": 0.90, "TabM": 0.10}},
-        "2317": {"rank_scores": {"LightGBM": 0.40, "XGBoost": 0.50, "ExtraTrees": 0.45, "TabM": 0.99}},
-        "2454": {"rank_scores": {"TabM": 1.00}},
-    }
-
-    gated, selected, summary = _attach_l2_core_ml_evidence(
-        predictions,
-        target_size=1,
-        upstream_count=3,
-    )
-
-    assert selected == ["2330"]
-    assert gated["2330"]["core_ml_evidence"]["selected"] is True
-    assert gated["2330"]["core_ml_evidence"]["l3_formal_inference_selected"] is True
-    assert gated["2330"]["core_ml_evidence"]["final_recommendation_gate"] is False
-    assert gated["2330"]["core_ml_gate"] == gated["2330"]["core_ml_evidence"]
-    assert gated["2317"]["core_ml_evidence"]["selected"] is False
-    assert gated["2454"]["core_ml_evidence"]["selected"] is False
-    assert gated["2330"]["core_ml_evidence"]["models"] == ["LightGBM", "XGBoost", "ExtraTrees"]
-    assert summary["schema_version"] == "l2_core_ml_evidence_v1"
-    assert summary["scored_count"] == 2
-    assert summary["selection_role"] == "evidence_only_l3_formal_inference_queue"
-    assert summary["final_recommendation_gate"] is False
-
-
-def test_l2_core_ml_evidence_does_not_truncate_sparse_allocator_pool():
-    from services.recommendation_service import apply_core_ml_evidence  # noqa: E402
+def test_l2_timesfm_evidence_does_not_truncate_sparse_allocator_pool():
+    from services.recommendation_service import apply_l2_timesfm_evidence  # noqa: E402
 
     recommendations = [
         {"symbol": "2330", "score": 99.0},
         {"symbol": "2317", "score": 98.0},
     ]
 
-    result = apply_core_ml_evidence(recommendations, {}, fallback_size=1)
+    result = apply_l2_timesfm_evidence(recommendations, {}, fallback_size=1)
     assert [row["symbol"] for row in result] == ["2330", "2317"]
-    assert all("core_ml_evidence:missing_l2_tree_prediction" in row["watch_points"] for row in result)
+    assert all("l2_timesfm_evidence:missing_sidecar" in row["watch_points"] for row in result)
 
-    result = apply_core_ml_evidence(
+    result = apply_l2_timesfm_evidence(
         recommendations,
-        {"2330": {"core_ml_evidence": {"selected": False, "rank": 1, "target_size": 1}}},
+        {
+            "2330": {
+                "stock_meta": {
+                    "timesfm_l175_sidecar": {
+                        "schema_version": "timesfm-l1-75-sidecar-v1",
+                        "layer": "L2",
+                        "role": "feature_sidecar",
+                        "direct_alpha_blocked": True,
+                        "eligible_for_l2_feature_enrichment": True,
+                        "l2_feature_input_active": True,
+                        "l2_feature_names": ["timesfm_l175_forecast_return"],
+                        "current_allowed_use": ["l2_feature_enrichment"],
+                        "features": {"forecast_return": 0.012},
+                    }
+                }
+            }
+        },
         fallback_size=1,
     )
     assert [row["symbol"] for row in result] == ["2330", "2317"]
-    assert result[0]["core_ml_evidence"]["final_recommendation_gate"] is False
-    assert result[0]["core_ml_gate"] == result[0]["core_ml_evidence"]
+    assert result[0]["l2_timesfm_evidence"]["final_recommendation_gate"] is False
+    assert result[0]["l2_timesfm_evidence"]["l3_formal_inference_selected"] is True
+    assert result[0]["timesfm_sidecar"]["layer"] == "L2"
 
 
 def test_core_family_evidence_does_not_truncate_when_family_evidence_missing():
@@ -173,7 +155,7 @@ def test_core_family_evidence_does_not_truncate_when_family_evidence_missing():
     assert all(row["core_family_evidence"]["selection_role"] == "evidence_only_not_capacity_gate" for row in result)
 
 
-def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypatch):
+def test_l3_formal_predict_uses_full_post_l2_timesfm_slate(monkeypatch):
     _install_daily_pipeline_import_stubs()
     from graphs import daily_pipeline_v2  # noqa: E402
 
@@ -188,6 +170,11 @@ def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypa
                     "rank_scores": {"TabM": 0.81, "GNN": 0.76},
                     "ensemble_v2": {"signal": "BUY", "weights": {"TabM": 1.0, "GNN": 1.0}},
                 },
+                "2317": {
+                    "symbol": "2317",
+                    "rank_scores": {"TabM": 0.51, "GNN": 0.52},
+                    "ensemble_v2": {"signal": "HOLD", "weights": {"TabM": 1.0, "GNN": 1.0}},
+                },
             },
             "modal_wait_telemetry": {"stage": "fake_l3"},
         }
@@ -196,55 +183,29 @@ def test_l3_formal_predict_uses_only_l2_shortlist_and_preserves_l2_gate(monkeypa
 
     state = {
         "payloads": [{"symbol": "2330"}, {"symbol": "2317"}],
-        "l3_payloads": [{"symbol": "2330"}],
-        "l2_predictions": {
-            "2330": {
-                "symbol": "2330",
-                "rank_scores": {"LightGBM": 0.8, "XGBoost": 0.7, "ExtraTrees": 0.9},
-                "core_ml_evidence": {"selected": True, "rank": 1, "target_size": 1},
-                "core_ml_gate": {"selected": True, "rank": 1, "target_size": 1},
-                "feature_version": "l2_tree_predict_v1",
-                "prediction_stage": "L2",
-            },
-            "2317": {
-                "symbol": "2317",
-                "rank_scores": {"LightGBM": 0.4, "XGBoost": 0.5, "ExtraTrees": 0.45},
-                "core_ml_evidence": {"selected": False, "rank": 2, "target_size": 1},
-                "core_ml_gate": {"selected": False, "rank": 2, "target_size": 1},
-                "feature_version": "l2_tree_predict_v1",
-                "prediction_stage": "L2",
-            },
-        },
+        "predictions": {},
     }
 
     result = asyncio.run(daily_pipeline_v2.node_l3_formal_predict(state))
 
-    assert observed_payload_symbols == [["2330"]]
+    assert observed_payload_symbols == [["2330", "2317"]]
     assert result["predictions"]["2330"]["prediction_stage"] == "L3"
-    assert result["predictions"]["2330"]["core_ml_evidence"] == {"selected": True, "rank": 1, "target_size": 1}
-    assert result["predictions"]["2330"]["core_ml_gate"] == {"selected": True, "rank": 1, "target_size": 1}
-    assert result["predictions"]["2330"]["feature_version"] == "l2_tree_predict_v1"
-    assert result["predictions"]["2317"]["prediction_stage"] == "L2"
-    assert result["predictions"]["2317"]["feature_version"] == "l2_tree_predict_v1"
+    assert result["predictions"]["2317"]["prediction_stage"] == "L3"
     assert result["l3_predictions"]["2330"]["rank_scores"] == {"TabM": 0.81, "GNN": 0.76}
+    assert result["l3_predictions"]["2317"]["rank_scores"] == {"TabM": 0.51, "GNN": 0.52}
 
 
-def test_daily_pipeline_graph_splits_l2_gate_before_l3_formal_predict():
+def test_daily_pipeline_graph_routes_l2_timesfm_before_l3_formal_predict():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
-    assert "def _l2_l3_split_enabled" in source
-    assert "PIPELINE_L2_L3_SPLIT_ENABLED" in source
-    assert source.index('g.add_edge("build_payloads",      "l2_cheap_ml_predict")') < source.index(
-        'g.add_edge("l2_cheap_ml_predict", "l2_core_gate")'
+    assert source.index('g.add_edge("build_payloads",      "l2_timesfm_enrich")') < source.index(
+        'g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")'
     )
-    assert source.index('g.add_edge("l2_cheap_ml_predict", "l2_core_gate")') < source.index(
-        'g.add_edge("l2_core_gate",        "l3_formal_predict")'
-    )
-    assert source.index('g.add_edge("l2_core_gate",        "l3_formal_predict")') < source.index(
+    assert source.index('g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")') < source.index(
         'g.add_edge("l3_formal_predict",   "compute_personas")'
     )
-    assert 'g.add_edge("build_payloads",      "ml_predict")' in source
-    assert 'g.add_edge("ml_predict",          "compute_personas")' in source
+    assert 'g.add_edge("build_payloads",      "ml_predict")' not in source
+    assert 'g.add_edge("ml_predict",          "compute_personas")' not in source
 
 
 def test_daily_pipeline_does_not_inject_gnn_controller_adapter():

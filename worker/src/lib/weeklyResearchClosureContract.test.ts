@@ -113,17 +113,17 @@ assert(
 assert(
   workflows.includes('FORMAL_ARTIFACT_LIFECYCLE_BY_NAME') &&
     workflows.includes('artifact_lifecycle_targets') &&
-    workflows.includes('foundation_forecast_validation_config_refresh') &&
     workflows.includes('sequence_artifact_retrain_registration') &&
+    !workflows.includes('foundation_forecast_validation_config_refresh') &&
     workflows.includes('weekly_drift skipped: no supported retrain groups'),
-  'weekly drift retrain must route formal L3 artifact slots through artifact lifecycle targets instead of falling back to tree retrain',
+  'weekly drift retrain must route formal L3 artifact slots through artifact lifecycle targets; TimesFM is handled by L2 feature-release governance',
 )
 assert(
   workflows.includes('ACTIVE_WEEKLY_DRIFT_MODEL_NAMES') &&
     workflows.includes('ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name)') &&
     !/MODEL_GROUP_BY_NAME[\s\S]*CatBoost/.test(workflows) &&
     !/MODEL_GROUP_BY_NAME[\s\S]*Chronos/.test(workflows),
-  'weekly drift retrain must filter to active-9 and must not map retired CatBoost/Chronos into retrain groups',
+  'weekly drift retrain must filter to active-8 direct-alpha and must not map retired CatBoost/Chronos into retrain groups',
 )
 
 assert(

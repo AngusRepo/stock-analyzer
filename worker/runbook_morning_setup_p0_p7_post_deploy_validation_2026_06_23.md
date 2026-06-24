@@ -75,7 +75,7 @@ npx.cmd wrangler@4 d1 execute stockvision-db --remote --command "SELECT id, trad
 Check the Worker daily recommendations API and UI card:
 
 - ML vote denominator should be 8 direct-alpha models.
-- TimesFM should show as `L1.75 TimesFM sidecar` / direct alpha blocked.
+- TimesFM should show as `L2 TimesFM sidecar` / direct alpha blocked.
 - TimesFM should show `L2 input PENDING` with `L2 block formal137/retrain/release`, not active L2 feature input.
 - L2/L3 card should show direct ML + sidecar semantics, not `9ML Stack` with TimesFM as voter.
 

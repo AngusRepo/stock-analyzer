@@ -87,7 +87,7 @@ def test_promote_check_apply_requires_confirm():
     assert "confirm=true" in exc.value.detail
 
 
-def test_register_challenger_blocks_active9_legacy_slot():
+def test_register_challenger_blocks_active8_legacy_slot():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             model_pool.register_challenger(

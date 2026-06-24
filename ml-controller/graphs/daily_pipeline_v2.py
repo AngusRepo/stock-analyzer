@@ -36,8 +36,9 @@ from services.payload_builder import (
     build_payloads,
     build_ml_universe,
 )
-from services.active9_dataset_policy import (
+from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
+    TIMESFM_L2_SIDECAR_MODELS,
     RETIRED_ALPHA_MODELS,
     daily_sequence_target_points,
 )
@@ -60,13 +61,13 @@ from services.state_space_series import (
 from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 from services.recommendation_service import (
     apply_core_family_evidence,
-    apply_core_ml_evidence,
+    apply_l2_timesfm_evidence,
     build_return_history_from_payloads,
     filter_and_score_recommendations,
     apply_sparse_tangent_allocation,
     load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
-    write_layer2_core_gate_audit,
+    write_layer2_timesfm_enrichment_audit,
     write_layer3_formal_gate_audit,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
@@ -95,6 +96,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
 ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
+MODEL_POOL_REQUIRED_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
+TIMESFM_L2_SIDECAR_MODEL_SET = set(TIMESFM_L2_SIDECAR_MODELS)
 RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 MODEL_POOL_SERVING_STATUSES = {"active", "degraded"}
@@ -306,13 +309,16 @@ def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str,
 
 
 def _timesfm_artifact_sequence_contract_points(pool: dict | None) -> int | None:
-    entry = ((pool or {}).get("models") or {}).get("TimesFM") or {}
+    pool = pool or {}
+    sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
+    models = pool.get("models") if isinstance(pool.get("models"), dict) else {}
+    entry = sidecars.get("TimesFM") or models.get("TimesFM") or {}
     gcs_path = str(entry.get("gcs_path") or "").strip()
     version = str(entry.get("version") or "").strip()
     if not gcs_path and version:
         gcs_path = f"universal/timesfm/{version}.json"
     if not gcs_path:
-        raise RuntimeError("TimesFM active model missing gcs_path/version for sequence contract")
+        raise RuntimeError("TimesFM L2 sidecar missing gcs_path/version for sequence contract")
     try:
         from google.cloud import storage
 
@@ -350,7 +356,7 @@ def _timesfm_sync_gate(
 ) -> tuple[bool, dict[str, Any]]:
     status = model_status.get("TimesFM", "retired")
     if status not in {"active", "degraded"}:
-        return False, {"allowed": False, "reason": "timesfm_retired_by_model_pool", "status": status}
+        return False, {"allowed": False, "reason": "timesfm_l2_sidecar_retired_by_model_pool", "status": status}
 
     sequence_contract_points = _timesfm_sequence_contract_points(pool)
     coverage = _sequence_coverage(sequence_series, min_points=sequence_contract_points)
@@ -369,28 +375,13 @@ def _timesfm_sync_gate(
             "sequence_contract_points": sequence_contract_points,
         }
 
-    serving_ic = _build_serving_ic_bundle(pool, "GLOBAL", ev2_cfg or {})
-    weight = float((serving_ic.get("weights") or {}).get("TimesFM") or 0.0)
-    diagnostic = (serving_ic.get("diagnostics") or {}).get("TimesFM") or {}
-    if weight <= 0.0:
-        return True, {
-            "allowed": True,
-            "reason": "timesfm_observation_only_non_positive_effective_ic",
-            "status": status,
-            "coverage": coverage,
-            "effective_weight": weight,
-            "diagnostic": diagnostic,
-            "sequence_contract_points": sequence_contract_points,
-            "sequence_contract_mode": "per_symbol_subset",
-            "ensemble_contribution_allowed": False,
-        }
     return True, {
         "allowed": True,
-        "reason": "timesfm_sidecar_only_direct_alpha_blocked",
+        "reason": "timesfm_l2_sidecar_sequence_contract_ok",
         "status": status,
         "coverage": coverage,
-        "effective_weight": weight,
-        "diagnostic": diagnostic,
+        "effective_weight": 0.0,
+        "diagnostic": {"source": "l2_feature_sidecar", "direct_alpha_blocked": True},
         "sequence_contract_points": sequence_contract_points,
         "sequence_contract_mode": "per_symbol_subset",
         "ensemble_contribution_allowed": False,
@@ -420,124 +411,9 @@ def _breeze2_reason_generation_timeout_seconds() -> float:
     return _float_env("BREEZE2_REASON_GENERATION_TIMEOUT_SECONDS", 75.0, minimum=5.0, maximum=180.0)
 
 
-def _l2_l3_split_enabled() -> bool:
-    raw = os.environ.get("PIPELINE_L2_L3_SPLIT_ENABLED", "1")
-    return str(raw).strip().lower() not in {"0", "false", "off", "disabled", "no"}
-
-
-_L2_TREE_MODEL_NAMES = ("LightGBM", "XGBoost", "ExtraTrees")
-
-
-def _l2_tree_gate_score(prediction: dict | None) -> tuple[float | None, list[str]]:
-    if not isinstance(prediction, dict):
-        return None, []
-    rank_scores = prediction.get("rank_scores")
-    if not isinstance(rank_scores, dict):
-        return None, []
-    scores: list[float] = []
-    models: list[str] = []
-    for name in _L2_TREE_MODEL_NAMES:
-        value = rank_scores.get(name)
-        try:
-            score = float(value)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(score):
-            continue
-        scores.append(max(0.0, min(1.0, score)))
-        models.append(name)
-    if not scores:
-        return None, []
-    return sum(scores) / len(scores), models
-
-
-def _payloads_for_symbols(payloads: list[dict], symbols: list[str]) -> list[dict]:
-    wanted = {str(symbol) for symbol in symbols}
-    return [
-        payload
-        for payload in payloads or []
-        if str(payload.get("symbol") or "") in wanted
-    ]
-
-
-def _attach_l2_core_ml_evidence(
-    predictions: dict[str, dict],
-    *,
-    target_size: int,
-    upstream_count: int,
-) -> tuple[dict[str, dict], list[str], dict]:
-    scored: list[tuple[str, float, list[str]]] = []
-    for symbol, prediction in (predictions or {}).items():
-        score, models = _l2_tree_gate_score(prediction)
-        if score is None:
-            continue
-        scored.append((symbol, score, models))
-
-    ranked = sorted(scored, key=lambda item: item[1], reverse=True)
-    selected_symbols = [symbol for symbol, _score, _models in ranked[:max(0, target_size)]]
-    selected_set = set(selected_symbols)
-    rank_by_symbol = {symbol: idx + 1 for idx, (symbol, _score, _models) in enumerate(ranked)}
-    score_by_symbol = {symbol: score for symbol, score, _models in ranked}
-    models_by_symbol = {symbol: models for symbol, _score, models in ranked}
-
-    gated: dict[str, dict] = {}
-    for symbol, prediction in (predictions or {}).items():
-        row = dict(prediction or {})
-        rank = rank_by_symbol.get(symbol)
-        score = score_by_symbol.get(symbol)
-        evidence = {
-            "schema_version": "core_ml_evidence_v1",
-            "legacy_schema_version": "core_ml_gate_v2",
-            "source": "l2_tree_evidence",
-            "stage": "L2",
-            "selection_role": "evidence_only_l3_formal_inference_queue",
-            "final_recommendation_gate": False,
-            "selected": symbol in selected_set,
-            "l3_formal_inference_selected": symbol in selected_set,
-            "rank": rank,
-            "target_size": target_size,
-            "upstream_count": upstream_count,
-            "score": round(float(score), 6) if score is not None else None,
-            "models": models_by_symbol.get(symbol, []),
-        }
-        row["core_ml_evidence"] = evidence
-        row["core_ml_gate"] = evidence
-        gated[symbol] = row
-
-    summary = {
-        "schema_version": "l2_core_ml_evidence_v1",
-        "legacy_schema_version": "l2_core_ml_gate_v1",
-        "source": "l2_tree_evidence",
-        "selection_role": "evidence_only_l3_formal_inference_queue",
-        "final_recommendation_gate": False,
-        "target_size": target_size,
-        "upstream_count": upstream_count,
-        "scored_count": len(scored),
-        "l3_formal_inference_count": len(selected_symbols),
-        "l3_formal_inference_symbols": selected_symbols,
-        "selected_count": len(selected_symbols),
-        "selected_symbols": selected_symbols,
-    }
-    return gated, selected_symbols, summary
-
-
-def _attach_l2_core_ml_gate(
-    predictions: dict[str, dict],
-    *,
-    target_size: int,
-    upstream_count: int,
-) -> tuple[dict[str, dict], list[str], dict]:
-    """Deprecated compatibility wrapper; L2 now emits evidence, not a gate."""
-    return _attach_l2_core_ml_evidence(
-        predictions,
-        target_size=target_size,
-        upstream_count=upstream_count,
-    )
-
-
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # State schema ??typed, contains domain data (not just step_status)
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 class PipelineStateV2(TypedDict, total=False):
     """
@@ -559,14 +435,12 @@ class PipelineStateV2(TypedDict, total=False):
 
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
-    timesfm_l175_sidecars: dict              # symbol -> TimesFM L1.75 sidecar payload
-    timesfm_l175_summary: dict               # L1.75 feature enrichment telemetry
+    timesfm_l2_sidecars: dict                # symbol -> TimesFM L2 sidecar payload
+    timesfm_l2_summary: dict                 # L2 feature enrichment telemetry
+    timesfm_l175_sidecars: dict              # Legacy key for TimesFM L2 sidecar payload
+    timesfm_l175_summary: dict               # Legacy key for TimesFM L2 enrichment telemetry
     predictions: dict                       # symbol ??ml result
-    l2_predictions: dict                     # symbol -> cheap tree-only L2 result
-    l2_selected_symbols: list[str]           # symbols admitted to L3 formal inference queue
-    l2_core_ml_evidence_summary: dict        # L2 coarse evidence audit summary
-    l2_core_ml_gate_summary: dict            # Legacy alias for L2 coarse evidence summary
-    l3_payloads: list[dict]                  # reduced payloads sent to L3 formal ML
+    l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate after L2 TimesFM enrichment
     l3_predictions: dict                     # symbol -> formal L3 merged result
     final_recommendations: list[dict]       # after filter + scoring + allocation
     layer2_recommendation_symbols: list[str] # symbols entering formal L3 family evidence
@@ -583,9 +457,9 @@ class PipelineStateV2(TypedDict, total=False):
     errors: Annotated[list[str], operator.add]
 
 
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # Nodes
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 async def node_load_inputs(state: PipelineStateV2) -> dict:
     """
@@ -800,8 +674,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     Single batch_predict call ??modal.map() (or httpx parallel concurrency=20).
     No serial sub-batching: all stocks at once, controller-side parallel.
 
-    2026-06-04 ML_POOL new L3 family:
-    - Parallel batch: tree/tabular/graph alpha predictors + DLinear/PatchTST/iTransformer/TimesFM.
+    2026-06-24 ML_POOL L3 family:
+    - Parallel batch: tree/tabular/graph alpha predictors + DLinear/PatchTST/iTransformer.
+    - TimesFM is owned by L2 feature enrichment and must not run as an L3 direct alpha voter.
     - Per-stock merged signal: time_series ??rank via sigmoid, weighted by
       ic_weights ? lifecycle_weights from model_pool.json.
     - Original signal preserved as r["signal"] for backward compat;
@@ -920,27 +795,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if _is_loaded_serving_model(model_status, "iTransformer", "ml_predict_task_plan") and sequence_model_series
         else _skip_batch(_sequence_model_skip_reason("iTransformer"))
     )
-    timesfm_allowed, timesfm_gate = _timesfm_sync_gate(
-        model_status=model_status,
-        pool=serving_pool,
-        ev2_cfg=serving_ev2_cfg,
-        sequence_series=sequence_series,
-    )
-    timesfm_sequence_series, _timesfm_excluded = _sequence_contract_subset(
-        sequence_series,
-        min_points=int(timesfm_gate.get("sequence_contract_points") or DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS),
-    )
-    timesfm_task = (
-        modal_client.timesfm_batch_predict(
-            timesfm_sequence_series,
-            horizon_used=5,
-            version=_require_loaded_serving_version(active_versions, "TimesFM", "ml_predict_task_plan"),
-            sequence_contract_points=timesfm_gate.get("sequence_contract_points"),
-        )
-        if timesfm_allowed
-        else _skip_batch(f"TimesFM skipped by serving gate: {timesfm_gate.get('reason')}")
-    )
-    logger.info("[Pipeline V2] TimesFM serving gate: %s", timesfm_gate)
     state_space_mode = _state_space_overlay_mode()
     state_space_models = {
         model_name: _require_loaded_serving_version(active_versions, model_name, "ml_predict_task_plan")
@@ -1007,7 +861,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         patchtst_raw,
         state_space_raw,
         itransformer_raw,
-        timesfm_raw,
     ) = await asyncio.gather(
         _timed_stage("predict_batch_v2", feat_task, required_alpha=True),
         _timed_stage("gnn_graphsage_universal_predict", gnn_task, required_alpha=True),
@@ -1015,7 +868,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         _timed_stage("patchtst_universal_predict", patchtst_task, required_alpha=True),
         _timed_stage("state_space_universal_predict", state_space_task, required_alpha=False),
         _timed_stage("itransformer_universal_predict", itransformer_task, required_alpha=True),
-        _timed_stage("timesfm_universal_predict", timesfm_task, required_alpha=timesfm_allowed),
         return_exceptions=True,
     )
 
@@ -1037,7 +889,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         "stage_timings": stage_timings,
         "state_space_overlay_mode": state_space_mode,
         "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
-        "timesfm_gate": timesfm_gate,
+        "timesfm_l2_owner": "node_l2_timesfm_enrich",
         "sequence_dataset": sequence_dataset_meta,
         "gnn_result_summary": gnn_result_summary,
         "n_input": n,
@@ -1150,7 +1002,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
     def _drain_ts_result(raw, name: str, series: list[dict]) -> dict[str, dict]:
         out: dict[str, dict] = {}
-        required = timesfm_allowed if name == "TimesFM" else _active_required_model(name, series)
+        required = _active_required_model(name, series)
         if isinstance(raw, BaseException):
             if required:
                 raise RuntimeError(f"{name} active model batch failed entirely: {raw}") from raw
@@ -1236,7 +1088,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
     itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_series)
-    timesfm_map = _drain_ts_result(timesfm_raw, "TimesFM", timesfm_sequence_series)
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -1249,8 +1100,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             row["patchtst"] = patchtst_map[sym]
         if sym in itransformer_map:
             row["itransformer"] = itransformer_map[sym]
-        if sym in timesfm_map:
-            row["timesfm"] = timesfm_map[sym]
         if sym in gnn_map:
             row["gnn"] = gnn_map[sym]
             rank_scores = row.get("rank_scores")
@@ -1308,7 +1157,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"dlinear={sum(1 for v in pred_map.values() if 'dlinear' in v)}, "
         f"patchtst={sum(1 for v in pred_map.values() if 'patchtst' in v)}, "
         f"itransformer={sum(1 for v in pred_map.values() if 'itransformer' in v)}, "
-        f"timesfm={sum(1 for v in pred_map.values() if 'timesfm' in v)}, "
         f"gnn={sum(1 for v in pred_map.values() if 'gnn' in v)}, "
         f"kalman={sum(1 for v in pred_map.values() if 'kalman_filter' in v)}, "
         f"markov={sum(1 for v in pred_map.values() if 'markov_switching' in v)}, "
@@ -1317,7 +1165,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
-    # ?? A: ML_POOL ensemble merge (8 alpha models with lifecycle) ??
+    # ???? A: ML_POOL ensemble merge (8 alpha models with lifecycle) ????
     # 2026-05-06: IC is lane-aware and empirical-Bayes shrunk before serving.
     # Short-sample negative IC no longer hard-zeros a model; confirmed negative
     # IC plus failed validation still fail-closed.
@@ -1346,7 +1194,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         )
 
         # #B Option 1 Top-K override (2026-04-21): regression-on-rank predictions
-        # compress to [0.43, 0.58] under realistic R簡 0.02-0.05, never hitting
+        # compress to [0.43, 0.58] under realistic R蝪?0.02-0.05, never hitting
         # absolute 0.70 BUY threshold. Industry-standard fix: sort top K by
         # avg_rank desc, force BUY regardless of absolute threshold. Confidence
         # override gives downstream (paper.ts morning-setup SQL + debate prompt)
@@ -1380,63 +1228,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     }
 
 
-async def node_l2_cheap_ml_predict(state: PipelineStateV2) -> dict:
-    """Run cheap tree-only ML before any formal L3 model family."""
-    from services import modal_client
-
-    payloads = state["payloads"]
-    n = len(payloads)
-    logger.info("[Pipeline V2] node_l2_cheap_ml_predict: %s stocks (tree-only coarse gate)", n)
-    if not payloads:
-        return {"l2_predictions": {}, "predictions": {}, "l3_payloads": []}
-
-    started = time.time()
-    results = await modal_client.l2_tree_batch_predict(payloads)
-    wait_telemetry = {
-        "modal_waiter_sec": round(time.time() - started, 3),
-        "stage": "l2_tree_predict",
-        "n_input": n,
-        "n_result": len(results or []),
-    }
-
-    payload_by_symbol = {
-        str(payload.get("symbol") or ""): payload
-        for payload in payloads
-        if isinstance(payload, dict) and payload.get("symbol")
-    }
-    pred_map: dict[str, dict] = {}
-    row_errors: dict[str, str] = {}
-    for row in results or []:
-        if not isinstance(row, dict):
-            continue
-        symbol = str(row.get("symbol") or "")
-        if not symbol:
-            continue
-        if row.get("error"):
-            row_errors[symbol] = str(row.get("error"))
-            continue
-        payload = payload_by_symbol.get(symbol) or {}
-        row = dict(row)
-        row["stock_meta"] = payload.get("stock_meta") or {}
-        pred_map[symbol] = row
-
-    degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
-    if degenerate_scores:
-        logger.warning("[Pipeline V2] L2 dropped degenerate tree rank_scores: %s", degenerate_scores)
-    if row_errors:
-        logger.warning(
-            "[Pipeline V2] L2 tree batch returned %s row errors; sample=%s",
-            len(row_errors),
-            [f"{sym}: {err}" for sym, err in list(row_errors.items())[:5]],
-        )
-    logger.info("[Pipeline V2] L2 tree predict done: %s/%s succeeded", len(pred_map), n)
-    return {
-        "l2_predictions": pred_map,
-        "predictions": pred_map,
-        "l2_modal_wait_telemetry": wait_telemetry,
-    }
-
-
 def _timesfm_l175_registry_release_policy() -> dict[str, Any]:
     try:
         rows = d1_client.query(
@@ -1452,7 +1243,7 @@ def _timesfm_l175_registry_release_policy() -> dict[str, Any]:
             timeout=30.0,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("[Pipeline V2] TimesFM L1.75 registry release fallback skipped: %s", exc)
+        logger.debug("[Pipeline V2] TimesFM L2 registry release fallback skipped: %s", exc)
         return {}
     if not rows:
         return {}
@@ -1486,7 +1277,7 @@ def _timesfm_l175_release_policy() -> dict[str, Any]:
         if isinstance(policy, dict) and policy:
             return policy
     except Exception as exc:  # noqa: BLE001
-        logger.debug("[Pipeline V2] TimesFM L1.75 release policy read skipped: %s", exc)
+        logger.debug("[Pipeline V2] TimesFM L2 release policy read skipped: %s", exc)
     return _timesfm_l175_registry_release_policy()
 
 
@@ -1507,13 +1298,19 @@ def _payload_with_timesfm_l175_sidecar(payload: dict, sidecar: dict[str, Any]) -
     return out
 
 
-async def node_timesfm_l175_enrich(state: PipelineStateV2) -> dict:
-    """Build TimesFM L1.75 sidecar features before L2 tree inference."""
+async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
+    """Build TimesFM L2 sidecar features before formal L3 8ML inference."""
     from services import modal_client
 
     payloads = state.get("payloads") or []
     if not payloads:
-        return {"timesfm_l175_sidecars": {}, "timesfm_l175_summary": {"status": "skipped", "reason": "empty_payloads"}}
+        summary = {"status": "skipped", "reason": "empty_payloads", "layer": "L2"}
+        return {
+            "timesfm_l2_sidecars": {},
+            "timesfm_l2_summary": summary,
+            "timesfm_l175_sidecars": {},
+            "timesfm_l175_summary": summary,
+        }
 
     release_policy = _timesfm_l175_release_policy()
     try:
@@ -1543,8 +1340,16 @@ async def node_timesfm_l175_enrich(state: PipelineStateV2) -> dict:
         if not timesfm_allowed:
             return {
                 "timesfm_l175_sidecars": {},
+                "timesfm_l2_sidecars": {},
+                "timesfm_l2_summary": {
+                    "status": "blocked",
+                    "layer": "L2",
+                    "gate": timesfm_gate,
+                    "sequence_dataset_meta": sequence_dataset_meta,
+                },
                 "timesfm_l175_summary": {
                     "status": "blocked",
+                    "layer": "L2",
                     "gate": timesfm_gate,
                     "sequence_dataset_meta": sequence_dataset_meta,
                 },
@@ -1558,7 +1363,7 @@ async def node_timesfm_l175_enrich(state: PipelineStateV2) -> dict:
         started = time.time()
         raw = await modal_client.timesfm_batch_predict(
             timesfm_sequence_series,
-            version=_require_loaded_serving_version(active_versions, "TimesFM", "timesfm_l175_enrich"),
+            version=_require_loaded_serving_version(active_versions, "TimesFM", "l2_timesfm_enrich"),
             sequence_contract_points=sequence_contract_points,
         )
         elapsed = round(time.time() - started, 3)
@@ -1566,8 +1371,17 @@ async def node_timesfm_l175_enrich(state: PipelineStateV2) -> dict:
         if not isinstance(result_rows, list):
             return {
                 "timesfm_l175_sidecars": {},
+                "timesfm_l2_sidecars": {},
+                "timesfm_l2_summary": {
+                    "status": "error",
+                    "layer": "L2",
+                    "reason": "timesfm_batch_invalid_payload",
+                    "gate": timesfm_gate,
+                    "elapsed_sec": elapsed,
+                },
                 "timesfm_l175_summary": {
                     "status": "error",
+                    "layer": "L2",
                     "reason": "timesfm_batch_invalid_payload",
                     "gate": timesfm_gate,
                     "elapsed_sec": elapsed,
@@ -1606,7 +1420,7 @@ async def node_timesfm_l175_enrich(state: PipelineStateV2) -> dict:
         active_count = sum(1 for sidecar in sidecars.values() if sidecar.get("l2_feature_input_active"))
         summary = {
             "status": "ready",
-            "layer": "L1.75",
+            "layer": "L2",
             "sidecar_count": len(sidecars),
             "l2_feature_input_active_count": active_count,
             "l2_feature_input_blocked_count": len(sidecars) - active_count,
@@ -1617,70 +1431,35 @@ async def node_timesfm_l175_enrich(state: PipelineStateV2) -> dict:
             "elapsed_sec": elapsed,
             "sequence_dataset_meta": sequence_dataset_meta,
         }
-        logger.info("[Pipeline V2] TimesFM L1.75 sidecar summary: %s", summary)
+        logger.info("[Pipeline V2] TimesFM L2 sidecar summary: %s", summary)
         return {
+            "timesfm_l2_sidecars": sidecars,
+            "timesfm_l2_summary": summary,
             "payloads": enriched_payloads,
             "timesfm_l175_sidecars": sidecars,
             "timesfm_l175_summary": summary,
         }
-    except Exception as exc:  # noqa: BLE001 - L1.75 sidecar must not break L2.
-        logger.warning("[Pipeline V2] TimesFM L1.75 sidecar failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - L2 sidecar must not break L3.
+        logger.warning("[Pipeline V2] TimesFM L2 sidecar failed: %s", exc)
+        summary = {
+            "status": "error",
+            "layer": "L2",
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
         return {
+            "timesfm_l2_sidecars": {},
+            "timesfm_l2_summary": summary,
             "timesfm_l175_sidecars": {},
-            "timesfm_l175_summary": {
-                "status": "error",
-                "reason": f"{type(exc).__name__}: {exc}",
-            },
+            "timesfm_l175_summary": summary,
         }
 
 
-async def node_l2_core_gate(state: PipelineStateV2) -> dict:
-    """Attach L2 tree evidence and build the bounded L3 formal inference queue."""
-    from services.trading_config_loader import load_merged_trading_config_with_contract
-
-    cfg_result = load_merged_trading_config_with_contract()
-    _require_trading_config_contract(cfg_result, "l2_core_gate")
-    trading_cfg = cfg_result.config
-
-    screener_sizing = resolve_controller_screener_sizing(
-        trading_cfg,
-        state.get("adaptive_params"),
-    )
-    target_size = _resolve_coarse_ml_gate_target(
-        len(state.get("screener_recs") or []),
-        screener_sizing,
-        trading_cfg,
-    )
-    l2_predictions = dict(state.get("l2_predictions") or state.get("predictions") or {})
-    gated_predictions, selected_symbols, summary = _attach_l2_core_ml_evidence(
-        l2_predictions,
-        target_size=target_size,
-        upstream_count=len(state.get("screener_recs") or []),
-    )
-    l3_payloads = _payloads_for_symbols(state.get("payloads") or [], selected_symbols)
-    summary["l3_payload_count"] = len(l3_payloads)
-    logger.info(
-        "[Pipeline V2] L2 tree evidence queued %s/%s candidates for L3 formal inference (target=%s)",
-        len(selected_symbols),
-        len(state.get("screener_recs") or []),
-        target_size,
-    )
-    return {
-        "l2_predictions": gated_predictions,
-        "predictions": gated_predictions,
-        "l2_selected_symbols": selected_symbols,
-        "l2_core_ml_evidence_summary": summary,
-        "l2_core_ml_gate_summary": summary,
-        "l3_payloads": l3_payloads,
-    }
-
-
 async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
-    """Run formal L3 families only on the L2 shortlist, then merge evidence."""
-    l3_payloads = state.get("l3_payloads") or []
+    """Run formal L3 families on the full post-L2 TimesFM-enriched slate."""
+    l3_payloads = state.get("l3_payloads") or state.get("payloads") or []
     l2_predictions = dict(state.get("l2_predictions") or state.get("predictions") or {})
     if not l3_payloads:
-        logger.warning("[Pipeline V2] node_l3_formal_predict skipped: no L2-selected payloads")
+        logger.warning("[Pipeline V2] node_l3_formal_predict skipped: no enriched slate payloads")
         return {
             "predictions": l2_predictions,
             "l3_predictions": {},
@@ -1688,7 +1467,7 @@ async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
         }
 
     logger.info(
-        "[Pipeline V2] node_l3_formal_predict: %s L2-selected stocks (formal family ML)",
+        "[Pipeline V2] node_l3_formal_predict: %s full-slate stocks after L2 TimesFM enrichment",
         len(l3_payloads),
     )
     l3_state = dict(state)
@@ -1698,17 +1477,13 @@ async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
     merged_predictions = dict(l2_predictions)
     for symbol, row in l3_predictions.items():
         base = dict(l2_predictions.get(symbol) or {})
-        core_ml_evidence = base.get("core_ml_evidence") or base.get("core_ml_gate")
         merged = {**base, **row}
-        if core_ml_evidence is not None:
-            merged["core_ml_evidence"] = core_ml_evidence
-            merged["core_ml_gate"] = core_ml_evidence
         merged["prediction_stage"] = "L3"
         merged_predictions[symbol] = merged
 
     dispersion = build_prediction_dispersion_report(merged_predictions)
     logger.info(
-        "[Pipeline V2] L3 formal predict merged: %s/%s L2 candidates, total predictions=%s",
+        "[Pipeline V2] L3 formal predict merged: %s/%s full-slate candidates, total predictions=%s",
         len(l3_predictions),
         len(l3_payloads),
         len(merged_predictions),
@@ -1722,9 +1497,9 @@ async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
     }
 
 
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # A: ML_POOL-aware ensemble merge helpers (pure Python, no Modal)
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 
 def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[str, str], bool]:
@@ -1748,13 +1523,13 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
             raise RuntimeError("universal/model_pool.json missing")
 
         pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
-        _require_model_pool_active9_contract(pool, "model_pool_versions")
+        _require_model_pool_required_contract(pool, "model_pool_versions")
         status: dict[str, str] = {}
         active_versions: dict[str, str] = {}
         challenger_versions: dict[str, str] = {}
         for name, entry in (pool.get("models") or {}).items():
-            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
-                logger.warning("[Pipeline V2] Ignoring legacy/non-active-9 model_pool entry: %s", name)
+            if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET:
+                logger.warning("[Pipeline V2] Ignoring legacy/non-required model_pool entry: %s", name)
                 continue
             lifecycle_status = _require_model_pool_status(entry, name, "model_pool_versions")
             status[name] = lifecycle_status
@@ -1763,6 +1538,16 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
             challenger = entry.get("challenger") or {}
             if challenger.get("version"):
                 challenger_versions[name] = challenger["version"]
+        sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
+        models = pool.get("models") if isinstance(pool.get("models"), dict) else {}
+        for name in TIMESFM_L2_SIDECAR_MODELS:
+            entry = sidecars.get(name) or models.get(name)
+            if not isinstance(entry, dict):
+                continue
+            lifecycle_status = _require_model_pool_status(entry, name, "model_pool_versions")
+            status[name] = lifecycle_status
+            if lifecycle_status in MODEL_POOL_SERVING_STATUSES:
+                active_versions[name] = _require_serving_model_version(entry, name, "model_pool_versions")
         for name, entry in (pool.get("formal_layer3_slots") or {}).items():
             slot_status = str(entry.get("status") or "").strip()
             direct_prediction = bool(entry.get("direct_prediction")) or float(entry.get("vote_weight") or 0.0) > 0.0
@@ -1786,7 +1571,7 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
         raise RuntimeError(f"model_pool version load failed: {e}") from e
 
 
-def _require_model_pool_active9_contract(pool: dict, stage: str) -> None:
+def _require_model_pool_required_contract(pool: dict, stage: str) -> None:
     models = pool.get("models") if isinstance(pool, dict) else None
     if not isinstance(models, dict):
         raise RuntimeError(f"model_pool_contract:{stage}:models must be an object")
@@ -1795,15 +1580,27 @@ def _require_model_pool_active9_contract(pool: dict, stage: str) -> None:
         for name in ACTIVE_ALPHA_MODELS
         if not isinstance(models.get(name), dict)
     ]
+    sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
+    missing.extend(
+        name
+        for name in TIMESFM_L2_SIDECAR_MODELS
+        if not isinstance(sidecars.get(name), dict) and not isinstance(models.get(name), dict)
+    )
     if missing:
         raise RuntimeError(
-            f"model_pool_contract:{stage}:missing active-9 model entries: {', '.join(missing)}"
+            f"model_pool_contract:{stage}:missing required model entries: {', '.join(missing)}"
         )
     invalid = [
         f"{name}={models[name].get('status')}"
         for name in ACTIVE_ALPHA_MODELS
         if str(models[name].get("status") or "").strip() not in MODEL_POOL_ALLOWED_STATUSES
     ]
+    invalid.extend(
+        f"{name}={(sidecars.get(name) or models.get(name) or {}).get('status')}"
+        for name in TIMESFM_L2_SIDECAR_MODELS
+        if str(((sidecars.get(name) or models.get(name) or {}).get("status") or "")).strip()
+        not in MODEL_POOL_ALLOWED_STATUSES
+    )
     if invalid:
         raise RuntimeError(
             f"model_pool_contract:{stage}:invalid lifecycle status: {', '.join(invalid)}"
@@ -1824,26 +1621,6 @@ def _normalize_market_segment(segment: Any) -> str | None:
 def _prediction_market_segment(pred: dict) -> str | None:
     meta = pred.get("stock_meta") if isinstance(pred.get("stock_meta"), dict) else {}
     return _normalize_market_segment(meta.get("market_segment") or meta.get("market"))
-
-
-def _resolve_coarse_ml_gate_target(
-    input_count: int,
-    screener_sizing: dict[str, Any],
-    trading_config: dict[str, Any] | None = None,
-) -> int:
-    """Resolve Layer 2 keep count from a ratio, not the legacy queue-size cap."""
-    _ = screener_sizing
-    if input_count <= 0:
-        return 0
-    config = trading_config if isinstance(trading_config, dict) else {}
-    raw = config.get("screener") if isinstance(config.get("screener"), dict) else {}
-    try:
-        keep_ratio = float(raw.get("coarseMlKeepRatio", raw.get("coarse_ml_keep_ratio", 0.75)) or 0.75)
-    except (TypeError, ValueError):
-        keep_ratio = 0.75
-    keep_ratio = max(0.25, min(1.0, keep_ratio))
-    ratio_target = max(1, math.ceil(input_count * keep_ratio))
-    return min(input_count, ratio_target)
 
 
 def _resolve_core_family_evidence_target(
@@ -2237,14 +2014,16 @@ def _load_pool_and_ic():
         if not pool_blob.exists():
             raise RuntimeError("universal/model_pool.json missing")
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-        _require_model_pool_active9_contract(pool, "load_pool_and_ic")
+        _require_model_pool_required_contract(pool, "load_pool_and_ic")
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}
         for name, entry in pool.get("models", {}).items():
-            if name in RETIRED_ALPHA_MODEL_SET or name not in ACTIVE_ALPHA_MODEL_SET:
-                logger.warning("[Pipeline V2] Ignoring legacy/non-active-9 model_pool IC entry: %s", name)
+            if name in RETIRED_ALPHA_MODEL_SET or name not in MODEL_POOL_REQUIRED_MODEL_SET:
+                logger.warning("[Pipeline V2] Ignoring legacy/non-required model_pool IC entry: %s", name)
                 continue
             model_status[name] = _require_model_pool_status(entry, name, "load_pool_and_ic")
+            if name in TIMESFM_L2_SIDECAR_MODEL_SET:
+                continue
             last_status = str(entry.get("last_ic_status") or "").strip()
             last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()
             has_fresh_diagnostics = bool(last_status or last_root_cause)
@@ -2406,7 +2185,7 @@ def _attach_ensemble_v2(
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:
     """
-    Taiwan-persona augmentation layer (?縑 + ?? contrarian).
+    Taiwan-persona augmentation layer (??? + ????contrarian).
 
     For each active stock with a payload, compute two opinions using
     chip_data (trust_net) and margin_data (margin_balance) already loaded
@@ -2424,7 +2203,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     if not payloads:
         return {"persona_opinions": {}}
 
-    # ?? Bulk-load concept sentiment: symbol ??best_concept ??sentiment_avg ??
+    # ???? Bulk-load concept sentiment: symbol ??best_concept ??sentiment_avg ????
     # One query each for tags + buzz, then join in memory. Keeps D1 QPS low.
     symbols = [p.get("stock_id") or p.get("symbol") for p in payloads]
     symbols = [s for s in symbols if s]
@@ -2468,7 +2247,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     except Exception as e:
         logger.warning(f"[Pipeline V2] persona sentiment lookup failed (non-fatal): {e}")
 
-    # ?? Compute per-symbol opinions ?????????????????????????????????????????
+    # ???? Compute per-symbol opinions ??????????????????????????????????????????????????????????????????????????????????
     from datetime import date as _date
     try:
         today_dt = _date.fromisoformat(run_date)
@@ -2515,7 +2294,7 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
             "retail": retail.to_dict(),
         }
 
-    # ?? Persist to D1 (non-fatal) ???????????????????????????????????????????
+    # ???? Persist to D1 (non-fatal) ??????????????????????????????????????????????????????????????????????????????????????
     try:
         written = write_persona_opinions(d1_client, opinions)
         logger.info(f"[Pipeline V2] persona opinions written: {written}/{len(opinions)}")
@@ -2603,27 +2382,20 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy=alpha_policy,
         fundamental_quality_by_symbol=fundamental_quality_by_symbol,
     )
-    screener_sizing = resolve_controller_screener_sizing(
-        trading_cfg,
-        state.get("adaptive_params"),
-    )
-    core_ml_target_size = _resolve_coarse_ml_gate_target(
-        len(screener_recs),
-        screener_sizing,
-        trading_cfg,
-    )
-    final = apply_core_ml_evidence(
+    final = apply_l2_timesfm_evidence(
         final,
         state["predictions"],
-        fallback_size=core_ml_target_size,
     )
     layer2_symbols = [str(row.get("symbol") or "") for row in final if row.get("symbol")]
     layer2_count = len(final)
     logger.info(
-        "[Pipeline V2] Layer2 core_ml_evidence attached to %s/%s candidates (l3_queue_target=%s)",
+        "[Pipeline V2] Layer2 TimesFM evidence attached to %s/%s candidates (no L3 queue shrink)",
         layer2_count,
         len(screener_recs),
-        core_ml_target_size,
+    )
+    screener_sizing = resolve_controller_screener_sizing(
+        trading_cfg,
+        state.get("adaptive_params"),
     )
     core_family_target_size = _resolve_core_family_evidence_target(
         layer2_count,
@@ -2754,16 +2526,11 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
     stale_predictions_deleted = prune_predictions_outside_universe(list(stock_id_map.values()), run_date)
     predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map, run_date)
-    layer2_audit_rows = write_layer2_core_gate_audit(
+    layer2_audit_rows = write_layer2_timesfm_enrichment_audit(
         predictions=state["predictions"],
         screener_recs=state.get("screener_recs") or [],
         run_date=run_date,
         screener_run_id=state.get("screener_run_id"),
-        target_size=(
-            state.get("l2_core_ml_evidence_summary")
-            or state.get("l2_core_ml_gate_summary")
-            or {}
-        ).get("target_size"),
     )
     layer3_audit_rows = write_layer3_formal_gate_audit(
         predictions=state["predictions"],
@@ -2816,7 +2583,6 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
                 ("dlinear", "DLinear"),
                 ("patchtst", "PatchTST"),
                 ("itransformer", "iTransformer"),
-                ("timesfm", "TimesFM"),
             ):
                 if isinstance(pred.get(src_key), dict):
                     model_names.add(model_name)
@@ -2827,7 +2593,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
 
     metrics = {
         "predictions_written": predictions_written,
-        "layer2_core_gate_audit_rows": layer2_audit_rows,
+        "layer2_timesfm_enrichment_audit_rows": layer2_audit_rows,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
         "prediction_symbols": len(stock_id_map),
         "prediction_output_models": prediction_output_models,
@@ -2846,15 +2612,16 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
             key: value for key, value in dispersion.items()
             if key != "symbols"
         }
-    if state.get("timesfm_l175_summary"):
-        metrics["timesfm_l175_summary"] = state.get("timesfm_l175_summary")
+    timesfm_l2_summary = state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary")
+    if timesfm_l2_summary:
+        metrics["timesfm_l2_summary"] = timesfm_l2_summary
     logger.info(f"[Pipeline V2] write_d1 done: {metrics}")
     return {"metrics": metrics}
 
 
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # Helpers
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 def _snapshot_export_start_date(run_date: str) -> str:
     """Resolve the rolling research snapshot window from the pipeline run date."""
@@ -2953,9 +2720,9 @@ def _to_dict(obj: Any) -> dict:
     return dict(obj) if obj else {}
 
 
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # Build graph
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 _graph_singleton: Any = None
 
@@ -2979,10 +2746,7 @@ def build_graph():
     g.add_node("load_market_env",   node_load_market_env)
     g.add_node("compute_sector_flow", node_compute_sector_flow)
     g.add_node("build_payloads",    node_build_payloads)
-    g.add_node("timesfm_l175_enrich", node_timesfm_l175_enrich, retry=ml_retry)
-    g.add_node("ml_predict",        node_ml_predict, retry=ml_retry)
-    g.add_node("l2_cheap_ml_predict", node_l2_cheap_ml_predict, retry=ml_retry)
-    g.add_node("l2_core_gate",      node_l2_core_gate)
+    g.add_node("l2_timesfm_enrich", node_l2_timesfm_enrich, retry=ml_retry)
     g.add_node("l3_formal_predict", node_l3_formal_predict, retry=ml_retry)
     g.add_node("compute_personas", node_compute_personas)
     g.add_node("recommend",         node_recommend)
@@ -2996,15 +2760,9 @@ def build_graph():
     g.set_entry_point("load_inputs")
     g.add_edge("load_inputs",         "load_market_env")
     g.add_edge("load_market_env",     "build_payloads")
-    if _l2_l3_split_enabled():
-        g.add_edge("build_payloads",      "timesfm_l175_enrich")
-        g.add_edge("timesfm_l175_enrich", "l2_cheap_ml_predict")
-        g.add_edge("l2_cheap_ml_predict", "l2_core_gate")
-        g.add_edge("l2_core_gate",        "l3_formal_predict")
-        g.add_edge("l3_formal_predict",   "compute_personas")
-    else:
-        g.add_edge("build_payloads",      "ml_predict")
-        g.add_edge("ml_predict",          "compute_personas")
+    g.add_edge("build_payloads",      "l2_timesfm_enrich")
+    g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")
+    g.add_edge("l3_formal_predict",   "compute_personas")
     g.add_edge("compute_personas",    "recommend")
     g.add_edge("recommend",           "gen_llm_reasons")
     g.add_edge("gen_llm_reasons",     "write_d1")
@@ -3031,9 +2789,9 @@ def get_graph():
     return _graph_singleton
 
 
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # Public runner
-# ?????????????????????????????????????????????????????????????????????????????
+# ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict:
     """

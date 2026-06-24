@@ -48,7 +48,6 @@ const ACTIVE_MODELS = [
   'DLinear',
   'PatchTST',
   'iTransformer',
-  'TimesFM',
 ] as const
 
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number {

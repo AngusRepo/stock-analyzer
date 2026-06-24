@@ -202,11 +202,12 @@ void (async () => {
 
 {
   const rows = EXPECTED_V2_MODELS
-    .filter((model) => model !== 'TimesFM')
+    .filter((model) => model !== 'iTransformer')
     .map((model) => ({ model_name: model, count: 20, stocks: 20 }))
   const check = buildPredictionCoverageCheck(rows)
   assert(check.status === 'fail', 'missing one of the V2 production models should fail prediction coverage')
-  assert((check.metrics?.missing_models as string[]).includes('TimesFM'), 'missing model should be reported')
+  assert((check.metrics?.missing_models as string[]).includes('iTransformer'), 'missing model should be reported')
+  assert(!(check.metrics?.missing_models as string[]).includes('TimesFM'), 'TimesFM sidecar should not be required direct prediction coverage')
 }
 
 {

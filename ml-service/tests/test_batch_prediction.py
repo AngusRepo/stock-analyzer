@@ -8,7 +8,7 @@ import pytest
 
 from app import batch_prediction
 
-_ACTIVE_MODEL_NAMES = (
+_ACTIVE_ALPHA_MODEL_NAMES = (
     "LightGBM",
     "XGBoost",
     "ExtraTrees",
@@ -17,7 +17,6 @@ _ACTIVE_MODEL_NAMES = (
     "DLinear",
     "PatchTST",
     "iTransformer",
-    "TimesFM",
 )
 
 
@@ -35,7 +34,16 @@ def _full_model_pool(
                 "version": "v1",
                 "gcs_path": f"universal/{name.lower()}/v1",
             }
-            for name in _ACTIVE_MODEL_NAMES
+            for name in _ACTIVE_ALPHA_MODEL_NAMES
+        },
+        "l2_feature_sidecars": {
+            "TimesFM": {
+                "status": statuses.get("TimesFM", "active"),
+                "version": "v1",
+                "gcs_path": "universal/timesfm/v1.json",
+                "role": "l2_feature_sidecar",
+                "direct_prediction": False,
+            }
         },
         "shadow_models": shadow_models or {},
         "formal_layer3_slots": formal_layer3_slots or {},
@@ -49,7 +57,7 @@ def test_batch_model_pool_loader_requires_governance_source(monkeypatch):
         batch_prediction._load_model_pool()
 
 
-def test_batch_model_pool_loader_requires_all_active9_entries(monkeypatch):
+def test_batch_model_pool_loader_requires_all_active8_entries(monkeypatch):
     monkeypatch.setattr("app.model_pool.load_pool", lambda: {"models": {"XGBoost": {"status": "active"}}})
 
     with pytest.raises(batch_prediction.ModelPoolUnavailable, match="missing model_pool.models entries"):
@@ -247,79 +255,8 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     assert overrides[1][_BATCH_FEATURE_RANK_SCORES_KEY]["XGBoost"] == pytest.approx(0.75)
 
 
-def test_l2_tree_batch_predict_uses_only_tree_models(monkeypatch):
-    loaded_models: list[str] = []
-
-    class FakeModel:
-        def predict(self, x_batch):
-            return np.full((len(x_batch),), 0.72, dtype=np.float32)
-
-    def fake_load_artifact(model_name, explicit_path=None):
-        loaded_models.append(model_name)
-        if model_name in {"LightGBM", "XGBoost", "ExtraTrees"}:
-            return FakeModel(), {"feature_names": [], "feature_medians": {}}
-        raise AssertionError(f"unexpected L2 model load: {model_name}")
-
-    monkeypatch.setattr(
-        batch_prediction,
-        "_load_model_pool",
-        lambda: _full_model_pool({"LightGBM": "active", "XGBoost": "active", "ExtraTrees": "active"}),
-    )
-    monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
-
-    batch = batch_prediction.predict_l2_tree_batch([
-        _predict_payload("2330", 2330, 100.0),
-        _predict_payload("2317", 2317, 80.0),
-    ])
-
-    assert loaded_models == ["LightGBM", "XGBoost", "ExtraTrees"]
-    assert batch["metrics"]["contract"] == "l2_tree_predict_v1"
-    assert batch["n_success"] == 2
-    assert batch["results"][0]["source"] == "l2_tree_predict"
-    assert batch["results"][0]["prediction_stage"] == "L2"
-    assert batch["results"][0]["feature_version"] == "l2_tree_predict_v1"
-    assert set(batch["results"][0]["rank_scores"]) == {"LightGBM", "XGBoost", "ExtraTrees"}
-
-
-def test_l2_tree_batch_predict_can_consume_released_timesfm_l175_features(monkeypatch):
-    from app.features import TIMESFM_L175_FEATURE_COLS
-
-    class FakeModel:
-        observed_widths: list[int] = []
-
-        def predict(self, x_batch):
-            self.observed_widths.append(x_batch.shape[1])
-            return np.full((len(x_batch),), 0.72, dtype=np.float32)
-
-    fake_model = FakeModel()
-
-    def fake_load_artifact(model_name, explicit_path=None):
-        if model_name in {"LightGBM", "XGBoost", "ExtraTrees"}:
-            return fake_model, {"feature_names": [], "feature_medians": {}}
-        raise AssertionError(f"unexpected L2 model load: {model_name}")
-
-    monkeypatch.setattr(
-        batch_prediction,
-        "_load_model_pool",
-        lambda: _full_model_pool({"LightGBM": "active", "XGBoost": "active", "ExtraTrees": "active"}),
-    )
-    monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
-
-    payload = _predict_payload("2330", 2330, 100.0)
-    payload.setdefault("stock_meta", {})
-    payload["stock_meta"]["timesfm_l175_l2_feature_input_active"] = True
-    payload["stock_meta"]["timesfm_l175_features"] = {
-        name.replace("timesfm_l175_", ""): 0.01
-        for name in TIMESFM_L175_FEATURE_COLS
-    }
-
-    batch = batch_prediction.predict_l2_tree_batch([payload])
-
-    assert batch["n_success"] == 1
-    assert batch["results"][0]["timesfm_l175_feature_input_active"] is True
-    assert batch["results"][0]["feature_schema"] == "formal137+timesfm_l175"
-    assert batch["results"][0]["feature_count"] == 137 + len(TIMESFM_L175_FEATURE_COLS)
-    assert fake_model.observed_widths == [137 + len(TIMESFM_L175_FEATURE_COLS)] * 3
+def test_l2_tree_batch_predict_api_removed():
+    assert not hasattr(batch_prediction, "predict_l2_tree_batch")
 
 
 def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):

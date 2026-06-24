@@ -4,7 +4,8 @@ FastAPI ML service entrypoint.
 Current ensemble groups:
   - Tree alpha models: LightGBM / XGBoost / ExtraTrees
   - Tabular neural / graph targets: TabM / GNN
-  - Time-series alpha models: DLinear / PatchTST / iTransformer / TimesFM
+  - Time-series alpha models: DLinear / PatchTST / iTransformer
+  - L2 feature sidecar: TimesFM
   - State-space overlays: KalmanFilter / MarkovSwitching
 """
 import os
@@ -380,7 +381,6 @@ _MODEL_NAMES_V2 = [
     "DLinear",
     "PatchTST",
     "iTransformer",
-    "TimesFM",
 ]
 
 
@@ -400,25 +400,6 @@ async def predict_v2_endpoint(req: PredictRequest, request: Request):
     """HTTP wrapper for 2.0 predict."""
     await verify_service_token(request)
     return predict_stock_v2(req)
-
-
-@app.post("/predict/l2-tree")
-async def predict_l2_tree_endpoint(req: PredictRequest, request: Request):
-    """HTTP wrapper for the cheap L2 tree-only coarse gate."""
-    await verify_service_token(request)
-    from .batch_prediction import predict_l2_tree_batch
-
-    if hasattr(req, "model_dump"):
-        payload = req.model_dump()
-    else:
-        payload = req.dict()
-    batch = predict_l2_tree_batch([payload])
-    results = batch.get("results") or []
-    return results[0] if results else {
-        "stock_id": payload.get("stock_id", 0),
-        "symbol": payload.get("symbol", "?"),
-        "error": "l2_tree_empty_result",
-    }
 
 
 def retrain_stock(req: PredictRequest) -> dict:

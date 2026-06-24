@@ -135,7 +135,7 @@ def test_legacy_challenger_suppression_stays_outside_registry_candidates():
         "DLinear": {
             "status": "disabled",
             "version": "v20260614010101",
-            "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+            "reason": "legacy_model_pool_challenger_disabled_for_active8_artifact_registry_flow",
         }
     }
     assert build_suppressed_legacy_challenger_registrations(

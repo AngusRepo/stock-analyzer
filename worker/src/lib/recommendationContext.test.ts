@@ -129,7 +129,7 @@ const forecastData = {
   },
   timesfm_sidecar: {
     schema_version: 'timesfm-l1-75-sidecar-v1',
-    layer: 'L1.75',
+    layer: 'L2',
     role: 'feature_sidecar',
     direct_alpha_blocked: true,
     eligible_for_l2_feature_enrichment: false,
@@ -175,7 +175,7 @@ const forecastData = {
   assert(diagnostics?.dispersion.mergeCompression === 0.62, 'rank compression should be visible to UI')
   assert(diagnostics?.zeroWeightModels?.[0] === 'DLinear', 'zero weight root-cause list should be visible to UI')
   assert(diagnostics?.validationBlockedModels?.[0] === 'DLinear', 'CPCV/PBO blocked models should be visible to UI')
-  assert(diagnostics?.timesfmSidecar?.layer === 'L1.75', 'TimesFM should remain visible only as an L1.75 sidecar diagnostic')
+  assert(diagnostics?.timesfmSidecar?.layer === 'L2', 'TimesFM should remain visible only as an L2 sidecar diagnostic')
   assert(diagnostics?.timesfmSidecar?.directAlphaBlocked === true, 'TimesFM sidecar must expose direct-alpha blocked status')
   assert(diagnostics?.timesfmSidecar?.eligibleForL2FeatureEnrichment === false, 'TimesFM must not claim L2 enrichment eligibility before formal137/retrain/release')
   assert(diagnostics?.timesfmSidecar?.l2FeatureInputActive === false, 'TimesFM must not claim active L2 feature input before formal137/retrain/release')

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_active_9_runtime_dependencies_are_tightly_pinned_to_reviewed_versions():
+def test_active8_and_timesfm_sidecar_runtime_dependencies_are_tightly_pinned_to_reviewed_versions():
     requirements = (
         Path(__file__)
         .resolve()

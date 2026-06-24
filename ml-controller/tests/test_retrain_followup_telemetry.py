@@ -201,6 +201,23 @@ def test_retrain_followup_reconciles_champion_pointer_after_artifact_lifecycle_c
 def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
     written: list[dict] = []
 
+    def fake_attach_timesfm_l2_evidence(payload: dict) -> dict:
+        stages = payload.setdefault("stages", {})
+        lifecycle_results = stages.get("artifact_lifecycle", {}).get("results", {})
+        legacy = lifecycle_results.pop("TimesFM")
+        l2_results = stages.setdefault("timesfm_l2_feature_release", {}).setdefault("results", {})
+        l2_results["TimesFM"] = {
+            **legacy,
+            "candidate_type": "timesfm_l175_l2_feature_release",
+            "release_stage": "timesfm_l2_feature_release",
+            "direct_alpha_blocked": True,
+            "oos_ic": 0.088,
+            "metrics": {"oos_ic": 0.088, "oos_samples": 80},
+            "model_cpcv": {"decision": "PASS", "failed_gates": []},
+            "foundation_forecast_validation": {"decision": "PASS", "oos_ic_mean": 0.088},
+        }
+        return {"attempted": True, "updated": True, "oos_ic": 0.088, "samples": 80}
+
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
     monkeypatch.setattr(followup_router.d1_client, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
@@ -208,14 +225,7 @@ def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
     monkeypatch.setattr(
         followup_router,
         "attach_timesfm_foundation_evidence_to_followup_payload",
-        lambda payload: payload["stages"]["artifact_lifecycle"]["results"]["TimesFM"].update(
-            {
-                "oos_ic": 0.088,
-                "metrics": {"oos_ic": 0.088, "oos_samples": 80},
-                "model_cpcv": {"decision": "PASS", "failed_gates": []},
-                "foundation_forecast_validation": {"decision": "PASS", "oos_ic_mean": 0.088},
-            }
-        ) or {"attempted": True, "updated": True, "oos_ic": 0.088, "samples": 80},
+        fake_attach_timesfm_l2_evidence,
     )
     monkeypatch.setattr(
         followup_router,
@@ -251,7 +261,8 @@ def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
     result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
 
     assert result["foundation_evidence"]["updated"] is True
-    assert written[0]["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:monthly_release"
+    assert written[0]["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:timesfm_l175_l2_feature_release"
+    assert written[0]["candidate_type"] == "timesfm_l175_l2_feature_release"
     assert written[0]["offline_gate_decision"] in {"PASS", "STRONG_PASS"}
 
 

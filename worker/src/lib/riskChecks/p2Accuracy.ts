@@ -3,14 +3,14 @@
  *
  * Runtime sources:
  * 1. ml:adaptive_params.recent_accuracy_30d from ml-controller.
- * 2. model_accuracy active-9 aggregate as the local authoritative table.
+ * 2. model_accuracy active-8 direct-alpha aggregate as the local authoritative table.
  *
  * No predictions-table fallback: if both sources are unavailable, fail closed.
  */
 import type { TradingConfig } from '../tradingConfig'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 
-const ACTIVE_9_MODELS = [
+const ACTIVE_8_MODELS = [
   'LightGBM',
   'XGBoost',
   'ExtraTrees',
@@ -19,11 +19,10 @@ const ACTIVE_9_MODELS = [
   'DLinear',
   'PatchTST',
   'iTransformer',
-  'TimesFM',
 ]
 
-async function readActive9ModelAccuracy30d(db: D1Database): Promise<{ accuracy: number; samples: number } | null> {
-  const placeholders = ACTIVE_9_MODELS.map(() => '?').join(', ')
+async function readActive8ModelAccuracy30d(db: D1Database): Promise<{ accuracy: number; samples: number } | null> {
+  const placeholders = ACTIVE_8_MODELS.map(() => '?').join(', ')
   const row = await db.prepare(`
     SELECT CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS accuracy,
            SUM(total_count) AS samples
@@ -31,7 +30,7 @@ async function readActive9ModelAccuracy30d(db: D1Database): Promise<{ accuracy: 
      WHERE period='30d'
        AND total_count >= 3
        AND model_name IN (${placeholders})
-  `).bind(...ACTIVE_9_MODELS).first<{ accuracy: number | null; samples: number | null }>()
+  `).bind(...ACTIVE_8_MODELS).first<{ accuracy: number | null; samples: number | null }>()
   const accuracy = Number(row?.accuracy)
   const samples = Number(row?.samples)
   if (!Number.isFinite(accuracy) || !Number.isFinite(samples) || samples <= 0) return null
@@ -65,10 +64,10 @@ export async function checkP2Accuracy(
 
   if (recentAcc == null) {
     try {
-      const observed = await readActive9ModelAccuracy30d(db)
+      const observed = await readActive8ModelAccuracy30d(db)
       if (observed) {
         recentAcc = observed.accuracy
-        evidenceSource = `model_accuracy.active9.samples_${observed.samples}`
+        evidenceSource = `model_accuracy.active8.samples_${observed.samples}`
       }
     } catch (error: any) {
       evidenceErrors.push(`model_accuracy:${error?.message ?? error}`)

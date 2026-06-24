@@ -1,5 +1,5 @@
 """
-routers/retrain_trigger.py — POST /retrain/trigger
+routers/retrain_trigger.py ??POST /retrain/trigger
 
 Sprint 6b: Self-contained retrain trigger.
 Uses payload_builder to pull D1 data and build payloads,
@@ -34,7 +34,7 @@ from services.payload_builder import (
     _bulk_load_sentiment,
     PredictPayload,
 )
-from services.active9_dataset_policy import long_history_sequence_enabled, long_history_sequence_prefix
+from services.active_model_policy import long_history_sequence_enabled, long_history_sequence_prefix
 from services.training_calendar import monthly_revenue_available_date
 from services.training_policy import TrainingPolicy
 from services.modal_client import batch_retrain, prep_universal_batch, train_universal, shap_audit
@@ -42,11 +42,11 @@ from services.modal_client import batch_retrain, prep_universal_batch, train_uni
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/retrain", tags=["retrain"])
 
-# ── Idempotency lock (P0-4 + persistent GCS layer) ──────────────────────────
+# ?? Idempotency lock (P0-4 + persistent GCS layer) ??????????????????????????
 # Protects against duplicate cron triggers (e.g. 13:37 + 13:47) AND against
 # cross-instance races that the old in-memory dict missed. See
 # services.retrain_lock for design (GCS CAS via if_generation_match).
-_LOCK_TTL_SECONDS = 600  # 10 分鐘
+_LOCK_TTL_SECONDS = 600  # 10 ??
 _UNIVERSAL_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_RETRAIN_LOCK_TTL_SECONDS", str(12 * 3600)))
 _UNIVERSAL_PREP_CONCURRENCY_DEFAULT = 3
 _UNIVERSAL_PREP_CONCURRENCY_MAX = 5
@@ -534,18 +534,18 @@ def _upsert_retrain_status(
 @router.post("/trigger")
 async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTriggerRequest())):
     """
-    Sprint 6b retrain trigger — builds payloads from D1, calls Modal.
+    Sprint 6b retrain trigger ??builds payloads from D1, calls Modal.
 
     1. Load all active stocks from D1
     2. Build market_env (shared)
     3. Bulk load prices/indicators/chips/sentiment per stock
-    4. Call Modal retrain_single_stock × N stocks
+    4. Call Modal retrain_single_stock ? N stocks
     """
     t0 = time.time()
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
     run_date = req.run_date or tw_now.date().isoformat()
 
-    # ── 1. Active stocks ────────────────────────────────────────────────────
+    # ?? 1. Active stocks ????????????????????????????????????????????????????
     stock_rows = d1_client.query(
         "SELECT id, symbol, market FROM stocks "
         "WHERE market IN ('TW','TWO','TWSE','OTC') AND in_current_watchlist=1 "
@@ -561,16 +561,16 @@ async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTrigg
 
     logger.info(f"[retrain/trigger] {len(stock_rows)} active stocks, run_date={run_date}")
 
-    # ── 2. Shared market env ────────────────────────────────────────────────
+    # ?? 2. Shared market env ????????????????????????????????????????????????
     market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
 
-    # ── 3. Bulk load per-stock data ─────────────────────────────────────────
+    # ?? 3. Bulk load per-stock data ?????????????????????????????????????????
     prices_map = _bulk_load_prices(stock_ids, limit=500)
     indicators_map = _bulk_load_indicators(stock_ids, limit=500)
     chips_map = _bulk_load_chips(symbols, limit=300)
     sentiment_map = _bulk_load_sentiment(stock_ids, limit=90)
 
-    # ── 4. Build payloads ───────────────────────────────────────────────────
+    # ?? 4. Build payloads ???????????????????????????????????????????????????
     payloads = []
     skipped = []
     for row in stock_rows:
@@ -600,7 +600,7 @@ async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTrigg
         f"Starting Modal retrain..."
     )
 
-    # ── 5. Call Modal batch retrain ─────────────────────────────────────────
+    # ?? 5. Call Modal batch retrain ?????????????????????????????????????????
     results = await batch_retrain(payloads)
 
     elapsed = round(time.time() - t0, 2)
@@ -619,9 +619,9 @@ async def trigger_retrain(req: RetrainTriggerRequest = Body(default=RetrainTrigg
     }
 
 
-# ── Universal Model Retrain ─────────────────────────────────────────────────
+# ?? Universal Model Retrain ?????????????????????????????????????????????????
 
-# Sector → int encoding (must match ml-service/app/features/__init__.py)
+# Sector ??int encoding (must match ml-service/app/features/__init__.py)
 _SECTOR_ENCODING: dict[str, int] = {}  # populated lazily from D1
 
 
@@ -639,7 +639,7 @@ def _build_sector_encoding() -> dict[str, int]:
 
 
 def _estimate_cap_bucket(prices: list[dict]) -> int:
-    """Estimate market_cap_bucket from avg close × avg volume (proxy).
+    """Estimate market_cap_bucket from avg close ? avg volume (proxy).
     0=micro, 1=small, 2=mid, 3=large, 4=mega
     """
     if not prices:
@@ -683,9 +683,9 @@ async def trigger_universal_retrain(
     request: Request = None,
 ):
     """
-    全市場 universal model retrain trigger.
+    ?典???universal model retrain trigger.
 
-    1. Load ALL stocks from D1 (no in_current_watchlist filter — universal covers all)
+    1. Load ALL stocks from D1 (no in_current_watchlist filter ??universal covers all)
     2. Bulk load prices/indicators/chips/sentiment
     3. Add stock_meta (sector_encoded, market_cap_bucket, avg_volume_bucket)
     4. Send pooled payload to Modal retrain_universal_model
@@ -694,7 +694,7 @@ async def trigger_universal_retrain(
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
     run_id = f"universal-{tw_now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
-    # ── Idempotency check (P0-4, persistent via GCS) ─────────────────────────
+    # ?? Idempotency check (P0-4, persistent via GCS) ?????????????????????????
     run_date = req.run_date or tw_now.date().isoformat()
     lock_key = f"retrain:{run_date}"
     lock_result = retrain_lock.acquire(
@@ -710,7 +710,7 @@ async def trigger_universal_retrain(
     )
     if not lock_result.acquired:
         logger.info(
-            f"[retrain/universal] {lock_result.reason} — skip duplicate trigger "
+            f"[retrain/universal] {lock_result.reason} ??skip duplicate trigger "
             f"(backend={lock_result.backend})"
         )
         return {
@@ -739,7 +739,7 @@ async def trigger_universal_retrain(
         downstream_notes="lock_acquired",
     )
 
-    # ── 1. All stocks (universal covers inactive too for training diversity) ──
+    # ?? 1. All stocks (universal covers inactive too for training diversity) ??
     stock_rows = d1_client.query(
         "SELECT id, symbol, market FROM stocks "
         "WHERE market IN ('TW','TWO','TWSE','OTC') "
@@ -768,7 +768,7 @@ async def trigger_universal_retrain(
 
     logger.info(f"[retrain/universal] {len(stock_rows)} stocks, run_date={run_date}")
 
-    # ── 2. Shared market env ────────────────────────────────────────────────
+    # ?? 2. Shared market env ????????????????????????????????????????????????
     market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
 
     # 2a. B-lite regime-conditional training window.
@@ -798,7 +798,7 @@ async def trigger_universal_retrain(
     active_features = None
     logger.info("[retrain/universal] prep writes full canonical features; train-side feature policy filters active models")
 
-    # ── 3. Bulk load per-stock data (chunked — CF D1 REST API binding limit ~100) ──
+    # ?? 3. Bulk load per-stock data (chunked ??CF D1 REST API binding limit ~100) ??
     D1_CHUNK = 80
     prices_map: dict = {}
     indicators_map: dict = {}
@@ -845,9 +845,9 @@ async def trigger_universal_retrain(
         f"prices={len(prices_map)} indicators={len(indicators_map)} chips={len(chips_map)}"
     )
 
-    # ── 3b. Bulk load per-stock time-series for Wave 3 features ────────────
+    # ?? 3b. Bulk load per-stock time-series for Wave 3 features ????????????
     # revenue_yoy (monthly, per stock) + margin_data (daily, per stock)
-    # monthly_revenue: all stocks × all months
+    # monthly_revenue: all stocks ? all months
     rev_rows = []
     if "monthly_revenue" not in snapshot_components:
         rev_rows = d1_client.query(
@@ -865,7 +865,7 @@ async def trigger_universal_retrain(
                 per_stock_ts_map[sid][date_key] = {}
             per_stock_ts_map[sid][date_key]["revenue_yoy"] = r.get("revenue_yoy", 0)
 
-    # margin_data: all stocks × all dates (margin_balance, short_ratio)
+    # margin_data: all stocks ? all dates (margin_balance, short_ratio)
     for ci in range(0, len(stock_ids), D1_CHUNK):
         chunk_ids = stock_ids[ci:ci + D1_CHUNK]
         placeholders = ",".join("?" * len(chunk_ids))
@@ -913,7 +913,7 @@ async def trigger_universal_retrain(
         f"{len(rev_rows or [])} revenue rows, margin+shareholding chunked"
     )
 
-    # ── 4. Sector encoding ──────────────────────────────────────────────────
+    # ?? 4. Sector encoding ??????????????????????????????????????????????????
     timesfm_l175_feature_release_requested = _timesfm_l175_feature_release_requested(req)
     timesfm_l175_history_by_stock_id: dict[int, dict[str, dict[str, float]]] = {}
     timesfm_l175_history_summary: dict[str, int | str | bool] = {
@@ -927,7 +927,7 @@ async def trigger_universal_retrain(
         )
         timesfm_l175_history_summary.update(loaded_summary)
         logger.info(
-            "[retrain/universal] TimesFM L1.75 feature-release history loaded: "
+            "[retrain/universal] TimesFM L2 feature-release history loaded: "
             f"stocks={loaded_summary.get('stocks_with_history')} rows={loaded_summary.get('rows_loaded')} "
             f"window={loaded_summary.get('start_date')}..{loaded_summary.get('end_date')}"
         )
@@ -941,7 +941,7 @@ async def trigger_universal_retrain(
     for r in tag_rows:
         sym_to_sector[r["symbol"]] = r["tag"]
 
-    # ── 5. Build pooled payloads ────────────────────────────────────────────
+    # ?? 5. Build pooled payloads ????????????????????????????????????????????
     per_stock_payloads = []
     skipped = []
     for row in stock_rows:
@@ -994,9 +994,9 @@ async def trigger_universal_retrain(
         )
         return {"error": f"Usable stocks < 10 ({len(per_stock_payloads)})", "skipped": skipped}
 
-    # ── 5b. Cross-sectional features: sector peer returns ────────────────────
-    # MI-LSTM 啟發：計算同產業平均報酬，注入 stock_meta
-    sector_returns: dict[str, list[tuple[float, float]]] = {}  # tag → [(return_1d, return_5d), ...]
+    # ?? 5b. Cross-sectional features: sector peer returns ????????????????????
+    # MI-LSTM ?嚗?蝞??Ｘ平撟喳??梢嚗釣??stock_meta
+    sector_returns: dict[str, list[tuple[float, float]]] = {}  # tag ??[(return_1d, return_5d), ...]
     for p in per_stock_payloads:
         px = p["prices"]
         if len(px) < 6:
@@ -1010,17 +1010,17 @@ async def trigger_universal_retrain(
         tag = sym_to_sector.get(sym, "")
         if tag:
             sector_returns.setdefault(tag, []).append((r1d, r5d))
-        # 暫存個股報酬供 stock_vs_sector 計算
+        # ?怠???梢靘?stock_vs_sector 閮?
         p["_r5d"] = r5d
 
-    # 算 sector 平均
+    # 蝞?sector 撟喳?
     sector_avg: dict[str, tuple[float, float]] = {}
     for tag, returns in sector_returns.items():
         avg_1d = sum(r[0] for r in returns) / len(returns)
         avg_5d = sum(r[1] for r in returns) / len(returns)
         sector_avg[tag] = (avg_1d, avg_5d)
 
-    # 注入 stock_meta
+    # 瘜典 stock_meta
     for p in per_stock_payloads:
         tag = sym_to_sector.get(p["symbol"], "")
         avg = sector_avg.get(tag, (0.0, 0.0))
@@ -1033,17 +1033,17 @@ async def trigger_universal_retrain(
         f"{len(skipped)} skipped, {len(sector_avg)} sectors. Starting batch prep..."
     )
 
-    # ── 6. Batch prep — 分批送 Modal prep_universal_batch ────────────────────
+    # ?? 6. Batch prep ?????Modal prep_universal_batch ????????????????????
     BATCH_SIZE = 500
     batches = [
         per_stock_payloads[i:i + BATCH_SIZE]
         for i in range(0, len(per_stock_payloads), BATCH_SIZE)
     ]
     batch_count = len(batches)
-    # P0-3: guard log — batch_count < 2 is unexpected for full-market retrain (should be 4-5)
+    # P0-3: guard log ??batch_count < 2 is unexpected for full-market retrain (should be 4-5)
     if batch_count < 2:
         logger.warning(
-            f"[retrain/universal] ⚠️ batch_count={batch_count} unexpectedly low "
+            f"[retrain/universal] ?? batch_count={batch_count} unexpectedly low "
             f"(payloads={len(per_stock_payloads)}, skipped={len(skipped)}, limit={req.limit}). "
             f"Verify D1 prices availability."
         )
@@ -1118,7 +1118,7 @@ async def trigger_universal_retrain(
     )
 
     if total_rows < 10000:
-        # Abort before orchestrator spawn → release lock so next retry can run.
+        # Abort before orchestrator spawn ??release lock so next retry can run.
         logger.warning(f"[retrain/universal] Aborting: total_rows={total_rows} < 10000; releasing lock")
         retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(
@@ -1142,8 +1142,8 @@ async def trigger_universal_retrain(
             "lock_key": lock_key,
         }
 
-    # ── 7. Flow B: Modal orchestrator (selection → train → SHAP) ──────────────
-    # Cloud Run 觸發一次 Modal retrain_orchestrator，後面全在 Modal 內完成
+    # ?? 7. Flow B: Modal orchestrator (selection ??train ??SHAP) ??????????????
+    # Cloud Run 閫貊銝甈?Modal retrain_orchestrator嚗??Ｗ??Modal ?批???
     from services.modal_client import retrain_orchestrator
     followup_webhook_url = _build_followup_webhook_url(request)
     sequence_required = (
@@ -1190,10 +1190,10 @@ async def trigger_universal_retrain(
                 "run_date": run_date,
                 **sequence_contract,
             },
-            fire_and_forget=True,  # Cloud Run 不等 Modal 完成，避免 3600s timeout
+            fire_and_forget=True,  # Cloud Run 銝? Modal 摰?嚗??3600s timeout
         )
     except Exception as orch_err:
-        # Orchestrator dispatch failed — release lock so the next cron retry
+        # Orchestrator dispatch failed ??release lock so the next cron retry
         # is not blocked by our aborted attempt (matches pre-GCS behavior).
         logger.error(f"[retrain/universal] orchestrator dispatch failed: {orch_err}; releasing lock")
         retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
@@ -1214,7 +1214,7 @@ async def trigger_universal_retrain(
         )
         raise
 
-    # ── Lock stays held until the Modal followup releases it. The long TTL is
+    # ?? Lock stays held until the Modal followup releases it. The long TTL is
     # only a safety net if the callback is lost or the orchestrator crashes.
     logger.info(f"[retrain/universal] Lock held: {lock_key} (orchestrator dispatched)")
     _upsert_retrain_status(

@@ -138,7 +138,7 @@ def normalize_universal_lifecycle_request(
     If an older caller omits output_model_version, generate a candidate version
     so the artifact can be audited/promoted by artifact_registry instead of
     bypassing lifecycle evidence. The legacy model_pool challenger slot is
-    intentionally disabled for active-9 production models.
+    intentionally disabled for Active-8 direct-alpha production models.
     """
     if not should_force_artifact_candidate_version(
         gcs_prefix=gcs_prefix,
@@ -220,7 +220,7 @@ def _register_challenger_safe(
     return {
         "status": "disabled",
         "version": version,
-        "reason": "legacy_model_pool_challenger_disabled_for_active9_artifact_registry_flow",
+        "reason": "legacy_model_pool_challenger_disabled_for_active8_artifact_registry_flow",
         "model_cpcv": model_cpcv,
         "feature_policy_version": feature_policy_version,
         "feature_policy": feature_policy,
@@ -256,7 +256,9 @@ def build_validation_split_metadata(
                 "TabM": {"additional_fit_count": 0, "cost_note": "formal L3 slot; artifact-backed serving uses registered artifacts, not this tree retrain job"},
                 "GNN": {"additional_fit_count": 0, "cost_note": "formal L3 slot; graph artifact registration owns training/serving readiness"},
                 "iTransformer": {"additional_fit_count": 0, "cost_note": "formal L3 sequence slot; artifact-backed serving is owned by sequence artifact registry"},
-                "TimesFM": {"additional_fit_count": 0, "cost_note": "formal L3 foundation slot; forecast artifact registration owns serving readiness"},
+            },
+            "l2_feature_sidecar_targets": {
+                "TimesFM": {"additional_fit_count": 0, "cost_note": "L2 feature sidecar; forecast config validation owns serving readiness, direct alpha retrain is not run"},
             },
             "sequence_models": {
                 "DLinear": {
@@ -1283,7 +1285,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     "feature_policy_type": "formal137_timesfm_l175_feature_release",
                     "feature_source": "prep.full_formal137_plus_timesfm_l175",
                     "selection_required": False,
-                    "note": "TimesFM L1.75 feature release retrains tree artifacts on full formal137 + L1.75 sidecar columns.",
+                    "note": "TimesFM L2 feature release retrains downstream artifacts on full formal137 + timesfm_l175 sidecar columns.",
                 })
                 feature_policy_meta["feature_policy"] = feature_policy
                 model_selection_evidence["feature_release_mode"] = req.feature_release_mode

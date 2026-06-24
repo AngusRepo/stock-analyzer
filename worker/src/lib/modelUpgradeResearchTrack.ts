@@ -2,6 +2,7 @@ import { assertOwnerCanOwn } from './strategyOwnerFreeze'
 
 export type ModelUpgradeStage =
   | 'production_slot_member'
+  | 'l2_feature_sidecar_member'
   | 'production_artifact_required'
   | 'shadow_challenger'
   | 'benchmark_only'
@@ -118,16 +119,16 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
   },
   {
     id: 'TimesFM',
-    stage: 'production_slot_member',
+    stage: 'l2_feature_sidecar_member',
     family: 'foundation_time_series_timesfm25',
-    role: 'L3 sequence foundation production slot backed by TimesFM 2.5 config artifact',
-    vote_weight: 1,
+    role: 'L2 TimesFM feature sidecar backed by TimesFM 2.5 config artifact',
+    vote_weight: 0,
     can_predict: true,
-    can_vote: true,
+    can_vote: false,
     can_promote_directly: false,
     requires_review_packet: true,
-    evidence_required: ['production_artifact', 'timesfm_2p5_config', 'forecast_validation', 'walk_forward', 'cost_profile', 'positive_ic'],
-    notes: 'Production slot member; serving id remains TimesFM while the active artifact/config uses TimesFM 2.5. Missing config, unavailable runtime, or non-positive lifecycle evidence yields zero contribution.',
+    evidence_required: ['production_artifact', 'timesfm_2p5_config', 'forecast_validation', 'walk_forward', 'cost_profile', 'l2_feature_release'],
+    notes: 'L2 feature sidecar member; serving id remains TimesFM while the active artifact/config uses TimesFM 2.5. Direct alpha voting is blocked; downstream value comes from released formal137+timesfm_l175 features.',
   },
   {
     id: 'GAOptimizer',

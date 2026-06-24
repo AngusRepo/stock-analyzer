@@ -11,7 +11,7 @@ from app.linucb_multiplier_replay import (
 
 def _rows(n_days: int = 12, n_symbols: int = 4) -> list[dict]:
     out: list[dict] = []
-    models = ["LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "DLinear", "PatchTST", "iTransformer", "TimesFM"]
+    models = ["LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "DLinear", "PatchTST", "iTransformer"]
     for day in range(n_days):
         date = f"2026-05-{day + 1:02d}"
         regime = "bull" if day % 2 == 0 else "volatile"
@@ -57,10 +57,10 @@ def test_bandit_protection_from_l2_uses_loss_thresholds_and_multiplier_order():
     assert high["bandit_force_explore"] is True
 
 
-def test_prepare_multiplier_replay_rows_keeps_active_9_and_context():
+def test_prepare_multiplier_replay_rows_keeps_active_8_and_context():
     prepared = prepare_multiplier_replay_rows(_rows(n_days=1, n_symbols=1))
 
-    assert len(prepared) == 9
+    assert len(prepared) == 8
     assert {row.model_name for row in prepared} == {
         "LightGBM",
         "XGBoost",
@@ -70,7 +70,6 @@ def test_prepare_multiplier_replay_rows_keeps_active_9_and_context():
         "DLinear",
         "PatchTST",
         "iTransformer",
-        "TimesFM",
     }
     assert prepared[0].context.shape == (4,)
 
@@ -92,7 +91,7 @@ def test_linucb_multiplier_replay_is_read_only_and_ranks_candidates():
     assert report["schema_version"] == "linucb-multiplier-replay-v1"
     assert report["production_effect"] is False
     assert report["mutation_allowed"] is False
-    assert report["prepared_rows"] == 12 * 4 * 9
+    assert report["prepared_rows"] == 12 * 4 * 8
     assert report["candidate_count"] == 2
     assert report["baseline"]["candidate"]["bandit_max_mult_low"] == 2.5
     assert report["ranking"][0]["decisions"] == 12 * 4
@@ -112,7 +111,6 @@ def test_linucb_multiplier_replay_is_read_only_and_ranks_candidates():
         "DLinear",
         "PatchTST",
         "iTransformer",
-        "TimesFM",
     }
 
     candidate = report["adaptive_params_candidate"]

@@ -503,7 +503,7 @@ async function writeScreenerFunnel(
   if (!input.items.length) return
   const criticalStageSet = new Set([
     'l15_ml_slate_queue',
-    'layer2_coarse_ml_gate',
+    'layer2_timesfm_enrichment',
     'strategy_pool_ml_queue',
     'l1_candidate_seed_after_overlay',
     'final_selection',
@@ -2865,9 +2865,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: index + 1,
         evidence: {
           worker_seed_only: true,
-          layer_contract: 'L1.5 router owns ML slate queue; ml-controller owns the actual L2 LightGBM/XGBoost/ExtraTrees coarse pass decision',
+          layer_contract: 'L1.5 router owns ML slate queue; ml-controller owns L2 TimesFM feature enrichment before L3 8ML',
           downstream_owner: 'ml-controller',
-          downstream_stage: 'layer2_coarse_ml_gate',
+          downstream_stage: 'layer2_timesfm_enrichment',
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
           strategy_family_ids: (candidate as any).strategy_family_ids ?? [],
           strategy_variant_ids: (candidate as any).strategy_variant_ids ?? [],
@@ -4055,10 +4055,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       scoreAfter: Number(sc.score ?? 0),
       rank: index + 1,
       evidence: {
-        layer_contract: 'L1.5 router owns ML slate queue; ml-controller runs L2 LightGBM/XGBoost/ExtraTrees coarse rank before core family ML',
+        layer_contract: 'L1.5 router owns ML slate queue; ml-controller runs L2 TimesFM feature enrichment before L3 8ML',
         worker_seed_only: true,
         downstream_owner: 'ml-controller',
-        downstream_stage: 'layer2_coarse_ml_gate',
+        downstream_stage: 'layer2_timesfm_enrichment',
         coarse_ml_queue_size_legacy: coarseQueueSize,
         coarse_ml_keep_ratio: screenerPolicy.sizing.coarseMlKeepRatio,
         core_ml_shortlist_size: maxCandidates,

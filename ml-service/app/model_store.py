@@ -267,7 +267,7 @@ def load_model(
         if meta_path:
             meta_blob = bucket.blob(meta_path)
             if meta_blob.exists():
-                metadata = json.loads(meta_blob.download_as_text())
+                metadata = json.loads(meta_blob.download_as_text().lstrip("\ufeff"))
                 if metadata.get("schema_version") == ARTIFACT_SCHEMA_VERSION:
                     try:
                         metadata["artifact_contract_report"] = validate_model_artifact_metadata(metadata)

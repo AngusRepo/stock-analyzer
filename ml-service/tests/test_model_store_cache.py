@@ -73,6 +73,30 @@ def test_universal_explicit_model_load_is_cached_within_container(monkeypatch):
     assert model_store.get_model_cache_stats()["gcs_downloads"] == 1
 
 
+def test_universal_explicit_model_load_accepts_utf8_bom_metadata(monkeypatch):
+    buf = io.BytesIO()
+    joblib.dump({"model": "xgb"}, buf)
+    model_blob = _FakeBlob(buf.getvalue())
+    meta_blob = _FakeBlob("\ufeff" + json.dumps({"feature_names": ["a"], "n_samples": 10}))
+    bucket = _FakeBucket(
+        {
+            "universal/xgboost/v1.joblib": model_blob,
+            "universal/xgboost/metadata_v1.json": meta_blob,
+        }
+    )
+    monkeypatch.setattr(model_store, "_bucket", bucket)
+    model_store.clear_model_cache()
+
+    model, metadata = model_store.load_model(
+        0,
+        "XGBoost",
+        explicit_path="universal/xgboost/v1.joblib",
+    )
+
+    assert model == {"model": "xgb"}
+    assert metadata["feature_names"] == ["a"]
+
+
 def test_clear_model_cache_invalidates_cached_model(monkeypatch):
     first_buf = io.BytesIO()
     second_buf = io.BytesIO()

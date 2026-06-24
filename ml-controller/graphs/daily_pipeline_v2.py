@@ -402,6 +402,18 @@ def _breeze2_reason_shadow_provider() -> str:
     return provider if provider in {"context", "modal_generation"} else "context"
 
 
+def _float_env(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _breeze2_reason_generation_timeout_seconds() -> float:
+    return _float_env("BREEZE2_REASON_GENERATION_TIMEOUT_SECONDS", 75.0, minimum=5.0, maximum=180.0)
+
+
 def _l2_l3_split_enabled() -> bool:
     raw = os.environ.get("PIPELINE_L2_L3_SPLIT_ENABLED", "1")
     return str(raw).strip().lower() not in {"0", "false", "off", "disabled", "no"}
@@ -2690,10 +2702,20 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
             provider = _breeze2_reason_shadow_provider()
             if provider == "modal_generation":
                 try:
-                    breeze2_shadow = await build_breeze2_generation_shadow_for_canonical_payloads(
-                        canonical_candidate_payloads,
-                        run_date=state.get("run_date"),
+                    timeout_s = _breeze2_reason_generation_timeout_seconds()
+                    breeze2_shadow = await asyncio.wait_for(
+                        build_breeze2_generation_shadow_for_canonical_payloads(
+                            canonical_candidate_payloads,
+                            run_date=state.get("run_date"),
+                        ),
+                        timeout=timeout_s,
                     )
+                except TimeoutError:
+                    logger.warning(
+                        "[Pipeline V2] Breeze2 modal generation timed out after %.1fs; fallback to context shadow",
+                        _breeze2_reason_generation_timeout_seconds(),
+                    )
+                    breeze2_shadow = build_breeze2_reason_shadow_for_canonical_payloads(canonical_candidate_payloads)
                 except Exception as shadow_error:  # noqa: BLE001 - shadow provider must not block D1 writes.
                     logger.warning("[Pipeline V2] Breeze2 modal generation failed; fallback to context shadow: %s", shadow_error)
                     breeze2_shadow = build_breeze2_reason_shadow_for_canonical_payloads(canonical_candidate_payloads)

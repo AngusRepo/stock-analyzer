@@ -65,6 +65,11 @@ assert(
   'historical evening-chain replay must skip duplicate FinLab backfill when target-date canonical data is already ready',
 )
 assert(
+  updateOrchestrator.includes('historical replay supplemental already ready') &&
+    updateOrchestrator.indexOf('historical replay supplemental already ready') < updateOrchestrator.indexOf('bulkFetchAndStorePrices'),
+  'historical evening-chain replay must not refetch TWSE/TPEX supplemental data when target-date supplemental rows are already ready',
+)
+assert(
   updateOrchestrator.includes('runQueueUpdate(env, twDate, force)'),
   'force rerun must bypass the queue-update lock, not only the bulk-fetch lock',
 )
@@ -90,6 +95,13 @@ assert(
 )
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
+const marketDataReadiness = fs.readFileSync('src/lib/marketDataReadiness.ts', 'utf8')
+assert(
+  marketDataReadiness.includes('targetAwareTableStats') &&
+    marketDataReadiness.includes("targetAwareTableStats(db, 'stock_prices', targetDate)") &&
+    marketDataReadiness.includes('if (targetRows > 0) return { latestDate: targetDate'),
+  'market-data readiness must evaluate target-date rows for historical replay instead of only MAX(date)',
+)
 assert(
   mlPipelineTrigger.includes('assertEveningPipelineReady'),
   'pipeline trigger must require evening-chain readiness before calling ml-controller',

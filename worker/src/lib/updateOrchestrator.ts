@@ -213,6 +213,16 @@ async function loadPriceMetadataForBatch(
 export async function runBulkFetch(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   const lockKey = `cron:bulk-fetch:${twDate}`
+  if (isHistoricalReplayDate(twDate)) {
+    try {
+      const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+      await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+      return `TWSE/TPEX supplemental fetch skipped for historical replay; historical replay supplemental already ready; ${ready.summary}; source_role=supplemental_after_finlab_canonical`
+    } catch {
+      // Historical replay only falls through to source fetch when target-date
+      // supplemental rows are genuinely missing or below the production floor.
+    }
+  }
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] TWSE/TPEX supplemental fetch already done today (${twDate}), skipping.`)
     const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })

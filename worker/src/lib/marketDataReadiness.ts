@@ -96,6 +96,19 @@ async function latestTableStats(db: D1Database, table: string): Promise<{ latest
   return { latestDate, rowsOnLatest: normalizeRows(row?.count) }
 }
 
+async function targetAwareTableStats(
+  db: D1Database,
+  table: string,
+  targetDate: string,
+): Promise<{ latestDate: string | null; rowsOnLatest: number }> {
+  const target = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE date = ?`)
+    .bind(targetDate)
+    .first<{ count: number }>()
+  const targetRows = normalizeRows(target?.count)
+  if (targetRows > 0) return { latestDate: targetDate, rowsOnLatest: targetRows }
+  return latestTableStats(db, table)
+}
+
 async function latestPriceSegmentStats(
   db: D1Database,
   latestDate: string | null,
@@ -120,9 +133,9 @@ export async function loadMarketDataReadinessStats(
   targetDate: string,
 ): Promise<MarketDataReadinessStats> {
   const [price, chip, indicators] = await Promise.all([
-    latestTableStats(db, 'stock_prices'),
-    latestTableStats(db, 'chip_data'),
-    latestTableStats(db, 'technical_indicators'),
+    targetAwareTableStats(db, 'stock_prices', targetDate),
+    targetAwareTableStats(db, 'chip_data', targetDate),
+    targetAwareTableStats(db, 'technical_indicators', targetDate),
   ])
   const priceSegments = await latestPriceSegmentStats(db, price.latestDate)
   return {

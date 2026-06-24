@@ -264,10 +264,12 @@ def test_build_retrain_followup_payload_preserves_callback_schema():
                 }
             }
         },
+        candidate_type="timesfm_l175_l2_feature_release",
     )
 
     assert payload["run_id"] == "universal-1"
     assert payload["trained_at"] == "2026-05-18T01:00:00Z"
+    assert payload["candidate_type"] == "timesfm_l175_l2_feature_release"
     assert payload["status"] == "completed"
     assert payload["candidate_version"] == "v20260518020202"
     assert payload["total_samples"] == 120

@@ -340,6 +340,7 @@ def build_retrain_followup_payload(
     result: dict,
     partial_results: dict[str, dict],
     elapsed_s: float,
+    candidate_type: str | None = None,
 ) -> dict:
     """Build the controller followup payload for inline or detached finalizers."""
 
@@ -353,6 +354,7 @@ def build_retrain_followup_payload(
         "lock_key": lock_key,
         "run_date": run_date,
         "is_monthly": bool(is_monthly),
+        "candidate_type": candidate_type,
         "batch_count": int(batch_count),
         "gcs_prefix": gcs_prefix,
         "candidate_version": train_stage.get("candidate_version") or candidate_version,

@@ -411,6 +411,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
 
     from .features import (
         FEATURE_COLS,
+        TIMESFM_L175_FEATURE_COLS,
         build_feature_matrix,
         compute_cross_sectional_rank,
         sanitize_feature_frame,
@@ -491,7 +492,10 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
             pooled = pooled.drop(drop_cols)
             print(f"[PrepBatch] Feature pool filter: kept {len(keep_cols)}, dropped {len(drop_cols)}")
 
-    available = [c for c in FEATURE_COLS if c in pooled.columns]
+    candidate_feature_cols = list(FEATURE_COLS) + [
+        c for c in TIMESFM_L175_FEATURE_COLS if c not in FEATURE_COLS
+    ]
+    available = [c for c in candidate_feature_cols if c in pooled.columns]
     select_cols = available + ["target_rank", "_date"]
     if "target_5d" in pooled.columns:
         select_cols.append("target_5d")

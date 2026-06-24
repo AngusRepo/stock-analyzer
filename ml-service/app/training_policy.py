@@ -570,9 +570,22 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
     if policy is None:
         return dict(base_payload)
     payload = dict(base_payload)
+    timesfm_l175_feature_release = (
+        str(base_payload.get("candidate_type") or "").strip() == "timesfm_l175_l2_feature_release"
+        and str(group or "").strip().lower() == "tree"
+    )
     payload["models_filter"] = list(policy.models)
-    payload["skip_feature_pool"] = policy.skip_feature_pool
-    payload["feature_policy"] = policy.to_dict()
+    payload["skip_feature_pool"] = True if timesfm_l175_feature_release else policy.skip_feature_pool
+    feature_policy = policy.to_dict()
+    if timesfm_l175_feature_release:
+        feature_policy = {
+            **feature_policy,
+            "feature_policy_type": "formal137_timesfm_l175_feature_release",
+            "feature_source": "prep.full_formal137_plus_timesfm_l175",
+            "selection_required": False,
+            "note": "TimesFM L1.75 feature release retrains tree artifacts on full formal137 + L1.75 sidecar columns.",
+        }
+    payload["feature_policy"] = feature_policy
     return payload
 
 
@@ -657,6 +670,7 @@ class UniversalTrainingPolicy:
     ) -> dict[str, float | int | str | bool]:
         payload = payload or {}
         model_cpcv_policy = payload.get("model_cpcv_policy") or {"family_adapters": {}}
+        candidate_type = str(payload.get("candidate_type") or "").strip()
         selection_params = payload.get("selection_params") if isinstance(payload.get("selection_params"), dict) else {}
         label_horizon_days = _coerce_int(
             payload.get("label_horizon_days") or selection_params.get("label_horizon_days"),
@@ -670,6 +684,11 @@ class UniversalTrainingPolicy:
             "label_horizon_days": label_horizon_days,
             "tree_model_split": _coerce_bool(payload.get("tree_model_split"), True),
         }
+        if candidate_type:
+            base_payload["candidate_type"] = candidate_type
+        if candidate_type == "timesfm_l175_l2_feature_release":
+            base_payload["skip_feature_pool"] = True
+            base_payload["feature_release_mode"] = "timesfm_l175_l2_feature_release"
         for key in ("run_date", "as_of_date", "max_prep_stale_days"):
             if payload.get(key) is not None:
                 base_payload[key] = payload[key]

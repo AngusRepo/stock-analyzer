@@ -291,6 +291,31 @@ def test_universal_training_policy_keeps_current_defaults():
     }
 
 
+def test_timesfm_l175_feature_release_forces_full_tree_feature_schema():
+    policy = UniversalTrainingPolicy()
+    base = policy.to_base_train_payload(
+        {"candidate_type": "timesfm_l175_l2_feature_release"},
+        candidate_version="v-l175",
+    )
+
+    tree_payload = build_group_train_payload(base, "tree")
+
+    assert base["candidate_type"] == "timesfm_l175_l2_feature_release"
+    assert base["skip_feature_pool"] is True
+    assert tree_payload["skip_feature_pool"] is True
+    assert tree_payload["feature_policy"]["feature_policy_type"] == "formal137_timesfm_l175_feature_release"
+    assert tree_payload["feature_policy"]["feature_source"] == "prep.full_formal137_plus_timesfm_l175"
+
+
+def test_universal_prep_includes_timesfm_l175_materialized_columns():
+    source = (Path(__file__).resolve().parent.parent / "app" / "universal_training.py").read_text(encoding="utf-8")
+
+    assert "TIMESFM_L175_FEATURE_COLS" in source
+    assert "candidate_feature_cols = list(FEATURE_COLS)" in source
+    assert "for c in TIMESFM_L175_FEATURE_COLS" in source
+    assert "available = [c for c in candidate_feature_cols if c in pooled.columns]" in source
+
+
 def test_universal_lifecycle_normalization_does_not_register_legacy_challengers():
     req = UniversalTrainRequest(gcs_prefix="universal")
 

@@ -106,6 +106,12 @@ D1_RETRYABLE_MARKERS = (
     "Requests queued for too long",
     "Too Many Requests",
 )
+D1_IN_CLAUSE_CHUNK_SIZE = 80
+
+
+def _d1_bind_chunks(values: list[Any], size: int = D1_IN_CLAUSE_CHUNK_SIZE) -> list[list[Any]]:
+    clean = [value for value in values if value is not None and value != ""]
+    return [clean[i : i + size] for i in range(0, len(clean), size)]
 
 
 def _require_model_pool_status(entry: dict[str, Any], model_name: str, stage: str) -> str:
@@ -2425,12 +2431,14 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     sentiment_by_symbol: dict[str, float] = {}
     try:
         # Top concept per symbol (highest weight)
-        placeholders = ",".join("?" * len(symbols))
-        tag_rows = d1_client.query(
-            f"SELECT symbol, tag FROM stock_tags WHERE tag_type = 'concept' AND symbol IN ({placeholders}) "
-            f"ORDER BY symbol, weight DESC",
-            list(symbols),
-        )
+        tag_rows: list[dict[str, Any]] = []
+        for chunk in _d1_bind_chunks(list(symbols)):
+            placeholders = ",".join("?" * len(chunk))
+            tag_rows.extend(d1_client.query(
+                f"SELECT symbol, tag FROM stock_tags WHERE tag_type = 'concept' AND symbol IN ({placeholders}) "
+                f"ORDER BY symbol, weight DESC",
+                chunk,
+            ) or [])
         top_concept_by_symbol: dict[str, str] = {}
         for r in tag_rows or []:
             sym = r.get("symbol")
@@ -2440,12 +2448,14 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
         # Today's concept_buzz sentiment for those concepts
         concepts = list({c for c in top_concept_by_symbol.values() if c})
         if concepts:
-            cp_placeholders = ",".join("?" * len(concepts))
-            buzz_rows = d1_client.query(
-                f"SELECT concept, sentiment_avg FROM concept_buzz "
-                f"WHERE date = ? AND concept IN ({cp_placeholders})",
-                [run_date, *concepts],
-            )
+            buzz_rows: list[dict[str, Any]] = []
+            for chunk in _d1_bind_chunks(concepts):
+                cp_placeholders = ",".join("?" * len(chunk))
+                buzz_rows.extend(d1_client.query(
+                    f"SELECT concept, sentiment_avg FROM concept_buzz "
+                    f"WHERE date = ? AND concept IN ({cp_placeholders})",
+                    [run_date, *chunk],
+                ) or [])
             sent_by_concept: dict[str, float] = {}
             for r in buzz_rows or []:
                 c = r.get("concept")

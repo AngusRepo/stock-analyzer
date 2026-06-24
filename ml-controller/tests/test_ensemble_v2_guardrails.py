@@ -142,6 +142,22 @@ def test_daily_pipeline_wrapper_no_longer_contains_legacy_plain_mean_body():
     assert "weight_total > 0" not in body
 
 
+def test_daily_pipeline_persona_sentiment_uses_d1_chunked_in_clause():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "graphs" / "daily_pipeline_v2.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("async def node_compute_personas")
+    end = text.index("async def node_compute_sector_flow", start)
+    body = text[start:end]
+
+    assert "D1_IN_CLAUSE_CHUNK_SIZE = 80" in text
+    assert "for chunk in _d1_bind_chunks(list(symbols))" in body
+    assert "for chunk in _d1_bind_chunks(concepts)" in body
+    assert "symbol IN ({placeholders})" in body
+    assert "concept IN ({cp_placeholders})" in body
+
+
 def test_daily_pipeline_model_pool_lifecycle_does_not_default_missing_status_or_version_to_active():
     from pathlib import Path
 

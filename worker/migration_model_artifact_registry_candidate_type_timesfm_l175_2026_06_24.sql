@@ -1,4 +1,10 @@
-CREATE TABLE IF NOT EXISTS model_artifact_registry (
+-- Expand model_artifact_registry.candidate_type CHECK constraint.
+-- D1/SQLite cannot ALTER a CHECK constraint in place, so rebuild the table
+-- and preserve all existing rows.
+
+PRAGMA foreign_keys=off;
+
+CREATE TABLE model_artifact_registry_new (
   artifact_id                 TEXT PRIMARY KEY,
   model_name                  TEXT NOT NULL,
   version                     TEXT NOT NULL,
@@ -43,6 +49,66 @@ CREATE TABLE IF NOT EXISTS model_artifact_registry (
   UNIQUE(model_name, version, candidate_type)
 );
 
+INSERT INTO model_artifact_registry_new (
+  artifact_id,
+  model_name,
+  version,
+  candidate_type,
+  state,
+  artifact_path,
+  metadata_path,
+  training_run_id,
+  training_manifest_path,
+  trained_from_snapshot,
+  evaluation_baseline_version,
+  final_compared_to,
+  feature_policy_version,
+  checksum,
+  source_run_date,
+  is_monthly,
+  offline_gate_status,
+  offline_gate_decision,
+  offline_gate_failed_gates,
+  offline_evidence_json,
+  live_gate_status,
+  live_evidence_json,
+  promotion_decision,
+  approval_state,
+  created_at,
+  updated_at
+)
+SELECT
+  artifact_id,
+  model_name,
+  version,
+  candidate_type,
+  state,
+  artifact_path,
+  metadata_path,
+  training_run_id,
+  training_manifest_path,
+  trained_from_snapshot,
+  evaluation_baseline_version,
+  final_compared_to,
+  feature_policy_version,
+  checksum,
+  source_run_date,
+  is_monthly,
+  offline_gate_status,
+  offline_gate_decision,
+  offline_gate_failed_gates,
+  offline_evidence_json,
+  live_gate_status,
+  live_evidence_json,
+  promotion_decision,
+  approval_state,
+  created_at,
+  updated_at
+FROM model_artifact_registry;
+
+DROP TABLE model_artifact_registry;
+ALTER TABLE model_artifact_registry_new RENAME TO model_artifact_registry;
+
 CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_model_state
   ON model_artifact_registry(model_name, state, updated_at DESC);
 
@@ -52,17 +118,4 @@ CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_candidate_type
 CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_run
   ON model_artifact_registry(training_run_id, source_run_date);
 
-CREATE TABLE IF NOT EXISTS model_champion_pointers (
-  model_name                  TEXT PRIMARY KEY,
-  champion_version            TEXT NOT NULL,
-  champion_artifact_id        TEXT,
-  rollback_version            TEXT,
-  rollback_artifact_id        TEXT,
-  promoted_at                 TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  promotion_reason            TEXT,
-  promotion_evidence_json     TEXT NOT NULL DEFAULT '{}',
-  updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
-  ON model_champion_pointers(updated_at DESC);
+PRAGMA foreign_keys=on;

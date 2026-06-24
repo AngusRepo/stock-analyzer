@@ -2268,6 +2268,37 @@ def apply_promoted_artifact_to_model_pool(
                 entry[key] = challenger[key]
         entry.pop("challenger", None)
 
+    metadata = _nested_dict(artifact.get("metadata"))
+    offline_evidence = _json_loads(artifact.get("offline_evidence_json"))
+    registration = _nested_dict(offline_evidence.get("registration"))
+    gate = _nested_dict(offline_evidence.get("gate"))
+    artifact_evidence = {
+        "schema_version": "model-pool-artifact-evidence-v1",
+        "source": "model_artifact_registry",
+        "artifact_id": artifact.get("artifact_id"),
+        "candidate_type": artifact.get("candidate_type"),
+        "version": candidate_version,
+        "artifact_path": candidate_path,
+        "metadata_path": artifact.get("metadata_path"),
+        "feature_count": metadata.get("feature_count") or registration.get("feature_count"),
+        "sample_count": metadata.get("sample_count") or registration.get("sample_count"),
+        "trained_at": metadata.get("trained_at"),
+        "training_manifest_path": metadata.get("training_manifest_path") or artifact.get("training_manifest_path"),
+        "artifact_checksum": metadata.get("artifact_checksum") or artifact.get("checksum"),
+        "offline_gate_decision": artifact.get("offline_gate_decision"),
+        "offline_gate_status": artifact.get("offline_gate_status"),
+        "oos_ic": _nested_dict(gate.get("metrics")).get("oos_ic") or registration.get("oos_ic"),
+        "model_cpcv": metadata.get("model_cpcv") or registration.get("model_cpcv"),
+        "prep_lineage": metadata.get("prep_lineage"),
+        "feature_policy": metadata.get("feature_policy"),
+        "feature_policy_schema_version": metadata.get("feature_policy_schema_version"),
+    }
+    entry["last_artifact_evidence"] = {
+        key: value
+        for key, value in artifact_evidence.items()
+        if value is not None
+    }
+
     entry["promotion_controller"] = {
         "artifact_id": artifact.get("artifact_id"),
         "candidate_type": artifact.get("candidate_type"),

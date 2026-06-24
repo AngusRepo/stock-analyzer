@@ -558,7 +558,7 @@ CREATE TABLE IF NOT EXISTS model_artifact_registry (
   artifact_id                 TEXT PRIMARY KEY,
   model_name                  TEXT NOT NULL,
   version                     TEXT NOT NULL,
-  candidate_type              TEXT NOT NULL CHECK(candidate_type IN ('monthly_release','weekly_drift','manual_hotfix','model_family_shadow','research_benchmark','unknown')),
+  candidate_type              TEXT NOT NULL CHECK(candidate_type IN ('monthly_release','weekly_drift','manual_hotfix','model_family_shadow','research_benchmark','timesfm_l175_l2_feature_release','unknown')),
   state                       TEXT NOT NULL CHECK(state IN (
     'registered',
     'registration_failed',

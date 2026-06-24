@@ -1598,6 +1598,12 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
             artifact = next((row for row in rows if str(row.get("artifact_id")) == str(req.artifact_id)), None)
             if artifact is None:
                 raise HTTPException(status_code=500, detail="promoted artifact disappeared from registry readback")
+            artifact = dict(artifact)
+            metadata_path = str(artifact.get("metadata_path") or "").strip()
+            if metadata_path:
+                metadata_blob = bucket.blob(metadata_path)
+                if metadata_blob.exists():
+                    artifact["metadata"] = _json.loads(metadata_blob.download_as_text().lstrip("\ufeff"))
             pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
             release_writer = run_model_pool_release_writer(
                 pool,

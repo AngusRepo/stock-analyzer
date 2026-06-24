@@ -191,6 +191,55 @@ def test_timesfm_l175_l2_feature_release_candidate_type_is_preserved():
     assert decision["approval_required"] is True
 
 
+def test_model_pool_release_writer_syncs_artifact_metadata_evidence():
+    pool = {
+        "models": {
+            "LightGBM": {
+                "version": "vOld",
+                "status": "active",
+                "weekly_ic": [0.1],
+                "last_artifact_evidence": {"feature_count": 48},
+            }
+        }
+    }
+    artifact = {
+        "artifact_id": "LightGBM:v20260624_l175:timesfm_l175_l2_feature_release",
+        "model_name": "LightGBM",
+        "version": "v20260624_l175",
+        "candidate_type": "timesfm_l175_l2_feature_release",
+        "artifact_path": "universal/lightgbm/v20260624_l175.joblib",
+        "metadata_path": "universal/lightgbm/metadata_v20260624_l175.json",
+        "offline_gate_decision": "STRONG_PASS",
+        "offline_gate_status": "strong_pass",
+        "metadata": {
+            "feature_count": 148,
+            "sample_count": 558270,
+            "trained_at": "2026-06-24T06:24:13Z",
+            "artifact_checksum": "sha256:l175",
+            "training_manifest_path": "universal/manifests/v20260624_l175-lightgbm.json",
+            "prep_lineage": {"feature_count": 148},
+            "feature_policy": {"feature_policy_type": "formal137_timesfm_l175_feature_release"},
+            "feature_policy_schema_version": "model-feature-policy-v1",
+            "model_cpcv": {"decision": "PASS"},
+        },
+    }
+
+    result = registry.run_model_pool_release_writer(
+        pool,
+        artifact,
+        reason="timesfm_l175_l2_feature_release_148_feature_schema",
+        promoted_at="2026-06-24T09:32:26Z",
+        confirm=True,
+    )
+
+    entry = result["planned_entry"]
+    assert entry["version"] == "v20260624_l175"
+    assert entry["last_artifact_evidence"]["feature_count"] == 148
+    assert entry["last_artifact_evidence"]["prep_lineage"]["feature_count"] == 148
+    assert entry["last_artifact_evidence"]["feature_policy"]["feature_policy_type"] == "formal137_timesfm_l175_feature_release"
+    assert entry["promotion_controller"]["artifact_id"] == artifact["artifact_id"]
+
+
 def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets():
     payload = {
         "run_id": "universal-20260613T000147-b8bdd212",

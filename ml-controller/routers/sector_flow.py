@@ -6,6 +6,7 @@ routers/sector_flow.py — 全市場族群資金流向 API endpoint
 """
 
 import asyncio
+import csv
 import re
 import logging
 import httpx
@@ -25,6 +26,81 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _USER_AGENT = "StockVision/12.3 (sector-flow)"
+
+
+def _twse_float(value):
+    text = str(value or "").replace(",", "").strip()
+    if not text or text == "--":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _twse_int(value):
+    text = str(value or "").replace(",", "").strip()
+    if not text or text == "--":
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _twse_report_date_iso(value):
+    digits = re.sub(r"\D", "", str(value or ""))
+    if re.match(r"^\d{8}$", digits):
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    if re.match(r"^\d{7}$", digits):
+        year = int(digits[:3]) + 1911
+        return f"{year}-{digits[3:5]}-{digits[5:7]}"
+    return None
+
+
+def _parse_twse_price_body(text: str):
+    try:
+        body = httpx.Response(200, text=text).json()
+    except Exception:
+        body = None
+
+    if isinstance(body, dict) and body.get("stat") == "OK":
+        report_date_iso = _twse_report_date_iso(body.get("date"))
+        prices = []
+        for row in body.get("data", []) or []:
+            if not isinstance(row, list) or len(row) < 8:
+                continue
+            symbol = str(row[0] or "").strip()
+            if not re.match(r"^\d{4}$", symbol):
+                continue
+            prices.append({
+                "symbol": symbol,
+                "open": _twse_float(row[4]),
+                "high": _twse_float(row[5]),
+                "low": _twse_float(row[6]),
+                "close": _twse_float(row[7]),
+                "volume": _twse_int(row[2]),
+            })
+        return report_date_iso, prices
+
+    report_date_iso = None
+    prices = []
+    for row in csv.reader(text.splitlines()):
+        if len(row) < 9:
+            continue
+        symbol = str(row[1] or "").strip()
+        if not re.match(r"^\d{4}$", symbol):
+            continue
+        report_date_iso = report_date_iso or _twse_report_date_iso(row[0])
+        prices.append({
+            "symbol": symbol,
+            "open": _twse_float(row[5]),
+            "high": _twse_float(row[6]),
+            "low": _twse_float(row[7]),
+            "close": _twse_float(row[8]),
+            "volume": _twse_int(row[3]),
+        })
+    return report_date_iso, prices
 
 
 # ─── Request / Response Models ────────────────────────────────────────────────
@@ -328,51 +404,9 @@ async def proxy_twse_prices(req: TpexProxyRequest):
     ) as client:
         resp = await client.get(url, timeout=30.0)
         resp.raise_for_status()
-        body = resp.json()
+        body_text = resp.text
 
-    if body.get("stat") != "OK":
-        return {"date": target_date, "report_date": None, "prices": []}
-
-    report_date = str(body.get("date") or "")
-    if len(report_date) == 8:
-        report_date_iso = f"{report_date[:4]}-{report_date[4:6]}-{report_date[6:8]}"
-    else:
-        report_date_iso = None
-
-    prices = []
-    for row in body.get("data", []) or []:
-        if not isinstance(row, list) or len(row) < 8:
-            continue
-        symbol = str(row[0] or "").strip()
-        if not re.match(r"^\d{4}$", symbol):
-            continue
-
-        def pf(value):
-            text = str(value or "").replace(",", "").strip()
-            if not text or text == "--":
-                return None
-            try:
-                return float(text)
-            except ValueError:
-                return None
-
-        def pi(value):
-            text = str(value or "").replace(",", "").strip()
-            if not text or text == "--":
-                return None
-            try:
-                return int(float(text))
-            except ValueError:
-                return None
-
-        prices.append({
-            "symbol": symbol,
-            "open": pf(row[4]),
-            "high": pf(row[5]),
-            "low": pf(row[6]),
-            "close": pf(row[7]),
-            "volume": pi(row[2]),
-        })
+    report_date_iso, prices = _parse_twse_price_body(body_text)
 
     logger.info(f"TWSE price proxy: {len(prices)} prices for {target_date} report_date={report_date_iso}")
     return {"date": target_date, "report_date": report_date_iso, "prices": prices}

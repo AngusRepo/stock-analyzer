@@ -178,6 +178,51 @@ function parseJsonObject(text: string): any {
   return JSON.parse(normalized)
 }
 
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = []
+  let current = ''
+  let quoted = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      if (quoted && line[i + 1] === '"') {
+        current += '"'
+        i += 1
+      } else {
+        quoted = !quoted
+      }
+      continue
+    }
+    if (ch === ',' && !quoted) {
+      fields.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  fields.push(current)
+  return fields.map(v => v.trim())
+}
+
+function parseTwFloat(value: string | null | undefined): number | null {
+  const text = String(value ?? '').replace(/,/g, '').trim()
+  if (!text || text === '--') return null
+  const parsed = Number(text)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseTwseReportDateValue(value: string | null | undefined): string | null {
+  const digits = String(value ?? '').replace(/\D/g, '')
+  if (/^\d{8}$/.test(digits)) {
+    return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`
+  }
+  if (/^\d{7}$/.test(digits)) {
+    const year = Number(digits.slice(0, 3)) + 1911
+    return `${year}-${digits.slice(3, 5)}-${digits.slice(5, 7)}`
+  }
+  return null
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface BulkChipRow {
@@ -1008,8 +1053,13 @@ export async function fetchTwseStockDayAll(
     signal: AbortSignal.timeout(30000),
   }, { label: 'TWSE_STOCK_DAY_ALL' })
   if (!res.ok) return { reportDate: null, rows: [] }
-  const body = await res.json() as any
-  if (body.stat !== 'OK' || !body.data) return { reportDate: null, rows: [] }
+  const text = await res.text()
+  const body = parseJsonObject(text)
+  if (body.stat !== 'OK' || !body.data) {
+    const csv = parseTwseStockDayAllCsv(text, date)
+    if (csv.rows.length > 0) return csv
+    return { reportDate: null, rows: [] }
+  }
 
   // Parse body.date "YYYYMMDD" → "YYYY-MM-DD"
   let reportDate: string | null = null
@@ -1038,6 +1088,32 @@ export async function fetchTwseStockDayAll(
 }
 
 /** TPEX 全市場今日收盤（openapi）*/
+export function parseTwseStockDayAllCsv(
+  text: string,
+  requestedDate: string,
+): { reportDate: string | null; rows: StockDayAllRow[] } {
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(line => line.trim().length > 0)
+  let reportDate: string | null = null
+  const rows: StockDayAllRow[] = []
+  for (const line of lines) {
+    const r = parseCsvLine(line)
+    if (r.length < 9 || !isStockCode(r[1])) continue
+    reportDate = reportDate ?? parseTwseReportDateValue(r[0])
+    rows.push({
+      symbol: r[1].trim(),
+      open: parseTwFloat(r[5]),
+      high: parseTwFloat(r[6]),
+      low: parseTwFloat(r[7]),
+      close: parseTwFloat(r[8]),
+      volume: r[3] ? parseTwNum(r[3]) : null,
+    })
+  }
+  if (reportDate && reportDate !== requestedDate) {
+    console.warn(`[TWSE_STOCK_DAY_ALL] stale redirect: requested ${requestedDate} ??got ${reportDate}`)
+  }
+  return { reportDate, rows }
+}
+
 export function parseTpexDailyQuoteRows(body: any[]): StockDayAllRow[] {
   // fields vary, common keys: SecuritiesCompanyCode, Open, High, Low, Close, TradingShares
   return body

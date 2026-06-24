@@ -49,6 +49,21 @@ _LOCK_TTL_SECONDS = 600  # 10 分鐘
 _UNIVERSAL_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_RETRAIN_LOCK_TTL_SECONDS", str(12 * 3600)))
 _UNIVERSAL_PREP_CONCURRENCY_DEFAULT = 3
 _UNIVERSAL_PREP_CONCURRENCY_MAX = 5
+TIMESFM_L175_L2_FEATURE_RELEASE_CANDIDATE_TYPE = "timesfm_l175_l2_feature_release"
+TIMESFM_L175_HISTORY_LOOKBACK_DAYS = int(os.environ.get("TIMESFM_L175_HISTORY_LOOKBACK_DAYS", "420"))
+TIMESFM_L175_FEATURE_NAMES = (
+    "timesfm_l175_forecast_return",
+    "timesfm_l175_forecast_log_return",
+    "timesfm_l175_forecast_slope",
+    "timesfm_l175_forecast_curvature",
+    "timesfm_l175_random_walk_residual",
+    "timesfm_l175_quantile_width",
+    "timesfm_l175_forecast_dispersion",
+    "timesfm_l175_peer_sequence_mean_return",
+    "timesfm_l175_market_excess_return",
+    "timesfm_l175_sector_excess_return",
+    "timesfm_l175_sign_flip_flag",
+)
 
 
 class RetrainTriggerRequest(BaseModel):
@@ -245,6 +260,102 @@ def _snapshot_per_stock_ts_map(
         ensure_date(sid, str(row.get("date")))["retail_pct"] = row.get("retail_pct")
 
     return per_stock_ts
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _timesfm_l175_feature_release_requested(req: UniversalRetrainTriggerRequest) -> bool:
+    return (
+        (req.candidate_type or "").strip() == TIMESFM_L175_L2_FEATURE_RELEASE_CANDIDATE_TYPE
+        or _truthy_env("TIMESFM_L175_RETRAIN_FEATURES_ENABLED")
+    )
+
+
+def _clean_timesfm_l175_features(features: object) -> dict[str, float] | None:
+    if not isinstance(features, dict):
+        return None
+    cleaned: dict[str, float] = {}
+    for name in TIMESFM_L175_FEATURE_NAMES:
+        raw = features.get(name)
+        try:
+            cleaned[name] = float(raw)
+        except (TypeError, ValueError):
+            return None
+    return cleaned
+
+
+def _extract_timesfm_l175_features(forecast_data: object) -> dict[str, float] | None:
+    if isinstance(forecast_data, str):
+        try:
+            forecast_data = json.loads(forecast_data)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(forecast_data, dict):
+        return None
+    sidecar = forecast_data.get("timesfm_sidecar")
+    if not isinstance(sidecar, dict):
+        return None
+    return _clean_timesfm_l175_features(sidecar.get("features"))
+
+
+def _load_timesfm_l175_history(
+    *,
+    stock_ids: list[int],
+    run_date: str,
+    lookback_days: int = TIMESFM_L175_HISTORY_LOOKBACK_DAYS,
+) -> tuple[dict[int, dict[str, dict[str, float]]], dict[str, int | str]]:
+    if not stock_ids:
+        return {}, {"rows_scanned": 0, "rows_loaded": 0, "stocks_with_history": 0}
+
+    try:
+        run_dt = datetime.strptime(run_date, "%Y-%m-%d")
+    except ValueError:
+        run_dt = datetime.now(timezone.utc)
+    start_date = (run_dt - timedelta(days=max(1, int(lookback_days)))).strftime("%Y-%m-%d")
+    end_date = run_dt.strftime("%Y-%m-%d")
+
+    history: dict[int, dict[str, dict[str, float]]] = {}
+    rows_scanned = 0
+    rows_loaded = 0
+    for ci in range(0, len(stock_ids), 80):
+        chunk_ids = stock_ids[ci:ci + 80]
+        placeholders = ",".join("?" * len(chunk_ids))
+        rows = d1_client.query(
+            f"""
+            SELECT stock_id, prediction_date, forecast_data
+            FROM predictions
+            WHERE model_name = 'ensemble'
+              AND stock_id IN ({placeholders})
+              AND prediction_date BETWEEN ? AND ?
+              AND forecast_data LIKE '%"timesfm_sidecar"%'
+            ORDER BY stock_id ASC, prediction_date ASC
+            """,
+            [*chunk_ids, start_date, end_date],
+            timeout=120.0,
+        )
+        for row in rows or []:
+            rows_scanned += 1
+            features = _extract_timesfm_l175_features(row.get("forecast_data"))
+            if not features:
+                continue
+            sid = int(row.get("stock_id"))
+            date_key = str(row.get("prediction_date") or "")
+            if not date_key:
+                continue
+            history.setdefault(sid, {})[date_key] = features
+            rows_loaded += 1
+
+    return history, {
+        "source": "predictions.forecast_data.timesfm_sidecar.features",
+        "lookback_days": int(lookback_days),
+        "start_date": start_date,
+        "end_date": end_date,
+        "rows_scanned": rows_scanned,
+        "rows_loaded": rows_loaded,
+        "stocks_with_history": len(history),
+    }
 
 
 def _load_training_maps_from_snapshot(
@@ -788,6 +899,24 @@ async def trigger_universal_retrain(
     )
 
     # ── 4. Sector encoding ──────────────────────────────────────────────────
+    timesfm_l175_feature_release_requested = _timesfm_l175_feature_release_requested(req)
+    timesfm_l175_history_by_stock_id: dict[int, dict[str, dict[str, float]]] = {}
+    timesfm_l175_history_summary: dict[str, int | str | bool] = {
+        "requested": timesfm_l175_feature_release_requested,
+        "candidate_type": req.candidate_type or "",
+    }
+    if timesfm_l175_feature_release_requested:
+        timesfm_l175_history_by_stock_id, loaded_summary = _load_timesfm_l175_history(
+            stock_ids=stock_ids,
+            run_date=run_date,
+        )
+        timesfm_l175_history_summary.update(loaded_summary)
+        logger.info(
+            "[retrain/universal] TimesFM L1.75 feature-release history loaded: "
+            f"stocks={loaded_summary.get('stocks_with_history')} rows={loaded_summary.get('rows_loaded')} "
+            f"window={loaded_summary.get('start_date')}..{loaded_summary.get('end_date')}"
+        )
+
     sector_enc = _build_sector_encoding()
     # Load per-symbol industry tag
     tag_rows = d1_client.query(
@@ -815,6 +944,7 @@ async def trigger_universal_retrain(
             "us_sox_return": market_env.us_sox_return,
             "us_vix": market_env.us_vix,
         }
+        timesfm_l175_history = timesfm_l175_history_by_stock_id.get(sid, {})
         per_stock_payloads.append({
             "stock_id": sid,
             "symbol": sym,
@@ -828,6 +958,8 @@ async def trigger_universal_retrain(
                 "sector_encoded": sector_enc.get(sector_tag, 0),
                 "market_cap_bucket": _estimate_cap_bucket(px),
                 "avg_volume_bucket": _volume_bucket(px),
+                "timesfm_l175_l2_feature_input_active": bool(timesfm_l175_history),
+                "timesfm_l175_history": timesfm_l175_history,
             },
         })
 
@@ -962,6 +1094,7 @@ async def trigger_universal_retrain(
             "batch_count": batch_count,
             "prep_concurrency": prep_concurrency,
             "dataset_snapshot": dataset_snapshot_info,
+            "timesfm_l175_feature_release": timesfm_l175_history_summary,
             "total_prep_rows": total_rows,
             "stocks_sent": len(per_stock_payloads),
             "stocks_skipped": len(skipped),
@@ -982,6 +1115,7 @@ async def trigger_universal_retrain(
                 "batch_count": batch_count,
                 "prep_concurrency": prep_concurrency,
                 "dataset_snapshot": dataset_snapshot_info,
+                "timesfm_l175_feature_release": timesfm_l175_history_summary,
                 "total_prep_rows": total_rows,
             },
             downstream_notes="aborted_before_orchestrator",
@@ -1033,6 +1167,7 @@ async def trigger_universal_retrain(
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),
                 "dataset_snapshot": dataset_snapshot_info,
+                "timesfm_l175_feature_release": timesfm_l175_history_summary,
                 "followup_webhook_url": followup_webhook_url,
                 "gcs_prefix": "universal",
                 "run_id": run_id,
@@ -1056,6 +1191,7 @@ async def trigger_universal_retrain(
                 "batch_count": batch_count,
                 "prep_concurrency": prep_concurrency,
                 "dataset_snapshot": dataset_snapshot_info,
+                "timesfm_l175_feature_release": timesfm_l175_history_summary,
                 "total_prep_rows": total_rows,
                 "error": str(orch_err),
             },
@@ -1077,6 +1213,7 @@ async def trigger_universal_retrain(
             "prep_concurrency": prep_concurrency,
             "sequence_contract": sequence_contract or None,
             "dataset_snapshot": dataset_snapshot_info,
+            "timesfm_l175_feature_release": timesfm_l175_history_summary,
             "total_prep_rows": total_rows,
             "followup_webhook_url": followup_webhook_url,
             "stocks_sent": len(per_stock_payloads),
@@ -1098,6 +1235,7 @@ async def trigger_universal_retrain(
         "prep_concurrency": prep_concurrency,
         "sequence_contract": sequence_contract or None,
         "dataset_snapshot": dataset_snapshot_info,
+        "timesfm_l175_feature_release": timesfm_l175_history_summary,
         "total_prep_rows": total_rows,
         "prep_results": prep_results,
         "orchestrator_result": orchestrator_result,

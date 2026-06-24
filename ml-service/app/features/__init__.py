@@ -960,6 +960,17 @@ def build_feature_matrix(
         ("vola_realized_1m", ret1_raw.rolling_std(21)),
     ])
 
+    timesfm_l175_features = _timesfm_l175_feature_map(stock_meta) or _timesfm_l175_history(stock_meta)
+    if timesfm_l175_features:
+        df = df.with_columns([
+            pl.Series(
+                col,
+                _timesfm_l175_series_values(df, stock_meta, col),
+                dtype=pl.Float64,
+            )
+            for col in TIMESFM_L175_FEATURE_COLS
+        ])
+
     formal_missing = [col for col in FEATURE_COLS if col not in df.columns]
     if formal_missing:
         raise RuntimeError(
@@ -1071,6 +1082,19 @@ def build_feature_matrix(
 NIGHT_SESSION_COLS = ["taifex_night_change_pct", "taifex_night_range_pct", "taifex_night_available"]
 ORDERBOOK_COLS = ["orderbook_imbalance", "orderbook_spread_pct", "orderbook_available"]
 OPTIONAL_FEATURE_COLS = NIGHT_SESSION_COLS + ORDERBOOK_COLS
+TIMESFM_L175_FEATURE_COLS = [
+    "timesfm_l175_forecast_return",
+    "timesfm_l175_forecast_log_return",
+    "timesfm_l175_forecast_slope",
+    "timesfm_l175_forecast_curvature",
+    "timesfm_l175_random_walk_residual",
+    "timesfm_l175_quantile_width",
+    "timesfm_l175_forecast_dispersion",
+    "timesfm_l175_peer_sequence_mean_return",
+    "timesfm_l175_market_excess_return",
+    "timesfm_l175_sector_excess_return",
+    "timesfm_l175_sign_flip_flag",
+]
 
 FEATURE_SCHEMA = "formal137"
 
@@ -1197,6 +1221,55 @@ def _meta_float(stock_meta: dict, key: str, default: float) -> float:
     return safe_float(stock_meta.get(key, default), default)
 
 
+def _timesfm_l175_feature_map(stock_meta: dict | None) -> dict:
+    if not isinstance(stock_meta, dict):
+        return {}
+    active = stock_meta.get("timesfm_l175_l2_feature_input_active") is True
+    direct = stock_meta.get("timesfm_l175_features")
+    if active and isinstance(direct, dict):
+        return direct
+    sidecar = stock_meta.get("timesfm_l175_sidecar")
+    if isinstance(sidecar, dict) and sidecar.get("l2_feature_input_active") is True and isinstance(sidecar.get("features"), dict):
+        return sidecar["features"]
+    return {}
+
+
+def _timesfm_l175_history(stock_meta: dict | None) -> dict[str, dict]:
+    if not isinstance(stock_meta, dict):
+        return {}
+    if stock_meta.get("timesfm_l175_l2_feature_input_active") is not True:
+        return {}
+    history = stock_meta.get("timesfm_l175_history")
+    if not isinstance(history, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for date_key, value in history.items():
+        if isinstance(value, dict):
+            out[str(date_key)] = value
+    return out
+
+
+def _timesfm_l175_source_key(column_name: str) -> str:
+    return column_name.replace("timesfm_l175_", "")
+
+
+def _timesfm_l175_series_values(df: pl.DataFrame, stock_meta: dict | None, column_name: str) -> list[float]:
+    feature_key = _timesfm_l175_source_key(column_name)
+    direct = _timesfm_l175_feature_map(stock_meta)
+    history = _timesfm_l175_history(stock_meta)
+    row_count = int(df.height)
+    if history and "date" in df.columns:
+        dates = [str(value) for value in df["date"].to_list()]
+        return [
+            safe_float((history.get(date_key) or {}).get(feature_key), 0.0)
+            for date_key in dates
+        ]
+    if direct:
+        value = safe_float(direct.get(feature_key), 0.0)
+        return [value] * row_count
+    return [0.0] * row_count
+
+
 def close_or_adjusted(row: dict) -> float:
     value = row.get("adj_close")
     if value is None:
@@ -1237,6 +1310,8 @@ def get_features(
             f"first_missing={preview}"
         )
     available = list(FEATURE_COLS)
+    if all(col in df.columns for col in TIMESFM_L175_FEATURE_COLS):
+        available = available + TIMESFM_L175_FEATURE_COLS
     if target_col not in df.columns:
         if not allow_missing_target:
             raise ValueError(f"target_col '{target_col}' not found in DataFrame. "

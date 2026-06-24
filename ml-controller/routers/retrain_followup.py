@@ -48,6 +48,7 @@ class RetrainFollowupPayload(BaseModel):
     lock_key: str | None = None
     run_date: str | None = None
     is_monthly: bool | None = None
+    candidate_type: str | None = None
     batch_count: int | None = None
     gcs_prefix: str = "universal"
     candidate_version: str | None = None
@@ -337,6 +338,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "lock_key": payload.lock_key,
             "run_date": payload.run_date,
             "is_monthly": payload.is_monthly,
+            "candidate_type": payload.candidate_type,
             "batch_count": payload.batch_count,
             "gcs_prefix": payload.gcs_prefix,
             "candidate_version": payload.candidate_version,
@@ -438,6 +440,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "lock_key": payload.lock_key,
             "run_date": payload.run_date,
             "is_monthly": payload.is_monthly,
+            "candidate_type": payload.candidate_type,
             "batch_count": payload.batch_count,
             "gcs_prefix": payload.gcs_prefix,
             "window_id": payload.window_id,

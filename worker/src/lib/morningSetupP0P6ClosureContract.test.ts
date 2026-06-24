@@ -14,6 +14,7 @@ const formal137 = fs.readFileSync('src/lib/formal137FeatureMaterialization.ts', 
 const recommendationContext = fs.readFileSync('src/lib/recommendationContext.ts', 'utf8')
 const recommendationCard = fs.readFileSync('../frontend/src/components/RecommendationCardClean.tsx', 'utf8')
 const recommendationService = fs.readFileSync('../ml-controller/services/recommendation_service.py', 'utf8')
+const timesfmL175Sidecar = fs.readFileSync('../ml-controller/services/timesfm_l175_sidecar.py', 'utf8')
 const morningBriefing = fs.readFileSync('src/lib/morningBriefing.ts', 'utf8')
 const rrgCalculator = fs.readFileSync('../ml-controller/services/_rrg_calculator.py', 'utf8')
 const sectorFlowService = fs.readFileSync('../ml-controller/services/sector_flow_service.py', 'utf8')
@@ -67,9 +68,10 @@ assert(
     recommendationContext.includes('timesfmSidecar') &&
     recommendationContext.includes('l2FeatureInputActive') &&
     recommendationContext.includes('l2FeatureInputBlockedReason') &&
-    recommendationService.includes('"eligible_for_l2_feature_enrichment": False') &&
-    recommendationService.includes('"l2_feature_input_active": False') &&
-    recommendationService.includes('requires_formal137_registry_retrain_release') &&
+    recommendationService.includes('build_timesfm_l175_sidecar') &&
+    timesfmL175Sidecar.includes('"eligible_for_l2_feature_enrichment": active') &&
+    timesfmL175Sidecar.includes('"l2_feature_input_active": active') &&
+    timesfmL175Sidecar.includes('requires_formal137_registry_retrain_release') &&
     recommendationCard.includes('L2/L3 Direct ML + L1.75 Sidecar') &&
     recommendationCard.includes('L2 input') &&
     recommendationCard.includes('L2 block formal137/retrain/release') &&

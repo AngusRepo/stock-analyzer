@@ -16,6 +16,7 @@ CandidateType = Literal[
     "manual_hotfix",
     "model_family_shadow",
     "research_benchmark",
+    "timesfm_l175_l2_feature_release",
     "unknown",
 ]
 ArtifactState = Literal[
@@ -205,7 +206,14 @@ def _as_float(value: Any) -> float | None:
 
 
 def candidate_type_from_retrain(*, is_monthly: bool | None, explicit: str | None = None) -> CandidateType:
-    if explicit in {"monthly_release", "weekly_drift", "manual_hotfix", "model_family_shadow", "research_benchmark"}:
+    if explicit in {
+        "monthly_release",
+        "weekly_drift",
+        "manual_hotfix",
+        "model_family_shadow",
+        "research_benchmark",
+        "timesfm_l175_l2_feature_release",
+    }:
         return explicit  # type: ignore[return-value]
     if is_monthly is True:
         return "monthly_release"
@@ -558,9 +566,10 @@ def _artifact_record_from_registration(
     offline_gate_passed = offline_gate["decision"] != "FAIL"
     promoted_to_active = promotion_requested and offline_gate_passed
     promotion_blocked_by_offline_gate = promotion_requested and not promoted_to_active
+    offline_feature_release_candidate_type = candidate_type in {"monthly_release", "timesfm_l175_l2_feature_release"}
     eligible_pending_approval = (
         not promoted_to_active
-        and candidate_type == "monthly_release"
+        and offline_feature_release_candidate_type
         and offline_gate["decision"] in {"PASS", "STRONG_PASS"}
     )
     state = "production" if promoted_to_active else offline_gate["state"]
@@ -1112,7 +1121,7 @@ def _promotion_ready(row: dict[str, Any] | None) -> bool:
         return False
     state = str(row.get("state") or "")
     live_status = str(row.get("live_gate_status") or "")
-    if _offline_monthly_release_candidate(row):
+    if _offline_monthly_release_candidate(row) or _offline_timesfm_l175_feature_release_candidate(row):
         return True
     return state in {"live_gate_passed", "approval_required", "approved", "production"} or live_status in {
         "passed",
@@ -1126,6 +1135,22 @@ def _offline_monthly_release_candidate(row: dict[str, Any] | None) -> bool:
         return False
     return (
         str(row.get("candidate_type") or "") == "monthly_release"
+        and str(row.get("offline_gate_decision") or "") in {"STRONG_PASS", "PASS"}
+        and str(row.get("state") or "") in {
+            "offline_passed",
+            "offline_strong_pass",
+            "live_gate_passed",
+            "approval_required",
+            "approved",
+        }
+    )
+
+
+def _offline_timesfm_l175_feature_release_candidate(row: dict[str, Any] | None) -> bool:
+    if not row:
+        return False
+    return (
+        str(row.get("candidate_type") or "") == "timesfm_l175_l2_feature_release"
         and str(row.get("offline_gate_decision") or "") in {"STRONG_PASS", "PASS"}
         and str(row.get("state") or "") in {
             "offline_passed",
@@ -2072,10 +2097,12 @@ def build_promotion_queue(
         state = str(row.get("state") or "")
         live_status = str(row.get("live_gate_status") or "")
         offline_monthly_candidate = _offline_monthly_release_candidate(row)
+        offline_timesfm_l175_candidate = _offline_timesfm_l175_feature_release_candidate(row)
         if state in {"production", "archived", "rejected"}:
             continue
         if (
             not offline_monthly_candidate
+            and not offline_timesfm_l175_candidate
             and state not in {"live_gate_passed", "approval_required", "approved"}
             and live_status not in {
             "passed",
@@ -2115,12 +2142,13 @@ def build_promotion_queue(
             continue
         offline_decision = str(row.get("offline_gate_decision") or "")
         approval_required = (
-            candidate_type in {"weekly_drift", "manual_hotfix"}
+            candidate_type in {"weekly_drift", "manual_hotfix", "timesfm_l175_l2_feature_release"}
             or str(row.get("approval_state") or "") == "required"
             or offline_monthly_candidate
+            or offline_timesfm_l175_candidate
         )
         blockers = artifact_promotion_blockers(row, champion_version=champion_version)
-        if offline_monthly_candidate:
+        if offline_monthly_candidate or offline_timesfm_l175_candidate:
             blockers = _offline_monthly_release_blockers(blockers)
         blocker_codes = _blocker_codes(blockers)
         if not champion_version:
@@ -2132,6 +2160,9 @@ def build_promotion_queue(
         elif offline_monthly_candidate:
             decision = "eligible_pending_approval"
             next_action = "Run promotion-controller dry-run with allow_offline_monthly_release=true, then request Wei approval before release."
+        elif offline_timesfm_l175_candidate:
+            decision = "eligible_pending_approval"
+            next_action = "Run promotion-controller dry-run, then request Wei approval before enabling TimesFM L1.75 L2 feature release."
         elif approval_required:
             decision = "approval_required"
             next_action = "Run final comparison against current champion, then request Wei approval before promotion."
@@ -2314,20 +2345,26 @@ def _promotion_row_decision(
         and candidate_type == "monthly_release"
         and offline_decision in {"STRONG_PASS", "PASS"}
     )
+    offline_timesfm_l175_feature_release_candidate = bool(
+        candidate_type == "timesfm_l175_l2_feature_release"
+        and offline_decision in {"STRONG_PASS", "PASS"}
+    )
     approval_required = (
-        candidate_type in {"weekly_drift", "manual_hotfix"}
+        candidate_type in {"weekly_drift", "manual_hotfix", "timesfm_l175_l2_feature_release"}
         or str(artifact.get("approval_state") or "") == "required"
         or offline_monthly_release_candidate
+        or offline_timesfm_l175_feature_release_candidate
     )
     blockers: list[str] = []
     offline_monthly_release_cutover = offline_monthly_release_candidate and approved
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
-    if offline_monthly_release_candidate:
+    if offline_monthly_release_candidate or offline_timesfm_l175_feature_release_candidate:
         promotion_blockers = _offline_monthly_release_blockers(promotion_blockers)
     if promotion_blockers:
         blockers.extend(_blocker_codes(promotion_blockers))
     if (
         not offline_monthly_release_candidate
+        and not offline_timesfm_l175_feature_release_candidate
         and live_status not in {"passed", "multi_evidence_passed"}
         and state not in {"approval_required", "approved"}
     ):
@@ -2358,6 +2395,7 @@ def _promotion_row_decision(
         "approved": approved,
         "allow_offline_monthly_release": allow_offline_monthly_release,
         "offline_monthly_release_candidate": offline_monthly_release_candidate,
+        "offline_timesfm_l175_feature_release_candidate": offline_timesfm_l175_feature_release_candidate,
         "offline_monthly_release_cutover": offline_monthly_release_cutover,
         "blockers": blockers,
         "blocker_details": promotion_blockers,

@@ -619,7 +619,10 @@ def predict_l2_tree_batch(payloads: list[dict]) -> dict:
             "rank_scores": {name: round(float(score), 6) for name, score in sorted(scores.items())},
             "model_errors": list(ctx.model_errors),
             "l2_tree_score": round(avg_rank, 6),
+            "feature_count": len(ctx.feature_names),
+            "feature_schema": "formal137+timesfm_l175" if any(name.startswith("timesfm_l175_") for name in ctx.feature_names) else "formal137",
             "feature_version": "l2_tree_predict_v1",
+            "timesfm_l175_feature_input_active": any(name.startswith("timesfm_l175_") for name in ctx.feature_names),
             "source": "l2_tree_predict",
             "prediction_stage": "L2",
         }

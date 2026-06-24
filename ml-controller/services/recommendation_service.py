@@ -49,6 +49,7 @@ from services.similarity_evidence import (
     similarity_components,
     symbol_cluster_evidence,
 )
+from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 
 logger = logging.getLogger(__name__)
 
@@ -272,95 +273,16 @@ def _quantile_width(signal: dict[str, Any]) -> float | None:
 
 def _timesfm_sidecar_payload(data: dict) -> dict[str, Any] | None:
     """Build L1.75 TimesFM feature sidecar without restoring direct-alpha voting."""
-    signal = data.get("timesfm")
-    if not isinstance(signal, dict) or signal.get("error"):
-        return None
-
-    reference_price = (
-        data.get("entry_price")
-        or data.get("current_price")
-        or signal.get("current_price")
-        or signal.get("last_price")
-        or signal.get("input_price")
+    stock_meta = data.get("stock_meta") if isinstance(data.get("stock_meta"), dict) else {}
+    existing = stock_meta.get("timesfm_l175_sidecar") if isinstance(stock_meta, dict) else None
+    if isinstance(existing, dict):
+        return existing
+    return build_timesfm_l175_sidecar(
+        data,
+        release_policy=data.get("timesfm_l175_release_policy")
+        if isinstance(data.get("timesfm_l175_release_policy"), dict)
+        else None,
     )
-    forecast_return = _finite_float_or_none(signal.get("forecast_pct"))
-    forecast_log_return = _price_log_return(signal.get("forecast_price"), reference_price)
-    if forecast_log_return is None and forecast_return is not None and forecast_return > -1.0:
-        forecast_log_return = math.log1p(forecast_return)
-
-    horizon = (
-        _finite_float_or_none(signal.get("horizon"))
-        or _finite_float_or_none(data.get("horizon"))
-        or 14.0
-    )
-    forecast_path = _numeric_series_from_signal(signal)
-    slope = forecast_return / horizon if forecast_return is not None and horizon and horizon > 0 else None
-
-    peer_returns: list[float] = []
-    for src_key in ("dlinear", "patchtst", "itransformer"):
-        peer_signal = data.get(src_key)
-        if not isinstance(peer_signal, dict):
-            continue
-        value = _finite_float_or_none(peer_signal.get("forecast_pct"))
-        if value is not None:
-            peer_returns.append(value)
-    dispersion_values = [value for value in [forecast_return, *peer_returns] if value is not None]
-    peer_mean = sum(peer_returns) / len(peer_returns) if peer_returns else None
-    forecast_dispersion = (
-        math.sqrt(sum((value - (sum(dispersion_values) / len(dispersion_values))) ** 2 for value in dispersion_values) / len(dispersion_values))
-        if len(dispersion_values) >= 2
-        else None
-    )
-    sign_flip_flag = None
-    if forecast_return is not None and peer_mean is not None:
-        sign_flip_flag = (forecast_return > 0 > peer_mean) or (forecast_return < 0 < peer_mean)
-
-    market_expected = _finite_float_or_none(
-        data.get("market_expected_return")
-        or signal.get("market_expected_return")
-        or signal.get("expected_market_return")
-    )
-    sector_expected = _finite_float_or_none(
-        data.get("sector_expected_return")
-        or signal.get("sector_expected_return")
-        or signal.get("expected_sector_return")
-    )
-
-    features = {
-        "forecast_return": forecast_return,
-        "forecast_log_return": forecast_log_return,
-        "forecast_slope": slope,
-        "forecast_curvature": _series_curvature(forecast_path),
-        "random_walk_residual": forecast_return,
-        "quantile_width": _quantile_width(signal),
-        "forecast_dispersion": forecast_dispersion,
-        "peer_sequence_mean_return": peer_mean,
-        "market_excess_return": (
-            forecast_return - market_expected
-            if forecast_return is not None and market_expected is not None
-            else None
-        ),
-        "sector_excess_return": (
-            forecast_return - sector_expected
-            if forecast_return is not None and sector_expected is not None
-            else None
-        ),
-        "sign_flip_flag": sign_flip_flag,
-    }
-
-    return {
-        "schema_version": "timesfm-l1-75-sidecar-v1",
-        "layer": "L1.75",
-        "source": "TimesFM",
-        "role": "feature_sidecar",
-        "direct_alpha_blocked": True,
-        "eligible_for_l2_feature_enrichment": False,
-        "l2_feature_input_active": False,
-        "l2_feature_input_blocked_reason": "requires_formal137_registry_retrain_release",
-        "current_allowed_use": ["diagnostic", "uncertainty_context", "risk_sidecar"],
-        "features": features,
-        "raw_context": _per_model_signal_payload(data, "TimesFM"),
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

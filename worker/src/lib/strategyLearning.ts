@@ -2,6 +2,7 @@ import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
+  explainFeatureRefDsl,
   normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
@@ -627,6 +628,10 @@ export function buildStrategyDecisionRows(
         matches: assessment.matches,
         tags: assessment.tags,
         watch_points: assessment.watchPoints,
+        feature_ref_diagnostics: explainFeatureRefDsl(
+          deriveStrategyRawSignals(candidate),
+          spec.thresholds.featureRefs,
+        ),
       }
       const rawSignals = deriveStrategyRawSignals(candidate)
       const context = {

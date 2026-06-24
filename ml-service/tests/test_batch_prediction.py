@@ -281,6 +281,47 @@ def test_l2_tree_batch_predict_uses_only_tree_models(monkeypatch):
     assert set(batch["results"][0]["rank_scores"]) == {"LightGBM", "XGBoost", "ExtraTrees"}
 
 
+def test_l2_tree_batch_predict_can_consume_released_timesfm_l175_features(monkeypatch):
+    from app.features import TIMESFM_L175_FEATURE_COLS
+
+    class FakeModel:
+        observed_widths: list[int] = []
+
+        def predict(self, x_batch):
+            self.observed_widths.append(x_batch.shape[1])
+            return np.full((len(x_batch),), 0.72, dtype=np.float32)
+
+    fake_model = FakeModel()
+
+    def fake_load_artifact(model_name, explicit_path=None):
+        if model_name in {"LightGBM", "XGBoost", "ExtraTrees"}:
+            return fake_model, {"feature_names": [], "feature_medians": {}}
+        raise AssertionError(f"unexpected L2 model load: {model_name}")
+
+    monkeypatch.setattr(
+        batch_prediction,
+        "_load_model_pool",
+        lambda: _full_model_pool({"LightGBM": "active", "XGBoost": "active", "ExtraTrees": "active"}),
+    )
+    monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
+
+    payload = _predict_payload("2330", 2330, 100.0)
+    payload.setdefault("stock_meta", {})
+    payload["stock_meta"]["timesfm_l175_l2_feature_input_active"] = True
+    payload["stock_meta"]["timesfm_l175_features"] = {
+        name.replace("timesfm_l175_", ""): 0.01
+        for name in TIMESFM_L175_FEATURE_COLS
+    }
+
+    batch = batch_prediction.predict_l2_tree_batch([payload])
+
+    assert batch["n_success"] == 1
+    assert batch["results"][0]["timesfm_l175_feature_input_active"] is True
+    assert batch["results"][0]["feature_schema"] == "formal137+timesfm_l175"
+    assert batch["results"][0]["feature_count"] == 137 + len(TIMESFM_L175_FEATURE_COLS)
+    assert fake_model.observed_widths == [137 + len(TIMESFM_L175_FEATURE_COLS)] * 3
+
+
 def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
     from app import gnn_batch_runtime
 

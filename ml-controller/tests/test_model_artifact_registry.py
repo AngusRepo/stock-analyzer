@@ -143,6 +143,54 @@ def test_explicit_candidate_type_from_weekly_drift_payload_wins_over_monthly_fla
     assert records[0]["candidate_type"] == "weekly_drift"
 
 
+def test_timesfm_l175_l2_feature_release_candidate_type_is_preserved():
+    payload = {
+        "run_id": "timesfm-l175-release",
+        "run_date": "2026-06-24",
+        "is_monthly": False,
+        "candidate_type": "timesfm_l175_l2_feature_release",
+        "candidate_version": "v20260624_l175",
+        "status": "completed",
+        "feature_count": 148,
+        "ic_summary": {"LightGBM": 0.052},
+        "challenger_registrations": {
+            "LightGBM": {
+                "status": "registered",
+                "version": "v20260624_l175",
+                "model_cpcv": {
+                    "decision": "PASS",
+                    "failed_gates": [],
+                    "oos_ic_mean": 0.044,
+                    "folds": 5,
+                    "min_test_rows": 120,
+                    "coverage": 0.9,
+                    "positive_fold_ratio": 0.8,
+                    "oos_ic_std": 0.05,
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert records[0]["artifact_id"] == "LightGBM:v20260624_l175:timesfm_l175_l2_feature_release"
+    assert records[0]["candidate_type"] == "timesfm_l175_l2_feature_release"
+    queue = registry.build_promotion_queue(records, champion_versions={"LightGBM": "vOld"})
+    assert queue["count"] == 1
+    assert queue["queue"][0]["approval_required"] is True
+    assert queue["queue"][0]["promotion_decision"] == "eligible_pending_approval"
+    decision = registry.run_promotion_controller(
+        artifact_id=records[0]["artifact_id"],
+        registry_rows=records,
+        d1_pointers=[],
+        model_pool_versions={"LightGBM": "vOld"},
+        confirm=False,
+        approved=False,
+    )
+    assert decision["decision"] == "approval_required"
+    assert decision["approval_required"] is True
+
+
 def test_build_artifact_records_from_monthly_followup_includes_lifecycle_targets():
     payload = {
         "run_id": "universal-20260613T000147-b8bdd212",

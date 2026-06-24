@@ -57,6 +57,7 @@ from services.state_space_series import (
     build_state_space_series_from_payloads,
     enrich_state_space_series_with_long_history,
 )
+from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 from services.recommendation_service import (
     apply_core_family_evidence,
     apply_core_ml_evidence,
@@ -540,6 +541,8 @@ class PipelineStateV2(TypedDict, total=False):
 
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
+    timesfm_l175_sidecars: dict              # symbol -> TimesFM L1.75 sidecar payload
+    timesfm_l175_summary: dict               # L1.75 feature enrichment telemetry
     predictions: dict                       # symbol ??ml result
     l2_predictions: dict                     # symbol -> cheap tree-only L2 result
     l2_selected_symbols: list[str]           # symbols admitted to L3 formal inference queue
@@ -1414,6 +1417,203 @@ async def node_l2_cheap_ml_predict(state: PipelineStateV2) -> dict:
         "predictions": pred_map,
         "l2_modal_wait_telemetry": wait_telemetry,
     }
+
+
+def _timesfm_l175_registry_release_policy() -> dict[str, Any]:
+    try:
+        rows = d1_client.query(
+            """
+            SELECT artifact_id, model_name, version, state, feature_policy_version, source_run_date, updated_at
+            FROM model_artifact_registry
+            WHERE candidate_type = 'timesfm_l175_l2_feature_release'
+              AND state IN ('approved', 'production')
+            ORDER BY updated_at DESC
+            LIMIT 50
+            """,
+            [],
+            timeout=30.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Pipeline V2] TimesFM L1.75 registry release fallback skipped: %s", exc)
+        return {}
+    if not rows:
+        return {}
+
+    production_tree = [
+        dict(row)
+        for row in rows
+        if str(row.get("state") or "") == "production"
+        and str(row.get("model_name") or "") in {"LightGBM", "XGBoost", "ExtraTrees"}
+    ]
+    latest = dict(rows[0])
+    return {
+        "schema_version": "timesfm-l1-75-l2-feature-release-v1",
+        "status": "production_approved" if production_tree else "approved",
+        "source": "model_artifact_registry",
+        "candidate_type": "timesfm_l175_l2_feature_release",
+        "feature_schema": "formal137+timesfm_l175",
+        "retrain_complete": True,
+        "model_pool_released": bool(production_tree),
+        "latest_artifact_id": latest.get("artifact_id"),
+        "latest_model": latest.get("model_name"),
+        "latest_version": latest.get("version"),
+        "production_tree_artifacts": production_tree,
+        "registry_rows": len(rows),
+    }
+
+
+def _timesfm_l175_release_policy() -> dict[str, Any]:
+    try:
+        policy = kv_client.get_json("ml:timesfm_l175_l2_feature_release", default={})
+        if isinstance(policy, dict) and policy:
+            return policy
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Pipeline V2] TimesFM L1.75 release policy read skipped: %s", exc)
+    return _timesfm_l175_registry_release_policy()
+
+
+def _payload_with_timesfm_l175_sidecar(payload: dict, sidecar: dict[str, Any]) -> dict:
+    out = dict(payload)
+    stock_meta = dict(out.get("stock_meta") or {})
+    runtime_options = dict(out.get("runtime_options") or {})
+    active = bool(sidecar.get("l2_feature_input_active"))
+    stock_meta["timesfm_l175_sidecar"] = sidecar
+    stock_meta["timesfm_l175_l2_feature_input_active"] = active
+    runtime_options["timesfm_l175_sidecar"] = sidecar
+    runtime_options["timesfm_l175_l2_feature_input_active"] = active
+    if active:
+        stock_meta["timesfm_l175_features"] = dict(sidecar.get("features") or {})
+        runtime_options["timesfm_l175_l2_feature_values"] = dict(sidecar.get("l2_feature_values") or {})
+    out["stock_meta"] = stock_meta
+    out["runtime_options"] = runtime_options
+    return out
+
+
+async def node_timesfm_l175_enrich(state: PipelineStateV2) -> dict:
+    """Build TimesFM L1.75 sidecar features before L2 tree inference."""
+    from services import modal_client
+
+    payloads = state.get("payloads") or []
+    if not payloads:
+        return {"timesfm_l175_sidecars": {}, "timesfm_l175_summary": {"status": "skipped", "reason": "empty_payloads"}}
+
+    release_policy = _timesfm_l175_release_policy()
+    try:
+        model_status, active_versions, _challenger_versions, _pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+        (
+            serving_model_status,
+            _serving_ic_universe,
+            _serving_degraded_dampening,
+            serving_ev2_cfg,
+            _serving_used_pool,
+            serving_pool,
+        ) = await asyncio.to_thread(_load_pool_and_ic)
+        if serving_model_status:
+            model_status = {**model_status, **serving_model_status}
+
+        base_sequence_series = build_state_space_series_from_payloads(payloads)
+        sequence_series, sequence_dataset_meta = enrich_state_space_series_with_long_history(
+            base_sequence_series,
+            target_points=daily_sequence_target_points(),
+        )
+        timesfm_allowed, timesfm_gate = _timesfm_sync_gate(
+            model_status=model_status,
+            pool=serving_pool,
+            ev2_cfg=serving_ev2_cfg,
+            sequence_series=sequence_series,
+        )
+        if not timesfm_allowed:
+            return {
+                "timesfm_l175_sidecars": {},
+                "timesfm_l175_summary": {
+                    "status": "blocked",
+                    "gate": timesfm_gate,
+                    "sequence_dataset_meta": sequence_dataset_meta,
+                },
+            }
+
+        sequence_contract_points = int(timesfm_gate.get("sequence_contract_points") or DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS)
+        timesfm_sequence_series, excluded = _sequence_contract_subset(
+            sequence_series,
+            min_points=sequence_contract_points,
+        )
+        started = time.time()
+        raw = await modal_client.timesfm_batch_predict(
+            timesfm_sequence_series,
+            version=_require_loaded_serving_version(active_versions, "TimesFM", "timesfm_l175_enrich"),
+            sequence_contract_points=sequence_contract_points,
+        )
+        elapsed = round(time.time() - started, 3)
+        result_rows = raw.get("results") if isinstance(raw, dict) else raw
+        if not isinstance(result_rows, list):
+            return {
+                "timesfm_l175_sidecars": {},
+                "timesfm_l175_summary": {
+                    "status": "error",
+                    "reason": "timesfm_batch_invalid_payload",
+                    "gate": timesfm_gate,
+                    "elapsed_sec": elapsed,
+                },
+            }
+
+        timesfm_by_symbol = {
+            str(row.get("symbol")): row
+            for row in result_rows
+            if isinstance(row, dict) and row.get("symbol") and not row.get("error")
+        }
+        payload_by_symbol = {
+            str(payload.get("symbol")): payload
+            for payload in payloads
+            if isinstance(payload, dict) and payload.get("symbol")
+        }
+        sidecars: dict[str, dict] = {}
+        enriched_payloads: list[dict] = []
+        for payload in payloads:
+            symbol = str(payload.get("symbol") or "")
+            timesfm = timesfm_by_symbol.get(symbol)
+            if not timesfm:
+                enriched_payloads.append(payload)
+                continue
+            data = {
+                **(payload_by_symbol.get(symbol) or {}),
+                "timesfm": timesfm,
+            }
+            sidecar = build_timesfm_l175_sidecar(data, release_policy=release_policy)
+            if not sidecar:
+                enriched_payloads.append(payload)
+                continue
+            sidecars[symbol] = sidecar
+            enriched_payloads.append(_payload_with_timesfm_l175_sidecar(payload, sidecar))
+
+        active_count = sum(1 for sidecar in sidecars.values() if sidecar.get("l2_feature_input_active"))
+        summary = {
+            "status": "ready",
+            "layer": "L1.75",
+            "sidecar_count": len(sidecars),
+            "l2_feature_input_active_count": active_count,
+            "l2_feature_input_blocked_count": len(sidecars) - active_count,
+            "release_policy": sidecars[next(iter(sidecars))].get("release_evidence") if sidecars else release_policy,
+            "gate": timesfm_gate,
+            "excluded_count": len(excluded),
+            "excluded_symbols": excluded[:20],
+            "elapsed_sec": elapsed,
+            "sequence_dataset_meta": sequence_dataset_meta,
+        }
+        logger.info("[Pipeline V2] TimesFM L1.75 sidecar summary: %s", summary)
+        return {
+            "payloads": enriched_payloads,
+            "timesfm_l175_sidecars": sidecars,
+            "timesfm_l175_summary": summary,
+        }
+    except Exception as exc:  # noqa: BLE001 - L1.75 sidecar must not break L2.
+        logger.warning("[Pipeline V2] TimesFM L1.75 sidecar failed: %s", exc)
+        return {
+            "timesfm_l175_sidecars": {},
+            "timesfm_l175_summary": {
+                "status": "error",
+                "reason": f"{type(exc).__name__}: {exc}",
+            },
+        }
 
 
 async def node_l2_core_gate(state: PipelineStateV2) -> dict:
@@ -2614,6 +2814,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
             key: value for key, value in dispersion.items()
             if key != "symbols"
         }
+    if state.get("timesfm_l175_summary"):
+        metrics["timesfm_l175_summary"] = state.get("timesfm_l175_summary")
     logger.info(f"[Pipeline V2] write_d1 done: {metrics}")
     return {"metrics": metrics}
 
@@ -2745,6 +2947,7 @@ def build_graph():
     g.add_node("load_market_env",   node_load_market_env)
     g.add_node("compute_sector_flow", node_compute_sector_flow)
     g.add_node("build_payloads",    node_build_payloads)
+    g.add_node("timesfm_l175_enrich", node_timesfm_l175_enrich, retry=ml_retry)
     g.add_node("ml_predict",        node_ml_predict, retry=ml_retry)
     g.add_node("l2_cheap_ml_predict", node_l2_cheap_ml_predict, retry=ml_retry)
     g.add_node("l2_core_gate",      node_l2_core_gate)
@@ -2762,7 +2965,8 @@ def build_graph():
     g.add_edge("load_inputs",         "load_market_env")
     g.add_edge("load_market_env",     "build_payloads")
     if _l2_l3_split_enabled():
-        g.add_edge("build_payloads",      "l2_cheap_ml_predict")
+        g.add_edge("build_payloads",      "timesfm_l175_enrich")
+        g.add_edge("timesfm_l175_enrich", "l2_cheap_ml_predict")
         g.add_edge("l2_cheap_ml_predict", "l2_core_gate")
         g.add_edge("l2_core_gate",        "l3_formal_predict")
         g.add_edge("l3_formal_predict",   "compute_personas")

@@ -86,6 +86,32 @@ export interface StrategyFeatureRefTerm {
 export interface StrategyFeatureRefWeightedScore {
   min: number
   terms: StrategyFeatureRefTerm[]
+  calibration?: StrategyFeatureRefWeightedScoreCalibration
+}
+
+export interface StrategyFeatureRefWeightedScoreCalibration {
+  schemaVersion: 'strategy-feature-ref-weighted-score-calibration-v1'
+  calibrationId: string
+  status: 'shadow' | 'candidate' | 'active'
+  method: 'validation_fold_top_after_base_gates'
+  originalMin: number
+  calibratedMin: number
+  validationFold: {
+    startDate: string
+    endDate: string
+    excludedDates?: string[]
+  }
+  targetDailyMatches: number
+  observed: {
+    validationRows: number
+    validationCompleteFeatureRows: number
+    validationMatchesAtOriginalMin: number
+    validationMatchesAtCalibratedMin: number
+    holdoutDate?: string
+    holdoutMatchesAtCalibratedMin?: number
+  }
+  sourceRefs: string[]
+  frozenAt: string
 }
 
 export interface StrategyFeatureRefCondition extends StrategyFeatureRefTerm {
@@ -621,6 +647,79 @@ function missingRequiredFeatureRefs(raw: StrategyRawSignals, dsl?: StrategyFeatu
   return [...new Set(missing)]
 }
 
+function activeWeightedScoreCalibration(
+  weighted: StrategyFeatureRefWeightedScore,
+): StrategyFeatureRefWeightedScoreCalibration | null {
+  const calibration = weighted.calibration
+  if (!calibration || calibration.status !== 'active') return null
+  if (calibration.schemaVersion !== 'strategy-feature-ref-weighted-score-calibration-v1') return null
+  const calibratedMin = finiteNumber(calibration.calibratedMin)
+  if (calibratedMin == null || calibratedMin < 0 || calibratedMin > 1) return null
+  return calibration
+}
+
+function effectiveWeightedScoreMin(weighted: StrategyFeatureRefWeightedScore): {
+  min: number
+  source: 'spec_min' | 'active_calibration'
+  calibration: StrategyFeatureRefWeightedScoreCalibration | null
+} {
+  const calibration = activeWeightedScoreCalibration(weighted)
+  if (calibration) {
+    return {
+      min: calibration.calibratedMin,
+      source: 'active_calibration',
+      calibration,
+    }
+  }
+  return {
+    min: weighted.min,
+    source: 'spec_min',
+    calibration: null,
+  }
+}
+
+export function explainFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeatureRefDsl): Record<string, unknown> | null {
+  if (!dsl) return null
+  const weighted = dsl.weightedScore
+  if (!weighted) {
+    return {
+      missing_required_feature_refs: missingRequiredFeatureRefs(raw, dsl),
+    }
+  }
+  let score = 0
+  let weightSum = 0
+  const terms: Array<Record<string, unknown>> = []
+  for (const term of weighted.terms ?? []) {
+    const value = finiteNumber(featureRefValue(raw, term))
+    const weight = finiteNumber(term.weight) ?? 1
+    if (weight <= 0) continue
+    if (value != null) {
+      score += value * weight
+      weightSum += weight
+    }
+    terms.push({
+      feature_ref: featureRefLabel(term),
+      signal: cleanText(term.signal) || null,
+      weight,
+      value,
+      present: value != null,
+    })
+  }
+  const effective = effectiveWeightedScoreMin(weighted)
+  const weightedScore = weightSum > 0 ? score / weightSum : null
+  return {
+    weighted_score: weightedScore == null ? null : Math.round(weightedScore * 1_000_000) / 1_000_000,
+    spec_min: weighted.min,
+    effective_min: effective.min,
+    threshold_source: effective.source,
+    calibration_id: effective.calibration?.calibrationId ?? null,
+    calibration_status: effective.calibration?.status ?? null,
+    passes_weighted_score: weightedScore == null ? false : weightedScore >= effective.min,
+    terms,
+    missing_required_feature_refs: missingRequiredFeatureRefs(raw, dsl),
+  }
+}
+
 type StrategyComparisonCondition = Pick<StrategySignalCondition, 'op' | 'value'>
 
 function compareSignal(rawValue: unknown, condition: StrategyComparisonCondition): boolean {
@@ -683,7 +782,7 @@ function meetsFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeatureRefDsl
       weightSum += weight
     }
     if (weightSum <= 0) return false
-    if ((score / weightSum) < weighted.min) return false
+    if ((score / weightSum) < effectiveWeightedScoreMin(weighted).min) return false
   }
   return true
 }

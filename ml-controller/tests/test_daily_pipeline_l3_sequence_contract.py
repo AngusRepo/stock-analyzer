@@ -31,7 +31,7 @@ def test_l2_cheap_ml_node_does_not_call_l3_models():
     source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
     l2_body = source[
         source.index("async def node_l2_cheap_ml_predict"):
-        source.index("async def node_l2_core_gate")
+        source.index("def _timesfm_l175_registry_release_policy")
     ]
 
     assert "modal_client.l2_tree_batch_predict" in l2_body
@@ -44,6 +44,34 @@ def test_l2_cheap_ml_node_does_not_call_l3_models():
         "state_space_overlays_batch_predict",
     ):
         assert forbidden not in l2_body
+
+
+def test_l2_split_routes_through_timesfm_l175_sidecar_before_l2():
+    source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    assert 'g.add_node("timesfm_l175_enrich"' in source
+    assert 'g.add_edge("build_payloads",      "timesfm_l175_enrich")' in source
+    assert 'g.add_edge("timesfm_l175_enrich", "l2_cheap_ml_predict")' in source
+    assert 'build_timesfm_l175_sidecar' in source
+    assert '"ml:timesfm_l175_l2_feature_release"' in source
+    assert "_timesfm_l175_registry_release_policy" in source
+    assert "candidate_type = 'timesfm_l175_l2_feature_release'" in source
+
+
+def test_timesfm_l175_release_retrain_path_materializes_l2_features():
+    retrain = (ROOT / "routers" / "retrain_trigger.py").read_text(encoding="utf-8")
+    followup = (ROOT / "routers" / "retrain_followup.py").read_text(encoding="utf-8")
+    features = (REPO / "ml-service" / "app" / "features" / "__init__.py").read_text(encoding="utf-8")
+    batch_prediction = (REPO / "ml-service" / "app" / "batch_prediction.py").read_text(encoding="utf-8")
+
+    assert 'TIMESFM_L175_L2_FEATURE_RELEASE_CANDIDATE_TYPE = "timesfm_l175_l2_feature_release"' in retrain
+    assert "predictions.forecast_data.timesfm_sidecar.features" in retrain
+    assert '"timesfm_l175_history"' in retrain
+    assert '"timesfm_l175_l2_feature_input_active"' in retrain
+    assert "timesfm_l175_feature_release" in retrain
+    assert "candidate_type: str | None = None" in followup
+    assert "TIMESFM_L175_FEATURE_COLS" in features
+    assert 'feature_schema": "formal137+timesfm_l175"' in batch_prediction
 
 
 def test_modal_client_exposes_l3_sequence_predictors_and_resources():

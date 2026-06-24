@@ -5,6 +5,7 @@ import {
   deriveStrategyThresholdScores,
   validateStrategySpec,
 } from './strategySpec'
+import type { StrategySpec } from './strategySpec'
 import { assertOwnerCanOwn, ownerOwns } from './strategyOwnerFreeze'
 import { annotateCandidateWithStrategySpecs } from './screenerStrategyConsumer'
 import { dryRunStrategySpec, listStrategySpecs } from './strategyLab'
@@ -86,6 +87,83 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   assert(raw.factorSignals?.margin_balance === 1_200_000, 'raw parser should expose margin balance evidence')
   assert(raw.factorSignals?.finlabRevenueAcceleration === 1.4, 'raw parser should preserve discovered factor signals')
   assert(raw.technicalIndicators?.rsi14 === 58, 'raw parser should preserve discovered technical indicators')
+}
+
+{
+  const base0081: StrategySpec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'alpha_miner_pymoo_nsga3_novelty_0081',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.7,
+      featureRefs: {
+        weightedScore: {
+          min: 0.62,
+          terms: [
+            { featureRef: 'KLOW2', signal: 'factorSignals.KLOW2', weight: 0.415128 },
+            { featureRef: 'advance_ratio', signal: 'factorSignals.advance_ratio', weight: 0.117772 },
+            { featureRef: 'CNTD_20', signal: 'factorSignals.CNTD_20', weight: 0.20684 },
+            { featureRef: 'KSFT', signal: 'factorSignals.KSFT', weight: 0.260259 },
+          ],
+          calibration: {
+            schemaVersion: 'strategy-feature-ref-weighted-score-calibration-v1',
+            calibrationId: 'alpha_miner_pymoo_nsga3_novelty_0081:formal137-scale:v20260622',
+            status: 'active',
+            method: 'validation_fold_top_after_base_gates',
+            originalMin: 0.62,
+            calibratedMin: 0.382732,
+            validationFold: { startDate: '2026-06-22', endDate: '2026-06-22', excludedDates: ['2026-06-23'] },
+            targetDailyMatches: 16,
+            observed: {
+              validationRows: 820,
+              validationCompleteFeatureRows: 820,
+              validationMatchesAtOriginalMin: 0,
+              validationMatchesAtCalibratedMin: 16,
+              holdoutDate: '2026-06-23',
+              holdoutMatchesAtCalibratedMin: 11,
+            },
+            sourceRefs: ['strategy_decision_log:2026-06-22', 'holdout:2026-06-23'],
+            frozenAt: '2026-06-24T00:00:00Z',
+          },
+        },
+      },
+    },
+  }
+  const candidate = {
+    symbol: '6274',
+    current_price: 85,
+    raw_signals: {
+      volumeExpansion20: 0.916,
+      factorSignals: {
+        KLOW2: 0.73,
+        advance_ratio: 0.22,
+        CNTD_20: 0.20,
+        KSFT: 0.05,
+      },
+    },
+  }
+  const calibrated = assessCandidateAgainstStrategySpecs(candidate, [base0081])
+  assert(
+    calibrated.matches.some((match) => match.specId === 'alpha_miner_pymoo_nsga3_novelty_0081'),
+    'active 0081 formal137-scale calibration should use calibratedMin while preserving originalMin as evidence',
+  )
+
+  const shadowOnly = assessCandidateAgainstStrategySpecs(candidate, [{
+    ...base0081,
+    thresholds: {
+      ...base0081.thresholds,
+      featureRefs: {
+        weightedScore: {
+          ...base0081.thresholds.featureRefs.weightedScore,
+          calibration: {
+            ...base0081.thresholds.featureRefs.weightedScore.calibration,
+            status: 'shadow',
+          },
+        },
+      },
+    },
+  }])
+  assert(!shadowOnly.matches.length, 'shadow 0081 calibration must not affect production matching')
 }
 
 {

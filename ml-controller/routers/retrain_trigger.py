@@ -15,6 +15,7 @@ import uuid
 import logging
 import asyncio
 import tempfile
+import math
 from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -277,12 +278,23 @@ def _clean_timesfm_l175_features(features: object) -> dict[str, float] | None:
     if not isinstance(features, dict):
         return None
     cleaned: dict[str, float] = {}
+    numeric_seen = 0
     for name in TIMESFM_L175_FEATURE_NAMES:
-        raw = features.get(name)
+        source_key = name.replace("timesfm_l175_", "", 1)
+        raw = features.get(source_key)
+        if raw is None:
+            raw = features.get(name)
         try:
-            cleaned[name] = float(raw)
+            value = float(raw)
         except (TypeError, ValueError):
-            return None
+            value = 0.0
+        if not math.isfinite(value):
+            value = 0.0
+        elif raw is not None:
+            numeric_seen += 1
+        cleaned[source_key] = value
+    if numeric_seen <= 0:
+        return None
     return cleaned
 
 
@@ -297,7 +309,10 @@ def _extract_timesfm_l175_features(forecast_data: object) -> dict[str, float] | 
     sidecar = forecast_data.get("timesfm_sidecar")
     if not isinstance(sidecar, dict):
         return None
-    return _clean_timesfm_l175_features(sidecar.get("features"))
+    features = _clean_timesfm_l175_features(sidecar.get("features"))
+    if features:
+        return features
+    return _clean_timesfm_l175_features(sidecar.get("l2_feature_values"))
 
 
 def _load_timesfm_l175_history(

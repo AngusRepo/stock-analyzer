@@ -69,6 +69,10 @@ def test_timesfm_l175_release_retrain_path_materializes_l2_features():
     assert '"timesfm_l175_history"' in retrain
     assert '"timesfm_l175_l2_feature_input_active"' in retrain
     assert "timesfm_l175_feature_release" in retrain
+    assert 'source_key = name.replace("timesfm_l175_", "", 1)' in retrain
+    assert "raw = features.get(source_key)" in retrain
+    assert "cleaned[source_key] = value" in retrain
+    assert 'sidecar.get("l2_feature_values")' in retrain
     assert "candidate_type: str | None = None" in followup
     assert "TIMESFM_L175_FEATURE_COLS" in features
     assert 'feature_schema": "formal137+timesfm_l175"' in batch_prediction

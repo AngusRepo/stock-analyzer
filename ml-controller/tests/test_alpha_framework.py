@@ -481,6 +481,8 @@ def test_normalize_alpha_policy_preserves_sparse_allocator_defaults():
     assert policy["allocation"]["engine"] == "sparse_tangent_inverse_risk"
     assert policy["allocation"]["controller"] == "OnlinePortfolioBandit"
     assert policy["allocation"]["buy_signal_count"] == 3
+    assert policy["allocation"]["objective"] == "mean_variance_alpha_utility"
+    assert policy["allocation"]["risk_aversion"] > 0
     assert policy["scoring"]["market_heat_impact"] > 0
     assert policy["scoring"]["market_heat_expected_return_max"] > 0
 
@@ -492,6 +494,10 @@ def test_normalize_alpha_policy_preserves_worker_allocator_contract():
             "controller": "OnlinePortfolioBandit",
             "buySignalCount": 5,
             "slateSize": 12,
+            "alphaStrength": 1.25,
+            "riskAversion": 3.5,
+            "turnoverPenalty": 0.002,
+            "utilityIterations": 220,
         }
     })
 
@@ -499,6 +505,10 @@ def test_normalize_alpha_policy_preserves_worker_allocator_contract():
     assert policy["allocation"]["controller"] == "OnlinePortfolioBandit"
     assert policy["allocation"]["buy_signal_count"] == 5
     assert policy["allocation"]["slate_size"] == 12
+    assert policy["allocation"]["alpha_strength"] == 1.25
+    assert policy["allocation"]["risk_aversion"] == 3.5
+    assert policy["allocation"]["turnover_penalty"] == 0.002
+    assert policy["allocation"]["utility_iterations"] == 220
 
 
 def test_regime_aware_allocate_uses_policy_weights_and_slate_size():

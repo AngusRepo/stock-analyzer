@@ -402,6 +402,7 @@ def apply_cluster_exposure_cap(
     similarity_evidence: dict[str, Any],
     *,
     max_cluster_weight: float,
+    preserve_total_weight: bool = False,
 ) -> tuple[dict[str, float], bool]:
     """Cap graph-cluster exposure without adding replacement symbols."""
 
@@ -413,7 +414,12 @@ def apply_cluster_exposure_cap(
     total = sum(clean_weights.values())
     if total <= 0:
         return {}, False
-    normalized = {symbol: weight / total for symbol, weight in clean_weights.items()}
+    budget = min(1.0, total) if preserve_total_weight else 1.0
+    normalized = (
+        dict(clean_weights)
+        if preserve_total_weight
+        else {symbol: weight / total for symbol, weight in clean_weights.items()}
+    )
     cap = max(0.01, min(1.0, float(max_cluster_weight)))
     clusters = similarity_evidence.get("clusters") or []
     symbol_cluster = similarity_evidence.get("symbol_cluster") or {}
@@ -444,7 +450,7 @@ def apply_cluster_exposure_cap(
         return {}, True
 
     # Redistribute only to clusters with headroom; otherwise leave cash unallocated.
-    cash = max(0.0, 1.0 - capped_total)
+    cash = max(0.0, budget - capped_total)
     for _ in range(8):
         if cash <= 1e-12:
             break

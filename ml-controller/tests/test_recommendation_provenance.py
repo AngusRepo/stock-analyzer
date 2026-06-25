@@ -594,6 +594,8 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert allocation["buy_signal_count_role"] == "maximum_selected_count_not_preallocation_rank_cut"
     assert allocation["sparse_diagnostics"]["candidate_count"] == 1
     assert allocation["sparse_diagnostics"]["selected_count"] == 1
+    assert allocation["optimizer_objective"] == "mean_variance_alpha_utility_with_cash"
+    assert allocation["alpha_utility"]["alpha_input"] == pytest.approx(0.03)
 
 
 def test_sparse_tangent_allocation_blocks_positive_forecast_when_ml_edge_missing():
@@ -780,7 +782,7 @@ def test_sparse_tangent_allocation_does_not_pre_cut_by_buy_signal_rank():
         "positive_edge_but_zero_weight_due_to_better_alternative",
         "positive_edge_but_zero_weight_due_to_correlation",
     }
-    assert allocations["1111"]["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk"
+    assert allocations["1111"]["sparse_weight_state"] == "zero_sparse_weight_after_alpha_utility"
     assert allocations["1111"]["allocation_rank"] == 1
     assert allocations["1111"]["allocation_rank_policy"] == "diagnostic_only_not_capacity_gate"
     assert allocations["2222"]["allocation_rank"] == 2
@@ -831,7 +833,7 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
     assert all(allocation["hard_minimum_fill"] is False for allocation in allocations)
     assert all(allocation["selection_policy"] == "positive_expected_edge_sparse_weights_no_forced_fill" for allocation in allocations)
     assert all(allocation["selection_reason"] == "no_positive_expected_edge" for allocation in allocations)
-    assert all(allocation["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk" for allocation in allocations)
+    assert all(allocation["sparse_weight_state"] == "zero_sparse_weight_after_alpha_utility" for allocation in allocations)
     assert all(allocation["expected_return"] == 0.0 for allocation in allocations)
     assert all(allocation["positive_expected_edge"] is False for allocation in allocations)
     assert all("single_name_weight" in allocation for allocation in allocations)
@@ -906,6 +908,8 @@ def test_sparse_tangent_allocation_accepts_market_heat_factor_edge():
     assert allocation["market_heat_score"] == pytest.approx(0.82)
     assert allocation["market_heat_expected_return"] == pytest.approx(0.0042)
     assert allocation["positive_expected_edge"] is True
+    assert allocation["optimizer_objective"] == "mean_variance_alpha_utility_with_cash"
+    assert allocation["alpha_utility"]["net_alpha_after_cost"] == pytest.approx(0.0042)
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):

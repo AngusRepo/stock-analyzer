@@ -44,6 +44,12 @@ DEFAULT_ALPHA_POLICY: dict[str, Any] = {
         "buy_signal_count": 3,
         "slate_size": 10,
         "score_round_decimals": 1,
+        "objective": "mean_variance_alpha_utility",
+        "alpha_strength": 1.0,
+        "risk_aversion": 2.0,
+        "turnover_penalty": 0.0,
+        "l2_penalty": 0.0,
+        "utility_iterations": 180,
         "weights": {
             "bull": {
                 "trend_following": 0.35,
@@ -275,6 +281,30 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
         _camel_or_snake(raw_alloc, "scoreRoundDecimals", "score_round_decimals", alloc_default["score_round_decimals"]),
         alloc_default["score_round_decimals"],
     ))))
+    allocation_objective = str(
+        _camel_or_snake(raw_alloc, "objective", "objective", alloc_default["objective"])
+        or alloc_default["objective"]
+    ).strip()
+    alpha_strength = max(0.0, _to_float(
+        _camel_or_snake(raw_alloc, "alphaStrength", "alpha_strength", alloc_default["alpha_strength"]),
+        alloc_default["alpha_strength"],
+    ))
+    risk_aversion = max(0.0, _to_float(
+        _camel_or_snake(raw_alloc, "riskAversion", "risk_aversion", alloc_default["risk_aversion"]),
+        alloc_default["risk_aversion"],
+    ))
+    turnover_penalty = max(0.0, _to_float(
+        _camel_or_snake(raw_alloc, "turnoverPenalty", "turnover_penalty", alloc_default["turnover_penalty"]),
+        alloc_default["turnover_penalty"],
+    ))
+    l2_penalty = max(0.0, _to_float(
+        _camel_or_snake(raw_alloc, "l2Penalty", "l2_penalty", alloc_default["l2_penalty"]),
+        alloc_default["l2_penalty"],
+    ))
+    utility_iterations = int(max(40, min(500, _to_float(
+        _camel_or_snake(raw_alloc, "utilityIterations", "utility_iterations", alloc_default["utility_iterations"]),
+        alloc_default["utility_iterations"],
+    ))))
     raw_scoring = raw.get("scoring") or {}
     scoring_default = default["scoring"]
     raw_bucket_bonus = raw_scoring.get("bucketBonus") or raw_scoring.get("bucket_bonus") or {}
@@ -460,6 +490,12 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
             "buy_signal_count": buy_signal_count,
             "slate_size": slate_size,
             "score_round_decimals": score_round_decimals,
+            "objective": allocation_objective,
+            "alpha_strength": alpha_strength,
+            "risk_aversion": risk_aversion,
+            "turnover_penalty": turnover_penalty,
+            "l2_penalty": l2_penalty,
+            "utility_iterations": utility_iterations,
             "weights": weights,
         },
         "classification": classification,

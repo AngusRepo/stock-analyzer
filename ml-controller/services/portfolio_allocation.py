@@ -139,6 +139,212 @@ def _long_only_tangent_raw(
     return {}
 
 
+def _row_turnover_pressure(row: dict[str, Any]) -> float:
+    for key in ("turnover_pressure", "turnover", "expected_turnover"):
+        if key in row:
+            return max(0.0, _to_float(row.get(key), 0.0))
+    return 0.0
+
+
+def _covariance_diag(covariance: list[list[float]], size: int, var_floor: float) -> list[float]:
+    out: list[float] = []
+    for idx in range(size):
+        value = var_floor
+        if idx < len(covariance) and idx < len(covariance[idx]):
+            value = _to_float(covariance[idx][idx], var_floor)
+        out.append(max(var_floor, value))
+    return out
+
+
+def _portfolio_variance(weights: list[float], covariance: list[list[float]]) -> float:
+    total = 0.0
+    for left, left_weight in enumerate(weights):
+        if left_weight <= 0:
+            continue
+        row = covariance[left] if left < len(covariance) else []
+        for right, right_weight in enumerate(weights):
+            if right_weight <= 0 or right >= len(row):
+                continue
+            total += left_weight * right_weight * _to_float(row[right], 0.0)
+    return max(0.0, total)
+
+
+def _project_capped_budget(values: list[float], *, max_weight: float, budget: float = 1.0) -> list[float]:
+    if not values:
+        return []
+    cap = max(0.0, min(1.0, float(max_weight)))
+    budget = max(0.0, min(1.0, float(budget)))
+    clipped = [min(cap, max(0.0, value)) for value in values]
+    if sum(clipped) <= budget + 1e-12:
+        return clipped
+    low = min(value - cap for value in values)
+    high = max(values)
+    for _ in range(80):
+        mid = (low + high) / 2.0
+        projected = [min(cap, max(0.0, value - mid)) for value in values]
+        if sum(projected) > budget:
+            low = mid
+        else:
+            high = mid
+    return [min(cap, max(0.0, value - high)) for value in values]
+
+
+def _alpha_utility_raw(
+    symbols: list[str],
+    rows: list[dict[str, Any]],
+    expected_returns: list[float],
+    covariance: list[list[float]],
+    *,
+    max_weight: float,
+    daily_vol_floor: float,
+    alpha_strength: float = 1.0,
+    risk_aversion: float = 2.0,
+    turnover_penalty: float = 0.0,
+    l2_penalty: float = 0.0,
+    iterations: int = 180,
+) -> tuple[dict[str, float], dict[str, dict[str, Any]], dict[str, Any]]:
+    """Mean-variance utility allocator with cash allowed.
+
+    This keeps alpha, covariance risk, and trading friction in one objective:
+    alpha'w - risk_aversion*w'cov*w - turnover_penalty*turnover'w - l2*||w||2.
+    """
+
+    n = len(symbols)
+    var_floor = max(1e-8, daily_vol_floor * daily_vol_floor)
+    if n == 0:
+        return {}, {}, {
+            "objective": "mean_variance_alpha_utility_with_cash",
+            "portfolio_expected_return": 0.0,
+            "portfolio_variance": 0.0,
+            "portfolio_volatility": 0.0,
+            "portfolio_utility": 0.0,
+        }
+    alpha_strength = max(0.0, _to_float(alpha_strength, 1.0))
+    risk_aversion = max(0.0, _to_float(risk_aversion, 2.0))
+    turnover_penalty = max(0.0, _to_float(turnover_penalty, 0.0))
+    l2_penalty = max(0.0, _to_float(l2_penalty, 0.0))
+    iterations = max(40, min(500, int(iterations)))
+    turnover = [_row_turnover_pressure(row) for row in rows]
+    net_alpha = [
+        max(0.0, alpha_strength * max(0.0, edge) - turnover_penalty * turnover[idx])
+        for idx, edge in enumerate(expected_returns)
+    ]
+    if not any(value > 0 for value in net_alpha):
+        diagnostics = {
+            symbol: {
+                "optimizer_objective": "mean_variance_alpha_utility_with_cash",
+                "alpha_input": round(expected_returns[idx], 10),
+                "alpha_strength": round(alpha_strength, 6),
+                "net_alpha_after_cost": 0.0,
+                "individual_variance": round(_covariance_diag(covariance, n, var_floor)[idx], 10),
+                "individual_volatility": round(math.sqrt(_covariance_diag(covariance, n, var_floor)[idx]), 10),
+                "risk_aversion": round(risk_aversion, 6),
+                "risk_penalty_unit": 0.0,
+                "turnover_pressure": round(turnover[idx], 8),
+                "turnover_penalty": round(turnover_penalty, 8),
+                "l2_penalty": round(l2_penalty, 8),
+                "marginal_utility": 0.0,
+                "final_weight": 0.0,
+            }
+            for idx, symbol in enumerate(symbols)
+        }
+        return {}, diagnostics, {
+            "objective": "mean_variance_alpha_utility_with_cash",
+            "portfolio_expected_return": 0.0,
+            "portfolio_variance": 0.0,
+            "portfolio_volatility": 0.0,
+            "portfolio_utility": 0.0,
+        }
+
+    diag = _covariance_diag(covariance, n, var_floor)
+    max_row_sum = max(
+        sum(abs(_to_float(covariance[row][col], 0.0)) for col in range(min(n, len(covariance[row]))))
+        if row < len(covariance) else diag[row]
+        for row in range(n)
+    )
+    lipschitz = max(1e-6, (2.0 * risk_aversion * max_row_sum) + (2.0 * l2_penalty))
+    step = min(25.0, max(0.05, 1.0 / lipschitz))
+    weights = [0.0 for _ in range(n)]
+    for _ in range(iterations):
+        cov_w = [
+            sum(
+                _to_float(covariance[row][col], 0.0) * weights[col]
+                for col in range(n)
+                if row < len(covariance) and col < len(covariance[row])
+            )
+            for row in range(n)
+        ]
+        gradient = [
+            net_alpha[idx] - (2.0 * risk_aversion * cov_w[idx]) - (2.0 * l2_penalty * weights[idx])
+            for idx in range(n)
+        ]
+        proposal = [weights[idx] + step * gradient[idx] for idx in range(n)]
+        next_weights = _project_capped_budget(proposal, max_weight=max_weight, budget=1.0)
+        if max(abs(next_weights[idx] - weights[idx]) for idx in range(n)) < 1e-10:
+            weights = next_weights
+            break
+        weights = next_weights
+
+    raw = {
+        symbol: weight
+        for symbol, weight in zip(symbols, weights)
+        if weight > 1e-8
+    }
+    cov_w = [
+        sum(
+            _to_float(covariance[row][col], 0.0) * weights[col]
+            for col in range(n)
+            if row < len(covariance) and col < len(covariance[row])
+        )
+        for row in range(n)
+    ]
+    portfolio_expected_return = sum(expected_returns[idx] * weights[idx] for idx in range(n))
+    portfolio_variance = _portfolio_variance(weights, covariance)
+    portfolio_turnover_cost = sum(turnover_penalty * turnover[idx] * weights[idx] for idx in range(n))
+    portfolio_l2_cost = l2_penalty * sum(weight * weight for weight in weights)
+    portfolio_utility = (
+        sum(net_alpha[idx] * weights[idx] for idx in range(n))
+        - risk_aversion * portfolio_variance
+        - portfolio_l2_cost
+    )
+    diagnostics = {}
+    for idx, symbol in enumerate(symbols):
+        marginal_risk = 2.0 * risk_aversion * cov_w[idx]
+        diagnostics[symbol] = {
+            "optimizer_objective": "mean_variance_alpha_utility_with_cash",
+            "alpha_input": round(expected_returns[idx], 10),
+            "alpha_strength": round(alpha_strength, 6),
+            "net_alpha_after_cost": round(net_alpha[idx], 10),
+            "individual_variance": round(diag[idx], 10),
+            "individual_volatility": round(math.sqrt(diag[idx]), 10),
+            "risk_aversion": round(risk_aversion, 6),
+            "risk_penalty_unit": round(risk_aversion * diag[idx], 10),
+            "marginal_risk_penalty": round(marginal_risk, 10),
+            "turnover_pressure": round(turnover[idx], 8),
+            "turnover_penalty": round(turnover_penalty, 8),
+            "turnover_penalty_unit": round(turnover_penalty * turnover[idx], 10),
+            "l2_penalty": round(l2_penalty, 8),
+            "marginal_utility": round(net_alpha[idx] - marginal_risk - (2.0 * l2_penalty * weights[idx]), 10),
+            "final_weight": round(weights[idx], 10),
+        }
+    objective_packet = {
+        "objective": "mean_variance_alpha_utility_with_cash",
+        "alpha_strength": round(alpha_strength, 6),
+        "risk_aversion": round(risk_aversion, 6),
+        "turnover_penalty": round(turnover_penalty, 8),
+        "l2_penalty": round(l2_penalty, 8),
+        "portfolio_expected_return": round(portfolio_expected_return, 10),
+        "portfolio_variance": round(portfolio_variance, 10),
+        "portfolio_volatility": round(math.sqrt(portfolio_variance), 10),
+        "portfolio_turnover_cost": round(portfolio_turnover_cost, 10),
+        "portfolio_l2_cost": round(portfolio_l2_cost, 10),
+        "portfolio_utility": round(portfolio_utility, 10),
+        "cash_allowed": True,
+        "budget_used": round(sum(weights), 10),
+    }
+    return raw, diagnostics, objective_packet
+
+
 def _ranked_candidates(candidates: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
     cleaned = [row for row in candidates if _symbol(row)]
     return sorted(cleaned, key=_score, reverse=True)[: max(1, int(top_k))]
@@ -214,14 +420,21 @@ def allocate_sparse_tangent_with_evidence(
     daily_vol_floor: float = 0.01,
     cluster_edge_threshold: float | None = None,
     cluster_threshold_quantile: float = 0.9,
+    allocation_objective: str = "mean_variance_alpha_utility",
+    alpha_strength: float = 1.0,
+    risk_aversion: float = 2.0,
+    turnover_penalty: float = 0.0,
+    l2_penalty: float = 0.0,
+    utility_iterations: int = 180,
 ) -> dict[str, Any]:
-    """Long-only sparse tangent weights over the current candidate set.
+    """Long-only sparse alpha weights over the current candidate set.
 
     Expected return comes from candidate expected_return/predicted_return when
-    available. Risk uses LedoitWolf covariance shrinkage when return history is
-    complete. If covariance evidence is unavailable but positive edge exists,
-    keep the existing diagonal variance-floor risk path instead of reverting to
-    rank-topK. If positive edge is missing, return empty weights and keep cash.
+    available. The production objective keeps alpha, LedoitWolf covariance risk,
+    and turnover friction in one utility. If covariance evidence is unavailable
+    but positive edge exists, keep the diagonal variance-floor risk path instead
+    of reverting to rank-topK. If positive edge is missing, return empty weights
+    and keep cash.
     """
     # Production sparse allocation evaluates the full eligible candidate pool.
     # `top_k` is a maximum final holding count, not a pre-optimization rank gate.
@@ -260,6 +473,13 @@ def allocate_sparse_tangent_with_evidence(
         "cluster_penalty_applied": False,
         "max_cluster_weight": max_cluster_weight if max_cluster_weight is not None else max_weight,
         "unallocated_cash_weight": 1.0,
+        "allocation_objective": allocation_objective,
+        "objective_evidence": {
+            "objective": "empty_or_no_positive_edge",
+            "cash_allowed": True,
+            "budget_used": 0.0,
+        },
+        "candidate_diagnostics": {},
     }
     if not any(value > 0 for value in expected_returns):
         return empty_evidence
@@ -270,7 +490,39 @@ def allocate_sparse_tangent_with_evidence(
         daily_vol_floor=daily_vol_floor,
     )
     covariance = covariance_packet.get("covariance") or _diagonal_covariance_matrix(len(symbols), var_floor)
-    raw = _long_only_tangent_raw(symbols, expected_returns, covariance)
+    objective = str(allocation_objective or "mean_variance_alpha_utility").strip()
+    if objective in {"mean_variance_alpha_utility", "alpha_utility_sparse"}:
+        raw, candidate_diagnostics, objective_evidence = _alpha_utility_raw(
+            symbols,
+            evaluated,
+            expected_returns,
+            covariance,
+            max_weight=max_weight,
+            daily_vol_floor=daily_vol_floor,
+            alpha_strength=alpha_strength,
+            risk_aversion=risk_aversion,
+            turnover_penalty=turnover_penalty,
+            l2_penalty=l2_penalty,
+            iterations=utility_iterations,
+        )
+    else:
+        raw = _long_only_tangent_raw(symbols, expected_returns, covariance)
+        diag = _covariance_diag(covariance, len(symbols), var_floor)
+        candidate_diagnostics = {
+            symbol: {
+                "optimizer_objective": "sparse_tangent_inverse_risk_legacy",
+                "alpha_input": round(expected_returns[idx], 10),
+                "individual_variance": round(diag[idx], 10),
+                "individual_volatility": round(math.sqrt(diag[idx]), 10),
+                "final_weight": 0.0,
+            }
+            for idx, symbol in enumerate(symbols)
+        }
+        objective_evidence = {
+            "objective": "sparse_tangent_inverse_risk_legacy",
+            "cash_allowed": False,
+            "budget_used": 1.0 if raw else 0.0,
+        }
     if not any(value > 0 for value in raw.values()):
         return {
             **empty_evidence,
@@ -283,14 +535,24 @@ def allocate_sparse_tangent_with_evidence(
                 daily_vol_floor=daily_vol_floor,
             ),
             "unallocated_cash_weight": 1.0,
+            "objective_evidence": objective_evidence,
+            "candidate_diagnostics": candidate_diagnostics,
         }
-    weights = _cap_and_renormalize(raw, max_weight=max_weight)
+    if objective in {"mean_variance_alpha_utility", "alpha_utility_sparse"}:
+        weights = {
+            symbol: min(max_weight, max(0.0, float(weight)))
+            for symbol, weight in raw.items()
+            if float(weight) > 1e-8
+        }
+    else:
+        weights = _cap_and_renormalize(raw, max_weight=max_weight)
     selected_cap = max(1, int(top_k))
     if len(weights) > selected_cap:
         weights = dict(
             sorted(weights.items(), key=lambda item: (-item[1], item[0]))[:selected_cap]
         )
-        weights = _cap_and_renormalize(weights, max_weight=max_weight)
+        if objective not in {"mean_variance_alpha_utility", "alpha_utility_sparse"}:
+            weights = _cap_and_renormalize(weights, max_weight=max_weight)
     similarity = similarity_components(
         symbols,
         return_history,
@@ -303,6 +565,7 @@ def allocate_sparse_tangent_with_evidence(
         weights,
         similarity,
         max_cluster_weight=max_cluster_weight if max_cluster_weight is not None else max_weight,
+        preserve_total_weight=objective in {"mean_variance_alpha_utility", "alpha_utility_sparse"},
     )
     if cluster_penalty_applied:
         similarity = similarity_components(
@@ -314,6 +577,8 @@ def allocate_sparse_tangent_with_evidence(
             daily_vol_floor=daily_vol_floor,
         )
     unallocated_cash_weight = round(max(0.0, 1.0 - sum(capped_weights.values())), 10)
+    for symbol, diagnostic in candidate_diagnostics.items():
+        diagnostic["final_weight"] = round(float(capped_weights.get(symbol, 0.0) or 0.0), 10)
     return {
         "weights": capped_weights,
         "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
@@ -328,6 +593,13 @@ def allocate_sparse_tangent_with_evidence(
         "cluster_penalty_applied": cluster_penalty_applied,
         "max_cluster_weight": max_cluster_weight if max_cluster_weight is not None else max_weight,
         "unallocated_cash_weight": unallocated_cash_weight,
+        "allocation_objective": objective,
+        "objective_evidence": {
+            **objective_evidence,
+            "budget_used": round(sum(capped_weights.values()), 10),
+            "unallocated_cash_weight": unallocated_cash_weight,
+        },
+        "candidate_diagnostics": candidate_diagnostics,
     }
 
 

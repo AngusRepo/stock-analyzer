@@ -20,6 +20,13 @@ assert.equal(
   'champion allocation must expose up to five buy signals while maxPositions remains the hard cap',
 )
 assert.equal(
+  champion.alphaFramework.allocation.objective,
+  'mean_variance_alpha_utility',
+  'champion allocation objective must blend alpha and risk in one utility',
+)
+assert.equal(champion.alphaFramework.allocation.riskAversion, 2.0)
+assert.equal(champion.alphaFramework.scoring.marketHeatExpectedReturnMax, 0.006)
+assert.equal(
   champion.ensemble_v2.topKOverrideEnabled,
   false,
   'legacy top-k override must stay disabled in champion config',
@@ -61,6 +68,7 @@ assert.deepEqual(validateTradingConfig(restored), [], 'restored champion config 
 assert.equal(restored.alphaFramework.allocation.buySignalCount, 5)
 assert.equal(restored.alphaFramework.allocation.slateSize, 12)
 assert.equal(restored.alphaFramework.allocation.scoreRoundDecimals, 2)
+assert.equal(restored.alphaFramework.allocation.objective, 'mean_variance_alpha_utility')
 assert.equal(restored.alphaFramework.allocation.weights.bull.trend_following, 0.5)
 assert.equal(
   restored.alphaFramework.allocation.weights.bear.defensive_accumulation,

@@ -47,6 +47,12 @@ export interface AlphaFrameworkConfig {
     buySignalCount: number
     slateSize: number
     scoreRoundDecimals: number
+    objective: string
+    alphaStrength: number
+    riskAversion: number
+    turnoverPenalty: number
+    l2Penalty: number
+    utilityIterations: number
     weights: Record<AlphaFrameworkRegime, AlphaFrameworkBucketWeights>
   }
   classification: {
@@ -71,6 +77,9 @@ export interface AlphaFrameworkConfig {
     confidencePenaltyImpact: number
     confidenceMin: number
     confidenceMax: number
+    marketHeatImpact: number
+    marketHeatExpectedReturnMax: number
+    marketHeatExpectedReturnMinScore: number
   }
   executionOverlay: {
     sizingMin: number
@@ -729,6 +738,12 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
       buySignalCount: 5,
       slateSize: 10,
       scoreRoundDecimals: 1,
+      objective: 'mean_variance_alpha_utility',
+      alphaStrength: 1.0,
+      riskAversion: 2.0,
+      turnoverPenalty: 0.0,
+      l2Penalty: 0.0,
+      utilityIterations: 180,
       weights: {
         bull: {
           trend_following: 0.35,
@@ -808,6 +823,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
       confidencePenaltyImpact: 0.01,
       confidenceMin: 0.75,
       confidenceMax: 1.08,
+      marketHeatImpact: 2.0,
+      marketHeatExpectedReturnMax: 0.006,
+      marketHeatExpectedReturnMinScore: 0.35,
     },
     executionOverlay: {
       sizingMin: 0.25,
@@ -900,6 +918,12 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
       buySignalCount: rawAllocation.buySignalCount ?? rawAllocation.buy_signal_count ?? d.allocation.buySignalCount,
       slateSize: rawAllocation.slateSize ?? rawAllocation.slate_size ?? d.allocation.slateSize,
       scoreRoundDecimals: rawAllocation.scoreRoundDecimals ?? rawAllocation.score_round_decimals ?? d.allocation.scoreRoundDecimals,
+      objective: rawAllocation.objective ?? rawAllocation.allocationObjective ?? rawAllocation.allocation_objective ?? d.allocation.objective,
+      alphaStrength: rawAllocation.alphaStrength ?? rawAllocation.alpha_strength ?? d.allocation.alphaStrength,
+      riskAversion: rawAllocation.riskAversion ?? rawAllocation.risk_aversion ?? d.allocation.riskAversion,
+      turnoverPenalty: rawAllocation.turnoverPenalty ?? rawAllocation.turnover_penalty ?? d.allocation.turnoverPenalty,
+      l2Penalty: rawAllocation.l2Penalty ?? rawAllocation.l2_penalty ?? d.allocation.l2Penalty,
+      utilityIterations: rawAllocation.utilityIterations ?? rawAllocation.utility_iterations ?? d.allocation.utilityIterations,
       weights: {
         bull: mergeWeights('bull'),
         bear: mergeWeights('bear'),
@@ -936,6 +960,9 @@ export function mergeAlphaFrameworkConfig(partial?: Partial<AlphaFrameworkConfig
       confidencePenaltyImpact: rawScoring.confidencePenaltyImpact ?? rawScoring.confidence_penalty_impact ?? d.scoring.confidencePenaltyImpact,
       confidenceMin: rawScoring.confidenceMin ?? rawScoring.confidence_min ?? d.scoring.confidenceMin,
       confidenceMax: rawScoring.confidenceMax ?? rawScoring.confidence_max ?? d.scoring.confidenceMax,
+      marketHeatImpact: rawScoring.marketHeatImpact ?? rawScoring.market_heat_impact ?? d.scoring.marketHeatImpact,
+      marketHeatExpectedReturnMax: rawScoring.marketHeatExpectedReturnMax ?? rawScoring.market_heat_expected_return_max ?? d.scoring.marketHeatExpectedReturnMax,
+      marketHeatExpectedReturnMinScore: rawScoring.marketHeatExpectedReturnMinScore ?? rawScoring.market_heat_expected_return_min_score ?? d.scoring.marketHeatExpectedReturnMinScore,
     },
     executionOverlay: {
       ...d.executionOverlay,
@@ -1694,6 +1721,18 @@ export function validateTradingConfig(config: TradingConfig): string[] {
       errors.push('alphaFramework.allocation.buySignalCount must be an integer between 1 and 30')
     if (!Number.isInteger(allocation.scoreRoundDecimals) || allocation.scoreRoundDecimals < 0 || allocation.scoreRoundDecimals > 6)
       errors.push('alphaFramework.allocation.scoreRoundDecimals must be an integer between 0 and 6')
+    if (!['mean_variance_alpha_utility', 'alpha_utility_sparse', 'sparse_tangent_inverse_risk'].includes(allocation.objective))
+      errors.push('alphaFramework.allocation.objective must be mean_variance_alpha_utility, alpha_utility_sparse, or sparse_tangent_inverse_risk')
+    if (!isFiniteNumber(allocation.alphaStrength) || allocation.alphaStrength < 0 || allocation.alphaStrength > 10)
+      errors.push('alphaFramework.allocation.alphaStrength must be 0-10')
+    if (!isFiniteNumber(allocation.riskAversion) || allocation.riskAversion < 0 || allocation.riskAversion > 100)
+      errors.push('alphaFramework.allocation.riskAversion must be 0-100')
+    if (!isFiniteNumber(allocation.turnoverPenalty) || allocation.turnoverPenalty < 0 || allocation.turnoverPenalty > 1)
+      errors.push('alphaFramework.allocation.turnoverPenalty must be 0-1')
+    if (!isFiniteNumber(allocation.l2Penalty) || allocation.l2Penalty < 0 || allocation.l2Penalty > 1)
+      errors.push('alphaFramework.allocation.l2Penalty must be 0-1')
+    if (!Number.isInteger(allocation.utilityIterations) || allocation.utilityIterations < 40 || allocation.utilityIterations > 500)
+      errors.push('alphaFramework.allocation.utilityIterations must be an integer between 40 and 500')
     const regimes: AlphaFrameworkRegime[] = ['bull', 'bear', 'volatile', 'sideways']
     const buckets: AlphaFrameworkBucket[] = [
       'trend_following',
@@ -1786,6 +1825,12 @@ export function validateTradingConfig(config: TradingConfig): string[] {
       errors.push('alphaFramework.scoring.scoreMin must be <= scoreMax')
     if (!isFiniteNumber(scoring.confidenceMin) || !isFiniteNumber(scoring.confidenceMax) || scoring.confidenceMin > scoring.confidenceMax)
       errors.push('alphaFramework.scoring.confidenceMin must be <= confidenceMax')
+    if (!isFiniteNumber(scoring.marketHeatImpact) || scoring.marketHeatImpact < 0 || scoring.marketHeatImpact > 20)
+      errors.push('alphaFramework.scoring.marketHeatImpact must be 0-20')
+    if (!isFiniteNumber(scoring.marketHeatExpectedReturnMax) || scoring.marketHeatExpectedReturnMax < 0 || scoring.marketHeatExpectedReturnMax > 0.10)
+      errors.push('alphaFramework.scoring.marketHeatExpectedReturnMax must be 0-0.10')
+    if (!isFiniteNumber(scoring.marketHeatExpectedReturnMinScore) || scoring.marketHeatExpectedReturnMinScore < 0 || scoring.marketHeatExpectedReturnMinScore > 1)
+      errors.push('alphaFramework.scoring.marketHeatExpectedReturnMinScore must be 0-1')
   }
   if (!executionOverlay) {
     errors.push('alphaFramework.executionOverlay is required')

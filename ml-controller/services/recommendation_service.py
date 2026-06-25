@@ -2281,6 +2281,22 @@ def _apply_sparse_tangent_buy_selection(
                 return value
         return default
 
+    def _allocation_int(keys: list[str], default: int) -> int:
+        value = _allocation_float(keys, float(default))
+        if value is None:
+            return default
+        return int(value)
+
+    def _allocation_text(keys: list[str], default: str) -> str:
+        for key in keys:
+            raw = allocation.get(key)
+            if raw is None:
+                continue
+            text = str(raw or "").strip()
+            if text:
+                return text
+        return default
+
     max_weight = float(_allocation_float(["max_weight", "maxWeight"], 0.55) or 0.55)
     cluster_edge_threshold = _allocation_float(["cluster_edge_threshold", "clusterEdgeThreshold"], None)
     cluster_threshold_quantile = float(
@@ -2292,6 +2308,15 @@ def _apply_sparse_tangent_buy_selection(
     sector_concentration_cap = _allocation_float(["sector_concentration_cap", "sectorConcentrationCap"], 0.5)
     strategy_concentration_cap = _allocation_float(["strategy_concentration_cap", "strategyConcentrationCap"], 0.5)
     family_concentration_cap = _allocation_float(["family_concentration_cap", "familyConcentrationCap"], 0.5)
+    allocation_objective = _allocation_text(
+        ["objective", "allocationObjective", "allocation_objective"],
+        "mean_variance_alpha_utility",
+    )
+    alpha_strength = float(_allocation_float(["alpha_strength", "alphaStrength"], 1.0) or 1.0)
+    risk_aversion = float(_allocation_float(["risk_aversion", "riskAversion"], 2.0) or 2.0)
+    turnover_penalty = float(_allocation_float(["turnover_penalty", "turnoverPenalty"], 0.0) or 0.0)
+    l2_penalty = float(_allocation_float(["l2_penalty", "l2Penalty"], 0.0) or 0.0)
+    utility_iterations = max(40, min(500, _allocation_int(["utility_iterations", "utilityIterations"], 180)))
 
     def _cap_final_weight_count(weights: dict[str, Any]) -> dict[str, float]:
         cleaned: list[tuple[str, float]] = []
@@ -2328,6 +2353,11 @@ def _apply_sparse_tangent_buy_selection(
         "sector_concentration_cap": sector_concentration_cap,
         "strategy_concentration_cap": strategy_concentration_cap,
         "family_concentration_cap": family_concentration_cap,
+        "allocation_objective": allocation_objective,
+        "alpha_strength": alpha_strength,
+        "risk_aversion": risk_aversion,
+        "turnover_penalty": turnover_penalty,
+        "l2_penalty": l2_penalty,
         "diversity_loss_report_scope": "l3_to_l4_sparse_allocation_capacity_and_concentration",
     }
 
@@ -2370,6 +2400,7 @@ def _apply_sparse_tangent_buy_selection(
             "expected_return_source": expected_return_source,
             "market_heat_score": row.get("market_heat_score"),
             "market_heat_expected_return": row.get("market_heat_expected_return"),
+            "turnover_pressure": row.get("turnover_pressure") or row.get("turnover") or row.get("expected_turnover"),
         }
         allocation_candidates.append(candidate)
         if symbol:
@@ -2432,6 +2463,12 @@ def _apply_sparse_tangent_buy_selection(
             max_cluster_weight=max_cluster_weight,
             cluster_edge_threshold=cluster_edge_threshold,
             cluster_threshold_quantile=cluster_threshold_quantile,
+            allocation_objective=allocation_objective,
+            alpha_strength=alpha_strength,
+            risk_aversion=risk_aversion,
+            turnover_penalty=turnover_penalty,
+            l2_penalty=l2_penalty,
+            utility_iterations=utility_iterations,
         )
         weights = dict(allocation_result.get("weights") or {})
     else:
@@ -2470,6 +2507,8 @@ def _apply_sparse_tangent_buy_selection(
     selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
     history_coverage = sum(1 for symbol in selected_symbols if risk_history.get(symbol))
     similarity_evidence = allocation_result.get("similarity_evidence") or {}
+    objective_evidence = allocation_result.get("objective_evidence") or {}
+    allocation_diagnostics_by_symbol = allocation_result.get("candidate_diagnostics") or {}
     cluster_penalty_applied = bool(allocation_result.get("cluster_penalty_applied"))
     cluster_evidence_by_symbol = {
         symbol: symbol_cluster_evidence(symbol, similarity_evidence)
@@ -2509,6 +2548,8 @@ def _apply_sparse_tangent_buy_selection(
         "pairwise_corr_max": similarity_evidence.get("pairwise_corr_max"),
         "cluster_edge_threshold": similarity_evidence.get("edge_threshold"),
         "cluster_edge_threshold_source": similarity_evidence.get("edge_threshold_source"),
+        "allocation_objective": allocation_result.get("allocation_objective", allocation_objective),
+        "objective_evidence": objective_evidence,
     }
 
     def _float_from_row(row: dict, keys: tuple[str, ...]) -> float | None:
@@ -2547,6 +2588,12 @@ def _apply_sparse_tangent_buy_selection(
         live_backtest_divergence = _float_from_row(row, ("live_backtest_divergence", "live_vs_backtest_divergence"))
         turnover_pressure = _float_from_row(row, ("turnover_pressure", "turnover", "expected_turnover"))
         positive_expected_edge = expected_return > 0.0
+        utility_diagnostics = (
+            allocation_diagnostics_by_symbol.get(symbol)
+            if isinstance(allocation_diagnostics_by_symbol, dict)
+            else None
+        ) or {}
+        marginal_utility = _float_or_none(utility_diagnostics.get("marginal_utility"))
         if selected:
             selection_reason = "selected_positive_edge_sparse_weight"
         elif symbol and symbol not in candidate_evidence_by_symbol:
@@ -2555,12 +2602,14 @@ def _apply_sparse_tangent_buy_selection(
             selection_reason = "no_positive_expected_edge"
         elif cluster_penalty_applied:
             selection_reason = "positive_edge_but_zero_weight_due_to_correlation"
+        elif marginal_utility is not None and marginal_utility <= 0:
+            selection_reason = "positive_edge_but_nonpositive_marginal_utility"
         else:
             selection_reason = "positive_edge_but_zero_weight_due_to_better_alternative"
         sparse_weight_state = (
             "selected_positive_sparse_weight"
             if selected and single_name_weight > 0
-            else "zero_sparse_weight_after_inverse_risk"
+            else "zero_sparse_weight_after_alpha_utility"
         )
         cluster_evidence = cluster_evidence_by_symbol.get(symbol) or {}
         return {
@@ -2583,6 +2632,11 @@ def _apply_sparse_tangent_buy_selection(
             "live_backtest_divergence": None if live_backtest_divergence is None else round(live_backtest_divergence, 6),
             "turnover_pressure": None if turnover_pressure is None else round(turnover_pressure, 6),
             "selection_reason": selection_reason,
+            "optimizer_objective": utility_diagnostics.get(
+                "optimizer_objective",
+                allocation_result.get("allocation_objective", allocation_objective),
+            ),
+            "alpha_utility": utility_diagnostics,
             "cluster_id": cluster_evidence.get("cluster_id"),
             "cluster_size": cluster_evidence.get("cluster_size"),
             "cluster_exposure": cluster_evidence.get("cluster_exposure"),

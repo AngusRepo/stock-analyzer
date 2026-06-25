@@ -96,6 +96,31 @@ def test_sparse_tangent_allocation_returns_cluster_and_covariance_evidence():
     assert result["similarity_evidence"]["pairwise_corr_max"] >= 0
 
 
+def test_alpha_utility_allocator_lets_strong_alpha_compete_with_low_volatility():
+    _require_similarity_deps()
+
+    result = allocate_sparse_tangent_with_evidence(
+        [
+            {"symbol": "LOWVOL", "score": 95, "expected_return": 0.003},
+            {"symbol": "HOT", "score": 80, "expected_return": 0.012},
+        ],
+        {
+            "LOWVOL": [0.001, 0.0012, 0.0008, 0.0011, 0.0009, 0.0010],
+            "HOT": [0.045, -0.025, 0.038, -0.018, 0.052, -0.012],
+        },
+        top_k=1,
+        max_weight=0.55,
+        allocation_objective="mean_variance_alpha_utility",
+        risk_aversion=2.0,
+    )
+
+    assert set(result["weights"]) == {"HOT"}
+    assert result["allocation_objective"] == "mean_variance_alpha_utility"
+    assert result["objective_evidence"]["cash_allowed"] is True
+    assert result["candidate_diagnostics"]["HOT"]["alpha_input"] > result["candidate_diagnostics"]["LOWVOL"]["alpha_input"]
+    assert result["candidate_diagnostics"]["HOT"]["individual_volatility"] > result["candidate_diagnostics"]["LOWVOL"]["individual_volatility"]
+
+
 def test_sparse_tangent_allocation_does_not_convert_score_to_expected_return():
     result = allocate_sparse_tangent_with_evidence(
         [

@@ -170,6 +170,48 @@ async function runLinUcbMultiplierReplayTask(c: any, endDate?: string): Promise<
   return String(result.summary ?? `linucb_multiplier_replay status=${result.status ?? 'unknown'}`)
 }
 
+function assertRunDate(value?: string): string {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error('post-screener-pipeline requires date=YYYY-MM-DD')
+  }
+  return value
+}
+
+async function enqueuePostScreenerPipelineContinuation(c: any, runDate?: string): Promise<string> {
+  const triggerTime = assertRunDate(runDate)
+  const screener = await c.env.DB.prepare(`
+    SELECT run_id, final_count, emerging_count
+      FROM screener_funnel_runs
+     WHERE date = ?
+       AND status = 'success'
+     ORDER BY created_at DESC
+     LIMIT 1
+  `).bind(triggerTime).first() as { run_id?: string; final_count?: number; emerging_count?: number } | null
+
+  if (!screener?.run_id) {
+    throw new Error(`No successful screener_funnel_run found for ${triggerTime}; refusing post-screener pipeline continuation`)
+  }
+
+  const runId = `manual-post-screener-${triggerTime}-${Date.now().toString(36)}`
+  await c.env.UPDATE_QUEUE.send({
+    type: 'post_screener_pipeline',
+    cursor: 0,
+    triggerTime,
+    runId,
+    shardCount: 1,
+    attempt: 1,
+  })
+
+  return [
+    `triggered post-screener pipeline continuation for ${triggerTime}`,
+    `run_id=${runId}`,
+    `screener_run_id=${screener.run_id}`,
+    `final=${Number(screener.final_count ?? 0)}`,
+    `emerging=${Number(screener.emerging_count ?? 0)}`,
+    'callback expected',
+  ].join('; ')
+}
+
 export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
@@ -179,6 +221,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),
     recommendation: () => deps.runDailyRecommendation(requestedRunDate()),
+    'post-screener-pipeline': () => enqueuePostScreenerPipelineContinuation(c, requestedRunDate()),
     'paper-trade': () => deps.runPaperAutoTrade(),
     'morning-setup': async () => {
       const { settlePaperT2 } = await import('./cronOrchestrator')

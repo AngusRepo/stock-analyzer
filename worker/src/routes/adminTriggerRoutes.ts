@@ -11,7 +11,7 @@ interface TriggerRouteDeps {
 
 const SYNC_REQUIRED_TASKS = new Set([
   'evening-chain',
-  'update', 'pipeline',
+  'update', 'pipeline', 'post-screener-pipeline',
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'weekly-cleanup', 'weekly-backtest',

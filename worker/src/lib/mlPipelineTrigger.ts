@@ -13,9 +13,21 @@ function resolvePipelineRunDate(runDate?: string | null): string {
   return value
 }
 
-export async function runMLAndRiskV2(env: Bindings, runDate?: string | null): Promise<string> {
+export interface PipelineTriggerOptions {
+  prevalidatedEventChain?: boolean
+}
+
+export async function runMLAndRiskV2(
+  env: Bindings,
+  runDate?: string | null,
+  options: PipelineTriggerOptions = {},
+): Promise<string> {
   const twDate = resolvePipelineRunDate(runDate)
-  await assertEveningPipelineReady(env, twDate)
+  if (options.prevalidatedEventChain) {
+    await assertMarketDataReady(env.DB, twDate)
+  } else {
+    await assertEveningPipelineReady(env, twDate)
+  }
 
   const lockKey = `lock:ml-predict:${twDate}`
   const existing = await env.KV.get(lockKey)

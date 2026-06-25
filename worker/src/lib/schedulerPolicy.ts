@@ -30,6 +30,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'ml-warmup': { kind: 'trading_day', holidayGated: true, description: 'post-market ML control-plane warmup' },
   'post-pipeline-chain': { kind: 'trading_day', holidayGated: true, description: 'callback-driven verify chain after pipeline' },
   'post-verify-chain': { kind: 'trading_day', holidayGated: true, description: 'callback-driven IC/adapt/report chain after verify' },
+  'post-screener-pipeline': { kind: 'trading_day', holidayGated: true, description: 'manual repair continuation from successful screener into regime and pipeline' },
   'paper-active-postmarket': { kind: 'trading_day', holidayGated: true, description: 'non-critical paper-active promotion audit after verify/daily report' },
   pipeline: { kind: 'trading_day', holidayGated: true, description: 'post-market prediction/recommendation pipeline' },
   ml: { kind: 'trading_day', holidayGated: true, description: 'manual ML prediction alias' },

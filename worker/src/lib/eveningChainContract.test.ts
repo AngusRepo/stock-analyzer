@@ -23,6 +23,12 @@ for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', '
 
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose evening-chain')
+assert(
+  workerTasks.includes("'post-screener-pipeline'") &&
+    workerTasks.includes('enqueuePostScreenerPipelineContinuation') &&
+    workerTasks.includes("type: 'post_screener_pipeline'"),
+  'admin trigger map must expose a minimal post-screener continuation repair without rerunning the full evening chain',
+)
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
@@ -84,6 +90,13 @@ assert(
   'evening chain must not overwrite a successful in-flight pipeline trigger with success/LOCKED telemetry',
 )
 assert(
+  updateOrchestrator.includes('repairFinalizeContinuationIfNeeded') &&
+    updateOrchestrator.includes('hasSuccessfulScreenerRun') &&
+    updateOrchestrator.includes('hasPipelineEvidence') &&
+    updateOrchestrator.includes('stale-lock-repair'),
+  'indicator queue finalizer must repair stale/orphaned locks so screener seed rows cannot strand the chain before pipeline',
+)
+assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'update'") &&
     updateOrchestrator.includes('market data update ready for'),
   'runDailyUpdate must write canonical update success logs so OBS can reconcile market-data readiness separately from downstream callbacks',
@@ -113,6 +126,12 @@ assert(
 assert(
   mlPipelineTrigger.includes('regime-compute not complete'),
   'pipeline readiness must block direct triggers until same-date regime-compute writes market_regime_state',
+)
+assert(
+  mlPipelineTrigger.includes('prevalidatedEventChain') &&
+    mlPipelineTrigger.includes('assertMarketDataReady(env.DB, twDate)') &&
+    updateOrchestrator.includes('prevalidatedEventChain: true'),
+  'event-driven post-screener pipeline trigger must not depend on KV scheduler telemetry after the chain has already validated indicator/screener/regime stages',
 )
 assert(
   mlPipelineTrigger.includes('active execution') && mlPipelineTrigger.includes('return `LOCKED active execution'),

@@ -16,6 +16,10 @@ const verifyCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("const verifyCanContinue"),
   callbackRoutes.indexOf("if (body.task === 'verify-v2' && String(body.status) === 'error')"),
 )
+const postScreenerContinuationBlock = updateOrchestrator.slice(
+  updateOrchestrator.indexOf('async function continuePostScreenerPipeline'),
+  updateOrchestrator.indexOf('async function markShardComplete'),
+)
 const metaShadowBlock = postMarketChain.slice(
   postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
   postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
@@ -48,8 +52,9 @@ assert(
   'verify-v2 must receive the callback business date',
 )
 assert(
-  updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
-    updateOrchestrator.indexOf('runRegimeCompute(env, triggerTime)') < updateOrchestrator.indexOf('deps.runMLAndRiskV2(env, triggerTime)'),
+  postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
+    postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') <
+      postScreenerContinuationBlock.indexOf('deps.runMLAndRiskV2(env, triggerTime'),
   'regime-compute must run with the chain business date before pipeline/recommendation so market_regime_state is not null or future-dated',
 )
 assert(

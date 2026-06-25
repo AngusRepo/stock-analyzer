@@ -15,6 +15,7 @@ const INDICATOR_BATCH_CONCURRENCY = 4
 const NEWS_BATCH_CONCURRENCY = 2
 const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
+const FINALIZE_ORPHAN_REPAIR_DELAY_MS = 2 * 60_000
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
@@ -150,7 +151,11 @@ async function scheduleSourceReadinessRetry(
 
 type ProcessUpdateBatchDeps = {
   runMarketScreener: (env: Bindings, runDate?: string) => Promise<any>
-  runMLAndRiskV2: (env: Bindings, runDate?: string) => Promise<string>
+  runMLAndRiskV2: (
+    env: Bindings,
+    runDate?: string,
+    options?: { prevalidatedEventChain?: boolean },
+  ) => Promise<string>
 }
 
 type UpdateStockRow = {
@@ -316,14 +321,25 @@ async function finalizeUpdateChain(
   const acquired = await acquireFinalizeLock(env, triggerTime, runId)
   if (!acquired) {
     console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
+    await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
     return
   }
   await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired')
+}
 
+async function runFinalizeContinuation(
+  env: Bindings,
+  deps: ProcessUpdateBatchDeps,
+  triggerTime: string,
+  runId: string,
+  shardCount: number,
+  source: string,
+): Promise<void> {
   console.log('[Queue] All shards done. Running alert check and event-driven pipeline...')
   await logSchedulerResult(env.KV, 'indicator-queue', {
     status: 'success',
-    summary: `indicator queue complete for ${triggerTime}; run_id=${runId}; shards=${shardCount}`,
+    summary: `indicator queue complete for ${triggerTime}; run_id=${runId}; shards=${shardCount}; source=${source}`,
     duration_ms: 0,
     run_date: triggerTime,
   })
@@ -391,7 +407,7 @@ async function finalizeUpdateChain(
 
   await logSchedulerResult(env.KV, 'evening-chain', {
     status: 'running',
-    summary: `event-driven chain queued post-screener continuation for ${triggerTime}; run_id=${runId}`,
+    summary: `event-driven chain queued post-screener continuation for ${triggerTime}; run_id=${runId}; source=${source}`,
     duration_ms: 0,
     run_date: triggerTime,
   })
@@ -403,6 +419,11 @@ async function finalizeUpdateChain(
     shardCount,
     attempt: 1,
   })
+  await env.KV.put(
+    `cron:indicator-queue:${triggerTime}:${runId}:post-screener-enqueued`,
+    new Date().toISOString(),
+    { expirationTtl: 7 * 86400 },
+  ).catch((e) => console.warn('[Queue] Post-screener enqueue marker write failed:', e))
 }
 
 async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<boolean> {
@@ -427,6 +448,115 @@ async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: st
     })
     throw error
   }
+}
+
+async function loadFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<{ created_at?: string | null } | null> {
+  const lockKey = `indicator-finalize:${triggerTime}:${runId}`
+  return await env.DB.prepare(`
+    SELECT created_at
+      FROM scheduler_locks
+     WHERE lock_key = ?
+     LIMIT 1
+  `).bind(lockKey).first<{ created_at?: string | null }>()
+}
+
+function finalizeLockIsRepairable(lock: { created_at?: string | null } | null): boolean {
+  const createdAtMs = lock?.created_at ? Date.parse(lock.created_at) : NaN
+  if (!Number.isFinite(createdAtMs)) return true
+  return Date.now() - createdAtMs >= FINALIZE_ORPHAN_REPAIR_DELAY_MS
+}
+
+async function hasSuccessfulScreenerRun(db: D1Database, triggerTime: string): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT run_id
+      FROM screener_funnel_runs
+     WHERE date = ?
+       AND status = 'success'
+     ORDER BY created_at DESC
+     LIMIT 1
+  `).bind(triggerTime).first<{ run_id?: string }>()
+  return Boolean(row?.run_id)
+}
+
+async function hasPipelineEvidence(env: Bindings, triggerTime: string): Promise<boolean> {
+  const pipelineLog = await env.KV.get(`scheduler:run:pipeline:${triggerTime}`, 'json') as { status?: string } | null
+  if (['running', 'triggered', 'success'].includes(String(pipelineLog?.status ?? ''))) return true
+
+  try {
+    const prediction = await env.DB.prepare(`
+      SELECT id
+        FROM predictions
+       WHERE prediction_date = ?
+       LIMIT 1
+    `).bind(triggerTime).first<{ id?: number }>()
+    if (prediction?.id) return true
+  } catch {
+    // Older/dev databases may not have prediction_date; recommendation evidence is enough.
+  }
+
+  const recommendation = await env.DB.prepare(`
+    SELECT id
+      FROM daily_recommendations
+     WHERE date = ?
+       AND (
+         signal IS NOT NULL
+         OR COALESCE(ml_score, 0) <> 0
+         OR alpha_allocation IS NOT NULL
+       )
+     LIMIT 1
+  `).bind(triggerTime).first<{ id?: number }>()
+  return Boolean(recommendation?.id)
+}
+
+async function repairFinalizeContinuationIfNeeded(
+  env: Bindings,
+  deps: ProcessUpdateBatchDeps,
+  triggerTime: string,
+  runId: string,
+  shardCount: number,
+): Promise<void> {
+  const lock = await loadFinalizeLock(env, triggerTime, runId)
+  if (!finalizeLockIsRepairable(lock)) {
+    console.log(`[Queue] Finalize lock is recent; waiting for original finalizer ${triggerTime} ${runId}`)
+    return
+  }
+
+  if (await hasPipelineEvidence(env, triggerTime)) {
+    console.log(`[Queue] Finalize continuation already reached pipeline for ${triggerTime} ${runId}`)
+    return
+  }
+
+  if (await hasSuccessfulScreenerRun(env.DB, triggerTime)) {
+    await logSchedulerResult(env.KV, 'indicator-queue', {
+      status: 'success',
+      summary: `indicator queue finalizer repaired from existing lock for ${triggerTime}; run_id=${runId}; shards=${shardCount}`,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'running',
+      summary: `event-driven chain repaired orphaned post-screener continuation for ${triggerTime}; run_id=${runId}`,
+      duration_ms: 0,
+      run_date: triggerTime,
+    })
+    await env.UPDATE_QUEUE.send({
+      type: 'post_screener_pipeline',
+      cursor: 0,
+      triggerTime,
+      runId,
+      shardCount,
+      attempt: 1,
+    })
+    return
+  }
+
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `event-driven chain repairing stale finalizer lock before screener for ${triggerTime}; run_id=${runId}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'stale-lock-repair')
 }
 
 async function continuePostScreenerPipeline(
@@ -482,7 +612,7 @@ async function continuePostScreenerPipeline(
   }
 
   try {
-    const summary = await deps.runMLAndRiskV2(env, triggerTime)
+    const summary = await deps.runMLAndRiskV2(env, triggerTime, { prevalidatedEventChain: true })
     if (summary.trim().toUpperCase().startsWith('LOCKED')) {
       const lockedSummary = `pipeline already running for ${triggerTime}; existing run lock preserved`
       await logSchedulerResult(env.KV, 'pipeline', {

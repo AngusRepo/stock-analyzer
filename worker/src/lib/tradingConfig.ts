@@ -218,10 +218,10 @@ export interface TradingConfig {
     topNPerSector: number        // 每族群取 top N（預設 8）
     topNMomentum: number         // 動量 top N（預設 15）
     maxCandidates: number        // Bottom-up 最終候選上限（預設 25）
-    emergingMaxCandidates: number // 興櫃研究觀察候選上限（不進 pending buys，預設 24）
+    emergingMaxCandidates: number // 興櫃研究觀察候選上限（retired，預設 0）
     candidatePoolSize?: number   // Screener enrichment top pool（預設由 screenerPolicy 解析）
     mlShortlistSize?: number     // 送入 ML/recommendation 的上市櫃 shortlist（預設由 screenerPolicy 解析）
-    emergingResearchSize?: number // 興櫃研究 shortlist（預設由 screenerPolicy 解析）
+    emergingResearchSize?: number // 興櫃研究 shortlist（retired；screenerPolicy 固定為 0）
     scoreCalibrationEnabled?: boolean
     scoreCalibrationMinSize?: number
     scoreCalibrationPercentileWeight?: number
@@ -538,10 +538,10 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     topNPerSector: 8,
     topNMomentum: 15,
     maxCandidates: 25,
-    emergingMaxCandidates: 24,
+    emergingMaxCandidates: 0,
     candidatePoolSize: 120,
     mlShortlistSize: 40,
-    emergingResearchSize: 24,
+    emergingResearchSize: 0,
     scoreCalibrationEnabled: true,
     scoreCalibrationMinSize: 30,
     scoreCalibrationPercentileWeight: 0.65,

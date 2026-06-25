@@ -624,6 +624,14 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
             ON l1.symbol = sfi.symbol
          WHERE sfi.stage_preference_rank = 1
            AND COALESCE(dr.stock_id, st.id) IS NOT NULL
+           AND COALESCE(dr.recommendation_lane, '') != 'emerging_watchlist'
+           AND UPPER(COALESCE(
+                dr.market_segment,
+                CASE WHEN json_valid(sfi.evidence) THEN json_extract(sfi.evidence, '$.market_segment') END,
+                CASE WHEN json_valid(l1.evidence) THEN json_extract(l1.evidence, '$.market_segment') END,
+                st.market,
+                ''
+           )) NOT IN ('EMERGING', 'ESB', 'ROTC')
          ORDER BY COALESCE(sfi.rank, dr.rank, 999999), COALESCE(sfi.score_after, dr.score, scoring.score_after, 0) DESC
         """,
         [run_date, run_date, run_date],

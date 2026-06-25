@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Activity, BarChart3, RefreshCw, ShieldCheck, Star } from 'lucide-react'
+import { Activity, BarChart3, RefreshCw, Star } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
@@ -37,7 +37,6 @@ export function DailyRecommendationPanelV2() {
   })
   const payload = data?.payload
   const tradable = data?.tradable ?? []
-  const emerging = data?.emerging ?? []
   const explanation = AI_TOP_PICK_EXPLANATION.replace(/^名詞解釋：/, '')
 
   return (
@@ -50,7 +49,6 @@ export function DailyRecommendationPanelV2() {
               每日選股推薦
             </h2>
             <ObservabilityChip icon={BarChart3} label="tradable" value={`${tradable.length}`} tone="ok" />
-            <ObservabilityChip icon={ShieldCheck} label="research" value={`${emerging.length}`} tone="warn" />
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {payload?.date ?? today} · ML + 籌碼 + 技術 + Alpha / Risk 綜合評分
@@ -77,19 +75,19 @@ export function DailyRecommendationPanelV2() {
       <RecommendationLaneExplainer />
 
       {isLoading ? (
-        <div className="grid gap-3 xl:grid-cols-2">
+        <div className="grid gap-3">
           {[1, 2, 3, 4].map((i) => (
             <div key={i} className="h-24 animate-pulse rounded-xl bg-muted/40" />
           ))}
         </div>
-      ) : tradable.length === 0 && emerging.length === 0 ? (
+      ) : tradable.length === 0 ? (
         <div className="rounded-2xl border border-[#263247] bg-[#070a10]/80 py-10 text-center text-muted-foreground">
           <Star className="mx-auto mb-2 h-8 w-8 opacity-20" />
           <p className="text-sm">尚未產出今日推薦</p>
           <p className="mt-1 text-xs">請檢查 evening-chain / pipeline / recommendation，或到 OBS 看 root cause。</p>
         </div>
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
+        <div className="grid gap-4">
           <section className="space-y-3 rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.025] p-3">
             <div className="flex items-center justify-between px-1">
               <div>
@@ -109,29 +107,6 @@ export function DailyRecommendationPanelV2() {
             ) : (
               <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-4 text-xs text-muted-foreground">
                 今日沒有通過上市櫃交易流的候選。
-              </div>
-            )}
-          </section>
-
-          <section className="space-y-3 rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
-            <div className="flex items-center justify-between px-1">
-              <div>
-                <p className="text-xs font-semibold text-amber-300">興櫃研究流</p>
-                <p className="text-[11px] text-muted-foreground">
-                  可做研究追蹤，但硬 gate 不進 morning setup / pending buys。
-                </p>
-              </div>
-              <Badge variant="outline" className="border-amber-500/30 text-[10px] text-amber-300">
-                {emerging.length} 檔
-              </Badge>
-            </div>
-            {emerging.length > 0 ? (
-              emerging.slice(0, 24).map((rec: any, i: number) => (
-                <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
-              ))
-            ) : (
-              <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4 text-xs text-muted-foreground">
-                今日沒有興櫃研究候選。
               </div>
             )}
           </section>

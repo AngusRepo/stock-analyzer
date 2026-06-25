@@ -2545,6 +2545,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
         argv.extend(["--canonical-datasets", str(payload["canonical_datasets"])])
     if payload.get("canonical_limit_per_dataset"):
         argv.extend(["--canonical-limit-per-dataset", str(int(payload["canonical_limit_per_dataset"]))])
+    if payload.get("lanes"):
+        argv.extend(["--lanes", str(payload["lanes"])])
     if payload.get("canonical_dry_run"):
         argv.append("--canonical-dry-run")
 

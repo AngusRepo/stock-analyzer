@@ -54,7 +54,6 @@ export function splitRecommendationLanes<T extends RecommendationLike>(payload: 
     ? explicitAll
     : [
         ...asArray<T>(payload?.tradable_recommendations ?? payload?.recommendations ?? payload?.data),
-        ...asArray<T>(payload?.emerging_recommendations),
         ...asArray<T>(payload?.research_only_recommendations),
       ]
 
@@ -75,7 +74,7 @@ export function splitRecommendationLanes<T extends RecommendationLike>(payload: 
     const pendingEligible = boolFromFlag(rec.eligible_for_pending_buy)
 
     if (isEmergingRecommendation(rec)) {
-      emerging.push(rec)
+      continue
     } else if (lane === 'research_only' || pendingEligible === false) {
       researchOnly.push(rec)
     } else {

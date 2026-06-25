@@ -43,8 +43,8 @@ const rows: ScreenerPriceRow[] = [
 const result = splitPriceRowsByBoard(rows)
 
 assert(
-  result.emergingResearchPrices.some((row) => row.stock_id === '3585'),
-  '3585 latest avg-price-only row should route to emerging research lane',
+  !result.emergingResearchPrices.some((row) => row.stock_id === '3585'),
+  '3585 latest avg-price-only row should not consume emerging research capacity',
 )
 assert(
   !result.allPrices.some((row) => row.stock_id === '3585'),
@@ -59,4 +59,5 @@ assert(
   '7820 historical emerging-style rows must not leak into emerging lane after OTC listing',
 )
 assert(result.laneCounts.tradable === 1, 'only 7820 should count as tradable')
-assert(result.laneCounts.emerging_watchlist === 1, 'only 3585 should count as emerging research')
+assert(result.laneCounts.emerging_watchlist === 0, 'emerging research lane should stay disabled')
+assert(result.laneCounts.research_only === 1, '3585 should count as research-only after emerging retirement')

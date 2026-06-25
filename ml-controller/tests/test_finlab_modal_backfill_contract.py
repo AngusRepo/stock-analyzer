@@ -22,6 +22,7 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert "FINLAB_CONTROLLER_D1_QUERY_URL" in modal_app
     assert "X-Controller-Token" in modal_app
     assert "continue_evening_chain" in modal_app
+    assert '"--lanes"' in modal_app
     assert "def spawn_finlab_v4_backfill(payload: dict)" in modal_client
     assert '"status": "triggered"' in modal_client
     assert "callback_url" in finlab_router

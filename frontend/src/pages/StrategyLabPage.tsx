@@ -489,7 +489,7 @@ function StrategyLearningPanel({
           </div>
         </div>
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-black/20">
-          <div className="grid grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr] gap-3 border-b border-slate-800 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+          <div className="hidden grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr] gap-3 border-b border-slate-800 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 xl:grid">
             <div>Strategy</div>
             <div>Outcomes</div>
             <div>Reward</div>

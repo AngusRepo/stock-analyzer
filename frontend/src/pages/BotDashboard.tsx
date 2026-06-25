@@ -513,20 +513,17 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
     queryFn: () => recommendationsApi.daily(),
     staleTime: 5 * 60_000,
   })
-  const { tradable: tradableRecs, emerging: emergingRecs } = splitRecommendationLanes<any>(recData)
+  const { tradable: tradableRecs } = splitRecommendationLanes<any>(recData)
   const recs = tradableRecs
   const strategyPortfolioHealth = recData?.strategy_portfolio_intelligence_health
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
-  if (!recs.length && !emergingRecs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
+  if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
   return (
     <div className="bot-fallback-recommendations space-y-3">
       <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
           tradable {recs.length}
-        </Badge>
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 bg-amber-500/10 text-amber-300">
-          research {emergingRecs.length}
         </Badge>
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
@@ -548,7 +545,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
         <span className="text-muted-foreground/70">Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.</span>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1.05fr)_minmax(300px,0.95fr)]">
+      <div className="grid grid-cols-1 gap-3">
         <div className="space-y-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
           <div className="flex items-center justify-between px-1">
             <div>
@@ -572,31 +569,6 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
             </div>
           ))}
           {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有上市櫃交易候選。</div>}
-        </div>
-
-        <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-2">
-          <div className="flex items-center justify-between gap-3 px-1">
-            <div>
-              <p className="text-[11px] font-semibold text-amber-300">興櫃觀察名單</p>
-              <p className="text-[10px] text-muted-foreground/70">研究用，不進 morning setup / pending buys。</p>
-            </div>
-            <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
-              {emergingRecs.length} 檔
-            </Badge>
-          </div>
-          {emergingRecs.slice(0, 12).map((r: any, idx: number) => (
-            <div key={`emerging-${r.symbol}`} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-amber-500/40 rounded-xl' : ''}`}>
-              <RecommendationCard rec={r} rank={idx + 1} />
-              <button
-                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                title="查看 K 線"
-              >
-                <Activity className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-          {!emergingRecs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有興櫃研究候選。</div>}
         </div>
       </div>
     </div>
@@ -1388,7 +1360,7 @@ export default function BotDashboard() {
           <div className="p-3">
             <WorkstationFlow
               steps={[
-                { label: '每日候選', detail: '收盤後 pipeline 產出上市櫃交易候選；興櫃只進研究流。', tone: 'info' },
+                { label: '每日候選', detail: '收盤後 pipeline 只產出上市櫃交易候選。', tone: 'info' },
                 { label: '晨間設定', detail: '下一交易日才把交易候選轉成 base ready，不用凌晨重跑寫錯日期。', tone: 'neutral' },
                 { label: '辯論風控', detail: 'T2 / debate 通過才進 pending buys；未通過只留 reason。', tone: 'warn' },
                 { label: '報價檢查', detail: '下單前檢查即時價、處置股、流動性、追高接刀與 impossible fill。', tone: 'ok' },

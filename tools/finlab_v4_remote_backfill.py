@@ -142,6 +142,11 @@ DEFAULT_CANONICAL_DATASETS = [
     "canonical_broker_flow_daily",
     "finlab_taxonomy_tags",
 ]
+EMERGING_LANES = {
+    "emerging_price_diversity",
+    "emerging_revenue_diversity",
+    "emerging_chip_diversity",
+}
 
 OPTIONAL_NEWS_SPECS = [
     DatasetSpec(
@@ -543,7 +548,12 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
     return grouped
 
 
-def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def materialize_specs(
+    *,
+    years: int,
+    run_dir: Path,
+    lanes: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from finlab import data, login
 
     api_key = os.environ["FINLAB_API_KEY"]
@@ -553,7 +563,13 @@ def materialize_specs(*, years: int, run_dir: Path) -> tuple[list[dict[str, Any]
     dataset_summaries: list[dict[str, Any]] = []
     diff_reports: list[dict[str, Any]] = []
 
-    specs = list(CORE_SPECS)
+    requested_lanes = {str(lane).strip() for lane in lanes or [] if str(lane).strip()}
+    all_lanes = {spec.lane for spec in CORE_SPECS}
+    unknown_lanes = sorted(requested_lanes - all_lanes)
+    if unknown_lanes:
+        raise ValueError(f"unknown FinLab lanes: {','.join(unknown_lanes)}")
+
+    specs = [spec for spec in CORE_SPECS if not requested_lanes or spec.lane in requested_lanes]
     if os.environ.get("INCLUDE_FINLAB_CNYES_NEWS", "0").lower() in {"1", "true", "yes"}:
         specs.extend(OPTIONAL_NEWS_SPECS)
 
@@ -1036,6 +1052,12 @@ def parse_canonical_datasets(raw: str | None) -> list[str]:
     return values or list(DEFAULT_CANONICAL_DATASETS)
 
 
+def parse_lanes(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def default_canonical_window(*, generated_at: str, window_days: int) -> tuple[str, str]:
     end = datetime.fromisoformat(generated_at).date()
     start = end - timedelta(days=max(0, window_days))
@@ -1054,6 +1076,12 @@ def materialize_canonical_to_d1(
 ) -> dict[str, Any]:
     from services.finlab_canonical_materializer import build_d1_upsert_statements, materialize_finlab_canonical_outputs
 
+    manifest_lanes = {
+        str(dataset.get("lane") or "").strip()
+        for dataset in manifest.get("datasets") or []
+        if isinstance(dataset, dict)
+    }
+    include_emerging = bool(manifest_lanes & EMERGING_LANES)
     outputs = materialize_finlab_canonical_outputs(
         manifest["artifact_root"],
         run_id=manifest["run_id"],
@@ -1062,6 +1090,7 @@ def materialize_canonical_to_d1(
         end_date=end_date,
         limit_per_dataset=limit_per_dataset,
         datasets=datasets,
+        include_emerging=include_emerging,
     )
     statements = build_d1_upsert_statements(outputs)
     apply_result = {"total": len(statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
@@ -1119,6 +1148,7 @@ def main() -> int:
     parser.add_argument("--canonical-limit-per-dataset", type=int, default=0)
     parser.add_argument("--canonical-d1-chunk-size", type=int, default=250)
     parser.add_argument("--canonical-dry-run", action="store_true")
+    parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
     args = parser.parse_args()
 
     required_env = ["FINLAB_API_KEY"]
@@ -1136,7 +1166,8 @@ def main() -> int:
     run_dir = Path(args.output_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     generated_at = utc_now()
-    dataset_summaries, diff_reports = materialize_specs(years=args.years, run_dir=run_dir)
+    requested_lanes = parse_lanes(args.lanes)
+    dataset_summaries, diff_reports = materialize_specs(years=args.years, run_dir=run_dir, lanes=requested_lanes)
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),
@@ -1151,6 +1182,7 @@ def main() -> int:
         "lookback_years": args.years,
         "mode": "remote_summary_writeback_full_artifacts",
         "artifact_root": str(run_dir),
+        "requested_lanes": requested_lanes or None,
         "summary": summary,
         "datasets": dataset_summaries,
         "diff_reports": diff_reports,

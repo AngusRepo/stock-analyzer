@@ -136,12 +136,18 @@
   html,
   body,
   #root {
-    height: 100%;
-    overflow: hidden;
+    min-height: 100%;
+  }
+  html {
+    overflow-x: hidden;
+    scroll-behavior: smooth;
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-family: 'Inter', sans-serif;
+    min-width: 320px;
+    overflow-x: hidden;
+    text-rendering: optimizeLegibility;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -181,6 +187,28 @@
   .flex {
     min-height: 0;
     min-width: 0;
+  }
+
+  .sv-safe-shell {
+    min-height: 100dvh;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .sv-horizontal-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  @media (max-width: 767px) {
+    .sv-safe-shell table {
+      display: block;
+      max-width: 100%;
+      overflow-x: auto;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+    }
   }
 
   .bot-fallback-recommendations > div:first-child,

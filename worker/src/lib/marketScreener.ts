@@ -3881,50 +3881,57 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const truncated = afterIndustryLimit.slice(selectionTargetSize)
   const emergingMaxCandidates = screenerPolicy.sizing.emergingResearchSize
   const emergingResearchCandidates: ScreenerCandidate[] = []
-  const emergingData = buildStockData(emergingResearchPrices, allChips)
-  try {
-    const emergingScored: ScoredCandidate[] = []
-    for (const [stockId, prices] of emergingData.prices) {
-      if (prices.length < 3) continue
-      if (punishedSet.has(stockId)) continue
-      const latest = prices[prices.length - 1]
-      if (latest.close < sc.minPrice || latest.close > sc.maxPrice) continue
-      if (latest.Trading_Volume === 0) continue
-      const chipMeta = latestChipMeta(emergingData.chips.get(stockId))
-      const { base_score, chip_score, tech_score, momentum_score, score_components, reasons } = scoreMultiFactor(
-        prices, emergingData.chips.get(stockId), marketReturn5d, latest.close, cfg,
-      )
-      const info = sectorMap[stockId]
-      const taxonomy = taxonomyProfiles.get(stockId)
-      const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '?嗡?')
-      emergingScored.push({
-        symbol: stockId,
-        name: info?.name ?? stockId,
-        sector: industry,
-        score: base_score,
-        reason: reasons.slice(0, 3).join(' | ') || 'emerging research watchlist',
-        chip_score,
-        tech_score,
-        momentum_score,
-        score_components,
-        current_price: finiteOrNull(latest.close),
-        industry,
-        market_segment: 'emerging',
-        taxonomy,
-        strategy_watch_points: chipMeta ? [chipMeta] : ['chip_source:missing'],
-      })
+  const shouldScoreEmerging = emergingMaxCandidates > 0 && emergingResearchPrices.length > 0
+  const emergingData = shouldScoreEmerging
+    ? buildStockData(emergingResearchPrices, allChips)
+    : { prices: new Map(), chips: new Map() } as StockDailyData
+  if (shouldScoreEmerging) {
+    try {
+      const emergingScored: ScoredCandidate[] = []
+      for (const [stockId, prices] of emergingData.prices) {
+        if (prices.length < 3) continue
+        if (punishedSet.has(stockId)) continue
+        const latest = prices[prices.length - 1]
+        if (latest.close < sc.minPrice || latest.close > sc.maxPrice) continue
+        if (latest.Trading_Volume === 0) continue
+        const chipMeta = latestChipMeta(emergingData.chips.get(stockId))
+        const { base_score, chip_score, tech_score, momentum_score, score_components, reasons } = scoreMultiFactor(
+          prices, emergingData.chips.get(stockId), marketReturn5d, latest.close, cfg,
+        )
+        const info = sectorMap[stockId]
+        const taxonomy = taxonomyProfiles.get(stockId)
+        const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '?嗡?')
+        emergingScored.push({
+          symbol: stockId,
+          name: info?.name ?? stockId,
+          sector: industry,
+          score: base_score,
+          reason: reasons.slice(0, 3).join(' | ') || 'emerging research watchlist',
+          chip_score,
+          tech_score,
+          momentum_score,
+          score_components,
+          current_price: finiteOrNull(latest.close),
+          industry,
+          market_segment: 'emerging',
+          taxonomy,
+          strategy_watch_points: chipMeta ? [chipMeta] : ['chip_source:missing'],
+        })
+      }
+      applyScreenerScoreCalibration(emergingScored, screenerPolicy.scoreCalibration)
+      emergingResearchCandidates.push(...dedupeScreenerCandidatesBySymbol(
+        annotateCandidatesWithStrategySpecs(
+          emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
+          runtimeStrategySpecs,
+        ),
+      ))
+      debugLog.push(`[Step 5e] emerging research lane: ${emergingResearchCandidates.length}/${emergingScored.length} top ${emergingMaxCandidates}`)
+    } catch (e) {
+      console.warn('[Screener v2] Emerging research lane failed:', e)
+      debugLog.push(`[Step 5e] emerging research lane skipped (error): ${e}`)
     }
-    applyScreenerScoreCalibration(emergingScored, screenerPolicy.scoreCalibration)
-    emergingResearchCandidates.push(...dedupeScreenerCandidatesBySymbol(
-      annotateCandidatesWithStrategySpecs(
-        emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
-        runtimeStrategySpecs,
-      ),
-    ))
-    debugLog.push(`[Step 5e] emerging research lane: ${emergingResearchCandidates.length}/${emergingScored.length} top ${emergingMaxCandidates}`)
-  } catch (e) {
-    console.warn('[Screener v2] Emerging research lane failed:', e)
-    debugLog.push(`[Step 5e] emerging research lane skipped (error): ${e}`)
+  } else {
+    debugLog.push('[Step 5e] emerging research lane retired; skipped')
   }
   if (truncated.length) {
     debugLog.push(`[Step 5d] 鋡?top ${maxCandidates} ?芣嚗? 10嚗?`)

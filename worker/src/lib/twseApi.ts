@@ -1250,7 +1250,7 @@ export async function fetchEmergingStockDayAll(): Promise<StockDayAllRow[]> {
 }
 
 /**
- * 每日股價 bulk 寫入（TWSE + TPEX + 興櫃，替代 FinMind per-stock TaiwanStockPrice）
+ * 每日股價 bulk 寫入（TWSE + TPEX；興櫃已退出 daily pipeline）
  * 在 runDailyUpdate 與 bulkFetchAndStoreChipData 同步呼叫。
  */
 export async function bulkFetchAndStorePrices(
@@ -1301,10 +1301,9 @@ export async function bulkFetchAndStorePrices(
     return directRows
   }
 
-  const [twseResult, tpexRows, emergingRows] = await Promise.allSettled([
+  const [twseResult, tpexRows] = await Promise.allSettled([
     fetchTwseRows(),
     fetchTpexRows(),
-    fetchEmergingStockDayAll(),
   ])
 
   // 2026-04-09 M3 fix: TWSE 會對盤前/假日 redirect 到最近一個交易日。
@@ -1331,11 +1330,9 @@ export async function bulkFetchAndStorePrices(
   const allRows: StockDayAllRow[] = [
     ...twseRows,
     ...tpexQuoteRows,
-    ...(emergingRows.status === 'fulfilled' ? emergingRows.value : []),
   ]
   if (twseResult.status === 'rejected') console.warn('[BulkPrice] TWSE STOCK_DAY_ALL failed:', twseResult.reason)
   if (tpexRows.status === 'rejected') console.warn('[BulkPrice] TPEX DayAll failed:', tpexRows.reason)
-  if (emergingRows.status === 'rejected') console.warn('[BulkPrice] Emerging DayAll failed:', emergingRows.reason)
 
   const validRows = allRows.filter(r => r.close !== null)
   if (!validRows.length) { console.warn('[BulkPrice] No valid price rows'); return 0 }
@@ -1359,7 +1356,7 @@ export async function bulkFetchAndStorePrices(
       count += stmts.length
     }
   }
-  console.log(`[BulkPrice] Written: ${count} stock_prices rows to date=${effectiveDate} (TWSE ${twseRows.length} + TPEX ${tpexRows.status === 'fulfilled' ? tpexRows.value.length : 0} + Emerging ${emergingRows.status === 'fulfilled' ? emergingRows.value.length : 0})`)
+  console.log(`[BulkPrice] Written: ${count} stock_prices rows to date=${effectiveDate} (TWSE ${twseRows.length} + TPEX ${tpexRows.status === 'fulfilled' ? tpexRows.value.length : 0}; emerging disabled)`)
   return count
 }
 

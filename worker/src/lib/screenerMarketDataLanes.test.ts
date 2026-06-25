@@ -30,9 +30,8 @@ const split = splitPriceRowsByBoard([
 ])
 
 assert(split.allPrices.length === 1, 'listed/TWSE rows should enter the auto-tradable lane')
-assert(split.emergingResearchPrices.length === 1, 'avg-price-only rows should enter the emerging research lane')
-assert(split.emergingResearchPrices[0].stock_id === '7879', 'emerging research row should preserve symbol')
-assert(split.emergingResearchPrices[0].open === 101.5, 'emerging research OHLC adapter should use close as synthetic open')
+assert(split.emergingResearchPrices.length === 0, 'avg-price-only rows should not enter retired emerging research lane')
 assert(split.tpexSymbols.size === 0, 'stale OTC metadata must not mark emerging-style rows as TPEX tradable')
 assert(split.laneCounts.tradable === 1, 'tradable lane count should be explicit')
-assert(split.laneCounts.emerging_watchlist === 1, 'emerging lane count should be explicit')
+assert(split.laneCounts.emerging_watchlist === 0, 'emerging lane should remain disabled')
+assert(split.laneCounts.research_only === 1, 'avg-price-only rows should count as research-only')

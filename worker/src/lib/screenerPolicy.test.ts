@@ -32,7 +32,7 @@ function assert(condition: unknown, message: string): void {
 
   assert(policy.sizing.candidatePoolSize === 100, 'candidate pool size should accept adaptive delta')
   assert(policy.sizing.mlShortlistSize === 45, 'ML shortlist size should accept adaptive delta')
-  assert(policy.sizing.emergingResearchSize === 30, 'emerging research size should accept adaptive delta')
+  assert(policy.sizing.emergingResearchSize === 0, 'emerging research size should stay retired even when adaptive delta exists')
 }
 
 {

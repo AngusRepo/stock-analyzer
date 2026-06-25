@@ -673,6 +673,7 @@ def materialize_finlab_canonical_outputs(
     limit_per_dataset: int | None = None,
     generated_at: str | None = None,
     datasets: Iterable[str] | None = None,
+    include_emerging: bool = True,
 ) -> FinLabCanonicalOutputs:
     root = Path(artifact_root)
     timestamp = generated_at or utc_now()
@@ -703,7 +704,7 @@ def materialize_finlab_canonical_outputs(
         start_date=start_date,
         end_date=end_date,
         limit=limit_per_dataset,
-    ) if wants("canonical_market_daily") else []
+    ) if include_emerging and wants("canonical_market_daily") else []
     listed_chip = build_chip_rows(
         root,
         run_id=rid,
@@ -728,7 +729,7 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_broker_flow_daily") else []
-    if wants("canonical_chip_daily") or wants("canonical_broker_flow_daily"):
+    if include_emerging and (wants("canonical_chip_daily") or wants("canonical_broker_flow_daily")):
         emerging_chip, emerging_broker_flow = build_emerging_broker_rows(
             root,
             run_id=rid,
@@ -765,7 +766,7 @@ def materialize_finlab_canonical_outputs(
         start_date=start_date,
         end_date=end_date,
         limit=limit_per_dataset,
-    ) if wants("canonical_revenue_monthly") else []
+    ) if include_emerging and wants("canonical_revenue_monthly") else []
     taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
 
     output_rows: dict[str, list[dict[str, Any]]] = {}
@@ -794,6 +795,7 @@ def materialize_finlab_canonical_outputs(
             "end_date": end_date,
             "limit_per_dataset": limit_per_dataset,
             "datasets": sorted(dataset_filter) if dataset_filter else None,
+            "include_emerging": include_emerging,
         },
         "row_counts": row_counts,
     }

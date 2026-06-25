@@ -1277,6 +1277,8 @@ recommendations.get('/daily', async (c) => {
        LIMIT 1
     )
     WHERE r.date = ? AND ${FINAL_RECOMMENDATION_ROW_WHERE}
+      AND COALESCE(r.recommendation_lane, '') != 'emerging_watchlist'
+      AND UPPER(COALESCE(r.market_segment, s.market, '')) NOT IN ('EMERGING', 'ESB', 'ROTC')
     ORDER BY r.rank ASC
     LIMIT 80
   `).bind(date).all<any>()
@@ -1441,7 +1443,7 @@ recommendations.get('/daily', async (c) => {
     rec.evidence_links = evidenceLinksBySymbol.get(String(rec.symbol ?? '').trim()) ?? []
   }
   const tradableRecs = recs.filter((r: any) => r.recommendation_lane === 'tradable')
-  const emergingRecs = recs.filter((r: any) => r.recommendation_lane === 'emerging_watchlist')
+  const emergingRecs: any[] = []
   const researchOnlyRecs = recs.filter((r: any) => r.recommendation_lane === 'research_only')
   const shape = view === 'card' ? compactRecommendationForCard : (r: Record<string, any>) => r
   const tradablePayload = tradableRecs.map(shape)

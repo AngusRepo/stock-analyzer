@@ -345,7 +345,7 @@ function finLabCanonicalWindowDays(env: Bindings): number {
   return windowDays
 }
 
-const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,emerging_price_diversity,chip_diversity,institutional_amount_summary,emerging_chip_diversity'
+const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity'
 const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_broker_flow_daily'
 
 function buildFinLabBackfillRunId(years: number, runDate?: string): string {

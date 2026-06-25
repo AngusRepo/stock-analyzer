@@ -232,7 +232,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="relative flex h-screen overflow-hidden bg-[#0b0f14] text-[#e6edf3]">
+    <div className="sv-safe-shell relative flex overflow-x-hidden bg-[#0b0f14] text-[#e6edf3] lg:h-[100dvh] lg:overflow-hidden">
       <WorkstationBackdrop />
 
       <aside
@@ -243,20 +243,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-[230px] border-[#2b3a49] p-0" style={{ background: '#0c1117' }}>
+        <SheetContent side="left" className="w-[min(88vw,250px)] border-[#2b3a49] p-0" style={{ background: '#0c1117' }}>
           <SidebarNav currentPath={location} onNavigate={handleNavigate} />
         </SheetContent>
       </Sheet>
 
-      <div className="relative z-10 flex flex-1 flex-col overflow-hidden">
-        <div className="grid min-h-[48px] shrink-0 grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#2b3a49] bg-[linear-gradient(90deg,#0c1117,#171714_42%,#0d1722)] px-3">
+      <div className="relative z-10 flex min-w-0 flex-1 flex-col lg:overflow-hidden">
+        <div className="grid min-h-[48px] shrink-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 border-b border-[#2b3a49] bg-[linear-gradient(90deg,#0c1117,#171714_42%,#0d1722)] px-2 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-3 sm:px-3">
           <Button size="icon" variant="ghost" className="h-8 w-8 lg:hidden" onClick={() => setSidebarOpen(true)}>
             <Menu className="h-4 w-4" />
           </Button>
 
           <MarketTicker />
 
-          <div className="ml-auto flex min-w-0 items-center gap-2.5">
+          <div className="col-span-2 flex min-w-0 items-center justify-end gap-2.5 pb-2 sm:col-span-1 sm:ml-auto sm:pb-0">
             <FocusBar currentPath={location} unreadCount={unreadCount} />
             <div className="hidden min-w-[250px] items-center gap-2 rounded-full border border-[#2b3a49] bg-[#0b0f14] px-3 py-1.5 font-mono text-[11px] text-[#8b9bab] md:flex">
               <Command className="h-3.5 w-3.5 text-[#ffd87f]" />
@@ -274,7 +274,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <main className="relative z-10 flex-1 overflow-y-auto bg-transparent">
+        <main className="relative z-10 min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-transparent [scrollbar-gutter:stable]">
           {children}
         </main>
       </div>

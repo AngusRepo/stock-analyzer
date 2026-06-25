@@ -93,13 +93,13 @@ export function RecommendationLaneExplainer() {
           可進入 morning setup、T2/debate、pending buys 與盤中 quote sanity，這一區才會影響自動交易。
         </p>
       </div>
-      <div className="bg-[linear-gradient(135deg,#171006,#0b0d12)] p-4">
+      <div className="bg-[linear-gradient(135deg,#111821,#0b0d12)] p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-amber-200">興櫃研究流</p>
-          <WorkstationPill tone="warn">research only</WorkstationPill>
+          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-sky-200">正式候選池</p>
+          <WorkstationPill tone="info">listed + otc</WorkstationPill>
         </div>
         <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
-          可做 ML、IC、校準與研究觀察，但硬 gate 不進 morning setup、不產生 pending buys、不自動交易。
+          興櫃已退出每日選股與頁面展示，算力集中在上市櫃可交易標的；研究型資料不再佔用推薦清單空間。
         </p>
       </div>
     </div>

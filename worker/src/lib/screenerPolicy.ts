@@ -36,6 +36,7 @@ export interface ScreenerScoreCandidate {
 const CANDIDATE_POOL_DEFAULT = 120
 const CANDIDATE_POOL_MIN = 30
 const CANDIDATE_POOL_MAX = 240
+const EMERGING_RESEARCH_SIZE = 0
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -69,7 +70,6 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
   const coarseMlQueueBase = positiveInt(raw.coarseMlQueueSize, 80, 30, 160)
   const coarseMlKeepRatio = clamp(finiteNumber(raw.coarseMlKeepRatio) ?? 0.75, 0.25, 1)
   const mlShortlistBase = positiveInt(raw.mlShortlistSize ?? raw.maxCandidates, 35, 15, 80)
-  const emergingResearchBase = positiveInt(raw.emergingResearchSize ?? raw.emergingMaxCandidates, 24, 0, 80)
 
   const candidatePoolSize = applyAdaptiveDelta(
     candidatePoolBase,
@@ -85,12 +85,7 @@ export function resolveScreenerPolicy(config: TradingConfig, adaptive?: Adaptive
     applyAdaptiveDelta(mlShortlistBase, adaptiveScreener.ml_shortlist_delta, 15, 80),
     coarseMlQueueSize,
   )
-  const emergingResearchSize = applyAdaptiveDelta(
-    emergingResearchBase,
-    adaptiveScreener.emerging_research_delta,
-    0,
-    80,
-  )
+  const emergingResearchSize = EMERGING_RESEARCH_SIZE
 
   return {
     sizing: {

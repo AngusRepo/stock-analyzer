@@ -17,7 +17,7 @@ from services.finlab_canonical_materializer import (
     materialize_finlab_canonical_outputs,
     normalize_symbol,
 )
-from tools.finlab_v4_remote_backfill import default_canonical_window, parse_canonical_datasets
+from tools.finlab_v4_remote_backfill import default_canonical_window, parse_canonical_datasets, parse_lanes
 
 
 def _write(path: Path, df: pl.DataFrame) -> None:
@@ -45,6 +45,7 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
         "canonical_chip_daily",
         "finlab_taxonomy_tags",
     ]
+    assert parse_lanes("daily_price, chip_diversity") == ["daily_price", "chip_diversity"]
 
 
 def test_emerging_broker_rows_materialize_canonical_chip_and_lineage() -> None:
@@ -193,6 +194,27 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     assert statements
     assert any("INSERT INTO canonical_market_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO finlab_materialization_manifest" in sql for sql, _ in statements)
+
+
+def test_materialize_outputs_can_exclude_emerging_rows_from_daily_primary() -> None:
+    root = _root("exclude_emerging")
+    for lane in ["daily_price", "emerging_price_diversity"]:
+        _write(root / "raw" / lane / "close.parquet", pl.DataFrame({"date": ["2026-06-15"], "2330" if lane == "daily_price" else "6682": [100.0]}))
+        for field in ["open", "high", "low", "volume", "value"]:
+            _write(root / "raw" / lane / f"{field}.parquet", pl.DataFrame({"date": ["2026-06-15"], "2330" if lane == "daily_price" else "6682": [1.0]}))
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-16T00:00:00+00:00",
+        start_date="2026-06-15",
+        end_date="2026-06-15",
+        datasets=["canonical_market_daily"],
+        include_emerging=False,
+    )
+
+    assert outputs.manifest["filters"]["include_emerging"] is False
+    assert outputs.manifest["row_counts"]["canonical_market_daily"] == 1
+    assert {row["market_segment"] for row in outputs.canonical_market_daily} == {"LISTED_OTC"}
 
 
 def test_materialize_outputs_include_institutional_amount_summary() -> None:

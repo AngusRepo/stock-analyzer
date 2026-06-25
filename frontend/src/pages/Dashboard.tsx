@@ -295,7 +295,7 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
       <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
         <Star className="w-3.5 h-3.5" /> 我的自選股
       </h3>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 sm:grid-cols-3">
         {(stocks as any[]).map((s: any) => {
           const up = (s.change_pct ?? 0) >= 0
           const change = s.close && s.change_pct != null
@@ -369,7 +369,7 @@ function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => v
         <StockSearchCombobox onSelect={onSelect} />
         <div>
           <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-[#7f8ba0]">quick launch</p>
-          <div className="grid grid-cols-5 gap-1.5">
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
             {QUICK_STOCKS.map(s => (
               <button
                 key={s.symbol}
@@ -391,7 +391,7 @@ function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => v
 function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void; user: any }) {
   return (
     <div className="min-h-full">
-      <div className="w-full space-y-4 px-4 py-4">
+      <div className="w-full space-y-4 px-3 py-3 sm:px-4 sm:py-4">
 
         <MorningBriefingCard />
 
@@ -404,7 +404,7 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
         <AttentionStocksCard />
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.28fr)_minmax(360px,0.72fr)]">
-          <WorkstationPanel title="AI 候選清單" kicker="tradable lane + emerging research lane">
+          <WorkstationPanel title="AI 候選清單" kicker="listed + otc tradable lane">
             <div className="p-3">
               <DailyRecommendationPanelV2 />
             </div>
@@ -628,7 +628,7 @@ export default function Dashboard() {
         <TooltipProvider>
           <Toaster />
           <AppShell>
-            <div className="p-4 pb-0 lg:p-5 lg:pb-0">
+            <div className="p-3 pb-0 sm:p-4 sm:pb-0 lg:p-5 lg:pb-0">
               <WorkstationPageTitle
                 kicker="Morning overview"
                 title={activeStock ? `${activeStock.symbol} 研究筆記` : '晨間概覽'}
@@ -644,14 +644,14 @@ export default function Dashboard() {
             {!activeStock ? (
               <EmptyState onSelect={handleSelect} user={user} />
             ) : (
-              <div className="flex h-full">
+              <div className="flex min-h-0 flex-col lg:h-full lg:flex-row">
                 {/* Inner watchlist sidebar (desktop only) */}
                 <aside className="hidden lg:flex flex-col w-52 border-r border-border bg-card shrink-0">
                   <SidebarContent />
                 </aside>
 
                 {/* Stock detail content */}
-                <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="flex min-w-0 flex-1 flex-col lg:overflow-hidden">
                   {/* Stock Hero */}
                   <StockHero
                     stock={activeStock}
@@ -665,8 +665,8 @@ export default function Dashboard() {
                   {/* Tabs */}
                   <div className="flex-1 overflow-y-auto">
                     <Tabs defaultValue="chart" className="h-full flex flex-col">
-                      <div className="px-4 pt-3 border-b border-border bg-card shrink-0">
-                        <TabsList className="h-9 bg-transparent p-0 gap-1">
+                      <div className="sv-horizontal-scroll px-3 pt-3 border-b border-border bg-card shrink-0 sm:px-4">
+                        <TabsList className="h-9 min-w-max bg-transparent p-0 gap-1">
                           {[
                             { value: 'chart',       icon: BarChart2,  label: '圖表' },
                             { value: 'chips',        icon: Layers,     label: '籌碼技術' },

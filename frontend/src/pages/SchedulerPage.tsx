@@ -95,7 +95,7 @@ function JobRow({ job }: { job: SchedulerJob }) {
   const suspicious = suspiciousDuration(job)
   const consolidation = job.consolidation
   return (
-    <div className="grid min-h-[92px] grid-cols-[1fr_96px_92px_112px] items-center gap-2 border-b border-[#263247] px-3 py-2 font-mono text-[11px]">
+    <div className="grid min-h-[92px] grid-cols-1 gap-2 border-b border-[#263247] px-3 py-2 font-mono text-[11px] sm:grid-cols-[1fr_96px_92px_112px] sm:items-center">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
@@ -115,9 +115,11 @@ function JobRow({ job }: { job: SchedulerJob }) {
           <HistoryStrip history={job.history7d ?? []} />
         </div>
       </div>
-      <span className={suspicious ? 'text-amber-300' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
-      <span className="truncate text-[#8a92a6]">{job.rate7d || '-'}</span>
-      <span className="truncate text-right text-[#70809b]">{job.nextRun || '-'}</span>
+      <div className="grid grid-cols-3 gap-2 text-[#8a92a6] sm:contents">
+        <span className={suspicious ? 'text-amber-300' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
+        <span className="truncate">{job.rate7d || '-'}</span>
+        <span className="truncate text-right text-[#70809b]">{job.nextRun || '-'}</span>
+      </div>
     </div>
   )
 }

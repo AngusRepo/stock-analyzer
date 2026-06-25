@@ -175,7 +175,9 @@ class FakeStrategyRegistryD1 {
 
 {
   const activeSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
-  assert(activeSpecs.length === 8, 'bootstrap strategy manifest should expose exactly 8 base production strategies')
+  const candidateSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'candidate')
+  assert(activeSpecs.length === 5, 'bootstrap strategy manifest should expose exactly 5 base production strategies')
+  assert(candidateSpecs.length === 3, 'bootstrap strategy manifest should keep the demoted FinLab owners in candidate pool')
   assert(activeSpecs.filter((spec) => spec.id.startsWith('research_consolidated_')).length === 0, 'research consolidated strategies must not remain in bootstrap runtime defaults')
   assert(activeSpecs.filter((spec) => spec.id.startsWith('alphabuilders_multifactor_')).length === 1, 'bootstrap should keep only the retained AlphaBuilders production label')
   assert(activeSpecs.filter((spec) => spec.id.startsWith('alpha_miner_pymoo_nsga3_novelty_')).length === 0, 'pymoo mined strategies must live in D1 registry/migration, not TS bootstrap defaults')
@@ -218,12 +220,15 @@ async function runStrategyRegistrySeedContractTest(): Promise<void> {
   const seedReport = await seedDefaultStrategySpecRegistry(fakeDb as unknown as D1Database, {
     nowIso: '2026-06-16T00:00:00.000Z',
   })
+  const expectedActiveCount = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').length
+  const expectedCandidateCount = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'candidate').length
   const { specs, registryRowCount, activeCount } = await listStrategySpecsForLearning(fakeDb as unknown as D1Database)
   assert(seedReport.seeded === DEFAULT_STRATEGY_SPECS.length, 'seed should write the full source-approved registry manifest')
-  assert(seedReport.demoted_stale_active === 1, 'seed should retire stale generated discovery rows outside the approved active set')
+  assert(seedReport.demoted_stale_active === 1, 'seed should retire stale generated discovery rows outside the approved runtime set')
   assert(registryRowCount === DEFAULT_STRATEGY_SPECS.length + 1, 'registry should preserve retired history while exposing clean runtime specs')
   assert(specs.length === DEFAULT_STRATEGY_SPECS.length, 'runtime reader should expose the bootstrap manifest after clean seed when no mined D1 strategies are present')
-  assert(activeCount === DEFAULT_STRATEGY_SPECS.length, 'runtime reader active count should equal bootstrap manifest size after clean seed')
+  assert(activeCount === expectedActiveCount, 'runtime reader active count should equal active bootstrap manifest size after clean seed')
+  assert(specs.filter((spec) => spec.status === 'candidate').length === expectedCandidateCount, 'runtime reader should preserve candidate bootstrap specs after clean seed')
   assert(specs.every((spec) => spec.candidatePolicy && Object.keys(spec.candidatePolicy).length > 0), 'every runtime strategy must carry candidate policy from D1')
   assert(!specs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'retired discovery lane must not be visible to runtime reader')
 }

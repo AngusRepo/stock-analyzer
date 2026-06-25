@@ -14,7 +14,7 @@ function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const ACTIVE_PRODUCTION_STRATEGY_IDS = [
+const BASE_RUNTIME_STRATEGY_IDS = [
   'trend_following_seed_v1',
   'breakout_vol_expansion_seed_v1',
   'defensive_accumulation_seed_v1',
@@ -25,19 +25,44 @@ const ACTIVE_PRODUCTION_STRATEGY_IDS = [
   'alphabuilders_multifactor_revenue_quality_momentum_v1',
 ] as const
 
+const ACTIVE_PRODUCTION_STRATEGY_IDS = [
+  'trend_following_seed_v1',
+  'breakout_vol_expansion_seed_v1',
+  'defensive_accumulation_seed_v1',
+  'finlab_ai_skill_broker_accumulation_reclaim_v1',
+  'alphabuilders_multifactor_revenue_quality_momentum_v1',
+] as const
+
+const CANDIDATE_STRATEGY_IDS = [
+  'finlab_ai_skill_quality_trend_v1',
+  'finlab_ai_skill_reversion_value_v1',
+  'finlab_ai_skill_revenue_revision_breakout_v1',
+] as const
+
 const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore', 'minMomentumScore'] as const
 
 {
   const ids = DEFAULT_STRATEGY_SPECS.map((spec) => spec.id)
-  assert(DEFAULT_STRATEGY_SPECS.length === 8, 'bootstrap manifest should expose exactly 8 base production strategies')
+  const activeIds = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').map((spec) => spec.id)
+  const candidateIds = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'candidate').map((spec) => spec.id)
+  assert(DEFAULT_STRATEGY_SPECS.length === 8, 'bootstrap manifest should expose exactly 8 base runtime strategies')
   assert(
-    JSON.stringify(ids) === JSON.stringify(ACTIVE_PRODUCTION_STRATEGY_IDS),
+    JSON.stringify(ids) === JSON.stringify(BASE_RUNTIME_STRATEGY_IDS),
     `bootstrap manifest ids changed unexpectedly: ${ids.join(',')}`,
   )
-  assert(DEFAULT_STRATEGY_SPECS.every((spec) => spec.status === 'active'), 'bootstrap manifest must not contain retired/research/shadow strategies')
+  assert(
+    JSON.stringify(activeIds) === JSON.stringify(ACTIVE_PRODUCTION_STRATEGY_IDS),
+    `bootstrap active ids changed unexpectedly: ${activeIds.join(',')}`,
+  )
+  assert(
+    JSON.stringify(candidateIds) === JSON.stringify(CANDIDATE_STRATEGY_IDS),
+    `bootstrap candidate ids changed unexpectedly: ${candidateIds.join(',')}`,
+  )
+  assert(DEFAULT_STRATEGY_SPECS.every((spec) => spec.status === 'active' || spec.status === 'candidate'), 'bootstrap manifest must not contain retired/research/shadow strategies')
   assert(DEFAULT_STRATEGY_SPECS.every((spec) => spec.ownerType === 'strategy'), 'all bootstrap specs should be owned by strategy')
-  assert(DEFAULT_STRATEGY_SPECS.every((spec) => spec.promotionStatus === 'production'), 'all bootstrap specs should be production promotion status')
-  assert(ids.every((id) => ACTIVE_PRODUCTION_STRATEGY_IDS.includes(id as typeof ACTIVE_PRODUCTION_STRATEGY_IDS[number])), 'bootstrap manifest must only contain the approved 8 base strategy ids')
+  assert(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').every((spec) => spec.promotionStatus === 'production'), 'active bootstrap specs should be production promotion status')
+  assert(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'candidate').every((spec) => spec.promotionStatus === 'candidate'), 'candidate bootstrap specs should be candidate promotion status')
+  assert(ids.every((id) => BASE_RUNTIME_STRATEGY_IDS.includes(id as typeof BASE_RUNTIME_STRATEGY_IDS[number])), 'bootstrap manifest must only contain the approved 8 base strategy ids')
 }
 
 {
@@ -55,7 +80,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
-  const activeIds = new Set(DEFAULT_STRATEGY_SPECS.map((spec) => spec.id))
+  const activeIds = new Set(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').map((spec) => spec.id))
   assert([...activeIds].filter((id) => id.startsWith('alpha_miner_pymoo_nsga3_novelty_')).length === 0, 'mined strategies must live in D1 strategy_spec_registry, not TS bootstrap defaults')
   assert([...activeIds].filter((id) => id.startsWith('alphabuilders_multifactor_')).length === 1, 'only one AlphaBuilders strategy should remain production active')
 }
@@ -400,8 +425,8 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     },
   }, DEFAULT_STRATEGY_SPECS)
   assert(
-    assessment.matches.some((match) => match.specId === 'finlab_ai_skill_revenue_revision_breakout_v1'),
-    'revenue revision strategy should match raw mined revenue factors directly in production',
+    assessment.matches.some((match) => match.specId === 'finlab_ai_skill_revenue_revision_breakout_v1' && match.status === 'candidate'),
+    'revenue revision strategy should remain matchable from the candidate pool',
   )
 }
 

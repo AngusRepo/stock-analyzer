@@ -510,10 +510,10 @@ export async function retireGeneratedDiscoveryStrategySpecs(
   db: D1Database,
   nowIso = new Date().toISOString(),
 ): Promise<number> {
-  const approvedActiveIds = DEFAULT_STRATEGY_SPECS
-    .filter((spec) => spec.status === 'active')
+  const approvedRuntimeIds = DEFAULT_STRATEGY_SPECS
+    .filter((spec) => spec.status !== 'retired')
     .map((spec) => spec.id)
-  const placeholders = approvedActiveIds.length ? approvedActiveIds.map(() => '?').join(', ') : "''"
+  const placeholders = approvedRuntimeIds.length ? approvedRuntimeIds.map(() => '?').join(', ') : "''"
   const result = await db.prepare(`
     UPDATE strategy_spec_registry
        SET status='retired',
@@ -528,7 +528,7 @@ export async function retireGeneratedDiscoveryStrategySpecs(
          OR source_refs_json LIKE '%finlab_ai_skill_discovery_v1%'
          OR source_refs_json LIKE '%finlab_ai_skill%'
        )
-  `).bind(nowIso, ...approvedActiveIds).run()
+  `).bind(nowIso, ...approvedRuntimeIds).run()
   return Number((result as { meta?: { changes?: number } })?.meta?.changes ?? 0)
 }
 

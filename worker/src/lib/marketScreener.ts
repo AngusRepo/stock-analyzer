@@ -487,8 +487,36 @@ async function writeScreenerFunnel(
 ): Promise<void> {
   const metadata = JSON.stringify(input.metadata)
   const debugLog = JSON.stringify(input.debugLog.slice(-80))
+  const initialStatus = input.status === 'success' ? 'error' : input.status
+  const initialDebugLog = input.status === 'success'
+    ? JSON.stringify([...input.debugLog.slice(-79), 'funnel persistence pending item write completion'])
+    : debugLog
 
   try {
+    await env.DB.prepare(`
+      INSERT INTO screener_funnel_runs
+        (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        status=excluded.status,
+        universe_count=excluded.universe_count,
+        candidate_count=excluded.candidate_count,
+        final_count=excluded.final_count,
+        emerging_count=excluded.emerging_count,
+        metadata=excluded.metadata,
+        debug_log=excluded.debug_log
+    `).bind(
+      input.runId,
+      input.date,
+      initialStatus,
+      input.universeCount,
+      input.candidateCount,
+      input.finalCount,
+      input.emergingCount,
+      metadata,
+      initialDebugLog,
+    ).run()
+
     if (input.items.length) {
       const pipelineSeed = input.items.filter((item) => SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage))
       const auditCritical = input.items.filter((item) =>

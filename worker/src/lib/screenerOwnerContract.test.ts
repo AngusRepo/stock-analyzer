@@ -97,8 +97,8 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('SCREENER_FUNNEL_MAX_ITEMS = 5000'), 'screener funnel audit cap must keep strategy/final stages, not truncate at universe+scoring')
   assert(marketScreener.includes('SCREENER_FUNNEL_PIPELINE_SEED_STAGES'), 'screener funnel persistence must prioritize pipeline seed stages before large audit evidence')
   assert(
-    marketScreener.indexOf('INSERT INTO screener_funnel_items') < marketScreener.indexOf('INSERT INTO screener_funnel_runs'),
-    'screener funnel run must not be marked success before required item evidence is persisted',
+    marketScreener.includes("const initialStatus = input.status === 'success' ? 'error' : input.status"),
+    'screener funnel persistence must use a non-success FK anchor until required item evidence is persisted',
   )
   assert(
     marketScreener.includes("status='error'") && marketScreener.includes('throw error'),

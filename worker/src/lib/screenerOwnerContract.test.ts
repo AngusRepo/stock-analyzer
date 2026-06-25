@@ -104,6 +104,11 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
     marketScreener.includes("status='error'") && marketScreener.includes('throw error'),
     'screener funnel persistence failure must mark the run error instead of leaving a partial success run',
   )
+  assert(
+    marketScreener.includes("console.warn('[Screener v2] funnel write failed:', e)") &&
+    marketScreener.includes('throw e'),
+    'screener must fail closed when funnel evidence persistence fails because pipeline requires L1 seed evidence',
+  )
   assert(marketScreener.includes('rrg_overlay'), 'RRG must be recorded as overlay evidence, not opaque bonus text')
   assert(marketScreener.includes('latestThemeUniverse'), 'RRG overlay must align FinLab taxonomy tags to the latest sector_flow taxonomy universe')
   assert(marketScreener.includes("SELECT sector, classification, quadrant"), 'screener RRG overlay must keep sector_flow classification with the sector')

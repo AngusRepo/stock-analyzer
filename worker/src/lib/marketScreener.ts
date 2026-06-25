@@ -4527,6 +4527,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     })
   } catch (e) {
     console.warn('[Screener v2] funnel write failed:', e)
+    throw e
   }
 
   return { hotSectors: sectorHeatScores, candidates: finalCandidates, emergingResearchCandidates, debugLog }

@@ -15,7 +15,12 @@ DEFAULT_OUTPUT_DIR = ROOT / "output" / "finlab_strategy_backtests"
 SCHEMA_VERSION = "stockvision-active-strategy-spec-export-v1"
 
 
-SELECT_ACTIVE_STRATEGIES_SQL = """
+STATUS_SCOPES = {
+    "active": ("active",),
+    "runtime": ("active", "candidate", "shadow", "research"),
+}
+
+SELECT_STRATEGIES_SQL_TEMPLATE = """
 SELECT
   strategy_id AS id,
   version,
@@ -34,10 +39,21 @@ SELECT
   risk_notes_json,
   created_by
 FROM strategy_spec_registry
-WHERE status='active'
-ORDER BY strategy_id;
+WHERE status IN ({status_placeholders})
+ORDER BY CASE status
+  WHEN 'active' THEN 0
+  WHEN 'candidate' THEN 1
+  WHEN 'shadow' THEN 2
+  WHEN 'research' THEN 3
+  ELSE 4
+END, strategy_id;
 """.strip()
-SELECT_ACTIVE_STRATEGIES_SQL_ONE_LINE = " ".join(SELECT_ACTIVE_STRATEGIES_SQL.split())
+
+
+def _select_sql(status_scope: str) -> str:
+    statuses = STATUS_SCOPES[status_scope]
+    quoted = ",".join(f"'{status}'" for status in statuses)
+    return " ".join(SELECT_STRATEGIES_SQL_TEMPLATE.format(status_placeholders=quoted).split())
 
 
 def _strip_ansi(text: str) -> str:
@@ -134,9 +150,10 @@ def _strategy_spec(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_specs(specs: list[dict[str, Any]]) -> list[str]:
+def _validate_specs(specs: list[dict[str, Any]], *, status_scope: str) -> list[str]:
     errors: list[str] = []
     ids: set[str] = set()
+    allowed_statuses = set(STATUS_SCOPES[status_scope])
     for idx, spec in enumerate(specs):
         sid = str(spec.get("id") or "").strip()
         if not sid:
@@ -144,13 +161,13 @@ def _validate_specs(specs: list[dict[str, Any]]) -> list[str]:
         if sid in ids:
             errors.append(f"duplicate_id:{sid}")
         ids.add(sid)
-        if spec.get("status") != "active":
-            errors.append(f"{sid}:status_not_active")
+        if spec.get("status") not in allowed_statuses:
+            errors.append(f"{sid}:status_out_of_scope")
         if spec.get("owner") != "strategy":
             errors.append(f"{sid}:owner_not_strategy")
         if spec.get("ownerType") != "strategy":
             errors.append(f"{sid}:owner_type_not_strategy")
-        if spec.get("promotionStatus") != "production":
+        if status_scope == "active" and spec.get("promotionStatus") != "production":
             errors.append(f"{sid}:promotion_status_not_production")
         if not isinstance(spec.get("supportedRegimes"), list):
             errors.append(f"{sid}:supported_regimes_not_array")
@@ -163,7 +180,9 @@ def _validate_specs(specs: list[dict[str, Any]]) -> list[str]:
     return errors
 
 
-def export_active_strategy_specs(root: Path = ROOT) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def export_strategy_specs(root: Path = ROOT, *, status_scope: str = "active") -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if status_scope not in STATUS_SCOPES:
+        raise ValueError(f"unsupported_status_scope:{status_scope}")
     run = _run(
         [
             "npx",
@@ -174,18 +193,20 @@ def export_active_strategy_specs(root: Path = ROOT) -> tuple[list[dict[str, Any]
             "--remote",
             "--json",
             "--command",
-            SELECT_ACTIVE_STRATEGIES_SQL_ONE_LINE,
+            _select_sql(status_scope),
         ],
         root / "worker",
     )
     rows = _wrangler_results(run)
     specs = [_strategy_spec(row) for row in rows]
-    errors = _validate_specs(specs)
+    errors = _validate_specs(specs, status_scope=status_scope)
     summary = {
         "schema_version": SCHEMA_VERSION,
         "decision_effect": "read_only_d1_export",
         "production_mutation_allowed": False,
         "source": "remote_d1.strategy_spec_registry",
+        "status_scope": status_scope,
+        "included_statuses": list(STATUS_SCOPES[status_scope]),
         "strategy_count": len(specs),
         "errors": errors,
         "strategy_ids": [spec["id"] for spec in specs],
@@ -197,21 +218,27 @@ def export_active_strategy_specs(root: Path = ROOT) -> tuple[list[dict[str, Any]
     return specs, summary
 
 
+def export_active_strategy_specs(root: Path = ROOT) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return export_strategy_specs(root, status_scope="active")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export active StockVision StrategySpec rows from remote D1 as clean JSON.")
     parser.add_argument("--repo", default=str(ROOT))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--output", default=None)
     parser.add_argument("--summary-output", default=None)
+    parser.add_argument("--status-scope", choices=sorted(STATUS_SCOPES), default="active")
     args = parser.parse_args()
 
     root = Path(args.repo)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    specs, summary = export_active_strategy_specs(root)
+    specs, summary = export_strategy_specs(root, status_scope=args.status_scope)
     count = int(summary["strategy_count"])
-    output = Path(args.output) if args.output else output_dir / f"current_active_{count}_strategy_specs.json"
-    summary_output = Path(args.summary_output) if args.summary_output else output_dir / f"current_active_{count}_strategy_specs_summary.json"
+    scope = str(args.status_scope)
+    output = Path(args.output) if args.output else output_dir / f"current_{scope}_{count}_strategy_specs.json"
+    summary_output = Path(args.summary_output) if args.summary_output else output_dir / f"current_{scope}_{count}_strategy_specs_summary.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     summary_output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(specs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

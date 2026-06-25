@@ -1,0 +1,22 @@
+{
+  "json": "output\\finlab_technical_strategy12_backtests\\technical_strategy12_sii_otc_20230101_20260615.json",
+  "results_csv": "output\\finlab_technical_strategy12_backtests\\technical_strategy12_sii_otc_20230101_20260615_results.csv",
+  "pairwise_csv": "output\\finlab_technical_strategy12_backtests\\technical_strategy12_sii_otc_20230101_20260615_pairwise.csv",
+  "return_corr_csv": "output\\finlab_technical_strategy12_backtests\\technical_strategy12_sii_otc_20230101_20260615_return_corr.csv",
+  "technical12_ok": 11,
+  "active_spec_ok": 11,
+  "no_signal": [],
+  "errors": [],
+  "unsupported": [
+    {
+      "strategy_id": "stock_tech_s12_multitimeframe_smc_reclaim_v1",
+      "strategy_group": "technical12",
+      "name": "S12 multi-timeframe SMC reclaim",
+      "family_id": "SMC_STRUCTURE_RECLAIM",
+      "alpha_bucket": "breakout_vol_expansion",
+      "status": "unsupported_intraday_data",
+      "reason": "requires completed 15m/1h/4h bars, pivot confirmation, OB/FVG state, and intraday execution; daily FinLab OHLCV is not a valid proxy"
+    }
+  ],
+  "runtime_seconds": 508.895
+}

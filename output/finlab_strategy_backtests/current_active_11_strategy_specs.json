@@ -1,86 +1,5 @@
 [
   {
-    "id": "alpha_miner_pymoo_nsga3_novelty_0081",
-    "version": "strategy-spec-v1",
-    "name": "Pymoo NSGA-III novelty 0081 breadth trend impulse",
-    "status": "active",
-    "owner": "strategy",
-    "familyId": "TREND_RECLAIM_CONTINUATION",
-    "variantId": "canonical114_klow2_advance_cntd_ksft_v1",
-    "ownerType": "strategy",
-    "promotionStatus": "production",
-    "alphaBucket": "trend_following",
-    "supportedRegimes": [
-      "bull",
-      "sideways",
-      "volatile"
-    ],
-    "thesis": "Promoted mined strategy 0081: market breadth plus short-term trend and volume continuation evidence discovered by pymoo NSGA-III plus novelty search.",
-    "thresholds": {
-      "minPrice": 10,
-      "minVolumeExpansion20": 0.7,
-      "minFactorSignals": {
-        "alphaMinerPymoo0081Score": 0.62
-      }
-    },
-    "candidatePolicy": {
-      "poolQuota": 16,
-      "costBudget": 18,
-      "evidenceRequirements": [
-        "alpha_mining:pymoo_nsga3_novelty",
-        "canonical114",
-        "runtime_composite:alphaMinerPymoo0081Score"
-      ],
-      "maxMlShare": 0.2
-    },
-    "riskNotes": [
-      "Original mined factors: KLOW2 0.415128, advance_ratio 0.117772, CNTD_20 0.20684, KSFT 0.260259.",
-      "FinLab confirm: CAGR 53.0%, monthly Sharpe 1.36, max drawdown -16.5%, Calmar 3.21."
-    ],
-    "createdBy": "p5_strategy_governance"
-  },
-  {
-    "id": "alpha_miner_pymoo_nsga3_novelty_0187",
-    "version": "strategy-spec-v1",
-    "name": "Pymoo NSGA-III novelty 0187 revenue short trend",
-    "status": "active",
-    "owner": "strategy",
-    "familyId": "REVENUE_QUALITY_MOMENTUM",
-    "variantId": "revenue_mom_ma10_return5_v1",
-    "ownerType": "strategy",
-    "promotionStatus": "production",
-    "alphaBucket": "trend_following",
-    "supportedRegimes": [
-      "bull",
-      "sideways",
-      "volatile"
-    ],
-    "thesis": "Promoted mined strategy 0187: revenue momentum plus MA10 and 5-day continuation evidence discovered by pymoo NSGA-III plus novelty search.",
-    "thresholds": {
-      "minPrice": 10,
-      "minVolumeExpansion20": 0.55,
-      "minFactorSignals": {
-        "alphaMinerPymoo0187Score": 0.6
-      }
-    },
-    "candidatePolicy": {
-      "poolQuota": 16,
-      "costBudget": 18,
-      "evidenceRequirements": [
-        "alpha_mining:pymoo_nsga3_novelty",
-        "canonical114",
-        "monthly_revenue",
-        "runtime_composite:alphaMinerPymoo0187Score"
-      ],
-      "maxMlShare": 0.2
-    },
-    "riskNotes": [
-      "Original mined factors: KSFT2 0.300141, l1_monthlyRevenueMoM 0.056417, CNTN_20 0.106408, ma10_bias 0.351215, return_5d 0.185819.",
-      "FinLab confirm: CAGR 29.9%, monthly Sharpe 0.73, max drawdown -27.6%, Calmar 1.08."
-    ],
-    "createdBy": "p5_strategy_governance"
-  },
-  {
     "id": "alpha_miner_pymoo_nsga3_novelty_0193",
     "version": "strategy-spec-v1",
     "name": "Pymoo NSGA-III novelty 0193 sentiment margin flow",
@@ -100,8 +19,22 @@
     "thresholds": {
       "minPrice": 10,
       "minVolumeExpansion20": 0.5,
-      "minFactorSignals": {
-        "alphaMinerPymoo0193Score": 0.58
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "us_sentiment_score",
+              "signal": "factorSignals.us_sentiment_score",
+              "weight": 0.479025
+            },
+            {
+              "featureRef": "margin_balance",
+              "signal": "factorSignals.margin_balance",
+              "weight": 0.520975
+            }
+          ]
+        }
       }
     },
     "candidatePolicy": {
@@ -109,9 +42,9 @@
       "costBudget": 18,
       "evidenceRequirements": [
         "alpha_mining:pymoo_nsga3_novelty",
-        "us_market_signals",
-        "margin_balance",
-        "runtime_composite:alphaMinerPymoo0193Score"
+        "formal137",
+        "feature_ref:us_sentiment_score",
+        "feature_ref:margin_balance"
       ],
       "maxMlShare": 0.2
     },
@@ -137,7 +70,7 @@
       "sideways",
       "volatile"
     ],
-    "thesis": "Use monthly revenue acceleration with price or volume confirmation as an AlphaBuilders fundamental momentum label.",
+    "thesis": "Use monthly revenue acceleration with price or volume confirmation as the retained AlphaBuilders fundamental momentum label.",
     "thresholds": {
       "minPrice": 10,
       "minVolumeExpansion20": 0.7,
@@ -168,6 +101,7 @@
       "poolQuota": 18,
       "costBudget": 20,
       "evidenceRequirements": [
+        "alphabuilderstw",
         "raw_revenue_revision",
         "raw_price_structure",
         "raw_volume"
@@ -175,7 +109,7 @@
       "maxMlShare": 0.28
     },
     "riskNotes": [
-      "Fundamental hard gates avoid sparse ROE/EPS/PE fields until those feeds are complete."
+      "Production AlphaBuilders label retained because adjacent AlphaBuilders labels overlapped current owners."
     ],
     "createdBy": "p5_strategy_governance"
   },
@@ -228,10 +162,11 @@
         "raw_price_structure",
         "raw_volume",
         "raw_breakout"
-      ]
+      ],
+      "maxMlShare": 0.22
     },
     "riskNotes": [
-      "Breakout candidates need slippage and reversal checks at allocation time."
+      "Retained as the low-overlap breakout owner; L2/L3 and sparse allocation reject false breakouts."
     ],
     "createdBy": "p5_strategy_governance"
   },
@@ -266,10 +201,11 @@
         "raw_price_structure",
         "raw_chip_flow",
         "raw_broker_flow"
-      ]
+      ],
+      "maxMlShare": 0.24
     },
     "riskNotes": [
-      "Accumulation can become stale; Kalman, Markov, and portfolio risk overlays decide final sizing."
+      "Retained as the defensive chip-flow owner; L1.25 down-weights stale or crowded accumulation."
     ],
     "createdBy": "p5_strategy_governance"
   },
@@ -290,12 +226,11 @@
       "bear",
       "volatile"
     ],
-    "thesis": "Use mined broker participation persistence, low concentration and mild technical reclaim to admit accumulation names that broad scores may miss.",
+    "thesis": "Use broker participation persistence, low concentration and mild technical reclaim to admit accumulation names that broad scores may miss.",
     "thresholds": {
       "minPrice": 10,
       "minVolumeExpansion20": 0.85,
       "minBrokerNetAmount5d": 0,
-      "minBrokerCount": 5,
       "maxBrokerConcentration": 0.65,
       "minTechnicalIndicators": {
         "rsi14": 40
@@ -304,160 +239,275 @@
         "rsi14": 68
       },
       "minFactorSignals": {
-        "brokerNetAmount5d": 0,
-        "brokerCount": 5
+        "brokerNetAmount5d": 0
       }
     },
     "candidatePolicy": {
       "poolQuota": 16,
       "costBudget": 18,
       "evidenceRequirements": [
-        "finlab_ai_skill",
-        "raw_factor_mining",
-        "raw_technical_indicator_mining",
-        "raw_broker_flow"
+        "raw_broker_flow",
+        "raw_technical_indicator_mining"
       ],
       "maxMlShare": 0.2
     },
     "riskNotes": [
-      "Active breadth strategy; broker-flow candidates still require L2/L3 model and allocation rejection when edge is weak."
+      "Retained as the broker-flow variant; overlap is governed by L1.25 crowding and graph evidence."
     ],
     "createdBy": "p5_strategy_governance"
   },
   {
-    "id": "finlab_ai_skill_quality_trend_v1",
+    "id": "stock_tech_s01_55d_trend_volume_breakout_v1",
     "version": "strategy-spec-v1",
-    "name": "FinLab AI quality trend",
+    "name": "S1 55d trend volume breakout",
     "status": "active",
     "owner": "strategy",
-    "familyId": "REVENUE_QUALITY_MOMENTUM",
-    "variantId": "quality_trend_revenue_profitability_v1",
-    "ownerType": "strategy",
-    "promotionStatus": "production",
-    "alphaBucket": "trend_following",
-    "supportedRegimes": [
-      "bull",
-      "sideways",
-      "volatile"
-    ],
-    "thesis": "Use FinLab raw fundamentals, revenue growth, price trend and volume evidence to admit quality-trend candidates into L1.",
-    "thresholds": {
-      "minPrice": 10,
-      "minCloseAboveMa20Pct": 0,
-      "minVolumeExpansion20": 0.9,
-      "minRevenueGrowthYoY": 0,
-      "minEps": 0,
-      "minRoe": 3,
-      "maxPe": 45
-    },
-    "candidatePolicy": {
-      "poolQuota": 18,
-      "costBudget": 18,
-      "evidenceRequirements": [
-        "finlab_ai_skill",
-        "raw_technical",
-        "raw_revenue",
-        "raw_profitability"
-      ],
-      "maxMlShare": 0.22
-    },
-    "riskNotes": [
-      "Temporary production strategy for breadth; future FinLab AI discoveries still enter research/discovery first."
-    ],
-    "createdBy": "p5_strategy_governance"
-  },
-  {
-    "id": "finlab_ai_skill_revenue_revision_breakout_v1",
-    "version": "strategy-spec-v1",
-    "name": "FinLab AI revenue revision breakout",
-    "status": "active",
-    "owner": "strategy",
-    "familyId": "REVENUE_QUALITY_MOMENTUM",
-    "variantId": "revenue_revision_breakout_v1",
+    "familyId": "TREND_RECLAIM_CONTINUATION",
+    "variantId": "s01_55d_trend_volume_breakout_v1",
     "ownerType": "strategy",
     "promotionStatus": "production",
     "alphaBucket": "breakout_vol_expansion",
     "supportedRegimes": [
       "bull",
-      "sideways",
       "volatile"
     ],
-    "thesis": "Use FinLab-mined revenue revision factors plus raw price reclaim and volume confirmation to expand L1 beyond old score-ranked candidates.",
+    "thesis": "55-day trend and volume breakout challenger from 2026-06-25 technical StrategySpec batch.",
     "thresholds": {
       "minPrice": 10,
-      "minCloseAboveMa20Pct": 0,
-      "minVolumeExpansion20": 1,
-      "minRevenueGrowthYoY": 3,
-      "minRoe": 5,
-      "minTechnicalIndicators": {
-        "rsi14": 45,
-        "volumeExpansion20": 1.05,
-        "closeAboveMa20Pct": 0
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS01Score",
+            "op": ">=",
+            "value": 1
+          }
+        ]
       },
-      "maxTechnicalIndicators": {
-        "rsi14": 72
-      },
-      "minFactorSignals": {
-        "monthlyRevenueYoY": 8,
-        "monthlyRevenueMoM": 0,
-        "revenueGrowthYoY": 3
+      "technicalStrategy": {
+        "id": "S1",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedScore": "technicalIndicators.stockTechS01Score"
       }
     },
     "candidatePolicy": {
-      "poolQuota": 16,
-      "costBudget": 18,
+      "poolQuota": 10,
+      "costBudget": 12,
       "evidenceRequirements": [
-        "finlab_ai_skill",
-        "raw_factor_mining",
-        "raw_technical_indicator_mining",
-        "raw_revenue_revision",
-        "raw_volume"
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_price_structure",
+        "raw_volume",
+        "materialized_score:stockTechS01Score"
       ],
-      "maxMlShare": 0.2
+      "maxMlShare": 0
     },
     "riskNotes": [
-      "Active breadth strategy; future FinLab AI discoveries still enter research/discovery before normal promotion."
+      "Candidate only. FinLab research benchmark required before paper-active approval.",
+      "Runtime matching is fail-closed until stockTechS01Score is materialized into raw_signals."
     ],
     "createdBy": "p5_strategy_governance"
   },
   {
-    "id": "finlab_ai_skill_reversion_value_v1",
+    "id": "stock_tech_s02_52w_dual_momentum_v1",
     "version": "strategy-spec-v1",
-    "name": "FinLab AI reversion value",
+    "name": "S2 52w dual momentum",
     "status": "active",
     "owner": "strategy",
-    "familyId": "REVENUE_QUALITY_MOMENTUM",
-    "variantId": "quality_value_reversion_v1",
+    "familyId": "TREND_RECLAIM_CONTINUATION",
+    "variantId": "s02_52w_dual_momentum_v1",
     "ownerType": "strategy",
     "promotionStatus": "production",
-    "alphaBucket": "mean_reversion",
+    "alphaBucket": "trend_following",
     "supportedRegimes": [
-      "sideways",
-      "bear",
-      "volatile"
+      "bull",
+      "sideways"
     ],
-    "thesis": "Use raw valuation, profitability and mild reversion evidence to admit neglected value-reversion candidates that improve L1 diversity.",
+    "thesis": "52-week high and 12-1 momentum monthly challenger from 2026-06-25 technical StrategySpec batch.",
     "thresholds": {
       "minPrice": 10,
-      "minEps": 0,
-      "maxPe": 28,
-      "maxPb": 3,
-      "maxReturn20d": 0.08,
-      "minVolumeExpansion20": 0.75
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS02Score",
+            "op": ">=",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S2",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedScore": "technicalIndicators.stockTechS02Score"
+      }
     },
     "candidatePolicy": {
-      "poolQuota": 18,
-      "costBudget": 18,
+      "poolQuota": 10,
+      "costBudget": 12,
       "evidenceRequirements": [
-        "finlab_ai_skill",
-        "raw_valuation",
-        "raw_profitability",
-        "raw_reversion"
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_momentum",
+        "monthly_rebalance",
+        "materialized_score:stockTechS02Score"
       ],
-      "maxMlShare": 0.22
+      "maxMlShare": 0
     },
     "riskNotes": [
-      "Mean-reversion candidates must be capped by regime and downside risk overlays before allocation."
+      "Candidate only. Monthly strategy; compare separately from daily event strategies.",
+      "Runtime matching is fail-closed until stockTechS02Score is materialized into raw_signals."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "stock_tech_s04_ma_deduct_turn_breakout_v1",
+    "version": "strategy-spec-v1",
+    "name": "S4 MA deduct turn breakout",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "TREND_RECLAIM_CONTINUATION",
+    "variantId": "s04_ma_deduct_turn_breakout_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "trend_following",
+    "supportedRegimes": [
+      "bull",
+      "sideways"
+    ],
+    "thesis": "Moving-average deduct turn plus range breakout challenger from 2026-06-25 technical StrategySpec batch.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS04Score",
+            "op": ">=",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S4",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedScore": "technicalIndicators.stockTechS04Score"
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 12,
+      "evidenceRequirements": [
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_price_structure",
+        "raw_volume",
+        "materialized_score:stockTechS04Score"
+      ],
+      "maxMlShare": 0
+    },
+    "riskNotes": [
+      "Candidate only. FinLab benchmark is research-only, not a promotion gate override.",
+      "Runtime matching is fail-closed until stockTechS04Score is materialized into raw_signals."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "stock_tech_s06_nr7_inside_bar_breakout_v1",
+    "version": "strategy-spec-v1",
+    "name": "S6 NR7 inside bar breakout",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "VOLATILITY_CONTRACTION_BREAKOUT",
+    "variantId": "s06_nr7_inside_bar_breakout_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "breakout_vol_expansion",
+    "supportedRegimes": [
+      "bull",
+      "volatile"
+    ],
+    "thesis": "NR7 inside bar breakout challenger from 2026-06-25 technical StrategySpec batch.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS06Score",
+            "op": ">=",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S6",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedScore": "technicalIndicators.stockTechS06Score"
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 12,
+      "evidenceRequirements": [
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_price_structure",
+        "raw_volume",
+        "materialized_score:stockTechS06Score"
+      ],
+      "maxMlShare": 0
+    },
+    "riskNotes": [
+      "Candidate only. Needs slippage review because signals are breakout-at-open sensitive.",
+      "Runtime matching is fail-closed until stockTechS06Score is materialized into raw_signals."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "stock_tech_s11_gap_breakout_continuation_v1",
+    "version": "strategy-spec-v1",
+    "name": "S11 gap breakout continuation",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "VOLATILITY_CONTRACTION_BREAKOUT",
+    "variantId": "s11_gap_breakout_continuation_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "breakout_vol_expansion",
+    "supportedRegimes": [
+      "bull",
+      "volatile"
+    ],
+    "thesis": "Daily gap breakout continuation challenger from 2026-06-25 technical StrategySpec batch.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS11Score",
+            "op": ">=",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S11",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedScore": "technicalIndicators.stockTechS11Score"
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 12,
+      "evidenceRequirements": [
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_gap_pattern",
+        "raw_volume",
+        "materialized_score:stockTechS11Score"
+      ],
+      "maxMlShare": 0
+    },
+    "riskNotes": [
+      "Candidate only. Gap execution requires open/slippage validation before paper-active.",
+      "Runtime matching is fail-closed until stockTechS11Score is materialized into raw_signals."
     ],
     "createdBy": "p5_strategy_governance"
   },
@@ -511,10 +561,11 @@
         "raw_price_structure",
         "raw_volume",
         "raw_momentum"
-      ]
+      ],
+      "maxMlShare": 0.24
     },
     "riskNotes": [
-      "Trend continuation can crowd quickly; allocation and execution gates remain the final owners."
+      "Production seed retained because realized overlap stayed below the production merge threshold."
     ],
     "createdBy": "p5_strategy_governance"
   }

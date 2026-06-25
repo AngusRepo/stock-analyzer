@@ -15,6 +15,41 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
+STATUS_SCOPES = {
+    "active": {"active"},
+    "runtime": {"active", "candidate", "shadow", "research"},
+}
+
+ALPHA_MINER_SCORE_SPECS = {
+    "alphaMinerPymoo0081Score": {
+        "candidate_id": "pymoo_nsga3_novelty_0081",
+        "factor_ids": ["KLOW2", "advance_ratio", "CNTD_20", "KSFT"],
+        "weights": [0.415128, 0.117772, 0.20684, 0.260259],
+    },
+    "alphaMinerPymoo0187Score": {
+        "candidate_id": "pymoo_nsga3_novelty_0187",
+        "factor_ids": ["KSFT2", "l1_monthlyRevenueMoM", "CNTN_20", "ma10_bias", "return_5d"],
+        "weights": [0.300141, 0.056417, 0.106408, 0.351215, 0.185819],
+    },
+    "alphaMinerPymoo0193Score": {
+        "candidate_id": "pymoo_nsga3_novelty_0193",
+        "factor_ids": ["us_sentiment_score", "margin_balance"],
+        "weights": [0.479025, 0.520975],
+    },
+}
+ALPHA_MINER_FACTOR_DIRECTIONS = {
+    "KLOW2": -1.0,
+    "advance_ratio": 1.0,
+    "CNTD_20": 1.0,
+    "KSFT": -1.0,
+    "KSFT2": -1.0,
+    "l1_monthlyRevenueMoM": -1.0,
+    "CNTN_20": -1.0,
+    "ma10_bias": -1.0,
+    "return_5d": 1.0,
+    "us_sentiment_score": 1.0,
+    "margin_balance": 1.0,
+}
 
 
 def _rel(path: Path | str) -> str:
@@ -80,6 +115,171 @@ def _align(df: pd.DataFrame, index: pd.Index, columns: list[str], *, ffill: bool
 
 def _nan_panel(index: pd.Index, columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(np.nan, index=pd.to_datetime(index), columns=columns)
+
+
+def _requires_alpha_miner_scores(specs: list[dict[str, Any]]) -> bool:
+    score_keys = set(ALPHA_MINER_SCORE_SPECS)
+    for spec in specs:
+        thresholds = spec.get("thresholds") or {}
+        for group_key in ("minFactorSignals", "maxFactorSignals"):
+            if score_keys.intersection((thresholds.get(group_key) or {}).keys()):
+                return True
+        dsl = thresholds.get("dsl") or {}
+        for condition_group in ("all", "any", "not"):
+            for condition in dsl.get(condition_group) or []:
+                if _normalize_feature_key(str(condition.get("signal") or "")) in score_keys:
+                    return True
+    return False
+
+
+def _rank_pct(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.replace([np.inf, -np.inf], np.nan).rank(axis=1, pct=True)
+
+
+def _normalize_weights(weights: list[float]) -> list[float]:
+    arr = np.asarray([max(0.0, float(weight)) for weight in weights], dtype=float)
+    total = float(arr.sum())
+    if total <= 0:
+        return [1.0 / len(weights)] * len(weights)
+    return [float(weight / total) for weight in arr]
+
+
+def _safe_div(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+    return left / right.replace(0, np.nan)
+
+
+def _load_margin_balance(close: pd.DataFrame, columns: list[str]) -> tuple[pd.DataFrame, str]:
+    from finlab import data
+
+    cache_mode = os.environ.get("STOCKVISION_CHIP_FEATURE_SOURCE", "finlab_first").strip().lower()
+    cache = _load_chip_cache_panel(close, columns)
+    try:
+        raw = _align(data.get("margin_transactions:融資今日餘額"), close.index, columns, ffill=True)
+        source = "finlab:margin_transactions:融資今日餘額"
+    except Exception as exc:
+        print(f"[warn] dataset_failed margin_transactions:margin_balance: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        raw = _nan_panel(close.index, columns)
+        source = "missing"
+    if not raw.notna().to_numpy().any():
+        fallback_paths = sorted(
+            (ROOT / "data" / "finlab_remote_backfill").glob("finlab-v4-5y-*/raw/chip_diversity/margin_balance.parquet"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in fallback_paths:
+            try:
+                fallback = _align(pd.read_parquet(path), close.index, columns, ffill=True)
+            except Exception as exc:  # noqa: BLE001 - research fallback must fail soft
+                print(f"[warn] margin_balance_fallback_failed {path}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                continue
+            if fallback.notna().to_numpy().any():
+                raw = fallback
+                source = f"local_backfill:{_rel(path)}"
+                break
+    if cache is not None and cache_mode == "cache_only":
+        return cache["margin"], "chip_cache:margin_balance"
+    if cache is not None and cache_mode == "cache_first":
+        return cache["margin"].combine_first(raw), "chip_cache_first:margin_balance"
+    return raw, source
+
+
+def _alpha_miner_factor_frames(
+    close: pd.DataFrame,
+    open_: pd.DataFrame,
+    high: pd.DataFrame,
+    low: pd.DataFrame,
+    features: dict[str, pd.DataFrame],
+    columns: list[str],
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
+    open_proxy = open_.where(open_.notna(), close)
+    high_low = high - low
+    candle_body_low = open_proxy.where(open_proxy <= close, close)
+    up = (close > close.shift(1)).astype(float)
+    down = (close < close.shift(1)).astype(float)
+    advance_ratio = up.sum(axis=1) / close.notna().sum(axis=1).replace(0, np.nan)
+    margin_balance, margin_source = _load_margin_balance(close, columns)
+    constant_us_sentiment = pd.DataFrame(0.0, index=close.index, columns=columns)
+
+    frames = {
+        "KLOW2": _safe_div(candle_body_low - low, high_low).clip(0.0, 1.0),
+        "advance_ratio": pd.DataFrame(
+            np.repeat(advance_ratio.to_numpy(dtype=float)[:, None], len(columns), axis=1),
+            index=close.index,
+            columns=columns,
+        ),
+        "CNTD_20": up.rolling(20).sum().fillna(0.0) / 20.0 - down.rolling(20).sum().fillna(0.0) / 20.0,
+        "KSFT": _safe_div(2.0 * close - high - low, open_proxy).clip(-0.2, 0.2),
+        "KSFT2": _safe_div(2.0 * close - high - low, high_low).clip(-1.0, 1.0),
+        "l1_monthlyRevenueMoM": features.get("monthlyRevenueMoM", _nan_panel(close.index, columns)),
+        "CNTN_20": down.rolling(20).sum().fillna(0.0) / 20.0,
+        "ma10_bias": close / close.rolling(10).mean().replace(0, np.nan) - 1.0,
+        "return_5d": close / close.shift(5).replace(0, np.nan) - 1.0,
+        "us_sentiment_score": constant_us_sentiment,
+        "margin_balance": margin_balance,
+    }
+    return frames, {
+        "factor_source": "direct_adapter_reconstruction",
+        "formula_source": "canonical114_mresample promoted alphaMiner active specs",
+        "direction_source": "output/finlab_alpha_miner_canonical114_mresample factor_meta",
+        "margin_balance_source": margin_source,
+        "advance_ratio_source": "FinLab sii_otc close cross-section daily up ratio broadcast to symbols",
+        "us_sentiment_score_source": "constant_zero_proxy_ranked_cross_sectionally",
+        "us_sentiment_score_limitation": "non-constant historical US sentiment is not materialized in this adapter; 0193 is research-only until that feature exists.",
+    }
+
+
+def _alpha_miner_scores(
+    specs: list[dict[str, Any]],
+    args: argparse.Namespace,
+    close: pd.DataFrame,
+    open_: pd.DataFrame,
+    high: pd.DataFrame,
+    low: pd.DataFrame,
+    features: dict[str, pd.DataFrame],
+    columns: list[str],
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any] | None]:
+    if not _requires_alpha_miner_scores(specs):
+        return {}, None
+    try:
+        factor_frames, provider_info = _alpha_miner_factor_frames(close, open_, high, low, features, columns)
+        out: dict[str, pd.DataFrame] = {}
+        materialized: dict[str, Any] = {}
+        for score_key, config in ALPHA_MINER_SCORE_SPECS.items():
+            frames: list[pd.DataFrame] = []
+            missing: list[str] = []
+            weights = _normalize_weights(list(config["weights"]))
+            for factor_id, weight in zip(config["factor_ids"], weights):
+                frame = factor_frames.get(str(factor_id))
+                if frame is None or not frame.notna().to_numpy().any():
+                    missing.append(str(factor_id))
+                    continue
+                direction = float(ALPHA_MINER_FACTOR_DIRECTIONS.get(str(factor_id), 1.0))
+                frames.append(_rank_pct(frame * direction) * weight)
+            if not frames:
+                materialized[score_key] = {"status": "no_score", "missing": missing or list(config["factor_ids"])}
+                continue
+            aligned = sum(frames).replace([np.inf, -np.inf], np.nan).reindex(index=close.index, columns=columns)
+            out[score_key] = aligned
+            materialized[score_key] = {
+                "status": "ok",
+                "candidate_id": str(config["candidate_id"]),
+                "factor_ids": list(config["factor_ids"]),
+                "weights": weights,
+                "missing": missing,
+                "coverage": _safe_float(aligned.notna().mean().mean()),
+            }
+        return out, {
+            **provider_info,
+            "universe": "sii_otc",
+            "materialized": materialized,
+        }
+    except Exception as exc:  # noqa: BLE001 - alpha-miner provider must fail soft for non-alpha specs
+        print(f"[warn] alpha_miner_score_provider_failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return {}, {
+            "provider": "finlab_alpha_miner_bakeoff._build_unified_registry_factor_universe",
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 def _deadline_daily(raw: pd.DataFrame, close: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -676,10 +876,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     with open(args.spec_json, "r", encoding="utf-8-sig") as fh:
         specs = json.load(fh)
+    status_scope = str(getattr(args, "status_scope", "active"))
+    if status_scope not in STATUS_SCOPES:
+        raise ValueError(f"unsupported_status_scope:{status_scope}")
+    selected_statuses = STATUS_SCOPES[status_scope]
     selected = [
         spec
         for spec in specs
-        if spec.get("status") == "active"
+        if spec.get("status") in selected_statuses
         and (not args.exclude_alphabuilders or not str(spec.get("id", "")).startswith("alphabuilders_"))
     ]
 
@@ -697,6 +901,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     features.update(_financial_features(close, columns))
     features.update(_chip_features(close, columns))
     features.update(_sector_features(close, volume, columns))
+    alpha_miner_feature_mapping: dict[str, Any] | None = None
+    alpha_miner_features, alpha_miner_feature_mapping = _alpha_miner_scores(
+        selected,
+        args,
+        close,
+        open_,
+        high,
+        low,
+        features,
+        columns,
+    )
+    features.update(alpha_miner_features)
 
     start = pd.Timestamp(args.start_date)
     end = pd.Timestamp(args.end_date)
@@ -781,6 +997,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "position_limit": float(args.position_limit),
             "trade_at_price": args.trade_at_price,
             "universe": "FinLab security_categories market in sii/otc and 4-digit common stocks",
+            "status_scope": status_scope,
+            "selected_statuses": sorted(selected_statuses),
+            "retired_included": False,
             "strategy_count": len(selected),
         },
         "feature_mapping": {
@@ -791,6 +1010,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "broker": "finlab etl:broker_transactions top15_buy/top15_sell/balance_index proxy; full broker_transactions was not used",
             "sector_flow": "reconstructed from FinLab security_categories + OHLCV relative strength proxy",
             "smc": "reconstructed OHLCV price-action proxy; not a byte-identical production SMC replay",
+            "alpha_miner": alpha_miner_feature_mapping,
         },
         "results": results,
     }
@@ -807,13 +1027,15 @@ def main() -> int:
     parser.add_argument("--trade-at-price", default="close")
     parser.add_argument("--output-dir", default=str(ROOT / "output" / "finlab_strategy_backtests"))
     parser.add_argument("--exclude-alphabuilders", action="store_true")
+    parser.add_argument("--status-scope", choices=sorted(STATUS_SCOPES), default="active")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     report = run(args)
 
-    strategy_scope = f"active{int(report['config']['strategy_count'])}"
+    status_scope = str(report["config"].get("status_scope") or "active")
+    strategy_scope = f"{status_scope}{int(report['config']['strategy_count'])}"
     stem = f"finlab_strategy_spec_{strategy_scope}_{args.start_date}_{args.end_date}".replace("-", "")
     json_path = output_dir / f"{stem}.json"
     csv_path = output_dir / f"{stem}.csv"

@@ -3,11 +3,14 @@
   "decision_effect": "read_only_d1_export",
   "production_mutation_allowed": false,
   "source": "remote_d1.strategy_spec_registry",
-  "status_scope": "active",
+  "status_scope": "runtime",
   "included_statuses": [
-    "active"
+    "active",
+    "candidate",
+    "shadow",
+    "research"
   ],
-  "strategy_count": 11,
+  "strategy_count": 23,
   "errors": [],
   "strategy_ids": [
     "alpha_miner_pymoo_nsga3_novelty_0193",
@@ -20,11 +23,23 @@
     "stock_tech_s04_ma_deduct_turn_breakout_v1",
     "stock_tech_s06_nr7_inside_bar_breakout_v1",
     "stock_tech_s11_gap_breakout_continuation_v1",
-    "trend_following_seed_v1"
+    "trend_following_seed_v1",
+    "alpha_miner_pymoo_nsga3_novelty_0081",
+    "alpha_miner_pymoo_nsga3_novelty_0187",
+    "finlab_ai_skill_quality_trend_v1",
+    "finlab_ai_skill_revenue_revision_breakout_v1",
+    "finlab_ai_skill_reversion_value_v1",
+    "stock_tech_s03_vcp_contraction_breakout_v1",
+    "stock_tech_s05_first_dry_pullback_v1",
+    "stock_tech_s07_2b_false_break_reversal_v1",
+    "stock_tech_s08_rsi2_bull_mean_reversion_v1",
+    "stock_tech_s09_three_soldiers_base_breakout_v1",
+    "stock_tech_s10_island_reversal_v1",
+    "stock_tech_s12_multitimeframe_smc_reclaim_v1"
   ],
   "wrangler": {
     "returncode": 0,
     "stderr": ""
   },
-  "json": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json"
+  "json": "output/finlab_strategy_backtests/current_runtime_23_strategy_specs.json"
 }

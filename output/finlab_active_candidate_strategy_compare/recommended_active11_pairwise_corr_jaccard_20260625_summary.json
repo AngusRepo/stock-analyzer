@@ -1,0 +1,102 @@
+{
+  "source_pairwise": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_pairwise.csv",
+  "output_csv": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_active_candidate_strategy_compare\\recommended_active11_pairwise_corr_jaccard_20260625.csv",
+  "pair_count": 55,
+  "expected_pairs": 55,
+  "max_return_corr": 0.987302,
+  "max_return_corr_pair": "BreakoutSeed vs TrendSeed",
+  "max_all_period_jaccard": 0.568159,
+  "max_all_period_jaccard_pair": "BreakoutSeed vs TrendSeed",
+  "max_latest_jaccard": 0.503106,
+  "max_latest_jaccard_pair": "BreakoutSeed vs TrendSeed",
+  "class_counts": {
+    "ok_low_overlap": 40,
+    "watch_corr_and_jaccard": 5,
+    "corr_only_low_jaccard": 5,
+    "severe_corr_and_jaccard": 5
+  },
+  "severe_pairs": [
+    {
+      "pair": "BreakoutSeed vs TrendSeed",
+      "return_corr": 0.9873022440831696,
+      "all_period_jaccard": 0.568159,
+      "latest_jaccard": 0.503106
+    },
+    {
+      "pair": "DefensiveSeed vs TrendSeed",
+      "return_corr": 0.9539629038609412,
+      "all_period_jaccard": 0.369182,
+      "latest_jaccard": 0.405367
+    },
+    {
+      "pair": "AlphaBuilders vs DefensiveSeed",
+      "return_corr": 0.9706859961777636,
+      "all_period_jaccard": 0.338691,
+      "latest_jaccard": 0.435556
+    },
+    {
+      "pair": "AlphaBuilders vs TrendSeed",
+      "return_corr": 0.9450666952017102,
+      "all_period_jaccard": 0.306818,
+      "latest_jaccard": 0.430351
+    },
+    {
+      "pair": "DefensiveSeed vs BrokerReclaim",
+      "return_corr": 0.979400695968478,
+      "all_period_jaccard": 0.263158,
+      "latest_jaccard": 0.238501
+    }
+  ],
+  "watch_pairs": [
+    {
+      "pair": "BrokerReclaim vs TrendSeed",
+      "return_corr": 0.9413376914062146,
+      "all_period_jaccard": 0.2313,
+      "latest_jaccard": 0.253142
+    },
+    {
+      "pair": "BreakoutSeed vs DefensiveSeed",
+      "return_corr": 0.9296253625843828,
+      "all_period_jaccard": 0.230136,
+      "latest_jaccard": 0.241776
+    },
+    {
+      "pair": "AM0193 vs AlphaBuilders",
+      "return_corr": 0.9794183011757898,
+      "all_period_jaccard": 0.222359,
+      "latest_jaccard": 0.267051
+    },
+    {
+      "pair": "AM0193 vs DefensiveSeed",
+      "return_corr": 0.9658092524863358,
+      "all_period_jaccard": 0.208289,
+      "latest_jaccard": 0.188914
+    },
+    {
+      "pair": "AM0193 vs TrendSeed",
+      "return_corr": 0.9392945016638712,
+      "all_period_jaccard": 0.203686,
+      "latest_jaccard": 0.21522
+    }
+  ],
+  "new_strategy_pairs_max": {
+    "new_any": {
+      "pairs": 40,
+      "max_return_corr": 0.617609,
+      "max_return_corr_pair": "S2 vs TrendSeed",
+      "max_all_period_jaccard": 0.034257,
+      "max_all_period_jaccard_pair": "S1 vs S2",
+      "max_latest_jaccard": 0.076923,
+      "max_latest_jaccard_pair": "S1 vs S11"
+    },
+    "new_only": {
+      "pairs": 10,
+      "max_return_corr": 0.606684,
+      "max_return_corr_pair": "S1 vs S2",
+      "max_all_period_jaccard": 0.034257,
+      "max_all_period_jaccard_pair": "S1 vs S2",
+      "max_latest_jaccard": 0.076923,
+      "max_latest_jaccard_pair": "S1 vs S11"
+    }
+  }
+}

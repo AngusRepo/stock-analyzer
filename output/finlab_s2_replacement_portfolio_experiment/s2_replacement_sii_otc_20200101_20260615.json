@@ -1,0 +1,89 @@
+{
+  "schema_version": "stockvision-s2-replacement-portfolio-experiment-v1",
+  "generated_at": "2026-06-25T16:02:31.585449+00:00",
+  "allowed_use": "research_only",
+  "decision_effect": "none",
+  "runtime_seconds": 357.946,
+  "config": {
+    "base_start_date": "2023-01-01",
+    "robustness_start_date": "2020-01-01",
+    "end_date": "2026-06-15",
+    "universe": "sii_otc",
+    "max_positions": 10,
+    "position_limit": 0.1,
+    "trade_at_price": "open",
+    "resample": "D",
+    "active_spec_json": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_strategy_backtests\\current_active_11_strategy_specs.json",
+    "base_results_csv": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_base_finlab_results.csv",
+    "fee_tax_cost": 0.004425,
+    "extra_slippage_bps": [
+      0,
+      10,
+      25,
+      50
+    ],
+    "output_dir": "output\\finlab_s2_replacement_portfolio_experiment"
+  },
+  "weakest_trend_breakout_owner": "alpha_miner_pymoo_nsga3_novelty_0187",
+  "active_warnings": [],
+  "scenario_members": {
+    "baseline_active11": [
+      "alpha_miner_pymoo_nsga3_novelty_0081",
+      "alpha_miner_pymoo_nsga3_novelty_0187",
+      "alpha_miner_pymoo_nsga3_novelty_0193",
+      "alphabuilders_multifactor_revenue_quality_momentum_v1",
+      "breakout_vol_expansion_seed_v1",
+      "defensive_accumulation_seed_v1",
+      "finlab_ai_skill_broker_accumulation_reclaim_v1",
+      "finlab_ai_skill_quality_trend_v1",
+      "finlab_ai_skill_revenue_revision_breakout_v1",
+      "finlab_ai_skill_reversion_value_v1",
+      "trend_following_seed_v1"
+    ],
+    "replace_trend_following_with_s2": [
+      "alpha_miner_pymoo_nsga3_novelty_0081",
+      "alpha_miner_pymoo_nsga3_novelty_0187",
+      "alpha_miner_pymoo_nsga3_novelty_0193",
+      "alphabuilders_multifactor_revenue_quality_momentum_v1",
+      "breakout_vol_expansion_seed_v1",
+      "defensive_accumulation_seed_v1",
+      "finlab_ai_skill_broker_accumulation_reclaim_v1",
+      "finlab_ai_skill_quality_trend_v1",
+      "finlab_ai_skill_revenue_revision_breakout_v1",
+      "finlab_ai_skill_reversion_value_v1",
+      "stock_tech_s02_52w_dual_momentum_v1"
+    ],
+    "replace_breakout_vol_expansion_with_s2": [
+      "alpha_miner_pymoo_nsga3_novelty_0081",
+      "alpha_miner_pymoo_nsga3_novelty_0187",
+      "alpha_miner_pymoo_nsga3_novelty_0193",
+      "alphabuilders_multifactor_revenue_quality_momentum_v1",
+      "defensive_accumulation_seed_v1",
+      "finlab_ai_skill_broker_accumulation_reclaim_v1",
+      "finlab_ai_skill_quality_trend_v1",
+      "finlab_ai_skill_revenue_revision_breakout_v1",
+      "finlab_ai_skill_reversion_value_v1",
+      "stock_tech_s02_52w_dual_momentum_v1",
+      "trend_following_seed_v1"
+    ],
+    "replace_weakest_trend_breakout_with_s2": [
+      "alpha_miner_pymoo_nsga3_novelty_0081",
+      "alpha_miner_pymoo_nsga3_novelty_0193",
+      "alphabuilders_multifactor_revenue_quality_momentum_v1",
+      "breakout_vol_expansion_seed_v1",
+      "defensive_accumulation_seed_v1",
+      "finlab_ai_skill_broker_accumulation_reclaim_v1",
+      "finlab_ai_skill_quality_trend_v1",
+      "finlab_ai_skill_revenue_revision_breakout_v1",
+      "finlab_ai_skill_reversion_value_v1",
+      "stock_tech_s02_52w_dual_momentum_v1",
+      "trend_following_seed_v1"
+    ]
+  },
+  "outputs": {
+    "scenario_summary_csv": "output\\finlab_s2_replacement_portfolio_experiment\\s2_replacement_sii_otc_20200101_20260615_scenario_summary.csv",
+    "deltas_csv": "output\\finlab_s2_replacement_portfolio_experiment\\s2_replacement_sii_otc_20200101_20260615_deltas.csv",
+    "removed_overlap_csv": "output\\finlab_s2_replacement_portfolio_experiment\\s2_replacement_sii_otc_20200101_20260615_removed_overlap.csv",
+    "report_md": "output\\finlab_s2_replacement_portfolio_experiment\\s2_replacement_sii_otc_20200101_20260615_report.md"
+  }
+}

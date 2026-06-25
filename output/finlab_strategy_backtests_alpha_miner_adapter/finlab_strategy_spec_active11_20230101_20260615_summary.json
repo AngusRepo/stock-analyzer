@@ -1,0 +1,9 @@
+{
+  "json": "output/finlab_strategy_backtests_alpha_miner_adapter/finlab_strategy_spec_active11_20230101_20260615.json",
+  "csv": "output/finlab_strategy_backtests_alpha_miner_adapter/finlab_strategy_spec_active11_20230101_20260615.csv",
+  "strategy_count": 11,
+  "ok": 11,
+  "no_signal": 0,
+  "unsupported_feature": 0,
+  "errors": []
+}

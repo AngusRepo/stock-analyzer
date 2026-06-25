@@ -1,0 +1,16 @@
+{
+  "json": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615.json",
+  "base_results_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_base_finlab_results.csv",
+  "period_metrics_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_period_metrics.csv",
+  "cost_stress_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_cost_stress.csv",
+  "pairwise_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_pairwise.csv",
+  "s2_focus_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_s2_focus.csv",
+  "s8_tests_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_s8_inverse_filter.csv",
+  "decision_table_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_decision_table.csv",
+  "counts": {
+    "active_strategy_spec": 11,
+    "candidate_stock_tech12": 12,
+    "daily_backtestable_positions": 22
+  },
+  "runtime_seconds": 347.753
+}

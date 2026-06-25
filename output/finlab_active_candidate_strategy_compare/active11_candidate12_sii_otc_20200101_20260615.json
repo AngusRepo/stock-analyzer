@@ -1,0 +1,38 @@
+{
+  "schema_version": "stockvision-active-candidate-strategy-compare-v1",
+  "generated_at": "2026-06-25T15:43:15.228446+00:00",
+  "allowed_use": "research_only",
+  "decision_effect": "none",
+  "config": {
+    "base_start_date": "2023-01-01",
+    "robustness_start_date": "2020-01-01",
+    "end_date": "2026-06-15",
+    "universe": "sii_otc",
+    "fee_tax_cost": 0.004425,
+    "extra_slippage_bps": [
+      0,
+      10,
+      25,
+      50
+    ],
+    "active_spec_json": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_strategy_backtests\\current_active_11_strategy_specs.json",
+    "base_results_csv": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\output\\finlab_technical_strategy12_backtests\\technical_strategy12_sii_otc_20230101_20260615_results.csv",
+    "legacy_retired_included": false
+  },
+  "counts": {
+    "active_strategy_spec": 11,
+    "candidate_stock_tech12": 12,
+    "daily_backtestable_positions": 22
+  },
+  "active_warnings": [],
+  "runtime_seconds": 347.753,
+  "outputs": {
+    "base_results_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_base_finlab_results.csv",
+    "period_metrics_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_period_metrics.csv",
+    "cost_stress_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_cost_stress.csv",
+    "pairwise_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_pairwise.csv",
+    "s2_focus_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_s2_focus.csv",
+    "s8_tests_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_s8_inverse_filter.csv",
+    "decision_table_csv": "output\\finlab_active_candidate_strategy_compare\\active11_candidate12_sii_otc_20200101_20260615_decision_table.csv"
+  }
+}

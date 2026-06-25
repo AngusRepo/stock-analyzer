@@ -95,6 +95,15 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes("stage: 'l1_candidate_seed_after_overlay'"), 'screener must persist semantic L1 candidate seed stage before legacy final_selection alias')
   assert(marketScreener.includes("legacy_alias_stage: 'final_selection'"), 'screener must mark final_selection as a legacy alias, not the semantic post-ML final')
   assert(marketScreener.includes('SCREENER_FUNNEL_MAX_ITEMS = 5000'), 'screener funnel audit cap must keep strategy/final stages, not truncate at universe+scoring')
+  assert(marketScreener.includes('SCREENER_FUNNEL_PIPELINE_SEED_STAGES'), 'screener funnel persistence must prioritize pipeline seed stages before large audit evidence')
+  assert(
+    marketScreener.indexOf('INSERT INTO screener_funnel_items') < marketScreener.indexOf('INSERT INTO screener_funnel_runs'),
+    'screener funnel run must not be marked success before required item evidence is persisted',
+  )
+  assert(
+    marketScreener.includes("status='error'") && marketScreener.includes('throw error'),
+    'screener funnel persistence failure must mark the run error instead of leaving a partial success run',
+  )
   assert(marketScreener.includes('rrg_overlay'), 'RRG must be recorded as overlay evidence, not opaque bonus text')
   assert(marketScreener.includes('latestThemeUniverse'), 'RRG overlay must align FinLab taxonomy tags to the latest sector_flow taxonomy universe')
   assert(marketScreener.includes("SELECT sector, classification, quadrant"), 'screener RRG overlay must keep sector_flow classification with the sector')

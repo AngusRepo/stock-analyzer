@@ -43,6 +43,15 @@ import {
 
 const D1_IN_CHUNK_SIZE = 40
 const SCREENER_FUNNEL_MAX_ITEMS = 5000
+const SCREENER_FUNNEL_PIPELINE_SEED_STAGES = new Set([
+  'l1_candidate_seed_after_overlay',
+  'final_selection',
+])
+const SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES = new Set([
+  'l15_ml_slate_queue',
+  'layer2_timesfm_enrichment',
+  'strategy_pool_ml_queue',
+])
 
 function isEtfHardGateSymbol(symbol: string, info?: { market?: string }): boolean {
   const market = String(info?.market ?? '').trim().toUpperCase()
@@ -476,70 +485,99 @@ async function writeScreenerFunnel(
     items: ScreenerFunnelItemInput[]
   },
 ): Promise<void> {
-  await env.DB.prepare(`
-    INSERT INTO screener_funnel_runs
-      (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(run_id) DO UPDATE SET
-      status=excluded.status,
-      universe_count=excluded.universe_count,
-      candidate_count=excluded.candidate_count,
-      final_count=excluded.final_count,
-      emerging_count=excluded.emerging_count,
-      metadata=excluded.metadata,
-      debug_log=excluded.debug_log
-  `).bind(
-    input.runId,
-    input.date,
-    input.status,
-    input.universeCount,
-    input.candidateCount,
-    input.finalCount,
-    input.emergingCount,
-    JSON.stringify(input.metadata),
-    JSON.stringify(input.debugLog.slice(-80)),
-  ).run()
+  const metadata = JSON.stringify(input.metadata)
+  const debugLog = JSON.stringify(input.debugLog.slice(-80))
 
-  if (!input.items.length) return
-  const criticalStageSet = new Set([
-    'l15_ml_slate_queue',
-    'layer2_timesfm_enrichment',
-    'strategy_pool_ml_queue',
-    'l1_candidate_seed_after_overlay',
-    'final_selection',
-  ])
-  const persistedItems = input.items.length <= SCREENER_FUNNEL_MAX_ITEMS
-    ? input.items
-    : (() => {
-      const critical = input.items.filter((item) => criticalStageSet.has(item.stage))
-      const nonCritical = input.items.filter((item) => !criticalStageSet.has(item.stage))
-      if (critical.length >= SCREENER_FUNNEL_MAX_ITEMS) return critical.slice(0, SCREENER_FUNNEL_MAX_ITEMS)
-      return [
-        ...nonCritical.slice(0, SCREENER_FUNNEL_MAX_ITEMS - critical.length),
-        ...critical,
-      ]
-    })()
-  const batch = persistedItems.map((item) =>
-    env.DB.prepare(`
-      INSERT INTO screener_funnel_items
-        (run_id, date, symbol, name, stage, decision, reason_code, score_before, score_after, rank, evidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  try {
+    if (input.items.length) {
+      const pipelineSeed = input.items.filter((item) => SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage))
+      const auditCritical = input.items.filter((item) =>
+        !SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage) &&
+        SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES.has(item.stage)
+      )
+      const nonCritical = input.items.filter((item) =>
+        !SCREENER_FUNNEL_PIPELINE_SEED_STAGES.has(item.stage) &&
+        !SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES.has(item.stage)
+      )
+      const persistedItems = [
+        ...pipelineSeed,
+        ...auditCritical,
+        ...nonCritical.slice(0, Math.max(0, SCREENER_FUNNEL_MAX_ITEMS - pipelineSeed.length - auditCritical.length)),
+      ].slice(0, SCREENER_FUNNEL_MAX_ITEMS)
+      const batch = persistedItems.map((item) =>
+        env.DB.prepare(`
+          INSERT INTO screener_funnel_items
+            (run_id, date, symbol, name, stage, decision, reason_code, score_before, score_after, rank, evidence)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          input.runId,
+          input.date,
+          item.symbol,
+          item.name ?? null,
+          item.stage,
+          item.decision,
+          item.reasonCode,
+          item.scoreBefore ?? null,
+          item.scoreAfter ?? null,
+          item.rank ?? null,
+          JSON.stringify(item.evidence ?? {}),
+        )
+      )
+      for (let i = 0; i < batch.length; i += 50) {
+        await env.DB.batch(batch.slice(i, i + 50))
+      }
+    }
+
+    await env.DB.prepare(`
+      INSERT INTO screener_funnel_runs
+        (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        status=excluded.status,
+        universe_count=excluded.universe_count,
+        candidate_count=excluded.candidate_count,
+        final_count=excluded.final_count,
+        emerging_count=excluded.emerging_count,
+        metadata=excluded.metadata,
+        debug_log=excluded.debug_log
     `).bind(
       input.runId,
       input.date,
-      item.symbol,
-      item.name ?? null,
-      item.stage,
-      item.decision,
-      item.reasonCode,
-      item.scoreBefore ?? null,
-      item.scoreAfter ?? null,
-      item.rank ?? null,
-      JSON.stringify(item.evidence ?? {}),
-    )
-  )
-  for (let i = 0; i < batch.length; i += 50) {
-    await env.DB.batch(batch.slice(i, i + 50))
+      input.status,
+      input.universeCount,
+      input.candidateCount,
+      input.finalCount,
+      input.emergingCount,
+      metadata,
+      debugLog,
+    ).run()
+  } catch (error) {
+    await env.DB.prepare(`
+      INSERT INTO screener_funnel_runs
+        (run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, debug_log)
+      VALUES (?, ?, 'error', ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        status='error',
+        universe_count=excluded.universe_count,
+        candidate_count=excluded.candidate_count,
+        final_count=excluded.final_count,
+        emerging_count=excluded.emerging_count,
+        metadata=excluded.metadata,
+        debug_log=excluded.debug_log
+    `).bind(
+      input.runId,
+      input.date,
+      input.universeCount,
+      input.candidateCount,
+      input.finalCount,
+      input.emergingCount,
+      metadata,
+      JSON.stringify([
+        ...input.debugLog.slice(-79),
+        `funnel persistence failed: ${error instanceof Error ? error.message : String(error)}`,
+      ]),
+    ).run().catch(() => {})
+    throw error
   }
 }
 

@@ -149,6 +149,23 @@ def _is_optional_loaded_serving_model(model_status: dict[str, str], model_name: 
     return status in MODEL_POOL_SERVING_STATUSES
 
 
+def _merge_model_status_preserving_sidecars(
+    base_status: dict[str, str] | None,
+    overlay_status: dict[str, str] | None,
+) -> dict[str, str]:
+    """Merge status maps without letting legacy formal slots retire canonical sidecars."""
+
+    base = dict(base_status or {})
+    overlay = dict(overlay_status or {})
+    merged = {**base, **overlay}
+    for name in TIMESFM_L2_SIDECAR_MODELS:
+        base_value = str(base.get(name) or "").strip()
+        overlay_value = str(overlay.get(name) or "").strip()
+        if base_value in MODEL_POOL_SERVING_STATUSES and overlay_value == "retired":
+            merged[name] = base_value
+    return merged
+
+
 def _require_loaded_serving_version(active_versions: dict[str, str], model_name: str, stage: str) -> str:
     version = str((active_versions or {}).get(model_name) or "").strip()
     if not version:
@@ -726,7 +743,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         serving_pool,
     ) = await asyncio.to_thread(_load_pool_and_ic)
     if serving_model_status:
-        model_status = {**model_status, **serving_model_status}
+        model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
@@ -1324,7 +1341,7 @@ async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
             serving_pool,
         ) = await asyncio.to_thread(_load_pool_and_ic)
         if serving_model_status:
-            model_status = {**model_status, **serving_model_status}
+            model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
 
         base_sequence_series = build_state_space_series_from_payloads(payloads)
         sequence_series, sequence_dataset_meta = enrich_state_space_series_with_long_history(
@@ -2042,6 +2059,14 @@ def _load_pool_and_ic():
             except (TypeError, ValueError):
                 logger.debug(f"[Pipeline V2] invalid model_pool IC for {name}: {ic_value}")
 
+        sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
+        models = pool.get("models") if isinstance(pool.get("models"), dict) else {}
+        for name in TIMESFM_L2_SIDECAR_MODELS:
+            entry = sidecars.get(name) or models.get(name)
+            if not isinstance(entry, dict):
+                continue
+            model_status[name] = _require_model_pool_status(entry, name, "load_pool_and_ic")
+
         for name, entry in (pool.get("formal_layer3_slots") or {}).items():
             slot_status = str(entry.get("status") or "").strip()
             direct_prediction = bool(entry.get("direct_prediction")) or float(entry.get("vote_weight") or 0.0) > 0.0
@@ -2385,6 +2410,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     final = apply_l2_timesfm_evidence(
         final,
         state["predictions"],
+        l2_summary=state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
     )
     layer2_symbols = [str(row.get("symbol") or "") for row in final if row.get("symbol")]
     layer2_count = len(final)
@@ -2531,6 +2557,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         screener_recs=state.get("screener_recs") or [],
         run_date=run_date,
         screener_run_id=state.get("screener_run_id"),
+        l2_summary=state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
     )
     layer3_audit_rows = write_layer3_formal_gate_audit(
         predictions=state["predictions"],

@@ -107,7 +107,11 @@ def test_l2_timesfm_evidence_does_not_truncate_sparse_allocator_pool():
 
     result = apply_l2_timesfm_evidence(recommendations, {}, fallback_size=1)
     assert [row["symbol"] for row in result] == ["2330", "2317"]
-    assert all("l2_timesfm_evidence:missing_sidecar" in row["watch_points"] for row in result)
+    assert all(
+        any(str(point).startswith("l2_timesfm_evidence:missing_sidecar:") for point in row["watch_points"])
+        for row in result
+    )
+    assert all(row["l2_timesfm_evidence"]["evidence_status"] == "missing_sidecar" for row in result)
 
     result = apply_l2_timesfm_evidence(
         recommendations,

@@ -481,6 +481,8 @@ def test_normalize_alpha_policy_preserves_sparse_allocator_defaults():
     assert policy["allocation"]["engine"] == "sparse_tangent_inverse_risk"
     assert policy["allocation"]["controller"] == "OnlinePortfolioBandit"
     assert policy["allocation"]["buy_signal_count"] == 3
+    assert policy["scoring"]["market_heat_impact"] > 0
+    assert policy["scoring"]["market_heat_expected_return_max"] > 0
 
 
 def test_normalize_alpha_policy_preserves_worker_allocator_contract():
@@ -662,6 +664,37 @@ def test_build_alpha_context_uses_policy_scoring_and_execution_overlay():
     assert ctx.sizing_multiplier <= 0.90
     assert ctx.stop_multiplier == 1.40
     assert ctx.target_multiplier == 1.30
+
+
+def test_build_alpha_context_adds_market_heat_alpha_and_expected_edge():
+    hot_payload = _payload_with_volumes(
+        "6669",
+        [
+            80, 81, 82, 83, 84, 85, 87, 89, 91, 93,
+            95, 97, 100, 103, 107, 111, 116, 121, 127, 134,
+            142, 151, 160, 170,
+        ],
+        [800_000] * 20 + [1_600_000, 1_900_000, 2_200_000, 2_500_000],
+    )
+    quiet_payload = _payload_with_volumes(
+        "6670",
+        [
+            80, 80.1, 80.2, 80.1, 80.3, 80.2, 80.4, 80.3,
+            80.5, 80.4, 80.6, 80.5, 80.7, 80.8, 80.7, 80.9,
+            81.0, 80.9, 81.1, 81.0, 81.2, 81.1, 81.3, 81.2,
+        ],
+        [900_000] * 24,
+    )
+    rec = {"chip_score": 12.0, "tech_score": 18.0, "momentum_score": 14.0}
+    ml = {"signal": "HOLD", "confidence": 0.70, "forecast_pct": 0.0}
+
+    hot = build_alpha_context(rec, ml, hot_payload, "bull")
+    quiet = build_alpha_context(rec, ml, quiet_payload, "bull")
+
+    assert hot.market_heat_score > quiet.market_heat_score
+    assert hot.market_heat_alpha > quiet.market_heat_alpha
+    assert hot.market_heat_expected_return > 0
+    assert hot.score_adjustment > quiet.score_adjustment
 
 
 def test_build_alpha_context_uses_policy_classification_thresholds():

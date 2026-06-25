@@ -132,6 +132,60 @@ def test_attach_ensemble_v2_marks_uncalibrated_forecast_as_none():
     assert ev2["forecast_pct_source"] == "uncalibrated_rank_score"
 
 
+def test_attach_ensemble_v2_tail_clamps_out_of_support_calibration():
+    pred = {"rank_scores": {"XGBoost": 0.95}}
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"XGBoost": "active"},
+        ic_weights={"XGBoost": 0.03},
+        degraded_dampening=1.0,
+        ev2_cfg={
+            "expectedReturnCalibration": {
+                "method": "empirical_rank_bins",
+                "minSamples": 20,
+                "tailDampening": 0.5,
+                "bins": [
+                    {"rankLow": 0.20, "rankHigh": 0.40, "meanReturn": -0.01, "samples": 35},
+                    {"rankLow": 0.40, "rankHigh": 0.80, "meanReturn": 0.02, "samples": 42},
+                ],
+            }
+        },
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["forecast_pct"] == 0.01
+    assert ev2["forecast_pct_source"] == "calibrated_rank_tail_clamp"
+    assert ev2["forecast_calibration_ood"] is True
+    assert ev2["forecast_calibration_ood_side"] == "above_max_rank"
+    assert ev2["forecast_calibration_tail_policy"] == "conservative_empirical_bin_clamp"
+
+
+def test_attach_ensemble_v2_lower_tail_never_invents_positive_edge():
+    pred = {"rank_scores": {"XGBoost": 0.10}}
+
+    attach_ensemble_v2(
+        pred,
+        model_status={"XGBoost": "active"},
+        ic_weights={"XGBoost": 0.03},
+        degraded_dampening=1.0,
+        ev2_cfg={
+            "expectedReturnCalibration": {
+                "minSamples": 20,
+                "bins": [
+                    {"rankLow": 0.20, "rankHigh": 0.40, "meanReturn": 0.015, "samples": 35},
+                    {"rankLow": 0.40, "rankHigh": 0.80, "meanReturn": 0.02, "samples": 42},
+                ],
+            }
+        },
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert ev2["forecast_pct"] == 0.0
+    assert ev2["forecast_pct_source"] == "calibrated_rank_tail_clamp"
+    assert ev2["forecast_calibration_ood_side"] == "below_min_rank"
+
+
 def test_attach_ensemble_v2_applies_only_capped_approved_allocator_policy():
     pred = {"rank_scores": {"XGBoost": 0.9, "LightGBM": 0.6}}
 

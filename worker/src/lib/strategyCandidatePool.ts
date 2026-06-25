@@ -102,6 +102,8 @@ export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   runtime_teacher_evidence?: Record<string, number>
   runtime_teacher_evidence_source?: string
   ml_teacher_labels?: Record<string, number>
+  market_heat_score?: number
+  market_heat_contribution?: number
   strategy_router_decision?: 'ml_slate' | 'observe_only' | 'research_only' | 'capacity_overflow'
   strategy_router_reason?: string
   strategy_router_components?: Record<string, number>

@@ -413,7 +413,7 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
 
     contributors = ev2.get("contributing_models") or []
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
-        return "V2 ensemble has no positive active weight; keep verifying IC evidence."
+        return "V2 ensemble 暫無正 IC 權重；持續驗證 IC evidence。"
     if contributors:
         label = "buy" if "BUY" in signal else "hold" if signal == "HOLD" else "sell"
         return f"V2 ensemble {label}: {len(contributors)} contributing models, forecast {forecast_text}."
@@ -621,6 +621,16 @@ def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy:
             "label": "Regime weight",
             "value": round(regime_delta, 2),
             "explain": "Applies the market-regime weight adjustment.",
+        })
+    market_heat_alpha = _float_or_none(alpha_context.get("market_heat_alpha"))
+    if market_heat_alpha:
+        details.append({
+            "key": "market_heat_alpha",
+            "label": "Market heat",
+            "value": round(market_heat_alpha, 2),
+            "score": alpha_context.get("market_heat_score"),
+            "expectedReturn": alpha_context.get("market_heat_expected_return"),
+            "explain": "Adds the momentum/relative-strength factor inside the same sparse allocator objective.",
         })
     if risk_penalty:
         flag_text = ", ".join(str(flag) for flag in risk_flags) if risk_flags else "risk_overlay"
@@ -1025,6 +1035,9 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
         "regimeWeight": alpha_context.get("regime_weight") if isinstance(alpha_context, dict) else None,
         "riskFlags": risk_flags,
         "riskPenalty": ((alpha_context.get("risk_overlay") or {}).get("penalty") if isinstance(alpha_context, dict) else 0) or 0,
+        "marketHeatScore": alpha_context.get("market_heat_score") if isinstance(alpha_context, dict) else None,
+        "marketHeatAlpha": alpha_context.get("market_heat_alpha") if isinstance(alpha_context, dict) else None,
+        "marketHeatExpectedReturn": alpha_context.get("market_heat_expected_return") if isinstance(alpha_context, dict) else None,
         "details": _build_alpha_adjustment_details(alpha_context if isinstance(alpha_context, dict) else {}, alpha_policy),
     }
     components = _score_v2_components_from_row(row)
@@ -1176,7 +1189,7 @@ def _format_abs_cash_billion(value: float) -> str:
     abs_value = abs(value)
     if 0 < abs_value < 0.01:
         return f"TWD {abs_value * 100:.1f}m"
-    return f"TWD {abs_value:.2f}e8"
+    return f"{abs_value:.2f}億"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -1307,14 +1320,14 @@ def build_reason(s: dict) -> str:
     broker_cash_5d = _score_number(s.get("broker_net_amount_5d"))
     if market_segment == "EMERGING" and broker_rows > 0:
         chip_context = (
-            f"emerging broker flow {_format_abs_cash_billion(broker_cash_5d)}"
-            f", broker_count={s.get('broker_count_latest', 'N/A')}"
+            f"興櫃券商分點 5d {_format_abs_cash_billion(broker_cash_5d)}"
+            f", 分點數={s.get('broker_count_latest', 'N/A')}"
         )
     elif market_segment == "EMERGING":
         chip_context = "emerging broker flow evidence unavailable"
     else:
         net_amount = _score_number(s.get("foreign_net_5d")) + _score_number(s.get("trust_net_5d")) + _score_number(s.get("dealer_net_5d"))
-        chip_context = f"listed institutional net flow 5d {net_amount:.1f}e8"
+        chip_context = f"上市櫃法人買賣超 5d {net_amount:.1f}億"
 
     technical_parts: list[str] = []
     rsi = _first_float(s.get("rsi14"))
@@ -1828,11 +1841,33 @@ def _l2_timesfm_evidence_from_sidecar(sidecar: dict[str, Any] | None) -> dict[st
     }
 
 
+def _l2_timesfm_missing_evidence(l2_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    summary = l2_summary if isinstance(l2_summary, dict) else {}
+    gate = summary.get("gate") if isinstance(summary.get("gate"), dict) else {}
+    gate_reason = str(gate.get("reason") or summary.get("reason") or "missing_sidecar").strip()
+    gate_status = str(gate.get("status") or summary.get("status") or "").strip() or None
+    return {
+        "schema_version": "l2_timesfm_enrichment_evidence_v1",
+        "source": "timesfm_l2_sidecar",
+        "stage": "L2",
+        "selection_role": "feature_enrichment_not_gate",
+        "final_recommendation_gate": False,
+        "l3_formal_inference_selected": True,
+        "direct_alpha_blocked": True,
+        "evidence_status": "missing_sidecar",
+        "l2_summary_status": summary.get("status"),
+        "l2_gate_allowed": gate.get("allowed"),
+        "l2_gate_reason": gate_reason,
+        "l2_gate_status": gate_status,
+    }
+
+
 def apply_l2_timesfm_evidence(
     recommendations: list[dict],
     predictions: dict[str, dict],
     *,
     fallback_size: int | None = None,
+    l2_summary: dict[str, Any] | None = None,
 ) -> list[dict]:
     """Attach Layer 2 TimesFM enrichment evidence without gating L3/L4 input."""
     _ = fallback_size
@@ -1854,9 +1889,12 @@ def apply_l2_timesfm_evidence(
                 ),
             ]
         else:
+            evidence = _l2_timesfm_missing_evidence(l2_summary)
+            gate_reason = str(evidence.get("l2_gate_reason") or "missing_sidecar")
+            row["l2_timesfm_evidence"] = evidence
             row["watch_points"] = [
                 *(row.get("watch_points") if isinstance(row.get("watch_points"), list) else []),
-                "l2_timesfm_evidence:missing_sidecar",
+                f"l2_timesfm_evidence:missing_sidecar:{gate_reason}",
             ]
         enriched.append(row)
     return enriched
@@ -2169,6 +2207,11 @@ def _row_expected_return(row: dict) -> float:
 
 
 def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
+    alpha_context = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
+    heat_edge = _float_or_none(row.get("market_heat_expected_return"))
+    if heat_edge is None:
+        heat_edge = _float_or_none(alpha_context.get("market_heat_expected_return"))
+    heat_edge = max(0.0, heat_edge or 0.0)
     for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
         if key not in row:
             continue
@@ -2180,6 +2223,8 @@ def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
                 "missing_calibrated_forecast_pct",
                 "no_positive_lifecycle_weight",
             }:
+                if heat_edge > 0:
+                    return heat_edge, "market_heat_factor_expected_edge"
                 return 0.0, f"{source}_no_expected_return"
             continue
         try:
@@ -2187,7 +2232,11 @@ def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
         except (TypeError, ValueError):
             value = 0.0
         if math.isfinite(value):
+            if heat_edge > 0:
+                return value + heat_edge, f"{key}_plus_market_heat_factor"
             return value, key
+    if heat_edge > 0:
+        return heat_edge, "market_heat_factor_expected_edge"
     return 0.0, "missing_expected_return_no_allocation_edge"
 
 
@@ -2319,12 +2368,16 @@ def _apply_sparse_tangent_buy_selection(
             "score": row.get("score"),
             "expected_return": expected_return,
             "expected_return_source": expected_return_source,
+            "market_heat_score": row.get("market_heat_score"),
+            "market_heat_expected_return": row.get("market_heat_expected_return"),
         }
         allocation_candidates.append(candidate)
         if symbol:
             candidate_evidence_by_symbol[symbol] = {
                 "expected_return": expected_return,
                 "expected_return_source": expected_return_source,
+                "market_heat_score": row.get("market_heat_score"),
+                "market_heat_expected_return": row.get("market_heat_expected_return"),
                 "risk_estimate": _row_daily_risk_estimate(symbol, risk_history),
                 "risk_estimate_source": (
                     "return_history_sample_std" if len(risk_history.get(symbol, []) or []) >= 2 else "daily_vol_floor"
@@ -2488,6 +2541,8 @@ def _apply_sparse_tangent_buy_selection(
         rank = allocation_rank_by_symbol.get(symbol)
         expected_return = float((evidence or {}).get("expected_return") or 0.0)
         risk_estimate = float((evidence or {}).get("risk_estimate") or 0.0)
+        market_heat_score = _float_from_row(row, ("market_heat_score",))
+        market_heat_expected_return = _float_from_row(row, ("market_heat_expected_return",))
         single_name_weight = round(float(weight or 0.0), 8)
         live_backtest_divergence = _float_from_row(row, ("live_backtest_divergence", "live_vs_backtest_divergence"))
         turnover_pressure = _float_from_row(row, ("turnover_pressure", "turnover", "expected_turnover"))
@@ -2515,6 +2570,10 @@ def _apply_sparse_tangent_buy_selection(
             "sparse_weight_state": sparse_weight_state,
             "expected_return": round(expected_return, 10),
             "expected_return_source": (evidence or {}).get("expected_return_source"),
+            "market_heat_score": None if market_heat_score is None else round(market_heat_score, 6),
+            "market_heat_expected_return": (
+                None if market_heat_expected_return is None else round(market_heat_expected_return, 10)
+            ),
             "positive_expected_edge": positive_expected_edge,
             "risk_estimate": round(risk_estimate, 10),
             "risk_estimate_source": (evidence or {}).get("risk_estimate_source"),
@@ -2723,6 +2782,7 @@ def write_predictions_to_d1(
             "core_ml_gate": data.get("core_ml_gate") or data.get("core_ml_evidence"),
             "core_family_vote": data.get("core_family_vote"),
             "gnn": data.get("gnn"),
+            "timesfm": data.get("timesfm"),
             "timesfm_sidecar": _timesfm_sidecar_payload(data),
             "state_space_overlays": _state_space_overlay_payload(data),
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
@@ -2852,6 +2912,7 @@ def write_layer2_timesfm_enrichment_audit(
     screener_recs: list[dict],
     run_date: str | None,
     screener_run_id: str | None,
+    l2_summary: dict[str, Any] | None = None,
 ) -> int:
     """Persist L2 TimesFM sidecar enrichment evidence into screener_funnel_items."""
     if not run_date or not screener_run_id:
@@ -2878,17 +2939,8 @@ def write_layer2_timesfm_enrichment_audit(
             else:
                 reason_code = "timesfm_l2_sidecar_observe"
         else:
-            evidence = {
-                "schema_version": "l2_timesfm_enrichment_evidence_v1",
-                "source": "timesfm_l2_sidecar",
-                "stage": "L2",
-                "selection_role": "feature_enrichment_not_gate",
-                "final_recommendation_gate": False,
-                "l3_formal_inference_selected": True,
-                "direct_alpha_blocked": True,
-                "evidence_status": "missing_sidecar",
-            }
-            reason_code = "timesfm_l2_sidecar_missing"
+            evidence = _l2_timesfm_missing_evidence(l2_summary)
+            reason_code = f"timesfm_l2_sidecar_missing:{evidence.get('l2_gate_reason') or 'unknown'}"
 
         try:
             score_before = float(source_row.get("score")) if source_row.get("score") is not None else None

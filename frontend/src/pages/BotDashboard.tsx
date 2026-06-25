@@ -23,7 +23,7 @@ import AppShell from '@/components/AppShell'
 import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
-import { formatExecutionStatusBadge, formatPartialFillRemaining } from '@/lib/pendingBuyExecutionUi'
+import { formatPartialFillRemaining, formatPendingBuyExecutionBadge } from '@/lib/pendingBuyExecutionUi'
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
@@ -435,7 +435,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
-        const executionBadge = formatExecutionStatusBadge(b.execution_status)
+        const executionBadge = formatPendingBuyExecutionBadge(b)
         const partialRemaining = formatPartialFillRemaining(b.watch_points)
         const allocatorSummary = describeAllocatorDecision(b.watch_points)
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,

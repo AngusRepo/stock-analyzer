@@ -1,8 +1,10 @@
 import {
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
+  deriveStrategyThresholdScores,
   normalizeStrategySpecGovernance,
   validateStrategySpec,
+  type StrategyCandidateInput,
   type StrategyFamilyId,
   type StrategyOwnerType,
   type StrategySpec,
@@ -99,6 +101,9 @@ export interface MultiStrategyPleRouterComponents {
   runtime_teacher_evidence_count: number
   runtime_teacher_evidence_missing: number
   research_signal_count: number
+  market_heat_score: number
+  market_heat_contribution: number
+  market_heat_alpha: number
 }
 
 export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoolCandidate {
@@ -121,6 +126,8 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   runtime_teacher_evidence?: Record<string, number>
   runtime_teacher_evidence_source?: 'historical_verified_cache' | 'candidate_supplied_runtime_evidence' | 'missing_runtime_teacher_cache'
   ml_teacher_labels?: Record<string, number>
+  market_heat_score?: number
+  market_heat_contribution?: number
   strategy_router_decision?: StrategyRouterDecision
   strategy_router_reason?: string
   strategy_router_components?: MultiStrategyPleRouterComponents
@@ -270,8 +277,15 @@ function specCanEnterMlSlate(spec: StrategySpec): boolean {
   return spec.status === 'active' && spec.ownerType === 'strategy' && maxMlShare !== 0
 }
 
+function strategyInputFromCandidate(candidate: StrategyCandidatePoolCandidate): StrategyCandidateInput {
+  return {
+    ...candidate,
+    score_v2: candidate.score_v2 ?? candidate.score_components,
+  }
+}
+
 function rawSignalQuality(candidate: StrategyCandidatePoolCandidate): number {
-  const raw = deriveStrategyRawSignals(candidate)
+  const raw = deriveStrategyRawSignals(strategyInputFromCandidate(candidate))
   const trendScore =
     clamp((finiteNumber(raw.closeAboveMa20Pct) ?? 0) * 180, -12, 18)
     + clamp((finiteNumber(raw.closeAboveMa60Pct) ?? 0) * 120, -10, 14)
@@ -288,6 +302,54 @@ function rawSignalQuality(candidate: StrategyCandidatePoolCandidate): number {
     + clamp((finiteNumber(raw.roe) ?? 0) / 2, -4, 12)
     + clamp((finiteNumber(raw.eps) ?? 0) * 2, -6, 12)
   return round3(clamp(45 + trendScore * 0.32 + flowScore * 0.32 + qualityScore * 0.24, 0, 100))
+}
+
+function marketHeatScore(candidate: StrategyCandidatePoolCandidate): number {
+  const input = strategyInputFromCandidate(candidate)
+  const raw = deriveStrategyRawSignals(input)
+  const scores = deriveStrategyThresholdScores(input)
+  const return5d = finiteNumber(raw.return5d)
+  const return20d = finiteNumber(raw.return20d)
+  const return60d = finiteNumber(raw.return60d)
+  const closeAboveMa20Pct = finiteNumber(raw.closeAboveMa20Pct)
+  const closeAboveMa60Pct = finiteNumber(raw.closeAboveMa60Pct)
+  const volumeExpansion20 = finiteNumber(raw.volumeExpansion20)
+  const rsi14 = finiteNumber(raw.technicalIndicators?.rsi14) ?? finiteNumber(raw.factorSignals?.rsi14)
+  const adx14 = finiteNumber(raw.technicalIndicators?.adx14)
+  const macdHist = finiteNumber(raw.technicalIndicators?.macdHist)
+  const flowAmount = finiteNumber(raw.brokerNetAmount5d) ?? 0
+  const flowShares = finiteNumber(raw.foreignTrustNet5d) ?? 0
+
+  const trendHeat =
+    clamp((closeAboveMa20Pct ?? 0) * 260, -10, 22)
+    + clamp((closeAboveMa60Pct ?? 0) * 150, -8, 16)
+    + clamp((adx14 ?? 0) / 2.5, 0, 12)
+    + (macdHist != null && macdHist > 0 ? 4 : 0)
+  const momentumHeat =
+    clamp((return5d ?? 0) * 140, -8, 15)
+    + clamp((return20d ?? 0) * 100, -10, 24)
+    + clamp((return60d ?? 0) * 45, -8, 16)
+    + clamp(scores.momentumScore * 1.6, 0, 24)
+  const volumeHeat = clamp(((volumeExpansion20 ?? 1) - 1.0) * 24, -6, 24)
+  const flowHeat =
+    clamp(Math.sign(flowAmount) * Math.log10(Math.abs(flowAmount) + 1), -6, 12)
+    + clamp(Math.sign(flowShares) * Math.log10(Math.abs(flowShares) + 1), -5, 10)
+    + clamp((finiteNumber(raw.brokerCount) ?? 0) / 2, 0, 7)
+  const exhaustionPenalty =
+    (rsi14 != null && rsi14 >= 82 ? 10 : 0)
+    + (rsi14 != null && rsi14 >= 74 ? 4 : 0)
+    + (volumeExpansion20 != null && volumeExpansion20 > 3.5 ? 4 : 0)
+
+  return round3(clamp(
+    16
+    + trendHeat * 0.28
+    + momentumHeat * 0.34
+    + volumeHeat * 0.24
+    + flowHeat * 0.14
+    - exhaustionPenalty,
+    0,
+    100,
+  ))
 }
 
 function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
@@ -792,6 +854,8 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     ? round3(clamp(average(teacherValues.map((value) => clamp(value, 0, 1))), 0, 1))
     : 0
   const teacherAlignmentContribution = teacherValues.length ? round3(teacherAlignment * 5) : 0
+  const heatScore = marketHeatScore(state.candidate)
+  const marketHeatContribution = round3(heatScore * 0.08)
   const diversityContribution = round3(clamp(avgDiversification + Math.min(0.18, crossFamilyBonus / 40), 0, 1))
   const riskAdjustedAffinity = round3(clamp(
     scaledActiveSupport * (0.72 + avgReliability * 0.28) * (1 - avgCrowding * 0.22),
@@ -812,6 +876,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     + state.raw_quality * 0.2
     + diversityContribution * 8
     + teacherAlignmentContribution
+    + marketHeatContribution
     - uncertainty * 5
     - sameFamilyCrowdingPenalty,
     0,
@@ -855,6 +920,8 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     // Legacy funnel alias. Daily L1.5 treats this as runtime teacher evidence;
     // offline PLE/Listwise training owns true training_teacher_labels.
     ml_teacher_labels: teacherLabels,
+    market_heat_score: heatScore,
+    market_heat_contribution: marketHeatContribution,
     strategy_router_decision: routerDecision,
     strategy_router_reason: routerReason,
     strategy_router_components: {
@@ -877,6 +944,9 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
       runtime_teacher_evidence_count: teacherValues.length,
       runtime_teacher_evidence_missing: teacherValues.length ? 0 : 1,
       research_signal_count: researchLabels.length,
+      market_heat_score: heatScore,
+      market_heat_contribution: marketHeatContribution,
+      market_heat_alpha: 0,
     },
     strategy_pool_score: routeScore,
     strategy_pool_ids: activeStrategyIds,
@@ -898,6 +968,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
       `strategy_router_decision:${routerDecision}`,
       `strategy_router_score:${routeScore.toFixed(2)}`,
       `strategy_router_reason:${routerReason}`,
+      `market_heat_score:${heatScore.toFixed(3)}`,
     ]),
   }
   return out
@@ -957,6 +1028,9 @@ function marginalUtilityForSlateCandidate<T extends StrategyCandidatePoolCandida
   const riskAdjustedAffinity = finiteNumber(candidate.risk_adjusted_affinity) ?? 0
   const diversity = finiteNumber(candidate.diversity_contribution) ?? 0
   const uncertainty = finiteNumber(candidate.uncertainty) ?? 0
+  const marketHeat = finiteNumber(candidate.market_heat_score)
+    ?? finiteNumber(candidate.strategy_router_components?.market_heat_score)
+    ?? 0
   const avgPrior = averageStrategyMetric(prior, strategyIds, 'prior_weight', 1)
   const avgReliability = averageStrategyMetric(prior, strategyIds, 'reliability', 0.5)
   const avgCrowding = averageStrategyMetric(prior, strategyIds, 'crowding_score', 0)
@@ -979,6 +1053,7 @@ function marginalUtilityForSlateCandidate<T extends StrategyCandidatePoolCandida
   const strategy_uniqueness_bonus = clamp(newStrategyRatio * 8 + avgUniqueness * 4 + diversity * 4, 0, 16)
   const family_diversification_bonus = clamp(newFamilyRatio * 7 + diversity * 3 - familyShare * 8, -8, 12)
   const exploration_bonus = clamp(uncertainty * diversity * 4 + (newStrategyRatio > 0 ? uncertainty * 1.5 : 0), 0, 5)
+  const market_heat_alpha = clamp(marketHeat * 0.07, 0, 7)
   const overlap_penalty = clamp(sharedStrategyRatio * 10 + sharedFamilyRatio * 5 + avgOverlap * 8, 0, 20)
   const crowding_penalty = clamp(avgCrowding * 8 + familyShare * 6, 0, 16)
   const score = round3(clamp(
@@ -987,6 +1062,7 @@ function marginalUtilityForSlateCandidate<T extends StrategyCandidatePoolCandida
     + strategy_uniqueness_bonus
     + family_diversification_bonus
     + exploration_bonus
+    + market_heat_alpha
     - overlap_penalty
     - crowding_penalty,
     0,
@@ -1000,6 +1076,8 @@ function marginalUtilityForSlateCandidate<T extends StrategyCandidatePoolCandida
       strategy_uniqueness_bonus: round3(strategy_uniqueness_bonus),
       family_diversification_bonus: round3(family_diversification_bonus),
       exploration_bonus: round3(exploration_bonus),
+      market_heat_score: round3(marketHeat),
+      market_heat_alpha: round3(market_heat_alpha),
       overlap_penalty: round3(overlap_penalty),
       crowding_penalty: round3(crowding_penalty),
       shared_strategy_ratio: round3(sharedStrategyRatio),

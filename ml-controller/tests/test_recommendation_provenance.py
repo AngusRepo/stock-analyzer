@@ -873,6 +873,41 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
     assert allocation["selection_reason"] == "no_positive_expected_edge"
 
 
+def test_sparse_tangent_allocation_accepts_market_heat_factor_edge():
+    rows = [{
+        "symbol": "3661",
+        "chip_score": 22.0,
+        "tech_score": 23.0,
+        "confidence": 0.78,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 82.0,
+        "score_components": _score_components(final_score=82.0, ml_edge=20.0),
+        "market_heat_score": 0.82,
+        "market_heat_expected_return": 0.0042,
+        "alpha_context": {
+            "market_heat_score": 0.82,
+            "market_heat_alpha": 1.64,
+            "market_heat_expected_return": 0.0042,
+        },
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "BUY"
+    assert promoted[0].get("sparse_tangent_selected") is True
+    assert allocation["expected_return"] == pytest.approx(0.0042)
+    assert allocation["expected_return_source"] == "market_heat_factor_expected_edge"
+    assert allocation["market_heat_score"] == pytest.approx(0.82)
+    assert allocation["market_heat_expected_return"] == pytest.approx(0.0042)
+    assert allocation["positive_expected_edge"] is True
+
+
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
     pytest.importorskip("httpx")
     from services import modal_client
@@ -967,10 +1002,10 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
         {"up": 0, "down": 0, "total": 0},
     )
 
-    assert summary["reported"] == 9
+    assert summary["reported"] == 8
     assert summary["missing"] == 0
     assert summary["activeWeightCount"] == 6
-    assert summary["zeroWeightModels"] == ["TabM", "DLinear", "TimesFM"]
+    assert summary["zeroWeightModels"] == ["TabM", "DLinear"]
 
 
 def test_core_family_vote_deduplicates_exact_same_model_scores_within_family():

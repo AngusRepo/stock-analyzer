@@ -63,6 +63,9 @@ function assert(condition: unknown, message: string): void {
           marginal_utility_score: 84.2,
           marginal_selection_step: 1,
           learned_strategy_edge: 9.1,
+          market_heat_score: 82,
+          market_heat_contribution: 6.56,
+          market_heat_alpha: 5.74,
           strategy_uniqueness_bonus: 7.4,
           family_diversification_bonus: 5.2,
           exploration_bonus: 0.8,
@@ -259,6 +262,9 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_prior_weight === 1.2, 'Layer1.25 strategy prior should remain unnormalized')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.marginal_utility_score === 84.2, 'Layer1.5 summary should expose marginal utility score')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.learned_strategy_edge === 9.1, 'Layer1.5 summary should expose learned strategy edge')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.market_heat_score === 0.82, 'Layer1.5 summary should expose market heat score')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.market_heat_contribution === 6.56, 'Layer1.5 summary should expose market heat route contribution')
+  assert((summary?.evidence.layer15_multi_strategy_router as any)?.market_heat_alpha === 5.74, 'Layer1.5 summary should expose market heat marginal utility alpha')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.new_strategy_ratio === 1, 'Layer1.5 summary should expose strategy novelty signal')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_rank_ic === 0.12, 'Layer1.5 summary should expose learned RankIC signal')
   assert((summary?.evidence.layer2_timesfm_enrichment as any)?.schema_version === 'layer2_timesfm_enrichment_summary_v1', 'Layer2 TimesFM evidence must expose a stable summary schema')

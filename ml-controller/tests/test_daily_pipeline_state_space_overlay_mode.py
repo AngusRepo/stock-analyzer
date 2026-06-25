@@ -266,6 +266,16 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
     assert result["modal_wait_telemetry"]["stage_timings"]["gnn_graphsage_universal_predict"]["required_alpha"] is True
 
 
+def test_timesfm_l2_sidecar_status_merge_preserves_canonical_active_status():
+    merged = daily_pipeline_v2._merge_model_status_preserving_sidecars(
+        {"TimesFM": "active", "DLinear": "active"},
+        {"TimesFM": "retired", "DLinear": "degraded"},
+    )
+
+    assert merged["TimesFM"] == "active"
+    assert merged["DLinear"] == "degraded"
+
+
 def test_timesfm_gate_requires_coverage_and_blocks_direct_alpha(monkeypatch):
     monkeypatch.setenv("TIMESFM_SEQUENCE_CONTRACT_POINTS", "128")
     series = [{"symbol": "2330", "prices": list(range(260))}]

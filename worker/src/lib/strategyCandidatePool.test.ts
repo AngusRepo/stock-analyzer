@@ -377,6 +377,83 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
+  const hotCandidate: StrategyCandidatePoolCandidate = {
+    symbol: '8801',
+    name: 'Hot Relative Strength',
+    industry: 'Momentum',
+    score_components: scoreV2Payload({ finalScore: 68, chipFlow: 18, technicalStructure: 20, momentumScore: 14 }),
+    raw_signals: rawSignalPayload({
+      closeAboveMa20Pct: 0.09,
+      closeAboveMa60Pct: 0.13,
+      volumeExpansion20: 2.15,
+      return20d: 0.18,
+      foreignTrustNet5d: 3200,
+      brokerNetAmount5d: 22_000_000,
+      brokerCount: 9,
+      revenueGrowthYoY: 9,
+      monthlyRevenueYoY: 11,
+      roe: 12,
+    }),
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+  }
+  const quietCandidate: StrategyCandidatePoolCandidate = {
+    symbol: '8802',
+    name: 'Quiet Quality',
+    industry: 'Momentum',
+    score_components: scoreV2Payload({ finalScore: 72, chipFlow: 20, technicalStructure: 21, momentumScore: 3 }),
+    raw_signals: rawSignalPayload({
+      closeAboveMa20Pct: 0.01,
+      closeAboveMa60Pct: 0.01,
+      volumeExpansion20: 0.95,
+      return20d: 0.01,
+      foreignTrustNet5d: 400,
+      brokerNetAmount5d: 1_000_000,
+      brokerCount: 3,
+      revenueGrowthYoY: 13,
+      monthlyRevenueYoY: 14,
+      roe: 16,
+    }),
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+  }
+  const broadSpec = {
+    id: 'market_heat_broad_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Market heat broad evidence',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    familyId: 'TREND_RECLAIM_CONTINUATION' as const,
+    variantId: 'market_heat_broad_v1',
+    ownerType: 'strategy' as const,
+    promotionStatus: 'production' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Heat should be a router feature, not a hard quota.',
+    thresholds: { minPrice: 10 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+
+  const plan = buildMultiStrategyPleRoutingPlan([quietCandidate, hotCandidate], [broadSpec], {
+    maxSlateSize: 1,
+    minRouteScore: 0,
+    regime: 'bull',
+  })
+  const annotated = [...plan.mlSlate, ...plan.observeOnly] as any[]
+  const hot = annotated.find((candidate) => candidate.symbol === '8801') as any
+  const quiet = annotated.find((candidate) => candidate.symbol === '8802') as any
+
+  assert(plan.mlSlate.length === 1, 'market heat must respect L1.5 max capacity')
+  assert(plan.telemetry.capacity_policy === 'max_only_no_minimum', 'market heat must not become a forced-fill sleeve')
+  assert(hot.strategy_router_components.market_heat_score > quiet.strategy_router_components.market_heat_score, 'hot candidate should expose stronger market heat evidence')
+  assert(hot.strategy_router_components.market_heat_contribution > quiet.strategy_router_components.market_heat_contribution, 'market heat should feed route score')
+  assert(hot.strategy_router_components.market_heat_alpha > 0, 'market heat should feed marginal utility')
+  assert(plan.mlSlate[0].symbol === '8801', 'market heat should let high relative-strength candidate compete for the formal slate')
+}
+
+{
   assert(ACTIVE_8_ML_TEACHERS.length === 8, 'L1.5 router must preserve 8ML teacher-label contract')
   assert(ACTIVE_8_ML_TEACHERS.includes('LightGBM') && !ACTIVE_8_ML_TEACHERS.includes('TimesFM' as any), '8ML teacher-label contract must keep TimesFM out of direct teachers')
 

@@ -123,6 +123,9 @@ DEFAULT_ALPHA_POLICY: dict[str, Any] = {
         "confidence_penalty_impact": 0.01,
         "confidence_min": 0.75,
         "confidence_max": 1.08,
+        "market_heat_impact": 2.0,
+        "market_heat_expected_return_max": 0.006,
+        "market_heat_expected_return_min_score": 0.35,
     },
     "execution_overlay": {
         "sizing_min": 0.25,
@@ -309,6 +312,28 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
             _camel_or_snake(raw_scoring, "confidenceMax", "confidence_max", scoring_default["confidence_max"]),
             scoring_default["confidence_max"],
         ),
+        "market_heat_impact": _to_float(
+            _camel_or_snake(raw_scoring, "marketHeatImpact", "market_heat_impact", scoring_default["market_heat_impact"]),
+            scoring_default["market_heat_impact"],
+        ),
+        "market_heat_expected_return_max": max(0.0, _to_float(
+            _camel_or_snake(
+                raw_scoring,
+                "marketHeatExpectedReturnMax",
+                "market_heat_expected_return_max",
+                scoring_default["market_heat_expected_return_max"],
+            ),
+            scoring_default["market_heat_expected_return_max"],
+        )),
+        "market_heat_expected_return_min_score": min(1.0, max(0.0, _to_float(
+            _camel_or_snake(
+                raw_scoring,
+                "marketHeatExpectedReturnMinScore",
+                "market_heat_expected_return_min_score",
+                scoring_default["market_heat_expected_return_min_score"],
+            ),
+            scoring_default["market_heat_expected_return_min_score"],
+        ))),
     }
     if scoring["score_min"] > scoring["score_max"]:
         scoring["score_min"], scoring["score_max"] = scoring["score_max"], scoring["score_min"]
@@ -467,6 +492,9 @@ class AlphaContext:
     regime_surface: dict[str, float]
     regime_weight: float
     score_adjustment: float
+    market_heat_score: float
+    market_heat_alpha: float
+    market_heat_expected_return: float
     confidence_multiplier: float
     sizing_multiplier: float
     stop_multiplier: float
@@ -888,6 +916,62 @@ def build_risk_overlay(
     )
 
 
+def market_heat_score(rec: dict, ml: dict | None, payload: dict | None, policy: dict | None = None) -> float:
+    """Momentum/relative-strength alpha feature for candidate generation and allocation."""
+    closes = _extract_closes(payload)
+    latest = closes[-1] if closes else _to_float(rec.get("current_price"), 0.0)
+    ind = _last_indicator(payload)
+    ma20 = _to_float(ind.get("ma20"), 0.0) or (sum(closes[-20:]) / min(len(closes), 20) if closes else 0.0)
+    ma60 = _to_float(ind.get("ma60"), 0.0) or (sum(closes[-60:]) / min(len(closes), 60) if closes else 0.0)
+    rsi = _to_float(ind.get("rsi14"), _to_float(rec.get("rsi14"), 50.0))
+    adx = _to_float(ind.get("adx14"), _to_float(rec.get("adx14"), 0.0))
+    macd_hist = _to_float(ind.get("macdHist", ind.get("macd_hist")), _to_float(rec.get("macd_hist"), 0.0))
+    ret_5d = _pct_change(closes, 5)
+    ret_20d = _pct_change(closes, 20)
+    ret_60d = _pct_change(closes, 60)
+    volumes = _extract_volumes(payload)
+    if len(volumes) >= 4:
+        base = median([value for value in volumes[:-1] if value > 0] or [volumes[-1] or 1.0])
+        volume_ratio = (volumes[-1] or 0.0) / base if base > 0 else 1.0
+    else:
+        volume_ratio = 1.0
+    forecast = _to_float((ml or {}).get("forecast_pct"), 0.0)
+    tech_score = _to_float(rec.get("tech_score"), 0.0)
+    momentum_score = _to_float(rec.get("momentum_score"), 0.0)
+
+    trend = 0.0
+    if latest > 0 and ma20 > 0:
+        trend += min(1.0, max(0.0, latest / ma20 - 1.0) / 0.08) * 0.18
+    if latest > 0 and ma60 > 0:
+        trend += min(1.0, max(0.0, latest / ma60 - 1.0) / 0.12) * 0.14
+    momentum = (
+        min(1.0, max(0.0, ret_5d) / 0.05) * 0.16
+        + min(1.0, max(0.0, ret_20d) / 0.15) * 0.22
+        + min(1.0, max(0.0, ret_60d) / 0.25) * 0.08
+        + min(1.0, max(0.0, momentum_score) / 20.0) * 0.08
+    )
+    volume = min(1.0, max(0.0, volume_ratio - 1.0) / 1.5) * 0.18
+    technical = (
+        min(1.0, max(0.0, tech_score) / 30.0) * 0.06
+        + min(1.0, max(0.0, adx) / 35.0) * 0.04
+        + (0.03 if macd_hist > 0 else 0.0)
+        + (0.03 if 52 <= rsi <= 72 else 0.0)
+    )
+    forecast_component = min(1.0, max(0.0, forecast) / 0.05) * 0.06
+    exhaustion_penalty = (0.10 if rsi >= 82 else 0.0) + (0.05 if volume_ratio >= 4.0 else 0.0)
+    return round(max(0.0, min(1.0, trend + momentum + volume + technical + forecast_component - exhaustion_penalty)), 4)
+
+
+def market_heat_expected_return(heat_score: float, policy: dict | None = None) -> float:
+    policy = normalize_alpha_policy(policy)
+    scoring = policy["scoring"]
+    floor = scoring["market_heat_expected_return_min_score"]
+    if heat_score <= floor:
+        return 0.0
+    scaled = (heat_score - floor) / max(1e-9, 1.0 - floor)
+    return round(scaled * scoring["market_heat_expected_return_max"], 8)
+
+
 def build_alpha_context(
     rec: dict,
     ml: dict | None,
@@ -912,12 +996,16 @@ def build_alpha_context(
     scoring = policy["scoring"]
     execution_overlay = policy["execution_overlay"]
     bucket_bonus = _to_float(scoring["bucket_bonus"].get(bucket.value), 0.0)
+    heat_score = market_heat_score(rec, ml, payload, policy=policy)
+    heat_alpha = heat_score * scoring["market_heat_impact"]
+    heat_expected_return = market_heat_expected_return(heat_score, policy=policy)
     score_adjustment = max(
         scoring["score_min"],
         min(
             scoring["score_max"],
             bucket_bonus
             + ((weight - 1.0) * scoring["regime_weight_impact"])
+            + heat_alpha
             - (overlay.penalty * scoring["overlay_penalty_impact"]),
         ),
     )
@@ -967,6 +1055,9 @@ def build_alpha_context(
         regime_surface=surface,
         regime_weight=round(weight, 4),
         score_adjustment=round(score_adjustment, 2),
+        market_heat_score=round(heat_score, 4),
+        market_heat_alpha=round(heat_alpha, 4),
+        market_heat_expected_return=heat_expected_return,
         confidence_multiplier=round(confidence_multiplier, 4),
         sizing_multiplier=round(max(execution_overlay["sizing_min"], min(execution_overlay["sizing_max"], sizing_multiplier)), 4),
         stop_multiplier=round(stop_multiplier, 4),
@@ -978,6 +1069,8 @@ def build_alpha_context(
 def apply_alpha_context(rec: dict, ml: dict | None, ctx: AlphaContext) -> dict:
     context_dict = ctx.to_dict()
     rec["alpha_context"] = context_dict
+    rec["market_heat_score"] = ctx.market_heat_score
+    rec["market_heat_expected_return"] = ctx.market_heat_expected_return
     rec["score"] = round(max(0.0, _to_float(rec.get("score"), 0.0) + ctx.score_adjustment) * 10) / 10
     if ctx.risk_overlay.skip:
         rec["has_buy_signal"] = 0
@@ -990,6 +1083,13 @@ def apply_alpha_context(rec: dict, ml: dict | None, ctx: AlphaContext) -> dict:
         f"{ctx.edge_bucket.value}, regime={ctx.regime}, "
         f"sizing x{ctx.sizing_multiplier}, risk={ctx.risk_overlay.volatility_level}/{ctx.risk_overlay.liquidity_level}"
     )
+    if ctx.market_heat_score > 0:
+        points.append(
+            "Market heat alpha: "
+            f"score={ctx.market_heat_score}, "
+            f"score_adjustment={ctx.market_heat_alpha}, "
+            f"expected_return={ctx.market_heat_expected_return}"
+        )
     structure = ctx.risk_overlay.structure_detail
     if structure.get("poc_price") is not None and structure.get("structure_status") == "ok":
         points.append(
@@ -1128,6 +1228,7 @@ def regime_aware_allocate(
     ]
     ordered = selected + tail
     for idx, row in enumerate(selected):
+        context = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
         row["alpha_allocation"] = {
             "selected": True,
             "selection_rank": idx + 1,
@@ -1135,15 +1236,22 @@ def regime_aware_allocate(
             "regime_surface": normalize_regime_surface(regime_label, regime_surface),
             "bucket": _bucket_of(row),
             "quota": quotas.get(_bucket_of(row) or "", 0),
+            "market_heat_score": context.get("market_heat_score"),
+            "market_heat_alpha": context.get("market_heat_alpha"),
+            "market_heat_expected_return": context.get("market_heat_expected_return"),
         }
     for row in tail:
         bucket = _bucket_of(row)
         if bucket:
+            context = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
             row["alpha_allocation"] = {
                 "selected": False,
                 "regime": dominant_regime(regime_label, regime_surface),
                 "regime_surface": normalize_regime_surface(regime_label, regime_surface),
                 "bucket": bucket,
                 "quota": quotas.get(bucket, 0),
+                "market_heat_score": context.get("market_heat_score"),
+                "market_heat_alpha": context.get("market_heat_alpha"),
+                "market_heat_expected_return": context.get("market_heat_expected_return"),
             }
     return ordered

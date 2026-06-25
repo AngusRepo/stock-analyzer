@@ -36,8 +36,20 @@ def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tu
     calibration = (ev2_cfg or {}).get("expectedReturnCalibration") or {}
     bins = calibration.get("bins") if isinstance(calibration, dict) else None
     min_samples = int(calibration.get("minSamples", 1) or 1) if isinstance(calibration, dict) else 1
+    base_meta = {
+        "forecast_calibration_method": calibration.get("method") if isinstance(calibration, dict) else None,
+        "forecast_calibration_status": (
+            calibration.get("status") if isinstance(calibration, dict) and calibration
+            else (ev2_cfg or {}).get("expectedReturnCalibrationRuntime", {}).get("status")
+            if isinstance((ev2_cfg or {}).get("expectedReturnCalibrationRuntime"), dict)
+            else "missing"
+        ),
+        "forecast_calibration_source": calibration.get("source") if isinstance(calibration, dict) else None,
+        "forecast_calibration_sample_count": calibration.get("sampleCount") if isinstance(calibration, dict) else None,
+    }
     if isinstance(bins, list):
-        for idx, row in enumerate(bins):
+        valid_bins: list[dict] = []
+        for row in bins:
             if not isinstance(row, dict):
                 continue
             try:
@@ -49,27 +61,69 @@ def _calibrated_forecast_pct(avg_rank: float, ev2_cfg: dict | None = None) -> tu
                 )
             except (TypeError, ValueError):
                 continue
-            upper_ok = avg_rank <= high if idx == len(bins) - 1 or high >= 1.0 else avg_rank < high
+            if samples < min_samples:
+                continue
+            valid_bins.append({
+                "low": low,
+                "high": high,
+                "samples": samples,
+                "mean_return": mean_return,
+            })
+        valid_bins.sort(key=lambda item: (item["low"], item["high"]))
+        for idx, row in enumerate(valid_bins):
+            low = row["low"]
+            high = row["high"]
+            samples = row["samples"]
+            mean_return = row["mean_return"]
+            upper_ok = avg_rank <= high if idx == len(valid_bins) - 1 or high >= 1.0 else avg_rank < high
             if samples >= min_samples and avg_rank >= low and upper_ok:
                 return round(mean_return, 6), "calibrated_rank_bin", {
-                    "forecast_calibration_method": calibration.get("method") or "empirical_rank_bins",
-                    "forecast_calibration_status": calibration.get("status") or "configured",
-                    "forecast_calibration_source": calibration.get("source"),
-                    "forecast_calibration_sample_count": calibration.get("sampleCount"),
+                    **base_meta,
+                    "forecast_calibration_method": base_meta["forecast_calibration_method"] or "empirical_rank_bins",
+                    "forecast_calibration_status": base_meta["forecast_calibration_status"] or "configured",
                     "forecast_calibration_bin_samples": samples,
                     "forecast_calibration_bin": {"rankLow": low, "rankHigh": high},
+                    "forecast_calibration_ood": False,
                 }
-    return None, "uncalibrated_rank_score", {
-        "forecast_calibration_method": calibration.get("method") if isinstance(calibration, dict) else None,
-        "forecast_calibration_status": (
-            calibration.get("status") if isinstance(calibration, dict) and calibration
-            else (ev2_cfg or {}).get("expectedReturnCalibrationRuntime", {}).get("status")
-            if isinstance((ev2_cfg or {}).get("expectedReturnCalibrationRuntime"), dict)
-            else "missing"
-        ),
-        "forecast_calibration_source": calibration.get("source") if isinstance(calibration, dict) else None,
-        "forecast_calibration_sample_count": calibration.get("sampleCount") if isinstance(calibration, dict) else None,
-    }
+        if valid_bins:
+            first = valid_bins[0]
+            last = valid_bins[-1]
+            if avg_rank < first["low"]:
+                clamp_bin = first
+                side = "below_min_rank"
+                distance = first["low"] - avg_rank
+            elif avg_rank > last["high"]:
+                clamp_bin = last
+                side = "above_max_rank"
+                distance = avg_rank - last["high"]
+            else:
+                clamp_bin = min(
+                    valid_bins,
+                    key=lambda item: min(abs(avg_rank - item["low"]), abs(avg_rank - item["high"])),
+                )
+                side = "rank_bin_gap"
+                distance = min(abs(avg_rank - clamp_bin["low"]), abs(avg_rank - clamp_bin["high"]))
+            dampening = calibration.get("tailDampening", calibration.get("tail_dampening", 0.5))
+            try:
+                dampening = max(0.0, min(1.0, float(dampening)))
+            except (TypeError, ValueError):
+                dampening = 0.5
+            clamped = float(clamp_bin["mean_return"]) * dampening
+            if side == "below_min_rank":
+                clamped = min(0.0, clamped)
+            return round(clamped, 6), "calibrated_rank_tail_clamp", {
+                **base_meta,
+                "forecast_calibration_method": base_meta["forecast_calibration_method"] or "empirical_rank_bins",
+                "forecast_calibration_status": base_meta["forecast_calibration_status"] or "configured",
+                "forecast_calibration_bin_samples": clamp_bin["samples"],
+                "forecast_calibration_bin": {"rankLow": clamp_bin["low"], "rankHigh": clamp_bin["high"]},
+                "forecast_calibration_ood": True,
+                "forecast_calibration_ood_side": side,
+                "forecast_calibration_tail_distance": round(distance, 6),
+                "forecast_calibration_tail_policy": "conservative_empirical_bin_clamp",
+                "forecast_calibration_tail_dampening": dampening,
+            }
+    return None, "uncalibrated_rank_score", base_meta
 
 
 def _forecast_fields(avg_rank: float, ev2_cfg: dict | None = None) -> dict:

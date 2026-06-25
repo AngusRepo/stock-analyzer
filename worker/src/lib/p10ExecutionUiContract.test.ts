@@ -33,8 +33,16 @@ assert(
   'frontend must expose a human-readable execution status formatter',
 )
 assert(
-  botDashboard.includes('formatExecutionStatusBadge'),
-  'Bot dashboard must not show raw execution_status strings',
+  uiHelper.includes('formatPendingBuyExecutionBadge'),
+  'frontend must expose an item-aware pending-buy execution formatter',
+)
+assert(
+  uiHelper.includes('已檢查，等待條件'),
+  'frontend must distinguish checked-but-waiting pending buys from never-checked pending buys',
+)
+assert(
+  botDashboard.includes('formatPendingBuyExecutionBadge'),
+  'Bot dashboard must use item-aware execution status labels',
 )
 assert(
   botDashboard.includes('formatPartialFillRemaining'),

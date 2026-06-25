@@ -171,6 +171,28 @@ def test_daily_pipeline_model_pool_lifecycle_does_not_default_missing_status_or_
     assert "_require_loaded_serving_version" in text
 
 
+def test_daily_pipeline_load_pool_and_ic_reads_timesfm_l2_sidecar_before_formal_slot():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "graphs" / "daily_pipeline_v2.py"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("def _load_pool_and_ic():")
+    end = text.index("def _load_expected_return_calibration", start)
+    body = text[start:end]
+
+    sidecar_read = body.index('sidecars = pool.get("l2_feature_sidecars")')
+    sidecar_status = body.index(
+        'model_status[name] = _require_model_pool_status(entry, name, "load_pool_and_ic")',
+        sidecar_read,
+    )
+    formal_slots = body.index('for name, entry in (pool.get("formal_layer3_slots") or {}).items():')
+
+    assert sidecar_read < formal_slots
+    assert sidecar_status < formal_slots
+    assert "_merge_model_status_preserving_sidecars" in text
+    assert "model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)" in text
+
+
 def test_daily_pipeline_loads_ic_from_model_pool_before_legacy_sidecar(monkeypatch):
     import sys
     import types

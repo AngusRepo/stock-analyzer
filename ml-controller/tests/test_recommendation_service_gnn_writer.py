@@ -39,6 +39,26 @@ def test_extract_per_model_scores_keeps_timesfm_out_of_direct_alpha_rows():
     assert "TimesFM" not in out
 
 
+def test_extract_per_model_scores_persists_active8_challenger_rows_for_live_gate():
+    out = _extract_per_model_scores_for_d1(
+        {
+            "rank_scores": {"XGBoost": 0.61},
+            "challenger_rank_scores": {
+                "XGBoost": 0.66,
+                "GNN::challenger": 0.58,
+                "CatBoost": 0.77,
+            },
+            "timesfm": {"forecast_pct": 0.05},
+        }
+    )
+
+    assert out["XGBoost"] == 0.61
+    assert out["XGBoost::challenger"] == 0.66
+    assert out["GNN::challenger"] == 0.58
+    assert "CatBoost::challenger" not in out
+    assert "TimesFM" not in out
+
+
 def test_per_model_signal_payload_keeps_timesfm_out_of_direct_alpha_rows():
     payload = _per_model_signal_payload(
         {

@@ -31,7 +31,7 @@ import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent
 import { stocksApi } from '@/lib/api'
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
-import { buildTradingPlanLevels, normalizeOhlcvRows, type TradingPlanLevels } from '@/lib/tradingPlanLevels'
+import { buildAtrBandSeries, buildTradingPlanLevels, normalizeOhlcvRows, type TradingPlanLevels } from '@/lib/tradingPlanLevels'
 import { buildTradePlanStructureZones } from '@/lib/tradePlanStructureZones'
 import { cn } from '@/lib/utils'
 
@@ -485,6 +485,30 @@ function fmtShares(value: number | string | null | undefined): string {
 function fmtLots(value: number | string | null | undefined): string {
   const text = fmtInteger(value)
   return text === '-' ? '-' : `${text} 張`
+}
+
+function institutionalNetShares(institutional: ReturnType<typeof institutionalRawFromRec>): number | null {
+  const direct = Number(institutional?.total_net_shares)
+  if (Number.isFinite(direct)) return direct
+  const rows = institutional?.rows ?? []
+  if (!rows.length) return null
+  const sum = rows.reduce((acc, row) => {
+    const value = Number(row.net_shares)
+    return Number.isFinite(value) ? acc + value : acc
+  }, 0)
+  return Number.isFinite(sum) ? sum : null
+}
+
+function flowDirectionText(value: number): string {
+  if (value > 0) return '買超'
+  if (value < 0) return '賣超'
+  return '持平'
+}
+
+function fmtAbsLotsFromShares(value: number | string | null | undefined): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '-'
+  return fmtLots(Math.abs(numeric) / 1000)
 }
 
 function signedFlowClass(value: unknown): string {
@@ -1784,7 +1808,7 @@ function InstitutionalBrokerFlowBlock({
     if (!rows.length) return <p className="text-[11px] text-muted-foreground">{emptyText}</p>
     return (
       <div className="space-y-1">
-        {rows.slice(0, 3).map((row, index) => {
+        {rows.slice(0, 5).map((row, index) => {
           const name = String(row.broker_name ?? row.broker_code ?? '-')
           const netLots = row.net_lots ?? row.net_shares ?? null
           return (
@@ -1829,8 +1853,8 @@ function InstitutionalBrokerFlowBlock({
               {institutional.rows.map((row) => (
                 <div key={row.key ?? row.label} className="grid grid-cols-[3.5rem_1fr_1fr_1fr] items-center gap-1 text-[11px]">
                   <span className="truncate text-foreground/85">{row.label ?? row.key ?? '-'}</span>
-                  <span className="text-right font-mono tabular-nums text-emerald-500 dark:text-emerald-300">{fmtShares(row.buy_shares)}</span>
-                  <span className="text-right font-mono tabular-nums text-red-500 dark:text-red-300">{fmtShares(row.sell_shares)}</span>
+                  <span className="text-right font-mono tabular-nums text-red-500 dark:text-red-300">{fmtShares(row.buy_shares)}</span>
+                  <span className="text-right font-mono tabular-nums text-emerald-500 dark:text-emerald-300">{fmtShares(row.sell_shares)}</span>
                   <span className={cn('text-right font-mono tabular-nums', signedFlowClass(row.net_shares))}>{fmtShares(row.net_shares)}</span>
                 </div>
               ))}
@@ -1850,17 +1874,17 @@ function InstitutionalBrokerFlowBlock({
           {hasBrokerRanks ? (
             <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
               <div>
-                <p className="mb-1 text-[11px] font-medium text-red-500 dark:text-red-300">買超前三大</p>
-                {renderBrokerRankRows(topBuy, '買超前三大尚無資料')}
+                <p className="mb-1 text-[11px] font-medium text-red-500 dark:text-red-300">買超前五大</p>
+                {renderBrokerRankRows(topBuy, '買超前五大尚無資料')}
               </div>
               <div>
-                <p className="mb-1 text-[11px] font-medium text-emerald-500 dark:text-emerald-300">賣超前三大</p>
-                {renderBrokerRankRows(topSell, '賣超前三大尚無資料')}
+                <p className="mb-1 text-[11px] font-medium text-emerald-500 dark:text-emerald-300">賣超前五大</p>
+                {renderBrokerRankRows(topSell, '賣超前五大尚無資料')}
               </div>
             </div>
           ) : (
             <div className="space-y-1.5 text-[11px] text-muted-foreground">
-              <p className="text-amber-600 dark:text-amber-300">分券商前三大尚未入庫；目前顯示 canonical 聚合分點。</p>
+              <p className="text-amber-600 dark:text-amber-300">分券商前五大尚未入庫；目前顯示 canonical 聚合分點。</p>
               {aggregate ? (
                 <div className="grid grid-cols-3 gap-1">
                   <MetricPill label="買" value={fmtLots(aggregate.buy_lots)} />
@@ -2079,6 +2103,37 @@ function priceRowsToVolume(rows: any[], candles: KlineCandle[], limit = 42) {
     .filter((item) => Boolean(item.time))
 }
 
+function movingAverageSeries(candles: KlineCandle[], period: number) {
+  if (candles.length < period) return []
+  const out: Array<{ time: Time; value: number }> = []
+  for (let index = period - 1; index < candles.length; index += 1) {
+    const window = candles.slice(index - period + 1, index + 1)
+    const avg = window.reduce((sum, candle) => sum + candle.close, 0) / period
+    out.push({ time: candles[index].time, value: Math.round(avg * 100) / 100 })
+  }
+  return out
+}
+
+function rsiSeries(candles: KlineCandle[], period = 14) {
+  if (candles.length < period + 1) return []
+  const out: Array<{ time: Time; value: number }> = []
+  for (let index = period; index < candles.length; index += 1) {
+    const window = candles.slice(index - period, index + 1)
+    let gains = 0
+    let losses = 0
+    for (let i = 1; i < window.length; i += 1) {
+      const change = window[i].close - window[i - 1].close
+      if (change >= 0) gains += change
+      else losses += Math.abs(change)
+    }
+    const avgGain = gains / period
+    const avgLoss = losses / period
+    const value = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss))
+    out.push({ time: candles[index].time, value: Math.round(value * 10) / 10 })
+  }
+  return out
+}
+
 function KLinePlanSketch({
   rec,
   priceRows,
@@ -2099,9 +2154,21 @@ function KLinePlanSketch({
   const optimisticHigh = plan.optimisticHigh ?? resistance
   const atrDefense = plan.atrDefense
   const volumeNode = plan.volumeNode
+  const buyReferenceLow = plan.buyReferenceLow
+  const buyReferenceHigh = plan.buyReferenceHigh
+  const optimisticLow = plan.optimisticLow
+  const ma20 = plan.ma20
+  const ma60 = plan.ma60
   const prices = [latest, support, confirmation, resistance, atrDefense, volumeNode].filter((value): value is number => value != null)
   const candles = priceRowsToCandles(priceRows)
   const volume = priceRowsToVolume(priceRows, candles)
+  const ma20Series = movingAverageSeries(candles, 20)
+  const ma60Series = movingAverageSeries(candles, 60)
+  const atrBands = buildAtrBandSeries(normalizeOhlcvRows(priceRows)).slice(-candles.length)
+  const atrUpperSeries = atrBands.map((point) => ({ time: point.time as Time, value: point.upper }))
+  const atrLowerSeries = atrBands.map((point) => ({ time: point.time as Time, value: point.lower }))
+  const rsi = rsiSeries(candles)
+  const latestRsi = rsi[rsi.length - 1]?.value ?? null
   const lastTime = candles[candles.length - 1]?.time
   const nextTime = addCalendarDays(lastTime, 1)
   const targetTime = addCalendarDays(lastTime, 3)
@@ -2121,6 +2188,11 @@ function KLinePlanSketch({
     optimisticHigh,
     atrDefense,
     volumeNode,
+    buyReferenceLow,
+    buyReferenceHigh,
+    optimisticLow,
+    ma20,
+    ma60,
     rows: candles.map((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close]),
   })
 
@@ -2160,6 +2232,46 @@ function KLinePlanSketch({
         lastValueVisible: false,
       })
       projectionSeries.setData(projection)
+    }
+
+    if (ma20Series.length) {
+      const ma20Line = chart.addSeries(LineSeries, {
+        color: '#f59e0b',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      ma20Line.setData(ma20Series)
+    }
+
+    if (ma60Series.length) {
+      const ma60Line = chart.addSeries(LineSeries, {
+        color: '#a78bfa',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      ma60Line.setData(ma60Series)
+    }
+
+    if (atrUpperSeries.length && atrLowerSeries.length) {
+      const atrUpperLine = chart.addSeries(LineSeries, {
+        color: 'rgba(244, 63, 94, 0.55)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      const atrLowerLine = chart.addSeries(LineSeries, {
+        color: 'rgba(34, 197, 94, 0.55)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      atrUpperLine.setData(atrUpperSeries)
+      atrLowerLine.setData(atrLowerSeries)
     }
 
     if (resistance) {
@@ -2215,6 +2327,67 @@ function KLinePlanSketch({
       })
     }
 
+    if (buyReferenceLow) {
+      candleSeries.createPriceLine({
+        price: buyReferenceLow,
+        color: '#34d399',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: '買區下緣',
+      })
+    }
+
+    if (buyReferenceHigh) {
+      candleSeries.createPriceLine({
+        price: buyReferenceHigh,
+        color: '#22c55e',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: '買區上緣',
+      })
+    }
+
+    if (optimisticLow && optimisticHigh && optimisticHigh !== optimisticLow) {
+      candleSeries.createPriceLine({
+        price: optimisticHigh,
+        color: '#fb7185',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: '樂觀目標',
+      })
+    }
+
+    if (rsi.length) {
+      const rsiPaneIndex = volume.length ? 2 : 1
+      const rsiLine = chart.addSeries(LineSeries, {
+        color: '#c084fc',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }, rsiPaneIndex)
+      rsiLine.setData(rsi)
+      rsiLine.createPriceLine({
+        price: 70,
+        color: 'rgba(248, 113, 113, 0.5)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: 'RSI 70',
+      })
+      rsiLine.createPriceLine({
+        price: 30,
+        color: 'rgba(52, 211, 153, 0.5)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: 'RSI 30',
+      })
+      chart.panes()[rsiPaneIndex]?.setHeight(54)
+    }
+
     chart.panes()[1]?.setHeight(64)
     chart.timeScale().fitContent()
     if (candles.length > 32) {
@@ -2259,12 +2432,15 @@ function KLinePlanSketch({
         <span className="font-mono text-[11px] text-muted-foreground">Lightweight Charts</span>
       </div>
       <div ref={containerRef} className="h-[260px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
-      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-5">
+      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-4 lg:grid-cols-8">
         <span className="font-mono text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
         <span className="font-mono text-sky-500">轉強 {confirmation ? fmtNumber(confirmation, 2) : '-'}</span>
         <span className="font-mono text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
         <span className="font-mono text-violet-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
         <span className="font-mono text-rose-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
+        <span className="font-mono text-amber-500">MA20 {ma20 ? fmtNumber(ma20, 2) : '-'}</span>
+        <span className="font-mono text-violet-500">MA60 {ma60 ? fmtNumber(ma60, 2) : '-'}</span>
+        <span className="font-mono text-fuchsia-500">RSI {latestRsi != null ? fmtNumber(latestRsi, 1) : '-'}</span>
       </div>
     </div>
   )
@@ -2287,6 +2463,11 @@ function technicalPlanNote(rec: any): string {
 }
 
 function chipPlanNote(rec: any): string {
+  const institutional = institutionalRawFromRec(rec)
+  const todayNetShares = institutionalNetShares(institutional)
+  if (todayNetShares != null) {
+    return `法人今日${flowDirectionText(todayNetShares)}${fmtAbsLotsFromShares(todayNetShares)}，來源為 chip_data 法人原始買賣超。`
+  }
   const scoreV2 = scoreV2PayloadFromRec(rec)
   const evidence = parseObject(scoreV2?.chipEvidence) ?? parseObject(rec.chip_evidence)
   if (evidence?.broker_net_amount_5d_billion != null) {
@@ -2352,6 +2533,11 @@ function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanRe
 }
 
 function chipPlanValue(rec: any): string {
+  const institutional = institutionalRawFromRec(rec)
+  const todayNetShares = institutionalNetShares(institutional)
+  if (todayNetShares != null) {
+    return `${flowDirectionText(todayNetShares)} ${fmtAbsLotsFromShares(todayNetShares)}`
+  }
   const evidence = parseObject(scoreV2PayloadFromRec(rec)?.chipEvidence) ?? parseObject(rec.chip_evidence)
   const brokerAmount = Number(evidence?.broker_net_amount_5d_billion)
   if (Number.isFinite(brokerAmount)) {
@@ -2698,14 +2884,24 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
     + (rec.chip_cash_trust_5d ?? rec.trust_net_5d ?? 0)
     + (rec.dealer_net_5d ?? 0)
   )
-  const chipPositive = chip5dRaw > 0
   const evidenceLinks = normalizeEvidenceLinks(rec.evidence_links)
   const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
-  const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
   const institutionalRaw = institutionalRawFromRec(rec)
   const brokerTopFlows = brokerTopFlowsFromRec(rec)
+  const todayInstitutionalNetShares = institutionalNetShares(institutionalRaw)
+  const chipBadge = todayInstitutionalNetShares != null
+    ? {
+        label: '法人今日',
+        text: `${flowDirectionText(todayInstitutionalNetShares)} ${fmtAbsLotsFromShares(todayInstitutionalNetShares)}`,
+        signedValue: todayInstitutionalNetShares,
+      }
+    : {
+        label: isEmerging ? '券商' : '籌碼5日',
+        text: fmtChipAmount(chip5dRaw),
+        signedValue: Number(chip5dRaw),
+      }
 
   return (
     <div className={cn(
@@ -2741,9 +2937,9 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               <SigIcon className="mr-1 h-2.5 w-2.5" />
               {sig.label}
             </Badge>
-            <span className={cn('flex items-center gap-1 text-xs', chipPositive ? 'text-red-500' : 'text-emerald-500')}>
+            <span className={cn('flex items-center gap-1 text-xs', signedFlowClass(chipBadge.signedValue))}>
               <Users className="h-3 w-3" />
-              {chipBadgeLabel} {fmtChipAmount(chip5dRaw)}
+              {chipBadge.label} {chipBadge.text}
             </span>
             {rec.rsi14 != null && (
               <span className="flex items-center gap-1 text-xs text-muted-foreground">

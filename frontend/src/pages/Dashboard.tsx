@@ -344,20 +344,6 @@ function WatchlistCards({ onSelect }: { onSelect: (s: StockSelection) => void })
   )
 }
 
-function MorningBriefingCard() {
-  return (
-    <section className="overflow-hidden rounded-xl border border-[#2b3a49] bg-[linear-gradient(135deg,#171714,#111821_55%,#0d1722)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.22)]">
-      <div>
-        <p className="text-[11px] font-semibold tracking-[0.18em] text-[#d6a85f]">MORNING BRIEF / Morning overview</p>
-        <h2 className="mt-1 font-['Space_Grotesk'] text-2xl font-semibold tracking-tight text-[#f2ead8]">先看市場，再看推薦，不急著按鈕</h2>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-[#a8b6c5]">
-          第一屏只保留今天決策需要的市場風險、AI 候選、模擬掛單與資料可信度；詳細 trace 留在對應頁面，不在首頁堆入口。
-        </p>
-      </div>
-    </section>
-  )
-}
-
 function StockSearchWorkbench({ onSelect }: { onSelect: (s: StockSelection) => void }) {
   return (
     <WorkstationPanel title="標的入口" kicker="search, quick tickers, personal watch">
@@ -392,9 +378,6 @@ function EmptyState({ onSelect, user }: { onSelect: (s: StockSelection) => void;
   return (
     <div className="min-h-full">
       <div className="w-full space-y-4 px-3 py-3 sm:px-4 sm:py-4">
-
-        <MorningBriefingCard />
-
         <WorkstationPanel title="今日市場判讀" kicker="risk, flow, confidence">
           <div className="p-3">
             <MarketRiskPanel />
@@ -630,9 +613,9 @@ export default function Dashboard() {
           <AppShell>
             <div className="p-3 pb-0 sm:p-4 sm:pb-0 lg:p-5 lg:pb-0">
               <WorkstationPageTitle
-                kicker="Morning overview"
+                kicker="Daily decision"
                 title={activeStock ? `${activeStock.symbol} 研究筆記` : '晨間概覽'}
-                description="用比較輕的節奏整理市場、推薦與 Observability；需要細節時再進研究室或監控中心。"
+                description="整理市場風險、AI 候選、自選股與資料狀態；細節留在研究室與監控中心。"
                 action={
                   <div className="flex flex-wrap gap-2">
                     <WorkstationPill tone="info">今日焦點</WorkstationPill>

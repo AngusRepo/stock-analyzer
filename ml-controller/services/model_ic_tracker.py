@@ -25,11 +25,16 @@ EXPERIMENTAL_SHADOW_MODELS = (
     "ResidualMLP",
 )
 
+ACTIVE_ARTIFACT_CHALLENGER_MODELS = ALPHA_PREDICTION_MODELS
+
 PRODUCTION_IC_SEGMENTS = {"LISTED", "OTC", "UNKNOWN"}
 
 
 def tracked_model_names() -> tuple[str, ...]:
-    challengers = tuple(f"{name}::challenger" for name in EXPERIMENTAL_SHADOW_MODELS)
+    challengers = tuple(
+        f"{name}::challenger"
+        for name in (*ACTIVE_ARTIFACT_CHALLENGER_MODELS, *EXPERIMENTAL_SHADOW_MODELS)
+    )
     return ALPHA_PREDICTION_MODELS + challengers
 
 

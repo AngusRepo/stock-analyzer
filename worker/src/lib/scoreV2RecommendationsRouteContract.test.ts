@@ -32,3 +32,20 @@ assert(
   !route.includes('return `【籌碼】'),
   'recommendations route must not synthesize legacy tripartite reason labels',
 )
+assert(
+  route.includes('broker_level_top5')
+    && route.includes('.slice(0, 5)')
+    && route.includes('top_buy: topBuy')
+    && route.includes('top_sell: topSell'),
+  'daily recommendations route should expose broker branch top-five buy/sell rows',
+)
+for (const text of [
+  'function buildDailyPipelineSummaries',
+  'daily_pipeline_funnel_summary_v1',
+  'daily_active_strategy_summary_v1',
+  'screener_funnel_runs + screener_funnel_items',
+  'funnel_summary: pipelineSummaries.funnel_summary',
+  'strategy_summary: pipelineSummaries.strategy_summary',
+]) {
+  assert(route.includes(text), `daily recommendations route should expose flow-tracking summary contract: ${text}`)
+}

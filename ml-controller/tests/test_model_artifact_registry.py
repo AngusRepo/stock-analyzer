@@ -1120,18 +1120,10 @@ def test_update_live_gate_from_ic_marks_selected_candidate_not_enough_data(monke
             {
                 "artifact_id": "XGBoost:vW:weekly_drift",
                 "model_name": "XGBoost",
+                "version": "vW",
                 "candidate_type": "weekly_drift",
                 "state": "offline_strong_pass",
-                "updated_at": "2026-05-10T00:00:00Z",
-                "offline_gate_failed_gates": "[]",
-                "offline_evidence_json": "{}",
-                "live_evidence_json": "{}",
-            },
-            {
-                "artifact_id": "DLinear:vW:weekly_drift",
-                "model_name": "DLinear",
-                "candidate_type": "weekly_drift",
-                "state": "offline_passed",
+                "offline_gate_decision": "STRONG_PASS",
                 "updated_at": "2026-05-10T00:00:00Z",
                 "offline_gate_failed_gates": "[]",
                 "offline_evidence_json": "{}",
@@ -1158,10 +1150,11 @@ def test_update_live_gate_from_ic_marks_selected_candidate_not_enough_data(monke
         min_samples=50,
     )
 
-    assert result["selected"] == 0
-    assert result["updated"] == 0
-    assert result["updates"] == []
-    assert executed == []
+    assert result["selected"] == 1
+    assert result["updated"] == 1
+    assert result["updates"][0]["live_gate_status"] == "shadowing_not_enough_data"
+    assert result["updates"][0]["root_cause"] == "coverage_low"
+    assert len(executed) == 1
 
 
 def test_promotion_queue_includes_backend_owned_action_context():
@@ -1188,7 +1181,63 @@ def test_promotion_queue_includes_backend_owned_action_context():
     assert "promotion_controller" in row["action_context"]["affected_downstream"]
 
 
-def test_update_live_gate_from_ic_ignores_active8_challenger_rows(monkeypatch):
+def test_promotion_queue_exposes_artifact_compare_delta_for_offline_release():
+    candidate_offline = json.dumps({
+        "gate": {
+            "decision": "STRONG_PASS",
+            "metrics": {"oos_ic": 0.061, "model_cpcv_decision": "PASS"},
+        },
+        "registration": {"model_cpcv": {"decision": "PASS", "oos_ic_mean": 0.061}},
+        "validation_packet": {"pbo": 0.12, "deflated_sharpe": 1.21, "monte_carlo": {"decision": "PASS"}},
+    })
+    champion_offline = json.dumps({
+        "gate": {
+            "decision": "STRONG_PASS",
+            "metrics": {"oos_ic": 0.044, "model_cpcv_decision": "PASS"},
+        },
+        "registration": {"model_cpcv": {"decision": "PASS", "oos_ic_mean": 0.044}},
+    })
+
+    queue = registry.build_promotion_queue(
+        [
+            {
+                "artifact_id": "XGBoost:vNew:monthly_release",
+                "model_name": "XGBoost",
+                "version": "vNew",
+                "candidate_type": "monthly_release",
+                "state": "offline_strong_pass",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "not_started",
+                "offline_evidence_json": candidate_offline,
+                "live_evidence_json": "{}",
+            },
+            {
+                "artifact_id": "XGBoost:vChampion:monthly_release",
+                "model_name": "XGBoost",
+                "version": "vChampion",
+                "candidate_type": "monthly_release",
+                "state": "production",
+                "offline_gate_decision": "STRONG_PASS",
+                "live_gate_status": "not_started",
+                "offline_evidence_json": champion_offline,
+                "live_evidence_json": "{}",
+            },
+        ],
+        champion_versions={"XGBoost": "vChampion"},
+    )
+
+    row = queue["queue"][0]
+    compare = row["artifact_compare"]
+    assert compare["primary_metric"] == "oos_ic"
+    assert compare["candidate_oos_ic"] == 0.061
+    assert compare["champion_oos_ic"] == 0.044
+    assert compare["oos_ic_delta"] == 0.017
+    assert compare["metric_status"] == "candidate_beats_champion"
+    assert row["action_context"]["root_cause"] == "live_shadow_not_started"
+    assert "model-ic-tracker" in row["action_context"]["scheduler_dependency"]
+
+
+def test_update_live_gate_from_ic_updates_active8_challenger_rows(monkeypatch):
     executed: list[dict[str, object]] = []
 
     def fake_query(sql, params=None, timeout=60.0):
@@ -1196,8 +1245,10 @@ def test_update_live_gate_from_ic_ignores_active8_challenger_rows(monkeypatch):
             {
                 "artifact_id": "PatchTST:vW:weekly_drift",
                 "model_name": "PatchTST",
+                "version": "vW",
                 "candidate_type": "weekly_drift",
                 "state": "offline_strong_pass",
+                "offline_gate_decision": "STRONG_PASS",
                 "updated_at": "2026-05-10T00:00:00Z",
                 "offline_gate_failed_gates": "[]",
                 "offline_evidence_json": "{}",
@@ -1220,10 +1271,53 @@ def test_update_live_gate_from_ic_ignores_active8_challenger_rows(monkeypatch):
         min_samples=50,
     )
 
-    assert result["selected"] == 0
-    assert result["updated"] == 0
-    assert result["updates"] == []
-    assert executed == []
+    assert result["selected"] == 1
+    assert result["updated"] == 1
+    assert result["updates"][0]["artifact_id"] == "PatchTST:vW:weekly_drift"
+    assert result["updates"][0]["live_gate_status"] == "rolling_ic_passed"
+    assert result["updates"][0]["promotion_decision"] == "needs_multi_evidence_gate"
+    assert result["updates"][0]["root_cause"] == "rolling_ic_passed_needs_multi_evidence"
+    assert len(executed) == 1
+
+
+def test_update_live_gate_from_ic_updates_timesfm_l175_release_candidate(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_query(sql, params=None, timeout=60.0):
+        return [
+            {
+                "artifact_id": "XGBoost:vL175:timesfm_l175_l2_feature_release",
+                "model_name": "XGBoost",
+                "version": "vL175",
+                "candidate_type": "timesfm_l175_l2_feature_release",
+                "state": "offline_strong_pass",
+                "offline_gate_decision": "STRONG_PASS",
+                "updated_at": "2026-06-24T00:00:00Z",
+                "offline_gate_failed_gates": "[]",
+                "offline_evidence_json": "{}",
+                "live_evidence_json": "{}",
+            },
+        ]
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.update_live_gate_from_ic(
+        {
+            "XGBoost": {"status": "computed", "ic": 0.04, "n_samples": 80, "root_cause": "ok"},
+            "XGBoost::challenger": {"status": "computed", "ic": 0.07, "n_samples": 80, "root_cause": "ok"},
+        },
+        min_samples=50,
+    )
+
+    assert result["selected"] == 1
+    assert result["updates"][0]["artifact_id"] == "XGBoost:vL175:timesfm_l175_l2_feature_release"
+    assert result["updates"][0]["live_gate_status"] == "rolling_ic_passed"
+    assert len(executed) == 1
 
 
 def test_update_live_gate_from_ic_ignores_retired_model_challenger_rows(monkeypatch):

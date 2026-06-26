@@ -1112,7 +1112,7 @@ export type ModelArtifactRegistryRow = {
   artifact_id: string
   model_name: string
   version: string
-  candidate_type: 'monthly_release' | 'weekly_drift' | 'manual_hotfix' | 'unknown'
+  candidate_type: 'monthly_release' | 'weekly_drift' | 'manual_hotfix' | 'model_family_shadow' | 'research_benchmark' | 'timesfm_l175_l2_feature_release' | 'unknown' | string
   state: string
   artifact_path?: string | null
   metadata_path?: string | null
@@ -1134,6 +1134,20 @@ export type ModelArtifactRegistryRow = {
   approval_state?: string
   updated_at?: string
   created_at?: string
+}
+
+export type ModelArtifactCompare = {
+  schema_version?: string
+  primary_metric?: string
+  candidate_version?: string | null
+  current_champion_version?: string | null
+  champion_artifact_id?: string | null
+  candidate_oos_ic?: number | null
+  champion_oos_ic?: number | null
+  oos_ic_delta?: number | null
+  metric_status?: string | null
+  final_compared_to?: string | null
+  next_action?: string | null
 }
 
 export type ModelArtifactActionContext = {
@@ -1163,6 +1177,7 @@ export type ModelArtifactSuppressedRow = {
   candidate_type: string
   superseded_by?: string | null
   reason: string
+  artifact_compare?: ModelArtifactCompare
   action_context?: ModelArtifactActionContext
 }
 
@@ -1210,6 +1225,7 @@ export type ModelArtifactPromotionQueueResponse = {
     next_action: string
     blockers?: Array<{ code: string; label: string; next_action: string; severity?: string }>
     blocker_codes?: string[]
+    artifact_compare?: ModelArtifactCompare
     action_context?: ModelArtifactActionContext
   }>
 }

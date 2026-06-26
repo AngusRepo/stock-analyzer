@@ -18,6 +18,19 @@ assert(!page.includes('CandidateSourceMixChart'), 'PipelinePage must not render 
 assert(!page.includes('SingleStockTrace'), 'PipelinePage must not bring back the duplicate single-stock trace panel')
 assert(page.includes('buildScreenerSectorSummary('), 'PipelinePage should keep sector selection reasons in the bottom-up screener block')
 assert(page.includes('DebateTurnsList'), 'PipelinePage should keep debate turns attached to each T2 pending buy row')
+for (const text of [
+  'function FunnelSummaryColumn',
+  'function StrategySummaryColumn',
+  'function RecommendationSummaryColumn',
+  'function ExecutionFlowColumn',
+  'recData?.funnel_summary',
+  'recData?.strategy_summary',
+  'recommendationRows',
+  'candidateCount={recommendationRows.length}',
+]) {
+  assert(page.includes(text), `PipelinePage should render the four-column flow-tracking rebuild: ${text}`)
+}
+assert(!page.includes('function StepHeader'), 'PipelinePage should not bring back the old low-signal step-card layout')
 
 const packageLock = JSON.parse(fs.readFileSync(packageLockPath, 'utf8')) as {
   packages?: Record<string, { license?: string; version?: string }>

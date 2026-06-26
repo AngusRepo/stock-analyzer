@@ -142,6 +142,18 @@ for (const text of ['KLinePlanSketch', 'K線交易計劃圖', 'Lightweight Chart
 for (const text of ['isRawDebugWatchPoint', 'market_segment:', 'chip_source=', 'broker_net_(?:amount|shares)_5d']) {
   assert(recommendationCard.includes(text), `Recommendation card should filter raw debug watch point: ${text}`)
 }
+for (const text of [
+  'function institutionalNetShares',
+  '法人今日',
+  'fmtAbsLotsFromShares',
+  'institutionalRawFromRec(rec)',
+  'todayInstitutionalNetShares != null',
+  '賣超',
+  '買超前五大',
+  '賣超前五大',
+]) {
+  assert(recommendationCard.includes(text), `Recommendation card should prioritize same-day institutional raw chip flow: ${text}`)
+}
 
 assert(!scoreBreakdown.includes('compactLine(reason),'), '盤勢判讀 should not repeat the raw score/reason paragraph as a row')
 assert(!scoreBreakdown.includes('項目：'), 'Trade plan rows should not render label/value as prose prefixes')

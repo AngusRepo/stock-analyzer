@@ -1135,12 +1135,12 @@ function buildBrokerTopFlowsToday(
   const topBuy = rankRows
     .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'buy')
     .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
-    .slice(0, 3)
+    .slice(0, 5)
     .map(normalizeBrokerRankRow)
   const topSell = rankRows
     .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'sell')
     .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
-    .slice(0, 3)
+    .slice(0, 5)
     .map(normalizeBrokerRankRow)
   if (!row) {
     return {
@@ -1152,7 +1152,7 @@ function buildBrokerTopFlowsToday(
       top_sell: topSell,
       aggregate: null,
       missing_reason: topBuy.length || topSell.length ? null : 'no_canonical_broker_flow_row_for_symbol_date',
-      materialization_gap: topBuy.length || topSell.length ? null : 'broker_level_top3_not_materialized_in_d1',
+      materialization_gap: topBuy.length || topSell.length ? null : 'broker_level_top5_not_materialized_in_d1',
     }
   }
   return {
@@ -1176,7 +1176,214 @@ function buildBrokerTopFlowsToday(
     missing_reason: topBuy.length || topSell.length ? null : 'broker_level_detail_table_missing',
     materialization_gap: topBuy.length || topSell.length
       ? null
-      : 'FinLab broker_transactions was compressed into canonical_broker_flow_daily aggregates; broker_code/name top3 rows are not persisted yet.',
+      : 'FinLab broker_transactions was compressed into canonical_broker_flow_daily aggregates; broker_code/name top5 rows are not persisted yet.',
+  }
+}
+
+function parseJsonObject(value: unknown): Record<string, any> {
+  if (!value) return {}
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+  if (typeof value !== 'string') return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function uniqueStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.map((item) => String(item ?? '').trim()).filter(Boolean))]
+}
+
+function stageEffectivePass(row: Record<string, any> | null | undefined): number | null {
+  if (!row) return null
+  const selected = finiteNumber(row.selected_count)
+  const pass = finiteNumber(row.pass_count)
+  const observe = finiteNumber(row.observe_count)
+  const total = finiteNumber(row.total_count)
+  const drop = finiteNumber(row.drop_count) ?? 0
+  const candidates = [selected, pass, observe, total == null ? null : Math.max(0, total - drop)]
+    .filter((value): value is number => value != null && Number.isFinite(value))
+  return candidates.length ? Math.max(...candidates) : null
+}
+
+function roundMetric(value: number | null, digits = 3): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  const factor = 10 ** digits
+  return Math.round(value * factor) / factor
+}
+
+function jaccard(left: Set<string>, right: Set<string>): number | null {
+  const union = new Set([...left, ...right])
+  if (union.size === 0) return null
+  let intersection = 0
+  for (const symbol of left) if (right.has(symbol)) intersection += 1
+  return intersection / union.size
+}
+
+function binaryCorr(left: Set<string>, right: Set<string>, universeSize: number): number | null {
+  if (universeSize <= 1) return null
+  let both = 0
+  for (const symbol of left) if (right.has(symbol)) both += 1
+  const leftOnly = left.size - both
+  const rightOnly = right.size - both
+  const neither = Math.max(0, universeSize - both - leftOnly - rightOnly)
+  const denom = Math.sqrt(
+    (both + leftOnly) *
+    (rightOnly + neither) *
+    (both + rightOnly) *
+    (leftOnly + neither),
+  )
+  if (!Number.isFinite(denom) || denom <= 0) return null
+  return ((both * neither) - (leftOnly * rightOnly)) / denom
+}
+
+async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Promise<Record<string, any>> {
+  const latestRun = await db.prepare(`
+    SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, created_at
+      FROM screener_funnel_runs
+     WHERE date = ?
+     ORDER BY created_at DESC
+     LIMIT 1
+  `).bind(date).first<any>()
+  if (!latestRun?.run_id) {
+    return {
+      funnel_summary: null,
+      strategy_summary: null,
+    }
+  }
+
+  const { results: stageRows } = await db.prepare(`
+    SELECT stage,
+           COUNT(DISTINCT symbol) AS total_count,
+           COUNT(DISTINCT CASE WHEN decision = 'pass' THEN symbol END) AS pass_count,
+           COUNT(DISTINCT CASE WHEN decision = 'selected' THEN symbol END) AS selected_count,
+           COUNT(DISTINCT CASE WHEN decision = 'observe' THEN symbol END) AS observe_count,
+           COUNT(DISTINCT CASE WHEN decision = 'drop' THEN symbol END) AS drop_count
+      FROM screener_funnel_items
+     WHERE run_id = ?
+     GROUP BY stage
+  `).bind(latestRun.run_id).all<any>()
+  const byStage = new Map<string, Record<string, any>>((stageRows ?? []).map((row: any) => [String(row.stage ?? ''), row]))
+  const pickStage = (...names: string[]) => names.map((name) => byStage.get(name)).find(Boolean) ?? null
+  const layer0Stage = pickStage('universe')
+  const layer1Stage = pickStage('l1_candidate_seed_after_overlay', 'layer1_strategy_breadth_gate', 'final_selection')
+  const layer2Stage = pickStage('l15_ml_slate_queue', 'layer2_coarse_ml_gate', 'layer2_timesfm_enrichment')
+  const layer3Stage = pickStage('layer3_formal_ml_gate')
+  const l0Pass = finiteNumber(layer0Stage?.pass_count) ?? finiteNumber(latestRun.candidate_count)
+  const l0Drop = finiteNumber(layer0Stage?.drop_count)
+  const l1Pass = stageEffectivePass(layer1Stage)
+  const l2Pass = stageEffectivePass(layer2Stage)
+  const l3Pass = stageEffectivePass(layer3Stage)
+  const l4Pass = finiteNumber(latestRun.final_count)
+  type PipelineLayerDef = {
+    layer: string
+    label: string
+    stage: string
+    passed: number | null
+    eliminated?: number | null
+    previous?: number | null
+  }
+  const layerDefs: PipelineLayerDef[] = [
+    { layer: 'L0', label: 'Universe gate', stage: String(layer0Stage?.stage ?? 'universe'), passed: l0Pass, eliminated: l0Drop },
+    { layer: 'L1', label: 'Active strategy breadth', stage: String(layer1Stage?.stage ?? 'l1_candidate_seed_after_overlay'), passed: l1Pass, previous: l0Pass },
+    { layer: 'L2', label: 'ML slate queue', stage: String(layer2Stage?.stage ?? 'l15_ml_slate_queue'), passed: l2Pass, previous: l1Pass },
+    { layer: 'L3', label: 'Formal ML gate', stage: String(layer3Stage?.stage ?? 'layer3_formal_ml_gate'), passed: l3Pass, previous: l2Pass },
+    { layer: 'L4', label: 'Sparse allocation final', stage: 'daily_recommendations.final_count', passed: l4Pass, previous: l3Pass ?? l2Pass ?? l1Pass },
+  ]
+  const layers = layerDefs.map((row) => {
+    const eliminated = row.eliminated != null
+      ? row.eliminated
+      : row.previous != null && row.passed != null
+        ? Math.max(0, row.previous - row.passed)
+        : null
+    return {
+      layer: row.layer,
+      label: row.label,
+      stage: row.stage,
+      passed: row.passed,
+      eliminated,
+    }
+  })
+
+  const { results: strategyRows } = await db.prepare(`
+    SELECT symbol, evidence
+      FROM screener_funnel_items
+     WHERE run_id = ?
+       AND stage = 'l1_candidate_seed_after_overlay'
+       AND decision IN ('selected', 'pass', 'observe')
+  `).bind(latestRun.run_id).all<any>()
+  const strategySymbols = new Map<string, Set<string>>()
+  const candidateSymbols = new Set<string>()
+  for (const row of strategyRows ?? []) {
+    const symbol = String(row.symbol ?? '').trim()
+    if (!symbol) continue
+    candidateSymbols.add(symbol)
+    const evidence = parseJsonObject(row.evidence)
+    const strategyIds = uniqueStringList(evidence.strategy_pool_ids ?? evidence.strategy_ids)
+    for (const strategyId of strategyIds) {
+      const set = strategySymbols.get(strategyId) ?? new Set<string>()
+      set.add(symbol)
+      strategySymbols.set(strategyId, set)
+    }
+  }
+  const strategyUniverseSize = Math.max(candidateSymbols.size, finiteNumber(latestRun.final_count) ?? 0)
+  const strategyCounts = [...strategySymbols.entries()]
+    .map(([strategy_id, symbols]) => ({
+      strategy_id,
+      selected_count: symbols.size,
+      symbols: [...symbols].sort(),
+    }))
+    .sort((a, b) => b.selected_count - a.selected_count || a.strategy_id.localeCompare(b.strategy_id))
+  const pairwise: Array<Record<string, any>> = []
+  const entries = [...strategySymbols.entries()].sort(([a], [b]) => a.localeCompare(b))
+  for (let i = 0; i < entries.length; i += 1) {
+    for (let j = i + 1; j < entries.length; j += 1) {
+      const [leftId, leftSet] = entries[i]
+      const [rightId, rightSet] = entries[j]
+      const overlap = [...leftSet].filter((symbol) => rightSet.has(symbol)).length
+      pairwise.push({
+        left: leftId,
+        right: rightId,
+        overlap,
+        jaccard: roundMetric(jaccard(leftSet, rightSet)),
+        corr: roundMetric(binaryCorr(leftSet, rightSet, strategyUniverseSize)),
+      })
+    }
+  }
+  const avg = (values: Array<number | null | undefined>) => {
+    const clean = values.filter((value): value is number => value != null && Number.isFinite(value))
+    return clean.length ? roundMetric(clean.reduce((sum, value) => sum + value, 0) / clean.length) : null
+  }
+
+  return {
+    funnel_summary: {
+      schema_version: 'daily_pipeline_funnel_summary_v1',
+      source_of_truth: 'screener_funnel_runs + screener_funnel_items',
+      run_id: latestRun.run_id,
+      status: latestRun.status,
+      date: latestRun.date,
+      created_at: latestRun.created_at,
+      universe_count: finiteNumber(latestRun.universe_count),
+      candidate_count: finiteNumber(latestRun.candidate_count),
+      final_count: finiteNumber(latestRun.final_count),
+      emerging_count: finiteNumber(latestRun.emerging_count),
+      layers,
+      stage_counts: stageRows ?? [],
+    },
+    strategy_summary: {
+      schema_version: 'daily_active_strategy_summary_v1',
+      source_of_truth: 'screener_funnel_items.l1_candidate_seed_after_overlay.evidence.strategy_pool_ids',
+      run_id: latestRun.run_id,
+      candidate_count: candidateSymbols.size,
+      active_strategy_count: strategyCounts.length,
+      strategies: strategyCounts,
+      pairwise,
+      avg_jaccard: avg(pairwise.map((row) => row.jaccard)),
+      avg_corr: avg(pairwise.map((row) => row.corr)),
+    },
   }
 }
 
@@ -1445,7 +1652,7 @@ recommendations.get('/daily', async (c) => {
         }
       }
     } catch (e) {
-      console.warn('[recommendations/daily] broker top3 rank table unavailable:', e)
+      console.warn('[recommendations/daily] broker top5 rank table unavailable:', e)
     }
     try {
       const { results: brokerRows } = await c.env.DB.prepare(`
@@ -1637,6 +1844,12 @@ recommendations.get('/daily', async (c) => {
     screenerFunnelBySymbol.values(),
     recs.length,
   )
+  let pipelineSummaries: Record<string, any> = { funnel_summary: null, strategy_summary: null }
+  try {
+    pipelineSummaries = await buildDailyPipelineSummaries(c.env.DB, String(date))
+  } catch (e) {
+    console.warn('[recommendations/daily] daily pipeline summaries unavailable:', e)
+  }
 
   return c.json({
     requested_date: requestedOrToday,
@@ -1655,6 +1868,8 @@ recommendations.get('/daily', async (c) => {
       research_only: { count: researchOnlyRecs.length },
     },
     strategy_portfolio_intelligence_health: strategyPortfolioIntelligenceHealth,
+    funnel_summary: pipelineSummaries.funnel_summary,
+    strategy_summary: pipelineSummaries.strategy_summary,
     generated_at: recs[0]?.created_at ?? null,
   })
 })

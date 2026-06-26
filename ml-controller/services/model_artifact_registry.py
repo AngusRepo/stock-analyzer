@@ -1354,6 +1354,86 @@ def _first_metric(source: Any, *keys: str) -> float | None:
     return None
 
 
+def _artifact_oos_ic(row: dict[str, Any] | None) -> float | None:
+    if not row:
+        return None
+    model_name = str(row.get("model_name") or "")
+    offline = _artifact_offline_evidence(row)
+    gate = _nested_dict(offline.get("gate"))
+    gate_metrics = _nested_dict(gate.get("metrics"))
+    registration = _nested_dict(offline.get("registration"))
+    registration_metrics = _nested_dict(registration.get("metrics"))
+    registration_ic_tracking = _nested_dict(registration.get("ic_tracking"))
+    registration_cpcv = _nested_dict(registration.get("model_cpcv"))
+    ic_tracking_cpcv = _nested_dict(registration_ic_tracking.get("model_cpcv"))
+    ic_summary = _nested_dict(offline.get("ic_summary"))
+    foundation_forecast = _nested_dict(
+        registration.get("foundation_forecast_validation")
+        or offline.get("foundation_forecast_validation")
+    )
+    for value in (
+        gate_metrics.get("oos_ic"),
+        ic_summary.get(model_name),
+        registration.get("oos_ic"),
+        registration_metrics.get("oos_ic"),
+        registration_ic_tracking.get("oos_ic"),
+        registration_cpcv.get("oos_ic_mean"),
+        ic_tracking_cpcv.get("oos_ic_mean"),
+        foundation_forecast.get("oos_ic_mean"),
+    ):
+        numeric = _as_float(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _artifact_compare(
+    candidate: dict[str, Any],
+    *,
+    champion_version: str | None,
+    champion_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    candidate_oos_ic = _artifact_oos_ic(candidate)
+    champion_oos_ic = _artifact_oos_ic(champion_artifact)
+    delta = (
+        round(candidate_oos_ic - champion_oos_ic, 8)
+        if candidate_oos_ic is not None and champion_oos_ic is not None
+        else None
+    )
+    if not champion_version:
+        metric_status = "missing_champion_pointer"
+        next_action = "Resolve current champion pointer before judging promotion delta."
+    elif champion_artifact is None:
+        metric_status = "missing_champion_artifact"
+        next_action = "Backfill or register the current champion artifact so candidate-vs-champion metrics are visible."
+    elif candidate_oos_ic is None:
+        metric_status = "missing_candidate_metric"
+        next_action = "Attach candidate OOS IC / CPCV evidence before promotion review."
+    elif champion_oos_ic is None:
+        metric_status = "missing_champion_metric"
+        next_action = "Attach champion baseline OOS IC before promotion review."
+    else:
+        metric_status = "candidate_beats_champion" if delta is not None and delta > 0 else "candidate_not_better"
+        next_action = (
+            "Candidate has positive offline delta; still require live/multi-evidence gate and approval policy."
+            if delta is not None and delta > 0
+            else "Do not promote on offline evidence; candidate does not beat champion OOS IC."
+        )
+    return {
+        "schema_version": "artifact-compare-v1",
+        "primary_metric": "oos_ic",
+        "candidate_version": candidate.get("version"),
+        "current_champion_version": champion_version,
+        "champion_artifact_id": champion_artifact.get("artifact_id") if champion_artifact else None,
+        "candidate_oos_ic": candidate_oos_ic,
+        "champion_oos_ic": champion_oos_ic,
+        "oos_ic_delta": delta,
+        "metric_status": metric_status,
+        "final_compared_to": candidate.get("final_compared_to"),
+        "next_action": next_action,
+    }
+
+
 def _add_policy_metric_blocker(
     add: Callable[[str, str, str, str], None],
     *,
@@ -1797,13 +1877,15 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
     selections: dict[str, dict[str, Any]] = {}
     for model_name, items in grouped.items():
         monthly = [r for r in items if r.get("candidate_type") == "monthly_release"]
+        feature_release = [r for r in items if r.get("candidate_type") == "timesfm_l175_l2_feature_release"]
+        release_train = [*monthly, *feature_release]
         weekly = [r for r in items if r.get("candidate_type") == "weekly_drift"]
         active_weekly = [r for r in weekly if not _legacy_shadow_selection_row(r)]
-        latest_monthly = max(monthly, key=_artifact_time_key, default=None)
+        latest_monthly = max(release_train, key=_artifact_time_key, default=None)
         latest_active_monthly = latest_monthly if latest_monthly and not _legacy_shadow_selection_row(latest_monthly) else None
         best_monthly = latest_active_monthly
         serving_release = max(
-            [r for r in monthly if r.get("state") == "production"],
+            [r for r in release_train if r.get("state") == "production"],
             key=_artifact_time_key,
             default=None,
         )
@@ -1866,7 +1948,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "weekly_drift_candidate": weekly_context,
             },
             "policy": {
-                "monthly": "select latest non-legacy active-8 direct-alpha monthly artifact only if offline_passed or stronger",
+                "monthly": "select latest non-legacy active-8 direct-alpha monthly or TimesFM L1.75 feature-release artifact only if offline_passed or stronger",
                 "weekly": "select only non-legacy offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
                 "serving_release_artifact": "latest monthly_release artifact already marked production; audit evidence only, not a candidate queue slot",
                 "live_shadow_slots": {
@@ -2005,7 +2087,6 @@ def update_live_gate_from_ic(
     bridge keeps the ownership clean: it only updates artifacts selected by the
     release-train policy, and it writes evidence; it does not promote champions.
     """
-    allowed_live_shadow_models = {"ResidualMLP"}
     rows = list_artifact_registry(limit=limit)
     selection = build_candidate_selection(rows)
     selected: dict[str, dict[str, Any]] = {}
@@ -2015,7 +2096,16 @@ def update_live_gate_from_ic(
             if isinstance(candidate, dict) and candidate.get("artifact_id"):
                 candidate_type = str(candidate.get("candidate_type") or "")
                 candidate_model_name = str(candidate.get("model_name") or model_name)
-                if candidate_type != "model_family_shadow" or candidate_model_name not in allowed_live_shadow_models:
+                if str(candidate.get("state") or "") in {"production", "archived", "rejected"}:
+                    continue
+                if candidate_type not in {
+                    "monthly_release",
+                    "weekly_drift",
+                    "model_family_shadow",
+                    "timesfm_l175_l2_feature_release",
+                }:
+                    continue
+                if not is_production_artifact_model(candidate_model_name):
                     continue
                 selected[str(candidate["artifact_id"])] = candidate | {
                     "_selection_slot": key,
@@ -2104,6 +2194,11 @@ def build_promotion_queue(
     """
     champion_versions = champion_versions or {}
     queue: list[dict[str, Any]] = []
+    artifact_by_model_version = {
+        (str(row.get("model_name") or ""), str(row.get("version") or "")): row
+        for row in rows
+        if row.get("model_name") and row.get("version")
+    }
     promotable_monthly_by_model: dict[str, dict[str, Any]] = {}
     for row in rows:
         if str(row.get("candidate_type") or "") != "monthly_release":
@@ -2178,6 +2273,12 @@ def build_promotion_queue(
         if offline_monthly_candidate or offline_timesfm_l175_candidate:
             blockers = _offline_monthly_release_blockers(blockers)
         blocker_codes = _blocker_codes(blockers)
+        champion_artifact = artifact_by_model_version.get((model_name, champion_version or ""))
+        artifact_compare = _artifact_compare(
+            row,
+            champion_version=champion_version,
+            champion_artifact=champion_artifact,
+        )
         if not champion_version:
             decision = "blocked_missing_champion_pointer"
             next_action = "Resolve current champion version before final comparison."
@@ -2213,6 +2314,7 @@ def build_promotion_queue(
             "next_action": next_action,
             "blockers": blockers,
             "blocker_codes": blocker_codes,
+            "artifact_compare": artifact_compare,
             "action_context": build_artifact_action_context(row, champion_version=champion_version),
         })
 

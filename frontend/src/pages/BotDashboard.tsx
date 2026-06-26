@@ -29,7 +29,6 @@ import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
 import {
   WorkstationCatCard,
-  WorkstationFlow,
   WorkstationPageTitle,
   WorkstationPanel,
   WorkstationPill,
@@ -1385,19 +1384,6 @@ export default function BotDashboard() {
 
         <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
           <PositionsTable />
-        </WorkstationPanel>
-
-        <WorkstationPanel title="交易生命週期" kicker="candidate → debate → quote sanity → execution → audit">
-          <div className="p-3">
-            <WorkstationFlow
-              steps={[
-                { label: '每日候選', detail: '收盤後 pipeline 只產出上市櫃交易候選。', tone: 'info' },
-                { label: '晨間設定', detail: '下一交易日才把交易候選轉成 base ready，不用凌晨重跑寫錯日期。', tone: 'neutral' },
-                { label: '辯論風控', detail: 'T2 / debate 通過才進 pending buys；未通過只留 reason。', tone: 'warn' },
-                { label: '報價檢查', detail: '下單前檢查即時價、處置股、流動性、追高接刀與 impossible fill。', tone: 'ok' },
-              ]}
-            />
-          </div>
         </WorkstationPanel>
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,0.85fr)_minmax(420px,1.15fr)]">

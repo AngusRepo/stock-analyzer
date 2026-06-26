@@ -1083,6 +1083,55 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
     assert written == 2
 
 
+def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+
+    captured = {}
+
+    def _fake_batch_execute(statements):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+
+    written = write_predictions_to_d1(
+        {
+            "2330": {
+                "signal": "HOLD",
+                "confidence": 0.31,
+                "entry_price": 100.0,
+                "stop_loss": 95.0,
+                "target1": 108.0,
+                "target2": 112.0,
+                "feature_version": "v2",
+                "ensemble_v2": {"signal": "HOLD", "signal_source": "ensemble_v2"},
+                "rank_scores": {"XGBoost": 0.6},
+                "challenger_rank_scores": {"XGBoost": 0.67, "CatBoost": 0.9},
+            }
+        },
+        {"2330": 1},
+        run_date="2026-06-27",
+    )
+
+    challenger_rows = [
+        params
+        for sql, params in captured["statements"]
+        if "model_name" in sql and len(params) > 1 and params[1] == "XGBoost::challenger"
+    ]
+    retired_rows = [
+        params
+        for sql, params in captured["statements"]
+        if "model_name" in sql and len(params) > 1 and params[1] == "CatBoost::challenger"
+    ]
+    challenger_payload = json.loads(challenger_rows[0][5])
+
+    assert written == 3
+    assert len(challenger_rows) == 1
+    assert retired_rows == []
+    assert challenger_payload["rank_score"] == 0.67
+    assert challenger_payload["source"] == "model_pool_stage2_challenger"
+
+
 def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 

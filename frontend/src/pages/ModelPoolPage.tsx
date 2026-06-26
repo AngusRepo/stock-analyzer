@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   modelPoolApi,
+  type ModelArtifactCompare,
   strategyLabApi,
   type ModelArtifactActionContext,
   type ModelArtifactPromotionControllerResponse,
@@ -91,6 +92,66 @@ function promotionComparisonSummary(result: ModelArtifactPromotionControllerResp
   return { icDelta, hasLiveComparison, beatsChampion, blockers, approvalRequired, resultLabel }
 }
 
+function governanceMetric(value: number | string | null | undefined, digits = 4): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 'N/A'
+  return numeric.toFixed(digits)
+}
+
+function signedGovernanceMetric(value: number | string | null | undefined, digits = 4): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 'N/A'
+  return `${numeric >= 0 ? '+' : ''}${numeric.toFixed(digits)}`
+}
+
+function artifactCompareTone(compare?: ModelArtifactCompare): WorkstationTone {
+  const status = String(compare?.metric_status ?? '').toLowerCase()
+  const delta = Number(compare?.oos_ic_delta)
+  if (status.includes('missing')) return 'warn'
+  if (Number.isFinite(delta)) return delta > 0 ? 'ok' : 'error'
+  return 'neutral'
+}
+
+function ArtifactDeltaGrid({
+  compare,
+  context,
+}: {
+  compare?: ModelArtifactCompare
+  context?: ModelArtifactActionContext
+}) {
+  const rootCause = context?.root_cause ?? compare?.metric_status ?? 'pending'
+  const liveRootCause = rootCause === 'live_shadow_not_started'
+    ? 'live shadow not started'
+    : humanizeGovernanceToken(rootCause)
+  return (
+    <div className="mt-3 grid gap-2 text-[11px] text-[#9aa6bd] md:grid-cols-4">
+      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+        <p className="font-mono text-[#70809b]">Candidate OOS</p>
+        <p className="mt-1 font-mono text-slate-100">{governanceMetric(compare?.candidate_oos_ic)}</p>
+      </div>
+      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+        <p className="font-mono text-[#70809b]">Champion OOS</p>
+        <p className="mt-1 font-mono text-slate-100">{governanceMetric(compare?.champion_oos_ic)}</p>
+      </div>
+      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+        <p className="font-mono text-[#70809b]">Delta</p>
+        <p className={`mt-1 font-mono ${artifactCompareTone(compare) === 'ok' ? 'text-emerald-200' : artifactCompareTone(compare) === 'error' ? 'text-rose-200' : 'text-amber-200'}`}>
+          {signedGovernanceMetric(compare?.oos_ic_delta)}
+        </p>
+      </div>
+      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
+        <p className="font-mono text-[#70809b]">Root cause</p>
+        <p className="mt-1 text-slate-100">{liveRootCause}</p>
+      </div>
+    </div>
+  )
+}
+
+function humanizeGovernanceToken(value: string | null | undefined): string {
+  const text = String(value ?? '').trim()
+  return text ? text.replace(/[_-]+/g, ' ') : 'pending'
+}
+
 function ActionContextNote({ context }: { context?: ModelArtifactActionContext }) {
   if (!context) return null
   const blockers = Array.isArray(context.blockers) ? context.blockers : []
@@ -162,7 +223,8 @@ function PromotionQueuePanelV2({
   const approvalCount = rows.filter((row) => row.approval_required).length
   const autoCount = rows.filter((row) => row.promotion_decision === 'auto_promote_candidate').length
   const blockedCount = rows.filter((row) => String(row.promotion_decision ?? '').includes('blocked') || (row.blockers?.length ?? 0) > 0).length
-  const suppressedCount = queue?.suppressed_count ?? queue?.suppressed?.length ?? 0
+  const suppressedRows = queue?.suppressed ?? []
+  const suppressedCount = queue?.suppressed_count ?? suppressedRows.length
 
   return (
     <WorkstationPanel title="Promotion & Parameter Governance" kicker="artifact candidate, final compare, approval, champion pointer">
@@ -204,6 +266,7 @@ function PromotionQueuePanelV2({
                   <p className="mt-1 text-slate-200">{row.final_compared_to ?? 'pending champion pointer'}</p>
                 </div>
               </div>
+              <ArtifactDeltaGrid compare={row.artifact_compare} context={row.action_context} />
               <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
               <ActionContextNote context={row.action_context} />
               <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -247,6 +310,30 @@ function PromotionQueuePanelV2({
         )}
         {promotionResult && <PromotionControllerResultPanel result={promotionResult} />}
       </div>
+      {suppressedRows.length > 0 && (
+        <div className="border-t border-[#263247] p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">Suppressed versions</p>
+            <WorkstationPill tone="info">{suppressedRows.length} hidden</WorkstationPill>
+          </div>
+          <div className="grid gap-2 lg:grid-cols-2">
+            {suppressedRows.slice(0, 8).map((row) => (
+              <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-[#9aa7bd]">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-mono text-slate-100">{row.model_name} {row.candidate_version ?? ''}</p>
+                    <p>{humanizeGovernanceToken(row.reason)}</p>
+                  </div>
+                  <span className="font-mono text-[#70809b]">{row.candidate_type}</span>
+                </div>
+                {row.action_context?.root_cause && (
+                  <p className="mt-1 text-amber-200">root: {humanizeGovernanceToken(row.action_context.root_cause)}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </WorkstationPanel>
   )
 }

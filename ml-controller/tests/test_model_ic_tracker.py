@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.model_ic_tracker import (  # noqa: E402
+    ACTIVE_ARTIFACT_CHALLENGER_MODELS,
     ALPHA_PREDICTION_MODELS,
     EXPERIMENTAL_SHADOW_MODELS,
     apply_weekly_ic_to_pool,
@@ -28,11 +29,13 @@ def test_tracked_model_names_follow_refactored_l3_pool():
         "iTransformer",
     )
     assert EXPERIMENTAL_SHADOW_MODELS == ("ResidualMLP",)
+    assert ACTIVE_ARTIFACT_CHALLENGER_MODELS == ALPHA_PREDICTION_MODELS
     tracked = tracked_model_names()
     assert "CatBoost" not in tracked
     assert "FT-Transformer" not in tracked
     assert "Chronos" not in tracked
-    assert "GNN::challenger" not in tracked
+    assert "GNN::challenger" in tracked
+    assert "XGBoost::challenger" in tracked
     assert "ResidualMLP::challenger" in tracked
 
 

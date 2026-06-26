@@ -10,8 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
 import {
-  Filter, Brain, Star, Scale, ChevronDown, ChevronUp,
-  TrendingUp, TrendingDown, Minus,
+  Filter, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
@@ -316,26 +315,6 @@ function buildScreenerSectorSummary(recs: any[]) {
     .slice(0, 8)
 }
 
-function StepHeader({ step, icon: Icon, title, subtitle, count, color }: {
-  step: number; icon: any; title: string; subtitle: string; count?: number; color: string
-}) {
-  return (
-    <div className="flex items-center gap-3 mb-3">
-      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold ${color}`}>
-        {step}
-      </div>
-      <Icon className="w-4 h-4 text-muted-foreground" />
-      <div className="flex-1">
-        <div className="text-sm font-semibold">{title}</div>
-        <div className="text-xs text-muted-foreground">{subtitle}</div>
-      </div>
-      {count != null && (
-        <Badge variant="outline" className="font-mono text-xs">{count} 檔</Badge>
-      )}
-    </div>
-  )
-}
-
 // ─── Score bar ─────────────────────────────────────────────────────────────
 function ScoreBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0
@@ -496,6 +475,225 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
   )
 }
 
+function countValue(value: unknown): string {
+  if (value == null || value === '') return 'N/A'
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? fmt(numeric, 0) : 'N/A'
+}
+
+function ratioValue(value: unknown): string {
+  if (value == null || value === '') return 'N/A'
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric.toFixed(3) : 'N/A'
+}
+
+function PipelineColumn({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+  return (
+    <Card className="min-h-[520px] border-border bg-card">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">{title}</CardTitle>
+        <p className="text-xs leading-5 text-muted-foreground">{subtitle}</p>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-0">
+        {children}
+      </CardContent>
+    </Card>
+  )
+}
+
+function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbackCount: number }) {
+  const layers = Array.isArray(summary?.layers) ? summary.layers : [
+    {
+      layer: 'L0-L4',
+      label: 'observed final recommendations',
+      stage: 'daily_recommendations',
+      passed: fallbackCount,
+      eliminated: null,
+    },
+  ]
+  return (
+    <PipelineColumn
+      title="L0-L4 通過 / 淘汰"
+      subtitle={summary?.run_id ? `${summary.run_id} / ${summary.source_of_truth}` : 'API 尚未提供完整 funnel stage counts；先顯示推薦列可觀測數。'}
+    >
+      <div className="space-y-2">
+        {layers.map((row: any) => (
+          <div key={row.layer} className="rounded-lg border border-border bg-background/35 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="font-mono text-sm font-semibold text-primary">{row.layer}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{row.label}</p>
+              </div>
+              <Badge variant="outline" className="max-w-[10rem] truncate font-mono text-[10px]" title={row.stage}>
+                {row.stage}
+              </Badge>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-2">
+                <p className="text-[10px] text-emerald-300">通過</p>
+                <p className="mt-1 font-mono text-lg font-semibold text-emerald-200">{countValue(row.passed)}</p>
+              </div>
+              <div className="rounded-md border border-rose-500/20 bg-rose-500/10 p-2">
+                <p className="text-[10px] text-rose-300">淘汰</p>
+                <p className="mt-1 font-mono text-lg font-semibold text-rose-200">{countValue(row.eliminated)}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </PipelineColumn>
+  )
+}
+
+function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: ReturnType<typeof buildScreenerSectorSummary> }) {
+  const strategies = Array.isArray(summary?.strategies) ? summary.strategies : []
+  const pairwise = Array.isArray(summary?.pairwise) ? summary.pairwise : []
+  const strongestPairs = [...pairwise]
+    .sort((a: any, b: any) => Number(b.jaccard ?? -1) - Number(a.jaccard ?? -1))
+    .slice(0, 6)
+  return (
+    <PipelineColumn
+      title="Active strategy"
+      subtitle={summary?.source_of_truth ?? 'strategy_pool_ids 尚未彙總；等待後端 funnel summary。'}
+    >
+      <div className="grid grid-cols-3 gap-2 text-xs">
+        <div className="rounded-md border border-border bg-background/35 p-2">
+          <p className="text-[10px] text-muted-foreground">策略數</p>
+          <p className="mt-1 font-mono text-base font-semibold">{countValue(summary?.active_strategy_count ?? strategies.length)}</p>
+        </div>
+        <div className="rounded-md border border-border bg-background/35 p-2">
+          <p className="text-[10px] text-muted-foreground">Avg Jaccard</p>
+          <p className="mt-1 font-mono text-base font-semibold">{ratioValue(summary?.avg_jaccard)}</p>
+        </div>
+        <div className="rounded-md border border-border bg-background/35 p-2">
+          <p className="text-[10px] text-muted-foreground">Avg Corr</p>
+          <p className="mt-1 font-mono text-base font-semibold">{ratioValue(summary?.avg_corr)}</p>
+        </div>
+      </div>
+
+      <div className="max-h-[210px] space-y-1 overflow-y-auto pr-1">
+        {strategies.length ? strategies.map((row: any) => (
+          <div key={row.strategy_id} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-xs">
+            <span className="truncate font-mono" title={row.strategy_id}>{row.strategy_id}</span>
+            <Badge variant="outline" className="font-mono text-[10px]">{countValue(row.selected_count)} 檔</Badge>
+          </div>
+        )) : (
+          <p className="rounded-md border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground">今日推薦列沒有 strategy_pool_ids 彙總資料。</p>
+        )}
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-[11px] font-semibold text-muted-foreground">策略 overlap / corr</p>
+        {strongestPairs.length ? strongestPairs.map((row: any) => (
+          <div key={`${row.left}-${row.right}`} className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-[11px]">
+            <div className="truncate font-mono text-foreground" title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
+            <div className="mt-1 flex gap-2 text-muted-foreground">
+              <span>overlap {countValue(row.overlap)}</span>
+              <span>J {ratioValue(row.jaccard)}</span>
+              <span>corr {ratioValue(row.corr)}</span>
+            </div>
+          </div>
+        )) : (
+          <p className="rounded-md border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground">策略兩兩比較需要至少 2 個策略且有選股集合。</p>
+        )}
+      </div>
+
+      {sectors.length > 0 && (
+        <div className="space-y-1 border-t border-border pt-3">
+          <p className="text-[11px] font-semibold text-muted-foreground">產業/題材脈絡</p>
+          {sectors.slice(0, 3).map((row) => (
+            <div key={row.sector} className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-[11px]">
+              <p className="font-semibold">{row.sector} · {row.count} 檔</p>
+              <p className="mt-0.5 text-muted-foreground">{row.strategyText}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </PipelineColumn>
+  )
+}
+
+function RecommendationSummaryColumn({ rows }: { rows: any[] }) {
+  return (
+    <PipelineColumn title="今日推薦股票" subtitle="包含 BUY 與 HOLD；按 Score V2 最終分排序。">
+      <div className="max-h-[470px] space-y-1 overflow-y-auto pr-1">
+        {rows.length ? rows.map((rec: any, index: number) => (
+          <StockRow key={rec.symbol ?? index} rec={rec} rank={index + 1} />
+        )) : (
+          <p className="rounded-md border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有 BUY/HOLD 推薦列。</p>
+        )}
+      </div>
+    </PipelineColumn>
+  )
+}
+
+function ExecutionFlowColumn({
+  pendingBuys,
+  pbDate,
+  qfList,
+  candidateCount,
+}: {
+  pendingBuys: any[]
+  pbDate: string
+  qfList: any[]
+  candidateCount: number
+}) {
+  const steps = [
+    { label: '候選', value: countValue(candidateCount), detail: 'final allocation' },
+    { label: '辯論', value: String(pendingBuys.length), detail: 'T2 pending buys' },
+    { label: '報價', value: String(qfList.length), detail: 'RRG / quote sanity' },
+    { label: '掛單', value: String(pendingBuys.filter((buy: any) => String(buy.execution_status ?? '').toLowerCase().includes('filled')).length), detail: 'paper fills' },
+  ]
+  return (
+    <PipelineColumn title="辯論與模擬掛單" subtitle={`Morning setup → debate → quote sanity → execution audit（${pbDate || 'latest'}）`}>
+      <div className="grid gap-2">
+        {steps.map((step, index) => (
+          <div key={step.label} className="grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-[#3a3125] font-mono text-[#d6a85f]">{index + 1}</span>
+            <div>
+              <p className="font-semibold text-foreground">{step.label}</p>
+              <p className="text-[11px] text-muted-foreground">{step.detail}</p>
+            </div>
+            <span className="text-right font-mono text-sm font-semibold text-primary">{step.value}</span>
+          </div>
+        ))}
+      </div>
+
+      {pendingBuys.length === 0 ? (
+        <div className="rounded-lg border border-border/70 bg-background/45 p-3 text-center text-xs text-muted-foreground">
+          目前沒有 active pending buys；若曾被 skipped/cancelled/expired/rejected，請到模擬交易頁看 terminal 狀態。
+        </div>
+      ) : (
+        <div className="max-h-[300px] space-y-1 overflow-y-auto pr-1">
+          {pendingBuys.map((buy: any, i: number) => (
+            <T2BuyRow key={buy.symbol ?? i} buy={buy} rank={i + 1} />
+          ))}
+        </div>
+      )}
+
+      {qfList.length > 0 && (
+        <div className="border-t border-border pt-3">
+          <p className="mb-2 text-xs text-muted-foreground">RRG 象限過濾結果</p>
+          <div className="flex flex-wrap gap-1.5">
+            {qfList.map((q: any) => {
+              const qColor = q.quadrant === 'Leading' ? 'text-emerald-400' :
+                             q.quadrant === 'Improving' ? 'text-blue-400' :
+                             q.quadrant === 'Weakening' ? 'text-amber-400' : 'text-red-400'
+              return (
+                <Badge key={q.symbol} variant="outline" className="gap-1 text-[10px]">
+                  <span className="font-mono">{q.symbol}</span>
+                  <span className={qColor}>{q.quadrant}</span>
+                  <span className="text-muted-foreground">{q.action}</span>
+                </Badge>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </PipelineColumn>
+  )
+}
+
 // ─── Main Pipeline Page ────────────────────────────────────────────────────
 export default function PipelinePage() {
   const { isAuthenticated, login } = useAuth()
@@ -532,15 +730,9 @@ export default function PipelinePage() {
   const screenerPassed = allRecs
   const mlBuy = allRecs.filter((r: any) => ['BUY', 'STRONG_BUY'].includes(r.signal))
   const mlHold = allRecs.filter((r: any) => r.signal === 'HOLD')
-  const mlSell = allRecs.filter((r: any) => ['SELL', 'STRONG_SELL'].includes(r.signal))
-  const mlNoSignal = allRecs.filter((r: any) => !r.signal || r.signal === 'NO_SIGNAL')
-  const screenerPreview = [...screenerPassed]
-    .sort((a: any, b: any) => (b.chip_score ?? 0) + (b.tech_score ?? 0) - ((a.chip_score ?? 0) + (a.tech_score ?? 0)))
-    .slice(0, 10)
   const screenerSectorSummary = buildScreenerSectorSummary(screenerPassed)
-  const recommendationPreview = [...mlBuy, ...mlHold]
+  const recommendationRows = [...mlBuy, ...mlHold]
     .sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a))
-    .slice(0, 10)
 
   const isLoading = recLoading || pbLoading
 
@@ -572,25 +764,10 @@ export default function PipelinePage() {
             <p className="mt-1 text-xs text-[#b9b1a1]">{recDate} 從初篩、模型、推薦到模擬掛單的節奏總覽</p>
           </div>
           <div className="hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 text-xs text-[#b9b1a1] md:flex">
-            <span className="font-mono">882 → {screenerPassed.length} → {mlBuy.length} 買進 → {pendingBuys.length} 掛單</span>
+            <span className="font-mono">
+              L4 {countValue(recData?.funnel_summary?.final_count ?? recommendationRows.length)} · BUY {mlBuy.length} · HOLD {mlHold.length} · 掛單 {pendingBuys.length}
+            </span>
           </div>
-        </div>
-
-        {/* Pipeline flow indicator */}
-        <div className="grid gap-2 rounded-2xl border border-[#3a3125] bg-[#171714] px-4 py-3 md:grid-cols-4">
-          {[
-            { label: '初篩', count: screenerPassed.length, color: 'text-[#9fcca1]' },
-            { label: '模型判斷', count: allRecs.filter((r: any) => r.ml_score != null).length, color: 'text-[#d7b98c]' },
-            { label: '推薦整理', count: mlBuy.length + mlHold.length, color: 'text-[#f1c16f]' },
-            { label: '辯論掛單', count: pendingBuys.length, color: 'text-[#d6a85f]' },
-          ].map((step, i) => (
-            <div key={step.label} className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-1.5">
-                <span className={`text-lg font-bold font-mono ${step.color}`}>{step.count}</span>
-                <span className="text-xs text-muted-foreground">{step.label}</span>
-              </div>
-            </div>
-          ))}
         </div>
 
         {isLoading ? (
@@ -599,177 +776,10 @@ export default function PipelinePage() {
           </div>
         ) : (
           <div className="grid gap-4 xl:grid-cols-4">
-
-            {/* ═══ Step 1: Screener ═══ */}
-            <Card className="border-border bg-card">
-              <CardContent className="pt-4 pb-3">
-                <StepHeader
-                  step={1} icon={Filter}
-                  title="自下而上初篩"
-                  subtitle="全市場約 882 檔 → 多因子評分（籌碼 0-40、技術 0-30、動能 0-20）→ 同產業去重 → 前 25 名"
-                  count={screenerPassed.length}
-                  color="bg-blue-500/20 text-blue-400"
-                />
-                <div className="space-y-2">
-                  {screenerSectorSummary.map((row, i) => (
-                    <div key={row.sector} className="rounded-lg border border-border bg-background/35 px-3 py-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold">{i + 1}. {row.sector}</p>
-                          <p className="mt-1 text-[11px] text-muted-foreground">
-                            {row.reasonText}；代表股 {row.symbols.join('、') || '-'}
-                          </p>
-                        </div>
-                        <Badge variant="outline" className="font-mono text-[10px]">{row.count} 檔</Badge>
-                      </div>
-                      <div className="mt-2 grid gap-1 text-[11px] text-muted-foreground">
-                        <p><span className="text-amber-300">題材</span>：{row.themeText}</p>
-                        <p><span className="text-emerald-300">資金</span>：{row.flowText}</p>
-                        <p><span className="text-sky-300">族群輪動</span>：{row.rotationText}</p>
-                        <p><span className="text-violet-300">策略</span>：{row.strategyText}</p>
-                      </div>
-                      <div className="mt-2 grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
-                        <span>均分 <b className="font-mono text-foreground">{fmt(row.avgScore, 1)}</b></span>
-                        <span>籌碼 <b className="font-mono text-foreground">{fmt(row.avgChip, 1)}</b></span>
-                        <span>技術 <b className="font-mono text-foreground">{fmt(row.avgTech, 1)}</b></span>
-                      </div>
-                    </div>
-                  ))}
-                  {screenerPassed.length > screenerPreview.length && (
-                    <p className="px-3 pt-1 text-[11px] text-muted-foreground">初篩摘要以產業/題材聚合呈現；完整股票清單往後看 ML 與推薦整理。</p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* ═══ Step 2: ML Predict ═══ */}
-            <Card className="border-border bg-card">
-              <CardContent className="pt-4 pb-3">
-                <StepHeader
-                  step={2} icon={Brain}
-                  title="模型判斷"
-                  subtitle="整合多模型投票與 signal_score，先分出買進、觀望與賣出，再交給下一層整理。"
-                  count={allRecs.filter((r: any) => r.ml_score != null).length}
-                  color="bg-purple-500/20 text-purple-400"
-                />
-                <div className="grid grid-cols-1 gap-3">
-                  <div>
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <TrendingUp className="w-3.5 h-3.5 text-red-400" />
-                      <span className="text-xs font-medium text-red-400">BUY ({mlBuy.length})</span>
-                    </div>
-                    <div className="space-y-0.5">
-                      {mlBuy.sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a)).map((r: any, i: number) => (
-                        <div key={r.symbol} className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-muted/30">
-                          <span className="font-mono font-semibold w-12">{r.symbol}</span>
-                          <span className="text-muted-foreground truncate flex-1">{r.name}</span>
-                          <span className="font-mono text-primary">{Math.round(scoreFinalValue(r))}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <Minus className="w-3.5 h-3.5 text-yellow-400" />
-                      <span className="text-xs font-medium text-yellow-400">HOLD ({mlHold.length})</span>
-                    </div>
-                    <div className="space-y-0.5">
-                      {mlHold.sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a)).map((r: any, i: number) => (
-                        <div key={r.symbol} className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-muted/30">
-                          <span className="font-mono font-semibold w-12">{r.symbol}</span>
-                          <span className="text-muted-foreground truncate flex-1">{r.name}</span>
-                          <span className="font-mono text-muted-foreground">{Math.round(scoreFinalValue(r))}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <TrendingDown className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-xs font-medium text-emerald-400">賣出 / 無訊號 ({mlSell.length + mlNoSignal.length})</span>
-                    </div>
-                    <div className="space-y-0.5">
-                      {[...mlSell, ...mlNoSignal].map((r: any) => (
-                        <div key={r.symbol} className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-muted/30">
-                          <span className="font-mono font-semibold w-12">{r.symbol}</span>
-                          <span className="text-muted-foreground truncate flex-1">{r.name}</span>
-                          <span className="font-mono text-muted-foreground/60">{r.signal ?? '—'}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* ═══ Step 3: Recommendation Filter ═══ */}
-            <Card className="border-border bg-card">
-              <CardContent className="pt-4 pb-3">
-                <StepHeader
-                  step={3} icon={Star}
-                  title="推薦整理"
-                  subtitle="買進與觀望保留為觀察清單，賣出與無訊號排除；再補上可閱讀的推薦理由。"
-                  count={mlBuy.length + mlHold.length}
-                  color="bg-amber-500/20 text-amber-400"
-                />
-                <div className="space-y-0.5">
-                  {recommendationPreview
-                    .map((rec: any, i: number) => (
-                      <StockRow key={rec.symbol ?? i} rec={rec} rank={i + 1} />
-                    ))
-                  }
-                  {(mlBuy.length + mlHold.length) > recommendationPreview.length && (
-                    <p className="px-3 pt-2 text-[11px] text-muted-foreground">另有 {(mlBuy.length + mlHold.length) - recommendationPreview.length} 檔保留觀察；這格只看 ML/Alpha 後排序。</p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* ═══ Step 4: T2 Debate ═══ */}
-            <Card className="border-border bg-card border-primary/20">
-              <CardContent className="pt-4 pb-3">
-                <StepHeader
-                  step={4} icon={Scale}
-                  title="辯論與模擬掛單"
-                  subtitle={`Morning Setup 辯論 → RRG 象限過濾 → 限價掛單（${pbDate}）`}
-                  count={pendingBuys.length}
-                  color="bg-primary/20 text-primary"
-                />
-                {pendingBuys.length === 0 ? (
-                  <div className="text-xs text-muted-foreground text-center py-6">
-                    目前沒有 active pending buys；若今天曾產生候選但已被 skipped/cancelled/expired/rejected，請到模擬交易頁查看 terminal 狀態。
-                  </div>
-                ) : (
-                  <div className="space-y-0.5">
-                    {pendingBuys.map((buy: any, i: number) => (
-                      <T2BuyRow key={buy.symbol} buy={buy} rank={i + 1} />
-                    ))}
-                  </div>
-                )}
-
-                {/* Quadrant filter log */}
-                {qfList.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-border">
-                    <p className="text-xs text-muted-foreground mb-2">RRG 象限過濾結果</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {qfList.map((q: any) => {
-                        const qColor = q.quadrant === 'Leading' ? 'text-emerald-400' :
-                                       q.quadrant === 'Improving' ? 'text-blue-400' :
-                                       q.quadrant === 'Weakening' ? 'text-amber-400' : 'text-red-400'
-                        return (
-                          <Badge key={q.symbol} variant="outline" className="text-[10px] gap-1">
-                            <span className="font-mono">{q.symbol}</span>
-                            <span className={qColor}>{q.quadrant}</span>
-                            <span className="text-muted-foreground">{q.action}</span>
-                          </Badge>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
+            <FunnelSummaryColumn summary={recData?.funnel_summary} fallbackCount={recommendationRows.length} />
+            <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
+            <RecommendationSummaryColumn rows={recommendationRows} />
+            <ExecutionFlowColumn pendingBuys={pendingBuys} pbDate={pbDate} qfList={qfList} candidateCount={recommendationRows.length} />
           </div>
         )}
       </div>

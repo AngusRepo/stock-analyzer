@@ -2894,8 +2894,8 @@ def write_predictions_to_d1(
         inserted_rows += 1
 
         # 2026-04-19 ML_POOL Stage 2: per-model rows for weekly IC tracking.
-        # Screener refactor: production writes only formal active/family slots;
-        # legacy challenger side-channel scores are intentionally ignored.
+        # 2026-06-27: active-8 challenger rows are non-voting live-gate evidence
+        # for artifact registry candidates; TimesFM remains L2 sidecar only.
         per_model_scores = _extract_per_model_scores_for_d1(data)
         for model_name, model_score in per_model_scores.items():
             safe_model_score, replaced = _sanitize_non_finite(model_score)
@@ -2908,7 +2908,7 @@ def write_predictions_to_d1(
                 {
                     "signal": raw_signal,
                     "rank_score": safe_model_score,
-                    "source": "model_pool_stage2",
+                    "source": "model_pool_stage2_challenger" if model_name.endswith("::challenger") else "model_pool_stage2",
                     "forecast_pct": signal_payload.get("forecast_pct"),
                     "forecast_pct_source": (
                         f"{signal_payload.get('source_key')}.forecast_pct"
@@ -3160,6 +3160,8 @@ _PER_MODEL_TRACKED = (
     "DLinear", "PatchTST", "iTransformer",
 )
 
+_PER_MODEL_TRACKED_SET = set(_PER_MODEL_TRACKED)
+
 
 def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     """Pull out per-model rank scores from one stock's prediction dict.
@@ -3179,6 +3181,16 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
         if v is not None:
             try:
                 out[name] = float(v)
+            except (TypeError, ValueError):
+                pass
+    challenger_rank_scores = pred.get("challenger_rank_scores") or {}
+    if isinstance(challenger_rank_scores, dict):
+        for name, value in challenger_rank_scores.items():
+            base_name = str(name).replace("::challenger", "")
+            if base_name not in _PER_MODEL_TRACKED_SET:
+                continue
+            try:
+                out[f"{base_name}::challenger"] = float(value)
             except (TypeError, ValueError):
                 pass
     # Time-series alpha predictors: forecast_pct ??sigmoid rank.

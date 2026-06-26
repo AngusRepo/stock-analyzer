@@ -6,8 +6,12 @@ This module is market-data only. It never constructs orders and always returns
 
 from __future__ import annotations
 
+import json
 import os
 import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +31,8 @@ SENSITIVE_ENV_KEYS = [
     "SHIOAJI_CERT_PERSON_ID",
     "SHIOAJI_CERT_PASSWORD",
     "SHIOAJI_ACCOUNT_ID",
+    "PROXY_SERVICE_TOKEN",
+    "SHIOAJI_PROXY_TOKEN",
 ]
 
 
@@ -216,6 +222,94 @@ def _sanitize(text: str, env: dict[str, str]) -> str:
     return sanitized
 
 
+def _flag_enabled(env: dict[str, str], key: str, *, default: bool = False) -> bool:
+    raw = env.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    normalized = str(raw).strip().lower()
+    return normalized in {"1", "true", "yes", "y", "on", "enabled"}
+
+
+def _proxy_base_url(env: dict[str, str]) -> str:
+    return str(env.get("SHIOAJI_PROXY_URL") or env.get("SHIOAJI_PROXY_BASE_URL") or "").strip().rstrip("/")
+
+
+def _proxy_token(env: dict[str, str]) -> str | None:
+    token = str(env.get("PROXY_SERVICE_TOKEN") or env.get("SHIOAJI_PROXY_TOKEN") or "").strip()
+    return token or None
+
+
+def _proxy_fallback_configured(env: dict[str, str]) -> bool:
+    return bool(_proxy_base_url(env)) and _flag_enabled(env, "SHIOAJI_L5_PROXY_FALLBACK_ENABLED", default=True)
+
+
+def _proxy_timeout_seconds(env: dict[str, str]) -> float:
+    try:
+        value = float(env.get("SHIOAJI_L5_PROXY_TIMEOUT_SECONDS") or 3)
+    except (TypeError, ValueError):
+        return 3
+    return min(max(value, 0.5), 10)
+
+
+def _read_quotes_from_proxy_orderbook(symbols: list[str], env: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
+    proxy_url = _proxy_base_url(env)
+    if not proxy_url:
+        return {}, ["shioaji_proxy_url_missing"]
+
+    token = _proxy_token(env)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    errors: list[str] = []
+    quotes: dict[str, Any] = {}
+    timeout_seconds = _proxy_timeout_seconds(env)
+
+    if not token:
+        errors.append("proxy_service_token_missing")
+
+    for symbol in symbols:
+        request = urllib.request.Request(
+            proxy_url + f"/orderbook/{urllib.parse.quote(symbol)}",
+            method="GET",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            message = _sanitize(str(exc), env)[:200]
+            errors.append(f"{symbol}:{exc.__class__.__name__}:{message}")
+            continue
+
+        if not isinstance(body, dict):
+            errors.append(f"{symbol}:invalid_proxy_body")
+            continue
+
+        bid_prices = _number_list(body.get("bid_prices") or body.get("bidPrices"))[:5]
+        ask_prices = _number_list(body.get("ask_prices") or body.get("askPrices"))[:5]
+        bid_volumes = _int_list(body.get("bid_volumes") or body.get("bidVolumes"))[:5]
+        ask_volumes = _int_list(body.get("ask_volumes") or body.get("askVolumes"))[:5]
+        status = str(body.get("status") or "orderbook").strip().lower()
+        if not bid_prices or not ask_prices:
+            errors.append(f"{symbol}:{status or 'missing_depth'}")
+            continue
+
+        quotes[symbol] = {
+            "provider": "shioaji_proxy_orderbook",
+            "status": status,
+            "price": body.get("price"),
+            "best_bid": bid_prices[0],
+            "best_ask": ask_prices[0],
+            "bid_prices": bid_prices,
+            "ask_prices": ask_prices,
+            "bid_volumes": bid_volumes,
+            "ask_volumes": ask_volumes,
+            "source_time": body.get("updated_at") or body.get("timestamp"),
+            "depth_available": body.get("depth_available"),
+            "features": body.get("features"),
+        }
+
+    return quotes, errors
+
+
 def _read_quotes_from_account(account: Any, symbols: list[str]) -> dict[str, Any]:
     get_l5_quotes = getattr(account, "get_l5_quotes", None)
     if callable(get_l5_quotes):
@@ -229,39 +323,100 @@ def _read_quotes_from_account(account: Any, symbols: list[str]) -> dict[str, Any
     raise RuntimeError("finlab_l5_quote_method_unavailable")
 
 
+def _normalize_quotes(raw_quotes: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    return {
+        symbol: normalize_l5_quote(symbol, payload, now=now)
+        for symbol, payload in raw_quotes.items()
+        if isinstance(payload, dict)
+    }
+
+
+def _base_response(env_status: dict[str, Any], clean_symbols: list[str]) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "allowed_use": "l5_live_market_data_pretrade",
+        "can_submit_real_order": False,
+        "live_submit_enabled": False,
+        "env_status": env_status,
+        "symbols": clean_symbols,
+    }
+
+
+def _fallback_response(
+    *,
+    env_status: dict[str, Any],
+    clean_symbols: list[str],
+    raw_quotes: dict[str, Any],
+    fallback_errors: list[str],
+    fallback_reason: str,
+    now: datetime | None = None,
+    account_error_type: str | None = None,
+    account_error: str | None = None,
+) -> dict[str, Any] | None:
+    quotes = _normalize_quotes(raw_quotes, now=now)
+    if not quotes:
+        return None
+    payload = {
+        **_base_response(env_status, clean_symbols),
+        "status": "pass",
+        "source": "shioaji_proxy_orderbook_fallback",
+        "fallback_used": True,
+        "fallback_attempted": True,
+        "fallback_reason": fallback_reason,
+        "fallback_errors": fallback_errors,
+        "quotes": quotes,
+    }
+    if account_error_type:
+        payload["account_error_type"] = account_error_type
+    if account_error:
+        payload["account_error"] = account_error
+    return payload
+
+
 def run_finlab_l5_market_data(
     *,
     symbols: list[str],
     allow_broker_login: bool = False,
     env: dict[str, str] | None = None,
     account_factory: Callable[[], Any] | None = None,
+    proxy_quote_reader: Callable[[list[str], dict[str, str]], tuple[dict[str, Any], list[str]]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    values = env or os.environ
+    values = dict(env or os.environ)
     clean_symbols = [str(symbol).strip() for symbol in symbols if str(symbol).strip()]
     env_status = l5_market_data_env_status(values)
+    fallback_reader = proxy_quote_reader or _read_quotes_from_proxy_orderbook
+    fallback_enabled = _proxy_fallback_configured(values)
+
+    if fallback_enabled and (not allow_broker_login or not env_status["ready"]):
+        fallback_reason = "broker_login_not_allowed" if not allow_broker_login else "finlab_env_not_ready"
+        raw_fallback_quotes, fallback_errors = fallback_reader(clean_symbols, values)
+        fallback_payload = _fallback_response(
+            env_status=env_status,
+            clean_symbols=clean_symbols,
+            raw_quotes=raw_fallback_quotes,
+            fallback_errors=fallback_errors,
+            fallback_reason=fallback_reason,
+            now=now,
+        )
+        if fallback_payload is not None:
+            return fallback_payload
 
     if not allow_broker_login:
         return {
-            "schema_version": SCHEMA_VERSION,
-            "allowed_use": "l5_live_market_data_pretrade",
+            **_base_response(env_status, clean_symbols),
             "status": "blocked",
             "blocked_reasons": ["broker_login_not_allowed"],
-            "can_submit_real_order": False,
-            "live_submit_enabled": False,
-            "env_status": env_status,
+            "fallback_attempted": fallback_enabled,
             "quotes": {},
         }
 
     if not env_status["ready"]:
         return {
-            "schema_version": SCHEMA_VERSION,
-            "allowed_use": "l5_live_market_data_pretrade",
+            **_base_response(env_status, clean_symbols),
             "status": "blocked",
             "blocked_reasons": env_status["missing"],
-            "can_submit_real_order": False,
-            "live_submit_enabled": False,
-            "env_status": env_status,
+            "fallback_attempted": fallback_enabled,
             "quotes": {},
         }
 
@@ -270,31 +425,38 @@ def run_finlab_l5_market_data(
         factory = account_factory or _load_account_factory()
         account = factory()
         raw_quotes = _read_quotes_from_account(account, clean_symbols)
-        quotes = {
-            symbol: normalize_l5_quote(symbol, payload, now=now)
-            for symbol, payload in raw_quotes.items()
-            if isinstance(payload, dict)
-        }
+        quotes = _normalize_quotes(raw_quotes, now=now)
         return {
-            "schema_version": SCHEMA_VERSION,
-            "allowed_use": "l5_live_market_data_pretrade",
+            **_base_response(env_status, clean_symbols),
             "status": "pass",
-            "can_submit_real_order": False,
-            "live_submit_enabled": False,
-            "env_status": env_status,
-            "symbols": clean_symbols,
+            "source": "finlab_sinopac_account",
+            "fallback_used": False,
+            "fallback_attempted": False,
             "quotes": quotes,
         }
     except Exception as exc:
+        fallback_errors: list[str] = []
+        if fallback_enabled:
+            raw_fallback_quotes, fallback_errors = fallback_reader(clean_symbols, values)
+            fallback_payload = _fallback_response(
+                env_status=env_status,
+                clean_symbols=clean_symbols,
+                raw_quotes=raw_fallback_quotes,
+                fallback_errors=fallback_errors,
+                fallback_reason="finlab_account_quote_error",
+                now=now,
+                account_error_type=exc.__class__.__name__,
+                account_error=_sanitize(str(exc), values),
+            )
+            if fallback_payload is not None:
+                return fallback_payload
+
         return {
-            "schema_version": SCHEMA_VERSION,
-            "allowed_use": "l5_live_market_data_pretrade",
+            **_base_response(env_status, clean_symbols),
             "status": "error",
-            "can_submit_real_order": False,
-            "live_submit_enabled": False,
-            "env_status": env_status,
-            "symbols": clean_symbols,
             "quotes": {},
+            "fallback_attempted": fallback_enabled,
+            "fallback_errors": fallback_errors,
             "error_type": exc.__class__.__name__,
             "error": _sanitize(str(exc), values),
             "trace_tail": _sanitize(traceback.format_exc(limit=2), values),

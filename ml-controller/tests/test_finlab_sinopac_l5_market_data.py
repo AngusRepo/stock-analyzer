@@ -95,6 +95,86 @@ def test_l5_market_data_uses_injected_account_without_order_methods() -> None:
     assert result["quotes"]["2330"]["l5_depth_levels"] == 5
 
 
+def test_l5_market_data_falls_back_to_proxy_when_account_quote_method_unavailable() -> None:
+    class FakeAccount:
+        def logout(self) -> None:
+            pass
+
+    def fake_proxy_reader(symbols: list[str], env: dict[str, str]) -> tuple[dict, list[str]]:
+        assert symbols == ["2330"]
+        assert env["SHIOAJI_PROXY_URL"] == "https://proxy.example.test"
+        return {
+            "2330": {
+                "provider": "shioaji_proxy_orderbook",
+                "price": 100,
+                "bid_prices": [99.9, 99.8, 99.7, 99.6, 99.5],
+                "ask_prices": [100.1, 100.2, 100.3, 100.4, 100.5],
+                "bid_volumes": [12, 10, 8, 6, 4],
+                "ask_volumes": [8, 7, 6, 5, 4],
+                "source_time": "2026-05-28T01:00:09Z",
+            },
+        }, []
+
+    result = run_finlab_l5_market_data(
+        symbols=["2330"],
+        allow_broker_login=True,
+        env={
+            "SHIOAJI_API_KEY": "key",
+            "SHIOAJI_SECRET_KEY": "secret",
+            "SHIOAJI_CERT_PASSWORD": "pass",
+            "SHIOAJI_CERT_PATH": __file__,
+            "SHIOAJI_CERT_PERSON_ID": "A123456789",
+            "SHIOAJI_PROXY_URL": "https://proxy.example.test",
+        },
+        account_factory=FakeAccount,
+        proxy_quote_reader=fake_proxy_reader,
+        now=datetime(2026, 5, 28, 1, 0, 10, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "pass"
+    assert result["source"] == "shioaji_proxy_orderbook_fallback"
+    assert result["fallback_used"] is True
+    assert result["fallback_reason"] == "finlab_account_quote_error"
+    assert result["account_error_type"] == "RuntimeError"
+    assert result["quotes"]["2330"]["provider"] == "shioaji_proxy_orderbook"
+    assert result["quotes"]["2330"]["l5_depth_levels"] == 5
+
+
+def test_l5_market_data_proxy_fallback_can_run_without_controller_broker_login() -> None:
+    def fake_proxy_reader(symbols: list[str], env: dict[str, str]) -> tuple[dict, list[str]]:
+        return {
+            symbols[0]: {
+                "provider": "shioaji_proxy_orderbook",
+                "price": 100,
+                "bid_prices": [99.9, 99.8, 99.7, 99.6, 99.5],
+                "ask_prices": [100.1, 100.2, 100.3, 100.4, 100.5],
+                "bid_volumes": [12, 10, 8, 6, 4],
+                "ask_volumes": [8, 7, 6, 5, 4],
+            },
+        }, []
+
+    result = run_finlab_l5_market_data(
+        symbols=["2330"],
+        allow_broker_login=False,
+        env={
+            "SHIOAJI_PROXY_URL": "https://proxy.example.test",
+            "PROXY_SERVICE_TOKEN": "token",
+            "SHIOAJI_L5_PROXY_FALLBACK_ENABLED": "1",
+        },
+        account_factory=lambda: (_ for _ in ()).throw(AssertionError("account path should not run")),
+        proxy_quote_reader=fake_proxy_reader,
+        now=datetime(2026, 5, 28, 1, 0, 10, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "pass"
+    assert result["can_submit_real_order"] is False
+    assert result["live_submit_enabled"] is False
+    assert result["fallback_used"] is True
+    assert result["fallback_reason"] == "broker_login_not_allowed"
+    assert result["env_status"]["ready"] is False
+    assert result["quotes"]["2330"]["best_bid"] == 99.9
+
+
 def test_l5_market_data_route_exposes_production_like_market_data_contract() -> None:
     source = (ROOT / "routers" / "finlab.py").read_text(encoding="utf-8")
 

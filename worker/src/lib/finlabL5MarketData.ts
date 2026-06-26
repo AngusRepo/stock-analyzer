@@ -398,6 +398,11 @@ function truthyFlag(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
+function enabledUnlessExplicitlyFalse(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return !['0', 'false', 'no', 'off', 'disabled'].includes(normalized)
+}
+
 function textArray(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.map((item) => String(item ?? '').trim()).filter(Boolean)
@@ -415,12 +420,92 @@ function emptyL5MarketDataSnapshot(status: string | null = null): FinLabL5Market
   }
 }
 
+function shioajiProxyFallbackEnabled(env: { SHIOAJI_PROXY_URL?: string; SHIOAJI_L5_PROXY_FALLBACK_ENABLED?: string }): boolean {
+  return Boolean(env.SHIOAJI_PROXY_URL?.trim()) && enabledUnlessExplicitlyFalse(env.SHIOAJI_L5_PROXY_FALLBACK_ENABLED)
+}
+
+function proxyOrderbookQuoteFromPayload(symbol: string, payload: Record<string, unknown> | null | undefined): FinLabL5Quote | null {
+  if (!payload) return null
+  return normalizeFinLabL5Quote(symbol, {
+    provider: 'shioaji_proxy_orderbook',
+    status: payload.status ?? 'orderbook',
+    price: payload.price,
+    bid_prices: payload.bid_prices ?? payload.bidPrices,
+    ask_prices: payload.ask_prices ?? payload.askPrices,
+    bid_volumes: payload.bid_volumes ?? payload.bidVolumes,
+    ask_volumes: payload.ask_volumes ?? payload.askVolumes,
+    source_time: payload.updated_at ?? payload.timestamp,
+  })
+}
+
+async function applyShioajiProxyL5Fallback(
+  snapshot: FinLabL5MarketDataSnapshot,
+  env: {
+    SHIOAJI_PROXY_URL?: string
+    PROXY_SERVICE_TOKEN?: string
+    SHIOAJI_L5_PROXY_FALLBACK_ENABLED?: string
+  },
+  symbols: string[],
+  fallbackReason: string,
+): Promise<boolean> {
+  if (!shioajiProxyFallbackEnabled(env)) return false
+
+  const proxyUrl = String(env.SHIOAJI_PROXY_URL ?? '').replace(/\/+$/, '')
+  const headers = env.PROXY_SERVICE_TOKEN ? { Authorization: `Bearer ${env.PROXY_SERVICE_TOKEN}` } : undefined
+  const fallbackErrors: string[] = []
+  let added = 0
+
+  for (const symbol of symbols) {
+    try {
+      const res = await fetch(`${proxyUrl}/orderbook/${encodeURIComponent(symbol)}`, {
+        headers,
+        signal: AbortSignal.timeout(3000),
+      })
+      if (!res.ok) {
+        fallbackErrors.push(`${symbol}:http_${res.status}`)
+        continue
+      }
+      const payload = await res.json() as Record<string, unknown>
+      const quote = proxyOrderbookQuoteFromPayload(symbol, payload)
+      const hasExecutableBook = quote?.bestBid != null && quote.bestAsk != null && quote.bidPrices.length > 0 && quote.askPrices.length > 0
+      if (!quote || !hasExecutableBook) {
+        fallbackErrors.push(`${symbol}:${String(payload?.status ?? 'missing_depth')}`)
+        continue
+      }
+      snapshot.quotes.set(symbol, quote)
+      added += 1
+    } catch (error) {
+      fallbackErrors.push(`${symbol}:${error instanceof Error ? error.message : String(error)}`.slice(0, 240))
+    }
+  }
+
+  const fallbackUsed = added > 0
+  snapshot.raw = {
+    ...(snapshot.raw ?? {}),
+    source: fallbackUsed ? 'worker_shioaji_proxy_orderbook_fallback' : snapshot.raw?.source,
+    fallback_attempted: true,
+    fallback_used: fallbackUsed,
+    fallback_reason: fallbackReason,
+    fallback_errors: fallbackErrors,
+  }
+  if (fallbackUsed) {
+    snapshot.status = 'pass'
+    snapshot.blockedReasons = []
+    snapshot.liveSubmitEnabled = false
+    snapshot.canSubmitRealOrder = false
+  }
+  return fallbackUsed
+}
+
 export async function fetchFinLabL5MarketDataSnapshot(
   env: {
     ML_CONTROLLER_URL?: string
     ML_CONTROLLER_SECRET?: string
     FINLAB_L5_MARKET_DATA_ENABLED?: string
     FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN?: string
+    SHIOAJI_PROXY_URL?: string
+    PROXY_SERVICE_TOKEN?: string
+    SHIOAJI_L5_PROXY_FALLBACK_ENABLED?: string
   },
   symbols: string[],
 ): Promise<FinLabL5MarketDataSnapshot> {
@@ -445,7 +530,11 @@ export async function fetchFinLabL5MarketDataSnapshot(
       }),
       signal: AbortSignal.timeout(5000),
     })
-    if (!res.ok) return emptyL5MarketDataSnapshot(`http_${res.status}`)
+    if (!res.ok) {
+      const failed = emptyL5MarketDataSnapshot(`http_${res.status}`)
+      await applyShioajiProxyL5Fallback(failed, env, symbols, `controller_http_${res.status}`)
+      return failed
+    }
     const payload = await res.json() as any
     snapshot.status = payload?.status != null ? String(payload.status) : null
     snapshot.blockedReasons = textArray(payload?.blocked_reasons)
@@ -457,8 +546,17 @@ export async function fetchFinLabL5MarketDataSnapshot(
         schema_version: payload.schema_version,
         allowed_use: payload.allowed_use,
         status: payload.status,
+        source: payload.source,
         blocked_reasons: payload.blocked_reasons,
         env_status: payload.env_status,
+        fallback_used: payload.fallback_used,
+        fallback_attempted: payload.fallback_attempted,
+        fallback_reason: payload.fallback_reason,
+        fallback_errors: payload.fallback_errors,
+        error_type: payload.error_type,
+        error: payload.error,
+        account_error_type: payload.account_error_type,
+        account_error: payload.account_error,
       }
       : null
     if (snapshot.canSubmitRealOrder || snapshot.liveSubmitEnabled) return snapshot
@@ -467,9 +565,19 @@ export async function fetchFinLabL5MarketDataSnapshot(
       const quote = normalizeFinLabL5Quote(symbol, quotePayload as Record<string, unknown>)
       if (quote) snapshot.quotes.set(symbol, quote)
     }
+    if (snapshot.quotes.size === 0) {
+      await applyShioajiProxyL5Fallback(
+        snapshot,
+        env,
+        symbols,
+        snapshot.status ? `controller_${snapshot.status}` : 'controller_empty_quotes',
+      )
+    }
   } catch (error) {
     console.warn(`[FinLabL5MarketData] fetch failed: ${error instanceof Error ? error.message : String(error)}`)
-    return emptyL5MarketDataSnapshot('fetch_failed')
+    const failed = emptyL5MarketDataSnapshot('fetch_failed')
+    await applyShioajiProxyL5Fallback(failed, env, symbols, 'controller_fetch_failed')
+    return failed
   }
   return snapshot
 }
@@ -480,6 +588,9 @@ export async function fetchFinLabL5MarketDataQuotes(
     ML_CONTROLLER_SECRET?: string
     FINLAB_L5_MARKET_DATA_ENABLED?: string
     FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN?: string
+    SHIOAJI_PROXY_URL?: string
+    PROXY_SERVICE_TOKEN?: string
+    SHIOAJI_L5_PROXY_FALLBACK_ENABLED?: string
   },
   symbols: string[],
 ): Promise<Map<string, FinLabL5Quote>> {

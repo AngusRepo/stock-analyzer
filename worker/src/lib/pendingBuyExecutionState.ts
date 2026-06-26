@@ -2,6 +2,7 @@ import { formatDebateEvent, formatExecutionStatusEvent } from './executionEvent'
 
 export type PendingBuyActiveExecutionStatus =
   | 'pending'
+  | 'checked_waiting'
   | 'submitted'
   | 'requoted'
   | 'partially_filled'
@@ -48,6 +49,7 @@ export interface PendingBuyExecutionTransition {
 
 const ACTIVE_STATUSES: PendingBuyActiveExecutionStatus[] = [
   'pending',
+  'checked_waiting',
   'submitted',
   'requoted',
   'partially_filled',
@@ -69,6 +71,7 @@ function emptySummary(): Record<PendingBuyTerminalExecutionStatus, number> {
 function emptyActiveSummary(): Record<PendingBuyActiveExecutionStatus, number> {
   return {
     pending: 0,
+    checked_waiting: 0,
     submitted: 0,
     requoted: 0,
     partially_filled: 0,
@@ -96,11 +99,23 @@ function isAllocatorExecutionNote(note: string): boolean {
   return note.startsWith('execution:pending:allocator_')
 }
 
+function isCheckedWaitingExecutionNote(note: string): boolean {
+  return note.startsWith('execution:checked_waiting:')
+}
+
+function isS12IntradayExecutionNote(note: string): boolean {
+  return note.startsWith('execution:checked_waiting:s12_')
+}
+
 export function appendPendingBuyExecutionNote<T extends PendingBuyExecutionItem>(item: T, note: string): T {
   const points = Array.isArray(item.watch_points) ? item.watch_points : []
   const nextPointsBase = isAllocatorExecutionNote(note)
     ? points.filter((point) => !isAllocatorExecutionNote(point))
-    : points
+    : isS12IntradayExecutionNote(note)
+      ? points.filter((point) => !isS12IntradayExecutionNote(point))
+    : isCheckedWaitingExecutionNote(note)
+      ? points.filter((point) => !isCheckedWaitingExecutionNote(point) || isS12IntradayExecutionNote(point))
+      : points
   if (nextPointsBase.includes(note)) return { ...item, execution_status: item.execution_status ?? 'pending' }
   return {
     ...item,

@@ -9,7 +9,11 @@ const paperExecutionEvents = readFileSync('src/lib/paperExecutionEvents.ts', 'ut
 
 assert(paperEntryTasks.includes('buildIntradayTechnicalSnapshot'), 'intraday execution should build dynamic technical snapshots')
 assert(paperEntryTasks.includes('resolveIntradayTechnicalDecision'), 'intraday execution should turn snapshots into pre-trade technical decisions')
-assert(paperEntryTasks.includes('technical: intradayTechnicalDecision'), 'pre-trade policy should consume intraday technical decisions')
+assert(paperEntryTasks.includes('effectiveTechnicalDecision'), 'pre-trade policy should consume the effective technical owner')
+assert(paperEntryTasks.includes('S12_INTRADAY_PRIMARY_OWNER_ENABLED'), 'S12 primary owner must be feature flagged')
+assert(paperEntryTasks.includes('s12PrimaryStructureOwnerActive'), 'S12 primary owner must be able to replace overlapping intraday technical vetoes')
+assert(paperEntryTasks.includes('s12PrimaryMomentumContext'), 'S12 ready owner must replace overlapping momentum direction gates')
+assert(paperEntryTasks.includes('slope5min: null') && paperEntryTasks.includes('rangePosition: null'), 'S12 ready owner should clear slope/range vetoes while keeping liquidity gates')
 assert(paperEntryTasks.includes("'intraday_technical_decision'"), 'intraday execution should persist active technical decision events')
 assert(paperEntryTasks.includes('INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED'), 'dynamic technical guard must be feature flagged')
 assert(paperEntryTasks.includes('enabledFlag(env.INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED, true)'), 'dynamic technical guard should default on unless explicitly disabled')

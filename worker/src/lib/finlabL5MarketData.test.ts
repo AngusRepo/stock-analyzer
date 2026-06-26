@@ -224,3 +224,63 @@ function assert(condition: unknown, message: string): void {
     globalThis.fetch = originalFetch
   }
 })()
+
+;(async () => {
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  let proxyAuth = ''
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = String(input)
+    calls.push(url)
+    if (url.includes('/finlab/execution/l5-market-data')) {
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'error',
+          can_submit_real_order: false,
+          live_submit_enabled: false,
+          error_type: 'RuntimeError',
+          error: 'finlab_l5_quote_method_unavailable',
+          quotes: {},
+        }),
+      } as Response
+    }
+    if (url.includes('/orderbook/2885')) {
+      proxyAuth = String((init?.headers as Record<string, unknown> | undefined)?.Authorization ?? '')
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'ok',
+          price: 80,
+          bid_prices: [79.9, 79.8, 79.7, 79.6, 79.5],
+          ask_prices: [80.1, 80.2, 80.3, 80.4, 80.5],
+          bid_volumes: [20, 18, 16, 14, 12],
+          ask_volumes: [8, 7, 6, 5, 4],
+          updated_at: '2026-06-26T01:00:00Z',
+        }),
+      } as Response
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }) as any
+
+  try {
+    const snapshot = await fetchFinLabL5MarketDataSnapshot({
+      ML_CONTROLLER_URL: 'https://controller.example',
+      FINLAB_L5_MARKET_DATA_ENABLED: '1',
+      FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN: '1',
+      SHIOAJI_PROXY_URL: 'https://proxy.example',
+      PROXY_SERVICE_TOKEN: 'proxy-token',
+    }, ['2885'])
+
+    assert(calls.some((url) => url.endsWith('/orderbook/2885')), 'L5 snapshot should fall back to Shioaji proxy orderbook')
+    assert(proxyAuth === 'Bearer proxy-token', 'proxy fallback should use service token')
+    assert(snapshot.status === 'pass', 'proxy fallback with executable book should repair L5 snapshot status')
+    assert(snapshot.quotes.get('2885')?.provider === 'shioaji_proxy_orderbook', 'proxy fallback quote should keep provider')
+    assert(snapshot.quotes.get('2885')?.bestAsk === 80.1, 'proxy fallback should normalize executable ask')
+    assert(snapshot.raw?.source === 'worker_shioaji_proxy_orderbook_fallback', 'snapshot raw should expose worker fallback source')
+    assert(snapshot.raw?.fallback_used === true, 'snapshot raw should expose fallback usage')
+    assert(snapshot.raw?.fallback_reason === 'controller_error', 'snapshot raw should explain fallback reason')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})()

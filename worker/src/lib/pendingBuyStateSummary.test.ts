@@ -26,6 +26,12 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   assert(summary.total_count === 3, 'total count should include terminal items')
   assertDeepEqual(summary.execution_counts, {
     pending: 0,
+    checked_waiting: 0,
+    submitted: 0,
+    requoted: 0,
+    partially_filled: 0,
+    stale_quote: 0,
+    quote_unavailable: 0,
     filled: 0,
     skipped: 2,
     cancelled: 1,
@@ -83,6 +89,16 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
 
   assert(summary.state === 'expired', 'expired-only run should be explicit')
   assert(summary.label === '已過期', 'expired should have zh-TW label')
+}
+
+{
+  const summary = buildPendingBuyStateSummary([
+    { symbol: '2330', debate_status: 'completed', execution_status: 'checked_waiting' },
+  ], { status: 'ready', debate_status: 'completed', candidate_count: 1 })
+
+  assert(summary.state === 'ready_to_execute', 'checked-waiting items should remain active')
+  assert(summary.execution_counts.checked_waiting === 1, 'summary should expose checked waiting execution count')
+  assert(summary.execution_counts.pending === 0, 'checked waiting should not be counted as never-checked pending')
 }
 
 {

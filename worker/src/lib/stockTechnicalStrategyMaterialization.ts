@@ -44,10 +44,20 @@ export interface StockTechnicalStrategyMaterializationTelemetry {
   materializedCount: number
   scoreCoverage: Record<string, number>
   signalCoverage: Record<string, number>
+  admissionCoverage: Record<string, number>
   marketRegime: StockTechnicalMarketRegime | null
   unsupported: {
     stockTechS12Score: 'requires_intraday_15m_1h_4h'
   }
+}
+
+type StockTechnicalStrategySuffix = '01' | '02' | '04' | '06' | '11'
+
+interface StockTechnicalAdmissionConfig<T extends StockTechnicalMaterializationCandidate> {
+  suffix: StockTechnicalStrategySuffix
+  floorScore: number
+  targetDailyMatches: number
+  broadGate: (candidate: T) => boolean
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -226,6 +236,7 @@ export function deriveStockTechnicalDailyFeatures(
   const hhPrev20 = hhPrev(20)
   const close20 = closeShift(20)
   const close21 = closeShift(21)
+  const close252 = closeShift(252) ?? closeShift(251)
   const stretch = hhPrev20 == null ? null : safeRatio(latest.close - hhPrev20, atr14)
 
   return {
@@ -265,9 +276,9 @@ export function deriveStockTechnicalDailyFeatures(
     stockTechReturn63: pctChange(latest.close, closeShift(63)),
     stockTechReturn60: pctChange(latest.close, closeShift(60)),
     stockTechReturn126: pctChange(latest.close, closeShift(126)),
-    stockTechReturn252: pctChange(latest.close, closeShift(252)),
+    stockTechReturn252: pctChange(latest.close, close252),
     stockTechReturn63Prev1: pctChange(prevClose, closeShift(64)),
-    stockTechMom12_1: pctChange(closeShift(21), closeShift(252)),
+    stockTechMom12_1: pctChange(closeShift(21), close252),
     stockTechAtr14: atr14,
     stockTechAtr20: atr20,
     stockTechNatr20: natr20,
@@ -359,6 +370,54 @@ function setSignalScore(
   if (signal) telemetry.signalCoverage[signalKey] = (telemetry.signalCoverage[signalKey] ?? 0) + 1
 }
 
+function setAdmission(
+  raw: StockTechnicalRawSignals,
+  suffix: StockTechnicalStrategySuffix,
+  admission: boolean,
+  telemetry: StockTechnicalStrategyMaterializationTelemetry,
+): void {
+  const indicators = ensureTechnicalIndicators(raw)
+  const admissionKey = `stockTechS${suffix}Admission`
+  indicators[admissionKey] = admission ? 1 : 0
+  if (admission) telemetry.admissionCoverage[admissionKey] = (telemetry.admissionCoverage[admissionKey] ?? 0) + 1
+}
+
+function assignAdaptiveAdmissions<T extends StockTechnicalMaterializationCandidate>(
+  candidates: T[],
+  telemetry: StockTechnicalStrategyMaterializationTelemetry,
+  configs: Array<StockTechnicalAdmissionConfig<T>>,
+): void {
+  for (const config of configs) {
+    const scoreKey = `stockTechS${config.suffix}Score`
+    const signalKey = `stockTechS${config.suffix}Signal`
+    const ranked = candidates
+      .map((candidate) => ({
+        candidate,
+        score: indicator(candidate, scoreKey),
+      }))
+      .filter((row): row is { candidate: T; score: number } =>
+        row.score != null &&
+        row.score >= config.floorScore &&
+        config.broadGate(row.candidate),
+      )
+      .sort((a, b) => b.score - a.score)
+    const cutoffIndex = Math.min(config.targetDailyMatches, ranked.length) - 1
+    const adaptiveCutoff = cutoffIndex >= 0 ? ranked[cutoffIndex].score : Infinity
+
+    for (const candidate of candidates) {
+      const raw = candidate.raw_signals
+      if (!raw) continue
+      const scoreValue = indicator(candidate, scoreKey)
+      const hardSignal = indicator(candidate, signalKey) === 1
+      const scoreAdmission = scoreValue != null &&
+        scoreValue >= config.floorScore &&
+        scoreValue >= adaptiveCutoff &&
+        config.broadGate(candidate)
+      setAdmission(raw, config.suffix, hardSignal || scoreAdmission, telemetry)
+    }
+  }
+}
+
 export function materializeStockTechnicalStrategyScores<T extends StockTechnicalMaterializationCandidate>(
   candidates: T[],
   options: { marketRegime?: StockTechnicalMarketRegime | null } = {},
@@ -369,6 +428,7 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
     materializedCount: 0,
     scoreCoverage: {},
     signalCoverage: {},
+    admissionCoverage: {},
     marketRegime: options.marketRegime ?? null,
     unsupported: {
       stockTechS12Score: 'requires_intraday_15m_1h_4h',
@@ -547,6 +607,76 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
 
     telemetry.materializedCount += 1
   }
+
+  assignAdaptiveAdmissions(candidates, telemetry, [
+    {
+      suffix: '01',
+      floorScore: 0.80,
+      targetDailyMatches: 10,
+      broadGate: (candidate) => {
+        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
+        return indicator(candidate, 'stockTechEligible') === 1 &&
+          indicator(candidate, 'stockTechMarketMkt2') === 1 &&
+          closeValue != null &&
+          closeValue > (indicator(candidate, 'stockTechMa50') ?? Infinity) &&
+          (indicator(candidate, 'stockTechMa50') ?? -Infinity) > (indicator(candidate, 'stockTechMa200') ?? Infinity)
+      },
+    },
+    {
+      suffix: '02',
+      floorScore: 0.78,
+      targetDailyMatches: 10,
+      broadGate: (candidate) => {
+        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
+        return indicator(candidate, 'stockTechEligible') === 1 &&
+          indicator(candidate, 'stockTechMarketMkt1') === 1 &&
+          closeValue != null &&
+          closeValue > (indicator(candidate, 'stockTechMa200') ?? Infinity) &&
+          (indicator(candidate, 'stockTechMom12_1') ?? -Infinity) > 0
+      },
+    },
+    {
+      suffix: '04',
+      floorScore: 0.76,
+      targetDailyMatches: 10,
+      broadGate: (candidate) => {
+        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
+        return indicator(candidate, 'stockTechEligible') === 1 &&
+          indicator(candidate, 'stockTechMarketMkt1') === 1 &&
+          closeValue != null &&
+          closeValue > (indicator(candidate, 'stockTechMa60') ?? Infinity) &&
+          (indicator(candidate, 'stockTechReturn60') ?? -Infinity) > 0 &&
+          (indicator(candidate, 'stockTechDeduct20Raw') ?? -Infinity) > 0
+      },
+    },
+    {
+      suffix: '06',
+      floorScore: 0.76,
+      targetDailyMatches: 10,
+      broadGate: (candidate) => {
+        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
+        return indicator(candidate, 'stockTechEligible') === 1 &&
+          indicator(candidate, 'stockTechMarketMkt2') === 1 &&
+          (indicator(candidate, 'stockTechPrevClose') ?? -Infinity) > (indicator(candidate, 'stockTechPrevMa20') ?? Infinity) &&
+          (indicator(candidate, 'stockTechPrevMa20') ?? -Infinity) > (indicator(candidate, 'stockTechPrevMa50') ?? Infinity) &&
+          closeValue != null &&
+          closeValue > (indicator(candidate, 'stockTechPrevHigh') ?? Infinity)
+      },
+    },
+    {
+      suffix: '11',
+      floorScore: 0.80,
+      targetDailyMatches: 10,
+      broadGate: (candidate) => {
+        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
+        return indicator(candidate, 'stockTechEligible') === 1 &&
+          indicator(candidate, 'stockTechMarketMkt2') === 1 &&
+          (indicator(candidate, 'stockTechGapPct') ?? -Infinity) >= 0 &&
+          closeValue != null &&
+          closeValue > (indicator(candidate, 'stockTechLatestOpen') ?? Infinity)
+      },
+    },
+  ])
 
   return telemetry
 }

@@ -1,10 +1,12 @@
 import type { Bindings } from '../types'
 import {
+  appendPendingBuyExecutionNote,
   applyPendingBuyExecutionEvents,
   applyPendingBuySlaExpiry,
   type PendingBuyExecutionEvent,
   type PendingBuyExecutionStatus,
 } from './pendingBuyExecutionState'
+import { formatExecutionStatusEvent } from './executionEvent'
 import { recordPaperExecutionEvents } from './paperExecutionEvents'
 import {
   readScoreV2Snapshot,
@@ -102,6 +104,14 @@ interface PendingBuyItemRow {
 interface PendingBuyCountRow {
   key: string | null
   count: number
+}
+
+interface PendingBuyIntradayEventRow {
+  symbol: string
+  status: string
+  reason: string | null
+  detail_json: string | null
+  created_at: string
 }
 
 export interface PendingBuySnapshot {
@@ -415,6 +425,113 @@ function auditEventsFromMeta(meta?: Record<string, unknown>): Array<Record<strin
     : []
 }
 
+function detailTextFromJson(raw: string | null): string | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const detail = parsed?.detail
+    if (typeof detail === 'string') return detail
+    if (detail != null) return JSON.stringify(detail)
+  } catch {
+    return raw
+  }
+  return null
+}
+
+function normalizeActiveIntradayStatus(status: string): PendingBuyExecutionStatus {
+  return status === 'pending' ? 'checked_waiting' : status as PendingBuyExecutionStatus
+}
+
+function intradayEventToMeta(row: PendingBuyIntradayEventRow): Record<string, unknown> {
+  return {
+    symbol: row.symbol,
+    status: normalizeActiveIntradayStatus(row.status),
+    reason: row.reason ?? 'intraday_check',
+    detail: detailTextFromJson(row.detail_json),
+    source: 'intraday_check',
+    created_at: row.created_at,
+  }
+}
+
+function enrichPendingBuysWithIntradayEvents(
+  pendingBuys: PendingBuy[],
+  rows: PendingBuyIntradayEventRow[],
+): PendingBuy[] {
+  if (!rows.length) return pendingBuys
+  const eventsBySymbol = new Map<string, PendingBuyIntradayEventRow[]>()
+  for (const row of rows) {
+    const existing = eventsBySymbol.get(row.symbol) ?? []
+    existing.push(row)
+    eventsBySymbol.set(row.symbol, existing)
+  }
+  return pendingBuys.map((item) => {
+    const events = eventsBySymbol.get(item.symbol) ?? []
+    if (!events.length) return item
+    let noted = item
+    let status: PendingBuyExecutionStatus = item.execution_status ?? 'pending'
+    for (const event of events) {
+      status = normalizeActiveIntradayStatus(event.status)
+      const reason = event.reason ?? 'intraday_check'
+      const detail = detailTextFromJson(event.detail_json)
+      noted = appendPendingBuyExecutionNote(
+        noted,
+        formatExecutionStatusEvent(status, reason, detail),
+      )
+    }
+    return {
+      ...noted,
+      execution_status: status,
+    }
+  })
+}
+
+async function loadLatestPendingBuyIntradayEvents(
+  db: D1Database,
+  tradeDate: string,
+  pendingRunId: number,
+): Promise<PendingBuyIntradayEventRow[]> {
+  const { results } = await db.prepare(`
+    WITH latest AS (
+      SELECT symbol, MAX(id) AS max_id
+        FROM paper_execution_events
+       WHERE trade_date = ?
+         AND pending_run_id = ?
+         AND event_type = 'pending_buy'
+         AND source = 'intraday_check'
+         AND status IN (
+           'pending',
+           'checked_waiting',
+           'submitted',
+           'requoted',
+           'partially_filled',
+           'stale_quote',
+           'quote_unavailable'
+         )
+       GROUP BY symbol
+    ),
+    latest_s12 AS (
+      SELECT symbol, MAX(id) AS max_id
+        FROM paper_execution_events
+       WHERE trade_date = ?
+         AND pending_run_id = ?
+         AND event_type = 'pending_buy'
+         AND source = 'intraday_check'
+         AND reason LIKE 's12_%'
+       GROUP BY symbol
+    ),
+    selected AS (
+      SELECT max_id FROM latest
+      UNION
+      SELECT max_id FROM latest_s12
+    )
+    SELECT e.symbol, e.status, e.reason, e.detail_json, e.created_at
+      FROM paper_execution_events e
+      JOIN selected l ON e.id = l.max_id
+     ORDER BY e.symbol ASC, e.id ASC
+  `).bind(tradeDate, pendingRunId, tradeDate, pendingRunId).all<PendingBuyIntradayEventRow>()
+  return results ?? []
+}
+
 async function findRunForDate(db: D1Database, tradeDate: string): Promise<PendingBuyRunRow | null> {
   return await db.prepare(
     `SELECT id, trade_date, source_reco_date, status, debate_status, candidate_count, error_message, created_at, updated_at
@@ -480,7 +597,7 @@ async function readD1Snapshot(
     ).bind(run.id).all<PendingBuyItemRow>()
     itemRows = results ?? []
   }
-  const [executionCountRows, debateCountRows] = await Promise.all([
+  const [executionCountRows, debateCountRows, intradayEventRows] = await Promise.all([
     env.DB.prepare(
       `SELECT COALESCE(execution_status, 'pending') AS key, COUNT(*) AS count
          FROM pending_buy_items
@@ -493,10 +610,15 @@ async function readD1Snapshot(
         WHERE run_id = ?
         GROUP BY COALESCE(debate_status, 'pending')`
     ).bind(run.id).all<PendingBuyCountRow>(),
+    loadLatestPendingBuyIntradayEvents(env.DB, resolvedDate, run.id),
   ])
   const pendingBuys = itemRows.map(mapItemRow)
   const scoreV2BySymbol = await loadPendingBuyScoreV2BySymbol(env.DB, run.source_reco_date ?? resolvedDate, pendingBuys)
-  const enrichedPendingBuys = enrichPendingBuysWithScoreV2(pendingBuys, scoreV2BySymbol)
+  const enrichedPendingBuys = enrichPendingBuysWithIntradayEvents(
+    enrichPendingBuysWithScoreV2(pendingBuys, scoreV2BySymbol),
+    intradayEventRows,
+  )
+  const intradayEvents = intradayEventRows.map(intradayEventToMeta)
 
   return {
     date: resolvedDate,
@@ -514,6 +636,8 @@ async function readD1Snapshot(
       error_message: run.error_message ?? undefined,
       execution_counts: rowsToCounts(executionCountRows.results),
       debate_counts: rowsToCounts(debateCountRows.results),
+      execution_events: intradayEvents,
+      intraday_execution_events: intradayEvents,
       created_at: run.created_at,
       updated_at: run.updated_at,
     },

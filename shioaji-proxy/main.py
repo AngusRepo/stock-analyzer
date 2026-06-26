@@ -22,7 +22,7 @@ import threading
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 # ── 環境變數 ────────────────────────────────────────────────────────────────
@@ -202,6 +202,75 @@ def get_snapshot(symbol: str) -> dict | None:
         return None
 
 
+def _series_value(container, *names):
+    for name in names:
+        if isinstance(container, dict) and name in container:
+            return container[name]
+        if hasattr(container, name):
+            return getattr(container, name)
+    return None
+
+
+def _iso_kbar_ts(value) -> str:
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TW_TZ)
+        return dt.astimezone(TW_TZ).isoformat()
+    return str(value)
+
+
+def _float_at(values, index: int) -> float | None:
+    try:
+        value = values[index]
+        return float(value)
+    except Exception:
+        return None
+
+
+def get_kbars(symbol: str, start: str, end: str, limit: int = 3000) -> list[dict]:
+    """Return historical 1-minute kbars from Shioaji for S12 intraday structure replay."""
+    if not api or not connected:
+        return []
+    try:
+        contract = api.Contracts.Stocks.get(symbol)
+        if not contract:
+            return []
+        kbars = api.kbars(contract, start=start, end=end)
+        ts = _series_value(kbars, "ts", "Time", "time")
+        opens = _series_value(kbars, "Open", "open")
+        highs = _series_value(kbars, "High", "high")
+        lows = _series_value(kbars, "Low", "low")
+        closes = _series_value(kbars, "Close", "close")
+        volumes = _series_value(kbars, "Volume", "volume")
+        if ts is None or opens is None or highs is None or lows is None or closes is None:
+            return []
+
+        count = min(len(ts), len(opens), len(highs), len(lows), len(closes), max(1, int(limit)))
+        rows: list[dict] = []
+        for index in range(count):
+            open_px = _float_at(opens, index)
+            high_px = _float_at(highs, index)
+            low_px = _float_at(lows, index)
+            close_px = _float_at(closes, index)
+            if open_px is None or high_px is None or low_px is None or close_px is None:
+                continue
+            rows.append({
+                "ts": _iso_kbar_ts(ts[index]),
+                "open": open_px,
+                "high": high_px,
+                "low": low_px,
+                "close": close_px,
+                "volume": _float_at(volumes, index) if volumes is not None else 0,
+            })
+        return rows
+    except Exception as e:
+        print(f"[Shioaji] Kbars {symbol} failed: {e}")
+        return []
+
+
 # ── FastAPI App ─────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -244,7 +313,7 @@ def health():
 
 
 @app.get("/quote/{symbol}")
-def quote(symbol: str, authorization: str | None = None):
+def quote(symbol: str, authorization: str | None = Header(default=None)):
     """單支即時報價 — 先查 tick cache，沒有就用 snapshot"""
     verify_token(authorization)
     symbol = symbol.upper().strip()
@@ -269,7 +338,7 @@ class BatchRequest(BaseModel):
 
 
 @app.post("/quotes")
-def batch_quotes(req: BatchRequest, authorization: str | None = None):
+def batch_quotes(req: BatchRequest, authorization: str | None = Header(default=None)):
     """批次即時報價"""
     verify_token(authorization)
     results: dict[str, dict] = {}
@@ -290,7 +359,7 @@ def batch_quotes(req: BatchRequest, authorization: str | None = None):
 
 
 @app.post("/snapshots")
-def batch_snapshots(req: BatchRequest, authorization: str | None = None):
+def batch_snapshots(req: BatchRequest, authorization: str | None = Header(default=None)):
     """Batch snapshot endpoint used by the Worker execution core."""
     verify_token(authorization)
     results: dict[str, dict] = {}
@@ -305,7 +374,7 @@ def batch_snapshots(req: BatchRequest, authorization: str | None = None):
 
 
 @app.get("/snapshot/{symbol}")
-def snapshot_endpoint(symbol: str, authorization: str | None = None):
+def snapshot_endpoint(symbol: str, authorization: str | None = Header(default=None)):
     """強制用 snapshot API 取最新值（繞過 tick cache）"""
     verify_token(authorization)
     symbol = symbol.upper().strip()
@@ -315,9 +384,33 @@ def snapshot_endpoint(symbol: str, authorization: str | None = None):
     raise HTTPException(404, f"No snapshot for {symbol}")
 
 
+@app.get("/kbars/{symbol}")
+def kbars_endpoint(
+    symbol: str,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 3000,
+    authorization: str | None = Header(default=None),
+):
+    """Historical 1-minute kbars for intraday structure replay."""
+    verify_token(authorization)
+    symbol = symbol.upper().strip()
+    end_date = end or get_tw_now().date().isoformat()
+    start_date = start or (get_tw_now() - timedelta(days=7)).date().isoformat()
+    rows = get_kbars(symbol, start_date, end_date, limit=max(1, min(int(limit), 5000)))
+    return {
+        "status": "ok",
+        "symbol": symbol,
+        "start": start_date,
+        "end": end_date,
+        "count": len(rows),
+        "data": rows,
+    }
+
+
 # ── F4: Trend endpoint（買入二次確認用）────────────────────────────────────
 @app.get("/trend/{symbol}")
-def trend(symbol: str, minutes: int = 5, authorization: str | None = None):
+def trend(symbol: str, minutes: int = 5, authorization: str | None = Header(default=None)):
     """回傳近 N 分鐘價格趨勢（slope + prices），用於買入二次確認。"""
     verify_token(authorization)
     symbol = symbol.upper().strip()
@@ -350,7 +443,7 @@ _market_risk_cache: dict = {}
 _market_risk_ts: float = 0
 
 @app.get("/market-risk")
-def market_risk(authorization: str | None = None):
+def market_risk(authorization: str | None = Header(default=None)):
     """
     即時大盤風險評估（快取 60 秒）
     基於加權指數即時跌幅 + 量比 判斷 risk_level: low / medium / high
@@ -425,7 +518,7 @@ def market_risk(authorization: str | None = None):
 
 # ── 五檔報價 + Orderbook Features ─────────────────────────────────────────
 @app.get("/orderbook/{symbol}")
-def orderbook(symbol: str, authorization: str | None = None):
+def orderbook(symbol: str, authorization: str | None = Header(default=None)):
     """Return latest streaming BidAsk L5 depth and derived orderbook features."""
     verify_token(authorization)
     symbol = symbol.upper().strip()

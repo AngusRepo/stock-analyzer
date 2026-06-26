@@ -10,6 +10,7 @@ const obsPage = readFileSync('../frontend/src/pages/ObservabilityPage.tsx', 'utf
 
 for (const status of [
   'pending',
+  'checked_waiting',
   'submitted',
   'requoted',
   'partially_filled',
@@ -45,6 +46,10 @@ assert(
   'Bot dashboard must use item-aware execution status labels',
 )
 assert(
+  botDashboard.includes('盤中原因：{executionBadge.label}'),
+  'Bot dashboard pending-buy cards must display the intraday reason inside each card',
+)
+assert(
   botDashboard.includes('formatPartialFillRemaining'),
   'Bot dashboard must surface partial-fill remaining shares',
 )
@@ -53,6 +58,6 @@ assert(
   'Bot dashboard must not render raw execution status labels',
 )
 assert(
-  obsPage.includes('quote_unavailable') && obsPage.includes('partially_filled'),
+  obsPage.includes('checked_waiting') && obsPage.includes('quote_unavailable') && obsPage.includes('partially_filled'),
   'OBS page must recognize P10 execution realism states',
 )

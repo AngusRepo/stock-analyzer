@@ -121,6 +121,44 @@ assert(cancelled.allItems[0].execution_status === 'cancelled', 'cancelled item s
 }
 
 {
+  const updated = applyPendingBuyExecutionStatusUpdates([item('2317')], [
+    { symbol: '2317', status: 'checked_waiting', reason: 'between_buy_reference_and_confirmation', detail: 'current=100;confirmation=102' },
+  ])
+  assert(updated.activeItems.length === 1, 'checked-but-waiting item should remain active')
+  assert(updated.allItems[0].execution_status === 'checked_waiting', 'checked waiting should be visible as its own active status')
+  assert(updated.activeSummary.checked_waiting === 1, 'active summary should count checked waiting')
+  assert(
+    updated.allItems[0].watch_points?.includes('execution:checked_waiting:between_buy_reference_and_confirmation:current=100;confirmation=102'),
+    'checked waiting should preserve the intraday defer reason for the card UI',
+  )
+  const refreshed = applyPendingBuyExecutionStatusUpdates(updated.allItems, [
+    { symbol: '2317', status: 'checked_waiting', reason: 'volume_ratio_low', detail: 'volume_ratio=0.4;min=0.55' },
+  ])
+  assert(
+    refreshed.allItems[0].watch_points?.filter((point) => point.startsWith('execution:checked_waiting:')).length === 1,
+    'checked waiting refresh should replace the prior volatile intraday note',
+  )
+}
+
+{
+  const withS12 = appendPendingBuyExecutionNote(
+    item('2317'),
+    'execution:checked_waiting:s12_waiting_4h_completed_bar:bars15m=4;bars1h=1;bars4h=0',
+  )
+  const refreshed = applyPendingBuyExecutionStatusUpdates([withS12], [
+    { symbol: '2317', status: 'checked_waiting', reason: 'volume_ratio_low', detail: 'volume_ratio=0.4;min=0.55' },
+  ])
+  assert(
+    refreshed.allItems[0].watch_points?.some((point) => point.startsWith('execution:checked_waiting:s12_waiting_4h_completed_bar')),
+    'S12 intraday structure note should survive generic checked-waiting refreshes',
+  )
+  assert(
+    refreshed.allItems[0].watch_points?.some((point) => point.startsWith('execution:checked_waiting:volume_ratio_low')),
+    'generic latest checked-waiting reason should still be visible beside S12',
+  )
+}
+
+{
   const updated = applyPendingBuyExecutionStatusUpdates([item('2330')], [
     { symbol: '2330', status: 'partially_filled', reason: 'paper_order_partial_fill', detail: 'requested=1000;filled=600;remaining=400' },
   ])

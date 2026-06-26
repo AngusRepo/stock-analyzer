@@ -546,3 +546,115 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
   assert(decision.action === 'DEFER', 'bearish SMC structure must block opening fast-path catch-the-knife entries')
   assert(decision.reason === 'smc_bearish_structure', 'SMC structure should own the visible defer reason')
 }
+
+{
+  const oldV2Blocked = evaluatePreTradeExecution(baseInput({
+    currentPrice: 101.1,
+    bestAsk: 101.1,
+    entryPrice: 100,
+    momentum: {
+      volumeRatio: 1.2,
+      minVolumeRatio: 0.8,
+      slope5min: 0.01,
+      rangePosition: 0.58,
+      minRangePosition: 0.3,
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.012,
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 100,
+      resistance: 101.25,
+      support: 98.7,
+      atrDefense: 98.7,
+      volumeNode: 100,
+      buyReferenceLow: 99.2,
+      buyReferenceHigh: 100,
+      optimisticLow: 100,
+      optimisticHigh: 101.25,
+    },
+    entryModelV2: {
+      modelVersion: 'entry_price_model_v2',
+      anchorSource: 'daily_proxy_fallback',
+      poc: 100,
+      vah: null,
+      val: null,
+      discountLow: 98.7,
+      discountHigh: 100,
+      equilibrium: 100,
+      premiumLow: 100,
+      premiumHigh: 101.25,
+      orderBlockLow: null,
+      orderBlockHigh: null,
+      fvgLow: null,
+      fvgHigh: null,
+      smcBias: 'neutral',
+      smcScore: 0,
+      smcBullishScore: 0,
+      smcBearishScore: 0,
+      liquiditySweepLow: null,
+      structureBreakHigh: null,
+      chochLevel: null,
+      displacementPct: null,
+      retestStatus: 'none',
+      entryLow: 98.7,
+      entryHigh: 100,
+      preferredEntry: 100,
+      chaseCeiling: 100.8,
+      stopAnchor: 98.7,
+      l5Support: { quoteAgeMs: null, spreadPct: null, depthOk: true, imbalance: 0.1 },
+      confidence: 0.55,
+      fallbackReason: 'ohlcv_trade_plan_proxy',
+    },
+  }))
+  assert(oldV2Blocked.action === 'DEFER', 'old entry model should still block prices above its stale chase ceiling')
+  assert(oldV2Blocked.reason === 'price_above_chase_ceiling', 'old v2 block should remain explicit')
+
+  const s12Assisted = evaluatePreTradeExecution(baseInput({
+    currentPrice: 101.1,
+    bestAsk: 101.1,
+    entryPrice: 100,
+    momentum: {
+      volumeRatio: 1.2,
+      minVolumeRatio: 0.8,
+      slope5min: 0.01,
+      rangePosition: 0.58,
+      minRangePosition: 0.3,
+    },
+    technical: {
+      action: 'pass',
+      reason: 's12_reaction_ready',
+      detail: 'state=reaction_ready;entry=100;chase_ceiling=101.25;stop=98.7',
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.012,
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 100,
+      resistance: 101.25,
+      support: 98.7,
+      atrDefense: 98.7,
+      volumeNode: 100,
+      buyReferenceLow: 100,
+      buyReferenceHigh: 100,
+      optimisticLow: 100,
+      optimisticHigh: 101.25,
+    },
+    entryModelV2: null,
+  }))
+  assert(s12Assisted.action === 'BUY_AT', 'S12 assist-entry overlay should allow a bounded long entry inside its chase ceiling')
+  assert(s12Assisted.reason === 'entry_chase_confirmed:1.10%', 'S12 assisted entry should expose the bounded chase premium')
+  assert(s12Assisted.limitPrice === 101.1, 'S12 assisted entry should use executable best ask as limit')
+}

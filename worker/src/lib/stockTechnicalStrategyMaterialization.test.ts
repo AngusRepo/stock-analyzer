@@ -33,7 +33,7 @@ const baseSpec: StrategySpec = {
   thresholds: {
     minPrice: 10,
     dsl: {
-      all: [{ signal: 'technicalIndicators.stockTechS01Signal', op: '==', value: 1 }],
+      all: [{ signal: 'technicalIndicators.stockTechS01Admission', op: '==', value: 1 }],
     },
   },
   candidatePolicy: { poolQuota: 10, costBudget: 12, maxMlShare: 0 },
@@ -61,6 +61,7 @@ const baseSpec: StrategySpec = {
   assert(features.stockTechMa200 != null, 'daily feature materializer should compute long MA features')
   assert(features.stockTechHighPos252 != null, 'daily feature materializer should compute 52w high position')
   assert(features.stockTechVr20 != null, 'daily feature materializer should compute current volume expansion')
+  assert(features.stockTechMom12_1 != null, 'S2 momentum should use a 252-bar fallback instead of staying null')
 }
 
 {
@@ -74,16 +75,37 @@ const baseSpec: StrategySpec = {
     stockTechMa50Ago20: 90,
     stockTechHhPrev55: 120,
     stockTechHighPos252: 0.96,
-    stockTechReturn126: 0.55,
+    stockTechReturn126: 0.7,
     stockTechReturn63: 0.3,
     stockTechReturn60: 0.3,
     stockTechReturn63Prev1: 0.28,
-    stockTechMom12_1: 0.45,
+    stockTechMom12_1: 0.6,
     stockTechVr20: 2.1,
     stockTechNatr20: 0.02,
     stockTechDeduct20Raw: 10,
     stockTechDeduct20Prev: -1,
     stockTechStretchHh20Atr: 0.2,
+  })
+  const nearMiss = candidate('9994', {
+    stockTechHistoryDays: 260,
+    stockTechLatestClose: 125,
+    stockTechTurnover20: 900_000,
+    stockTechMa50: 100,
+    stockTechMa100: 90,
+    stockTechMa200: 80,
+    stockTechMa50Ago20: 90,
+    stockTechHhPrev55: 130,
+    stockTechHighPos252: 0.96,
+    stockTechReturn126: 0.58,
+    stockTechReturn63: 0.35,
+    stockTechReturn60: 0.35,
+    stockTechReturn63Prev1: 0.32,
+    stockTechMom12_1: 0.48,
+    stockTechVr20: 2.2,
+    stockTechNatr20: 0.015,
+    stockTechDeduct20Raw: 8,
+    stockTechDeduct20Prev: 1,
+    stockTechStretchHh20Atr: 0.15,
   })
   const mid = candidate('9992', {
     stockTechHistoryDays: 260,
@@ -114,7 +136,7 @@ const baseSpec: StrategySpec = {
     stockTechNatr20: 0.08,
   })
 
-  const telemetry = materializeStockTechnicalStrategyScores([winner, mid, low], {
+  const telemetry = materializeStockTechnicalStrategyScores([winner, nearMiss, mid, low], {
     marketRegime: {
       source: 'equal_weight_close_return_proxy',
       latestDate: '2026-06-25',
@@ -127,8 +149,14 @@ const baseSpec: StrategySpec = {
   })
 
   assert.equal(telemetry.signalCoverage.stockTechS01Signal, 1)
+  assert(telemetry.admissionCoverage.stockTechS01Admission >= 1)
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS01Signal, 1)
+  assert.equal(winner.raw_signals.technicalIndicators.stockTechS01Admission, 1)
+  assert.equal(nearMiss.raw_signals.technicalIndicators.stockTechS01Signal, 0)
+  assert.equal(nearMiss.raw_signals.technicalIndicators.stockTechS01Admission, 1)
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS02Signal, 1)
+  assert(winner.raw_signals.technicalIndicators.stockTechS02Score != null)
+  assert.equal(winner.raw_signals.technicalIndicators.stockTechS02Admission, 1)
   assert(winner.raw_signals.technicalIndicators.stockTechS01Score != null)
   assert(winner.raw_signals.technicalIndicators.stockTechS01Score <= 1)
   assert.equal(mid.raw_signals.technicalIndicators.stockTechS01Signal, 0)
@@ -136,6 +164,6 @@ const baseSpec: StrategySpec = {
   const assessment = assessCandidateAgainstStrategySpecs(winner, [baseSpec])
   assert(
     assessment.matches.some((match) => match.specId === 'stock_tech_s01_55d_trend_volume_breakout_v1'),
-    'stock technical StrategySpec should match on materialized signal gate, not a fixed score>=1 gate',
+    'stock technical StrategySpec should match on materialized adaptive admission, not a fixed score>=1 or hard signal-only gate',
   )
 }

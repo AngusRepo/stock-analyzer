@@ -23,7 +23,7 @@ import AppShell from '@/components/AppShell'
 import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
-import { formatPartialFillRemaining, formatPendingBuyExecutionBadge } from '@/lib/pendingBuyExecutionUi'
+import { formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatS12IntradayStructureBadge } from '@/lib/pendingBuyExecutionUi'
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
@@ -311,6 +311,11 @@ function PendingBuyStateBadges({ state, stale, meta, policy }: { state?: any; st
           submitted {execution.submitted}
         </Badge>
       )}
+      {(execution.checked_waiting ?? 0) > 0 && (
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+          checked waiting {execution.checked_waiting}
+        </Badge>
+      )}
       {(execution.requoted ?? 0) > 0 && (
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
           requoted {execution.requoted}
@@ -367,6 +372,14 @@ function PendingBuyStateBadges({ state, stale, meta, policy }: { state?: any; st
       })}
     </div>
   )
+}
+
+function executionToneClass(tone: string): string {
+  if (tone === 'ok') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+  if (tone === 'warn') return 'border-amber-500/25 bg-amber-500/10 text-amber-200'
+  if (tone === 'error') return 'border-red-500/30 bg-red-500/10 text-red-200'
+  if (tone === 'info') return 'border-sky-500/25 bg-sky-500/10 text-sky-200'
+  return 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200'
 }
 
 function pendingBuyEmptyMessage(meta?: any): string {
@@ -436,6 +449,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
         const executionBadge = formatPendingBuyExecutionBadge(b)
+        const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const partialRemaining = formatPartialFillRemaining(b.watch_points)
         const allocatorSummary = describeAllocatorDecision(b.watch_points)
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
@@ -475,9 +489,24 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <div className="mt-1 text-muted-foreground/70">
                 base {b.original_entry ? `$${b.original_entry}` : 'N/A'} {'->'} limit {b.ml_entry_price ? `$${b.ml_entry_price}` : 'N/A'} | risk {(Number(b.risk_pct ?? 0) * 100).toFixed(1)}%
               </div>
-              <div className="mt-1 text-muted-foreground/70">
-                {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
+              <div className={[
+                'mt-2 rounded-md border px-2 py-1.5',
+                executionToneClass(executionBadge.tone),
+              ].join(' ')}>
+                <div className="font-semibold">盤中原因：{executionBadge.label}</div>
+                <div className="mt-0.5 text-muted-foreground/85">
+                  {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
+                </div>
               </div>
+              {s12Badge && (
+                <div className={[
+                  'mt-2 rounded-md border px-2 py-1.5',
+                  executionToneClass(s12Badge.tone),
+                ].join(' ')}>
+                  <div className="font-semibold">S12 盤中結構：{s12Badge.label}</div>
+                  <div className="mt-0.5 text-muted-foreground/85">{s12Badge.description}</div>
+                </div>
+              )}
               {allocatorSummary && (
                 <div className={[
                   'mt-2 rounded-md border px-2 py-1.5',

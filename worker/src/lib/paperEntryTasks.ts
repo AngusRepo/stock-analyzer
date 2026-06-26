@@ -21,7 +21,7 @@ import {
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
 import { checkCircuitBreakers, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
 import { acquirePaperBuyIntent, completePaperBuyIntent } from './paperOrderIntent'
-import { evaluatePreTradeExecution, type PreTradeMomentumContext } from './preTradeExecutionPolicy'
+import { evaluatePreTradeExecution, type PreTradeMomentumContext, type PreTradeOhlcvTradePlan } from './preTradeExecutionPolicy'
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
 import {
   buildFinLabL5MarketDataDetail,
@@ -41,6 +41,12 @@ import {
   resolveIntradayTechnicalDecision,
   type IntradayRollingBar,
 } from './intradayTechnicalSnapshot'
+import {
+  assessS12IntradayStructureFromBaseBars,
+  s12PreTradeTechnicalDecision,
+  type S12IntradayAssessment,
+  type S12IntradayGateMode,
+} from './s12IntradayStructure'
 import { getTwClockParts, isTwIntradayTradingMinute } from './twMarketSession'
 import {
   appendPendingBuyExecutionNote,
@@ -98,6 +104,14 @@ function optionalPositiveNumber(value: unknown, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback
 }
 
+function s12GateMode(value: unknown): S12IntradayGateMode {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === 'assist_entry' || normalized === 'assist' || normalized === 'entry') return 'assist_entry'
+  if (normalized === 'require_ready') return 'require_ready'
+  if (normalized === 'block_invalidated' || normalized === 'block') return 'block_invalidated'
+  return 'observe'
+}
+
 function minutesSinceTwMarketOpen(hour: number, minute: number): number {
   return hour * 60 + minute - 9 * 60
 }
@@ -105,6 +119,84 @@ function minutesSinceTwMarketOpen(hour: number, minute: number): number {
 function finiteNumber(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+interface S12AssistEntryOverlay {
+  entryPrice: number
+  stopLoss: number | null
+  chaseCeiling: number | null
+  maxEntryChasePct: number | null
+  detail: string
+}
+
+function positiveNumber(value: unknown): number | null {
+  const n = finiteNumber(value)
+  return n != null && n > 0 ? n : null
+}
+
+function roundPct(value: number): number {
+  return Math.round(value * 10_000) / 10_000
+}
+
+function buildS12AssistEntryOverlay(
+  assessment: S12IntradayAssessment | null,
+  mode: S12IntradayGateMode,
+  maxChasePctCap: number,
+): S12AssistEntryOverlay | null {
+  if (mode !== 'assist_entry' || !assessment?.ready) return null
+  const entryPrice = positiveNumber(assessment.execution.entryPrice)
+  if (entryPrice == null) return null
+  const stopLoss = positiveNumber(assessment.execution.stopLoss)
+  const chaseCeiling = positiveNumber(assessment.execution.chaseCeiling)
+  const rawChasePct =
+    chaseCeiling != null && chaseCeiling >= entryPrice
+      ? (chaseCeiling - entryPrice) / entryPrice
+      : null
+  const maxEntryChasePct =
+    rawChasePct != null
+      ? roundPct(maxChasePctCap > 0 ? Math.min(rawChasePct, maxChasePctCap) : rawChasePct)
+      : null
+  const detail = [
+    `state=${assessment.state}`,
+    assessment.setupId ? `setup_id=${assessment.setupId}` : null,
+    `entry=${entryPrice}`,
+    stopLoss != null ? `stop=${stopLoss}` : null,
+    chaseCeiling != null ? `chase_ceiling=${chaseCeiling}` : null,
+    maxEntryChasePct != null ? `max_entry_chase_pct=${maxEntryChasePct}` : null,
+    assessment.execution.target1 != null ? `t1=${assessment.execution.target1}` : null,
+  ].filter(Boolean).join(';')
+  return { entryPrice, stopLoss, chaseCeiling, maxEntryChasePct, detail }
+}
+
+function buildS12AssistTradePlan(
+  overlay: S12AssistEntryOverlay,
+  fallbackPlan: PreTradeOhlcvTradePlan | null,
+): PreTradeOhlcvTradePlan {
+  const chaseCeiling = overlay.chaseCeiling ?? fallbackPlan?.optimisticHigh ?? fallbackPlan?.resistance ?? overlay.entryPrice
+  const stopLoss = overlay.stopLoss ?? fallbackPlan?.support ?? fallbackPlan?.atrDefense ?? null
+  return {
+    source: 'ohlcv',
+    mode: 'pullback',
+    confirmation: overlay.entryPrice,
+    resistance: chaseCeiling,
+    support: stopLoss,
+    atrDefense: stopLoss,
+    volumeNode: overlay.entryPrice,
+    buyReferenceLow: Math.min(overlay.entryPrice, positiveNumber(fallbackPlan?.buyReferenceLow) ?? overlay.entryPrice),
+    buyReferenceHigh: overlay.entryPrice,
+    optimisticLow: overlay.entryPrice,
+    optimisticHigh: chaseCeiling,
+  }
+}
+
+function s12PrimaryMomentumContext(base: PreTradeMomentumContext): PreTradeMomentumContext {
+  const hasVolumeRatio = base.volumeRatio != null && Number.isFinite(Number(base.volumeRatio))
+  return {
+    ...base,
+    slope5min: null,
+    rangePosition: null,
+    error: hasVolumeRatio ? null : base.error ?? null,
+  }
 }
 
 function parseEventTimeMs(value: unknown): number | null {
@@ -377,15 +469,85 @@ function rollingBarsToOhlcvRows(tradeDate: string, bars: IntradayRollingBar[]): 
     }))
 }
 
+interface S12KbarRow {
+  ts?: string | null
+  time?: string | null
+  datetime?: string | null
+  open?: number | string | null
+  high?: number | string | null
+  low?: number | string | null
+  close?: number | string | null
+  volume?: number | string | null
+}
+
+function s12KbarStartDate(tradeDate: string): string {
+  return new Date(new Date(`${tradeDate}T00:00:00Z`).getTime() - 7 * 86400_000).toISOString().slice(0, 10)
+}
+
+function parseTwKbarTimeMs(value: unknown): number | null {
+  if (!value) return null
+  const text = String(value).trim()
+  const direct = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text) ? Date.parse(text) : Number.NaN
+  if (Number.isFinite(direct)) return direct
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/)
+  if (!match) {
+    const parsed = Date.parse(text)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  const [, y, mo, d, h, mi, s] = match
+  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h) - 8, Number(mi), Number(s ?? 0))
+}
+
+function s12KbarRowToBar(row: S12KbarRow): IntradayRollingBar | null {
+  const startMs = parseTwKbarTimeMs(row.ts ?? row.time ?? row.datetime)
+  const open = finiteNumber(row.open)
+  const high = finiteNumber(row.high)
+  const low = finiteNumber(row.low)
+  const close = finiteNumber(row.close)
+  if (startMs == null || open == null || high == null || low == null || close == null) return null
+  return {
+    startMs,
+    open,
+    high: Math.max(high, open, close),
+    low: Math.min(low, open, close),
+    close,
+    volume: Math.max(0, finiteNumber(row.volume) ?? 0),
+  }
+}
+
+async function fetchS12ShioajiKbars(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+): Promise<IntradayRollingBar[]> {
+  if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) return []
+  const proxyUrl = String((env as any).SHIOAJI_PROXY_URL ?? '').replace(/\/+$/, '')
+  if (!proxyUrl) return []
+  const start = s12KbarStartDate(tradeDate)
+  const limit = Math.max(200, Math.min(5000, Math.floor(optionalPositiveNumber((env as any).S12_INTRADAY_KBARS_LIMIT, 3000))))
+  const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`
+  const res = await fetch(url, {
+    headers: (env as any).PROXY_SERVICE_TOKEN ? { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN}` } : {},
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) throw new Error(`s12_kbars_http_${res.status}`)
+  const json = await res.json() as { data?: S12KbarRow[] }
+  return (Array.isArray(json.data) ? json.data : [])
+    .map(s12KbarRowToBar)
+    .filter((bar): bar is IntradayRollingBar => bar != null)
+}
+
 async function loadIntradayTechnicalRollingBars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
   currentPrice: number,
   currentTotalVolume: number,
+  options: { intervalMs?: number; lookback?: number } = {},
 ): Promise<IntradayRollingBar[]> {
-  const intervalMs = floorRollingBarIntervalMs(Number((env as any).INTRADAY_TECHNICAL_BAR_INTERVAL_MS ?? 30_000))
-  const lookback = Math.max(6, Math.min(120, Math.floor(Number((env as any).INTRADAY_TECHNICAL_BAR_LOOKBACK ?? 40))))
+  const intervalMs = floorRollingBarIntervalMs(Number(options.intervalMs ?? (env as any).INTRADAY_TECHNICAL_BAR_INTERVAL_MS ?? 30_000))
+  const defaultLookback = options.lookback ?? Number((env as any).INTRADAY_TECHNICAL_BAR_LOOKBACK ?? 40)
+  const lookback = Math.max(6, Math.min(720, Math.floor(Number(defaultLookback))))
   const { results } = await env.DB.prepare(`
     SELECT created_at, detail_json
       FROM paper_execution_events
@@ -414,6 +576,38 @@ async function loadIntradayTechnicalRollingBars(
       close: currentPrice,
       volume: Math.max(0, currentTotalVolume),
     }]
+}
+
+async function loadS12IntradayBaseBars(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+  currentPrice: number,
+  currentTotalVolume: number,
+): Promise<{ bars: IntradayRollingBar[]; source: 'shioaji_kbars_plus_events' | 'event_history' }> {
+  const eventBars = await loadIntradayTechnicalRollingBars(
+    env,
+    symbol,
+    tradeDate,
+    currentPrice,
+    currentTotalVolume,
+    {
+      intervalMs: optionalPositiveNumber((env as any).S12_INTRADAY_BASE_BAR_INTERVAL_MS, 60_000),
+      lookback: optionalPositiveNumber((env as any).S12_INTRADAY_BAR_LOOKBACK, 720),
+    },
+  )
+  try {
+    const kbarBars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
+    if (kbarBars.length > 0) {
+      return {
+        bars: [...kbarBars, ...eventBars].sort((a, b) => a.startMs - b.startMs),
+        source: 'shioaji_kbars_plus_events',
+      }
+    }
+  } catch (error) {
+    console.warn(`[S12] kbars unavailable for ${symbol}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  return { bars: eventBars, source: 'event_history' }
 }
 
 async function loadPreTradeMomentum(
@@ -504,7 +698,10 @@ function pendingRunIdFromMeta(meta: Record<string, unknown> | undefined): number
 }
 
 function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionStatus): boolean {
-  return status === 'requoted' || status === 'partially_filled' || status === 'quote_unavailable'
+  return status === 'checked_waiting' ||
+    status === 'requoted' ||
+    status === 'partially_filled' ||
+    status === 'quote_unavailable'
 }
 
 export async function runIntradayCheck(env: Bindings): Promise<void> {
@@ -1170,7 +1367,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const reason = allocatorDecision?.reason ?? 'allocator_no_plan'
       recordActiveExecutionStatus(
         pending.symbol,
-        'pending',
+        'checked_waiting',
         reason,
         allocatorDecision
           ? `target=${Math.round(allocatorDecision.targetPositionValue)};current=${Math.round(allocatorDecision.currentPositionValue)}`
@@ -1297,6 +1494,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         atrDefense: Math.max(ohlcvTradePlan.atrDefense ?? 0, intradayTechnicalSnapshot.atrDefense),
       }
       : ohlcvTradePlan
+    let effectivePreTradePlan: PreTradeOhlcvTradePlan | null = effectiveOhlcvTradePlan
     const finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
     const finLabL5Quality = finLabL5Quote
       ? quoteQualityFromL5(finLabL5Quote, {
@@ -1315,6 +1513,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         await loadRecentFinLabL5QuoteHistory(env, today, pending.symbol, finLabL5Quote, 5),
       )
       : null
+    const finLabL5ControllerRaw = (finLabL5MarketDataSnapshot.raw ?? {}) as Record<string, unknown>
     if (finLabL5MarketDataEnabled) {
       await recordPaperExecutionEvent(env, {
         tradeDate: today,
@@ -1326,10 +1525,19 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         detail: {
           ...buildFinLabL5MarketDataDetail(finLabL5Quote),
           controller_status: finLabL5MarketDataSnapshot.status,
+          controller_source: finLabL5ControllerRaw.source ?? null,
           controller_blocked_reasons: finLabL5MarketDataSnapshot.blockedReasons,
           controller_env_missing: finLabL5MarketDataSnapshot.envMissing,
           controller_live_submit_enabled: finLabL5MarketDataSnapshot.liveSubmitEnabled,
           controller_can_submit_real_order: finLabL5MarketDataSnapshot.canSubmitRealOrder,
+          controller_fallback_used: finLabL5ControllerRaw.fallback_used ?? null,
+          controller_fallback_attempted: finLabL5ControllerRaw.fallback_attempted ?? null,
+          controller_fallback_reason: finLabL5ControllerRaw.fallback_reason ?? null,
+          controller_fallback_errors: finLabL5ControllerRaw.fallback_errors ?? [],
+          controller_error_type: finLabL5ControllerRaw.error_type ?? null,
+          controller_error: finLabL5ControllerRaw.error ?? null,
+          controller_account_error_type: finLabL5ControllerRaw.account_error_type ?? null,
+          controller_account_error: finLabL5ControllerRaw.account_error ?? null,
           quality: finLabL5Quality,
           persistence: finLabL5Persistence,
           production_grade_market_data: finLabL5MarketDataEnabled,
@@ -1396,7 +1604,126 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         intradayTechnicalDecision.detail,
       )
     }
-    const closeWindowTechnicalPass = !technicalGuardEnabled || intradayTechnicalDecision?.action === 'pass'
+    let s12Assessment: S12IntradayAssessment | null = null
+    let s12TechnicalDecision: { action: 'pass' | 'defer' | 'skip'; reason: string; detail: string } | null = null
+    let s12AssistEntryOverlay: S12AssistEntryOverlay | null = null
+    const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
+    let s12PrimaryStructureOwnerActive = false
+    if (enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, true)) {
+      try {
+        const s12Base = await loadS12IntradayBaseBars(
+          env,
+          pending.symbol,
+          today,
+          price,
+          Number(currentOhlc?.totalVolume ?? 0),
+        )
+        s12Assessment = assessS12IntradayStructureFromBaseBars({
+          symbol: pending.symbol,
+          baseBars: s12Base.bars,
+          nowMs: Date.now(),
+        })
+        s12AssistEntryOverlay = buildS12AssistEntryOverlay(
+          s12Assessment,
+          s12Mode,
+          optionalPositiveNumber((env as any).S12_INTRADAY_MAX_CHASE_PCT_CAP, 0.012),
+        )
+        if (s12AssistEntryOverlay) {
+          executionEntryPrice = s12AssistEntryOverlay.entryPrice
+          executionStopLoss = s12AssistEntryOverlay.stopLoss ?? executionStopLoss
+          effectivePreTradePlan = buildS12AssistTradePlan(s12AssistEntryOverlay, effectiveOhlcvTradePlan)
+          entryModelV2 = null
+        }
+        await recordPaperExecutionEvent(env, {
+          tradeDate: today,
+          symbol: pending.symbol,
+          side: 'buy',
+          eventType: 's12_intraday_structure',
+          status: s12Assessment.state,
+          reason: s12Assessment.reason,
+          detail: {
+            ...s12Assessment,
+            gate_mode: s12Mode,
+            assist_only: s12Mode === 'observe',
+            assist_entry_applied: s12AssistEntryOverlay != null,
+            assist_entry_overlay: s12AssistEntryOverlay,
+            bar_source: s12Base.source,
+          },
+          pendingRunId,
+          source: 's12_intraday_structure',
+        })
+        recordExecutionNote(
+          pending.symbol,
+          'checked_waiting',
+          s12Assessment.reason,
+          `${s12Assessment.detail};bar_source=${s12Base.source}`,
+        )
+        s12TechnicalDecision = s12PreTradeTechnicalDecision(
+          s12Assessment,
+          s12Mode,
+        )
+        s12PrimaryStructureOwnerActive =
+          s12Mode === 'assist_entry' &&
+          enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true) &&
+          s12Assessment != null
+        if (s12PrimaryStructureOwnerActive && !s12Assessment.invalidated && !s12AssistEntryOverlay) {
+          entryModelV2 = null
+          recordExecutionNote(
+            pending.symbol,
+            'checked_waiting',
+            's12_primary_structure_owner_waiting',
+            `${s12Assessment.detail};replaced=entry_model_v2,intraday_technical_veto`,
+          )
+        }
+        if (s12TechnicalDecision) {
+          recordExecutionNote(
+            pending.symbol,
+            s12TechnicalDecision.action === 'skip' ? 'pending' : 'checked_waiting',
+            s12TechnicalDecision.reason,
+            s12TechnicalDecision.detail,
+          )
+        }
+        if (s12AssistEntryOverlay) {
+          recordExecutionNote(
+            pending.symbol,
+            'checked_waiting',
+            's12_assist_entry_ready',
+            s12AssistEntryOverlay.detail,
+          )
+        }
+      } catch (error) {
+        const reason = 's12_data_unavailable'
+        const detail = error instanceof Error ? error.message : String(error)
+        recordExecutionNote(pending.symbol, 'checked_waiting', reason, detail)
+        await recordPaperExecutionEvent(env, {
+          tradeDate: today,
+          symbol: pending.symbol,
+          side: 'buy',
+          eventType: 's12_intraday_structure',
+          status: 'error',
+          reason,
+          detail: { error: detail },
+          pendingRunId,
+          source: 's12_intraday_structure',
+        })
+      }
+    }
+    const effectiveTechnicalDecision = s12PrimaryStructureOwnerActive
+      ? s12TechnicalDecision
+      : s12TechnicalDecision ?? intradayTechnicalDecision
+    const effectivePreTradeMomentum = s12AssistEntryOverlay
+      ? s12PrimaryMomentumContext(baseMomentum)
+      : baseMomentum
+    if (s12AssistEntryOverlay && baseMomentum.error && effectivePreTradeMomentum.error == null) {
+      recordExecutionNote(
+        pending.symbol,
+        'checked_waiting',
+        's12_primary_cleared_momentum_directional_gate',
+        `cleared=${baseMomentum.error};kept_volume_ratio=${baseMomentum.volumeRatio ?? 'na'}`,
+      )
+    }
+    const closeWindowTechnicalPass = !technicalGuardEnabled ||
+      (s12PrimaryStructureOwnerActive ? effectiveTechnicalDecision?.action === 'pass' : intradayTechnicalDecision?.action === 'pass')
     const effectiveMomentumMinVolumeRatio =
       closeWindowVolumeBridge &&
       closeWindowTechnicalPass
@@ -1413,7 +1740,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (adaptivePolicy.envelopeBlockReason && truthyFlag(env.FINLAB_L5_ENVELOPE_GUARD_ENABLED)) {
       recordActiveExecutionStatus(
         pending.symbol,
-        'pending',
+        'checked_waiting',
         adaptivePolicy.envelopeBlockReason,
         'finlab_l5_envelope_guard',
       )
@@ -1440,20 +1767,28 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         ].join(';'),
       )
     }
+    const effectiveMaxEntryChasePct =
+      s12AssistEntryOverlay?.maxEntryChasePct != null
+        ? Math.max(adaptivePolicy.policy.maxEntryChasePct, s12AssistEntryOverlay.maxEntryChasePct)
+        : adaptivePolicy.policy.maxEntryChasePct
+    const effectiveStrongBreakoutMaxEntryChasePct =
+      s12AssistEntryOverlay?.maxEntryChasePct != null
+        ? Math.max(adaptivePolicy.policy.strongBreakoutMaxEntryChasePct, s12AssistEntryOverlay.maxEntryChasePct)
+        : adaptivePolicy.policy.strongBreakoutMaxEntryChasePct
     const preTrade = evaluatePreTradeExecution({
       symbol: pending.symbol,
       currentPrice: price,
       entryPrice: executionEntryPrice,
       bestAsk: currentOhlc?.ask,
       stopLoss: executionStopLoss,
-      originalEntry: effectiveOhlcvTradePlan?.entryPrice ?? (pending as any).original_entry ?? pending.ml_entry_price,
+      originalEntry: s12AssistEntryOverlay?.entryPrice ?? effectiveOhlcvTradePlan?.entryPrice ?? (pending as any).original_entry ?? pending.ml_entry_price,
       retryCount: (pending as any).retry_count ?? 0,
       previousClose: prevCloseMap.get(pending.symbol) ?? null,
       quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
       quoteSource: currentOhlc?.source === 'shioaji' ? 'shioaji' : currentOhlc?.source === 'yahoo' ? 'yahoo' : 'none',
       marketRiskLevel: marketRisk.risk_level,
       momentum: {
-        ...baseMomentum,
+        ...effectivePreTradeMomentum,
         minVolumeRatio: effectiveMomentumMinVolumeRatio,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
         strongBreakoutVolumeRatio: adaptivePolicy.momentum.strongBreakoutVolumeRatio,
@@ -1461,30 +1796,30 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       },
       entryModelV2,
       openingFastPath,
-      tradePlan: effectiveOhlcvTradePlan
+      tradePlan: effectivePreTradePlan
         ? {
-          source: effectiveOhlcvTradePlan.source,
-          mode: effectiveOhlcvTradePlan.mode,
-          confirmation: effectiveOhlcvTradePlan.confirmation,
-          resistance: effectiveOhlcvTradePlan.resistance,
-          support: effectiveOhlcvTradePlan.support,
-          atrDefense: effectiveOhlcvTradePlan.atrDefense,
-          volumeNode: effectiveOhlcvTradePlan.volumeNode,
-          buyReferenceLow: effectiveOhlcvTradePlan.buyReferenceLow,
-          buyReferenceHigh: effectiveOhlcvTradePlan.buyReferenceHigh,
-          optimisticLow: effectiveOhlcvTradePlan.optimisticLow,
-          optimisticHigh: effectiveOhlcvTradePlan.optimisticHigh,
+          source: effectivePreTradePlan.source,
+          mode: effectivePreTradePlan.mode,
+          confirmation: effectivePreTradePlan.confirmation,
+          resistance: effectivePreTradePlan.resistance,
+          support: effectivePreTradePlan.support,
+          atrDefense: effectivePreTradePlan.atrDefense,
+          volumeNode: effectivePreTradePlan.volumeNode,
+          buyReferenceLow: effectivePreTradePlan.buyReferenceLow,
+          buyReferenceHigh: effectivePreTradePlan.buyReferenceHigh,
+          optimisticLow: effectivePreTradePlan.optimisticLow,
+          optimisticHigh: effectivePreTradePlan.optimisticHigh,
         }
         : null,
-      technical: intradayTechnicalDecision,
+      technical: effectiveTechnicalDecision,
       policy: {
         limitUpPct: cfg.circuit.limitUpPct ?? 0.095,
         requoteDeviationMax: cfg.position.requoteDeviationMax,
         requoteDiscount: cfg.position.requoteDiscount,
         requoteStopFallback: cfg.position.requoteStopFallback,
         maxQuoteAgeMs: cfg.position.maxQuoteAgeMs,
-        maxEntryChasePct: adaptivePolicy.policy.maxEntryChasePct,
-        strongBreakoutMaxEntryChasePct: adaptivePolicy.policy.strongBreakoutMaxEntryChasePct,
+        maxEntryChasePct: effectiveMaxEntryChasePct,
+        strongBreakoutMaxEntryChasePct: effectiveStrongBreakoutMaxEntryChasePct,
       },
     })
 
@@ -1510,7 +1845,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         ? 'stale_quote'
         : preTrade.reason.startsWith('untrusted_quote_source:')
           ? 'quote_unavailable'
-          : 'pending'
+          : 'checked_waiting'
       recordActiveExecutionStatus(pending.symbol, activeStatus, preTrade.reason, preTrade.detail ?? null)
       console.log(`[PreTrade] defer ${pending.symbol}: ${preTrade.reason}`)
       continue
@@ -1560,7 +1895,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       console.log(`[Intraday] ${pending.symbol}: position cap (${maxPos}) reached, skip`)
       recordActiveExecutionStatus(
         pending.symbol,
-        'pending',
+        'checked_waiting',
         allocatorDecision.action === 'replace' ? 'allocator_replace_requires_sell_first' : 'allocator_full_requires_replacement',
         allocatorDecision.replaceSymbol
           ? `replace=${allocatorDecision.replaceSymbol};weakness=${allocatorDecision.replaceWeaknessScore ?? 'na'}`
@@ -1616,7 +1951,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (budget < minPosVal) {
       recordActiveExecutionStatus(
         pending.symbol,
-        'pending',
+        'checked_waiting',
         'allocator_budget_below_min',
         `budget=${Math.round(budget)};min=${minPosVal};action=${allocatorDecision.action}`,
       )
@@ -1646,7 +1981,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       currentPrice: price,
       budget,
       shares: requestedShares,
-      strategyMode: effectiveOhlcvTradePlan?.mode ?? null,
+      strategyMode: effectivePreTradePlan?.mode ?? null,
       marketRiskLevel: marketRisk.risk_level,
       quote: {
         bestAsk: currentOhlc?.ask ?? null,
@@ -1655,8 +1990,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
       },
       adaptivePolicy: {
-        maxEntryChasePct: adaptivePolicy.policy.maxEntryChasePct,
-        minVolumeRatio: adaptivePolicy.momentum.minVolumeRatio,
+        maxEntryChasePct: effectiveMaxEntryChasePct,
+        minVolumeRatio: effectiveMomentumMinVolumeRatio,
         minRangePosition: adaptivePolicy.momentum.minRangePosition,
       },
     })
@@ -1686,7 +2021,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       ) {
         recordActiveExecutionStatus(
           pending.symbol,
-          'pending',
+          'checked_waiting',
           finLabExecutionPreview.visible_reason,
           'finlab_execution_preview_guard',
         )

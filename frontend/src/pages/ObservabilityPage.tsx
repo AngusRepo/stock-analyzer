@@ -40,6 +40,7 @@ function schedulerStatusLabel(status?: string | null) {
 }
 
 const EXECUTION_REALISM_STATES = [
+  'checked_waiting',
   'quote_unavailable',
   'stale_quote',
   'requoted',

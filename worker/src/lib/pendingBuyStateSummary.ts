@@ -34,7 +34,7 @@ export interface PendingBuyStateSummary {
   label: string
   active_count: number
   total_count: number
-  execution_counts: Record<'pending' | 'filled' | 'skipped' | 'cancelled' | 'expired' | 'rejected', number>
+  execution_counts: Record<string, number>
   debate_counts: Record<'pending' | 'completed' | 'failed' | 'skipped', number>
   error_message?: string
 }
@@ -51,6 +51,24 @@ function normalizeExecutionCounts(
     pending: counts?.pending == null
       ? activeItems.filter((item) => (item.execution_status ?? 'pending') === 'pending').length
       : num(counts.pending),
+    checked_waiting: counts?.checked_waiting == null
+      ? activeItems.filter((item) => item.execution_status === 'checked_waiting').length
+      : num(counts.checked_waiting),
+    submitted: counts?.submitted == null
+      ? activeItems.filter((item) => item.execution_status === 'submitted').length
+      : num(counts.submitted),
+    requoted: counts?.requoted == null
+      ? activeItems.filter((item) => item.execution_status === 'requoted').length
+      : num(counts.requoted),
+    partially_filled: counts?.partially_filled == null
+      ? activeItems.filter((item) => item.execution_status === 'partially_filled').length
+      : num(counts.partially_filled),
+    stale_quote: counts?.stale_quote == null
+      ? activeItems.filter((item) => item.execution_status === 'stale_quote').length
+      : num(counts.stale_quote),
+    quote_unavailable: counts?.quote_unavailable == null
+      ? activeItems.filter((item) => item.execution_status === 'quote_unavailable').length
+      : num(counts.quote_unavailable),
     filled: num(counts?.filled),
     skipped: num(counts?.skipped),
     cancelled: num(counts?.cancelled),

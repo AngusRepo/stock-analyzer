@@ -35,6 +35,11 @@ import {
   type Formal137UsSentimentMaterializationTelemetry,
 } from './formal137FeatureMaterialization'
 import {
+  deriveStockTechnicalDailyFeatures,
+  deriveStockTechnicalMarketRegime,
+  materializeStockTechnicalStrategyScores,
+} from './stockTechnicalStrategyMaterialization'
+import {
   buildFinLabTaxonomyThemeSignals,
   refreshStockThemeFeaturesFromSignals,
   upsertThemeSignals,
@@ -1206,6 +1211,7 @@ function deriveStrategyRawSignals(
     close: row.close,
     volume: row.volume,
   }))
+  const stockTechnicalDailyFeatures = deriveStockTechnicalDailyFeatures(ohlcvRows)
   const priceAction = ohlcvRows.length >= 5 ? buildPriceActionStructure(ohlcvRows, { latestPrice: close }) : null
   const bestFvg = priceAction?.bestFvg ?? null
   const bestOrderBlock = priceAction?.bestOrderBlock ?? null
@@ -1269,6 +1275,7 @@ function deriveStrategyRawSignals(
       closeAboveMa20Pct,
       closeAboveMa60Pct,
       volumeExpansion20,
+      ...stockTechnicalDailyFeatures,
       ma10Bias,
       return5d,
       return20d,
@@ -2593,6 +2600,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       [...rawFundamentalLoad.telemetry.canonicalErrors, ...rawFundamentalLoad.telemetry.revenueErrors].slice(0, 4).join(' | '),
     )
   }
+  const stockTechMarketRegime = deriveStockTechnicalMarketRegime(
+    universe.map(({ prices }) => prices.map((price) => ({
+      date: price.date,
+      open: price.open,
+      high: price.max,
+      low: price.min,
+      close: price.close,
+      volume: price.Trading_Volume,
+    }))),
+  )
 
   type ScoredCandidate = ScreenerCandidate & {
     chip_score: number
@@ -2651,6 +2668,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   const finLabFactorNormalizationTelemetry = applyFinLabStyleFactorNormalization(scored)
+  const stockTechnicalStrategyTelemetry = materializeStockTechnicalStrategyScores(scored, {
+    marketRegime: stockTechMarketRegime,
+  })
   const l0RawSignalCoverageAudit = buildL0RawSignalCoverageAudit(
     scored,
     universe.length,
@@ -2664,6 +2684,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     `composite=${JSON.stringify(finLabFactorNormalizationTelemetry.compositeCoverage)} ` +
     `allocation=${JSON.stringify(finLabFactorNormalizationTelemetry.allocationCoverage)} ` +
     `special=${JSON.stringify(finLabFactorNormalizationTelemetry.specialFeatureMaterialization)}`,
+  )
+  debugLog.push(
+    `[Step 1c2] stock technical strategy12 materialization: ` +
+    `method=${stockTechnicalStrategyTelemetry.method} ` +
+    `market=${JSON.stringify(stockTechnicalStrategyTelemetry.marketRegime)} ` +
+    `scores=${JSON.stringify(stockTechnicalStrategyTelemetry.scoreCoverage)} ` +
+    `signals=${JSON.stringify(stockTechnicalStrategyTelemetry.signalCoverage)} ` +
+    `unsupported=${JSON.stringify(stockTechnicalStrategyTelemetry.unsupported)}`,
   )
   debugLog.push(
     `[Step 1d] L0 raw signal coverage audit: status=${l0RawSignalCoverageAudit.status} ` +

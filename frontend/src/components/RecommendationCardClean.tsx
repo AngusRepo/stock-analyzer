@@ -377,6 +377,25 @@ type EvidenceLink = {
   published_at?: string
 }
 
+type InstitutionalRawCardRow = {
+  key?: string
+  label?: string
+  buy_shares?: number | string | null
+  sell_shares?: number | string | null
+  net_shares?: number | string | null
+}
+
+type BrokerFlowRankRow = {
+  broker_code?: string | null
+  broker_name?: string | null
+  buy_lots?: number | string | null
+  sell_lots?: number | string | null
+  net_lots?: number | string | null
+  buy_shares?: number | string | null
+  sell_shares?: number | string | null
+  net_shares?: number | string | null
+}
+
 const DIRECT_ALPHA_VOTE_MODEL_NAMES = [
   'LightGBM',
   'XGBoost',
@@ -449,6 +468,45 @@ function fmtChipAmount(billion: number | null | undefined): string {
     return `${wan > 0 ? '+' : ''}${wan} 萬`
   }
   return `${billion > 0 ? '+' : ''}${billion.toFixed(2)} 億`
+}
+
+function fmtInteger(value: number | string | null | undefined): string {
+  if (value == null || value === '') return '-'
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return String(value)
+  return Math.round(numeric).toLocaleString('en-US')
+}
+
+function fmtShares(value: number | string | null | undefined): string {
+  const text = fmtInteger(value)
+  return text === '-' ? '-' : `${text} 股`
+}
+
+function fmtLots(value: number | string | null | undefined): string {
+  const text = fmtInteger(value)
+  return text === '-' ? '-' : `${text} 張`
+}
+
+function signedFlowClass(value: unknown): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric === 0) return 'text-muted-foreground'
+  return numeric > 0 ? 'text-red-500 dark:text-red-300' : 'text-emerald-500 dark:text-emerald-300'
+}
+
+function institutionalRawFromRec(rec: any): { date?: string; rows: InstitutionalRawCardRow[]; total_net_shares?: number | string | null } | null {
+  const payload = parseObject(rec?.institutional_raw_today)
+  if (!payload) return null
+  const rows = Array.isArray(payload.rows) ? payload.rows as InstitutionalRawCardRow[] : []
+  if (!rows.length) return null
+  return {
+    date: payload.date ? String(payload.date) : undefined,
+    rows,
+    total_net_shares: payload.total_net_shares ?? null,
+  }
+}
+
+function brokerTopFlowsFromRec(rec: any): any | null {
+  return parseObject(rec?.broker_top_flows_today)
 }
 
 function displayForecastPct(summary: MlVoteSummary | null): number | null {
@@ -1709,6 +1767,120 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
   )
 }
 
+function InstitutionalBrokerFlowBlock({
+  institutional,
+  brokerFlow,
+}: {
+  institutional: ReturnType<typeof institutionalRawFromRec>
+  brokerFlow: any | null
+}) {
+  if (!institutional && !brokerFlow) return null
+  const aggregate = parseObject(brokerFlow?.aggregate)
+  const topBuy = Array.isArray(brokerFlow?.top_buy) ? brokerFlow.top_buy as BrokerFlowRankRow[] : []
+  const topSell = Array.isArray(brokerFlow?.top_sell) ? brokerFlow.top_sell as BrokerFlowRankRow[] : []
+  const hasBrokerRanks = topBuy.length > 0 || topSell.length > 0
+
+  const renderBrokerRankRows = (rows: BrokerFlowRankRow[], emptyText: string) => {
+    if (!rows.length) return <p className="text-[11px] text-muted-foreground">{emptyText}</p>
+    return (
+      <div className="space-y-1">
+        {rows.slice(0, 3).map((row, index) => {
+          const name = String(row.broker_name ?? row.broker_code ?? '-')
+          const netLots = row.net_lots ?? row.net_shares ?? null
+          return (
+            <div key={`${name}-${index}`} className="grid grid-cols-[1.25rem_minmax(0,1fr)_5.5rem] items-center gap-2 text-[11px]">
+              <span className="font-mono text-muted-foreground">{index + 1}</span>
+              <span className="truncate text-foreground/85" title={name}>{name}</span>
+              <span className={cn('text-right font-mono tabular-nums', signedFlowClass(netLots))}>{fmtLots(netLots)}</span>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.045] p-3 text-xs">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-1 font-medium text-cyan-700 dark:text-cyan-300">
+          <Users className="h-3.5 w-3.5" />
+          籌碼原始資料
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {institutional?.date ?? brokerFlow?.date ?? 'today'}
+        </span>
+      </div>
+      <div className="grid gap-3 2xl:grid-cols-2">
+        <div className="rounded-md border border-border/40 bg-background/55 p-2">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <p className="font-medium text-foreground/85">法人原始資料（今日）</p>
+            <span className={cn('font-mono text-[11px]', signedFlowClass(institutional?.total_net_shares))}>
+              淨 {fmtShares(institutional?.total_net_shares)}
+            </span>
+          </div>
+          {institutional?.rows?.length ? (
+            <div className="space-y-1">
+              <div className="grid grid-cols-[3.5rem_1fr_1fr_1fr] gap-1 text-[10px] text-muted-foreground">
+                <span>法人</span>
+                <span className="text-right">買</span>
+                <span className="text-right">賣</span>
+                <span className="text-right">淨</span>
+              </div>
+              {institutional.rows.map((row) => (
+                <div key={row.key ?? row.label} className="grid grid-cols-[3.5rem_1fr_1fr_1fr] items-center gap-1 text-[11px]">
+                  <span className="truncate text-foreground/85">{row.label ?? row.key ?? '-'}</span>
+                  <span className="text-right font-mono tabular-nums text-emerald-500 dark:text-emerald-300">{fmtShares(row.buy_shares)}</span>
+                  <span className="text-right font-mono tabular-nums text-red-500 dark:text-red-300">{fmtShares(row.sell_shares)}</span>
+                  <span className={cn('text-right font-mono tabular-nums', signedFlowClass(row.net_shares))}>{fmtShares(row.net_shares)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">今日法人 raw 尚未入庫。</p>
+          )}
+        </div>
+
+        <div className="rounded-md border border-border/40 bg-background/55 p-2">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <p className="font-medium text-foreground/85">當日券商分點</p>
+            {aggregate?.broker_count != null && (
+              <span className="font-mono text-[11px] text-muted-foreground">{fmtInteger(aggregate.broker_count)} 家</span>
+            )}
+          </div>
+          {hasBrokerRanks ? (
+            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
+              <div>
+                <p className="mb-1 text-[11px] font-medium text-red-500 dark:text-red-300">買超前三大</p>
+                {renderBrokerRankRows(topBuy, '買超前三大尚無資料')}
+              </div>
+              <div>
+                <p className="mb-1 text-[11px] font-medium text-emerald-500 dark:text-emerald-300">賣超前三大</p>
+                {renderBrokerRankRows(topSell, '賣超前三大尚無資料')}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-1.5 text-[11px] text-muted-foreground">
+              <p className="text-amber-600 dark:text-amber-300">分券商前三大尚未入庫；目前顯示 canonical 聚合分點。</p>
+              {aggregate ? (
+                <div className="grid grid-cols-3 gap-1">
+                  <MetricPill label="買" value={fmtLots(aggregate.buy_lots)} />
+                  <MetricPill label="賣" value={fmtLots(aggregate.sell_lots)} />
+                  <MetricPill label="淨" value={fmtLots(aggregate.net_lots ?? aggregate.dominant_net_lots)} />
+                </div>
+              ) : (
+                <p>當日券商聚合資料尚未入庫。</p>
+              )}
+              <p className="break-words font-mono text-[10px] text-muted-foreground/80">
+                {brokerFlow?.missing_reason ?? 'broker_level_detail_table_missing'}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function planPrice(value: unknown): string | null {
   return fmtOptionalNumber(value as any, 2)
 }
@@ -2532,6 +2704,8 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
   const chipBadgeLabel = isEmerging ? '券商' : '籌碼'
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
+  const institutionalRaw = institutionalRawFromRec(rec)
+  const brokerTopFlows = brokerTopFlowsFromRec(rec)
 
   return (
     <div className={cn(
@@ -2641,6 +2815,8 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
           </div>
 
           <ScoreBreakdownV2 rec={rec} />
+
+          <InstitutionalBrokerFlowBlock institutional={institutionalRaw} brokerFlow={brokerTopFlows} />
 
           <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
 

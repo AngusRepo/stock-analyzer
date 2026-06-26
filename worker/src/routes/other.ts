@@ -1069,6 +1069,117 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+type InstitutionalRawCardRow = {
+  key: string
+  label: string
+  buy_shares: number | null
+  sell_shares: number | null
+  net_shares: number | null
+}
+
+function buildInstitutionalRawToday(row: Record<string, any> | null | undefined): Record<string, any> | null {
+  if (!row) return null
+  const rows: InstitutionalRawCardRow[] = [
+    {
+      key: 'foreign',
+      label: '外資',
+      buy_shares: finiteNumber(row.foreign_buy),
+      sell_shares: finiteNumber(row.foreign_sell),
+      net_shares: finiteNumber(row.foreign_net),
+    },
+    {
+      key: 'trust',
+      label: '投信',
+      buy_shares: finiteNumber(row.trust_buy),
+      sell_shares: finiteNumber(row.trust_sell),
+      net_shares: finiteNumber(row.trust_net),
+    },
+    {
+      key: 'dealer',
+      label: '自營商',
+      buy_shares: finiteNumber(row.dealer_buy),
+      sell_shares: finiteNumber(row.dealer_sell),
+      net_shares: finiteNumber(row.dealer_net),
+    },
+  ]
+  const hasData = rows.some((item) => (
+    item.buy_shares != null || item.sell_shares != null || item.net_shares != null
+  ))
+  if (!hasData) return null
+  return {
+    schema_version: 'institutional_raw_card_v1',
+    date: String(row.date ?? ''),
+    source: 'chip_data',
+    unit: 'shares',
+    rows,
+    total_net_shares: rows.reduce((sum, item) => sum + (item.net_shares ?? 0), 0),
+  }
+}
+
+function normalizeBrokerRankRow(row: Record<string, any>): Record<string, any> {
+  return {
+    rank: finiteNumber(row.rank_no),
+    broker_code: row.broker_code == null ? null : String(row.broker_code),
+    broker_name: row.broker_name == null ? null : String(row.broker_name),
+    buy_lots: finiteNumber(row.buy_lots ?? row.buy_shares),
+    sell_lots: finiteNumber(row.sell_lots ?? row.sell_shares),
+    net_lots: finiteNumber(row.net_lots ?? row.net_shares),
+  }
+}
+
+function buildBrokerTopFlowsToday(
+  row: Record<string, any> | null | undefined,
+  date: string,
+  rankRows: Record<string, any>[] = [],
+): Record<string, any> {
+  const topBuy = rankRows
+    .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'buy')
+    .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
+    .slice(0, 3)
+    .map(normalizeBrokerRankRow)
+  const topSell = rankRows
+    .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'sell')
+    .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
+    .slice(0, 3)
+    .map(normalizeBrokerRankRow)
+  if (!row) {
+    return {
+      schema_version: 'broker_top_flows_card_v1',
+      date,
+      source: 'canonical_broker_flow_daily',
+      unit: 'lots',
+      top_buy: topBuy,
+      top_sell: topSell,
+      aggregate: null,
+      missing_reason: topBuy.length || topSell.length ? null : 'no_canonical_broker_flow_row_for_symbol_date',
+      materialization_gap: topBuy.length || topSell.length ? null : 'broker_level_top3_not_materialized_in_d1',
+    }
+  }
+  return {
+    schema_version: 'broker_top_flows_card_v1',
+    date: String(row.date ?? date),
+    source: String(row.source ?? 'canonical_broker_flow_daily'),
+    unit: 'lots',
+    top_buy: topBuy,
+    top_sell: topSell,
+    aggregate: {
+      market_segment: row.market_segment ?? null,
+      buy_lots: finiteNumber(row.buy_shares),
+      sell_lots: finiteNumber(row.sell_shares),
+      net_lots: finiteNumber(row.net_shares),
+      dominant_net_lots: finiteNumber(row.dominant_net_shares),
+      gross_imbalance_lots: finiteNumber(row.gross_imbalance_shares),
+      estimated_amount: finiteNumber(row.estimated_amount),
+      broker_count: finiteNumber(row.broker_count),
+      concentration: finiteNumber(row.concentration),
+    },
+    missing_reason: topBuy.length || topSell.length ? null : 'broker_level_detail_table_missing',
+    materialization_gap: topBuy.length || topSell.length
+      ? null
+      : 'FinLab broker_transactions was compressed into canonical_broker_flow_daily aggregates; broker_code/name top3 rows are not persisted yet.',
+  }
+}
+
 function formatAbsTwdAmountFromBillion(value: number): string {
   const abs = Math.abs(value)
   if (abs < 0.01 && abs > 0) return `${Math.round(abs * 10_000)}萬`
@@ -1287,6 +1398,75 @@ recommendations.get('/daily', async (c) => {
   const resultSymbols = [...new Set((results ?? [])
     .map((r: any) => String(r.symbol ?? '').trim())
     .filter(Boolean))]
+  const institutionalRawBySymbol = new Map<string, any>()
+  const brokerTopFlowsBySymbol = new Map<string, any>()
+  const brokerRankRowsBySymbol = new Map<string, any[]>()
+  if (resultSymbols.length > 0) {
+    const placeholders = resultSymbols.map(() => '?').join(',')
+    try {
+      const { results: chipRows } = await c.env.DB.prepare(`
+        SELECT symbol, date,
+               foreign_buy, foreign_sell, foreign_net,
+               trust_buy, trust_sell, trust_net,
+               dealer_buy, dealer_sell, dealer_net
+          FROM chip_data
+         WHERE date = ?
+           AND symbol IN (${placeholders})
+      `).bind(String(date), ...resultSymbols).all<any>()
+      for (const row of chipRows ?? []) {
+        const payload = buildInstitutionalRawToday(row)
+        if (payload) institutionalRawBySymbol.set(String(row.symbol ?? '').trim(), payload)
+      }
+    } catch (e) {
+      console.warn('[recommendations/daily] institutional raw card data unavailable:', e)
+    }
+    try {
+      const rankTable = await c.env.DB.prepare(`
+        SELECT name FROM sqlite_master
+         WHERE type = 'table'
+           AND name = 'canonical_broker_rank_daily'
+         LIMIT 1
+      `).first<{ name: string }>()
+      if (rankTable?.name) {
+        const { results: rankRows } = await c.env.DB.prepare(`
+          SELECT stock_id, date, market_segment, rank_side, rank_no,
+                 broker_code, broker_name, buy_lots, sell_lots, net_lots, source
+            FROM canonical_broker_rank_daily
+           WHERE date = ?
+             AND stock_id IN (${placeholders})
+             AND rank_side IN ('buy', 'sell')
+           ORDER BY stock_id ASC, rank_side ASC, rank_no ASC
+        `).bind(String(date), ...resultSymbols).all<any>()
+        for (const row of rankRows ?? []) {
+          const symbol = String(row.stock_id ?? '').trim()
+          const rows = brokerRankRowsBySymbol.get(symbol) ?? []
+          rows.push(row)
+          brokerRankRowsBySymbol.set(symbol, rows)
+        }
+      }
+    } catch (e) {
+      console.warn('[recommendations/daily] broker top3 rank table unavailable:', e)
+    }
+    try {
+      const { results: brokerRows } = await c.env.DB.prepare(`
+        SELECT stock_id, date, market_segment, buy_shares, sell_shares, net_shares,
+               dominant_net_shares, gross_imbalance_shares, estimated_amount,
+               broker_count, concentration, source
+          FROM canonical_broker_flow_daily
+         WHERE date = ?
+           AND stock_id IN (${placeholders})
+      `).bind(String(date), ...resultSymbols).all<any>()
+      for (const row of brokerRows ?? []) {
+        const symbol = String(row.stock_id ?? '').trim()
+        brokerTopFlowsBySymbol.set(
+          symbol,
+          buildBrokerTopFlowsToday(row, String(date), brokerRankRowsBySymbol.get(symbol) ?? []),
+        )
+      }
+    } catch (e) {
+      console.warn('[recommendations/daily] broker flow card data unavailable:', e)
+    }
+  }
   if (resultSymbols.length > 0) {
     try {
       const placeholders = resultSymbols.map(() => '?').join(',')
@@ -1427,6 +1607,9 @@ recommendations.get('/daily', async (c) => {
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,
       screener_funnel_evidence: screenerFunnelEvidence,
       screener_funnel_timeline: screenerFunnel?.timeline ?? [],
+      institutional_raw_today: institutionalRawBySymbol.get(String(r.symbol ?? '').trim()) ?? null,
+      broker_top_flows_today: brokerTopFlowsBySymbol.get(String(r.symbol ?? '').trim())
+        ?? buildBrokerTopFlowsToday(null, String(r.date ?? date), brokerRankRowsBySymbol.get(String(r.symbol ?? '').trim()) ?? []),
       watch_points: watchPoints,
     }
   })

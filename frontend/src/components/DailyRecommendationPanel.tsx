@@ -154,9 +154,11 @@ export function DailyRecommendationPanel() {
                 {tradableRecs.length} 檔
               </Badge>
             </div>
-            {tradableRecs.map((rec: any, i: number) => (
-              <RecommendationCardClean key={rec.stock_id ?? i} rec={rec} rank={i + 1} />
-            ))}
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {tradableRecs.map((rec: any, i: number) => (
+                <RecommendationCardClean key={rec.stock_id ?? i} rec={rec} rank={i + 1} />
+              ))}
+            </div>
           </div>
         </div>
       )}

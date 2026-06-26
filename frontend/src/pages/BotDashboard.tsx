@@ -556,6 +556,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
               {recs.length} 檔
             </Badge>
           </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {recs.slice(0, 16).map((r: any, idx: number) => (
             <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
               <RecommendationCard rec={r} rank={idx + 1} />
@@ -568,6 +569,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
               </button>
             </div>
           ))}
+          </div>
           {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有上市櫃交易候選。</div>}
         </div>
       </div>

@@ -140,6 +140,7 @@ DEFAULT_CANONICAL_DATASETS = [
     "canonical_institutional_amount_daily",
     "canonical_revenue_monthly",
     "canonical_broker_flow_daily",
+    "canonical_broker_rank_daily",
     "finlab_taxonomy_tags",
 ]
 EMERGING_LANES = {
@@ -482,6 +483,58 @@ def _first_existing_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> 
     return None
 
 
+def build_broker_rank_daily(
+    broker_daily: pd.DataFrame,
+    *,
+    market_segment: str,
+    source: str,
+) -> pd.DataFrame:
+    columns = [
+        "date",
+        "stock_id",
+        "market_segment",
+        "rank_side",
+        "rank_no",
+        "broker_code",
+        "broker_name",
+        "buy_lots",
+        "sell_lots",
+        "net_lots",
+        "source",
+    ]
+    if broker_daily.empty:
+        return pd.DataFrame(columns=columns)
+    base = broker_daily.copy()
+    base["broker_code"] = base["broker_code"].astype(str).str.strip()
+    base["broker_name"] = None
+
+    buy = base[base["broker_net"] > 0].sort_values(
+        ["date", "stock_id", "broker_net"],
+        ascending=[True, True, False],
+    ).groupby(["date", "stock_id"], observed=True).head(3).copy()
+    buy["rank_side"] = "buy"
+    buy["rank_no"] = buy.groupby(["date", "stock_id"], observed=True).cumcount() + 1
+
+    sell = base[base["broker_net"] < 0].sort_values(
+        ["date", "stock_id", "broker_net"],
+        ascending=[True, True, True],
+    ).groupby(["date", "stock_id"], observed=True).head(3).copy()
+    sell["rank_side"] = "sell"
+    sell["rank_no"] = sell.groupby(["date", "stock_id"], observed=True).cumcount() + 1
+
+    ranked = pd.concat([buy, sell], ignore_index=True)
+    if ranked.empty:
+        return pd.DataFrame(columns=columns)
+    ranked["market_segment"] = market_segment
+    ranked["source"] = source
+    ranked = ranked.rename(columns={
+        "broker_buy_shares": "buy_lots",
+        "broker_sell_shares": "sell_lots",
+        "broker_net": "net_lots",
+    })
+    return ranked[columns]
+
+
 def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.DataFrame:
     """Normalize FinLab broker_transactions into daily symbol broker-flow evidence."""
     if frame.empty:
@@ -545,6 +598,11 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
     grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
     grouped["source"] = "finlab.broker_transactions"
     grouped["market_segment"] = "LISTED_OTC"
+    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
+        broker_daily,
+        market_segment="LISTED_OTC",
+        source="finlab.broker_transactions",
+    )
     return grouped
 
 
@@ -604,6 +662,15 @@ def materialize_specs(
             grouped = normalize_broker_transactions_daily(frame, start)
             path = lane_dir / "broker_daily.parquet"
             write_parquet(path, grouped)
+            rank_rows = grouped.attrs.get("broker_rank_daily")
+            if not isinstance(rank_rows, pd.DataFrame):
+                rank_rows = build_broker_rank_daily(
+                    pd.DataFrame(),
+                    market_segment="LISTED_OTC",
+                    source="finlab.broker_transactions",
+                )
+            rank_path = lane_dir / "broker_rank_daily.parquet"
+            write_parquet(rank_path, rank_rows)
             finlab_rows = int(len(grouped))
             latest = str(grouped["date"].max().date()) if len(grouped) and "date" in grouped.columns else None
             schema_fields = [
@@ -618,8 +685,10 @@ def materialize_specs(
                 "directional_broker_count",
                 "source",
                 "market_segment",
+                "broker_rank_top3",
             ]
             artifacts.append({"field": "broker_daily", "api_key": "broker_transactions", "path": str(path), "shape": list(grouped.shape)})
+            artifacts.append({"field": "broker_rank_daily", "api_key": "broker_transactions", "path": str(rank_path), "shape": list(rank_rows.shape)})
         elif spec.kind == "rotc_broker_aggregate":
             frame = pd.DataFrame(data.get("rotc_broker_transactions"))
             frame["date"] = pd.to_datetime(frame["date"], errors="coerce")

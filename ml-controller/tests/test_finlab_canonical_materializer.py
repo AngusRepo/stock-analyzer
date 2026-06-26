@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "ml-controller"))
 
 from services.finlab_canonical_materializer import (
     build_d1_upsert_statements,
+    build_broker_rank_rows,
     build_emerging_broker_rows,
     build_listed_broker_flow_rows,
     build_taxonomy_rows,
@@ -41,6 +42,7 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     assert "canonical_market_daily" in datasets
     assert "canonical_institutional_amount_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets
+    assert "canonical_broker_rank_daily" in datasets
     assert parse_canonical_datasets("canonical_chip_daily, finlab_taxonomy_tags") == [
         "canonical_chip_daily",
         "finlab_taxonomy_tags",
@@ -129,6 +131,49 @@ def test_listed_broker_transactions_materialize_canonical_broker_flow() -> None:
     assert row_2330["estimated_amount"] == 600000.0
     assert row_2330["broker_count"] == 11
     assert row_2330["concentration"] > 0
+
+
+def test_listed_broker_rank_rows_materialize_top_buy_sell() -> None:
+    root = _root("listed_broker_rank_rows")
+    _write(
+        root / "raw" / "broker_flow_diversity" / "broker_rank_daily.parquet",
+        pl.DataFrame(
+            {
+                "date": ["2026-06-15", "2026-06-15"],
+                "stock_id": ["2330", "2330"],
+                "rank_side": ["buy", "sell"],
+                "rank_no": [1, 1],
+                "broker_code": ["9200", "9800"],
+                "broker_name": ["Broker Buy", "Broker Sell"],
+                "buy_lots": [8000.0, 1000.0],
+                "sell_lots": [2000.0, 7000.0],
+                "net_lots": [6000.0, -6000.0],
+                "source": ["finlab.broker_transactions", "finlab.broker_transactions"],
+                "market_segment": ["LISTED_OTC", "LISTED_OTC"],
+            }
+        ),
+    )
+
+    rows = build_broker_rank_rows(
+        root,
+        run_id="finlab-v4-test",
+        generated_at="2026-06-16T00:00:00+00:00",
+        lane="broker_flow_diversity",
+        filename="broker_rank_daily.parquet",
+        market_segment="LISTED_OTC",
+        source="finlab.broker_transactions",
+        start_date="2026-06-15",
+        end_date="2026-06-15",
+    )
+
+    buy = next(row for row in rows if row["rank_side"] == "buy")
+    sell = next(row for row in rows if row["rank_side"] == "sell")
+    assert buy["stock_id"] == "2330"
+    assert buy["rank_no"] == 1
+    assert buy["broker_code"] == "9200"
+    assert buy["net_lots"] == 6000.0
+    assert sell["broker_code"] == "9800"
+    assert sell["net_lots"] == -6000.0
 
 
 def test_taxonomy_rows_build_four_layer_finlab_tags() -> None:

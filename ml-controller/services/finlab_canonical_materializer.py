@@ -24,6 +24,7 @@ class FinLabCanonicalOutputs:
     canonical_institutional_amount_daily: list[dict[str, Any]]
     canonical_revenue_monthly: list[dict[str, Any]]
     canonical_broker_flow_daily: list[dict[str, Any]]
+    canonical_broker_rank_daily: list[dict[str, Any]]
     finlab_taxonomy_tags: list[dict[str, Any]]
     data_source_inventory: list[dict[str, Any]]
     source_quality_metrics: list[dict[str, Any]]
@@ -489,6 +490,74 @@ def build_listed_broker_flow_rows(
     return _rows(broker, limit)
 
 
+def build_broker_rank_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    lane: str,
+    filename: str,
+    market_segment: str,
+    source: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    rank = _read_parquet(artifact_root / "raw" / lane / filename)
+    if rank.is_empty():
+        return []
+    rank = _filter_dates(rank, start_date=start_date, end_date=end_date)
+    if rank.is_empty():
+        return []
+
+    broker_name_expr = (
+        pl.col("broker_name").cast(pl.Utf8, strict=False)
+        if "broker_name" in rank.columns
+        else pl.lit(None).cast(pl.Utf8)
+    )
+    lineage = _lineage(
+        run_id,
+        lane,
+        ["rank_side", "rank_no", "broker_code", "broker_name", "buy_lots", "sell_lots", "net_lots"],
+        artifact_root,
+    )
+    rank = rank.with_columns(
+        pl.col("stock_id").map_elements(normalize_symbol, return_dtype=pl.Utf8).alias("stock_id"),
+        _date_expr("date").alias("date"),
+        pl.col("rank_side").cast(pl.Utf8).str.to_lowercase(),
+        pl.col("rank_no").cast(pl.Int64, strict=False),
+        pl.col("broker_code").cast(pl.Utf8, strict=False),
+        broker_name_expr.alias("broker_name"),
+        pl.col("buy_lots").cast(pl.Float64, strict=False),
+        pl.col("sell_lots").cast(pl.Float64, strict=False),
+        pl.col("net_lots").cast(pl.Float64, strict=False),
+        pl.lit(market_segment).alias("market_segment"),
+        pl.lit(source).alias("source"),
+        pl.lit(lineage).alias("lineage_json"),
+        pl.lit(generated_at[:10]).alias("as_of_date"),
+    ).filter(
+        pl.col("stock_id").is_not_null()
+        & (pl.col("stock_id") != "")
+        & pl.col("rank_side").is_in(["buy", "sell"])
+        & pl.col("rank_no").is_between(1, 3)
+    ).select([
+        "stock_id",
+        "date",
+        "market_segment",
+        "rank_side",
+        "rank_no",
+        "broker_code",
+        "broker_name",
+        "buy_lots",
+        "sell_lots",
+        "net_lots",
+        "source",
+        "lineage_json",
+        "as_of_date",
+    ])
+    return _rows(rank, limit)
+
+
 def build_revenue_rows(
     artifact_root: Path,
     *,
@@ -729,6 +798,18 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_broker_flow_daily") else []
+    listed_broker_rank = build_broker_rank_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        lane="broker_flow_diversity",
+        filename="broker_rank_daily.parquet",
+        market_segment="LISTED_OTC",
+        source="finlab.broker_transactions",
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_broker_rank_daily") else []
     if include_emerging and (wants("canonical_chip_daily") or wants("canonical_broker_flow_daily")):
         emerging_chip, emerging_broker_flow = build_emerging_broker_rows(
             root,
@@ -744,7 +825,20 @@ def materialize_finlab_canonical_outputs(
             emerging_broker_flow = []
     else:
         emerging_chip, emerging_broker_flow = [], []
+    emerging_broker_rank = build_broker_rank_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        lane="emerging_chip_diversity",
+        filename="rotc_broker_rank_daily.parquet",
+        market_segment="EMERGING",
+        source="finlab.rotc_broker_transactions",
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if include_emerging and wants("canonical_broker_rank_daily") else []
     broker_flow = listed_broker_flow + emerging_broker_flow
+    broker_rank = listed_broker_rank + emerging_broker_rank
     listed_revenue = build_revenue_rows(
         root,
         run_id=rid,
@@ -780,6 +874,8 @@ def materialize_finlab_canonical_outputs(
         output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
     if wants("canonical_broker_flow_daily"):
         output_rows["canonical_broker_flow_daily"] = broker_flow
+    if wants("canonical_broker_rank_daily"):
+        output_rows["canonical_broker_rank_daily"] = broker_rank
     if wants("finlab_taxonomy_tags"):
         output_rows["finlab_taxonomy_tags"] = taxonomy
     inventory = build_inventory_rows(output_rows, generated_at=timestamp)
@@ -809,6 +905,7 @@ def materialize_finlab_canonical_outputs(
         canonical_institutional_amount_daily=output_rows.get("canonical_institutional_amount_daily", []),
         canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
         canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
+        canonical_broker_rank_daily=output_rows.get("canonical_broker_rank_daily", []),
         finlab_taxonomy_tags=output_rows.get("finlab_taxonomy_tags", []),
         data_source_inventory=inventory,
         source_quality_metrics=quality,
@@ -885,6 +982,13 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["stock_id", "date", "market_segment", "buy_shares", "sell_shares", "net_shares", "dominant_net_shares", "gross_imbalance_shares", "estimated_amount", "broker_count", "concentration", "source", "lineage_json", "as_of_date"],
         ["stock_id", "date", "source"],
         ["market_segment", "buy_shares", "sell_shares", "net_shares", "dominant_net_shares", "gross_imbalance_shares", "estimated_amount", "broker_count", "concentration", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_broker_rank_daily",
+        outputs.canonical_broker_rank_daily,
+        ["stock_id", "date", "market_segment", "rank_side", "rank_no", "broker_code", "broker_name", "buy_lots", "sell_lots", "net_lots", "source", "lineage_json", "as_of_date"],
+        ["stock_id", "date", "source", "rank_side", "rank_no"],
+        ["market_segment", "broker_code", "broker_name", "buy_lots", "sell_lots", "net_lots", "lineage_json", "as_of_date"],
     ))
     statements.extend(_row_statements(
         "finlab_taxonomy_tags",

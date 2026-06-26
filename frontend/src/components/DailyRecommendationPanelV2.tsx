@@ -101,9 +101,11 @@ export function DailyRecommendationPanelV2() {
               </Badge>
             </div>
             {tradable.length > 0 ? (
-              tradable.map((rec: any, i: number) => (
-                <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
-              ))
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {tradable.map((rec: any, i: number) => (
+                  <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
+                ))}
+              </div>
             ) : (
               <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-4 text-xs text-muted-foreground">
                 今日沒有通過上市櫃交易流的候選。

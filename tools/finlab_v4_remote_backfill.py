@@ -353,7 +353,9 @@ def latest_index(df: pd.DataFrame) -> str | None:
 
 def write_parquet(path: Path, df: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, compression="zstd")
+    output = df.copy(deep=False)
+    output.attrs = {}
+    output.to_parquet(path, compression="zstd")
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -394,6 +396,7 @@ def d1_counts(start: str) -> dict[str, int]:
         "canonical_institutional_amount_daily": "SELECT COUNT(*) AS n FROM canonical_institutional_amount_daily WHERE date >= ?",
         "canonical_revenue_monthly": "SELECT COUNT(*) AS n FROM canonical_revenue_monthly WHERE revenue_month >= ?",
         "canonical_broker_flow_daily": "SELECT COUNT(*) AS n FROM canonical_broker_flow_daily WHERE date >= ?",
+        "canonical_broker_rank_daily": "SELECT COUNT(*) AS n FROM canonical_broker_rank_daily WHERE date >= ?",
     }
     counts: dict[str, int] = {}
     for key, sql in queries.items():
@@ -408,7 +411,10 @@ def stockvision_count_for_lane(counts: dict[str, int], lane: str) -> int:
     if lane in {"chip_diversity", "emerging_chip_diversity"}:
         return counts.get("chip_diversity", 0)
     if lane == "broker_flow_diversity":
-        return counts.get("canonical_broker_flow_daily", 0)
+        return min(
+            counts.get("canonical_broker_flow_daily", 0),
+            counts.get("canonical_broker_rank_daily", 0),
+        )
     if lane == "institutional_amount_summary":
         return counts.get("canonical_institutional_amount_daily", 0)
     if lane in {"revenue", "emerging_revenue_diversity"}:
@@ -1118,7 +1124,11 @@ def parse_canonical_datasets(raw: str | None) -> list[str]:
     if not raw:
         return list(DEFAULT_CANONICAL_DATASETS)
     values = [item.strip() for item in raw.split(",") if item.strip()]
-    return values or list(DEFAULT_CANONICAL_DATASETS)
+    if not values:
+        return list(DEFAULT_CANONICAL_DATASETS)
+    if "canonical_broker_flow_daily" in values and "canonical_broker_rank_daily" not in values:
+        values.append("canonical_broker_rank_daily")
+    return values
 
 
 def parse_lanes(raw: str | None) -> list[str]:
@@ -1273,22 +1283,24 @@ def main() -> int:
         print("[finlab-backfill] runtime_table_writeback start", file=sys.stderr, flush=True)
         manifest["runtime_table_writeback"] = insert_finlab_runtime_tables(manifest)
         print("[finlab-backfill] runtime_table_writeback done", file=sys.stderr, flush=True)
-        if args.apply_canonical_d1:
-            default_start, default_end = default_canonical_window(
-                generated_at=generated_at,
-                window_days=args.canonical_window_days,
-            )
-            print("[finlab-backfill] canonical_d1_apply start", file=sys.stderr, flush=True)
-            manifest["canonical_d1_apply"] = materialize_canonical_to_d1(
-                manifest,
-                start_date=args.canonical_start_date or default_start,
-                end_date=args.canonical_end_date or default_end,
-                datasets=parse_canonical_datasets(args.canonical_datasets),
-                limit_per_dataset=args.canonical_limit_per_dataset or None,
-                chunk_size=args.canonical_d1_chunk_size,
-                dry_run=args.canonical_dry_run,
-            )
-            print("[finlab-backfill] canonical_d1_apply done", file=sys.stderr, flush=True)
+        write_json(run_dir / "manifest.json", manifest)
+
+    if args.apply_canonical_d1:
+        default_start, default_end = default_canonical_window(
+            generated_at=generated_at,
+            window_days=args.canonical_window_days,
+        )
+        print("[finlab-backfill] canonical_d1_apply start", file=sys.stderr, flush=True)
+        manifest["canonical_d1_apply"] = materialize_canonical_to_d1(
+            manifest,
+            start_date=args.canonical_start_date or default_start,
+            end_date=args.canonical_end_date or default_end,
+            datasets=parse_canonical_datasets(args.canonical_datasets),
+            limit_per_dataset=args.canonical_limit_per_dataset or None,
+            chunk_size=args.canonical_d1_chunk_size,
+            dry_run=args.canonical_dry_run,
+        )
+        print("[finlab-backfill] canonical_d1_apply done", file=sys.stderr, flush=True)
         write_json(run_dir / "manifest.json", manifest)
 
     print(json.dumps({

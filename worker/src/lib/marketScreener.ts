@@ -48,6 +48,7 @@ import {
 
 const D1_IN_CHUNK_SIZE = 40
 const SCREENER_FUNNEL_MAX_ITEMS = 5000
+const STOCK_TECHNICAL_HISTORY_PRICE_DAYS = 280
 const SCREENER_FUNNEL_PIPELINE_SEED_STAGES = new Set([
   'l1_candidate_seed_after_overlay',
   'final_selection',
@@ -1140,6 +1141,7 @@ function deriveStrategyRawSignals(
   chipDates: Map<string, ChipDayNet> | undefined,
   fundamentals?: StrategyRawFundamentalSignals,
   extraFactors?: StrategyRawFactorSignalPatch,
+  stockTechnicalPrices?: CanonicalScreenerPrice[],
 ): StrategyRawSignals {
   const latest = prices[prices.length - 1]
   const indicatorRows = prices
@@ -1211,7 +1213,27 @@ function deriveStrategyRawSignals(
     close: row.close,
     volume: row.volume,
   }))
-  const stockTechnicalDailyFeatures = deriveStockTechnicalDailyFeatures(ohlcvRows)
+  const stockTechnicalIndicatorRows = (stockTechnicalPrices?.length ? stockTechnicalPrices : prices)
+    .map((price) => ({
+      date: price.date,
+      open: finiteOrNull(price.open),
+      high: finiteOrNull(price.max),
+      low: finiteOrNull(price.min),
+      close: finiteOrNull(price.close),
+      volume: finiteOrNull(price.Trading_Volume) ?? 0,
+    }))
+    .filter((row): row is { date: string; open: number; high: number; low: number; close: number; volume: number } =>
+      row.open != null && row.high != null && row.low != null && row.close != null && row.high >= row.low,
+    )
+  const stockTechnicalOhlcvRows = stockTechnicalIndicatorRows.map((row) => ({
+    date: row.date,
+    open: row.open,
+    high: row.high,
+    low: row.low,
+    close: row.close,
+    volume: row.volume,
+  }))
+  const stockTechnicalDailyFeatures = deriveStockTechnicalDailyFeatures(stockTechnicalOhlcvRows)
   const priceAction = ohlcvRows.length >= 5 ? buildPriceActionStructure(ohlcvRows, { latestPrice: close }) : null
   const bestFvg = priceAction?.bestFvg ?? null
   const bestOrderBlock = priceAction?.bestOrderBlock ?? null
@@ -2387,6 +2409,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   type BuzzResult = Awaited<ReturnType<typeof detectPttBuzz>>
   let allPrices: CanonicalScreenerPrice[]
+  let stockTechnicalLongPrices: CanonicalScreenerPrice[] = []
   let emergingResearchPrices: CanonicalScreenerPrice[]
   let allChips: CanonicalScreenerChip[]
   let tpexSymbolSet = new Set<string>()
@@ -2398,14 +2421,17 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   try {
     const buzzKeywords = await loadBuzzKeywords(env.DB, env.KV).catch(() => undefined)
 
-    const [marketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
+    const [marketData, stockTechnicalMarketData, pttBuzz, newsBuzz, anueBuzz, runtimeThemeSignals] = await Promise.all([
       loadMarketDataFromD1(env, 70, 5, endDate),
+      loadMarketDataFromD1(env, STOCK_TECHNICAL_HISTORY_PRICE_DAYS, 0, endDate)
+        .catch(() => ({ allPrices: [] as CanonicalScreenerPrice[] })),
       detectPttBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       detectNewsBuzz(env.DB, buzzKeywords).catch(() => [] as BuzzResult),
       detectAnueBuzz(buzzKeywords).catch(() => [] as BuzzResult),
       loadRuntimeThemeSignals(env.DB, endDate).catch(() => []),
     ])
     allPrices = marketData.allPrices
+    stockTechnicalLongPrices = stockTechnicalMarketData.allPrices ?? []
     emergingResearchPrices = marketData.emergingResearchPrices
     allChips = marketData.allChips
     tpexSymbolSet = marketData.tpexSymbols
@@ -2424,6 +2450,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
     debugLog.push(
       `[Data] prices=${allPrices.length} emerging_research=${emergingResearchPrices.length} ` +
+      `stockTechLongPrices=${stockTechnicalLongPrices.length} stockTechPriceDays=${STOCK_TECHNICAL_HISTORY_PRICE_DAYS} ` +
       `chips=${allChips.length} buzz=${combinedBuzz.length} theme_sources=${JSON.stringify(themeEvidence.acceptedSources)} ` +
       `lanes=${JSON.stringify(marketData.laneCounts)} chip_sources=${JSON.stringify(chipSourceSummary)}`,
     )
@@ -2467,6 +2494,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ?? 撱箄???瑽???
   const data = buildStockData(allPrices, allChips)
+  const stockTechnicalLongData = buildStockData(stockTechnicalLongPrices.length ? stockTechnicalLongPrices : allPrices, [])
   // 憭抒 5d return嚗 D1 ??0050嚗?憭批??0 ETF嚗???benchmark
   // 0050 餈質馱???嚗?蝛拙??之?支誨?瘝?撠梁???餈撮
   let marketReturn5d = 0
@@ -2601,7 +2629,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     )
   }
   const stockTechMarketRegime = deriveStockTechnicalMarketRegime(
-    universe.map(({ prices }) => prices.map((price) => ({
+    universe.map(({ stockId, prices }) => (stockTechnicalLongData.prices.get(stockId) ?? prices).map((price) => ({
       date: price.date,
       open: price.open,
       high: price.max,
@@ -2640,6 +2668,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       chipDates,
       rawFundamentalSignals.get(stockId),
       rawSectorRotationSignals.get(stockId),
+      stockTechnicalLongData.prices.get(stockId),
     )
 
     scored.push({

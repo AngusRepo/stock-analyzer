@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL_PATH = ROOT / "tools" / "finlab_v4_remote_backfill.py"
@@ -49,3 +51,23 @@ def test_remote_backfill_tool_honors_requested_lanes_before_finlab_fetch():
     assert 'parser.add_argument("--lanes"' in source
     assert "spec.lane in requested_lanes" in source
     assert "unknown FinLab lanes" in source
+
+
+def test_write_parquet_ignores_nonserializable_dataframe_attrs(tmp_path):
+    tool = _load_tool_module()
+    frame = pd.DataFrame({"date": ["2026-06-26"], "stock_id": ["2330"]})
+    rank_rows = pd.DataFrame({"rank_side": ["buy"], "rank_no": [1]})
+    frame.attrs["broker_rank_daily"] = rank_rows
+
+    path = tmp_path / "broker_daily.parquet"
+    tool.write_parquet(path, frame)
+
+    assert path.exists()
+    assert frame.attrs["broker_rank_daily"].equals(rank_rows)
+
+
+def test_apply_canonical_d1_is_not_gated_by_summary_writeback():
+    source = TOOL_PATH.read_text(encoding="utf-8")
+
+    assert "\n    if args.apply_canonical_d1:" in source
+    assert source.index("if args.apply_canonical_d1") > source.index("if args.write_d1")

@@ -222,9 +222,240 @@ async function loadFinlabSeries(
   return buildIndexSnapshot(symbol, name, [], `FinLab source missing: ${candidates.map((item) => item.source).join(' / ')}`)
 }
 
+function hasMarketSeriesData(snapshot: any): boolean {
+  return numberOrNull(snapshot?.current) != null
+}
+
+function percentChange(current: number | null, previous: number | null): number | null {
+  if (current == null || previous == null || previous === 0) return null
+  return Math.round(((current - previous) / previous) * 10_000) / 100
+}
+
+function missingMaterializationSnapshot(symbol: string, name: string, source: string) {
+  return {
+    symbol,
+    name,
+    current: null,
+    change: null,
+    changePct: null,
+    source,
+    status: 'finlab_not_materialized',
+    history: [],
+  }
+}
+
+async function loadMarketRiskTwiiSeries(db: D1Database) {
+  try {
+    const { results } = await db.prepare(
+      `SELECT date, twii_close AS close
+       FROM market_risk
+       WHERE twii_close IS NOT NULL
+       ORDER BY date DESC
+       LIMIT 30`
+    ).all<any>()
+    const points = (results ?? [])
+      .map((row: any) => {
+        const date = String(row.date ?? '').slice(0, 10)
+        const close = numberOrNull(row.close)
+        return date && close != null ? { date, close } : null
+      })
+      .filter((point): point is MarketSeriesPoint => Boolean(point))
+    return buildIndexSnapshot('TWII', '加權指數', points, 'FinLab canonical market_risk.twii_close')
+  } catch (e) {
+    console.warn('[market/indices] market_risk.twii_close fallback failed', e)
+    return missingMaterializationSnapshot('TWII', '加權指數', 'FinLab benchmark_return / market_risk.twii_close')
+  }
+}
+
+async function loadCanonicalMarketOverview(db: D1Database) {
+  try {
+    const row = await db.prepare(
+      `WITH ordered_dates AS (
+         SELECT date
+         FROM canonical_market_daily
+         GROUP BY date
+         ORDER BY date DESC
+         LIMIT 2
+       ),
+       latest_date AS (
+         SELECT MAX(date) AS date FROM ordered_dates
+       ),
+       previous_date AS (
+         SELECT MIN(date) AS date FROM ordered_dates
+       ),
+       joined_rows AS (
+         SELECT
+           cur.date,
+           cur.stock_id,
+           cur.close,
+           prev.close AS prev_close,
+           cur.volume,
+           cur.value
+         FROM canonical_market_daily cur
+         JOIN latest_date ld ON cur.date = ld.date
+         LEFT JOIN canonical_market_daily prev
+           ON prev.stock_id = cur.stock_id
+          AND prev.date = (SELECT date FROM previous_date)
+         WHERE cur.close IS NOT NULL
+       )
+       SELECT
+         (SELECT date FROM latest_date) AS date,
+         SUM(CASE WHEN prev_close IS NOT NULL AND close > prev_close THEN 1 ELSE 0 END) AS advance_count,
+         SUM(CASE WHEN prev_close IS NOT NULL AND close = prev_close THEN 1 ELSE 0 END) AS unchanged_count,
+         SUM(CASE WHEN prev_close IS NOT NULL AND close < prev_close THEN 1 ELSE 0 END) AS decline_count,
+         COUNT(CASE WHEN prev_close IS NOT NULL THEN 1 END) AS compared_count,
+         SUM(COALESCE(volume, 0)) AS market_volume,
+         SUM(COALESCE(value, 0)) AS market_value
+       FROM joined_rows`
+    ).first<any>()
+    if (!row?.date) return null
+
+    return {
+      breadthSnapshot: {
+        date: row.date,
+        advance_count: numberOrNull(row.advance_count),
+        unchanged_count: numberOrNull(row.unchanged_count),
+        decline_count: numberOrNull(row.decline_count),
+        compared_count: numberOrNull(row.compared_count),
+        source: 'canonical_market_daily.finlab.price',
+      },
+      marketStats: {
+        date: row.date,
+        volume: numberOrNull(row.market_volume),
+        amount: numberOrNull(row.market_value),
+        comparedCount: numberOrNull(row.compared_count),
+        source: 'canonical_market_daily.finlab.price',
+      },
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical_market_daily overview failed', e)
+    return null
+  }
+}
+
+async function loadCanonicalCreditTrading(db: D1Database) {
+  try {
+    const { results } = await db.prepare(
+      `WITH ordered_dates AS (
+         SELECT date
+         FROM canonical_chip_daily
+         GROUP BY date
+         ORDER BY date DESC
+         LIMIT 2
+       )
+       SELECT
+         c.date,
+         SUM(COALESCE(c.margin_balance, 0)) AS margin_balance,
+         SUM(COALESCE(c.short_balance, 0)) AS short_balance,
+         COUNT(*) AS coverage_count
+       FROM canonical_chip_daily c
+       JOIN ordered_dates d ON c.date = d.date
+       GROUP BY c.date
+       ORDER BY c.date DESC`
+    ).all<any>()
+    const latest = results?.[0]
+    const previous = results?.[1]
+    if (!latest?.date) return null
+    const marginBalance = numberOrNull(latest.margin_balance)
+    const shortBalance = numberOrNull(latest.short_balance)
+    const previousMarginBalance = numberOrNull(previous?.margin_balance)
+    const previousShortBalance = numberOrNull(previous?.short_balance)
+    return {
+      date: latest.date,
+      marginBalance,
+      shortBalance,
+      marginBalanceChangePct: percentChange(marginBalance, previousMarginBalance),
+      shortBalanceChangePct: percentChange(shortBalance, previousShortBalance),
+      maintenanceRate: null,
+      coverageCount: numberOrNull(latest.coverage_count),
+      source: 'canonical_chip_daily.finlab.margin_transactions',
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical_chip_daily credit trading failed', e)
+    return null
+  }
+}
+
+async function loadCanonicalInstitutionalFlows(db: D1Database) {
+  try {
+    const row = await db.prepare(
+      `WITH latest_date AS (
+         SELECT MAX(date) AS date
+         FROM canonical_institutional_amount_daily
+       )
+       SELECT
+         (SELECT date FROM latest_date) AS date,
+         SUM(CASE WHEN investor = 'foreign' THEN net_amount ELSE 0 END) / 100000000.0 AS foreign_net,
+         SUM(CASE WHEN investor = 'trust' THEN net_amount ELSE 0 END) / 100000000.0 AS trust_net,
+         SUM(CASE WHEN investor IN ('dealer', 'dealer_self', 'dealer_hedge') THEN net_amount ELSE 0 END) / 100000000.0 AS dealer_net,
+         SUM(CASE WHEN investor IN ('foreign', 'trust', 'dealer', 'dealer_self', 'dealer_hedge') THEN net_amount ELSE 0 END) / 100000000.0 AS total_net,
+         COUNT(*) AS row_count
+       FROM canonical_institutional_amount_daily
+       WHERE date = (SELECT date FROM latest_date)`
+    ).first<any>()
+    if (!row?.date) return null
+    return {
+      date: row.date,
+      foreignNet: numberOrNull(row.foreign_net),
+      trustNet: numberOrNull(row.trust_net),
+      dealerNet: numberOrNull(row.dealer_net),
+      totalNet: numberOrNull(row.total_net),
+      rowCount: numberOrNull(row.row_count),
+      source: 'canonical_institutional_amount_daily.finlab.institutional_investors_trading_all_market_summary',
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical_institutional_amount_daily flows failed', e)
+    return null
+  }
+}
+
+function cycleSignalLabel(score: number | null): string {
+  if (score == null) return '待匯入'
+  if (score <= 16) return '藍燈'
+  if (score <= 22) return '黃藍燈'
+  if (score <= 31) return '綠燈'
+  if (score <= 37) return '黃紅燈'
+  return '紅燈'
+}
+
+function businessCycleFromFactorPacket(factorPacket: any, fallbackDate: string) {
+  const factors = Array.isArray(factorPacket?.factors) ? factorPacket.factors : []
+  const businessFactor = factors.find((item: any) => (
+    String(item?.id ?? '').toLowerCase().includes('breadth')
+    || String(item?.label ?? '').includes('景氣對策')
+    || String(item?.source ?? '').includes('tw_business_indicators')
+  ))
+  const rawScore = numberOrNull(businessFactor?.raw_value)
+    ?? numberOrNull(String(businessFactor?.value ?? '').match(/-?\d+(?:\.\d+)?/)?.[0])
+  const sourceDate = String(businessFactor?.source_date ?? fallbackDate ?? '').slice(0, 10)
+  if (rawScore == null) {
+    return {
+      source: 'finlab.tw_business_indicators',
+      status: 'finlab_not_materialized',
+      months: [],
+    }
+  }
+  return {
+    source: businessFactor?.source ?? 'finlab.tw_business_indicators',
+    status: 'ok',
+    latest: {
+      month: sourceDate ? sourceDate.slice(0, 7) : String(fallbackDate).slice(0, 7),
+      score: rawScore,
+      label: cycleSignalLabel(rawScore),
+      sourceDate: sourceDate || null,
+    },
+    months: [{
+      month: sourceDate ? sourceDate.slice(0, 7) : String(fallbackDate).slice(0, 7),
+      score: rawScore,
+      label: cycleSignalLabel(rawScore),
+      sourceDate: sourceDate || null,
+    }],
+  }
+}
+
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v2', async () => {
-    const [twii, twoii, txfDay, taifexNight] = await Promise.all([
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v3', async () => {
+    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexNight, marketRiskTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
           sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
@@ -285,7 +516,15 @@ market.get('/indices', async (c) => {
         },
       ]),
       fetchTaifexNightClose().catch(() => null),
+      loadMarketRiskTwiiSeries(c.env.DB),
     ])
+    const twii = hasMarketSeriesData(finlabTwii) ? finlabTwii : marketRiskTwii
+    const twoii = hasMarketSeriesData(finlabTwoii)
+      ? finlabTwoii
+      : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab etl:finlab_tw_stock_market_ind not materialized')
+    const txfDay = hasMarketSeriesData(finlabTxfDay)
+      ? finlabTxfDay
+      : missingMaterializationSnapshot('TXF', '台指期貨', 'FinLab futures_price not materialized')
     const txfNight = taifexNight ? {
       symbol: 'TXF',
       name: '台指期貨夜盤',
@@ -900,7 +1139,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v7-market-outlook'
+  const cacheKey = 'market:risk:latest:v8-finlab-canonical-market-home'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -964,6 +1203,12 @@ market.get('/risk', async (c) => {
   } else {
     factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
   }
+  const [canonicalOverview, creditTrading, institutionalFlows] = await Promise.all([
+    loadCanonicalMarketOverview(c.env.DB),
+    loadCanonicalCreditTrading(c.env.DB),
+    loadCanonicalInstitutionalFlows(c.env.DB),
+  ])
+  const businessCycle = businessCycleFromFactorPacket(factorPacket, row.date)
   const contextFactors = factorPacket?.factors ?? legacyContextFactors
   const marketOutlook = buildMarketOptimisticOutlook({
     marketRiskRow: row,
@@ -991,6 +1236,28 @@ market.get('/risk', async (c) => {
     riskLevel:              factorPacket?.level ?? row.risk_level,
     riskSummary:            packetSummary,
     calculatedAt:           row.calculated_at,
+    breadthSnapshot:        canonicalOverview?.breadthSnapshot ?? null,
+    marketStats:            canonicalOverview?.marketStats ?? null,
+    marketVolume:           canonicalOverview?.marketStats?.volume ?? null,
+    marketTurnoverAmount:   canonicalOverview?.marketStats?.amount ?? null,
+    creditTrading,
+    marginBalance:          creditTrading?.marginBalance ?? null,
+    shortBalance:           creditTrading?.shortBalance ?? null,
+    marginBalanceChangePct: creditTrading?.marginBalanceChangePct ?? null,
+    shortBalanceChangePct:  creditTrading?.shortBalanceChangePct ?? null,
+    marginMaintenanceRate:  creditTrading?.maintenanceRate ?? null,
+    institutionalFlows,
+    businessCycle,
+    dataSourcePriority: [
+      'FinLab canonical materialized tables',
+      'market_risk / market_regime_factor_packets',
+      'TAIFEX MIS only for live night futures',
+    ],
+    materializationGaps: {
+      marginMaintenanceRate: creditTrading?.maintenanceRate == null ? 'FinLab margin maintenance rate not materialized' : null,
+      twoiiIndex: 'FinLab tw_stock_market_ind not materialized to D1 index table',
+      txfDay: 'FinLab futures_price not materialized to D1 futures table',
+    },
     regimeState: regimeState ? {
       label: regimeState.label,
       family: regimeState.family,

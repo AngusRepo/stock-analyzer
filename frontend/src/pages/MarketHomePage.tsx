@@ -183,13 +183,14 @@ function toIndexTile(raw: any, label: string, source: string): IndexTile {
   const change = asNumber(raw?.change)
   const changePct = asNumber(raw?.changePct ?? raw?.change_pct)
   const history = parseHistory(raw)
+  const notMaterialized = raw?.status === 'finlab_not_materialized'
 
   return {
     label,
-    value: current == null ? '待接資料' : formatNumber(current, current >= 1000 ? 2 : 2),
-    change: formatSigned(change, 2),
-    pct: formatPct(changePct, 2),
-    tone: toneBySigned(change),
+    value: current == null ? (notMaterialized ? '待匯入' : '待接資料') : formatNumber(current, current >= 1000 ? 2 : 2),
+    change: current == null ? (notMaterialized ? 'FinLab未匯入' : '待接資料') : formatSigned(change, 2),
+    pct: current == null ? '--' : formatPct(changePct, 2),
+    tone: current == null ? (notMaterialized ? 'amber' : 'slate') : toneBySigned(change),
     source: raw?.source ?? source,
     status: raw?.status ?? (current == null ? 'missing' : 'ok'),
     history,
@@ -324,11 +325,13 @@ function IndexTileCard({ tile }: { tile: IndexTile }) {
           </p>
         </div>
         {tile.available ? <Sparkline values={tile.history} tone={tile.tone} /> : (
-          <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-[11px] font-semibold text-amber-200">缺資料</span>
+          <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-[11px] font-semibold text-amber-200">
+            {tile.status === 'finlab_not_materialized' ? '待匯入' : '缺資料'}
+          </span>
         )}
       </div>
       <p className="mt-3 truncate text-[11px] text-slate-500" title={tile.source}>
-        {tile.status === 'missing' ? 'source missing' : tile.source}
+        {tile.status === 'missing' ? 'source missing' : tile.status === 'finlab_not_materialized' ? 'FinLab 尚未 materialize' : tile.source}
       </p>
     </div>
   )
@@ -548,10 +551,33 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   )
 }
 
+function monthKeyOffset(monthKey: string, offset: number) {
+  const [yearRaw, monthRaw] = monthKey.split('-').map((part) => Number(part))
+  if (!Number.isFinite(yearRaw) || !Number.isFinite(monthRaw)) return monthKey
+  const date = new Date(Date.UTC(yearRaw, monthRaw - 1 + offset, 1))
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+function businessSignalTone(score: number | null) {
+  if (score == null) return 'bg-slate-600 shadow-none'
+  if (score <= 16) return 'bg-blue-600 shadow-[0_0_18px_rgba(37,99,235,0.38)]'
+  if (score <= 22) return 'bg-yellow-400 shadow-[0_0_18px_rgba(250,204,21,0.34)]'
+  if (score <= 31) return 'bg-emerald-500 shadow-[0_0_18px_rgba(16,185,129,0.34)]'
+  if (score <= 37) return 'bg-orange-500 shadow-[0_0_18px_rgba(249,115,22,0.34)]'
+  return 'bg-red-500 shadow-[0_0_18px_rgba(239,68,68,0.38)]'
+}
+
 function BusinessSignalCard({ risk }: { risk: any }) {
   const months = asArray<any>(risk?.businessCycle?.months ?? risk?.businessSignal?.months).slice(-6)
   const hasData = months.length > 0
-  const rows = hasData ? months : Array.from({ length: 6 }, (_, index) => ({ month: `M-${5 - index}`, score: null }))
+  const latestMonth = String(months[months.length - 1]?.month ?? '')
+  const byMonth = new Map(months.map((row) => [String(row.month), row]))
+  const rows = hasData && latestMonth
+    ? Array.from({ length: 6 }, (_, index) => {
+        const key = monthKeyOffset(latestMonth, index - 5)
+        return byMonth.get(key) ?? { month: key, score: null, label: '待匯入' }
+      })
+    : Array.from({ length: 6 }, (_, index) => ({ month: `M-${5 - index}`, score: null, label: '待匯入' }))
 
   return (
     <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
@@ -560,7 +586,7 @@ function BusinessSignalCard({ risk }: { risk: any }) {
           <Activity className="h-4 w-4 text-blue-300" />
           <h3 className="font-bold text-slate-100">景氣對策信號</h3>
         </div>
-        <SourceBadge>{hasData ? 'NDC' : '待接資料'}</SourceBadge>
+        <SourceBadge>{hasData ? 'FinLab / NDC' : '待匯入'}</SourceBadge>
       </div>
 
       <div className="mt-5 grid grid-cols-3 gap-3 sm:grid-cols-6">
@@ -568,10 +594,10 @@ function BusinessSignalCard({ risk }: { risk: any }) {
           const score = asNumber(row.score ?? row.value)
           return (
             <div key={`${row.month}-${index}`} className="text-center">
-              <span className={cx('mx-auto block h-4 w-4 rounded-full shadow-[0_0_18px_rgba(239,68,68,0.38)]', score == null ? 'bg-slate-600' : 'bg-red-500')} />
+              <span className={cx('mx-auto block h-4 w-4 rounded-full', businessSignalTone(score))} />
               <span className="mt-3 inline-flex rounded-full bg-white/[0.055] px-2.5 py-1 text-xs text-slate-500">{row.month}</span>
               <p className="mt-2 text-xl font-bold tabular-nums text-slate-100">{score == null ? '--' : score}</p>
-              <p className="text-xs text-slate-400">{score == null ? '待接' : '熱絡'}</p>
+              <p className="text-xs text-slate-400">{score == null ? '待匯入' : (row.label ?? '已匯入')}</p>
             </div>
           )
         })}
@@ -604,11 +630,11 @@ function BusinessSignalCard({ risk }: { risk: any }) {
 
 function InstitutionFlowCard({ risk }: { risk: any }) {
   const flow = risk?.institutionalFlows ?? {}
-  const foreign = asNumber(risk?.foreignNet5d ?? flow.foreignNet ?? flow.foreign)
+  const foreign = asNumber(flow.foreignNet ?? flow.foreign ?? risk?.foreignNet5d)
   const trust = asNumber(flow.trustNet ?? flow.trust)
   const dealer = asNumber(flow.dealerNet ?? flow.dealer)
   const available = foreign != null || trust != null || dealer != null
-  const total = available ? (foreign ?? 0) + (trust ?? 0) + (dealer ?? 0) : null
+  const total = asNumber(flow.totalNet) ?? (available ? (foreign ?? 0) + (trust ?? 0) + (dealer ?? 0) : null)
   const max = Math.max(1, Math.abs(foreign ?? 0), Math.abs(trust ?? 0), Math.abs(dealer ?? 0))
   const rows = [
     { label: '外資', value: foreign, tone: toneBySigned(foreign) },
@@ -623,7 +649,7 @@ function InstitutionFlowCard({ risk }: { risk: any }) {
           <PieChart className="h-4 w-4 text-amber-300" />
           <h3 className="font-bold text-slate-100">主要法人資金動向</h3>
         </div>
-        <SourceBadge>{shortDate(risk?.date)}</SourceBadge>
+        <SourceBadge>{shortDate(flow.date ?? risk?.date)}</SourceBadge>
       </div>
 
       <div className="flex items-end justify-between gap-4 border-b border-white/[0.07] pb-4">

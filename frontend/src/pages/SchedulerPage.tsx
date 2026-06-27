@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+﻿import { useQuery } from '@tanstack/react-query'
 import { Activity, AlertTriangle, ArrowRight, Clock, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import SchedulerCadenceChart from '@/components/charts/SchedulerCadenceChart'
@@ -77,10 +77,10 @@ function MetricCell({ label, value, tone = 'neutral', detail }: {
   return (
     <div className="border-r border-[#263247] bg-[#070a10] p-3 last:border-r-0">
       <div className="flex items-center justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8a92a6]">{label}</p>
+        <p className="sv-num text-[10px] normal-case text-[#8a92a6]">{label}</p>
         <WorkstationPill tone={tone}>{tone}</WorkstationPill>
       </div>
-      <p className={`mt-2 font-mono text-xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'}`}>
+      <p className={`mt-2 sv-num text-xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'}`}>
         {value}
       </p>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
@@ -95,7 +95,7 @@ function JobRow({ job }: { job: SchedulerJob }) {
   const suspicious = suspiciousDuration(job)
   const consolidation = job.consolidation
   return (
-    <div className="grid min-h-[92px] grid-cols-1 gap-2 border-b border-[#263247] px-3 py-2 font-mono text-[11px] sm:grid-cols-[1fr_96px_92px_112px] sm:items-center">
+    <div className="grid min-h-[92px] grid-cols-1 gap-2 border-b border-[#263247] px-3 py-2 sv-num text-[11px] sm:grid-cols-[1fr_96px_92px_112px] sm:items-center">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
@@ -145,12 +145,12 @@ function PipelineDag({ jobs }: { jobs: SchedulerJob[] }) {
         }`}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">Evening Chain Root</p>
+              <p className="sv-num text-[11px] normal-case text-slate-100">Evening Chain Root</p>
               <p className="mt-1 text-[11px] text-[#8a92a6]">Data update → Indicator Queue → Screener → Pipeline → ML Predict → Recommendation</p>
             </div>
             <div className="flex items-center gap-2">
               <WorkstationPill tone={statusTone(root.lastStatus)}>{statusLabel(root.lastStatus)}</WorkstationPill>
-              <span className="font-mono text-[11px] text-[#8a92a6]">{root.lastDuration || '-'}</span>
+              <span className="sv-num text-[11px] text-[#8a92a6]">{root.lastDuration || '-'}</span>
             </div>
           </div>
           <div className="mt-2 max-w-[360px]">
@@ -168,7 +168,7 @@ function PipelineDag({ jobs }: { jobs: SchedulerJob[] }) {
               'border-[#263247] bg-[#05070c]'
           }`}
           >
-            <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
+            <p className="truncate sv-num text-[11px] normal-case text-slate-100">{job.name}</p>
             <p className="mt-1 text-[10px] text-[#8a92a6]">{job.lastDuration || '-'}</p>
             <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
             <HistoryStrip history={job.history7d ?? []} />
@@ -211,16 +211,16 @@ export default function SchedulerPage() {
           description="用 SLO、7 日狀態條、duration 與 next run 判斷：排程有沒有跑、是不是假成功、下一個卡點在哪。"
           action={
             <div className="flex flex-wrap gap-2">
-              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">
+              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 sv-num text-[10px] normal-case text-[#f1c16f]">
                 OBS <ExternalLink className="h-3 w-3" />
               </a>
-              <a href="/data-quality" className="inline-flex items-center gap-1 rounded-full border border-[#3a3125] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#b9b1a1]">
+              <a href="/data-quality" className="inline-flex items-center gap-1 rounded-full border border-[#3a3125] px-2 py-1 sv-num text-[10px] normal-case text-[#b9b1a1]">
                 Data Quality <ExternalLink className="h-3 w-3" />
               </a>
               <button
                 type="button"
                 onClick={() => void scheduler.refetch()}
-                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]"
+                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 sv-num text-[10px] normal-case text-[#f1c16f]"
               >
                 <RefreshCw className={`h-3 w-3 ${scheduler.isFetching ? 'animate-spin' : ''}`} />
                 Refresh
@@ -271,7 +271,7 @@ export default function SchedulerPage() {
                 <div key={job.id} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-slate-100">{job.name}</p>
+                      <p className="truncate sv-num text-[11px] normal-case text-slate-100">{job.name}</p>
                       <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{job.summary || job.schedule}</p>
                       {job.consolidation && (
                         <p className="mt-1 text-xs leading-5 text-[#70809b]">
@@ -281,7 +281,7 @@ export default function SchedulerPage() {
                     </div>
                     <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
                   </div>
-                  <p className="mt-2 font-mono text-[10px] text-[#70809b]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
+                  <p className="mt-2 sv-num text-[10px] text-[#70809b]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
                 </div>
               ))}
               {!suspiciousJobs.length && (
@@ -295,7 +295,7 @@ export default function SchedulerPage() {
                   <Clock className="h-4 w-4" />
                   Reading rule
                 </div>
-                <span className="font-mono">&lt;1s</span>、<span className="font-mono">--</span>、<span className="font-mono">N/A</span> 代表需要追 callback / queue / run log，不應直接視為成功。
+                <span className="sv-num">&lt;1s</span>、<span className="sv-num">--</span>、<span className="sv-num">N/A</span> 代表需要追 callback / queue / run log，不應直接視為成功。
               </div>
             </div>
           </WorkstationPanel>

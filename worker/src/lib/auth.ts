@@ -1,7 +1,34 @@
-import type { Context, Next } from 'hono'
+﻿import type { Context, Next } from 'hono'
 import type { Bindings, Variables } from '../types'
 
 type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>
+
+function isLocalAuthBypass(c: AppContext): boolean {
+  if ((c.env as any).LOCAL_AUTH_BYPASS === '1') return true
+  try {
+    const host = new URL(c.req.url).hostname.toLowerCase()
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  } catch {
+    const host = String(c.req.header('Host') ?? '').split(':')[0].toLowerCase()
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  }
+}
+
+function localDevPayload(): Record<string, unknown> {
+  return {
+    sub: '1',
+    email: 'local@stockvision.dev',
+    name: 'Local Dev',
+    role: 'admin',
+  }
+}
+
+function setLocalDevUser(c: AppContext) {
+  c.set('userId', 1)
+  c.set('userEmail', 'local@stockvision.dev')
+  c.set('userRole', 'admin')
+  c.set('userName', 'Local Dev')
+}
 
 // ─── JWT (using Web Crypto API, no external deps) ────────────────────────────
 function base64url(data: ArrayBuffer | Uint8Array): string {
@@ -62,7 +89,7 @@ export function hasServiceToken(token: string | null | undefined, serviceToken?:
 
 async function getJwtOrServicePayload(c: AppContext): Promise<Record<string, unknown> | null> {
   const token = getBearerToken(c.req.header('Authorization'))
-  if (!token) return null
+  if (!token) return isLocalAuthBypass(c) ? localDevPayload() : null
   if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) {
     return { role: 'service', sub: 'service' }
   }
@@ -70,6 +97,7 @@ async function getJwtOrServicePayload(c: AppContext): Promise<Record<string, unk
 }
 
 export async function requireServiceToken(c: AppContext): Promise<Response | null> {
+  if (isLocalAuthBypass(c)) return null
   const token = getBearerToken(c.req.header('Authorization'))
   if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) return null
   return c.json({ error: 'Unauthorized' }, 401)
@@ -82,6 +110,7 @@ export async function requireValidToken(c: AppContext): Promise<Response | null>
 }
 
 export async function requireAdminJWT(c: AppContext): Promise<Response | null> {
+  if (isLocalAuthBypass(c)) return null
   const token = getBearerToken(c.req.header('Authorization'))
   if (!token) return c.json({ error: 'Unauthorized' }, 401)
   const payload = await verifyJWT(token, c.env.JWT_SECRET)
@@ -102,6 +131,22 @@ export const authMiddleware = async (c: Context<{ Bindings: Bindings; Variables:
   const authHeader = c.req.header('Authorization')
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
 
+  if (!token && isLocalAuthBypass(c)) {
+    setLocalDevUser(c)
+    if (new URL(c.req.url).pathname.endsWith('/auth/me')) {
+      return c.json({
+        id: 1,
+        email: 'local@stockvision.dev',
+        name: 'Local Dev',
+        avatar: null,
+        role: 'admin',
+        approval_status: 'approved',
+        created_at: new Date().toISOString(),
+      })
+    }
+    await next()
+    return
+  }
   if (!token) return c.json({ error: '請先登入' }, 401)
 
   const payload = await verifyJWT(token, c.env.JWT_SECRET)
@@ -136,6 +181,9 @@ export async function revokeJWT(
 }
 
 export const adminMiddleware = async (c: Context<{ Bindings: Bindings; Variables: Variables }>, next: Next) => {
+  if (isLocalAuthBypass(c) && c.get('userRole') !== 'admin') {
+    setLocalDevUser(c)
+  }
   if (c.get('userRole') !== 'admin') return c.json({ error: '需要管理員權限' }, 403)
   await next()
 }

@@ -18,8 +18,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Activity, BrainCircuit, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
-import StrategyExperimentTimeline from '@/components/charts/StrategyExperimentTimeline'
-import StrategyFamilyWorkbench from '@/components/strategy-lab/StrategyFamilyWorkbench'
 
 type MetaLearningTrack = NonNullable<ResearchExperimentsResponse['meta_learning_tracks']>[number]
 type MetaLearningEvidenceRow = NonNullable<ResearchExperimentsResponse['meta_learning_evidence_matrix']>[number]
@@ -207,7 +205,7 @@ function StrategySpecCard({ spec, dryRun }: { spec: StrategySpec; dryRun?: Strat
       </div>
 
       <div className="mt-4 space-y-2">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Why it matters</div>
+        <div className="text-[10px] font-semibold normal-case text-slate-500">Why it matters</div>
         <div className="flex flex-wrap gap-2">
           {thresholds.map(([key, value]) => (
             <Badge key={key} variant="outline" className="border-slate-700 text-slate-300">
@@ -469,14 +467,14 @@ function StrategyLearningPanel({
           </div>
           <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[0.8fr_1.2fr]">
             <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">policy id</div>
+              <div className="text-[10px] normal-case text-slate-500">policy id</div>
               <div className="mt-1 break-all font-semibold text-slate-100">{policy?.policy_id ?? '-'}</div>
               <div className="mt-2 text-slate-500">updated {policy?.updated_at ?? '-'}</div>
             </div>
             <div className="space-y-2">
               {policyWeights.map(([strategyId, weight]) => (
                 <div key={strategyId}>
-                  <div className="flex justify-between gap-3 text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                  <div className="flex justify-between gap-3 text-[10px] normal-case text-slate-500">
                     <span className="truncate">{strategyId}</span><span>{pct(Number(weight))}</span>
                   </div>
                   <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-800">
@@ -489,7 +487,7 @@ function StrategyLearningPanel({
           </div>
         </div>
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-black/20">
-          <div className="hidden grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr] gap-3 border-b border-slate-800 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 xl:grid">
+          <div className="hidden grid-cols-[1.35fr_0.9fr_1fr_0.9fr_1.2fr] gap-3 border-b border-slate-800 px-4 py-2 text-[10px] font-semibold normal-case text-slate-500 xl:grid">
             <div>Strategy</div>
             <div>Outcomes</div>
             <div>Reward</div>
@@ -523,7 +521,7 @@ function StrategyLearningPanel({
                     <div><span className="text-slate-500">MDD </span><span className="text-amber-200">{pct(row.learning.max_drawdown_pct)}</span></div>
                   </div>
                   <div>
-                    <div className="flex justify-between gap-2 text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                    <div className="flex justify-between gap-2 text-[10px] normal-case text-slate-500">
                       <span>shadow</span><span>{pct(weight)}</span>
                     </div>
                     <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-800">
@@ -751,30 +749,39 @@ function MetaLearningDecisionDesk({
             <Activity className="h-4 w-4 text-emerald-300" /> Evidence Matrix
           </div>
           {visible.length ? (
-            <div className="mt-3 overflow-x-auto">
-              <table className="w-full min-w-[640px] text-left text-xs">
-                <thead className="text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                  <tr>
-                    <th className="border-b border-slate-800 py-2 pr-3">Track</th>
-                    <th className="border-b border-slate-800 py-2 pr-3">Evidence required</th>
-                    <th className="border-b border-slate-800 py-2 pr-3">Registry</th>
-                    <th className="border-b border-slate-800 py-2 pr-3">Decision</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map((track) => {
-                    const evidence = matrixById.get(track.id)
-                    return (
-                    <tr key={track.id} className="align-top">
-                      <td className="border-b border-slate-900 py-3 pr-3 font-semibold text-slate-100">{track.id}</td>
-                      <td className="border-b border-slate-900 py-3 pr-3 text-slate-400">{evidence?.missing_evidence.slice(0, 5).join(' / ') || 'ready'}</td>
-                      <td className="border-b border-slate-900 py-3 pr-3 text-slate-300">{track.registered_experiment_ids.join(', ') || 'missing'} / latest {evidence?.latest_evidence_at ?? '-'}</td>
-                      <td className="border-b border-slate-900 py-3 pr-3 text-amber-200">{decisionZhClean(track.decision_queue_status)} / ledger {evidenceLabel(evidence?.reward_ledger_status)} / shadow {evidenceLabel(evidence?.shadow_status)}</td>
-                    </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+            <div className="mt-3 grid gap-3 xl:grid-cols-2">
+              {visible.map((track) => {
+                const evidence = matrixById.get(track.id)
+                return (
+                  <div key={track.id} className="rounded-2xl border border-white/[0.08] bg-white/[0.035] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-100">{track.id}</p>
+                        <p className="mt-1 text-xs leading-5 text-slate-500">
+                          latest {evidence?.latest_evidence_at ?? '-'}
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="border-amber-400/25 bg-amber-400/10 text-amber-200">
+                        {decisionZhClean(track.decision_queue_status)}
+                      </Badge>
+                    </div>
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      <div className="rounded-xl border border-white/[0.06] bg-black/15 p-3">
+                        <p className="text-[11px] text-slate-500">Evidence</p>
+                        <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-300">{evidence?.missing_evidence.slice(0, 5).join(' / ') || 'ready'}</p>
+                      </div>
+                      <div className="rounded-xl border border-white/[0.06] bg-black/15 p-3">
+                        <p className="text-[11px] text-slate-500">Registry</p>
+                        <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-300">{track.registered_experiment_ids.join(', ') || 'missing'}</p>
+                      </div>
+                      <div className="rounded-xl border border-white/[0.06] bg-black/15 p-3">
+                        <p className="text-[11px] text-slate-500">State</p>
+                        <p className="mt-1 text-xs leading-5 text-amber-200">ledger {evidenceLabel(evidence?.reward_ledger_status)} / shadow {evidenceLabel(evidence?.shadow_status)}</p>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <div className="mt-3 rounded-xl border border-dashed border-slate-800 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
@@ -858,7 +865,7 @@ function RegistryInspectorPanel({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Select evidence source</div>
+          <div className="text-[10px] font-semibold normal-case text-slate-500">Select evidence source</div>
           <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
             {metaTracks.slice(0, 5).map((track) => (
               <button
@@ -1113,7 +1120,7 @@ function RegistryInspectorPanel({
                 <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
                   {ARTIFACT_INTENT_FIELDS.map((field) => (
                     <label key={`${selectedExperiment.id}-${field.key}`} className="text-[11px] text-slate-500">
-                      <span className="mb-1 block uppercase tracking-[0.12em]">
+                      <span className="mb-1 block normal-case">
                         {field.label}{field.required ? ' *' : ''}
                       </span>
                       <input
@@ -1223,16 +1230,16 @@ function StrategyLifecycleSwimlane({
           <div key={row.spec.id} className="grid gap-2 rounded-2xl border border-slate-800 bg-black/20 p-3 text-xs lg:grid-cols-[minmax(180px,0.9fr)_repeat(4,minmax(110px,1fr))_90px]">
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-slate-100">{row.spec.name}</div>
-              <div className="mt-1 truncate font-mono text-[10px] text-slate-500">{row.spec.id}</div>
+              <div className="mt-1 truncate sv-num text-[10px] text-slate-500">{row.spec.id}</div>
             </div>
             {row.cells.map((cell) => (
               <div key={cell.label} className={`rounded-xl border px-3 py-2 ${cell.ok ? 'border-emerald-500/25 bg-emerald-500/10' : 'border-amber-500/25 bg-amber-500/10'}`}>
-                <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">{cell.label}</div>
+                <div className="sv-num text-[10px] normal-case text-slate-500">{cell.label}</div>
                 <div className={cell.ok ? 'mt-1 font-semibold text-emerald-100' : 'mt-1 font-semibold text-amber-100'}>{cell.value}</div>
               </div>
             ))}
             <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-2">
-              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">Registry</div>
+              <div className="sv-num text-[10px] normal-case text-slate-500">Registry</div>
               <div className="mt-1 font-semibold text-sky-100">{row.experiments}</div>
             </div>
           </div>
@@ -1699,7 +1706,7 @@ export default function StrategyLabPage() {
         <div className="rounded-3xl border border-amber-500/20 bg-[radial-gradient(circle_at_18%_20%,rgba(245,158,11,0.18),transparent_28%),linear-gradient(135deg,#151714,#0b0f14_62%,#17110a)] p-5 shadow-[0_24px_90px_rgba(0,0,0,0.28)]">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-amber-300">Research Mission Control</p>
+              <p className="text-[10px] font-semibold normal-case text-amber-300">Research Mission Control</p>
               <h1 className="mt-2 flex items-center gap-2 text-2xl font-bold text-amber-50">
                 <FlaskConical className="h-5 w-5 text-amber-300" /> 策略研究室
               </h1>
@@ -1712,19 +1719,6 @@ export default function StrategyLabPage() {
             </Button>
           </div>
         </div>
-
-        <StrategyFamilyWorkbench
-          specs={specs?.specs ?? []}
-          dryRun={dryRun}
-          learning={strategyLearning}
-          experiments={experiments?.experiments ?? []}
-        />
-
-        <StrategyExperimentTimeline
-          specs={specs?.specs ?? []}
-          dryRun={dryRun}
-          experiments={experiments?.experiments ?? []}
-        />
 
         <StrategyLifecycleSwimlane
           specs={specs?.specs ?? []}
@@ -1749,7 +1743,7 @@ export default function StrategyLabPage() {
           ].map(([label, value, hint]) => (
             <Card key={label as string} className="border-slate-800 bg-slate-950/70">
               <CardContent className="p-4">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</div>
+                <div className="text-[10px] normal-case text-slate-500">{label}</div>
                 <div className="mt-2 text-2xl font-bold text-slate-100">{value}</div>
                 <div className="mt-1 truncate text-xs text-slate-500">{hint}</div>
               </CardContent>
@@ -1760,7 +1754,7 @@ export default function StrategyLabPage() {
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(420px,0.85fr)]">
           <div className="space-y-4">
             <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-300">Action Lanes</div>
+              <div className="text-[10px] font-semibold normal-case text-cyan-300">Action Lanes</div>
               <div className="mt-1 text-xs leading-5 text-slate-500">
                 左側是可執行操作；右側 inspector 是該操作對應的 registry evidence 與下一步。
               </div>
@@ -1871,7 +1865,7 @@ export default function StrategyLabPage() {
         <div className="rounded-3xl border border-slate-800 bg-slate-950/50 p-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Strategy Ops</div>
+              <div className="text-[10px] font-semibold normal-case text-emerald-300">Strategy Ops</div>
               <div className="mt-1 text-sm font-semibold text-slate-100">Pre-trade Spec + Dry-run / Post-trade Learning + Reward</div>
               <p className="mt-1 text-xs leading-5 text-slate-500">
                 左欄只看策略定義與當日候選池命中；右欄只看後驗 reward、promotion gate 與 adaptive shadow 權重。

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+﻿import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Database, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -46,10 +46,10 @@ function DataQualityMetric({ label, value, tone, detail }: { label: string; valu
   return (
     <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
+        <p className="sv-num text-[10px] normal-case text-slate-500">{label}</p>
         <WorkstationPill tone={tone}>{tone}</WorkstationPill>
       </div>
-      <p className={`mt-2 font-mono text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-200'}`}>
+      <p className={`mt-2 sv-num text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-200'}`}>
         {value}
       </p>
       <MiniBar tone={tone} value={tone === 'error' ? 100 : tone === 'warn' ? 62 : 92} />
@@ -94,7 +94,7 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
             return (
               <div key={source} className="bg-[#05070c] p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-100">{source}</p>
+                  <p className="sv-num text-[11px] normal-case text-slate-100">{source}</p>
                   <WorkstationPill tone={tone}>{row?.freshness_status ?? 'missing'}</WorkstationPill>
                 </div>
                 <MiniBar tone={tone} value={row ? Math.max(0, 100 - missing) : 0} />
@@ -132,12 +132,12 @@ function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boole
           <WorkstationPill tone={tone}>{check.status}</WorkstationPill>
           <p className="truncate text-sm font-semibold text-slate-100">{check.label}</p>
         </div>
-        <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">{check.id}</p>
+        <p className="mt-1 sv-num text-[10px] normal-case text-slate-500">{check.id}</p>
         <MiniBar tone={tone} value={check.status === 'ok' ? 96 : check.status === 'warn' ? 62 : 100} />
       </div>
       <p className="line-clamp-2 leading-5 text-slate-400">{check.summary}</p>
-      <p className="font-mono text-[10px] leading-5 text-slate-500">{metricSummary(check)}</p>
-      <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-200 hover:text-emerald-100">
+      <p className="sv-num text-[10px] leading-5 text-slate-500">{metricSummary(check)}</p>
+      <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 sv-num text-[10px] normal-case text-emerald-200 hover:text-emerald-100">
         Inspect <ExternalLink className="h-3 w-3" />
       </a>
     </div>
@@ -186,13 +186,13 @@ export default function DataQualityPage() {
           description="專注 freshness、schema、train/serve parity；OBS 看總覽，這頁看每一個檢查項目的證據。"
           action={
             <div className="flex flex-wrap gap-2">
-              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]">
+              <a href="/obs" className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 sv-num text-[10px] normal-case text-[#f1c16f]">
                 OBS <ExternalLink className="h-3 w-3" />
               </a>
               <button
                 type="button"
                 onClick={() => void quality.refetch()}
-                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-[#f1c16f]"
+                className="inline-flex items-center gap-1 rounded-full border border-[#d6a85f]/30 px-2 py-1 sv-num text-[10px] normal-case text-[#f1c16f]"
               >
                 <RefreshCw className={`h-3 w-3 ${quality.isFetching ? 'animate-spin' : ''}`} />
                 Refresh

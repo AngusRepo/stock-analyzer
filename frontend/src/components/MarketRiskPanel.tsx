@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -232,7 +232,7 @@ function MarketFearGauge({ score, level }: { score: number; level: keyof typeof 
   const needleY = 120 + Math.sin(angle) * 76
   return (
     <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-center">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Market Composite</div>
+      <div className="text-[10px] font-semibold normal-case text-muted-foreground">Market Composite</div>
       <svg viewBox="0 0 240 150" className="mx-auto mt-2 h-32 w-full max-w-[260px] overflow-visible">
         <defs>
           <linearGradient id="market-risk-gauge" x1="0" x2="1" y1="0" y2="0">
@@ -279,11 +279,11 @@ function FactorCard({ group }: { group: FactorGroup }) {
           {STATUS_LABEL[group.status]}
         </span>
       </div>
-      <div className="mt-3 break-words font-mono text-base font-semibold leading-6 tabular-nums">{group.value}</div>
+      <div className="mt-3 break-words sv-num text-base font-semibold leading-6 tabular-nums">{group.value}</div>
       <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
         {group.missingReason ? `缺資料：${group.missingReason}` : group.detail}
       </div>
-      <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[10px] text-muted-foreground/80">
+      <div className="mt-2 flex items-center justify-between gap-2 sv-num text-[10px] text-muted-foreground/80">
         {isUrl ? (
           <a className="truncate text-sky-300 hover:text-sky-200" href={group.source} target="_blank" rel="noreferrer">
             source link
@@ -315,22 +315,22 @@ function MarketOutlookCard({ outlook }: { outlook: NonNullable<MarketRisk['marke
           <TrendingUp className="h-4 w-4" />
           <span className="text-sm font-semibold">TWII Optimistic Target</span>
         </div>
-        <span className="rounded-full border border-current/25 px-2 py-0.5 text-[10px] uppercase">
+        <span className="rounded-full border border-current/25 px-2 py-0.5 text-[10px] normal-case">
           {outlook.confidence}
         </span>
       </div>
       <div className="mt-3 grid gap-3 sm:grid-cols-3">
         <div>
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Base</div>
-          <div className="font-mono text-base font-semibold tabular-nums">{base}</div>
+          <div className="text-[10px] normal-case text-muted-foreground">Base</div>
+          <div className="sv-num text-base font-semibold tabular-nums">{base}</div>
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Optimistic</div>
-          <div className="font-mono text-base font-semibold tabular-nums">{target}</div>
+          <div className="text-[10px] normal-case text-muted-foreground">Optimistic</div>
+          <div className="sv-num text-base font-semibold tabular-nums">{target}</div>
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{outlook.horizon_trading_days}D Upside</div>
-          <div className="font-mono text-base font-semibold tabular-nums">{upside}</div>
+          <div className="text-[10px] normal-case text-muted-foreground">{outlook.horizon_trading_days}D Upside</div>
+          <div className="sv-num text-base font-semibold tabular-nums">{upside}</div>
         </div>
       </div>
       <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
@@ -379,7 +379,7 @@ export default function MarketRiskPanel() {
       <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-5 text-sm">
         <p className="font-semibold text-amber-200">市場判讀 API 載入失敗</p>
         <p className="mt-1 text-xs text-muted-foreground">請檢查 OBS/Data Quality 的 market_risk 與 market_regime_state。</p>
-        <p className="mt-2 font-mono text-[10px] text-muted-foreground/70">source=market/risk status=degraded</p>
+        <p className="mt-2 sv-num text-[10px] text-muted-foreground/70">source=market/risk status=degraded</p>
       </div>
     )
   }
@@ -397,7 +397,7 @@ export default function MarketRiskPanel() {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className={`h-4 w-4 ${cfg.color}`} />
-            <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">今日市場判讀</span>
+            <span className="text-xs font-semibold normal-case text-muted-foreground">今日市場判讀</span>
             {missingCount > 0 && (
               <span className="rounded-full border border-slate-500/30 px-2 py-0.5 text-[10px] text-slate-300">
                 missing {missingCount}
@@ -406,8 +406,8 @@ export default function MarketRiskPanel() {
           </div>
           <div className="mt-2 flex flex-wrap items-end gap-3">
             <div className={`text-2xl font-bold ${cfg.color}`}>{cfg.label}</div>
-            <div className="font-mono text-xs text-muted-foreground">run_date={risk.regimeState?.runDate ?? risk.date}</div>
-            <div className="font-mono text-xs text-muted-foreground">generated={formatTwDateTimeShort(packetGeneratedAt)}</div>
+            <div className="sv-num text-xs text-muted-foreground">run_date={risk.regimeState?.runDate ?? risk.date}</div>
+            <div className="sv-num text-xs text-muted-foreground">generated={formatTwDateTimeShort(packetGeneratedAt)}</div>
           </div>
           {risk.marketOutlook && <MarketOutlookCard outlook={risk.marketOutlook} />}
           <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">

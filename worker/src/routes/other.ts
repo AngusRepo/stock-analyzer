@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+﻿import { Hono } from 'hono'
 
 // ── 安全的 ID 解析（parseInt NaN 防護）─────────────────────────────────────
 function parseId(s: string | undefined | null): number | null {
@@ -8,6 +8,102 @@ function parseId(s: string | undefined | null): number | null {
 function parsePosInt(s: string | undefined | null, fallback: number): number {
   const n = parseInt(s ?? '')
   return isNaN(n) || n <= 0 ? fallback : n
+}
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .trim()
+}
+function extractXmlTag(item: string, tag: string): string {
+  const match = item.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'))
+  return match ? decodeXmlEntities(match[1]) : ''
+}
+function parseRssItems(xml: string, source: string, limit: number) {
+  return Array.from(xml.matchAll(/<item\b[\s\S]*?<\/item>/gi))
+    .slice(0, limit)
+    .map((match) => {
+      const raw = match[0]
+      const title = extractXmlTag(raw, 'title')
+      const url = extractXmlTag(raw, 'link')
+      const publishedAt = extractXmlTag(raw, 'pubDate') || extractXmlTag(raw, 'published')
+      const publishedDate = publishedAt ? new Date(publishedAt) : null
+      const summary = extractXmlTag(raw, 'description').replace(/<[^>]+>/g, '').slice(0, 180)
+      return {
+        source,
+        title,
+        url,
+        published_at: publishedDate && Number.isFinite(publishedDate.getTime()) ? publishedDate.toISOString() : null,
+        summary,
+      }
+    })
+    .filter((item) => item.title && item.url)
+}
+const STOCK_NEWS_PATTERN = /股票|台股|股市|上市|上櫃|櫃買|個股|類股|股價|收盤|開盤|盤中|盤後|外資|投信|自營商|三大法人|成交量|融資|融券|台積電|鴻海|聯發科|電子股|金融股|權值股|ETF|除權息|營收|法說|財報|殖利率|現金股利|當沖|期貨|台指期/i
+function isStockMarketNews(item: { title?: string | null; summary?: string | null; url?: string | null }): boolean {
+  const text = `${item.title ?? ''} ${item.summary ?? ''}`
+  return STOCK_NEWS_PATTERN.test(text)
+}
+function vixLevelFromValue(vix: number | null): string {
+  if (vix == null) return 'unknown'
+  if (vix < 15) return 'low'
+  if (vix < 20) return 'normal'
+  if (vix < 30) return 'elevated'
+  if (vix < 40) return 'high'
+  return 'extreme'
+}
+async function fetchYahooCloses(symbol: string, range = '3mo'): Promise<number[]> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=${range}`
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+    if (!res.ok) return []
+    const json = await res.json() as any
+    return (json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [])
+      .map((v: unknown) => Number(v))
+      .filter((v: number) => Number.isFinite(v) && v > 0)
+  } catch {
+    return []
+  }
+}
+function annualizedVolPct(closes: number[]): number | null {
+  if (closes.length < 22) return null
+  const last = closes.slice(-21)
+  const returns = last.slice(1).map((close, index) => Math.log(close / last[index]))
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length
+  const variance = returns.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / Math.max(1, returns.length - 1)
+  return Math.round(Math.sqrt(variance) * Math.sqrt(252) * 1000) / 10
+}
+async function buildMarketRiskFallback(reason: string) {
+  const [vixCloses, twiiCloses] = await Promise.all([
+    fetchYahooCloses('^VIX', '5d'),
+    fetchYahooCloses('^TWII', '3mo'),
+  ])
+  const vix = vixCloses.length ? Math.round(vixCloses[vixCloses.length - 1] * 10) / 10 : null
+  const twiiVol20 = annualizedVolPct(twiiCloses)
+  return {
+    date: new Date().toISOString().slice(0, 10),
+    vix,
+    vixLevel: vixLevelFromValue(vix),
+    twiiClose: twiiCloses.length ? Math.round(twiiCloses[twiiCloses.length - 1] * 100) / 100 : null,
+    twiiVol20,
+    twiiMa20: null,
+    twiiBias: null,
+    foreignConsecutiveSell: null,
+    foreignNet5d: null,
+    marginRatio: null,
+    limitDownCount: null,
+    limitDownPct: null,
+    riskScore: 50,
+    riskLevel: 'local_fallback',
+    riskSummary: `本機 market_risk 資料不可用，暫以 Yahoo VIX / TWII 20日波動率顯示。原因：${reason}`,
+    calculatedAt: new Date().toISOString(),
+    contextFactors: [],
+  }
 }
 
 import type { Bindings, Variables } from '../types'
@@ -44,32 +140,250 @@ import { buildMarketOptimisticOutlook } from '../lib/marketOutlook'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
 import { getAdaptiveParamsForRegime } from '../lib/adaptiveConfig'
+import { fetchTaifexNightClose } from '../lib/twseApi'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
 // ════════════════════════════════════════════════════════════════════════════
 export const market = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices', async () => {
-    const fetchIdx = async (symbol: string, name: string) => {
-      try {
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`
-        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        const json = await res.json() as any
-        const result = json.chart?.result?.[0]
-        if (!result) return null
-        const meta   = result.meta ?? {}
-        const closes = (result.indicators?.quote?.[0]?.close ?? []).filter((v: any) => v != null)
-        const curr   = meta.regularMarketPrice ?? closes[closes.length - 1] ?? 0
-        const prev   = closes.length >= 2 ? closes[closes.length - 2] : (meta.chartPreviousClose ?? curr)
-        const change = curr - prev, changePct = prev ? (change / prev) * 100 : 0
-        return { symbol, name, current: Math.round(curr * 100) / 100, change: Math.round(change * 100) / 100, changePct: Math.round(changePct * 100) / 100 }
-      } catch (e) { console.error(`[market] fetchIdx ${symbol} failed:`, e); return null }
+type MarketSeriesCandidate = {
+  sql: string
+  binds?: unknown[]
+  source: string
+}
+
+type MarketSeriesPoint = {
+  date: string
+  close: number
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function buildIndexSnapshot(
+  symbol: string,
+  name: string,
+  points: MarketSeriesPoint[],
+  source: string,
+) {
+  const series = points
+    .filter((point) => Number.isFinite(point.close))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-30)
+  const current = series.at(-1)?.close ?? null
+  const prev = series.length >= 2 ? series.at(-2)?.close ?? null : null
+  const change = current != null && prev != null ? current - prev : null
+  const changePct = current != null && prev ? (change! / prev) * 100 : null
+
+  return {
+    symbol,
+    name,
+    current: current == null ? null : Math.round(current * 100) / 100,
+    change: change == null ? null : Math.round(change * 100) / 100,
+    changePct: changePct == null ? null : Math.round(changePct * 100) / 100,
+    source,
+    status: current == null ? 'missing_finlab_source' : 'ok',
+    history: series.map((point) => ({ date: point.date, close: Math.round(point.close * 100) / 100 })),
+  }
+}
+
+async function loadFinlabSeries(
+  db: D1Database,
+  symbol: string,
+  name: string,
+  candidates: MarketSeriesCandidate[],
+) {
+  for (const candidate of candidates) {
+    try {
+      const query = db.prepare(candidate.sql)
+      const result = candidate.binds?.length
+        ? await query.bind(...candidate.binds).all<any>()
+        : await query.all<any>()
+      const points = (result.results ?? [])
+        .map((row: any) => {
+          const date = String(row.date ?? row.trading_date ?? row.data_date ?? '').slice(0, 10)
+          const close = numberOrNull(row.close ?? row.value ?? row.current ?? row.price)
+          return date && close != null ? { date, close } : null
+        })
+        .filter((point): point is MarketSeriesPoint => Boolean(point))
+
+      if (points.length > 0) {
+        return buildIndexSnapshot(symbol, name, points, candidate.source)
+      }
+    } catch (e) {
+      console.warn(`[market/indices] FinLab candidate skipped for ${symbol}: ${candidate.source}`, e)
     }
-    const [twii, twoii] = await Promise.all([fetchIdx('^TWII', '加權指數'), fetchIdx('^TWOII', '櫃買指數')])
-    return { twii, twoii, updatedAt: new Date().toISOString() }
+  }
+
+  return buildIndexSnapshot(symbol, name, [], `FinLab source missing: ${candidates.map((item) => item.source).join(' / ')}`)
+}
+
+market.get('/indices', async (c) => {
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v2', async () => {
+    const [twii, twoii, txfDay, taifexNight] = await Promise.all([
+      loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
+        {
+          sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TWII', 'TAIEX'],
+          source: 'FinLab canonical_market_index_daily',
+        },
+        {
+          sql: 'SELECT date, close FROM market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TWII', 'TAIEX'],
+          source: 'FinLab market_index_daily',
+        },
+        {
+          sql: 'SELECT date, close FROM finlab_tw_stock_market_ind WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TWII', 'TAIEX'],
+          source: 'FinLab etl:finlab_tw_stock_market_ind',
+        },
+        {
+          sql: 'SELECT date, "發行量加權股價報酬指數" AS close FROM benchmark_return WHERE "發行量加權股價報酬指數" IS NOT NULL ORDER BY date DESC LIMIT 30',
+          source: 'FinLab benchmark_return:發行量加權股價報酬指數',
+        },
+        {
+          sql: 'SELECT date, "發行量加權股價報酬指數" AS close FROM finlab_benchmark_return WHERE "發行量加權股價報酬指數" IS NOT NULL ORDER BY date DESC LIMIT 30',
+          source: 'FinLab finlab_benchmark_return',
+        },
+      ]),
+      loadFinlabSeries(c.env.DB, 'TWOII', '櫃買指數', [
+        {
+          sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TWOII', 'OTC', 'TPEX'],
+          source: 'FinLab canonical_market_index_daily',
+        },
+        {
+          sql: 'SELECT date, close FROM market_index_daily WHERE symbol IN (?, ?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TWOII', 'OTC', 'TPEX'],
+          source: 'FinLab market_index_daily',
+        },
+        {
+          sql: 'SELECT date, close FROM finlab_tw_stock_market_ind WHERE symbol IN (?, ?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TWOII', 'OTC', 'TPEX'],
+          source: 'FinLab etl:finlab_tw_stock_market_ind',
+        },
+      ]),
+      loadFinlabSeries(c.env.DB, 'TXF', '台指期貨', [
+        {
+          sql: 'SELECT date, close FROM finlab_futures_price WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TXF', 'TX'],
+          source: 'FinLab futures_price',
+        },
+        {
+          sql: 'SELECT date, "收盤價" AS close FROM futures_price WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TXF', 'TX'],
+          source: 'FinLab futures_price:收盤價',
+        },
+        {
+          sql: 'SELECT date, close FROM futures_price WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          binds: ['TXF', 'TX'],
+          source: 'FinLab futures_price',
+        },
+      ]),
+      fetchTaifexNightClose().catch(() => null),
+    ])
+    const txfNight = taifexNight ? {
+      symbol: 'TXF',
+      name: '台指期貨夜盤',
+      current: Math.round(taifexNight.lastPrice * 100) / 100,
+      change: Math.round(taifexNight.changePoints * 100) / 100,
+      changePct: Math.round(taifexNight.changePct * 100) / 100,
+      date: taifexNight.date,
+      time: taifexNight.time,
+      source: 'TAIFEX MIS',
+      status: 'ok',
+      history: [],
+    } : null
+    return {
+      twii,
+      twoii,
+      txfDay,
+      txfNight,
+      futuresSources: {
+        finlabDaily: ['futures_price', 'futures_institutional_investors_trading_summary', 'tw_taifex_futures_large_trader'],
+        liveNight: txfNight ? 'TAIFEX MIS fetchTaifexNightClose' : null,
+        dahuApiConfigured: false,
+      },
+      updatedAt: new Date().toISOString(),
+    }
   }, TTL.MARKET)
+  return c.json(data)
+})
+
+market.get('/news', async (c) => {
+  const limitPerSource = Math.min(parsePosInt(c.req.query('perSource'), 3), 6)
+  const data = await withCache(c.env.KV, `market:news:v4:stock-filter:${limitPerSource}`, async () => {
+    const feeds = [
+      { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5591' },
+      { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5588' },
+    ]
+    const rssGroups = await Promise.all(feeds.map(async (feed) => {
+      try {
+        const res = await fetch(feed.url, {
+          headers: {
+            Accept: 'application/rss+xml, application/xml, text/xml',
+            'User-Agent': 'StockVisionBot/1.0 (+https://stockvision)',
+          },
+        })
+        if (!res.ok) throw new Error(`rss_http_${res.status}`)
+        return parseRssItems(await res.text(), feed.source, limitPerSource * 10)
+          .filter(isStockMarketNews)
+          .slice(0, limitPerSource)
+      } catch (e) {
+        console.warn(`[market/news] RSS failed ${feed.url}:`, e)
+        return []
+      }
+    }))
+
+    const d1Rows = await c.env.DB.prepare(`
+      SELECT source, title, url, published_at, summary
+      FROM news
+      WHERE published_at >= datetime('now', '-10 days')
+      ORDER BY published_at DESC
+      LIMIT 120
+    `).all<any>().catch(() => ({ results: [] as any[] }))
+
+    const bySource = new Map<string, any[]>()
+    for (const row of d1Rows.results ?? []) {
+      const source = String(row.source || 'StockVision').trim()
+      if (/經濟日報|money\s*udn|udn/i.test(source) && !isStockMarketNews(row)) continue
+      const list = bySource.get(source) ?? []
+      if (list.length < limitPerSource) {
+        list.push({
+          source,
+          title: String(row.title || '').trim(),
+          url: row.url,
+          published_at: row.published_at,
+          summary: row.summary,
+        })
+        bySource.set(source, list)
+      }
+    }
+
+    const merged = new Map<string, any>()
+    for (const item of rssGroups.flat()) merged.set(item.url || item.title, item)
+    for (const rows of bySource.values()) {
+      for (const item of rows) merged.set(item.url || `${item.source}:${item.title}`, item)
+    }
+
+    const sourceCounts = new Map<string, number>()
+    const balanced = Array.from(merged.values())
+      .sort((a, b) => new Date(b.published_at ?? 0).getTime() - new Date(a.published_at ?? 0).getTime())
+      .filter((item) => {
+        const source = String(item.source || 'unknown')
+        const count = sourceCounts.get(source) ?? 0
+        if (count >= limitPerSource) return false
+        sourceCounts.set(source, count + 1)
+        return true
+      })
+
+    return balanced
+  }, 15 * 60)
+
   return c.json(data)
 })
 
@@ -591,11 +905,23 @@ market.get('/risk', async (c) => {
   if (cached) return c.json(JSON.parse(cached))
 
   // 從 D1 取最新一筆
-  const row = await c.env.DB.prepare(
-    'SELECT * FROM market_risk ORDER BY date DESC LIMIT 1'
-  ).first<any>()
+  let row: any | null = null
+  try {
+    row = await c.env.DB.prepare(
+      'SELECT * FROM market_risk ORDER BY date DESC LIMIT 1'
+    ).first<any>()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const fallback = await buildMarketRiskFallback(message)
+    await c.env.KV.put(cacheKey, JSON.stringify(fallback), { expirationTtl: 300 }).catch(() => {})
+    return c.json(fallback)
+  }
 
-  if (!row) return c.json({ error: '尚無大盤風險資料，請等待排程執行' }, 404)
+  if (!row) {
+    const fallback = await buildMarketRiskFallback('market_risk_empty')
+    await c.env.KV.put(cacheKey, JSON.stringify(fallback), { expirationTtl: 300 }).catch(() => {})
+    return c.json(fallback)
+  }
 
   const regimeState = await readMarketRegimeState(c.env.KV).catch(() => null)
   const factor = (

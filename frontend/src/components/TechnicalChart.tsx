@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+﻿import { useQuery } from '@tanstack/react-query'
 import { stocksApi } from '@/lib/api'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, Legend } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -34,21 +34,21 @@ export default function TechnicalChart({ stockId }: { stockId: number }) {
       <div className="grid grid-cols-3 gap-3 text-sm">
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground mb-1">RSI (14)</p>
-          <p className={`text-lg font-mono font-bold ${latest.rsi14 > 70 ? 'text-red-400' : latest.rsi14 < 30 ? 'text-emerald-400' : 'text-foreground'}`}>
+          <p className={`text-lg sv-num font-bold ${latest.rsi14 > 70 ? 'text-red-400' : latest.rsi14 < 30 ? 'text-emerald-400' : 'text-foreground'}`}>
             {latest.rsi14?.toFixed(1) ?? '—'}
           </p>
           <p className="text-xs text-muted-foreground">{latest.rsi14 > 70 ? '超買' : latest.rsi14 < 30 ? '超賣' : '中性'}</p>
         </div>
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground mb-1">MACD</p>
-          <p className={`text-lg font-mono font-bold ${latest.macd_hist > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+          <p className={`text-lg sv-num font-bold ${latest.macd_hist > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
             {latest.macd?.toFixed(3) ?? '—'}
           </p>
           <p className="text-xs text-muted-foreground">Signal: {latest.macd_signal?.toFixed(3) ?? '—'}</p>
         </div>
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground mb-1">布林通道</p>
-          <p className="text-sm font-mono">{latest.bb_upper?.toFixed(2) ?? '—'}</p>
+          <p className="text-sm sv-num">{latest.bb_upper?.toFixed(2) ?? '—'}</p>
           <p className="text-xs text-muted-foreground">Mid: {latest.bb_mid?.toFixed(2) ?? '—'}</p>
         </div>
       </div>

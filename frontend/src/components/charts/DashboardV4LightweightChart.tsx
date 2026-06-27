@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+﻿import { useEffect, useMemo, useRef } from 'react'
 import {
   CandlestickSeries,
   ColorType,
@@ -35,42 +35,42 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
     height: 430,
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: '#070a10' },
-      textColor: '#9aa6bd',
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      background: { type: ColorType.Solid, color: '#0a0b0f' },
+      textColor: '#8992a3',
+      fontFamily: 'Manrope, Noto Sans TC, system-ui, sans-serif',
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      vertLines: { color: 'rgba(255, 255, 255, 0.045)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.055)' },
     },
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 255, 255, 0.035)',
       scaleMargins: { top: 0.08, bottom: 0.12 },
     },
     timeScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 255, 255, 0.035)',
       timeVisible: false,
       secondsVisible: false,
     },
     crosshair: {
-      horzLine: { color: 'rgba(214, 168, 95, 0.35)' },
-      vertLine: { color: 'rgba(214, 168, 95, 0.35)' },
+      horzLine: { color: 'rgba(214, 168, 95, 0.42)' },
+      vertLine: { color: 'rgba(214, 168, 95, 0.42)' },
     },
   }
 }
 
 function LoadingPanel() {
   return (
-    <div className="grid min-h-[460px] place-items-center border border-[#263247] bg-[#070a10]">
+    <div className="grid min-h-[460px] place-items-center rounded-[20px] border border-white/[0.08] bg-[#0a0b0f]">
       <div className="h-28 w-full max-w-xl animate-pulse rounded bg-slate-800/50" />
     </div>
   )
 }
 function EmptyPanel({ message }: { message: string }) {
   return (
-    <div className="grid min-h-[460px] place-items-center border border-[#263247] bg-[#070a10] px-4 text-center">
+    <div className="grid min-h-[460px] place-items-center rounded-[20px] border border-white/[0.08] bg-[#0a0b0f] px-4 text-center">
       <div>
-        <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-amber-200">chart unavailable</p>
+        <p className="sv-num text-[11px] normal-case text-amber-200">chart unavailable</p>
         <p className="mt-2 text-sm text-slate-400">{message}</p>
       </div>
     </div>
@@ -91,12 +91,12 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
     chartRef.current = chart
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#ef4444',
-      downColor: '#10b981',
-      borderUpColor: '#ef4444',
-      borderDownColor: '#10b981',
-      wickUpColor: '#f87171',
-      wickDownColor: '#34d399',
+      upColor: '#ff3b45',
+      downColor: '#00c076',
+      borderUpColor: '#ff3b45',
+      borderDownColor: '#00c076',
+      wickUpColor: '#ff6b72',
+      wickDownColor: '#28d190',
     })
     candleSeries.setData(viewModel.candles)
     createSeriesMarkers(candleSeries, viewModel.modelMarkers)
@@ -105,7 +105,7 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
       const volumeSeries = chart.addSeries(HistogramSeries, {
         priceFormat: { type: 'volume' },
         priceScaleId: '',
-        color: 'rgba(148, 163, 184, 0.35)',
+        color: 'rgba(148, 163, 184, 0.24)',
       }, 1)
       volumeSeries.setData(viewModel.volume)
     }
@@ -114,7 +114,7 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
       const sectorFlowSeries = chart.addSeries(HistogramSeries, {
         priceFormat: { type: 'volume' },
         priceScaleId: '',
-        color: '#d6a85f',
+        color: 'rgba(214, 168, 95, 0.82)',
       }, 2)
       sectorFlowSeries.setData(viewModel.sectorFlow)
     }
@@ -141,19 +141,19 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
   if (!viewModel.candles.length) return <EmptyPanel message="No valid OHLC rows were available after the data-quality filter." />
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_8px_26px_rgba(0,0,0,0.16)]">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+    <section className="overflow-hidden rounded-[22px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.34)]">
+      <header className="grid gap-3 border-b border-white/[0.07] bg-[#101116] p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="min-w-0">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">Dashboard V4 / Lightweight Charts</p>
+          <p className="sv-num text-[10px] normal-case text-[#d6a85f]">Dashboard V4 / Lightweight Charts</p>
           <h2 className="mt-1 truncate text-lg font-semibold text-[#f2ead8]">{viewModel.title}</h2>
-          <p className="mt-1 font-mono text-[11px] text-[#8b9bab]">{viewModel.subtitle}</p>
+          <p className="mt-1 sv-num text-[11px] text-[#8b9bab]">{viewModel.subtitle}</p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-3 lg:min-w-[520px]">
           {viewModel.lanes.map((lane) => (
             <div key={lane.id} className={`border px-2.5 py-2 ${laneColor(lane.status)}`}>
               <div className="flex items-center justify-between gap-2">
-                <span className="font-mono uppercase tracking-[0.12em]">{lane.label}</span>
-                <span className="font-mono text-xs">{lane.value}</span>
+                <span className="sv-num normal-case">{lane.label}</span>
+                <span className="sv-num text-xs">{lane.value}</span>
               </div>
               <p className="mt-1 truncate text-[10px] opacity-75">{lane.detail}</p>
             </div>
@@ -161,9 +161,9 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
         </div>
       </header>
 
-      <div ref={containerRef} className="min-h-[430px] w-full bg-[#070a10]" />
+      <div ref={containerRef} className="min-h-[430px] w-full bg-[#0a0b0f]" />
 
-      <footer className="grid gap-2 border-t border-[#263247] bg-[#070a10] p-3 text-[11px] text-[#8b9bab] lg:grid-cols-[minmax(0,1fr)_auto]">
+      <footer className="grid gap-2 border-t border-white/[0.07] bg-[#101116] p-3 text-[11px] text-[#8b9bab] lg:grid-cols-[minmax(0,1fr)_auto]">
         <div className="min-w-0">
           <span className="text-[#d6a85f]">regime</span> {viewModel.regimeLabel}
           <span className="mx-2 text-slate-600">/</span>

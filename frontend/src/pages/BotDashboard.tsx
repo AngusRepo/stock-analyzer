@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 模擬交易室 — Auto Trade Bot 專頁
  *
  * Design: Dark Mode + Mobile-first, inspired by FreqUI + 3Commas
@@ -82,7 +82,7 @@ function ConvictionGauge({ value, size = 48 }: { value: number; size?: number })
       <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
         fill="none" stroke={color} strokeWidth={4} strokeLinecap="round"
         strokeDasharray={`${filled} ${circumHalf}`} />
-      <text x={cx} y={cy - 2} textAnchor="middle" fill={color} fontSize={size * 0.22} fontFamily="monospace" fontWeight="bold">
+      <text x={cx} y={cy - 2} textAnchor="middle" fill={color} fontSize={size * 0.22} fontFamily="Manrope, Noto Sans TC, system-ui, sans-serif" fontWeight="bold">
         {pct.toFixed(0)}
       </text>
     </svg>
@@ -204,9 +204,9 @@ function PortfolioSummary() {
     <div className="grid grid-cols-[1.2fr_repeat(4,1fr)_1fr_1.2fr] items-baseline gap-6 py-1 overflow-x-auto whitespace-nowrap">
       {/* 總資產 */}
       <div>
-        <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">總資產</div>
-        <div className="text-3xl font-mono font-bold text-foreground leading-tight">${fmt(totalAssets)}</div>
-        <span className={`text-sm font-mono font-semibold ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
+        <div className="text-xs text-muted-foreground normal-case font-medium mb-1">總資產</div>
+        <div className="text-3xl sv-num font-bold text-foreground leading-tight">${fmt(totalAssets)}</div>
+        <span className={`text-sm sv-num font-semibold ${pctClass(totalReturn)}`}>{totalReturn >= 0 ? '+' : ''}{(totalReturn * 100).toFixed(2)}%</span>
         {netUnsettledSettlement !== 0 && (
           <div className="text-[11px] text-muted-foreground/70 mt-1">
             含未交割 {netUnsettledSettlement > 0 ? '+' : ''}${fmt(Math.round(netUnsettledSettlement))}
@@ -221,14 +221,14 @@ function PortfolioSummary() {
         { label: 'Sharpe', val: sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: '30d', cls: sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-foreground' : 'text-red-400') : 'text-muted-foreground' },
       ].map(m => (
         <div key={m.label}>
-          <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">{m.label}</div>
-          <div className={`text-xl font-mono font-semibold leading-tight ${m.cls}`}>{m.val}</div>
+          <div className="text-xs text-muted-foreground normal-case font-medium mb-1">{m.label}</div>
+          <div className={`text-xl sv-num font-semibold leading-tight ${m.cls}`}>{m.val}</div>
           <span className="text-[11px] text-muted-foreground/60">{m.sub || '\u00A0'}</span>
         </div>
       ))}
       {/* vs 0050 */}
       <div>
-        <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">vs 0050</div>
+        <div className="text-xs text-muted-foreground normal-case font-medium mb-1">vs 0050</div>
         <div className="flex gap-4 mt-0.5">
           {[{ l: '週', w: beatsBenchmark(retWeek, bmWeek) }, { l: '月', w: beatsBenchmark(retMonth, bmMonth) }, { l: '季', w: beatsBenchmark(retQuarter, bmQuarter) }].map(b => (
             <div key={b.l} className="text-center"><div className="text-[11px] text-muted-foreground">{b.l}</div><WinLossBadge win={b.w} /></div>
@@ -238,12 +238,12 @@ function PortfolioSummary() {
       </div>
       {/* 近期報酬 */}
       <div>
-        <div className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">近期報酬</div>
+        <div className="text-xs text-muted-foreground normal-case font-medium mb-1">近期報酬</div>
         <div className="flex gap-5 mt-0.5">
           {[{ l: '週', v: retWeek }, { l: '月', v: retMonth }, { l: '季', v: retQuarter }].map(({ l, v }) => (
             <div key={l} className="text-center">
               <div className="text-[11px] text-muted-foreground">{l}</div>
-              <div className={`text-base font-mono font-semibold ${v != null ? pctClass(v) : 'text-muted-foreground/60'}`}>{v != null ? `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '-'}</div>
+              <div className={`text-base sv-num font-semibold ${v != null ? pctClass(v) : 'text-muted-foreground/60'}`}>{v != null ? `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '-'}</div>
             </div>
           ))}
         </div>
@@ -271,7 +271,7 @@ function PendingBuyStateBadges({ state, stale, meta, policy }: { state?: any; st
                 : 'border-muted-foreground/30 text-muted-foreground'
 
   return (
-    <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
+    <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] sv-num">
       <Badge variant="outline" className={`h-5 px-1.5 text-[9px] ${stateClass}`}>
         {state?.label ?? 'pending buys'}
       </Badge>
@@ -422,18 +422,18 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     qfList.map((q: any) => [q.symbol, { quadrant: q.quadrant, action: q.action }])
   )
 
-  if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
+  if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
 
   // 如果沒有 pending buys，fallback 到 daily recommendations
   if (!buys.length) {
     return (
       <div className="space-y-3">
         <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
-        <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate || 'today'} pending buys execution state</div>
+        <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
         <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
           {pendingBuyEmptyMessage(pendingMeta)}
-          <div className="mt-2 font-mono text-[10px] text-muted-foreground/70">
+          <div className="mt-2 sv-num text-[10px] text-muted-foreground/70">
             Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.
           </div>
         </div>
@@ -443,7 +443,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{showingDate} · L4 sparse final-buy execution pool</div>
+      <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{showingDate} · L4 sparse final-buy execution pool</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
@@ -477,7 +477,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
             <RecommendationCard rec={rec} rank={idx + 1} />
-            <div className="mx-2 -mt-2 mb-2 rounded-lg border border-muted/40 bg-background/40 px-3 py-2 text-[10px] font-mono text-muted-foreground">
+            <div className="mx-2 -mt-2 mb-2 rounded-lg border border-muted/40 bg-background/40 px-3 py-2 text-[10px] sv-num text-muted-foreground">
               <div className="flex flex-wrap gap-x-3 gap-y-1">
                 <span>execution: {executionBadge.label}</span>
                 <span>debate: {b.debate_status ?? 'pending'}</span>
@@ -536,6 +536,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
 // Fallback: 無掛單時顯示最新 daily recommendations
 function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
+  const [activeTab, setActiveTab] = useState<'summary' | 'trade-flow'>('summary')
   const { data: recData, isLoading } = useQuery({
     queryKey: ['recommendations', 'daily', 'latest'],
     queryFn: () => recommendationsApi.daily(),
@@ -544,12 +545,11 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   const { tradable: tradableRecs } = splitRecommendationLanes<any>(recData)
   const recs = tradableRecs
   const strategyPortfolioHealth = recData?.strategy_portfolio_intelligence_health
-  if (isLoading) return <div className="text-muted-foreground text-sm p-4 font-mono">Loading...</div>
-  if (!recs.length) return <div className="text-center py-6 text-muted-foreground/60 text-xs">目前沒有 Daily Recommendations 可顯示</div>
+  if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
   return (
     <div className="bot-fallback-recommendations space-y-3">
-      <div className="px-1 text-[10px] text-muted-foreground/60 font-mono">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
-      <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] font-mono">
+      <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
+      <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] sv-num">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
           tradable {recs.length}
         </Badge>
@@ -573,7 +573,34 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
         <span className="text-muted-foreground/70">Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.</span>
       </div>
 
-      <div className="grid grid-cols-1 gap-3">
+      <div className="rounded-xl border border-white/[0.08] bg-[#101116]/90 p-1">
+        <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.035] p-1">
+          {[
+            { key: 'summary', label: '推薦摘要' },
+            { key: 'trade-flow', label: '上市櫃交易流' },
+          ].map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setActiveTab(item.key as 'summary' | 'trade-flow')}
+              className={[
+                'rounded-full px-3 py-1.5 text-[11px] font-semibold transition-colors',
+                activeTab === item.key ? 'bg-amber-300/15 text-amber-200' : 'text-muted-foreground hover:text-foreground',
+              ].join(' ')}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === 'summary' ? (
+        <div className="rounded-xl border border-white/[0.08] bg-[#101116]/80 p-3 text-xs leading-5 text-muted-foreground">
+          {recs.length
+            ? '此區只提供每日推薦 fallback 摘要；真正會進 morning setup / debate / pending buys 的候選已移到「上市櫃交易流」分頁。'
+            : '目前沒有 Daily Recommendations 可顯示；上市櫃交易流分頁會保留空狀態，方便確認 pipeline 是否產出候選。'}
+        </div>
+      ) : (
         <div className="space-y-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
           <div className="flex items-center justify-between px-1">
             <div>
@@ -585,22 +612,22 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
             </Badge>
           </div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {recs.slice(0, 16).map((r: any, idx: number) => (
-            <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
-              <RecommendationCard rec={r} rank={idx + 1} />
-              <button
-                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                title="查看 K 線"
-              >
-                <Activity className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
+            {recs.slice(0, 16).map((r: any, idx: number) => (
+              <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
+                <RecommendationCard rec={r} rank={idx + 1} />
+                <button
+                  onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
+                  className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                  title="查看 K 線"
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
           </div>
           {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有上市櫃交易候選。</div>}
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -699,11 +726,11 @@ function PositionsTable() {
               <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
                   <p className="text-[#8b9bab]">現金</p>
-                  <p className="font-mono text-[#e6edf3]">${fmt(summary.cash)}</p>
+                  <p className="sv-num text-[#e6edf3]">${fmt(summary.cash)}</p>
                 </div>
                 <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
                   <p className="text-[#8b9bab]">總資產</p>
-                  <p className="font-mono text-[#e6edf3]">${fmt(summary.total_value)}</p>
+                  <p className="sv-num text-[#e6edf3]">${fmt(summary.total_value)}</p>
                 </div>
               </div>
             )}
@@ -713,7 +740,7 @@ function PositionsTable() {
             <div className="rounded-xl border border-[#3a3125] bg-[linear-gradient(135deg,#15130d,#0b1118)] p-4">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]/80">
+                  <p className="sv-num text-[10px] normal-case text-[#d6a85f]/80">
                     latest order evidence
                   </p>
                   <h3 className="mt-1 text-sm font-semibold text-[#f2ead8]">最近交易證據</h3>
@@ -723,23 +750,23 @@ function PositionsTable() {
               <div className="grid gap-2 text-xs sm:grid-cols-4">
                 <div>
                   <p className="text-[#8b9bab]">標的</p>
-                  <p className="font-mono text-[#e6edf3]">{latestOrder.symbol} {latestOrder.name}</p>
+                  <p className="sv-num text-[#e6edf3]">{latestOrder.symbol} {latestOrder.name}</p>
                 </div>
                 <div>
                   <p className="text-[#8b9bab]">股數</p>
-                  <p className="font-mono text-[#e6edf3]">{fmt(latestOrder.shares)}</p>
+                  <p className="sv-num text-[#e6edf3]">{fmt(latestOrder.shares)}</p>
                 </div>
                 <div>
                   <p className="text-[#8b9bab]">價格</p>
-                  <p className="font-mono text-[#e6edf3]">${fmt(latestOrder.price, 1)}</p>
+                  <p className="sv-num text-[#e6edf3]">${fmt(latestOrder.price, 1)}</p>
                 </div>
                 <div>
                   <p className="text-[#8b9bab]">時間</p>
-                  <p className="font-mono text-[#e6edf3]">{formatTwOrderTime(latestOrder.created_at)}</p>
+                  <p className="sv-num text-[#e6edf3]">{formatTwOrderTime(latestOrder.created_at)}</p>
                 </div>
               </div>
               <div className="mt-3 rounded-lg border border-[#2b3a49] bg-[#070a10] p-3">
-                <p className="text-[10px] uppercase tracking-[0.16em] text-[#8b9bab]">原因 / note</p>
+                <p className="text-[10px] normal-case text-[#8b9bab]">原因 / note</p>
                 <p className="mt-1 text-xs leading-5 text-[#c8d3df]">{latestReason}</p>
               </div>
             </div>
@@ -769,7 +796,7 @@ function PositionsTable() {
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-muted-foreground text-xs uppercase border-b border-border">
+            <tr className="text-muted-foreground text-xs normal-case border-b border-border">
               <th className="text-left p-2">股票</th>
               <th className="text-right p-2">張數</th>
               <th className="text-right p-2">買入價</th>
@@ -800,38 +827,38 @@ function PositionsTable() {
               return (
                 <tr key={p.symbol} className="border-b border-border/50 hover:bg-muted/30">
                   <td className="p-2">
-                    <div className="font-mono text-foreground">{p.symbol}</div>
+                    <div className="sv-num text-foreground">{p.symbol}</div>
                     <div className="text-xs text-muted-foreground">
                       {p.name}
                       {daysHeld != null && <span className="ml-1 text-muted-foreground/60">({daysHeld}天)</span>}
                     </div>
                   </td>
-                  <td className="p-2 text-right font-mono text-foreground/80">{lots}</td>
-                  <td className="p-2 text-right font-mono text-foreground/80">${fmt(entry, 1)}</td>
-                  <td className="p-2 text-right font-mono text-foreground/80">${fmt(current, 1)}</td>
+                  <td className="p-2 text-right sv-num text-foreground/80">{lots}</td>
+                  <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 1)}</td>
+                  <td className="p-2 text-right sv-num text-foreground/80">${fmt(current, 1)}</td>
                   <td className="p-2 text-right">
                     {p.trailing_stop ? (
-                      <div className="font-mono text-red-400 text-xs">${fmt(p.trailing_stop, 1)}</div>
+                      <div className="sv-num text-red-400 text-xs">${fmt(p.trailing_stop, 1)}</div>
                     ) : p.initial_stop ? (
-                      <div className="font-mono text-red-400/60 text-xs">${fmt(p.initial_stop, 1)}</div>
+                      <div className="sv-num text-red-400/60 text-xs">${fmt(p.initial_stop, 1)}</div>
                     ) : <span className="text-muted-foreground/60">—</span>}
                   </td>
                   <td className="p-2 text-right">
                     {p.tp1_price && (
-                      <div className={`font-mono text-xs ${p.tp1_hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
+                      <div className={`sv-num text-xs ${p.tp1_hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
                         T1 ${fmt(p.tp1_price, 1)}
                       </div>
                     )}
                     {p.tp2_price && (
-                      <div className="font-mono text-xs text-red-300">T2 ${fmt(p.tp2_price, 1)}</div>
+                      <div className="sv-num text-xs text-red-300">T2 ${fmt(p.tp2_price, 1)}</div>
                     )}
                     {!p.tp1_price && !p.tp2_price && <span className="text-muted-foreground/60">—</span>}
                   </td>
                   <td className="p-2 text-right">
-                    <div className={`font-mono ${pctClass(pnlPct)}`}>
+                    <div className={`sv-num ${pctClass(pnlPct)}`}>
                       {pnlPct >= 0 ? '+' : ''}{(pnlPct * 100).toFixed(2)}%
                     </div>
-                    <div className={`text-xs font-mono ${pctClass(pnlAmt)}`}>
+                    <div className={`text-xs sv-num ${pctClass(pnlAmt)}`}>
                       {pnlAmt >= 0 ? '+' : ''}${fmt(Math.round(pnlAmt))}
                     </div>
                   </td>
@@ -881,7 +908,7 @@ function TradeHistory() {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-muted-foreground text-xs uppercase border-b border-border">
+          <tr className="text-muted-foreground text-xs normal-case border-b border-border">
             <th className="text-left p-2">Time</th>
             <th className="text-left p-2">Symbol</th>
             <th className="text-left p-2">Side</th>
@@ -902,11 +929,11 @@ function TradeHistory() {
             } catch { noteDisplay = o.note ?? '' }
             return (
               <tr key={o.id ?? i} className="border-b border-border/50 hover:bg-muted/30">
-                <td className="p-2 text-xs text-muted-foreground font-mono whitespace-nowrap">
+                <td className="p-2 text-xs text-muted-foreground sv-num whitespace-nowrap">
                   {formatTwOrderTime(o.created_at)}
                 </td>
                 <td className="p-2">
-                  <span className="font-mono text-foreground">{o.symbol}</span>
+                  <span className="sv-num text-foreground">{o.symbol}</span>
                   <span className="text-xs text-muted-foreground ml-1">{o.name}</span>
                 </td>
                 <td className="p-2">
@@ -918,8 +945,8 @@ function TradeHistory() {
                     {o.side?.toUpperCase()}
                   </Badge>
                 </td>
-                <td className="p-2 text-right font-mono text-foreground/80">{fmt(o.shares)}</td>
-                <td className="p-2 text-right font-mono text-foreground/80">${fmt(o.price, 1)}</td>
+                <td className="p-2 text-right sv-num text-foreground/80">{fmt(o.shares)}</td>
+                <td className="p-2 text-right sv-num text-foreground/80">${fmt(o.price, 1)}</td>
                 <td className="p-2 text-xs text-muted-foreground hidden md:table-cell max-w-[200px] truncate">
                   {noteDisplay}
                 </td>
@@ -954,7 +981,7 @@ function BotStatusPanel() {
           <span className="text-sm text-foreground/80">Market Risk</span>
         </div>
         <div className="text-right">
-          <span className={`font-mono font-semibold ${riskColor}`}>{riskScore}</span>
+          <span className={`sv-num font-semibold ${riskColor}`}>{riskScore}</span>
           <span className="text-muted-foreground text-xs ml-1">/ 100</span>
           <Badge className="ml-2 bg-muted/50 text-muted-foreground border-border/30 text-xs">{riskLevel}</Badge>
         </div>
@@ -1025,8 +1052,8 @@ function GateCalibrationPanel() {
               { label: 'skipped', value: skipped, cls: 'text-zinc-300' },
             ].map((item) => (
               <div key={item.label} className="rounded-md bg-black/20 px-2 py-1.5">
-                <div className="text-[10px] uppercase text-muted-foreground/60">{item.label}</div>
-                <div className={`font-mono text-sm ${item.cls}`}>{item.value}</div>
+                <div className="text-[10px] normal-case text-muted-foreground/60">{item.label}</div>
+                <div className={`sv-num text-sm ${item.cls}`}>{item.value}</div>
               </div>
             ))}
           </div>
@@ -1034,7 +1061,7 @@ function GateCalibrationPanel() {
             {topRows.map((row, idx) => (
               <div key={`${row.status}-${row.reason}-${idx}`} className="flex items-start justify-between gap-3 text-[11px]">
                 <span className="leading-relaxed text-muted-foreground/80">{describeGate(row)}</span>
-                <span className="shrink-0 font-mono text-foreground/70">x{row.count}</span>
+                <span className="shrink-0 sv-num text-foreground/70">x{row.count}</span>
               </div>
             ))}
           </div>
@@ -1157,8 +1184,8 @@ function BacktestCard() {
         <div className="grid grid-cols-3 gap-3">
           {metrics.map(m => (
             <div key={m.label} className="text-center" title={m.hint}>
-              <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{m.label}</div>
-              <div className={`text-sm font-mono mt-0.5 ${m.good ? 'text-emerald-400' : 'text-red-400'}`}>
+              <div className="text-muted-foreground text-[10px] normal-case">{m.label}</div>
+              <div className={`text-sm sv-num mt-0.5 ${m.good ? 'text-emerald-400' : 'text-red-400'}`}>
                 {m.value}
               </div>
             </div>
@@ -1172,14 +1199,14 @@ function BacktestCard() {
         {(mcVerdict || pboVerdict) && (
           <div className="mt-3 grid gap-2 border-t border-white/[0.06] pt-2 md:grid-cols-3">
             <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">PBO alpha credibility</div>
-              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] font-mono ${pboBadge || 'bg-white/5 text-muted-foreground'}`}>
+              <div className="text-[10px] normal-case text-muted-foreground">PBO alpha credibility</div>
+              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] sv-num ${pboBadge || 'bg-white/5 text-muted-foreground'}`}>
                 PBO {pboData?.pbo != null ? `${(pboData.pbo * 100).toFixed(0)}%` : '-'} {pboVerdict ?? 'N/A'}
               </div>
             </div>
             <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">MC tail risk</div>
-              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] font-mono ${mcBadge || 'bg-white/5 text-muted-foreground'}`}>
+              <div className="text-[10px] normal-case text-muted-foreground">MC tail risk</div>
+              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] sv-num ${mcBadge || 'bg-white/5 text-muted-foreground'}`}>
                 95th {mcData?.mdd_95th != null ? `${(mcData.mdd_95th * 100).toFixed(1)}%` : '-'} {mcVerdict ?? 'N/A'}
               </div>
               {String((mcData as any)?.raw_distribution ?? '').includes('LOW_SAMPLE_TAIL_RISK') && (
@@ -1187,8 +1214,8 @@ function BacktestCard() {
               )}
             </div>
             <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Backtest consistency</div>
-              <div className="mt-1 text-[10px] font-mono text-slate-200">
+              <div className="text-[10px] normal-case text-muted-foreground">Backtest consistency</div>
+              <div className="mt-1 text-[10px] sv-num text-slate-200">
                 MDD {data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-'} / Trades {data.total_trades ?? '-'}
               </div>
             </div>
@@ -1274,20 +1301,20 @@ function AdaptiveParamsCard() {
       <CardContent className="pb-3">
         <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">信心門檻</div>
-            <div className={`text-sm font-mono mt-0.5 ${confColor}`}>{confThreshold.toFixed(2)}</div>
+            <div className="text-muted-foreground text-[10px] normal-case">信心門檻</div>
+            <div className={`text-sm sv-num mt-0.5 ${confColor}`}>{confThreshold.toFixed(2)}</div>
           </div>
           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Risk Score</div>
-            <div className={`text-sm font-mono mt-0.5 ${riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>{riskScore}</div>
+            <div className="text-muted-foreground text-[10px] normal-case">Risk Score</div>
+            <div className={`text-sm sv-num mt-0.5 ${riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>{riskScore}</div>
           </div>
           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">30d 準確率</div>
-            <div className={`text-sm font-mono mt-0.5 ${acc30d >= 0.6 ? 'text-emerald-400' : 'text-amber-400'}`}>{(acc30d * 100).toFixed(0)}%</div>
+            <div className="text-muted-foreground text-[10px] normal-case">30d 準確率</div>
+            <div className={`text-sm sv-num mt-0.5 ${acc30d >= 0.6 ? 'text-emerald-400' : 'text-amber-400'}`}>{(acc30d * 100).toFixed(0)}%</div>
           </div>
           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-            <div className="text-muted-foreground text-[10px] uppercase tracking-wider">Bandit</div>
-            <div className={`text-sm font-mono mt-0.5 ${forceExplore ? 'text-red-400' : 'text-foreground/80'}`}>
+            <div className="text-muted-foreground text-[10px] normal-case">Bandit</div>
+            <div className={`text-sm sv-num mt-0.5 ${forceExplore ? 'text-red-400' : 'text-foreground/80'}`}>
               {forceExplore ? '強制探索' : `×${banditMult.toFixed(1)}`}
             </div>
           </div>
@@ -1402,7 +1429,7 @@ export default function BotDashboard() {
             action={<WorkstationPill tone="info">T2 aware</WorkstationPill>}
           >
             <div className="border-b border-[#263247] px-4 pb-2 pt-3">
-              <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 font-mono uppercase tracking-wider">
+              <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 sv-num normal-case">
                 <TrendingUp className="w-3.5 h-3.5" /> AI 候選清單
               </div>
               <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
@@ -1423,7 +1450,7 @@ export default function BotDashboard() {
         <Dialog open={!!selectedStockId} onOpenChange={(open) => { if (!open) setSelectedSymbol(null) }}>
           <DialogContent className="max-w-4xl bg-card border-border">
             <DialogHeader>
-              <DialogTitle className="text-sm font-mono">{selectedSymbol} K 線圖</DialogTitle>
+              <DialogTitle className="text-sm sv-num">{selectedSymbol} K 線圖</DialogTitle>
             </DialogHeader>
             {selectedStockId && <CandlestickChart stockId={selectedStockId} />}
           </DialogContent>
@@ -1437,7 +1464,7 @@ export default function BotDashboard() {
         <details className="group">
           <summary className="flex items-center gap-2 border border-[#263247] bg-[#070a10] px-4 py-2.5 cursor-pointer hover:border-amber-300/30 transition-colors text-xs font-medium text-muted-foreground select-none">
             <Bot className="w-3.5 h-3.5" />
-            <span className="font-mono uppercase tracking-wider">Bot 狀態與排程紀錄</span>
+            <span className="sv-num normal-case">Bot 狀態與排程紀錄</span>
             <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>
           </summary>
           <WorkstationPanel title="Bot 狀態" kicker="scheduler runs and market risk" className="mt-2">

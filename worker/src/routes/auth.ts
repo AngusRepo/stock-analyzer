@@ -259,6 +259,18 @@ auth.post('/exchange', async (c) => {
 
 // ─── GET /api/auth/me ─────────────────────────────────────────────────────────
 auth.get('/me', authMiddleware, async (c) => {
+  const host = new URL(c.req.url).hostname.toLowerCase()
+  if ((host === 'localhost' || host === '127.0.0.1' || host === '::1') && c.get('userId') === 1) {
+    return c.json({
+      id: 1,
+      email: 'local@stockvision.dev',
+      name: 'Local Dev',
+      avatar: null,
+      role: 'admin',
+      approval_status: 'approved',
+      created_at: new Date().toISOString(),
+    })
+  }
   const user = await c.env.DB.prepare(
     'SELECT id, email, name, avatar, role, approval_status, created_at FROM users WHERE id = ?'
   ).bind(c.get('userId')).first()

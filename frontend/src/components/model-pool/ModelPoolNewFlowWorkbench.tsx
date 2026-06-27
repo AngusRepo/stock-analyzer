@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+﻿import { useMemo, useState, type ReactNode } from 'react'
 import {
   MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
   MODEL_POOL_PRODUCTION_SLOT_IDS,
@@ -883,8 +883,8 @@ function GrafanaPanel({
     <section className={`overflow-hidden rounded-2xl border border-[#2d3a49] bg-[#111821]/96 shadow-[0_14px_36px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.05)] ${className}`}>
       <header className="flex min-h-12 items-center justify-between gap-3 border-b border-[#2d3a49] bg-[#18212c] px-4 py-2">
         <div className="min-w-0">
-          {kicker && <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">{kicker}</p>}
-          <h3 className="truncate font-['Space_Grotesk'] text-[17px] font-semibold tracking-[0.01em] text-[#eef4fb]">{title}</h3>
+          {kicker && <p className="sv-num text-[12px] normal-case text-[#90a0b8]">{kicker}</p>}
+          <h3 className="truncate font-['Space_Grotesk'] text-[17px] font-semibold text-[#eef4fb]">{title}</h3>
         </div>
         {action}
       </header>
@@ -906,8 +906,8 @@ function GrafanaStat({
 }) {
   return (
     <div className={`rounded-xl border bg-[#0c1219] px-4 py-3 ${grafanaBorderClass(tone)}`}>
-      <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#8fa0b7]">{label}</p>
-      <div className={`mt-1 font-mono text-xl font-semibold ${grafanaTextClass(tone)}`}>{value}</div>
+      <p className="sv-num text-[12px] normal-case text-[#8fa0b7]">{label}</p>
+      <div className={`mt-1 sv-num text-xl font-semibold ${grafanaTextClass(tone)}`}>{value}</div>
       <p className="mt-1 text-[13px] leading-5 text-[#9aa8ba]">{detail}</p>
     </div>
   )
@@ -936,10 +936,10 @@ function GrafanaDashboardHeader({
     <div className="border-b border-[#2d3a49] bg-[#0b1118]">
       <div className="flex flex-col gap-3 border-b border-[#2d3a49] px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
         <div>
-          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#f0c365]">Grafana-style model operations</p>
-          <h2 className="mt-1 font-['Space_Grotesk'] text-[28px] font-semibold tracking-[0.01em] text-[#f4efe4]">Active-8 Model Pool</h2>
+          <p className="sv-num text-[12px] normal-case text-[#f0c365]">Grafana-style model operations</p>
+          <h2 className="mt-1 font-['Space_Grotesk'] text-[28px] font-semibold text-[#f4efe4]">Active-8 Model Pool</h2>
         </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[12px] uppercase tracking-[0.08em] text-[#a7b5c8]">
+        <div className="flex flex-wrap items-center gap-2 sv-num text-[12px] normal-case text-[#a7b5c8]">
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">env prod</span>
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">weekly + OOS/live gates</span>
           <span className="rounded-full border border-[#2d3a49] bg-[#121a24] px-3 py-1">refresh 60s</span>
@@ -1013,7 +1013,7 @@ function FleetStatusStrip({
               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.fleetTone === 'ok' ? 'bg-emerald-400' : record.fleetTone === 'warn' ? 'bg-amber-300' : record.fleetTone === 'error' ? 'bg-rose-400' : record.fleetTone === 'info' ? 'bg-sky-400' : 'bg-slate-500'}`} />
             </div>
             <p className="mt-1 truncate text-[12px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
-            <div className={`mt-2 border px-2 py-1.5 text-center font-mono text-[12px] font-semibold ${grafanaCellClass(record.fleetTone)}`}>
+            <div className={`mt-2 border px-2 py-1.5 text-center sv-num text-[12px] font-semibold ${grafanaCellClass(record.fleetTone)}`}>
               {statusLabel(record.fleetTone)}
             </div>
           </button>
@@ -1038,16 +1038,16 @@ function StateTimelinePanel({
     <GrafanaPanel
       title="Evidence matrix"
       kicker="每欄下方先說明數據語意；格子內只保留該模型的狀態與數值"
-      action={<span className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">values include gate thresholds</span>}
+      action={<span className="sv-num text-[12px] normal-case text-[#90a0b8]">values include gate thresholds</span>}
       className="min-h-[360px]"
     >
       <div className="overflow-x-auto">
         <div className="min-w-[1240px]">
           <div className="grid grid-cols-[152px_repeat(7,minmax(136px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-3 text-[#90a0b8]">
-            <div className="font-mono text-[12px] uppercase tracking-[0.08em]">model</div>
+            <div className="sv-num text-[12px] normal-case">model</div>
             {columns.map((column) => (
               <div key={column.label} className="px-1 text-center">
-                <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#b4c0d0]">{column.label}</p>
+                <p className="sv-num text-[12px] normal-case text-[#b4c0d0]">{column.label}</p>
                 <p className="mt-1 text-[11px] leading-4 text-[#7f8ca3]">{column.description}</p>
               </div>
             ))}
@@ -1070,7 +1070,7 @@ function StateTimelinePanel({
                 {record.history.map((cell) => (
                   <div
                     key={`${record.candidate.id}-${cell.label}`}
-                    className={`min-h-[86px] border px-2 py-2 text-center font-mono text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`}
+                    className={`min-h-[86px] border px-2 py-2 text-center sv-num text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`}
                     title={cell.title}
                     aria-label={cell.title}
                   >
@@ -1132,23 +1132,23 @@ function PromotionReadinessPanel({
               <p className="font-['Space_Grotesk'] text-[18px] font-semibold text-[#f2ead8]">{selected.candidate.id}</p>
               <p className="mt-1 text-[13px] leading-5 text-[#9aa8ba]">{selected.family} / {selected.dataset?.window ?? 'model-specific'} / {selected.artifactVersion}</p>
             </div>
-            <span className={`border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(selected.statusTone)}`}>
+            <span className={`border px-2.5 py-1 sv-num text-[12px] font-semibold ${grafanaCellClass(selected.statusTone)}`}>
               {selected.status}
             </span>
           </div>
         </div>
 
         <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3">
-          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">Research diagnosis</p>
+          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Research diagnosis</p>
           <p className="mt-2 text-[13px] leading-5 text-[#dce3ea]">{diagnosis.rootCause}</p>
           <div className="mt-2 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-            <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">next action</p>
+            <p className="sv-num text-[12px] normal-case text-[#90a0b8]">next action</p>
             <p className="mt-1 text-[13px] leading-5 text-[#a7b5c8]">{diagnosis.nextAction}</p>
           </div>
           {diagnosis.missing.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {diagnosis.missing.slice(0, 5).map((item) => (
-                <span key={item} className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 font-mono text-[12px] text-amber-200">
+                <span key={item} className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 sv-num text-[12px] text-amber-200">
                   {humanizeToken(item)}
                 </span>
               ))}
@@ -1157,31 +1157,31 @@ function PromotionReadinessPanel({
         </div>
 
         <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3" title={compare.title}>
-          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">Candidate vs current champion</p>
+          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Candidate vs current champion</p>
           <div className="mt-3 grid gap-2">
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">candidate artifact</p>
-              <p className="mt-1 break-all font-mono text-[13px] font-semibold text-[#dce3ea]">{compare.candidate}</p>
+              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">candidate artifact</p>
+              <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.candidate}</p>
             </div>
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">current champion baseline</p>
-              <p className="mt-1 break-all font-mono text-[13px] font-semibold text-[#dce3ea]">{compare.champion}</p>
+              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">current champion baseline</p>
+              <p className="mt-1 break-all sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.champion}</p>
             </div>
             <div className="flex items-center justify-between gap-3 rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
               <div className="min-w-0">
-                <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">final compare</p>
+                <p className="sv-num text-[12px] normal-case text-[#90a0b8]">final compare</p>
                 <p className="mt-1 truncate text-[13px] text-[#a7b5c8]">
                   {finalCompareApplies ? finalComparedTo ? `completed vs ${finalComparedTo}` : 'dry-run compare not run yet' : 'N/R: no selected candidate'}
                 </p>
               </div>
-              <span className={`shrink-0 border px-2.5 py-1 font-mono text-[12px] font-semibold ${grafanaCellClass(finalCompareReady ? 'ok' : compare.tone)}`}>
+              <span className={`shrink-0 border px-2.5 py-1 sv-num text-[12px] font-semibold ${grafanaCellClass(finalCompareReady ? 'ok' : compare.tone)}`}>
                 {finalCompareReady ? 'READY' : 'WAIT'}
               </span>
             </div>
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">compare action</p>
+                  <p className="sv-num text-[12px] normal-case text-[#90a0b8]">compare action</p>
                   <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">
                     {finalCompareApplies ? '只做 candidate vs current champion dry-run；不切 pointer、不升級 production。' : '目前沒有 selected candidate；current production artifact 不需要 final compare。'}
                   </p>
@@ -1192,14 +1192,14 @@ function PromotionReadinessPanel({
                   onClick={() => {
                     if (compare.artifactId) onDryRunFinalCompare?.(compare.artifactId)
                   }}
-                  className="rounded-lg border border-[#d6a85f]/40 bg-[#1b2430] px-3 py-2 font-mono text-[12px] font-semibold text-[#f0c365] transition-colors hover:border-[#f0c365]/70 disabled:cursor-not-allowed disabled:border-[#303947] disabled:text-[#6e7a8d]"
+                  className="rounded-lg border border-[#d6a85f]/40 bg-[#1b2430] px-3 py-2 sv-num text-[12px] font-semibold text-[#f0c365] transition-colors hover:border-[#f0c365]/70 disabled:cursor-not-allowed disabled:border-[#303947] disabled:text-[#6e7a8d]"
                 >
                   {!finalCompareApplies ? 'No candidate' : finalComparePending ? 'Running...' : 'Dry-run final compare'}
                 </button>
               </div>
               {finalCompareResult && (
                 <div className="mt-2 rounded-lg border border-[#303947] bg-[#0b1118] px-3 py-2">
-                  <p className="font-mono text-[12px] text-[#dce3ea]">{finalCompareResultDetail(finalCompareResult)}</p>
+                  <p className="sv-num text-[12px] text-[#dce3ea]">{finalCompareResultDetail(finalCompareResult)}</p>
                   {finalCompareResult.next_action && <p className="mt-1 text-[12px] leading-5 text-[#90a0b8]">next: {finalCompareResult.next_action}</p>}
                   {(finalCompareResult.errors?.length ?? 0) > 0 && (
                     <p className="mt-1 text-[12px] leading-5 text-rose-200">errors: {finalCompareResult.errors?.join(', ')}</p>
@@ -1208,23 +1208,23 @@ function PromotionReadinessPanel({
               )}
             </div>
             <div className="rounded-lg border border-[#253242] bg-[#101722] px-3 py-2">
-              <p className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">OOS IC delta</p>
-              <p className="mt-1 font-mono text-[13px] font-semibold text-[#dce3ea]">{compare.metricDetail}</p>
+              <p className="sv-num text-[12px] normal-case text-[#90a0b8]">OOS IC delta</p>
+              <p className="mt-1 sv-num text-[13px] font-semibold text-[#dce3ea]">{compare.metricDetail}</p>
             </div>
           </div>
         </div>
 
         <div className="mt-3 rounded-xl border border-[#263247] bg-[#0b1118] p-3">
-          <p className="font-mono text-[12px] uppercase tracking-[0.10em] text-[#90a0b8]">Candidate release funnel</p>
+          <p className="sv-num text-[12px] normal-case text-[#90a0b8]">Candidate release funnel</p>
           <div className="mt-3 space-y-2">
             {gates.map((gate, index) => (
               <div key={gate.label} className="grid grid-cols-[28px_1fr_auto] items-center gap-2">
-                <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] font-mono text-[12px] text-[#a7b5c8]">{index + 1}</span>
+                <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#303947] bg-[#121a24] sv-num text-[12px] text-[#a7b5c8]">{index + 1}</span>
                 <div className="min-w-0">
                   <p className="font-['Space_Grotesk'] text-[14px] text-[#f2ead8]">{gate.label}</p>
                   <p className="text-[12px] leading-5 text-[#90a0b8]">{gate.detail}</p>
                 </div>
-                <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
+                <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(gate.ready ? 'ok' : 'warn')}`}>
                   {gate.ready ? 'PASS' : 'WAIT'}
                 </span>
               </div>
@@ -1249,7 +1249,7 @@ function EvidenceTablePanel({
     <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, candidate compare, promotion pressure, and missing evidence">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
         <table className="w-full min-w-[1240px] border-separate border-spacing-y-2 text-left">
-          <thead className="font-mono text-[12px] uppercase tracking-[0.08em] text-[#90a0b8]">
+          <thead className="sv-num text-[12px] normal-case text-[#90a0b8]">
             <tr>
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Family</th>
@@ -1287,41 +1287,41 @@ function EvidenceTablePanel({
               >
                 <td className="rounded-l-xl border-y border-l border-[#263247] px-3 py-3 font-['Space_Grotesk'] text-[15px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
                 <td className="border-y border-[#263247] px-3 py-3 text-[13px] text-[#a7b5c8]">{record.family}</td>
-                <td className="max-w-[210px] truncate border-y border-[#263247] px-3 py-3 font-mono text-[13px] text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
+                <td className="max-w-[210px] truncate border-y border-[#263247] px-3 py-3 sv-num text-[13px] text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <p className="font-mono text-[13px] text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
+                  <p className="sv-num text-[13px] text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
                   <p className="text-[12px] text-[#90a0b8]">{record.dataset?.shape ?? 'N/A'}</p>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(record.pointerTone)}`}>
+                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(record.pointerTone)}`}>
                     {record.pointerRow?.readiness ?? 'missing'}
                   </span>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(record.statusTone)}`}>
+                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(record.statusTone)}`}>
                     {record.status}
                   </span>
                   <p className="mt-1 max-w-[280px] text-[12px] leading-5 text-[#a7b5c8]">{diagnosis.rootCause}</p>
-                  <p className="mt-1 max-w-[280px] font-mono text-[12px] leading-5 text-sky-200">next: {diagnosis.nextAction}</p>
+                  <p className="mt-1 max-w-[280px] sv-num text-[12px] leading-5 text-sky-200">next: {diagnosis.nextAction}</p>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(pressureTone)}`}>
+                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(pressureTone)}`}>
                     {pressureLabel}
                   </span>
                 </td>
                 <td className="border-y border-[#263247] px-3 py-3" title={compare.title}>
-                  <span className={`inline-block border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(compare.tone)}`}>
+                  <span className={`inline-block border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(compare.tone)}`}>
                     {compare.compareReady ? 'ready' : compare.hasCandidate ? 'baseline' : compare.hasReleaseArtifact ? 'serving' : 'no candidate'}
                   </span>
-                  <p className="mt-1 max-w-[260px] break-all font-mono text-[12px] leading-5 text-[#90a0b8]">
+                  <p className="mt-1 max-w-[260px] break-all sv-num text-[12px] leading-5 text-[#90a0b8]">
                     {compactVersion(compare.candidate, 18)} vs {compactVersion(compare.champion, 18)}
                   </p>
-                  <p className="mt-1 max-w-[260px] font-mono text-[12px] leading-5 text-[#dce3ea]">{compare.metricDetail}</p>
+                  <p className="mt-1 max-w-[260px] sv-num text-[12px] leading-5 text-[#dce3ea]">{compare.metricDetail}</p>
                 </td>
                 <td className="rounded-r-xl border-y border-r border-[#263247] px-3 py-3">
                   <div className="flex max-w-[320px] flex-wrap gap-1">
                     {(missing.length ? missing : ['complete']).slice(0, 4).map((item) => (
-                      <span key={item} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 font-mono text-[12px] text-[#c0cad8]">
+                      <span key={item} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 sv-num text-[12px] text-[#c0cad8]">
                         {item}
                       </span>
                     ))}
@@ -1345,7 +1345,7 @@ function MetaBoundaryPanel() {
           <div key={step.label} className="rounded-xl border border-[#263247] bg-[#0c1219] p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{step.label}</p>
-              <span className={`border px-2.5 py-1 font-mono text-[12px] ${grafanaCellClass(step.tone)}`}>{statusLabel(step.tone)}</span>
+              <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(step.tone)}`}>{statusLabel(step.tone)}</span>
             </div>
             <p className="mt-2 text-[13px] leading-5 text-[#9aa8ba]">{step.detail}</p>
           </div>

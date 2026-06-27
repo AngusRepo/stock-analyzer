@@ -1,3 +1,4 @@
+﻿import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, BarChart3, RefreshCw, Star } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -15,7 +16,7 @@ function ObservabilityChip({ icon: Icon, label, value, tone = 'info' }: {
   tone?: 'ok' | 'warn' | 'info'
 }) {
   return (
-    <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] ${
+    <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 sv-num text-[10px] normal-case ${
       tone === 'ok' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
         : tone === 'warn' ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
           : 'border-sky-500/25 bg-sky-500/10 text-sky-300'
@@ -28,6 +29,7 @@ function ObservabilityChip({ icon: Icon, label, value, tone = 'info' }: {
 }
 
 export function DailyRecommendationPanelV2() {
+  const [activeTab, setActiveTab] = useState<'summary' | 'trade-flow'>('summary')
   const today = twToday()
   const { data, isLoading, refetch } = useQuery({
     queryKey: recommendationDailyKey(today),
@@ -72,9 +74,30 @@ export function DailyRecommendationPanelV2() {
         </Button>
       </div>
 
-      <RecommendationLaneExplainer />
+      <div className="rounded-2xl border border-white/[0.08] bg-[#101116]/90 p-1">
+        <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.035] p-1">
+          {[
+            { key: 'summary', label: '推薦摘要' },
+            { key: 'trade-flow', label: '上市櫃交易流' },
+          ].map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setActiveTab(item.key as 'summary' | 'trade-flow')}
+              className={cn(
+                'rounded-full px-3 py-1.5 text-xs font-semibold transition-colors',
+                activeTab === item.key ? 'bg-amber-300/15 text-amber-200' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      {isLoading ? (
+      {activeTab === 'summary' ? (
+        <RecommendationLaneExplainer />
+      ) : isLoading ? (
         <div className="grid gap-3">
           {[1, 2, 3, 4].map((i) => (
             <div key={i} className="h-24 animate-pulse rounded-xl bg-muted/40" />
@@ -83,36 +106,28 @@ export function DailyRecommendationPanelV2() {
       ) : tradable.length === 0 ? (
         <div className="rounded-2xl border border-[#263247] bg-[#070a10]/80 py-10 text-center text-muted-foreground">
           <Star className="mx-auto mb-2 h-8 w-8 opacity-20" />
-          <p className="text-sm">尚未產出今日推薦</p>
+          <p className="text-sm">今日沒有通過上市櫃交易流的候選</p>
           <p className="mt-1 text-xs">請檢查 evening-chain / pipeline / recommendation，或到 OBS 看 root cause。</p>
         </div>
       ) : (
-        <div className="grid gap-4">
-          <section className="space-y-3 rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.025] p-3">
-            <div className="flex items-center justify-between px-1">
-              <div>
-                <p className="text-xs font-semibold text-emerald-300">上市櫃交易流</p>
-                <p className="text-[11px] text-muted-foreground">
-                  會進 morning setup / debate / pending buys，自動交易只看這一區。
-                </p>
-              </div>
-              <Badge variant="outline" className="border-emerald-500/30 text-[10px] text-emerald-300">
-                {tradable.length} 檔
-              </Badge>
+        <section className="space-y-3 rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.025] p-3">
+          <div className="flex items-center justify-between px-1">
+            <div>
+              <p className="text-xs font-semibold text-emerald-300">上市櫃交易流</p>
+              <p className="text-[11px] text-muted-foreground">
+                會進 morning setup / debate / pending buys，自動交易只看這一區。
+              </p>
             </div>
-            {tradable.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                {tradable.map((rec: any, i: number) => (
-                  <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-4 text-xs text-muted-foreground">
-                今日沒有通過上市櫃交易流的候選。
-              </div>
-            )}
-          </section>
-        </div>
+            <Badge variant="outline" className="border-emerald-500/30 text-[10px] text-emerald-300">
+              {tradable.length} 檔
+            </Badge>
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {tradable.map((rec: any, i: number) => (
+              <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? i} rec={rec} rank={i + 1} />
+            ))}
+          </div>
+        </section>
       )}
     </div>
   )

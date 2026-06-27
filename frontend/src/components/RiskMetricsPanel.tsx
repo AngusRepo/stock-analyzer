@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+﻿import { useQuery } from '@tanstack/react-query'
 import { stocksApi } from '@/lib/api'
 import { Skeleton } from '@/components/ui/skeleton'
 
@@ -6,7 +6,7 @@ function Metric({ label, value, hint }: { label: string; value: any; hint?: stri
   return (
     <div className="rounded-lg border border-border/50 p-3">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-lg font-mono font-bold mt-1">{value ?? '—'}</p>
+      <p className="text-lg sv-num font-bold mt-1">{value ?? '—'}</p>
       {hint && <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>}
     </div>
   )

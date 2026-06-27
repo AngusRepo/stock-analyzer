@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ElementType } from 'react'
+﻿import { useEffect, useRef, useState, type ElementType } from 'react'
 import {
   CandlestickSeries,
   ColorType,
@@ -1316,7 +1316,7 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-14 text-right font-mono text-muted-foreground">
+      <span className="w-14 text-right sv-num text-muted-foreground">
         {fmtNumber(safeValue, 1)}/{fmtNumber(safeMax, 0)}
       </span>
     </div>
@@ -1334,22 +1334,22 @@ function ScoreFormulaSummary({ viewModel }: { viewModel: ReturnType<typeof build
     <div className="rounded-lg border border-border/50 bg-background/50 p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs font-medium text-muted-foreground">基礎分數與 Alpha 調整</p>
-        <span className="font-mono text-xs text-muted-foreground">
+        <span className="sv-num text-xs text-muted-foreground">
           {fmtNumber(viewModel.finalScore, 1)} = {fmtNumber(viewModel.baseScore, 1)} {viewModel.alphaAdjustment >= 0 ? '+' : '-'} {fmtNumber(Math.abs(viewModel.alphaAdjustment), 1)}
         </span>
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
         <div className="rounded-md border border-border/40 bg-muted/20 p-2">
           <p className="text-[10px] text-muted-foreground">基礎分數</p>
-          <p className="mt-0.5 font-mono text-lg font-semibold">{fmtNumber(viewModel.baseScore, 1)}</p>
+          <p className="mt-0.5 sv-num text-lg font-semibold">{fmtNumber(viewModel.baseScore, 1)}</p>
         </div>
         <div className="rounded-md border border-sky-500/25 bg-sky-500/[0.06] p-2">
           <p className="text-[10px] text-sky-700 dark:text-sky-300">Alpha 調整</p>
-          <p className="mt-0.5 font-mono text-lg font-semibold text-sky-700 dark:text-sky-300">{signedText(viewModel.alphaAdjustment)}</p>
+          <p className="mt-0.5 sv-num text-lg font-semibold text-sky-700 dark:text-sky-300">{signedText(viewModel.alphaAdjustment)}</p>
         </div>
         <div className="rounded-md border border-primary/25 bg-primary/[0.06] p-2">
           <p className="text-[10px] text-muted-foreground">最終分數</p>
-          <p className="mt-0.5 font-mono text-lg font-semibold text-primary">{fmtNumber(viewModel.finalScore, 1)}</p>
+          <p className="mt-0.5 sv-num text-lg font-semibold text-primary">{fmtNumber(viewModel.finalScore, 1)}</p>
         </div>
       </div>
       {Math.abs(viewModel.residual) >= 0.1 && (
@@ -1394,7 +1394,7 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
     <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-muted-foreground">Score V2 分解</span>
-        <span className="font-mono text-[11px] text-muted-foreground">技術結構 + Alpha 明細</span>
+        <span className="sv-num text-[11px] text-muted-foreground">技術結構 + Alpha 明細</span>
       </div>
       {technicalRows.length > 0 && (
         <div className="mt-2 space-y-2 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
@@ -1442,7 +1442,7 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-emerald-700 dark:text-emerald-300">L1.5 PLE/Listwise Router</span>
-        <span className="font-mono text-[11px] text-muted-foreground">diversified ML slate, no forced fill</span>
+        <span className="sv-num text-[11px] text-muted-foreground">diversified ML slate, no forced fill</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
         <MetricPill label="route score" value={percentText(router.route_score)} />
@@ -1493,7 +1493,7 @@ function EvidenceFusionBlock({ fusion }: { fusion: Layer35FusionSummary | null }
     <div className="rounded-lg border border-lime-500/20 bg-lime-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-lime-700 dark:text-lime-300">L3.5 Evidence Fusion</span>
-        <span className={cn('font-mono text-[11px] font-semibold uppercase', conflictTone)}>
+        <span className={cn('sv-num text-[11px] font-semibold normal-case', conflictTone)}>
           {fusion.conflict_level ?? fusion.decision ?? 'unknown'}
         </span>
       </div>
@@ -1535,7 +1535,7 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
     <div className={cn('rounded-lg border p-3 text-xs', tone)}>
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium">L0.5 Hard Gate</span>
-        <span className="font-mono text-[11px] text-muted-foreground">tradeability / data trust, not alpha ranker</span>
+        <span className="sv-num text-[11px] text-muted-foreground">tradeability / data trust, not alpha ranker</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="lane" value={String(gate.recommendation_lane ?? '-')} />
@@ -1565,7 +1565,7 @@ function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureS
     <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-cyan-700 dark:text-cyan-300">L0 Universe / Features</span>
-        <span className="font-mono text-[11px] text-muted-foreground">feature coverage, not top-k</span>
+        <span className="sv-num text-[11px] text-muted-foreground">feature coverage, not top-k</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="universe" value={passed ? 'PASS' : String(universe.universe_decision ?? 'unknown')} />
@@ -1599,7 +1599,7 @@ function StrategyLabelerEvidenceBlock({ labeler }: { labeler: StrategyLabelerSum
     <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-indigo-700 dark:text-indigo-300">L1 Strategy Labeler</span>
-        <span className="font-mono text-[11px] text-muted-foreground">labels strategy views, not stock selector</span>
+        <span className="sv-num text-[11px] text-muted-foreground">labels strategy views, not stock selector</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="strategies" value={countText(labeler.strategy_count)} />
@@ -1636,7 +1636,7 @@ function StrategyPortfolioIntelligenceBlock({ portfolio }: { portfolio: Strategy
     <div className="rounded-lg border border-teal-500/20 bg-teal-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-teal-700 dark:text-teal-300">L1.25 FinLab Portfolio Intelligence</span>
-        <span className="font-mono text-[11px] text-muted-foreground">strategy-as-asset weights, not stock selector</span>
+        <span className="sv-num text-[11px] text-muted-foreground">strategy-as-asset weights, not stock selector</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="strategy prior" value={fmtNumber(portfolio.strategy_prior_weight, 2)} />
@@ -1685,7 +1685,7 @@ function MlStackEvidenceBlock({
     <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-violet-700 dark:text-violet-300">L2 TimesFM + L3 Direct ML</span>
-        <span className="font-mono text-[11px] text-muted-foreground">L2 feature sidecar; L3 8ML formal direct alpha</span>
+        <span className="sv-num text-[11px] text-muted-foreground">L2 feature sidecar; L3 8ML formal direct alpha</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="L2 expected" value={countText(coarse?.expected_model_count ?? 1)} />
@@ -1712,8 +1712,8 @@ function MlStackEvidenceBlock({
 function MetricPill({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-border/40 bg-background/50 p-2">
-      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-0.5 break-words font-mono text-sm font-semibold text-foreground">{value}</p>
+      <p className="text-[10px] normal-case text-muted-foreground">{label}</p>
+      <p className="mt-0.5 break-words sv-num text-sm font-semibold text-foreground">{value}</p>
     </div>
   )
 }
@@ -1741,34 +1741,34 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
     <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-amber-700 dark:text-amber-300">L4 Sparse Allocation</span>
-        <span className="font-mono text-[11px] text-muted-foreground">{policyText}</span>
+        <span className="sv-num text-[11px] text-muted-foreground">{policyText}</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">decision</p>
-          <p className={cn('mt-0.5 font-mono text-sm font-semibold', selected ? 'text-emerald-600 dark:text-emerald-300' : 'text-muted-foreground')}>
+          <p className="text-[10px] normal-case text-muted-foreground">decision</p>
+          <p className={cn('mt-0.5 sv-num text-sm font-semibold', selected ? 'text-emerald-600 dark:text-emerald-300' : 'text-muted-foreground')}>
             {selected ? `BUY weight ${allocationWeightText(allocation.allocation_weight)}` : 'not selected / HOLD'}
           </p>
         </div>
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">capacity</p>
-          <p className="mt-0.5 font-mono text-sm font-semibold text-foreground">{allocationSlotText(allocation.buy_signal_count)}</p>
+          <p className="text-[10px] normal-case text-muted-foreground">capacity</p>
+          <p className="mt-0.5 sv-num text-sm font-semibold text-foreground">{allocationSlotText(allocation.buy_signal_count)}</p>
         </div>
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">method</p>
-          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{methodText}</p>
+          <p className="text-[10px] normal-case text-muted-foreground">method</p>
+          <p className="mt-0.5 break-words sv-num text-[11px] font-semibold text-foreground">{methodText}</p>
         </div>
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">scope</p>
-          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{inputScope}</p>
+          <p className="text-[10px] normal-case text-muted-foreground">scope</p>
+          <p className="mt-0.5 break-words sv-num text-[11px] font-semibold text-foreground">{inputScope}</p>
         </div>
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">engine</p>
-          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{allocation.engine}</p>
+          <p className="text-[10px] normal-case text-muted-foreground">engine</p>
+          <p className="mt-0.5 break-words sv-num text-[11px] font-semibold text-foreground">{allocation.engine}</p>
         </div>
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">controller</p>
-          <p className="mt-0.5 break-words font-mono text-[11px] font-semibold text-foreground">{controller}</p>
+          <p className="text-[10px] normal-case text-muted-foreground">controller</p>
+          <p className="mt-0.5 break-words sv-num text-[11px] font-semibold text-foreground">{controller}</p>
         </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
@@ -1813,9 +1813,9 @@ function InstitutionalBrokerFlowBlock({
           const netLots = row.net_lots ?? row.net_shares ?? null
           return (
             <div key={`${name}-${index}`} className="grid grid-cols-[1.25rem_minmax(0,1fr)_5.5rem] items-center gap-2 text-[11px]">
-              <span className="font-mono text-muted-foreground">{index + 1}</span>
+              <span className="sv-num text-muted-foreground">{index + 1}</span>
               <span className="truncate text-foreground/85" title={name}>{name}</span>
-              <span className={cn('text-right font-mono tabular-nums', signedFlowClass(netLots))}>{fmtLots(netLots)}</span>
+              <span className={cn('text-right sv-num tabular-nums', signedFlowClass(netLots))}>{fmtLots(netLots)}</span>
             </div>
           )
         })}
@@ -1830,7 +1830,7 @@ function InstitutionalBrokerFlowBlock({
           <Users className="h-3.5 w-3.5" />
           籌碼原始資料
         </span>
-        <span className="font-mono text-[11px] text-muted-foreground">
+        <span className="sv-num text-[11px] text-muted-foreground">
           {institutional?.date ?? brokerFlow?.date ?? 'today'}
         </span>
       </div>
@@ -1838,7 +1838,7 @@ function InstitutionalBrokerFlowBlock({
         <div className="rounded-md border border-border/40 bg-background/55 p-2">
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <p className="font-medium text-foreground/85">法人原始資料（今日）</p>
-            <span className={cn('font-mono text-[11px]', signedFlowClass(institutional?.total_net_shares))}>
+            <span className={cn('sv-num text-[11px]', signedFlowClass(institutional?.total_net_shares))}>
               淨 {fmtShares(institutional?.total_net_shares)}
             </span>
           </div>
@@ -1853,9 +1853,9 @@ function InstitutionalBrokerFlowBlock({
               {institutional.rows.map((row) => (
                 <div key={row.key ?? row.label} className="grid grid-cols-[3.5rem_1fr_1fr_1fr] items-center gap-1 text-[11px]">
                   <span className="truncate text-foreground/85">{row.label ?? row.key ?? '-'}</span>
-                  <span className="text-right font-mono tabular-nums text-red-500 dark:text-red-300">{fmtShares(row.buy_shares)}</span>
-                  <span className="text-right font-mono tabular-nums text-emerald-500 dark:text-emerald-300">{fmtShares(row.sell_shares)}</span>
-                  <span className={cn('text-right font-mono tabular-nums', signedFlowClass(row.net_shares))}>{fmtShares(row.net_shares)}</span>
+                  <span className="text-right sv-num tabular-nums text-red-500 dark:text-red-300">{fmtShares(row.buy_shares)}</span>
+                  <span className="text-right sv-num tabular-nums text-emerald-500 dark:text-emerald-300">{fmtShares(row.sell_shares)}</span>
+                  <span className={cn('text-right sv-num tabular-nums', signedFlowClass(row.net_shares))}>{fmtShares(row.net_shares)}</span>
                 </div>
               ))}
             </div>
@@ -1868,7 +1868,7 @@ function InstitutionalBrokerFlowBlock({
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <p className="font-medium text-foreground/85">當日券商分點</p>
             {aggregate?.broker_count != null && (
-              <span className="font-mono text-[11px] text-muted-foreground">{fmtInteger(aggregate.broker_count)} 家</span>
+              <span className="sv-num text-[11px] text-muted-foreground">{fmtInteger(aggregate.broker_count)} 家</span>
             )}
           </div>
           {hasBrokerRanks ? (
@@ -1894,7 +1894,7 @@ function InstitutionalBrokerFlowBlock({
               ) : (
                 <p>當日券商聚合資料尚未入庫。</p>
               )}
-              <p className="break-words font-mono text-[10px] text-muted-foreground/80">
+              <p className="break-words sv-num text-[10px] text-muted-foreground/80">
                 {brokerFlow?.missing_reason ?? 'broker_level_detail_table_missing'}
               </p>
             </div>
@@ -1993,7 +1993,7 @@ function TradePlanRow({ row }: { row: TradePlanReadRow }) {
   return (
     <div className="grid gap-1 border-b border-border/30 py-2 last:border-b-0 sm:grid-cols-[6.5rem_8.5rem_1fr] sm:items-start">
       <span className="text-[11px] font-semibold text-foreground/85">{row.label}</span>
-      <span className={cn('w-fit rounded-sm border border-current/20 bg-background/70 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+      <span className={cn('w-fit rounded-sm border border-current/20 bg-background/70 px-1.5 py-0.5 sv-num text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
         {row.value}
       </span>
       <span className="text-xs leading-relaxed text-muted-foreground">{row.note}</span>
@@ -2012,20 +2012,20 @@ function klineChartOptions(width: number): DeepPartial<ChartOptions> {
     height: 260,
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: 'transparent' },
-      textColor: '#94a3b8',
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      background: { type: ColorType.Solid, color: '#0a0b0f' },
+      textColor: '#8992a3',
+      fontFamily: 'Manrope, Noto Sans TC, system-ui, sans-serif',
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.10)' },
+      vertLines: { color: 'rgba(255, 255, 255, 0.045)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.055)' },
     },
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
-      scaleMargins: { top: 0.16, bottom: 0.22 },
+      borderColor: 'rgba(255, 255, 255, 0.035)',
+      scaleMargins: { top: 0.12, bottom: 0.24 },
     },
     timeScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 255, 255, 0.035)',
       timeVisible: false,
       secondsVisible: false,
       rightOffset: 8,
@@ -2034,8 +2034,8 @@ function klineChartOptions(width: number): DeepPartial<ChartOptions> {
     },
     crosshair: {
       mode: CrosshairMode.MagnetOHLC,
-      horzLine: { color: 'rgba(56, 189, 248, 0.28)' },
-      vertLine: { color: 'rgba(56, 189, 248, 0.28)' },
+      horzLine: { color: 'rgba(214, 168, 95, 0.42)' },
+      vertLine: { color: 'rgba(214, 168, 95, 0.42)' },
     },
   }
 }
@@ -2097,7 +2097,7 @@ function priceRowsToVolume(rows: any[], candles: KlineCandle[], limit = 42) {
       return {
         time,
         value: Number.isFinite(value) ? value : 0,
-        color: candle && candle.close >= candle.open ? 'rgba(239, 68, 68, 0.28)' : 'rgba(16, 185, 129, 0.28)',
+        color: candle && candle.close >= candle.open ? 'rgba(239, 68, 68, 0.24)' : 'rgba(0, 192, 118, 0.24)',
       }
     })
     .filter((item) => Boolean(item.time))
@@ -2204,12 +2204,12 @@ function KLinePlanSketch({
     chartRef.current = chart
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#ef4444',
-      downColor: '#22c55e',
-      borderUpColor: '#ef4444',
-      borderDownColor: '#22c55e',
-      wickUpColor: '#fca5a5',
-      wickDownColor: '#86efac',
+      upColor: '#ff3b45',
+      downColor: '#00c076',
+      borderUpColor: '#ff3b45',
+      borderDownColor: '#00c076',
+      wickUpColor: '#ff6b72',
+      wickDownColor: '#28d190',
       priceLineVisible: false,
     })
     candleSeries.setData(candles)
@@ -2415,32 +2415,32 @@ function KLinePlanSketch({
   }, [chartKey])
 
   if (isLoading && candles.length === 0) {
-    return <div className="h-[300px] animate-pulse rounded-md border border-border/50 bg-background/60" />
+    return <div className="h-[300px] animate-pulse rounded-[20px] border border-white/[0.08] bg-[#0a0b0f]" />
   }
 
   if (prices.length === 0 || candles.length === 0) {
     return (
-      <div className="rounded-md border border-border/50 bg-background/60 p-3 text-xs text-muted-foreground">
+      <div className="rounded-[20px] border border-white/[0.08] bg-[#0a0b0f] p-3 text-xs text-muted-foreground">
         K線策略圖：價格資料不足，暫時只能保留文字交易計劃。
       </div>
     )
   }
   return (
-    <div className="overflow-hidden rounded-md border border-border/50 bg-background/60">
-      <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
-        <span className="text-xs font-medium text-foreground">K線交易計劃圖</span>
-        <span className="font-mono text-[11px] text-muted-foreground">Lightweight Charts</span>
+    <div className="overflow-hidden rounded-[20px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_46px_rgba(0,0,0,0.28)]">
+      <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2">
+        <span className="text-xs font-semibold text-slate-100">K線交易計劃圖</span>
+        <span className="sv-num text-[11px] text-slate-500">Lightweight Charts</span>
       </div>
-      <div ref={containerRef} className="h-[260px] w-full" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
-      <div className="grid gap-1 border-t border-border/30 px-3 py-2 text-[11px] sm:grid-cols-4 lg:grid-cols-8">
-        <span className="font-mono text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
-        <span className="font-mono text-sky-500">轉強 {confirmation ? fmtNumber(confirmation, 2) : '-'}</span>
-        <span className="font-mono text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
-        <span className="font-mono text-violet-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
-        <span className="font-mono text-rose-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
-        <span className="font-mono text-amber-500">MA20 {ma20 ? fmtNumber(ma20, 2) : '-'}</span>
-        <span className="font-mono text-violet-500">MA60 {ma60 ? fmtNumber(ma60, 2) : '-'}</span>
-        <span className="font-mono text-fuchsia-500">RSI {latestRsi != null ? fmtNumber(latestRsi, 1) : '-'}</span>
+      <div ref={containerRef} className="h-[260px] w-full bg-[#0a0b0f]" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
+      <div className="grid gap-1 border-t border-white/[0.07] px-3 py-2 text-[11px] sm:grid-cols-4 lg:grid-cols-8">
+        <span className="sv-num text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
+        <span className="sv-num text-sky-500">轉強 {confirmation ? fmtNumber(confirmation, 2) : '-'}</span>
+        <span className="sv-num text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
+        <span className="sv-num text-violet-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
+        <span className="sv-num text-rose-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
+        <span className="sv-num text-amber-500">MA20 {ma20 ? fmtNumber(ma20, 2) : '-'}</span>
+        <span className="sv-num text-violet-500">MA60 {ma60 ? fmtNumber(ma60, 2) : '-'}</span>
+        <span className="sv-num text-fuchsia-500">RSI {latestRsi != null ? fmtNumber(latestRsi, 1) : '-'}</span>
       </div>
     </div>
   )
@@ -2603,7 +2603,7 @@ function FocusedTradePlanRow({ row }: { row: TradePlanReadRow }) {
   return (
     <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-start gap-3 border-b border-border/30 py-2 last:border-b-0">
       <span className="text-[11px] font-semibold text-foreground/80">{row.label}</span>
-      <span className={cn('min-w-0 break-words font-mono text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+      <span className={cn('min-w-0 break-words sv-num text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
         {row.value}
       </span>
     </div>
@@ -2985,7 +2985,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-700 hover:border-sky-500/45 dark:text-sky-300"
             >
               <ExternalLink className="h-3 w-3 shrink-0" />
-              <span className="shrink-0 font-mono uppercase">{link.source}</span>
+              <span className="shrink-0 sv-num normal-case">{link.source}</span>
               <span className="truncate">{link.title}</span>
             </a>
           ))}

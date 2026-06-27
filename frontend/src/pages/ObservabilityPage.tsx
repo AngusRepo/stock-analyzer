@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+﻿import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowRight, ExternalLink, Loader2 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
@@ -120,7 +120,7 @@ function MetricCell({
   return (
     <div className="border border-[#2b3a49] bg-[#070a10] p-3">
       <div className="flex items-start justify-between gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#7f8ba0]">{label}</p>
+        <p className="sv-num text-[10px] normal-case text-[#7f8ba0]">{label}</p>
         <WorkstationPill tone={tone}>{count ?? tone}</WorkstationPill>
       </div>
       <p className={`mt-2 text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-sky-300' : 'text-slate-200'}`}>
@@ -149,17 +149,17 @@ function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
                 <WorkstationPill tone={statusTone(job.lastStatus)}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
                 <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
               </div>
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{job.group} / {job.schedule}</p>
+              <p className="mt-1 sv-num text-[10px] normal-case text-[#70809b]">{job.group} / {job.schedule}</p>
             </div>
-            <div className="min-w-0 font-mono text-slate-400">
+            <div className="min-w-0 sv-num text-slate-400">
               <p>發生 {job.lastRun || '-'}</p>
               <p className="text-slate-600">next {job.nextRun || '-'}</p>
             </div>
-            <div className="min-w-0 font-mono text-slate-400">
+            <div className="min-w-0 sv-num text-slate-400">
               <p>{job.lastDuration || '-'}</p>
               <p className="text-slate-600">7d {job.rate7d || '-'}</p>
             </div>
-            <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
+            <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start sv-num text-[10px] normal-case text-sky-200 hover:text-sky-100">
               Drilldown <ExternalLink className="h-3 w-3" />
             </a>
             <div className={`xl:col-span-4 grid gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 ${schedulerHasRootCause(job) ? 'md:grid-cols-3' : 'md:grid-cols-1'}`}>
@@ -216,12 +216,12 @@ function SchedulerExecutionMap({ jobs }: { jobs: SchedulerJob[] }) {
     <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Execution dependency map / 執行依賴地圖</p>
+          <p className="sv-num text-[10px] normal-case text-[#70809b]">Scheduler execution flow / 執行流程</p>
           <p className="mt-1 text-xs text-slate-400">
             目前階段：{active?.label ?? 'complete'}；等待：{waiting.slice(0, 4).join(' -> ') || 'none'}
           </p>
         </div>
-        <a href="/scheduler" className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-sky-200 hover:text-sky-100">
+        <a href="/scheduler" className="inline-flex items-center gap-1 sv-num text-[10px] normal-case text-sky-200 hover:text-sky-100">
           Full scheduler <ExternalLink className="h-3 w-3" />
         </a>
       </div>
@@ -236,10 +236,10 @@ function SchedulerExecutionMap({ jobs }: { jobs: SchedulerJob[] }) {
                       : 'border-sky-500/25 bg-sky-500/10'
             }`}>
               <p className="truncate text-xs font-semibold text-slate-100">{stage.label}</p>
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em]" style={{ color: toneColor(stage.tone) }}>
+              <p className="mt-1 sv-num text-[10px] normal-case" style={{ color: toneColor(stage.tone) }}>
                 {schedulerStatusLabel(stage.status)}
               </p>
-              <p className="mt-1 truncate font-mono text-[10px] text-slate-500">{stage.job?.lastDuration || '-'}</p>
+              <p className="mt-1 truncate sv-num text-[10px] text-slate-500">{stage.job?.lastDuration || '-'}</p>
             </div>
             {index < stages.length - 1 && <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-600" />}
           </div>
@@ -259,7 +259,7 @@ function DataQualityScoreBar({ score, tone }: { score: number; tone: Workstation
   const clamped = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
   return (
     <div className="min-w-[120px]">
-      <div className="flex items-center justify-between font-mono text-[10px] text-slate-500">
+      <div className="flex items-center justify-between sv-num text-[10px] text-slate-500">
         <span>score</span>
         <span className={tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : 'text-rose-300'}>{clamped}%</span>
       </div>
@@ -287,11 +287,11 @@ function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
                 <WorkstationPill tone={tone}>{check.status}</WorkstationPill>
                 <p className="min-w-0 break-words text-sm font-semibold text-slate-100">{check.label}</p>
               </div>
-              <p className="mt-1 break-all font-mono text-[10px] uppercase tracking-[0.12em] text-[#70809b]">{check.id}</p>
+              <p className="mt-1 break-all sv-num text-[10px] normal-case text-[#70809b]">{check.id}</p>
             </div>
             <p className="min-w-0 whitespace-normal break-words leading-5 text-slate-400 [overflow-wrap:anywhere]">{check.summary}</p>
             <DataQualityScoreBar score={checkScore(check.status)} tone={tone} />
-            <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-200 hover:text-emerald-100">
+            <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 sv-num text-[10px] normal-case text-emerald-200 hover:text-emerald-100">
               Inspect <ExternalLink className="h-3 w-3" />
             </a>
           </div>
@@ -392,17 +392,17 @@ function AdaptiveMetaPanel({
       <div className="grid gap-3 p-3 xl:grid-cols-3">
         <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Threshold Policy</p>
+            <p className="sv-num text-[10px] normal-case text-[#70809b]">Threshold Policy</p>
             <WorkstationPill tone={tone}>{adaptive?.status ?? 'missing'}</WorkstationPill>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
             <div>
               <p className="text-slate-500">effective delta</p>
-              <p className="font-mono text-lg text-sky-200">{fmtNumber(threshold.effective_delta ?? evidence.confidence_delta)}</p>
+              <p className="sv-num text-lg text-sky-200">{fmtNumber(threshold.effective_delta ?? evidence.confidence_delta)}</p>
             </div>
             <div>
               <p className="text-slate-500">regime</p>
-              <p className="font-mono text-lg text-slate-100">{String(thresholdInputs.regime ?? asRecord(evidence.provenance).regime ?? '-')}</p>
+              <p className="sv-num text-lg text-slate-100">{String(thresholdInputs.regime ?? asRecord(evidence.provenance).regime ?? '-')}</p>
             </div>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
@@ -415,21 +415,21 @@ function AdaptiveMetaPanel({
 
         <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">LinUCB Guard</p>
+            <p className="sv-num text-[10px] normal-case text-[#70809b]">LinUCB Guard</p>
             <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
             <div>
               <p className="text-slate-500">max mult</p>
-              <p className="font-mono text-lg text-emerald-300">{fmtNumber(evidence.bandit_max_mult, 2)}</p>
+              <p className="sv-num text-lg text-emerald-300">{fmtNumber(evidence.bandit_max_mult, 2)}</p>
             </div>
             <div>
               <p className="text-slate-500">loss rate</p>
-              <p className="font-mono text-lg text-amber-200">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
+              <p className="sv-num text-lg text-amber-200">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
             </div>
             <div>
               <p className="text-slate-500">samples</p>
-              <p className="font-mono text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
+              <p className="sv-num text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
             </div>
           </div>
           <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
@@ -449,35 +449,35 @@ function AdaptiveMetaPanel({
 
         <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">GA Promotion</p>
+            <p className="sv-num text-[10px] normal-case text-[#70809b]">GA Promotion</p>
             <WorkstationPill tone={severityTone(ga?.severity)}>{String(promotion.level ?? 'L0')}</WorkstationPill>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
             <div>
               <p className="text-slate-500">status</p>
-              <p className="font-mono text-lg text-slate-100">{String(promotion.status ?? ga?.status ?? '-')}</p>
+              <p className="sv-num text-lg text-slate-100">{String(promotion.status ?? ga?.status ?? '-')}</p>
             </div>
             <div>
               <p className="text-slate-500">next</p>
-              <p className="font-mono text-lg text-amber-200">{String(promotion.nextLevel ?? '-')}</p>
+              <p className="sv-num text-lg text-amber-200">{String(promotion.nextLevel ?? '-')}</p>
             </div>
             <div>
               <p className="text-slate-500">L3 request</p>
-              <p className={`font-mono text-lg ${canRequestNextLevel || pendingApprovalLevel ? 'text-emerald-300' : 'text-slate-100'}`}>
+              <p className={`sv-num text-lg ${canRequestNextLevel || pendingApprovalLevel ? 'text-emerald-300' : 'text-slate-100'}`}>
                 {pendingApprovalLevel ? `pending ${pendingApprovalLevel}` : canRequestNextLevel ? 'ready for approval' : 'not ready'}
               </p>
             </div>
             <div>
               <p className="text-slate-500">best score</p>
-              <p className="font-mono text-lg text-emerald-300">{fmtNumber(gaEvidence.best_score, 4)}</p>
+              <p className="sv-num text-lg text-emerald-300">{fmtNumber(gaEvidence.best_score, 4)}</p>
             </div>
             <div>
               <p className="text-slate-500">score delta</p>
-              <p className="font-mono text-lg text-sky-200">{scoreDelta(historyTail)}</p>
+              <p className="sv-num text-lg text-sky-200">{scoreDelta(historyTail)}</p>
             </div>
             <div className="col-span-2">
               <p className="text-slate-500">last learned</p>
-              <p className="font-mono text-sm text-slate-100">{gaLearningUpdatedAt}</p>
+              <p className="sv-num text-sm text-slate-100">{gaLearningUpdatedAt}</p>
             </div>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
@@ -557,7 +557,7 @@ function AdaptiveMetaPanel({
                   </Button>
                 </>
               )}
-              <a href="/strategy-lab" className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200 hover:text-amber-100">
+              <a href="/strategy-lab" className="inline-flex items-center gap-1 sv-num text-[10px] normal-case text-amber-200 hover:text-amber-100">
                 Review GA candidate <ExternalLink className="h-3 w-3" />
               </a>
             </div>
@@ -570,7 +570,7 @@ function AdaptiveMetaPanel({
           {metaLearners.map(([name, description, stage, evidenceNeed]) => (
             <div key={String(name)} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
               <div className="flex items-center justify-between gap-2">
-                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">{String(name)}</p>
+                <p className="sv-num text-[10px] normal-case text-[#70809b]">{String(name)}</p>
                 <WorkstationPill tone={stage === 'production baseline' ? 'ok' : stage === 'research only' ? 'warn' : 'info'}>
                   {String(stage)}
                 </WorkstationPill>
@@ -587,42 +587,6 @@ function AdaptiveMetaPanel({
         </div>
       </div>
     </WorkstationPanel>
-  )
-}
-
-function DependencyMap() {
-  const nodes = [
-    ['GCP Scheduler', 'trigger'],
-    ['Cloud Run', 'orchestrate'],
-    ['Modal', 'heavy ML'],
-    ['Worker', 'callback'],
-    ['D1/KV', 'state'],
-    ['Frontend', 'read'],
-  ]
-  return (
-    <div className="p-3">
-      <div className="grid grid-cols-2 gap-2">
-        {nodes.map(([name, role], index) => (
-          <div key={name} className="rounded border border-[#263247] bg-[#05070c] p-2">
-            <div className="flex items-center justify-between gap-2">
-              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-200">{name}</p>
-              {index < nodes.length - 1 && <ArrowRight className="h-3 w-3 text-amber-300" />}
-            </div>
-            <p className="mt-1 text-xs text-slate-500">{role}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-3 border-t border-[#263247] pt-3">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">Execution realism watch</p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {EXECUTION_REALISM_STATES.map((item) => (
-            <WorkstationPill key={item} tone={item.includes('unavailable') || item.includes('stale') ? 'warn' : 'info'}>
-              {item.replace(/_/g, ' ')}
-            </WorkstationPill>
-          ))}
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -704,7 +668,7 @@ export default function ObservabilityPage() {
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#05070c]/95 backdrop-blur-sm">
             <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-sky-300" />
-              <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.18em] text-sky-200">Loading OBS evidence</p>
+              <p className="mt-3 sv-num text-[11px] normal-case text-sky-200">Loading OBS evidence</p>
               <p className="mt-1 text-xs text-slate-500">scheduler / data quality / deploy gate / model events</p>
             </div>
           </div>
@@ -724,16 +688,13 @@ export default function ObservabilityPage() {
           }
         />
 
-        <section className="grid gap-4 xl:grid-cols-[minmax(0,4fr)_minmax(260px,1fr)]">
+        <section>
           <AdaptiveMetaPanel
             events={events}
             onGaReview={(action, level) => gaReview.mutate({ action, level })}
             gaReviewPending={gaReview.isPending}
             gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
           />
-          <WorkstationPanel title="Dependency Map / 依賴地圖" kicker="blast radius">
-            <DependencyMap />
-          </WorkstationPanel>
         </section>
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
@@ -743,13 +704,13 @@ export default function ObservabilityPage() {
                 Scheduler row 直接顯示 root cause、發生時間與可能影響；OBS 不再另外維護重複的事件收件匣。
               </p>
               <div className="flex flex-wrap gap-2 text-[11px]">
-                <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 font-mono text-sky-200 hover:border-sky-300/50">
+                <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 sv-num text-sky-200 hover:border-sky-300/50">
                   Scheduler <ExternalLink className="h-3 w-3" />
                 </a>
-                <a href={`/data-quality${dataQuality.data?.date ? `?date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 font-mono text-emerald-200 hover:border-emerald-300/50">
+                <a href={`/data-quality${dataQuality.data?.date ? `?date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 sv-num text-emerald-200 hover:border-emerald-300/50">
                   Data Quality <ExternalLink className="h-3 w-3" />
                 </a>
-                <a href={`/data-quality?focus=price_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 font-mono text-amber-200 hover:border-amber-300/50">
+                <a href={`/data-quality?focus=price_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 sv-num text-amber-200 hover:border-amber-300/50">
                   Price Data <ExternalLink className="h-3 w-3" />
                 </a>
               </div>
@@ -758,7 +719,7 @@ export default function ObservabilityPage() {
           <div className="grid gap-3 p-3 xl:grid-cols-2">
             <div>
               <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Scheduler Runs / 排程執行</p>
+                <p className="shrink-0 whitespace-nowrap sv-num text-[10px] normal-case text-slate-400">Scheduler Runs / 排程執行</p>
                 <div className="hidden w-32 shrink-0 sm:block">
                   <Sparkline values={(jobs.length ? jobs : []).slice(0, 12).map((job) => job.lastStatus === 'success' ? 100 : job.lastStatus === 'waiting' ? 70 : job.lastStatus === 'sleep' || job.lastStatus === 'skip' ? 45 : 5)} tone={failedJobs ? 'warn' : 'ok'} />
                 </div>
@@ -767,9 +728,9 @@ export default function ObservabilityPage() {
             </div>
             <div>
               <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">Data Quality / 資料品質</p>
+                <p className="shrink-0 whitespace-nowrap sv-num text-[10px] normal-case text-slate-400">Data Quality / 資料品質</p>
                 <div className="hidden items-center gap-3 sm:flex">
-                  <span className={`font-mono text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
+                  <span className={`sv-num text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
                   <div className="w-32 shrink-0">
                     <Sparkline values={(dqChecks.length ? dqChecks : []).slice(0, 12).map((check) => check.status === 'ok' ? 100 : check.status === 'warn' ? 55 : 5)} tone={failedChecks ? 'error' : 'ok'} />
                   </div>

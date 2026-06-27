@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -73,7 +73,7 @@ export default function AlertManager({ stockId, stockSymbol }: Props) {
           : stockRules.map((r: any) => (
             <div key={r.id} className="flex items-center justify-between text-xs bg-muted/30 rounded-md px-2.5 py-1.5">
               <span>{RULE_TYPES.find(t => t.value === r.rule_type)?.label ?? r.rule_type}
-                {r.threshold && <span className="ml-1 text-primary font-mono">{r.threshold}</span>}
+                {r.threshold && <span className="ml-1 text-primary sv-num">{r.threshold}</span>}
               </span>
               <Button size="sm" variant="ghost" onClick={() => removeRule.mutate(r.id)} className="h-5 w-5 p-0">
                 <Trash2 className="w-3 h-3 text-destructive"/>

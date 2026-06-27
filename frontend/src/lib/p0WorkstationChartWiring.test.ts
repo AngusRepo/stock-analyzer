@@ -9,7 +9,6 @@ const root = process.cwd()
 const packageJsonPath = path.join(root, 'package.json')
 const lockPath = path.join(root, 'package-lock.json')
 const modelChartPath = path.join(root, 'src', 'components', 'charts', 'ModelPoolHealthChart.tsx')
-const strategyChartPath = path.join(root, 'src', 'components', 'charts', 'StrategyExperimentTimeline.tsx')
 const modelPoolPagePath = path.join(root, 'src', 'pages', 'ModelPoolPage.tsx')
 const strategyLabPagePath = path.join(root, 'src', 'pages', 'StrategyLabPage.tsx')
 const viteConfigPath = path.join(root, 'vite.config.ts')
@@ -26,7 +25,6 @@ assert(packageLock.packages?.['node_modules/lightweight-charts']?.version === '5
 assert(packageLock.packages?.['node_modules/lightweight-charts']?.license === 'Apache-2.0', 'lightweight-charts license should remain the explicitly accepted Apache-2.0')
 
 assert(fs.existsSync(modelChartPath), 'ModelPoolHealthChart component should exist')
-assert(fs.existsSync(strategyChartPath), 'StrategyExperimentTimeline component should exist')
 
 const modelChart = fs.readFileSync(modelChartPath, 'utf8')
 assert(modelChart.includes("from 'lightweight-charts'"), 'ModelPoolHealthChart should use lightweight-charts')
@@ -37,13 +35,6 @@ assert(modelChart.includes('ML Pool Visual Workbench'), 'ModelPoolHealthChart em
 assert(modelChart.includes("model.status === 'active' || model.status === 'degraded'"), 'ModelPoolHealthChart should include degraded production slots as serving alpha models')
 assert(!modelChart.includes('degraded still vote'), 'ModelPoolHealthChart should not imply degraded slots vote at full strength')
 assert(modelChart.includes('Production alpha slots evidence surface'), 'ModelPoolHealthChart title should describe serving alpha slots, not active-only lineage')
-
-const strategyChart = fs.readFileSync(strategyChartPath, 'utf8')
-assert(strategyChart.includes("from 'lightweight-charts'"), 'StrategyExperimentTimeline should use lightweight-charts')
-assert(strategyChart.includes('LineSeries'), 'StrategyExperimentTimeline should render match-rate line series')
-assert(strategyChart.includes('HistogramSeries'), 'StrategyExperimentTimeline should render sample histograms')
-assert(strategyChart.includes('createSeriesMarkers'), 'StrategyExperimentTimeline should render experiment markers')
-assert(strategyChart.includes('Strategy Visual Workbench'), 'StrategyExperimentTimeline empty state should still render a visible visual workbench')
 
 const modelPoolPage = fs.readFileSync(modelPoolPagePath, 'utf8')
 assert(modelPoolPage.includes('ModelPoolNewFlowWorkbench'), 'ModelPool page should render the new L2/L3 model cockpit')
@@ -61,8 +52,8 @@ assert(!modelPoolPage.includes('<Mini' + 'Sparkline'), 'Serving alpha matrix sho
 
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
 const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
-assert(strategyLabPage.includes('StrategyFamilyWorkbench'), 'Strategy Lab page should render the L1 strategy family cockpit')
-assert(strategyLabPage.includes('StrategyExperimentTimeline'), 'Strategy Lab page should render the experiment timeline')
+assert(!strategyLabPage.includes('Strategy' + 'FamilyWorkbench'), 'Strategy Lab page should not render the removed family cockpit')
+assert(!strategyLabPage.includes('Strategy' + 'ExperimentTimeline'), 'Strategy Lab page should not render the removed experiment timeline')
 assert(strategyLabPage.includes('Action Lanes'), 'Strategy Lab should group actionable controls into a left-side action lane')
 assert(strategyLabPage.includes('Registry / Evidence Inspector'), 'Strategy Lab should inspect registry evidence in the right-side inspector')
 assert(strategyLabPage.includes('Strategy Ops'), 'Strategy Lab should merge spec/dry-run and learning/reward into one lifecycle block')
@@ -86,10 +77,6 @@ assert(strategyLabPage.includes("registry_status === 'evaluation_pending'"), 'Mo
 assert(strategyLabPage.includes('candidate_ids: [nextTarget.candidate_id]'), 'ModelUpgrade dry-run action should send an explicit target candidate id')
 assert(strategyLabPage.includes("setRegistrySelection({ kind: 'model_upgrade'"), 'ModelUpgrade actions should select the right-side registry inspector target')
 assert(strategyLabPage.includes("setRegistrySelection({ kind: 'experiment'"), 'Experiment actions should select the right-side registry inspector target')
-assert(
-  strategyLabPage.indexOf('StrategyExperimentTimeline') < strategyLabPage.indexOf('{error &&'),
-  'Strategy Lab should render the visual workbench before API error text so the page does not look unchanged when APIs fail',
-)
 assert(
   viteConfig.includes("devOptions: { enabled: process.env.VITE_PWA_DEV === '1' }"),
   'Vite PWA dev service worker should be opt-in so local Strategy Lab is not blocked by a missing dev-dist/sw.js overlay',

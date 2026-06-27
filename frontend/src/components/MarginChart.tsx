@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+﻿import { useQuery } from '@tanstack/react-query'
 import { stocksApi } from '@/lib/api'
 import {
   ResponsiveContainer, ComposedChart, Area, Line,
@@ -37,21 +37,21 @@ export default function MarginChart({ stockId }: { stockId: number }) {
       <div className="grid grid-cols-3 gap-3 text-sm">
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground">融資餘額</p>
-          <p className="text-lg font-mono font-bold text-blue-400">
+          <p className="text-lg sv-num font-bold text-blue-400">
             {latest.margin_balance?.toLocaleString() ?? '—'}
           </p>
           <p className="text-xs text-muted-foreground">張</p>
         </div>
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground">融券餘額</p>
-          <p className="text-lg font-mono font-bold text-orange-400">
+          <p className="text-lg sv-num font-bold text-orange-400">
             {latest.short_balance?.toLocaleString() ?? '—'}
           </p>
           <p className="text-xs text-muted-foreground">張</p>
         </div>
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground">融資使用率</p>
-          <p className="text-lg font-mono font-bold text-purple-400">
+          <p className="text-lg sv-num font-bold text-purple-400">
             {latest.margin_usage_pct != null ? `${latest.margin_usage_pct.toFixed(1)}%` : '—'}
           </p>
           <p className="text-xs text-muted-foreground">

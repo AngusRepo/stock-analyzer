@@ -1,8 +1,8 @@
-import { defineConfig } from 'vite'
+import { execSync } from 'node:child_process'
+import path from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import path from 'path'
-import { execSync } from 'node:child_process'
+import { defineConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 function resolveBuildId() {
@@ -83,7 +83,7 @@ export default defineConfig({
         id: '/',
         name: 'StockVision 股票分析平台',
         short_name: 'StockVision',
-        description: '台股與美股 AI 驅動分析平台',
+        description: '台股量化、AI 推薦與風險監控平台',
         start_url: '/',
         scope: '/',
         display: 'standalone',
@@ -99,16 +99,16 @@ export default defineConfig({
         ],
         shortcuts: [
           {
-            name: '晨間儀表板',
+            name: '晨間概覽',
             short_name: 'Dashboard',
-            description: '打開 StockVision 晨間概覽',
+            description: '開啟 StockVision 首頁市場概覽',
             url: '/',
             icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }],
           },
           {
             name: '模型池',
             short_name: 'Models',
-            description: '查看模型健康與晉級狀態',
+            description: '查看模型池與升級狀態',
             url: '/model-pool',
             icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }],
           },

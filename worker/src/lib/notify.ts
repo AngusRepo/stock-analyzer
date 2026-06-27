@@ -1,4 +1,4 @@
-/**
+﻿/**
  * notify.ts — Cron 失敗通知
  *
  * 寫入 D1 system_logs 表（前端 SystemStatusBar 可讀）
@@ -357,7 +357,7 @@ const ZONE_COLOR: Record<'RED' | 'YELLOW' | 'GREEN', number> = {
   GREEN: 0x2ecc71,
 }
 
-/** Pad a symbol string to fixed width for monospace column alignment. */
+/** Pad a symbol string to fixed width for fixed-width column alignment. */
 function pad(s: string, width: number): string {
   const len = [...s].length
   return len >= width ? s : s + ' '.repeat(width - len)

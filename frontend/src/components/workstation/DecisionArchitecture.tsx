@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+﻿import type { ReactNode } from 'react'
 import { ArrowRight, GitBranch, ShieldCheck, Workflow } from 'lucide-react'
 import { WorkstationPanel, WorkstationPill, type WorkstationTone } from './WorkstationChrome'
 
@@ -28,10 +28,10 @@ export function DecisionTraceRail({
           <div key={`${step.label}-${index}`} className="bg-[#070a10] p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center border border-[#263247] bg-[#0b1220] font-mono text-[10px] text-amber-200">
+                <span className="flex h-6 w-6 items-center justify-center border border-[#263247] bg-[#0b1220] sv-num text-[10px] text-amber-200">
                   {index + 1}
                 </span>
-                <p className="font-mono text-[11px] uppercase tracking-[0.13em] text-slate-100">{step.label}</p>
+                <p className="sv-num text-[11px] normal-case text-slate-100">{step.label}</p>
               </div>
               {index < steps.length - 1 && <ArrowRight className="hidden h-3.5 w-3.5 text-[#5e6a82] md:block" />}
             </div>
@@ -71,7 +71,7 @@ export function AudienceRoleStrip() {
       ].map((item) => (
         <div key={item.title} className="bg-[#171714] p-4">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-[#fff1cf]">{item.title}</p>
+            <p className="sv-num text-[12px] normal-case text-[#fff1cf]">{item.title}</p>
             <WorkstationPill tone={item.tone}>{item.subtitle}</WorkstationPill>
           </div>
           <p className="mt-3 text-xs leading-5 text-[#b9b1a1]">{item.body}</p>
@@ -86,7 +86,7 @@ export function RecommendationLaneExplainer() {
     <div className="grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-2">
       <div className="bg-[linear-gradient(135deg,#06140f,#071019)] p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-emerald-200">上市櫃交易流</p>
+          <p className="sv-num text-[12px] normal-case text-emerald-200">上市櫃交易流</p>
           <WorkstationPill tone="ok">tradable lane</WorkstationPill>
         </div>
         <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
@@ -95,7 +95,7 @@ export function RecommendationLaneExplainer() {
       </div>
       <div className="bg-[linear-gradient(135deg,#111821,#0b0d12)] p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-sky-200">正式候選池</p>
+          <p className="sv-num text-[12px] normal-case text-sky-200">正式候選池</p>
           <WorkstationPill tone="info">listed + otc</WorkstationPill>
         </div>
         <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
@@ -140,7 +140,7 @@ export function ObsDrilldownMap() {
                 <Icon className="h-5 w-5 text-[#d6a85f]" />
                 <WorkstationPill tone={item.tone}>打開</WorkstationPill>
               </div>
-              <p className="mt-3 font-mono text-[12px] uppercase tracking-[0.14em] text-[#fff7e8] group-hover:text-[#f1c16f]">{item.title}</p>
+              <p className="mt-3 sv-num text-[12px] normal-case text-[#fff7e8] group-hover:text-[#f1c16f]">{item.title}</p>
               <p className="mt-2 text-xs leading-5 text-[#b9b1a1]">{item.body}</p>
             </a>
           )
@@ -167,8 +167,8 @@ export function SignalInsightCard({
     <div className="border border-[#263247] bg-[#070a10] p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#8a92a6]">{title}</p>
-          <p className="mt-2 font-mono text-2xl font-semibold text-[#fff1cf]">{value}</p>
+          <p className="sv-num text-[10px] normal-case text-[#8a92a6]">{title}</p>
+          <p className="mt-2 sv-num text-2xl font-semibold text-[#fff1cf]">{value}</p>
         </div>
         <WorkstationPill tone={tone}>{tone}</WorkstationPill>
       </div>

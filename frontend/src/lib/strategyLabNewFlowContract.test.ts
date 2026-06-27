@@ -4,34 +4,25 @@ import assert from 'node:assert/strict'
 
 const root = process.cwd()
 const pagePath = path.join(root, 'src', 'pages', 'StrategyLabPage.tsx')
-const workbenchPath = path.join(root, 'src', 'components', 'strategy-lab', 'StrategyFamilyWorkbench.tsx')
-
-assert(fs.existsSync(workbenchPath), 'StrategyFamilyWorkbench should exist for L1 family / variant governance')
+const familyWorkbenchName = 'Strategy' + 'FamilyWorkbench'
+const experimentTimelineName = 'Strategy' + 'ExperimentTimeline'
+const familyWorkbenchPath = path.join(root, 'src', 'components', 'strategy-lab', `${familyWorkbenchName}.tsx`)
+const experimentTimelinePath = path.join(root, 'src', 'components', 'charts', `${experimentTimelineName}.tsx`)
 
 const page = fs.readFileSync(pagePath, 'utf8')
-const workbench = fs.readFileSync(workbenchPath, 'utf8')
 
-assert(page.includes("import StrategyFamilyWorkbench from '@/components/strategy-lab/StrategyFamilyWorkbench'"), 'StrategyLab page should import the L1 family cockpit')
-assert(page.includes('<StrategyFamilyWorkbench'), 'StrategyLab page should render the L1 family cockpit')
-assert(page.indexOf('<StrategyFamilyWorkbench') < page.indexOf('<StrategyExperimentTimeline'), 'L1 family cockpit should render before experiment timeline')
+assert(!fs.existsSync(familyWorkbenchPath), 'Removed family workbench should stay out of Strategy Lab')
+assert(!fs.existsSync(experimentTimelinePath), 'Removed experiment timeline should stay out of Strategy Lab')
+assert(!page.includes(familyWorkbenchName), 'StrategyLab page should not import or render the removed family workbench')
+assert(!page.includes(experimentTimelineName), 'StrategyLab page should not import or render the removed timeline workbench')
 
-assert(workbench.includes("from 'lightweight-charts'"), 'Strategy family cockpit should use lightweight-charts')
-assert(workbench.includes('HistogramSeries'), 'Strategy family cockpit should render matched-count histograms')
-assert(workbench.includes('LineSeries'), 'Strategy family cockpit should render learning hit-rate lines')
-assert(workbench.includes('createSeriesMarkers'), 'Strategy family cockpit should render family markers')
-
-for (const familyId of [
-  'VOLATILITY_CONTRACTION_BREAKOUT',
-  'TREND_RECLAIM_CONTINUATION',
-  'SMART_MONEY_ACCUMULATION',
-  'SMC_STRUCTURE_RECLAIM',
-  'REVENUE_QUALITY_MOMENTUM',
-  'SECTOR_ROTATION_CORE',
-]) {
-  assert(workbench.includes(familyId), `${familyId} should be represented in the L1 family cockpit`)
-}
-
-assert(workbench.includes('raw top-up'), 'Strategy family cockpit should explicitly separate strategy-hit breadth from raw top-up')
-assert(workbench.includes('Model Pool'), 'Strategy family cockpit should hand off L2/L3 model concerns to Model Pool')
+assert(page.includes('StrategyLifecycleSwimlane'), 'Strategy Lab should keep lifecycle evidence after removing the table')
+assert(page.includes('Action Lanes'), 'Strategy Lab should keep actionable controls grouped in action lanes')
+assert(page.includes('Registry / Evidence Inspector'), 'Strategy Lab should keep the right-side registry evidence inspector')
+assert(page.includes('Strategy Ops'), 'Strategy Lab should keep the consolidated strategy operations block')
+assert(page.includes('Learning + Reward Ledger'), 'Strategy learning panel should focus on reward ledger evidence')
+assert(page.includes('Approve shadow'), 'Research Intern Gate UX should expose approve-shadow review action')
+assert(page.includes('Request evidence'), 'Research Intern Gate UX should expose request-more-evidence action')
+assert(page.includes('Promote paper-active'), 'Research Intern Gate UX should expose paper-active promotion request')
 
 console.log('strategyLabNewFlowContract: OK')

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PipelinePage — 每日選股流程總覽
  *
  * 顯示完整 pipeline：Screener → ML → Recommendation → T2 Debate
@@ -211,13 +211,13 @@ function LayerTracePanel({ rec }: { rec: any }) {
     <div className="rounded-lg border border-border/70 bg-background/45 p-2">
       <div className="mb-2 flex items-center justify-between gap-3">
         <p className="text-[11px] font-semibold text-foreground">Layer Evidence Trace</p>
-        <span className="font-mono text-[10px] text-muted-foreground">L0-L4 / screener_funnel_evidence</span>
+        <span className="sv-num text-[10px] text-muted-foreground">L0-L4 / screener_funnel_evidence</span>
       </div>
       <div className="grid gap-1.5">
         {rows.map((row) => (
           <div key={row.layer} className="grid gap-2 rounded-md border border-border/50 px-2 py-1.5 text-[11px] md:grid-cols-[86px_minmax(0,1fr)]">
             <div>
-              <div className="font-mono font-semibold text-primary">{row.layer}</div>
+              <div className="sv-num font-semibold text-primary">{row.layer}</div>
               <Badge variant="outline" className="mt-1 h-auto max-w-full whitespace-normal break-words px-1.5 py-0 text-[9px]">
                 {row.status}
               </Badge>
@@ -227,7 +227,7 @@ function LayerTracePanel({ rec }: { rec: any }) {
               <p className="mt-0.5 break-words leading-5 text-muted-foreground">{row.detail}</p>
               <div className="mt-1 flex flex-wrap gap-1">
                 {row.metrics.map((metric) => (
-                  <span key={metric} className="rounded border border-border/40 bg-background/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  <span key={metric} className="rounded border border-border/40 bg-background/60 px-1.5 py-0.5 sv-num text-[10px] text-muted-foreground">
                     {metric}
                   </span>
                 ))}
@@ -324,7 +324,7 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
       <div className="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-8 text-right font-mono text-muted-foreground">{value}/{max}</span>
+      <span className="w-8 text-right sv-num text-muted-foreground">{value}/{max}</span>
     </div>
   )
 }
@@ -341,12 +341,12 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
         className="flex items-center gap-3 px-3 py-2 cursor-pointer select-none"
         onClick={() => setExpanded(v => !v)}
       >
-        <span className="text-xs text-muted-foreground font-mono w-5 text-right">{rank}</span>
-        <span className="font-semibold text-sm w-14 font-mono">{rec.symbol}</span>
+        <span className="text-xs text-muted-foreground sv-num w-5 text-right">{rank}</span>
+        <span className="font-semibold text-sm w-14 sv-num">{rec.symbol}</span>
         <span className="text-xs text-muted-foreground truncate flex-1 max-w-[80px]">{rec.name}</span>
         {rec.sector && <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0">{rec.sector}</Badge>}
         <Badge className={`text-[10px] px-1.5 py-0 border ${sig.cls}`}>{sig.label}</Badge>
-        <span className="text-sm font-bold font-mono text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
+        <span className="text-sm font-bold sv-num text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
         {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
       </div>
       {expanded && (
@@ -361,9 +361,9 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
           )}
           <LayerTracePanel rec={rec} />
           <div className="flex gap-4 text-[11px] text-muted-foreground">
-            {rec.current_price && <span>現價 <span className="font-mono">${fmt(rec.current_price, 2)}</span></span>}
-            {rec.rsi14 && <span>RSI <span className="font-mono">{rec.rsi14.toFixed(1)}</span></span>}
-            {rec.confidence && <span>信心度 <span className="font-mono">{(rec.confidence * 100).toFixed(0)}%</span></span>}
+            {rec.current_price && <span>現價 <span className="sv-num">${fmt(rec.current_price, 2)}</span></span>}
+            {rec.rsi14 && <span>RSI <span className="sv-num">{rec.rsi14.toFixed(1)}</span></span>}
+            {rec.confidence && <span>信心度 <span className="sv-num">{(rec.confidence * 100).toFixed(0)}%</span></span>}
           </div>
         </div>
       )}
@@ -403,7 +403,7 @@ function DebateTurnsList({ turns }: { turns: any[] }) {
           <div key={`${label}-${i}`} className="grid gap-1 rounded-md border border-border/50 px-2 py-1.5 text-[11px] md:grid-cols-[120px_minmax(0,1fr)]">
             <div>
               <span className="font-semibold text-primary">{label}</span>
-              {turn.round != null ? <span className="ml-1 font-mono text-muted-foreground">R{turn.round}</span> : null}
+              {turn.round != null ? <span className="ml-1 sv-num text-muted-foreground">R{turn.round}</span> : null}
             </div>
             <p className="leading-5 text-muted-foreground">{String(turn.summary ?? turn.text ?? '-')}</p>
           </div>
@@ -432,29 +432,29 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
         className="flex items-center gap-3 px-3 py-2 cursor-pointer select-none"
         onClick={() => setExpanded(v => !v)}
       >
-        <span className="text-xs text-muted-foreground font-mono w-5 text-right">{rank}</span>
-        <span className="font-semibold text-sm w-14 font-mono">{buy.symbol}</span>
+        <span className="text-xs text-muted-foreground sv-num w-5 text-right">{rank}</span>
+        <span className="font-semibold text-sm w-14 sv-num">{buy.symbol}</span>
         <span className="text-xs text-muted-foreground truncate flex-1 max-w-[80px]">{buy.name}</span>
         <Badge className="text-[10px] px-1.5 py-0 border bg-red-500/10 text-red-400 border-red-500/20">
           {buy.signal ?? 'BUY'}
         </Badge>
         {buy.confidence != null && (
-          <span className="text-xs font-mono text-muted-foreground">信心度 {(buy.confidence * 100).toFixed(0)}%</span>
+          <span className="text-xs sv-num text-muted-foreground">信心度 {(buy.confidence * 100).toFixed(0)}%</span>
         )}
-        <span className="text-sm font-bold font-mono text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
+        <span className="text-sm font-bold sv-num text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
         {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
       </div>
       {expanded && (
         <div className="px-3 pb-3 pt-1 border-t border-border space-y-2 text-xs text-muted-foreground">
           <div className="grid grid-cols-3 gap-2">
-            <div>限價 <span className="font-mono text-foreground">${fmt(buy.ml_entry_price, 1)}</span></div>
-            <div>停損 <span className="font-mono text-emerald-400">${fmt(buy.ml_stop_loss, 1)}</span></div>
-            <div>目標 <span className="font-mono text-red-400">${fmt(buy.ml_target1, 1)}</span></div>
+            <div>限價 <span className="sv-num text-foreground">${fmt(buy.ml_entry_price, 1)}</span></div>
+            <div>停損 <span className="sv-num text-emerald-400">${fmt(buy.ml_stop_loss, 1)}</span></div>
+            <div>目標 <span className="sv-num text-red-400">${fmt(buy.ml_target1, 1)}</span></div>
           </div>
           {reason && <p className="leading-relaxed">{reason}</p>}
           <div className="grid grid-cols-2 gap-2 rounded-lg border border-border/70 bg-background/45 p-2">
-            <span>debate <b className="font-mono text-foreground">{buy.debate_verdict ?? buy.debate_status ?? '-'}</b></span>
-            <span>execution <b className="font-mono text-foreground">{buy.execution_status ?? 'pending'}</b></span>
+            <span>debate <b className="sv-num text-foreground">{buy.debate_verdict ?? buy.debate_status ?? '-'}</b></span>
+            <span>execution <b className="sv-num text-foreground">{buy.execution_status ?? 'pending'}</b></span>
           </div>
           <DebateTurnsList turns={buy.debate_turns ?? buy.debateTurns ?? []} />
           {Array.isArray(buy.watch_points) && buy.watch_points.length > 0 && (
@@ -465,9 +465,9 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
             </div>
           )}
           <div className="flex gap-3">
-            {buy.chip_score != null && <span>籌碼 <span className="font-mono">{buy.chip_score}/40</span></span>}
-            {buy.tech_score != null && <span>技術 <span className="font-mono">{buy.tech_score}/30</span></span>}
-            {buy.ml_score != null && <span>ML <span className="font-mono">{buy.ml_score}/30</span></span>}
+            {buy.chip_score != null && <span>籌碼 <span className="sv-num">{buy.chip_score}/40</span></span>}
+            {buy.tech_score != null && <span>技術 <span className="sv-num">{buy.tech_score}/30</span></span>}
+            {buy.ml_score != null && <span>ML <span className="sv-num">{buy.ml_score}/30</span></span>}
           </div>
         </div>
       )}
@@ -521,21 +521,21 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
           <div key={row.layer} className="rounded-lg border border-border bg-background/35 p-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <p className="font-mono text-sm font-semibold text-primary">{row.layer}</p>
+                <p className="sv-num text-sm font-semibold text-primary">{row.layer}</p>
                 <p className="mt-1 text-[11px] text-muted-foreground">{row.label}</p>
               </div>
-              <Badge variant="outline" className="max-w-[10rem] truncate font-mono text-[10px]" title={row.stage}>
+              <Badge variant="outline" className="max-w-[10rem] truncate sv-num text-[10px]" title={row.stage}>
                 {row.stage}
               </Badge>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-2">
                 <p className="text-[10px] text-emerald-300">通過</p>
-                <p className="mt-1 font-mono text-lg font-semibold text-emerald-200">{countValue(row.passed)}</p>
+                <p className="mt-1 sv-num text-lg font-semibold text-emerald-200">{countValue(row.passed)}</p>
               </div>
               <div className="rounded-md border border-rose-500/20 bg-rose-500/10 p-2">
                 <p className="text-[10px] text-rose-300">淘汰</p>
-                <p className="mt-1 font-mono text-lg font-semibold text-rose-200">{countValue(row.eliminated)}</p>
+                <p className="mt-1 sv-num text-lg font-semibold text-rose-200">{countValue(row.eliminated)}</p>
               </div>
             </div>
           </div>
@@ -559,23 +559,23 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
       <div className="grid grid-cols-3 gap-2 text-xs">
         <div className="rounded-md border border-border bg-background/35 p-2">
           <p className="text-[10px] text-muted-foreground">策略數</p>
-          <p className="mt-1 font-mono text-base font-semibold">{countValue(summary?.active_strategy_count ?? strategies.length)}</p>
+          <p className="mt-1 sv-num text-base font-semibold">{countValue(summary?.active_strategy_count ?? strategies.length)}</p>
         </div>
         <div className="rounded-md border border-border bg-background/35 p-2">
           <p className="text-[10px] text-muted-foreground">Avg Jaccard</p>
-          <p className="mt-1 font-mono text-base font-semibold">{ratioValue(summary?.avg_jaccard)}</p>
+          <p className="mt-1 sv-num text-base font-semibold">{ratioValue(summary?.avg_jaccard)}</p>
         </div>
         <div className="rounded-md border border-border bg-background/35 p-2">
           <p className="text-[10px] text-muted-foreground">Avg Corr</p>
-          <p className="mt-1 font-mono text-base font-semibold">{ratioValue(summary?.avg_corr)}</p>
+          <p className="mt-1 sv-num text-base font-semibold">{ratioValue(summary?.avg_corr)}</p>
         </div>
       </div>
 
       <div className="max-h-[210px] space-y-1 overflow-y-auto pr-1">
         {strategies.length ? strategies.map((row: any) => (
           <div key={row.strategy_id} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-xs">
-            <span className="truncate font-mono" title={row.strategy_id}>{row.strategy_id}</span>
-            <Badge variant="outline" className="font-mono text-[10px]">{countValue(row.selected_count)} 檔</Badge>
+            <span className="truncate sv-num" title={row.strategy_id}>{row.strategy_id}</span>
+            <Badge variant="outline" className="sv-num text-[10px]">{countValue(row.selected_count)} 檔</Badge>
           </div>
         )) : (
           <p className="rounded-md border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground">今日推薦列沒有 strategy_pool_ids 彙總資料。</p>
@@ -586,7 +586,7 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
         <p className="text-[11px] font-semibold text-muted-foreground">策略 overlap / corr</p>
         {strongestPairs.length ? strongestPairs.map((row: any) => (
           <div key={`${row.left}-${row.right}`} className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-[11px]">
-            <div className="truncate font-mono text-foreground" title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
+            <div className="truncate sv-num text-foreground" title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
             <div className="mt-1 flex gap-2 text-muted-foreground">
               <span>overlap {countValue(row.overlap)}</span>
               <span>J {ratioValue(row.jaccard)}</span>
@@ -649,12 +649,12 @@ function ExecutionFlowColumn({
       <div className="grid gap-2">
         {steps.map((step, index) => (
           <div key={step.label} className="grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs">
-            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-[#3a3125] font-mono text-[#d6a85f]">{index + 1}</span>
+            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-[#3a3125] sv-num text-[#d6a85f]">{index + 1}</span>
             <div>
               <p className="font-semibold text-foreground">{step.label}</p>
               <p className="text-[11px] text-muted-foreground">{step.detail}</p>
             </div>
-            <span className="text-right font-mono text-sm font-semibold text-primary">{step.value}</span>
+            <span className="text-right sv-num text-sm font-semibold text-primary">{step.value}</span>
           </div>
         ))}
       </div>
@@ -681,7 +681,7 @@ function ExecutionFlowColumn({
                              q.quadrant === 'Weakening' ? 'text-amber-400' : 'text-red-400'
               return (
                 <Badge key={q.symbol} variant="outline" className="gap-1 text-[10px]">
-                  <span className="font-mono">{q.symbol}</span>
+                  <span className="sv-num">{q.symbol}</span>
                   <span className={qColor}>{q.quadrant}</span>
                   <span className="text-muted-foreground">{q.action}</span>
                 </Badge>
@@ -759,12 +759,12 @@ export default function PipelinePage() {
         {/* Page header */}
         <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)] flex items-center justify-between">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Daily flow</p>
+            <p className="text-[10px] font-semibold normal-case text-[#d6a85f]">Daily flow</p>
             <h1 className="mt-1 text-lg font-bold text-[#fff7e8]">每日流程</h1>
             <p className="mt-1 text-xs text-[#b9b1a1]">{recDate} 從初篩、模型、推薦到模擬掛單的節奏總覽</p>
           </div>
           <div className="hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 text-xs text-[#b9b1a1] md:flex">
-            <span className="font-mono">
+            <span className="sv-num">
               L4 {countValue(recData?.funnel_summary?.final_count ?? recommendationRows.length)} · BUY {mlBuy.length} · HOLD {mlHold.length} · 掛單 {pendingBuys.length}
             </span>
           </div>

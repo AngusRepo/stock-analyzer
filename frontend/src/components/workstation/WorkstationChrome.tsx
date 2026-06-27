@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+﻿import type { ReactNode } from 'react'
 
 export type WorkstationTone = 'ok' | 'warn' | 'error' | 'info' | 'neutral'
 
@@ -25,7 +25,7 @@ export function WorkstationBackdrop() {
 
 export function WorkstationPill({ tone = 'neutral', children }: { tone?: WorkstationTone; children: ReactNode }) {
   return (
-    <span className={cx('inline-flex items-center rounded-full border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.10em] shadow-[0_0_14px_rgba(240,185,11,0.05)]', toneClass[tone])}>
+    <span className={cx('inline-flex items-center rounded-full border px-2.5 py-1 sv-num text-[11px] normal-case shadow-[0_0_14px_rgba(240,185,11,0.05)]', toneClass[tone])}>
       {children}
     </span>
   )
@@ -48,8 +48,8 @@ export function WorkstationPanel({
     <section className={cx('overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#0f151d]/96 shadow-[0_10px_30px_rgba(0,0,0,0.17),inset_0_1px_0_rgba(255,255,255,0.04)]', className)}>
       <header className="flex min-h-12 items-center justify-between border-b border-[#2b3a49] bg-[linear-gradient(90deg,#171714,#111821_58%,#0b1118)] px-4 py-2">
         <div className="min-w-0">
-          {kicker && <p className="text-[11px] tracking-[0.14em] text-[#9badbf]">{kicker}</p>}
-          <h2 className="truncate font-['Space_Grotesk'] text-[15px] font-semibold tracking-[0.04em] text-[#f2ead8]">{title}</h2>
+          {kicker && <p className="text-[11px] text-[#9badbf]">{kicker}</p>}
+          <h2 className="truncate font-['Space_Grotesk'] text-[15px] font-semibold text-[#f2ead8]">{title}</h2>
         </div>
         {action}
       </header>
@@ -116,8 +116,8 @@ export function WorkstationPageTitle({
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-[#2b3a49] bg-[linear-gradient(120deg,#171714,#111821_54%,#0b1118)] p-5 shadow-[0_10px_30px_rgba(0,0,0,0.17),inset_0_1px_0_rgba(240,185,11,0.08)] lg:flex-row lg:items-end lg:justify-between">
       <div>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#d6a85f]">{kicker}</p>
-        <h1 className="mt-1 font-['Space_Grotesk'] text-3xl font-semibold tracking-tight text-[#f2ead8]">{title}</h1>
+        <p className="text-[11px] font-semibold normal-case text-[#d6a85f]">{kicker}</p>
+        <h1 className="mt-1 font-['Space_Grotesk'] text-3xl font-semibold text-[#f2ead8]">{title}</h1>
         {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-[#a8b6c5]">{description}</p>}
       </div>
       {action}
@@ -149,7 +149,7 @@ export function WorkstationMetricTile({
   return (
     <div className="min-h-[92px] rounded-xl border border-[#2b3a49] bg-[#070a10]/78 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
       <div className="flex items-start justify-between gap-3">
-        <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#7f8ba0]">{label}</p>
+        <p className="sv-num text-[11px] normal-case text-[#7f8ba0]">{label}</p>
         <WorkstationPill tone={tone}>{tone}</WorkstationPill>
       </div>
       <div className={`mt-2 font-['Space_Grotesk'] text-2xl font-semibold ${valueColor}`}>{value}</div>
@@ -167,7 +167,7 @@ export function WorkstationTickerStrip({
     <div className="grid overflow-hidden rounded-xl border border-[#2b3a49] bg-[#070a10] sm:grid-cols-2 xl:grid-cols-4">
       {items.map((item, index) => (
         <div key={`${item.label}-${index}`} className="border-b border-[#2b3a49] p-3 sm:border-r xl:border-b-0">
-          <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#7f8ba0]">{item.label}</p>
+          <p className="sv-num text-[11px] normal-case text-[#7f8ba0]">{item.label}</p>
           <div className={cx(
             "mt-1 font-['Space_Grotesk'] text-lg font-semibold",
             item.tone === 'ok' ? 'text-emerald-300'
@@ -195,7 +195,7 @@ export function WorkstationFlow({
       {steps.map((step, index) => (
         <div key={step.label} className="relative rounded-xl border border-[#2b3a49] bg-[#070a10]/80 p-3">
           <div className="mb-3 flex items-start justify-between gap-2">
-            <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#3a3125] bg-[#171714] font-mono text-[11px] text-[#ffd87f]">{index + 1}</span>
+            <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#3a3125] bg-[#171714] sv-num text-[11px] text-[#ffd87f]">{index + 1}</span>
             <WorkstationPill tone={step.tone ?? 'neutral'}>{step.tone ?? 'step'}</WorkstationPill>
           </div>
           <p className="text-sm font-semibold text-[#f2ead8]">{step.label}</p>

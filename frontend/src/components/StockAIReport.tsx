@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StockAIReport — AI 個股分析報告（嵌入 Dashboard AI tab）
  * 自動 fetch ML 預測 + AI Summary + LLM 摘要/技術/交易
  * 不需要登入也能看 Summary/ML，LLM 部分需 auth
@@ -64,7 +64,7 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
       <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-14 text-right font-mono text-muted-foreground">{value}/{max}</span>
+      <span className="w-14 text-right sv-num text-muted-foreground">{value}/{max}</span>
     </div>
   )
 }
@@ -201,7 +201,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
             ].map(item => (
               <div key={item.label} className="rounded-lg border border-white/[0.08] bg-muted/20 p-2.5 text-center">
                 <p className="text-[10px] text-muted-foreground mb-1">{item.label}</p>
-                <p className={cn('text-sm font-bold font-mono', item.cls)}>
+                <p className={cn('text-sm font-bold sv-num', item.cls)}>
                   {typeof item.value === 'number' ? `$${item.value.toFixed(2)}` : '—'}
                 </p>
               </div>
@@ -226,7 +226,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
                 <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${(m.confidence * 100).toFixed(0)}%`, backgroundColor: MODEL_COLORS[m.name] ?? '#888' }} />
                 </div>
-                <span className="text-muted-foreground w-10 text-right font-mono">{(m.confidence * 100).toFixed(0)}%</span>
+                <span className="text-muted-foreground w-10 text-right sv-num">{(m.confidence * 100).toFixed(0)}%</span>
                 <span className="text-muted-foreground/60 w-16 text-right">準確 {(m.direction_accuracy * 100).toFixed(0)}%</span>
               </div>
             ))}
@@ -262,7 +262,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
               {[{ label: '外資', value: chip.foreign_net }, { label: '投信', value: chip.trust_net }].map(row => (
                 <div key={row.label} className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">{row.label}</span>
-                  <span className={cn('text-sm font-bold font-mono', (row.value ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                  <span className={cn('text-sm font-bold sv-num', (row.value ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
                     {row.value != null ? `${row.value >= 0 ? '+' : ''}${(row.value / 1000).toFixed(0)}張` : '-'}
                   </span>
                 </div>
@@ -281,7 +281,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
               ].map(row => (
                 <div key={row.label} className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">{row.label}</span>
-                  <span className="text-sm font-bold font-mono">{row.value}</span>
+                  <span className="text-sm font-bold sv-num">{row.value}</span>
                 </div>
               ))}
             </div>

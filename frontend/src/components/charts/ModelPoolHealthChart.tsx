@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+﻿import { useEffect, useMemo, useRef } from 'react'
 import {
   ColorType,
   HistogramSeries,
@@ -35,16 +35,16 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
     height: 340,
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: '#070a10' },
-      textColor: '#9aa6bd',
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      background: { type: ColorType.Solid, color: '#0a0b0f' },
+      textColor: '#8992a3',
+      fontFamily: 'Manrope, Noto Sans TC, system-ui, sans-serif',
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      vertLines: { color: 'rgba(255, 255, 255, 0.045)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.055)' },
     },
-    rightPriceScale: { borderColor: 'rgba(148, 163, 184, 0.18)' },
-    timeScale: { borderColor: 'rgba(148, 163, 184, 0.18)' },
+    rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.035)' },
+    timeScale: { borderColor: 'rgba(255, 255, 255, 0.035)' },
   }
 }
 
@@ -93,13 +93,13 @@ function ModelPoolSkeleton({ weakIc, sampleGaps }: { weakIc: number; sampleGaps:
     <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_18px_60px_rgba(0,0,0,0.22)]">
       <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-300">ML Pool Visual Workbench</p>
+          <p className="sv-num text-[10px] normal-case text-sky-300">ML Pool Visual Workbench</p>
           <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">模型池圖面等待 active lineage</h2>
           <p className="mt-2 max-w-2xl text-xs leading-5 text-[#9badbf]">
             目前沒有可畫出的 active alpha model series。先保留 champion / challenger 的視覺工作台位置，後續會把 weekly IC、sample coverage 與 promotion marker 接進同一張圖。
           </p>
         </div>
-        <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
+        <div className="grid grid-cols-3 gap-2 sv-num text-[11px]">
           <div className="border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sky-200">series 0</div>
           <div className="border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-200">weak IC {weakIc}</div>
           <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">sample gaps {sampleGaps}</div>
@@ -119,14 +119,14 @@ function ModelPoolSkeleton({ weakIc, sampleGaps }: { weakIc: number; sampleGaps:
               </div>
             ))}
           </div>
-          <div className="relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">
+          <div className="relative mt-3 flex items-center justify-between sv-num text-[10px] normal-case text-[#70809b]">
             <span>weekly IC</span>
             <span>sample coverage</span>
             <span>promotion markers</span>
           </div>
         </div>
         <aside className="bg-[#070a10] p-4">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">operator focus</p>
+          <p className="sv-num text-[10px] normal-case text-[#d6a85f]">operator focus</p>
           <div className="mt-3 space-y-2 text-xs">
             {[
               ['1', '確認 lineage API 是否有 active models'],
@@ -134,7 +134,7 @@ function ModelPoolSkeleton({ weakIc, sampleGaps }: { weakIc: number; sampleGaps:
               ['3', '檢查 promotion queue 與 champion pointers'],
             ].map(([step, text]) => (
               <div key={step} className="grid grid-cols-[28px_1fr] items-center gap-2 border border-[#263247] bg-[#0f151d] p-2 text-[#c8d3df]">
-                <span className="grid h-6 w-6 place-items-center bg-[#07131b] font-mono text-sky-200">{step}</span>
+                <span className="grid h-6 w-6 place-items-center bg-[#07131b] sv-num text-sky-200">{step}</span>
                 <span>{text}</span>
               </div>
             ))}
@@ -219,7 +219,7 @@ export default function ModelPoolHealthChart({ models, queue, weakIc, sampleGaps
         </div>
       }
     >
-      <div ref={containerRef} className="min-h-[340px] w-full bg-[#070a10]" />
+      <div ref={containerRef} className="min-h-[340px] w-full bg-[#0a0b0f]" />
     </ChartWorkbenchShell>
   )
 }

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * DailyRecommendationPanel.tsx
  * 每日選股推薦面板 — 顯示 ML + 籌碼 + LLM 綜合推薦結果
  */
@@ -60,7 +60,7 @@ function SectorFlowBar({ flow, maxAbs }: { flow: any; maxAbs: number }) {
           )}
         </div>
       </div>
-      <span className={cn('w-16 text-right font-mono', positive ? 'text-red-400' : 'text-emerald-400')}>
+      <span className={cn('w-16 text-right sv-num', positive ? 'text-red-400' : 'text-emerald-400')}>
         {fmtChipAmount(net)}
       </span>
     </div>
@@ -304,14 +304,14 @@ function BotThemeRankingTable({ flows, title, color }: { flows: any[]; title: st
                         {net >= 0 && <div className="bg-red-500/70 h-2.5 rounded-sm" style={{ width: `${Math.min(100, Math.abs(net) / maxAbs * 100)}%` }} />}
                       </div>
                     </div>
-                    <div className={cn('text-[10px] font-mono text-center', net >= 0 ? 'text-red-400' : 'text-emerald-400')}>
+                    <div className={cn('text-[10px] sv-num text-center', net >= 0 ? 'text-red-400' : 'text-emerald-400')}>
                       {fmtChipAmount(net)}
                     </div>
                   </td>
                   <td className="text-center py-1">
                     {q ? <Badge variant="outline" className={cn('text-[10px] px-1.5 py-0', q.cls)}>{q.label}</Badge> : '-'}
                   </td>
-                  <td className="text-right py-1 pr-1 font-mono text-muted-foreground text-[11px]">
+                  <td className="text-right py-1 pr-1 sv-num text-muted-foreground text-[11px]">
                     {f.rs_ratio != null ? Number(f.rs_ratio).toFixed(0) : '-'}
                   </td>
                 </tr>
@@ -551,7 +551,7 @@ function QuadrantFilterLog() {
       <div className="space-y-1">
         {log.map((entry: any, i: number) => (
           <div key={i} className="flex items-center gap-2 text-xs">
-            <span className="w-16 font-mono">{entry.symbol}</span>
+            <span className="w-16 sv-num">{entry.symbol}</span>
             <span className="text-muted-foreground truncate flex-1">{entry.name}</span>
             <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0',
               QUADRANT_STYLE[entry.quadrant]?.cls ?? '')}>

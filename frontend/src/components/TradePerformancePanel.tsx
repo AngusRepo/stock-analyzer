@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TradePerformancePanel.tsx
  * 模型交易模擬績效儀表板
  * 顯示：累計損益 / 勝率 / 獲利因子 / 期望值 / 出場分佈 / 逐筆記錄
@@ -69,7 +69,7 @@ function StatCard({ label, value, sub, color = 'text-white' }: {
   return (
     <div className="bg-gray-800 rounded-lg p-3 flex flex-col gap-1">
       <span className="text-xs text-gray-400">{label}</span>
-      <span className={`text-lg font-bold font-mono ${color}`}>{value}</span>
+      <span className={`text-lg font-bold sv-num ${color}`}>{value}</span>
       {sub && <span className="text-xs text-gray-500">{sub}</span>}
     </div>
   )
@@ -233,10 +233,10 @@ export default function TradePerformancePanel({ stockId }: { stockId: number }) 
                         </span>
                       </td>
                       <td className={`py-1 pr-2 ${oc.color}`}>{oc.label}</td>
-                      <td className={`py-1 pr-2 text-right font-mono ${pnl == null ? 'text-gray-500' : pnl >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                      <td className={`py-1 pr-2 text-right sv-num ${pnl == null ? 'text-gray-500' : pnl >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
                         {pnl == null ? '-' : `${pnl >= 0 ? '+' : ''}${(pnl * 100).toFixed(2)}%`}
                       </td>
-                      <td className={`py-1 pr-2 text-right font-mono ${!h.trade_pnl_r ? 'text-gray-500' : h.trade_pnl_r >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                      <td className={`py-1 pr-2 text-right sv-num ${!h.trade_pnl_r ? 'text-gray-500' : h.trade_pnl_r >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
                         {h.trade_pnl_r == null ? '-' : r(h.trade_pnl_r)}
                       </td>
                       <td className={`py-1 text-xs ${riskColor[h.market_risk_level ?? ''] ?? 'text-gray-500'}`}>

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+﻿import { useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { stocksApi } from '@/lib/api'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
@@ -36,7 +36,7 @@ export default function StockSearchCombobox({ onSelect }: Props) {
             <CommandGroup>
               {results.map((s: any) => (
                 <CommandItem key={s.id} onSelect={() => { onSelect(s); setOpen(false); setQ('') }}>
-                  <span className="font-mono font-semibold mr-2">{s.symbol}</span>
+                  <span className="sv-num font-semibold mr-2">{s.symbol}</span>
                   <span className="text-muted-foreground">{s.name}</span>
                   <span className="ml-auto text-xs text-muted-foreground">{s.market}</span>
                 </CommandItem>

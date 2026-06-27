@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+﻿import { useEffect, useMemo, useRef } from 'react'
 import {
   ColorType,
   HistogramSeries,
@@ -87,20 +87,20 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
     height: 340,
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: '#070a10' },
-      textColor: '#9aa6bd',
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      background: { type: ColorType.Solid, color: '#0a0b0f' },
+      textColor: '#8992a3',
+      fontFamily: 'Manrope, Noto Sans TC, system-ui, sans-serif',
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      vertLines: { color: 'rgba(255, 255, 255, 0.045)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.055)' },
     },
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 255, 255, 0.035)',
       scaleMargins: { top: 0.08, bottom: 0.2 },
     },
     timeScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 255, 255, 0.035)',
       timeVisible: false,
       secondsVisible: false,
     },
@@ -114,11 +114,11 @@ function EmptyWorkbench({ message }: { message: string }) {
     <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96">
       <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-emerald-300">Data Quality Visual Workbench</p>
+          <p className="sv-num text-[10px] normal-case text-emerald-300">Data Quality Visual Workbench</p>
           <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">資料品質圖面等待 checks</h2>
           <p className="mt-2 text-xs leading-5 text-[#9badbf]">{message}</p>
         </div>
-        <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
+        <div className="grid grid-cols-3 gap-2 sv-num text-[11px]">
           <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">checks 0</div>
           <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">score N/A</div>
           <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">api degraded</div>
@@ -137,7 +137,7 @@ function EmptyWorkbench({ message }: { message: string }) {
             </div>
           ))}
         </div>
-        <div className="relative mt-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em] text-[#70809b]">
+        <div className="relative mt-3 flex items-center justify-between sv-num text-[10px] normal-case text-[#70809b]">
           <span>freshness</span>
           <span>schema</span>
           <span>train / serve parity</span>
@@ -209,13 +209,13 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
     <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_18px_60px_rgba(0,0,0,0.20)]">
       <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-emerald-300">Data Quality Visual Workbench</p>
+          <p className="sv-num text-[10px] normal-case text-emerald-300">Data Quality Visual Workbench</p>
           <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">資料品質 evidence surface</h2>
           <p className="mt-2 max-w-2xl text-xs leading-5 text-[#9badbf]">
             這張圖把本次 freshness、schema、train/serve parity 與 feature coverage checks 轉成可掃描的品質曲線與缺口 marker。這不是歷史趨勢，等 V4 operations timeline contract 補齊後再接多日序列。
           </p>
         </div>
-        <div className="grid grid-cols-4 gap-2 font-mono text-[11px]">
+        <div className="grid grid-cols-4 gap-2 sv-num text-[11px]">
           <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">score {trustScore}%</div>
           <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">ok {okCount}</div>
           <div className="border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-200">warn {warnCount}</div>
@@ -224,9 +224,9 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
       </header>
 
       <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.55fr)]">
-        <div ref={containerRef} className="min-h-[340px] w-full bg-[#070a10]" />
+        <div ref={containerRef} className="min-h-[340px] w-full bg-[#0a0b0f]" />
         <aside className="bg-[#070a10] p-4">
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">gap focus</p>
+          <p className="sv-num text-[10px] normal-case text-[#d6a85f]">gap focus</p>
           <div className="mt-3 space-y-2 text-xs">
             {topGaps.length ? topGaps.map((point) => (
               <a
@@ -236,7 +236,7 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-semibold">{point.check.label}</span>
-                  <span className="font-mono text-[10px]" style={{ color: point.color }}>{point.check.status}</span>
+                  <span className="sv-num text-[10px]" style={{ color: point.color }}>{point.check.status}</span>
                 </div>
                 <p className="mt-1 line-clamp-2 text-[#8b9bab]">{point.check.summary}</p>
               </a>

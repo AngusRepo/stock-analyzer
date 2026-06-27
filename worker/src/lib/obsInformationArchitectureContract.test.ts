@@ -21,7 +21,9 @@ assert(!appShell.includes("href: '/data-quality'"), 'Data Quality must be remove
 
 assert(!obs.includes('Incident Inbox'), 'OBS must not render the old incident inbox; root cause belongs on scheduler rows')
 assert(!obs.includes('Selected Incident Detail'), 'OBS must not render the old selected incident detail pane')
-assert(obs.includes('Dependency Map'), 'OBS must expose a dependency map for ownership and blast radius')
+const removedDependencyMapLabel = ['Dependency', ' Map'].join('')
+const removedDependencyMapZhLabel = ['依賴', '地圖'].join('')
+assert(!obs.includes(removedDependencyMapLabel) && !obs.includes(removedDependencyMapZhLabel), 'OBS must not render the removed dependency map block')
 assert(!obs.includes('Reliability Map'), 'OBS must not render the low-signal reliability map')
 assert(obs.includes('computeDataQualityScore'), 'OBS Data Quality percentage must be computed from checks, not hardcoded fail=35')
 assert(obs.includes('schedulerStatusLogLabel') && obs.includes('執行摘要'), 'OBS scheduler rows must label success rows as execution summaries and reserve root cause for abnormal jobs')

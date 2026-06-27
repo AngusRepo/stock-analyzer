@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+﻿import { useQuery } from '@tanstack/react-query'
 import { stocksApi } from '@/lib/api'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -34,7 +34,7 @@ export default function ChipChart({ stockId }: { stockId: number }) {
         ].map(item => (
           <div key={item.label} className="rounded-lg border border-border/50 p-3">
             <p className="text-xs text-muted-foreground">{item.label}</p>
-            <p className={`text-lg font-mono font-bold ${(item.value ?? 0) >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+            <p className={`text-lg sv-num font-bold ${(item.value ?? 0) >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
               {item.value != null ? `${item.value > 0 ? '+' : ''}${item.value.toLocaleString()}` : '—'}
             </p>
             <p className="text-xs text-muted-foreground">張</p>

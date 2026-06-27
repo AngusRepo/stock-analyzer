@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+﻿import { useCallback, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -126,21 +126,21 @@ function ArtifactDeltaGrid({
   return (
     <div className="mt-3 grid gap-2 text-[11px] text-[#9aa6bd] md:grid-cols-4">
       <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="font-mono text-[#70809b]">Candidate OOS</p>
-        <p className="mt-1 font-mono text-slate-100">{governanceMetric(compare?.candidate_oos_ic)}</p>
+        <p className="sv-num text-[#70809b]">Candidate OOS</p>
+        <p className="mt-1 sv-num text-slate-100">{governanceMetric(compare?.candidate_oos_ic)}</p>
       </div>
       <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="font-mono text-[#70809b]">Champion OOS</p>
-        <p className="mt-1 font-mono text-slate-100">{governanceMetric(compare?.champion_oos_ic)}</p>
+        <p className="sv-num text-[#70809b]">Champion OOS</p>
+        <p className="mt-1 sv-num text-slate-100">{governanceMetric(compare?.champion_oos_ic)}</p>
       </div>
       <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="font-mono text-[#70809b]">Delta</p>
-        <p className={`mt-1 font-mono ${artifactCompareTone(compare) === 'ok' ? 'text-emerald-200' : artifactCompareTone(compare) === 'error' ? 'text-rose-200' : 'text-amber-200'}`}>
+        <p className="sv-num text-[#70809b]">Delta</p>
+        <p className={`mt-1 sv-num ${artifactCompareTone(compare) === 'ok' ? 'text-emerald-200' : artifactCompareTone(compare) === 'error' ? 'text-rose-200' : 'text-amber-200'}`}>
           {signedGovernanceMetric(compare?.oos_ic_delta)}
         </p>
       </div>
       <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="font-mono text-[#70809b]">Root cause</p>
+        <p className="sv-num text-[#70809b]">Root cause</p>
         <p className="mt-1 text-slate-100">{liveRootCause}</p>
       </div>
     </div>
@@ -157,7 +157,7 @@ function ActionContextNote({ context }: { context?: ModelArtifactActionContext }
   const blockers = Array.isArray(context.blockers) ? context.blockers : []
   return (
     <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-[#8a92a6]">
-      <div className="font-mono text-amber-200">root: {context.root_cause}</div>
+      <div className="sv-num text-amber-200">root: {context.root_cause}</div>
       <div>impact: {context.impact}</div>
       <div>next: {context.next_action}</div>
       {context.scheduler_dependency?.length ? (
@@ -165,7 +165,7 @@ function ActionContextNote({ context }: { context?: ModelArtifactActionContext }
       ) : null}
       {blockers.length > 0 && (
         <div className="mt-2 space-y-1 rounded-lg border border-amber-400/20 bg-amber-400/[0.04] p-2">
-          <div className="font-mono text-amber-200">blockers</div>
+          <div className="sv-num text-amber-200">blockers</div>
           {blockers.slice(0, 5).map((blocker) => (
             <div key={blocker.code} className="border-l border-amber-300/30 pl-2">
               <div className="font-semibold text-slate-100">{blocker.label}</div>
@@ -189,7 +189,7 @@ function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromo
         <WorkstationPill tone={summary.approvalRequired ? 'warn' : 'neutral'}>
           {summary.approvalRequired ? 'approval required' : 'approval not required'}
         </WorkstationPill>
-        <span className="font-mono text-[#fff1cf]">{result.artifact_id ?? 'artifact N/A'}</span>
+        <span className="sv-num text-[#fff1cf]">{result.artifact_id ?? 'artifact N/A'}</span>
       </div>
       <div className="grid gap-2 md:grid-cols-4">
         <SignalInsightCard title="Shadow IC" value={promotionMetric(result, ['shadow_ic', 'shadowIc'])} detail="candidate live evidence" />
@@ -247,8 +247,8 @@ function PromotionQueuePanelV2({
             <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-mono text-[12px] font-semibold text-slate-100">{row.model_name}</p>
-                  <p className="mt-1 font-mono text-[11px] text-[#70809b]">
+                  <p className="sv-num text-[12px] font-semibold text-slate-100">{row.model_name}</p>
+                  <p className="mt-1 sv-num text-[11px] text-[#70809b]">
                     {row.current_champion_version ?? 'champion N/A'} -&gt; {row.candidate_version ?? 'candidate N/A'}
                   </p>
                 </div>
@@ -258,11 +258,11 @@ function PromotionQueuePanelV2({
               </div>
               <div className="mt-3 grid gap-2 text-[11px] text-[#9aa6bd] md:grid-cols-2">
                 <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="font-mono text-[#70809b]">offline / live</p>
+                  <p className="sv-num text-[#70809b]">offline / live</p>
                   <p className="mt-1 text-slate-200">{row.offline_gate_decision ?? '-'} / {row.live_gate_status ?? '-'}</p>
                 </div>
                 <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="font-mono text-[#70809b]">final compared to</p>
+                  <p className="sv-num text-[#70809b]">final compared to</p>
                   <p className="mt-1 text-slate-200">{row.final_compared_to ?? 'pending champion pointer'}</p>
                 </div>
               </div>
@@ -313,7 +313,7 @@ function PromotionQueuePanelV2({
       {suppressedRows.length > 0 && (
         <div className="border-t border-[#263247] p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#90a0b8]">Suppressed versions</p>
+            <p className="sv-num text-[11px] normal-case text-[#90a0b8]">Suppressed versions</p>
             <WorkstationPill tone="info">{suppressedRows.length} hidden</WorkstationPill>
           </div>
           <div className="grid gap-2 lg:grid-cols-2">
@@ -321,10 +321,10 @@ function PromotionQueuePanelV2({
               <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-[#9aa7bd]">
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <p className="font-mono text-slate-100">{row.model_name} {row.candidate_version ?? ''}</p>
+                    <p className="sv-num text-slate-100">{row.model_name} {row.candidate_version ?? ''}</p>
                     <p>{humanizeGovernanceToken(row.reason)}</p>
                   </div>
-                  <span className="font-mono text-[#70809b]">{row.candidate_type}</span>
+                  <span className="sv-num text-[#70809b]">{row.candidate_type}</span>
                 </div>
                 {row.action_context?.root_cause && (
                   <p className="mt-1 text-amber-200">root: {humanizeGovernanceToken(row.action_context.root_cause)}</p>
@@ -532,7 +532,7 @@ export default function ModelPoolPage() {
                         </div>
                         <WorkstationPill tone={toneFromStatus(overlay.status)}>{overlay.status ?? 'active'}</WorkstationPill>
                       </div>
-                      <div className="mt-2 break-all font-mono text-[11px]">{overlay.gcs_path ?? 'default hyperparams'}</div>
+                      <div className="mt-2 break-all sv-num text-[11px]">{overlay.gcs_path ?? 'default hyperparams'}</div>
                       {overlay.note && <div className="mt-2 text-[11px]">{overlay.note}</div>}
                     </div>
                   ))}

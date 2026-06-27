@@ -7,7 +7,7 @@ function assert(condition: unknown, message: string): void {
 
 const root = process.cwd()
 const chartComponentPath = path.join(root, 'src', 'components', 'charts', 'DashboardV4LightweightChart.tsx')
-const dashboardPath = path.join(root, 'src', 'pages', 'Dashboard.tsx')
+const stockReportPagePath = path.join(root, 'src', 'pages', 'StockReportPage.tsx')
 const viteConfigPath = path.join(root, 'vite.config.ts')
 
 assert(fs.existsSync(chartComponentPath), 'DashboardV4LightweightChart component should exist')
@@ -20,15 +20,10 @@ assert(component.includes('CandlestickSeries'), 'DashboardV4LightweightChart sho
 assert(component.includes('HistogramSeries'), 'DashboardV4LightweightChart should render volume or flow histograms')
 assert(component.includes('buildDashboardV4ChartViewModel'), 'DashboardV4LightweightChart should consume the shared view model')
 
-const dashboard = fs.readFileSync(dashboardPath, 'utf8')
-assert(dashboard.includes('DashboardV4LightweightChart'), 'Dashboard should render DashboardV4LightweightChart')
-assert(dashboard.includes('dashboardV4Api.stockChart'), 'Dashboard should fetch the Dashboard V4 chart packet')
-assert(
-  dashboard.includes("queryKey: ['system', 'status']") &&
-    dashboard.includes('systemStatus?.data?.chips?.lastDate') &&
-    dashboard.includes("qc.invalidateQueries({ queryKey: ['stocks', stockId] })"),
-  'Dashboard should invalidate active stock detail when system chip date advances so StockHero cannot stay on stale chip dates',
-)
+const stockReportPage = fs.readFileSync(stockReportPagePath, 'utf8')
+assert(stockReportPage.includes('DashboardV4LightweightChart'), 'StockReportPage should render DashboardV4LightweightChart')
+assert(stockReportPage.includes('dashboardV4Api.stockChart'), 'StockReportPage should fetch the Dashboard V4 chart packet')
+assert(stockReportPage.includes("queryKey: ['dashboard-v4-chart', 'report', stockId]"), 'Stock report chart cache should stay scoped by stockId')
 
 const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
 assert(viteConfig.includes("'vendor-charts': ['recharts', 'lightweight-charts']"), 'Vite chart vendor chunk should include lightweight-charts')

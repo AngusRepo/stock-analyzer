@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StockReportPage — 整頁式 AI 個股完整報告
  * 路由: /report/:symbol
  * 自動 fetch 所有資料（ML 預測 + AI Summary + LLM 摘要/技術/交易）
@@ -67,7 +67,7 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
       <div className="flex-1 bg-[#27261f] rounded-full h-2 overflow-hidden">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-14 text-right font-mono text-[#8f877a]">{value}/{max}</span>
+      <span className="w-14 text-right sv-num text-[#8f877a]">{value}/{max}</span>
     </div>
   )
 }
@@ -154,10 +154,10 @@ export default function StockReportPage() {
             </button>
           </Link>
           <div className="flex-1">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6a85f]">Stock note</p>
+            <p className="text-[10px] font-semibold normal-case text-[#d6a85f]">Stock note</p>
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold text-[#fff7e8]">{stock?.name ?? symbol}</h1>
-              <span className="text-lg text-[#8f877a] font-mono">{symbol}</span>
+              <span className="text-lg text-[#8f877a] sv-num">{symbol}</span>
               {stock?.market && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-[#3a3125] text-[#b9b1a1]">
                   {stock.market}
@@ -166,9 +166,9 @@ export default function StockReportPage() {
             </div>
             {stock?.close != null && (
               <div className="flex items-center gap-3 mt-1">
-                <span className="text-xl font-bold font-mono">${stock.close.toLocaleString()}</span>
+                <span className="text-xl font-bold sv-num">${stock.close.toLocaleString()}</span>
                 {stock.change_pct != null && (
-                  <span className={cn('text-sm font-mono font-bold', stock.change_pct >= 0 ? 'text-red-400' : 'text-emerald-400')}>
+                  <span className={cn('text-sm sv-num font-bold', stock.change_pct >= 0 ? 'text-red-400' : 'text-emerald-400')}>
                     {stock.change_pct >= 0 ? '▲' : '▼'} {stock.change_pct >= 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%
                   </span>
                 )}
@@ -268,7 +268,7 @@ export default function StockReportPage() {
                   ].map(item => (
                     <div key={item.label} className="rounded-lg border border-white/[0.08] bg-muted/20 p-3 text-center">
                       <p className="text-[10px] text-muted-foreground mb-1">{item.label}</p>
-                      <p className={cn('text-sm font-bold font-mono', item.cls)}>
+                      <p className={cn('text-sm font-bold sv-num', item.cls)}>
                         {typeof item.value === 'number' ? `$${item.value.toFixed(2)}` : '—'}
                       </p>
                     </div>
@@ -298,7 +298,7 @@ export default function StockReportPage() {
                           style={{ width: `${(m.confidence * 100).toFixed(0)}%`, backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}
                         />
                       </div>
-                      <span className="text-muted-foreground w-10 text-right font-mono">{(m.confidence * 100).toFixed(0)}%</span>
+                      <span className="text-muted-foreground w-10 text-right sv-num">{(m.confidence * 100).toFixed(0)}%</span>
                       <span className="text-muted-foreground/60 w-16 text-right">
                         準確 {(m.direction_accuracy * 100).toFixed(0)}%
                       </span>
@@ -344,7 +344,7 @@ export default function StockReportPage() {
                     ].map(row => (
                       <div key={row.label} className="flex items-center justify-between">
                         <span className="text-sm text-muted-foreground">{row.label}</span>
-                        <span className={cn('text-sm font-bold font-mono',
+                        <span className={cn('text-sm font-bold sv-num',
                           (row.value ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
                           {row.value != null ? `${row.value >= 0 ? '+' : ''}${(row.value / 1000).toFixed(0)}張` : '-'}
                         </span>
@@ -365,7 +365,7 @@ export default function StockReportPage() {
                     ].map(row => (
                       <div key={row.label} className="flex items-center justify-between">
                         <span className="text-sm text-muted-foreground">{row.label}</span>
-                        <span className="text-sm font-bold font-mono">{row.value}</span>
+                        <span className="text-sm font-bold sv-num">{row.value}</span>
                       </div>
                     ))}
                   </div>

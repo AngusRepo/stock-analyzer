@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+﻿import { useQuery } from '@tanstack/react-query'
 import { stocksApi } from '@/lib/api'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -10,7 +10,7 @@ function Row({ label, value }: { label: string; value: any }) {
   return (
     <div className="flex justify-between py-2 border-b border-border/30 last:border-0 text-sm">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-mono font-medium">{value ?? '—'}</span>
+      <span className="sv-num font-medium">{value ?? '—'}</span>
     </div>
   )
 }
@@ -73,11 +73,11 @@ function RevenueTooltip({ active, payload }: any) {
   return (
     <div className="bg-card border border-border rounded-md px-3 py-2 text-xs shadow-lg">
       <p className="font-medium mb-1">{d.month}</p>
-      <p>營收：<span className="font-mono">{d.rawRevenue ? fmt(d.rawRevenue) : '—'}</span></p>
-      <p>MoM：<span className={`font-mono ${pctClass(d.mom)}`}>
+      <p>營收：<span className="sv-num">{d.rawRevenue ? fmt(d.rawRevenue) : '—'}</span></p>
+      <p>MoM：<span className={`sv-num ${pctClass(d.mom)}`}>
         {d.mom != null ? `${d.mom > 0 ? '+' : ''}${d.mom.toFixed(1)}%` : '—'}
       </span></p>
-      <p>YoY：<span className={`font-mono ${pctClass(d.yoy)}`}>
+      <p>YoY：<span className={`sv-num ${pctClass(d.yoy)}`}>
         {d.yoy != null ? `${d.yoy > 0 ? '+' : ''}${d.yoy.toFixed(1)}%` : '—'}
       </span></p>
     </div>
@@ -91,7 +91,7 @@ function PeTooltip({ active, payload }: any) {
   return (
     <div className="bg-card border border-border rounded-md px-3 py-2 text-xs shadow-lg">
       <p className="font-medium mb-1">{d.period}</p>
-      <p>P/E：<span className="font-mono">{d.pe?.toFixed(2)}</span></p>
+      <p>P/E：<span className="sv-num">{d.pe?.toFixed(2)}</span></p>
     </div>
   )
 }
@@ -109,7 +109,7 @@ function YoYLabel(props: any) {
       textAnchor="middle"
       fontSize={9}
       fill={yoy > 0 ? '#f87171' : '#4ade80'}
-      className="font-mono"
+      className="sv-num"
     >
       {yoy > 0 ? '+' : ''}{yoy.toFixed(1)}%
     </text>
@@ -171,11 +171,11 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
       {/* ─── 2. 本益比河流圖 ─── */}
       {peRiverData.length > 2 && (
         <div>
-          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">本益比河流圖</h4>
+          <h4 className="text-xs font-semibold text-muted-foreground normal-case mb-1">本益比河流圖</h4>
           <p className="text-[10px] text-muted-foreground mb-2">
             近 {peRiverData.length} 季 P/E 估值區間
             {latest?.pe != null && (
-              <span className="ml-2 font-mono">
+              <span className="ml-2 sv-num">
                 目前 P/E：<span className={latest.pe > 25 ? 'text-red-400' : latest.pe < 10 ? 'text-green-400' : 'text-foreground'}>{latest.pe.toFixed(1)}</span>
               </span>
             )}
@@ -235,11 +235,11 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
       {/* ─── 3. 月營收趨勢 Bar Chart ─── */}
       {revenueChartData.length > 0 && (
         <div>
-          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">月營收趨勢</h4>
+          <h4 className="text-xs font-semibold text-muted-foreground normal-case mb-1">月營收趨勢</h4>
           <p className="text-[10px] text-muted-foreground mb-2">
-            {latestRevStr && <>最新月營收：<span className="font-mono">{latestRevStr}</span></>}
+            {latestRevStr && <>最新月營收：<span className="sv-num">{latestRevStr}</span></>}
             {latestYoY != null && (
-              <span className={`ml-2 font-mono ${pctClass(latestYoY)}`}>
+              <span className={`ml-2 sv-num ${pctClass(latestYoY)}`}>
                 YoY {latestYoY > 0 ? '+' : ''}{latestYoY.toFixed(1)}%
               </span>
             )}
@@ -270,7 +270,7 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
       {/* ─── 4. 近12月營收 Table (existing) ─── */}
       {(monthlyRevenue as any[]).length > 0 && (
         <div>
-          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">近 12 月營收</h4>
+          <h4 className="text-xs font-semibold text-muted-foreground normal-case mb-2">近 12 月營收</h4>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -285,11 +285,11 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
                 {(monthlyRevenue as any[]).map((r: any, i: number) => (
                   <tr key={i} className="border-b border-border/20 last:border-0">
                     <td className="py-1.5 pr-2 text-muted-foreground">{r.date?.slice(0, 7) ?? r.period}</td>
-                    <td className="py-1.5 px-2 text-right font-mono">{r.revenue ? fmt(r.revenue) : '—'}</td>
-                    <td className={`py-1.5 px-2 text-right font-mono ${pctClass(r.revenue_mom)}`}>
+                    <td className="py-1.5 px-2 text-right sv-num">{r.revenue ? fmt(r.revenue) : '—'}</td>
+                    <td className={`py-1.5 px-2 text-right sv-num ${pctClass(r.revenue_mom)}`}>
                       {r.revenue_mom != null ? `${r.revenue_mom > 0 ? '+' : ''}${r.revenue_mom.toFixed(1)}%` : '—'}
                     </td>
-                    <td className={`py-1.5 pl-2 text-right font-mono ${pctClass(r.revenue_yoy)}`}>
+                    <td className={`py-1.5 pl-2 text-right sv-num ${pctClass(r.revenue_yoy)}`}>
                       {r.revenue_yoy != null ? `${r.revenue_yoy > 0 ? '+' : ''}${r.revenue_yoy.toFixed(1)}%` : '—'}
                     </td>
                   </tr>

@@ -2,8 +2,20 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AUTH_TOKEN_EVENT, authApi, setToken, clearToken, getToken } from '@/lib/api'
 import { useEffect } from 'react'
 
+const LOCAL_DEV_USER = {
+  id: 1,
+  email: 'local@stockvision.dev',
+  name: 'Local Dev',
+  role: 'admin',
+}
+
+function isLocalAuthBypass() {
+  return typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+}
+
 export function useAuth() {
   const qc = useQueryClient()
+  const localBypass = isLocalAuthBypass()
 
   // If auth code arrives in URL (after Google OAuth redirect), exchange for JWT
   useEffect(() => {
@@ -39,7 +51,7 @@ export function useAuth() {
   const meQuery = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: () => authApi.me(),
-    enabled: !!getToken(),
+    enabled: !localBypass && !!getToken(),
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
@@ -54,12 +66,12 @@ export function useAuth() {
   })
 
   return {
-    user: meQuery.data ?? null,
-    loading: meQuery.isLoading,
-    isAuthenticated: !!getToken() && !!meQuery.data,
+    user: localBypass ? LOCAL_DEV_USER : meQuery.data ?? null,
+    loading: localBypass ? false : meQuery.isLoading,
+    isAuthenticated: localBypass || (!!getToken() && !!meQuery.data),
     error: meQuery.error,
-    login: () => { window.location.href = authApi.loginUrl() },
-    logout: () => logoutMutation.mutate(),
+    login: () => { if (!localBypass) window.location.href = authApi.loginUrl() },
+    logout: () => { if (!localBypass) logoutMutation.mutate() },
     refresh: () => meQuery.refetch(),
   }
 }

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+﻿import type { ReactNode } from 'react'
 
 export type VisualTone = 'ok' | 'warn' | 'error' | 'info' | 'neutral'
 
@@ -20,7 +20,7 @@ const BAR_CLASS: Record<VisualTone, string> = {
 
 export function StatusPill({ tone = 'neutral', children }: { tone?: VisualTone; children: ReactNode }) {
   return (
-    <span className={`inline-flex items-center gap-1 border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] ${TONE_CLASS[tone]}`}>
+    <span className={`inline-flex items-center gap-1 border px-2 py-0.5 sv-num text-[10px] normal-case ${TONE_CLASS[tone]}`}>
       {children}
     </span>
   )
@@ -38,7 +38,7 @@ export function WeightBar({
   const safe = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0))
   return (
     <div>
-      <div className="mb-1 flex justify-between gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8a92a6]">
+      <div className="mb-1 flex justify-between gap-2 sv-num text-[10px] normal-case text-[#8a92a6]">
         <span>{label}</span>
         <span>{Math.round(safe)}%</span>
       </div>
@@ -82,7 +82,7 @@ export function DecisionPacketCell({
 }) {
   return (
     <div className={`border p-2 ${TONE_CLASS[tone]}`}>
-      <p className="font-mono text-[10px] uppercase tracking-[0.12em] opacity-75">{title}</p>
+      <p className="sv-num text-[10px] normal-case opacity-75">{title}</p>
       <div className="mt-1 text-sm font-semibold">{value}</div>
       {detail ? <div className="mt-1 text-[11px] leading-4 opacity-80">{detail}</div> : null}
     </div>
@@ -104,7 +104,7 @@ export function ChartWorkbenchShell({
     <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96">
       <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-300">{kicker}</p>
+          <p className="sv-num text-[10px] normal-case text-sky-300">{kicker}</p>
           <h2 className="mt-1 text-base font-semibold text-[#f2ead8]">{title}</h2>
         </div>
         {meta}

@@ -87,6 +87,7 @@ export const marketApi = {
   indices: () => get<any>('/market/indices'),
   risk:    () => get<any>('/market/risk'),
   riskHistory: (days = 30) => get<any>(`/market/risk/history?days=${days}`),
+  news:    () => get<any[]>('/market/news'),
   exDividend: () => get<any[]>('/market/ex-dividend'),
   attentionStocks: () => get<any[]>('/market/attention-stocks'),
 }

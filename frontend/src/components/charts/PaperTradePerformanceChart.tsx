@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AreaSeries,
   ColorType,
@@ -172,26 +172,26 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
     height: 340,
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: '#070a10' },
-      textColor: '#9aa6bd',
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      background: { type: ColorType.Solid, color: '#0a0b0f' },
+      textColor: '#8992a3',
+      fontFamily: 'Manrope, Noto Sans TC, system-ui, sans-serif',
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      vertLines: { color: 'rgba(255, 255, 255, 0.045)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.055)' },
     },
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 255, 255, 0.035)',
       scaleMargins: { top: 0.08, bottom: 0.22 },
     },
     timeScale: {
-      borderColor: 'rgba(148, 163, 184, 0.18)',
+      borderColor: 'rgba(255, 255, 255, 0.035)',
       timeVisible: false,
       secondsVisible: false,
     },
     crosshair: {
-      horzLine: { color: 'rgba(214, 168, 95, 0.35)' },
-      vertLine: { color: 'rgba(214, 168, 95, 0.35)' },
+      horzLine: { color: 'rgba(214, 168, 95, 0.42)' },
+      vertLine: { color: 'rgba(214, 168, 95, 0.42)' },
     },
   }
 }
@@ -211,10 +211,10 @@ function formatPct(value: number | null | undefined) {
 
 function EmptyPanel({ message }: { message: string }) {
   return (
-    <div className="grid min-h-[320px] place-items-center border border-[#263247] bg-[#070a10] px-4 text-center">
+    <div className="grid min-h-[320px] place-items-center rounded-[20px] border border-white/[0.08] bg-[#0a0b0f] px-4 text-center">
       <div>
         <Activity className="mx-auto mb-3 h-10 w-10 text-[#d6a85f]/45" />
-        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">Paper Trading Visual Workbench</p>
+        <p className="sv-num text-[10px] normal-case text-[#d6a85f]">Paper Trading Visual Workbench</p>
         <p className="mt-2 text-sm text-slate-400">{message}</p>
       </div>
     </div>
@@ -294,23 +294,23 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
   if (!points.length) return <EmptyPanel message="No performance data yet. Chart will appear after the first trading day." />
 
   return (
-    <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_18px_60px_rgba(0,0,0,0.18)]">
-      <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-3 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-center">
+    <section className="overflow-hidden rounded-[22px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.34)]">
+      <header className="grid gap-3 border-b border-white/[0.07] bg-[#101116] p-3 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-center">
         <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#d6a85f]">Paper Trading Visual Workbench</p>
+          <p className="sv-num text-[10px] normal-case text-[#d6a85f]">Paper Trading Visual Workbench</p>
           <h2 className="mt-1 text-lg font-semibold text-[#f2ead8]">資產曲線與基準比較</h2>
           <p className="mt-1 text-xs leading-5 text-[#9badbf]">
             Bot equity、0050/TWII 與 ETF benchmark 同軸比較；買賣事件改為無文字標記，避免遮住曲線。
           </p>
         </div>
-        <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
+        <div className="grid grid-cols-3 gap-2 sv-num text-[11px]">
           <div className="border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-rose-200">bot {formatPct(latest?.bot)}</div>
           <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">mdd {maxDrawdown.toFixed(2)}%</div>
           <div className="border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sky-200">bench {visibleBenchmarks.length}</div>
         </div>
       </header>
 
-      <div className="border-b border-[#263247] bg-[#070a10] px-3 py-2">
+      <div className="border-b border-white/[0.07] bg-[#101116] px-3 py-2">
         <div className="flex flex-wrap items-center gap-1">
           {PERIODS.map((row) => (
             <button
@@ -327,7 +327,7 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
             </button>
           ))}
         </div>
-        <div className="mt-2 flex flex-wrap gap-2 font-mono text-[10px]">
+        <div className="mt-2 flex flex-wrap gap-2 sv-num text-[10px]">
           <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/20 px-2 py-1 text-rose-200">
             <span className="h-2 w-2 rounded-full bg-rose-400" /> BOT {formatPct(latest?.bot)}
           </span>
@@ -349,7 +349,7 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
         </div>
       </div>
 
-      <div ref={containerRef} className="min-h-[340px] w-full bg-[#070a10]" />
+      <div ref={containerRef} className="min-h-[340px] w-full bg-[#0a0b0f]" />
     </section>
   )
 }

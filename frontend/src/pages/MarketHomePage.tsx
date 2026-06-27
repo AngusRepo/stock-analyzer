@@ -1,4 +1,4 @@
-import { useMemo, useState, type ComponentType, type ReactNode } from 'react'
+import { useMemo, type ComponentType, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -16,6 +16,7 @@ import {
   Waves,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
@@ -737,11 +738,6 @@ function MarketOverviewBlock() {
         </aside>
       </div>
 
-      {risk?.riskSummary && (
-        <div className="border-t border-white/[0.07] px-5 py-4 text-sm leading-7 text-slate-300">
-          {risk.riskSummary}
-        </div>
-      )}
     </section>
   )
 }
@@ -864,17 +860,37 @@ function ThemeFlowPanel() {
   )
 }
 
+function recommendationRowsFromPayload(payload: any) {
+  const explicitAll = asArray<any>(payload?.all_recommendations)
+  if (explicitAll.length) return explicitAll
+
+  const direct = asArray<any>(payload?.recommendations ?? payload?.data)
+  if (direct.length) return direct
+
+  const merged = [
+    ...asArray<any>(payload?.tradable_recommendations),
+    ...asArray<any>(payload?.research_only_recommendations),
+  ]
+  if (!merged.length) return []
+
+  const seen = new Set<string>()
+  return merged.filter((row, index) => {
+    const key = String(row?.stock_id ?? row?.symbol ?? index)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 function RecommendationPanel() {
-  const [tab, setTab] = useState<'overview' | 'trade-flow'>('overview')
-  const { data } = useQuery({
+  const { data, isLoading, refetch } = useQuery({
     queryKey: ['recommendations', 'daily', 'home'],
     queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }).catch(() => ({ recommendations: [] })),
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })
   const { tradable, researchOnly } = splitRecommendationLanes<any>(data)
-  const allRows = [...tradable, ...researchOnly]
-  const displayRows = tab === 'trade-flow' ? tradable.slice(0, 12) : allRows.slice(0, 8)
+  const allRows = recommendationRowsFromPayload(data)
   const heatValues = allRows
     .map((row: any) => asNumber(row?.market_heat_score ?? row?.strategy_router_components?.market_heat_score ?? row?.score_components?.market_heat_score))
     .filter((value): value is number => value != null)
@@ -885,68 +901,56 @@ function RecommendationPanel() {
       <SectionHeader
         icon={Sparkles}
         title="AI 推薦名單"
-        action={<SourceBadge>可交易 {tradable.length} / 研究 {researchOnly.length}</SourceBadge>}
+        action={<SourceBadge>{data?.date ?? 'latest'} · {allRows.length} 檔</SourceBadge>}
       />
-      <div className="border-t border-white/[0.06] bg-[#101116] px-4 py-3">
-        <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.035] p-1">
-          {[
-            { key: 'overview', label: '推薦摘要' },
-            { key: 'trade-flow', label: '上市櫃交易流' },
-          ].map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => setTab(item.key as 'overview' | 'trade-flow')}
-              className={cx(
-                'rounded-full px-3 py-1.5 text-xs font-semibold transition-colors',
-                tab === item.key ? 'bg-amber-300/16 text-amber-200' : 'text-slate-500 hover:text-slate-200',
-              )}
-            >
-              {item.label}
-            </button>
+      <div className="border-t border-white/[0.06] bg-[#101116] px-5 py-4">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
+                可交易 {tradable.length}
+              </span>
+              <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300">
+                研究 {researchOnly.length}
+              </span>
+              <span className="rounded-full border border-blue-400/20 bg-blue-400/10 px-2.5 py-1 text-[11px] font-bold text-blue-300">
+                平均熱度 {avgHeat == null ? '待接資料' : avgHeat.toFixed(1)}
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-500">{AI_TOP_PICK_EXPLANATION}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            className="inline-flex shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.045] px-3 py-2 text-xs font-semibold text-slate-300 transition-colors hover:bg-white/[0.075]"
+            disabled={isLoading}
+          >
+            更新
+          </button>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="grid gap-px bg-white/[0.06] p-4 md:grid-cols-2">
+          {[1, 2, 3, 4].map((index) => (
+            <div key={index} className="h-28 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.035]" />
           ))}
         </div>
-      </div>
-
-      <div className="grid gap-px bg-white/[0.06] md:grid-cols-2 xl:grid-cols-4">
-        {displayRows.length ? displayRows.map((row: any, index: number) => {
-          const score = asNumber(row?.final_score ?? row?.score)
-          const symbol = row?.symbol ?? row?.stock_symbol ?? '-'
-          return (
-            <div key={`${symbol}-${index}`} className="bg-[#111216] p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-bold tabular-nums text-blue-300">#{index + 1} {symbol}</p>
-                  <h3 className="mt-1 truncate font-bold text-slate-100">{row?.name ?? row?.stock_name ?? '-'}</h3>
-                </div>
-                <span className="text-xl font-bold tabular-nums text-red-400">{score == null ? '待接' : score.toFixed(0)}</span>
-              </div>
-              <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-400">{row?.theme ?? row?.sector ?? row?.industry ?? '尚無題材標籤'}</p>
-            </div>
-          )
-        }) : (
-          <div className="col-span-full bg-[#111216] p-8 text-center text-sm text-slate-500">
-            {tab === 'trade-flow' ? '今日沒有上市櫃交易流候選。' : '目前沒有可列入推薦摘要的標的。'}
-          </div>
-        )}
-      </div>
-
-      <div className="border-t border-white/[0.07] p-4">
-        <div className="rounded-[18px] border border-white/[0.06] bg-white/[0.032] p-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-sm font-bold text-slate-100">FinLab 市場熱度 vs StockVision 市場風險</p>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                市場熱度偏向 trend、momentum、volume、flow；市場風險偏向 VIX、實現波動、漲跌家數、信用交易、法人資金與避險因子。
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-xs text-slate-500">推薦樣本平均熱度</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-blue-300">{avgHeat == null ? '待接資料' : avgHeat.toFixed(1)}</p>
-            </div>
+      ) : allRows.length ? (
+        <div className="grid gap-3 bg-[#101116] p-4 lg:grid-cols-2">
+          {allRows.map((rec: any, index: number) => (
+            <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} />
+          ))}
+        </div>
+      ) : (
+        <div className="bg-[#111216] p-8 text-center text-sm text-slate-500">
+          <div className="mx-auto max-w-md rounded-[18px] border border-white/[0.07] bg-white/[0.032] p-6">
+            <Sparkles className="mx-auto mb-3 h-8 w-8 text-slate-600" />
+            <p>目前沒有可列入推薦名單的標的。</p>
+            <p className="mt-1 text-xs text-slate-600">請檢查 recommendations/daily payload 或登入狀態。</p>
           </div>
         </div>
-      </div>
+      )}
     </section>
   )
 }

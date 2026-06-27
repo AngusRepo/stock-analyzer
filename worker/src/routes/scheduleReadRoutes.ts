@@ -25,7 +25,7 @@ const schedule: ScheduleRow[] = [
   { task: 'daily-snapshot', tw_time: '14:20', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Paper account, position, and PnL snapshot.' },
   { task: 'evening-chain', tw_time: '22:00', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Post-market chain root owned by GCP Scheduler.' },
   { task: 'market-data-update', tw_time: '22:00 chain', owner: 'worker_chain', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Market data update and readiness manifest.' },
-  { task: 'screener', tw_time: '22:00 chain', owner: 'worker_chain', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Daily screener seed and candidate pool preparation.' },
+  { task: 'screener', tw_time: '22:00 chain', owner: 'controller_callback', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Daily screener seed and candidate pool preparation.' },
   { task: 'regime-compute', tw_time: 'before pipeline', owner: 'worker_chain', parameter_mode: 'adaptive_learning', layer: 'L4 allocation', description: 'Market-regime context for sizing, thresholds, and allocation.' },
   { task: 'pipeline', tw_time: 'after readiness', owner: 'controller_callback', parameter_mode: 'hard_boundary', layer: 'governance', description: 'LangGraph pipeline v2 after data, screener, and regime readiness.' },
   { task: 'ml-predict', tw_time: 'inside pipeline', owner: 'controller_callback', parameter_mode: 'adaptive_learning', layer: 'L2/L3 model evidence', description: 'TimesFM L2 sidecar enrichment, active-8 L3 ML prediction, and ensemble merge.' },

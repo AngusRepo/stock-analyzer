@@ -140,7 +140,7 @@ import { buildMarketOptimisticOutlook } from '../lib/marketOutlook'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
 import { getAdaptiveParamsForRegime } from '../lib/adaptiveConfig'
-import { fetchTaifexNightClose } from '../lib/twseApi'
+import { fetchTaifexDayClose, fetchTaifexNightClose } from '../lib/twseApi'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -453,9 +453,146 @@ function businessCycleFromFactorPacket(factorPacket: any, fallbackDate: string) 
   }
 }
 
+type CanonicalRegimeContextRow = {
+  date: string
+  dataset: string
+  field: string
+  category: string
+  value: number | null
+  textValue: string | null
+  source: string
+}
+
+function contextLabelValue(row: CanonicalRegimeContextRow | null, fallback = 'n/a') {
+  if (!row) return fallback
+  if (row.value != null) return Number.isInteger(row.value) ? String(row.value) : String(Math.round(row.value * 1000) / 1000)
+  return row.textValue ?? fallback
+}
+
+function pickContextRow(rows: CanonicalRegimeContextRow[], patterns: RegExp[]) {
+  return rows.find((row) => patterns.some((pattern) => pattern.test(`${row.field} ${row.category}`))) ?? rows[0] ?? null
+}
+
+function contextFactor(
+  id: string,
+  label: string,
+  row: CanonicalRegimeContextRow | null,
+  status: 'ok' | 'warn' | 'error' | 'info' | 'missing' = 'info',
+) {
+  return {
+    id,
+    label,
+    value: contextLabelValue(row),
+    raw_value: row?.value ?? null,
+    status: row ? status : 'missing',
+    source: row?.source ?? 'canonical_regime_context_daily',
+    source_date: row?.date ?? null,
+    detail: row ? `${row.dataset}.${row.field}.${row.category}` : 'not_materialized',
+  }
+}
+
+async function loadCanonicalRegimeContext(db: D1Database) {
+  try {
+    const { results } = await db.prepare(
+      `SELECT date, dataset, field, category, value, text_value, source
+       FROM canonical_regime_context_daily
+       WHERE dataset IN (
+         'tw_business_indicators',
+         'tw_option_put_call_ratio',
+         'tw_taifex_futures_large_trader',
+         'tw_taifex_option_large_trader',
+         'world_index',
+         'margin_context'
+       )
+       ORDER BY date DESC
+       LIMIT 420`
+    ).all<any>()
+    const rows: CanonicalRegimeContextRow[] = (results ?? [])
+      .map((row: any) => ({
+        date: String(row.date ?? '').slice(0, 10),
+        dataset: String(row.dataset ?? ''),
+        field: String(row.field ?? ''),
+        category: String(row.category ?? 'market'),
+        value: numberOrNull(row.value),
+        textValue: row.text_value == null ? null : String(row.text_value),
+        source: String(row.source ?? 'canonical_regime_context_daily'),
+      }))
+      .filter((row) => row.date && row.dataset)
+
+    const pcrRows = rows.filter((row) => row.dataset === 'tw_option_put_call_ratio' && row.value != null)
+    const largeRows = rows.filter((row) => /large_trader/.test(row.dataset) && row.value != null)
+    const businessRows = rows
+      .filter((row) => row.dataset === 'tw_business_indicators' && row.value != null)
+      .filter((row) => row.field === 'business_signal_score' || /景氣|signal/i.test(`${row.field} ${row.category}`))
+    const usdRows = rows
+      .filter((row) => row.dataset === 'world_index' && row.value != null)
+      .filter((row) => /usd|twd|美元|台幣|匯率/i.test(`${row.field} ${row.category}`))
+    const maintenanceRows = rows
+      .filter((row) => row.value != null)
+      .filter((row) => /maintenance|維持/.test(`${row.dataset} ${row.field} ${row.category}`))
+
+    const pcr = pickContextRow(pcrRows, [/pcr/i, /put.*call/i, /ratio/i, /賣買權|買賣權|賣權.*買權/])
+    const largeTrader = pickContextRow(largeRows, [/net/i, /淨|部位|大戶|未平倉/])
+    const maintenance = pickContextRow(maintenanceRows, [/maintenance/i, /維持/])
+    const usdTwd = pickContextRow(usdRows, [/usd.*twd/i, /twd.*usd/i, /美元|台幣|匯率/])
+    const usdPrevious = usdTwd
+      ? usdRows.find((row) => row.field === usdTwd.field && row.category === usdTwd.category && row.date < usdTwd.date) ?? null
+      : null
+    const latestBusiness = businessRows[0] ?? null
+    const businessMonths = businessRows
+      .slice(0, 6)
+      .map((row) => ({
+        month: row.date.slice(0, 7),
+        score: row.value,
+        label: cycleSignalLabel(row.value),
+        sourceDate: row.date,
+      }))
+      .reverse()
+
+    const factors = [
+      contextFactor('put_call_ratio', '賣買權量比', pcr, 'info'),
+      contextFactor('large_trader_net', '大戶淨部位', largeTrader, (largeTrader?.value ?? 0) < 0 ? 'warn' : 'info'),
+      contextFactor('usd_twd', '美元兌台幣', usdTwd, 'info'),
+      contextFactor('margin_maintenance_rate', '融資維持率', maintenance, maintenance?.value != null && maintenance.value < 150 ? 'warn' : 'info'),
+    ]
+
+    return {
+      source: 'canonical_regime_context_daily',
+      putCallRatio: pcr?.value ?? null,
+      largeTraderNet: largeTrader?.value ?? null,
+      usdTwd: usdTwd?.value ?? null,
+      usdTwdChangePct: percentChange(usdTwd?.value ?? null, usdPrevious?.value ?? null),
+      fxStatus: usdTwd?.value == null ? null : '穩定',
+      marginMaintenanceRate: maintenance?.value ?? null,
+      businessCycle: latestBusiness ? {
+        source: latestBusiness.source,
+        status: 'ok',
+        latest: {
+          month: latestBusiness.date.slice(0, 7),
+          score: latestBusiness.value,
+          label: cycleSignalLabel(latestBusiness.value),
+          sourceDate: latestBusiness.date,
+        },
+        months: businessMonths,
+      } : null,
+      factors,
+      missing: {
+        putCallRatio: pcr == null,
+        largeTraderNet: largeTrader == null,
+        usdTwd: usdTwd == null,
+        marginMaintenanceRate: maintenance == null,
+        businessSignal: latestBusiness == null,
+      },
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical_regime_context_daily failed', e)
+    return null
+  }
+}
+
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v3', async () => {
-    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexNight, marketRiskTwii] = await Promise.all([
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v4', async () => {
+    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
           sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
@@ -500,6 +637,11 @@ market.get('/indices', async (c) => {
       ]),
       loadFinlabSeries(c.env.DB, 'TXF', '台指期貨', [
         {
+          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' ORDER BY date DESC, contract_month ASC LIMIT 30",
+          binds: ['TXF', 'TX'],
+          source: 'FinLab canonical_futures_daily',
+        },
+        {
           sql: 'SELECT date, close FROM finlab_futures_price WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
           binds: ['TXF', 'TX'],
           source: 'FinLab futures_price',
@@ -515,6 +657,7 @@ market.get('/indices', async (c) => {
           source: 'FinLab futures_price',
         },
       ]),
+      fetchTaifexDayClose().catch(() => null),
       fetchTaifexNightClose().catch(() => null),
       loadMarketRiskTwiiSeries(c.env.DB),
     ])
@@ -524,7 +667,18 @@ market.get('/indices', async (c) => {
       : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab etl:finlab_tw_stock_market_ind not materialized')
     const txfDay = hasMarketSeriesData(finlabTxfDay)
       ? finlabTxfDay
-      : missingMaterializationSnapshot('TXF', '台指期貨', 'FinLab futures_price not materialized')
+      : taifexDay ? {
+        symbol: 'TXF',
+        name: '台指期貨',
+        current: Math.round(taifexDay.lastPrice * 100) / 100,
+        change: Math.round(taifexDay.changePoints * 100) / 100,
+        changePct: Math.round(taifexDay.changePct * 100) / 100,
+        date: taifexDay.date,
+        time: taifexDay.time,
+        source: 'TAIFEX MIS day session',
+        status: 'ok',
+        history: [],
+      } : missingMaterializationSnapshot('TXF', '台指期貨', 'FinLab futures_price not materialized')
     const txfNight = taifexNight ? {
       symbol: 'TXF',
       name: '台指期貨夜盤',
@@ -544,6 +698,7 @@ market.get('/indices', async (c) => {
       txfNight,
       futuresSources: {
         finlabDaily: ['futures_price', 'futures_institutional_investors_trading_summary', 'tw_taifex_futures_large_trader'],
+        liveDayFallback: taifexDay ? 'TAIFEX MIS fetchTaifexDayClose' : null,
         liveNight: txfNight ? 'TAIFEX MIS fetchTaifexNightClose' : null,
         dahuApiConfigured: false,
       },
@@ -1139,7 +1294,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v8-finlab-canonical-market-home'
+  const cacheKey = 'market:risk:latest:v9-finlab-regime-context'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -1203,21 +1358,29 @@ market.get('/risk', async (c) => {
   } else {
     factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
   }
-  const [canonicalOverview, creditTrading, institutionalFlows] = await Promise.all([
+  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext] = await Promise.all([
     loadCanonicalMarketOverview(c.env.DB),
     loadCanonicalCreditTrading(c.env.DB),
     loadCanonicalInstitutionalFlows(c.env.DB),
+    loadCanonicalRegimeContext(c.env.DB),
   ])
-  const businessCycle = businessCycleFromFactorPacket(factorPacket, row.date)
-  const contextFactors = factorPacket?.factors ?? legacyContextFactors
+  const creditTrading = creditTradingBase
+    ? { ...creditTradingBase, maintenanceRate: creditTradingBase.maintenanceRate ?? regimeContext?.marginMaintenanceRate ?? null }
+    : null
+  const businessCycle = regimeContext?.businessCycle ?? businessCycleFromFactorPacket(factorPacket, row.date)
+  const contextFactors = [
+    ...(regimeContext?.factors ?? []),
+    ...(factorPacket?.factors ?? legacyContextFactors),
+  ]
   const marketOutlook = buildMarketOptimisticOutlook({
     marketRiskRow: row,
     regimeState,
     factorPacket,
   })
-  const packetSummary = factorPacket
-    ? `V4 weighted factors: ${factorPacket.factors.map((item) => `${item.label} ${item.value}`).join(' / ')} | ${marketOutlook.summary}`
-    : row.risk_summary
+  const rawSummary = String(row.risk_summary ?? '').trim()
+  const packetSummary = rawSummary && !rawSummary.includes('V4 weighted factors')
+    ? rawSummary
+    : `市場風險 ${Math.round(Number(factorPacket?.score ?? row.risk_score ?? 0))}/100，等級 ${factorPacket?.level ?? row.risk_level ?? 'unknown'}。`
 
   const data = {
     date:                   row.date,
@@ -1246,8 +1409,14 @@ market.get('/risk', async (c) => {
     marginBalanceChangePct: creditTrading?.marginBalanceChangePct ?? null,
     shortBalanceChangePct:  creditTrading?.shortBalanceChangePct ?? null,
     marginMaintenanceRate:  creditTrading?.maintenanceRate ?? null,
+    putCallRatio:           regimeContext?.putCallRatio ?? null,
+    largeTraderNet:         regimeContext?.largeTraderNet ?? null,
+    usdTwd:                 regimeContext?.usdTwd ?? null,
+    usdTwdChangePct:        regimeContext?.usdTwdChangePct ?? null,
+    fxStatus:               regimeContext?.fxStatus ?? null,
     institutionalFlows,
     businessCycle,
+    regimeContext,
     dataSourcePriority: [
       'FinLab canonical materialized tables',
       'market_risk / market_regime_factor_packets',
@@ -1255,8 +1424,9 @@ market.get('/risk', async (c) => {
     ],
     materializationGaps: {
       marginMaintenanceRate: creditTrading?.maintenanceRate == null ? 'FinLab margin maintenance rate not materialized' : null,
-      twoiiIndex: 'FinLab tw_stock_market_ind not materialized to D1 index table',
-      txfDay: 'FinLab futures_price not materialized to D1 futures table',
+      putCallRatio: regimeContext?.missing?.putCallRatio ? 'FinLab tw_option_put_call_ratio not materialized' : null,
+      largeTraderNet: regimeContext?.missing?.largeTraderNet ? 'FinLab tw_taifex_futures_large_trader not materialized' : null,
+      usdTwd: regimeContext?.missing?.usdTwd ? 'FinLab world_index USD/TWD not materialized' : null,
     },
     regimeState: regimeState ? {
       label: regimeState.label,

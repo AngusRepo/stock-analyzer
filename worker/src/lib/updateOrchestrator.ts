@@ -6,6 +6,7 @@ import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import { runFinLabV4Backfill } from './controllerResearchWorkflows'
+import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { fetchPunishedStocks } from './twseApi'
 
@@ -151,6 +152,11 @@ async function scheduleSourceReadinessRetry(
 
 type ProcessUpdateBatchDeps = {
   runMarketScreener: (env: Bindings, runDate?: string) => Promise<any>
+  runMarketScreenerAsync?: (
+    env: Bindings,
+    runDate?: string,
+    options?: { chainRunId?: string },
+  ) => Promise<any>
   runMLAndRiskV2: (
     env: Bindings,
     runDate?: string,
@@ -362,6 +368,50 @@ async function runFinalizeContinuation(
   }
   await checkAlerts(env)
 
+  const runAsyncScreener = deps.runMarketScreenerAsync
+  if (runAsyncScreener) {
+    try {
+      const screenerResult = await runAsyncScreener(env, triggerTime, { chainRunId: runId })
+      const screenerSummary = typeof screenerResult === 'string'
+        ? screenerResult
+        : JSON.stringify(screenerResult)?.slice(0, 500) ?? ''
+      const screenerLocked = screenerSummary.trim().toUpperCase().startsWith('LOCKED')
+      const screenerStatus = screenerLocked ? 'triggered' : classifySchedulerSummary(screenerSummary)
+      await logSchedulerResult(env.KV, 'screener', {
+        status: screenerStatus,
+        summary: screenerSummary,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: screenerStatus === 'triggered' || screenerStatus === 'running' ? 'running' : screenerStatus,
+        summary: `event-driven chain triggered screener-v2 for ${triggerTime}; ${screenerSummary}`,
+        duration_ms: 0,
+        run_date: triggerTime,
+        run_id: runId,
+      })
+      console.log(`[Queue] Event-driven: screener-v2 triggered for ${triggerTime}; awaiting callback`)
+    } catch (e) {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: screener-v2 trigger failed for ${triggerTime}`,
+        duration_ms: 0,
+        error: String(e),
+        run_date: triggerTime,
+        run_id: runId,
+      })
+      await logSchedulerResult(env.KV, 'screener', {
+        status: 'error',
+        summary: e instanceof Error ? e.message : String(e),
+        duration_ms: 0,
+        error: String(e),
+        run_date: triggerTime,
+      })
+      console.warn('[Queue] Event-driven screener-v2 trigger failed:', e)
+    }
+    return
+  }
+
   try {
     const screenerResult = await deps.runMarketScreener(env, triggerTime)
     const screenerSummary = typeof screenerResult === 'string'
@@ -405,25 +455,12 @@ async function runFinalizeContinuation(
     return
   }
 
-  await logSchedulerResult(env.KV, 'evening-chain', {
-    status: 'running',
-    summary: `event-driven chain queued post-screener continuation for ${triggerTime}; run_id=${runId}; source=${source}`,
-    duration_ms: 0,
-    run_date: triggerTime,
-  })
-  await env.UPDATE_QUEUE.send({
-    type: 'post_screener_pipeline',
-    cursor: 0,
+  await enqueuePostScreenerPipelineContinuation(env, {
     triggerTime,
     runId,
     shardCount,
-    attempt: 1,
+    source,
   })
-  await env.KV.put(
-    `cron:indicator-queue:${triggerTime}:${runId}:post-screener-enqueued`,
-    new Date().toISOString(),
-    { expirationTtl: 7 * 86400 },
-  ).catch((e) => console.warn('[Queue] Post-screener enqueue marker write failed:', e))
 }
 
 async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<boolean> {

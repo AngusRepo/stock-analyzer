@@ -5,6 +5,7 @@ export type TaskHandler = () => Promise<any>
 
 export interface TriggerDeps {
   runMarketScreener: (runDate?: string) => Promise<any>
+  runScreenerV2?: (runDate?: string, options?: { chainRunId?: string }) => Promise<any>
   runDailyUpdate: (force?: boolean, runDate?: string) => Promise<any>
   runMLAndRiskV2: (runDate?: string) => Promise<any>
   runDailyRecommendation: (runDate?: string) => Promise<any>

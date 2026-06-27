@@ -41,6 +41,7 @@ const TASK_NAMES: Record<string, string> = {
   'ml-predict': 'ML Predict',
   recommendation: 'Daily Recommendation',
   screener: 'Screener',
+  'screener-v2': 'Screener V2 Job Trigger',
   'us-leading': 'US Leading',
   'news-analyst': 'News Analyst',
   'morning-setup': 'Morning Setup',

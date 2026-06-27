@@ -22,6 +22,9 @@ class FinLabCanonicalOutputs:
     canonical_market_daily: list[dict[str, Any]]
     canonical_chip_daily: list[dict[str, Any]]
     canonical_institutional_amount_daily: list[dict[str, Any]]
+    canonical_market_index_daily: list[dict[str, Any]]
+    canonical_futures_daily: list[dict[str, Any]]
+    canonical_regime_context_daily: list[dict[str, Any]]
     canonical_revenue_monthly: list[dict[str, Any]]
     canonical_broker_flow_daily: list[dict[str, Any]]
     canonical_broker_rank_daily: list[dict[str, Any]]
@@ -150,6 +153,40 @@ def _rows(df: pl.DataFrame, limit: int | None = None) -> list[dict[str, Any]]:
     if limit and limit > 0:
         df = df.head(limit)
     return df.to_dicts()
+
+
+def _coerce_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(str(value).replace(",", "").replace("%", "").strip())
+    except Exception:
+        return None
+    return parsed if parsed == parsed else None
+
+
+def _clean_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _first_row_value(row: dict[str, Any], names: Iterable[str]) -> Any:
+    lowered = {str(key).strip().lower(): value for key, value in row.items()}
+    for name in names:
+        key = name.strip().lower()
+        if key in lowered:
+            return lowered[key]
+    return None
+
+
+def _date_value(row: dict[str, Any]) -> str:
+    raw = _first_row_value(row, ["date", "trading_date", "data_date", "__index_level_0__", "年月", "月份", "日期"])
+    return str(raw or "")[:10]
+
+
+def _table_has_any(df: pl.DataFrame, names: Iterable[str]) -> bool:
+    lowered = {col.lower() for col in df.columns}
+    return any(name.lower() in lowered for name in names)
 
 
 def _lineage(run_id: str, lane: str, fields: list[str], artifact_root: Path) -> str:
@@ -311,6 +348,381 @@ def build_institutional_amount_rows(
         "as_of_date",
     ])
     return _rows(df, limit)
+
+
+def _market_index_symbol(value: Any, *, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    upper = text.upper()
+    if "TWOII" in upper or "TPEX" in upper or "OTC" in upper or "櫃買" in text or "上櫃" in text:
+        return "TWOII"
+    if "TWII" in upper or "TAIEX" in upper or "加權" in text or "發行量加權" in text:
+        return "TWII"
+    return fallback or normalize_symbol(text) or upper
+
+
+def _market_index_rows_from_frame(
+    frame: pl.DataFrame,
+    *,
+    run_id: str,
+    generated_at: str,
+    artifact_root: Path,
+    lane: str,
+    source: str,
+    default_symbol: str = "",
+    default_name: str = "",
+    start_date: str | None,
+    end_date: str | None,
+) -> list[dict[str, Any]]:
+    frame = _filter_dates(frame, start_date=start_date, end_date=end_date) if "date" in frame.columns else frame
+    if frame.is_empty():
+        return []
+    lineage = _lineage(run_id, lane, list(frame.columns), artifact_root)
+    rows: list[dict[str, Any]] = []
+    close_candidates = ["close", "收盤價", "指數", "value", "price", "發行量加權股價報酬指數"]
+    table_like = _table_has_any(frame, close_candidates) and (
+        _table_has_any(frame, ["symbol", "stock_id", "index_code", "代號", "name", "指數名稱"]) or len(frame.columns) > 3
+    )
+
+    if table_like:
+        for row in _rows(frame):
+            date = _date_value(row)
+            if not date:
+                continue
+            raw_symbol = _first_row_value(row, ["symbol", "stock_id", "index_code", "代號", "name", "指數名稱"])
+            close = _coerce_number(_first_row_value(row, close_candidates))
+            if close is None:
+                continue
+            symbol = _market_index_symbol(raw_symbol, fallback=default_symbol)
+            rows.append({
+                "symbol": symbol,
+                "date": date,
+                "name": _clean_text(_first_row_value(row, ["name", "指數名稱"])) or default_name or symbol,
+                "market_segment": "OTC" if symbol == "TWOII" else "LISTED",
+                "open": _coerce_number(_first_row_value(row, ["open", "開盤價"])),
+                "high": _coerce_number(_first_row_value(row, ["high", "最高價"])),
+                "low": _coerce_number(_first_row_value(row, ["low", "最低價"])),
+                "close": close,
+                "change": _coerce_number(_first_row_value(row, ["change", "漲跌價", "漲跌點"])),
+                "change_pct": _coerce_number(_first_row_value(row, ["change_pct", "漲跌幅"])),
+                "volume": _coerce_number(_first_row_value(row, ["volume", "成交量"])),
+                "value": _coerce_number(_first_row_value(row, ["value", "成交值", "成交金額"])),
+                "source": source,
+                "lineage_json": lineage,
+                "as_of_date": generated_at[:10],
+            })
+        return rows
+
+    date_columns = {"date", "trading_date", "data_date", "__index_level_0__"}
+    for row in _rows(frame):
+        date = _date_value(row)
+        if not date:
+            continue
+        for column, value in row.items():
+            if str(column).strip() in date_columns:
+                continue
+            close = _coerce_number(value)
+            if close is None:
+                continue
+            symbol = _market_index_symbol(column, fallback=default_symbol)
+            rows.append({
+                "symbol": symbol,
+                "date": date,
+                "name": default_name or str(column),
+                "market_segment": "OTC" if symbol == "TWOII" else "LISTED",
+                "open": None,
+                "high": None,
+                "low": None,
+                "close": close,
+                "change": None,
+                "change_pct": None,
+                "volume": None,
+                "value": None,
+                "source": source,
+                "lineage_json": lineage,
+                "as_of_date": generated_at[:10],
+            })
+    return rows
+
+
+def build_market_index_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    regime_dir = artifact_root / "raw" / "regime_context"
+    market_ind = _read_parquet(regime_dir / "tw_stock_market_ind.parquet")
+    if not market_ind.is_empty():
+        rows.extend(_market_index_rows_from_frame(
+            market_ind,
+            run_id=run_id,
+            generated_at=generated_at,
+            artifact_root=artifact_root,
+            lane="regime_context",
+            source="finlab.etl.finlab_tw_stock_market_ind",
+            start_date=start_date,
+            end_date=end_date,
+        ))
+
+    benchmark = _read_parquet(regime_dir / "benchmark_twii_return_index.parquet")
+    if not benchmark.is_empty():
+        benchmark_rows = _market_index_rows_from_frame(
+            benchmark,
+            run_id=run_id,
+            generated_at=generated_at,
+            artifact_root=artifact_root,
+            lane="regime_context",
+            source="finlab.benchmark_return",
+            default_symbol="TWII_RETURN",
+            default_name="發行量加權股價報酬指數",
+            start_date=start_date,
+            end_date=end_date,
+        )
+        for row in benchmark_rows:
+            if row["symbol"] == "TWII":
+                row["symbol"] = "TWII_RETURN"
+            rows.append(row)
+
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        deduped[(row["symbol"], row["date"], row["source"])] = row
+    output = list(deduped.values())
+    return output[:limit] if limit and limit > 0 else output
+
+
+def _wide_or_table_values(
+    frame: pl.DataFrame,
+    *,
+    value_field: str,
+    start_date: str | None,
+    end_date: str | None,
+) -> list[dict[str, Any]]:
+    frame = _filter_dates(frame, start_date=start_date, end_date=end_date) if "date" in frame.columns else frame
+    if frame.is_empty():
+        return []
+    rows: list[dict[str, Any]] = []
+    value_candidates = [value_field, "value", "close", "收盤價", "ratio", "淨部位"]
+    table_like = _table_has_any(frame, value_candidates) and len(frame.columns) > 2
+    if table_like:
+        for row in _rows(frame):
+            date = _date_value(row)
+            if not date:
+                continue
+            category = _clean_text(_first_row_value(row, ["symbol", "stock_id", "contract", "契約", "name", "商品", "category"])) or "market"
+            rows.append({
+                "date": date,
+                "category": category,
+                value_field: _first_row_value(row, value_candidates),
+                "raw": row,
+            })
+        return rows
+
+    date_columns = {"date", "trading_date", "data_date", "__index_level_0__"}
+    for row in _rows(frame):
+        date = _date_value(row)
+        if not date:
+            continue
+        for column, value in row.items():
+            if str(column).strip() in date_columns:
+                continue
+            rows.append({
+                "date": date,
+                "category": str(column),
+                value_field: value,
+                "raw": row,
+            })
+    return rows
+
+
+def _futures_symbol(category: Any, contract_month: Any = None) -> str:
+    text = f"{category or ''} {contract_month or ''}".strip()
+    upper = text.upper()
+    if "MTX" in upper or "小型" in text:
+        return "MTX"
+    if upper.startswith("TX") or "TXF" in upper or "臺股" in text or "台股" in text:
+        return "TXF"
+    return ""
+
+
+def build_futures_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    lane = "regime_context"
+    lane_dir = artifact_root / "raw" / lane
+    field_map = {
+        "contract_month": "futures_contract_month",
+        "open": "futures_open",
+        "high": "futures_high",
+        "low": "futures_low",
+        "close": "futures_close",
+        "change": "futures_change",
+        "change_pct": "futures_change_pct",
+        "volume": "futures_volume",
+        "open_interest": "futures_open_interest",
+    }
+    keyed: dict[tuple[str, str], dict[str, Any]] = {}
+    for output_field, filename in field_map.items():
+        frame = _read_parquet(lane_dir / f"{filename}.parquet")
+        if frame.is_empty():
+            continue
+        for item in _wide_or_table_values(frame, value_field=output_field, start_date=start_date, end_date=end_date):
+            key = (item["date"], item["category"])
+            bucket = keyed.setdefault(key, {"date": item["date"], "category": item["category"]})
+            bucket[output_field] = item.get(output_field)
+
+    lineage = _lineage(run_id, lane, list(field_map.values()), artifact_root)
+    rows: list[dict[str, Any]] = []
+    for item in keyed.values():
+        symbol = _futures_symbol(item.get("category"), item.get("contract_month"))
+        if not symbol:
+            continue
+        rows.append({
+            "symbol": symbol,
+            "date": item["date"],
+            "contract_month": _clean_text(item.get("contract_month")) or _clean_text(item.get("category")),
+            "session": "day",
+            "open": _coerce_number(item.get("open")),
+            "high": _coerce_number(item.get("high")),
+            "low": _coerce_number(item.get("low")),
+            "close": _coerce_number(item.get("close")),
+            "change": _coerce_number(item.get("change")),
+            "change_pct": _coerce_number(item.get("change_pct")),
+            "volume": _coerce_number(item.get("volume")),
+            "open_interest": _coerce_number(item.get("open_interest")),
+            "source": "finlab.futures_price",
+            "lineage_json": lineage,
+            "as_of_date": generated_at[:10],
+        })
+
+    rows = [row for row in rows if row["close"] is not None]
+    rows.sort(key=lambda row: (row["date"], row["symbol"], str(row.get("contract_month") or "")))
+    deduped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        deduped[(row["date"], row["symbol"], row["session"], row["source"])] = row
+    output = list(deduped.values())
+    return output[:limit] if limit and limit > 0 else output
+
+
+def _context_rows_from_frame(
+    frame: pl.DataFrame,
+    *,
+    run_id: str,
+    generated_at: str,
+    artifact_root: Path,
+    lane: str,
+    dataset: str,
+    source: str,
+    field_alias: str | None,
+    start_date: str | None,
+    end_date: str | None,
+) -> list[dict[str, Any]]:
+    frame = _filter_dates(frame, start_date=start_date, end_date=end_date) if "date" in frame.columns else frame
+    if frame.is_empty():
+        return []
+    lineage = _lineage(run_id, lane, list(frame.columns), artifact_root)
+    rows: list[dict[str, Any]] = []
+    date_columns = {"date", "trading_date", "data_date", "__index_level_0__"}
+    category_columns = {"symbol", "stock_id", "contract", "category", "name", "商品", "契約"}
+    table_like = len([col for col in frame.columns if col not in date_columns]) > 2 and _table_has_any(frame, category_columns | {"value", "ratio", "close"})
+
+    for raw in _rows(frame):
+        date = _date_value(raw)
+        if not date:
+            continue
+        if table_like:
+            category = _clean_text(_first_row_value(raw, category_columns)) or "market"
+            for column, value in raw.items():
+                col = str(column).strip()
+                if col in date_columns or col.lower() in {name.lower() for name in category_columns}:
+                    continue
+                num = _coerce_number(value)
+                text_value = None if num is not None else _clean_text(value)
+                if num is None and text_value is None:
+                    continue
+                rows.append({
+                    "date": date,
+                    "dataset": dataset,
+                    "field": field_alias or col,
+                    "category": category,
+                    "value": num,
+                    "text_value": text_value,
+                    "source": source,
+                    "lineage_json": lineage,
+                    "as_of_date": generated_at[:10],
+                })
+            continue
+
+        value_columns = [col for col in raw.keys() if str(col).strip() not in date_columns]
+        single_value = len(value_columns) == 1
+        for column in value_columns:
+            value = raw.get(column)
+            num = _coerce_number(value)
+            text_value = None if num is not None else _clean_text(value)
+            if num is None and text_value is None:
+                continue
+            rows.append({
+                "date": date,
+                "dataset": dataset,
+                "field": field_alias or str(column),
+                "category": "market" if single_value else str(column),
+                "value": num,
+                "text_value": text_value,
+                "source": source,
+                "lineage_json": lineage,
+                "as_of_date": generated_at[:10],
+            })
+    return rows
+
+
+def build_regime_context_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    specs = [
+        ("regime_context", "tw_business_indicators", "business_signal_score", "finlab.tw_business_indicators", "business_signal_score"),
+        ("regime_context", "tw_option_put_call_ratio", None, "finlab.tw_option_put_call_ratio", "tw_option_put_call_ratio"),
+        ("regime_context", "tw_taifex_futures_large_trader", None, "finlab.tw_taifex_futures_large_trader", "tw_taifex_futures_large_trader"),
+        ("regime_context", "tw_taifex_option_large_trader", None, "finlab.tw_taifex_option_large_trader", "tw_taifex_option_large_trader"),
+        ("global_context", "world_index", "world_close", "finlab.world_index", "world_close"),
+    ]
+    rows: list[dict[str, Any]] = []
+    for lane, dataset, field_alias, source, filename in specs:
+        frame = _read_parquet(artifact_root / "raw" / lane / f"{filename}.parquet")
+        if frame.is_empty():
+            continue
+        rows.extend(_context_rows_from_frame(
+            frame,
+            run_id=run_id,
+            generated_at=generated_at,
+            artifact_root=artifact_root,
+            lane=lane,
+            dataset=dataset,
+            source=source,
+            field_alias=field_alias,
+            start_date=start_date,
+            end_date=end_date,
+        ))
+
+    deduped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        deduped[(row["date"], row["dataset"], row["field"], row["category"], row["source"])] = row
+    output = list(deduped.values())
+    return output[:limit] if limit and limit > 0 else output
 
 
 def build_emerging_broker_rows(
@@ -790,6 +1202,30 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_institutional_amount_daily") else []
+    market_index = build_market_index_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_market_index_daily") else []
+    futures = build_futures_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_futures_daily") else []
+    regime_context = build_regime_context_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_regime_context_daily") else []
     listed_broker_flow = build_listed_broker_flow_rows(
         root,
         run_id=rid,
@@ -870,6 +1306,12 @@ def materialize_finlab_canonical_outputs(
         output_rows["canonical_chip_daily"] = listed_chip + emerging_chip
     if wants("canonical_institutional_amount_daily"):
         output_rows["canonical_institutional_amount_daily"] = institutional_amount
+    if wants("canonical_market_index_daily"):
+        output_rows["canonical_market_index_daily"] = market_index
+    if wants("canonical_futures_daily"):
+        output_rows["canonical_futures_daily"] = futures
+    if wants("canonical_regime_context_daily"):
+        output_rows["canonical_regime_context_daily"] = regime_context
     if wants("canonical_revenue_monthly"):
         output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
     if wants("canonical_broker_flow_daily"):
@@ -903,6 +1345,9 @@ def materialize_finlab_canonical_outputs(
         canonical_market_daily=output_rows.get("canonical_market_daily", []),
         canonical_chip_daily=output_rows.get("canonical_chip_daily", []),
         canonical_institutional_amount_daily=output_rows.get("canonical_institutional_amount_daily", []),
+        canonical_market_index_daily=output_rows.get("canonical_market_index_daily", []),
+        canonical_futures_daily=output_rows.get("canonical_futures_daily", []),
+        canonical_regime_context_daily=output_rows.get("canonical_regime_context_daily", []),
         canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
         canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
         canonical_broker_rank_daily=output_rows.get("canonical_broker_rank_daily", []),
@@ -968,6 +1413,27 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["date", "market_segment", "investor", "category", "buy_amount", "sell_amount", "net_amount", "source", "lineage_json", "as_of_date"],
         ["date", "market_segment", "investor", "source"],
         ["category", "buy_amount", "sell_amount", "net_amount", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_market_index_daily",
+        outputs.canonical_market_index_daily,
+        ["symbol", "date", "name", "market_segment", "open", "high", "low", "close", "change", "change_pct", "volume", "value", "source", "lineage_json", "as_of_date"],
+        ["symbol", "date", "source"],
+        ["name", "market_segment", "open", "high", "low", "close", "change", "change_pct", "volume", "value", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_futures_daily",
+        outputs.canonical_futures_daily,
+        ["symbol", "date", "contract_month", "session", "open", "high", "low", "close", "change", "change_pct", "volume", "open_interest", "source", "lineage_json", "as_of_date"],
+        ["symbol", "date", "contract_month", "session", "source"],
+        ["open", "high", "low", "close", "change", "change_pct", "volume", "open_interest", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_regime_context_daily",
+        outputs.canonical_regime_context_daily,
+        ["date", "dataset", "field", "category", "value", "text_value", "source", "lineage_json", "as_of_date"],
+        ["date", "dataset", "field", "category", "source"],
+        ["value", "text_value", "lineage_json", "as_of_date"],
     ))
     statements.extend(_row_statements(
         "canonical_revenue_monthly",

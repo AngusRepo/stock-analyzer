@@ -1562,10 +1562,8 @@ export interface TaifexNightSession {
  * 07:15 呼叫時會拿到夜盤（15:00~05:00）收盤數據
  * 盤中呼叫則拿到即時報價
  */
-export async function fetchTaifexNightClose(): Promise<TaifexNightSession | null> {
+export async function fetchTaifexDayClose(): Promise<TaifexNightSession | null> {
   try {
-    // TAIFEX MIS API — 不需 auth，POST 取台指期報價
-    // SymbolID 格式：TXF{月份}{年份}-F（近月合約），用空 SymbolID 取全部
     const res = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
@@ -1577,11 +1575,54 @@ export async function fetchTaifexNightClose(): Promise<TaifexNightSession | null
     const quotes = body?.RtData?.QuoteList as any[] | undefined
     if (!quotes?.length) return null
 
+    const txf = quotes.find(q =>
+      /^TXF[A-Z0-9]+-F$/.test(String(q.SymbolID ?? '')) &&
+      q.CLastPrice && q.CLastPrice !== ''
+    )
+    if (!txf) return null
+
+    const lastPrice = parseFloat(txf.CLastPrice)
+    const refPrice = parseFloat(txf.CRefPrice)
+    if (isNaN(lastPrice) || isNaN(refPrice) || refPrice === 0) return null
+
+    const changePoints = lastPrice - refPrice
+    const changePct = (changePoints / refPrice) * 100
+
+    console.log(`[TAIFEX] day ${txf.SymbolID}: ${lastPrice} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%) ref=${refPrice}`)
+
+    return {
+      lastPrice,
+      refPrice,
+      changePoints,
+      changePct,
+      date: txf.CDate ?? '',
+      time: txf.CTime ?? '',
+    }
+  } catch (e) {
+    console.warn('[TAIFEX] fetchTaifexDayClose failed:', e)
+    return null
+  }
+}
+
+export async function fetchTaifexNightClose(): Promise<TaifexNightSession | null> {
+  try {
+    // TAIFEX MIS API — 不需 auth，POST 取台指期報價
+    // SymbolID 格式：TXF{月份}{年份}-F（近月合約），用空 SymbolID 取全部
+    const res = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      body: JSON.stringify({ CID: '', SymbolID: '', MarketType: '1' }),
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return null
+    const body = await res.json() as any
+    const quotes = body?.RtData?.QuoteList as any[] | undefined
+    if (!quotes?.length) return null
+
     // 找台指期近月合約（DispCName 包含「臺指期」且為最近月份）
     // 第一筆 TXF-S 是現貨，跳過；找第一個 -F 結尾的才是期貨
     const txf = quotes.find(q =>
-      q.SymbolID?.endsWith('-F') &&
-      q.DispCName?.includes('臺指期') &&
+      /^TXF[A-Z0-9]+-M$/.test(String(q.SymbolID ?? '')) &&
       q.CLastPrice && q.CLastPrice !== ''
     )
     if (!txf) return null

@@ -72,10 +72,16 @@ screen_*.png
 **/test_*.py
 **/*_test.py
 
-# Worker-only (ml-controller image doesn't need CF code)
+# Worker source needed by screener-v2 Cloud Run Job; keep generated/cache output out.
 worker/
 !worker/
 worker/*
+!worker/package.json
+!worker/package-lock.json
+!worker/tsconfig.json
+!worker/tsconfig.tests.json
+!worker/src/
+!worker/src/**
 !worker/migration_strategy_mining_ledger_2026_06_18.sql
 
 # Scripts/tools root (not needed in ml-controller except the FinLab backfill helper copied by Dockerfile)

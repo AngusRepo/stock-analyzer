@@ -109,6 +109,27 @@ CORE_SPECS = [
         },
     ),
     DatasetSpec(
+        lane="regime_context",
+        kind="raw_frames",
+        keys={
+            "tw_stock_market_ind": "etl:finlab_tw_stock_market_ind",
+            "benchmark_twii_return_index": "benchmark_return:發行量加權股價報酬指數",
+            "futures_contract_month": "futures_price:到期月份(週別)",
+            "futures_open": "futures_price:開盤價",
+            "futures_high": "futures_price:最高價",
+            "futures_low": "futures_price:最低價",
+            "futures_close": "futures_price:收盤價",
+            "futures_change": "futures_price:漲跌價",
+            "futures_change_pct": "futures_price:漲跌幅",
+            "futures_volume": "futures_price:成交量",
+            "futures_open_interest": "futures_price:未沖銷契約數",
+            "business_signal_score": "tw_business_indicators:景氣對策信號(分)",
+            "tw_option_put_call_ratio": "tw_option_put_call_ratio",
+            "tw_taifex_futures_large_trader": "tw_taifex_futures_large_trader",
+            "tw_taifex_option_large_trader": "tw_taifex_option_large_trader",
+        },
+    ),
+    DatasetSpec(
         lane="security_master",
         kind="table",
         keys={"security_categories": "security_categories"},
@@ -138,6 +159,9 @@ DEFAULT_CANONICAL_DATASETS = [
     "canonical_market_daily",
     "canonical_chip_daily",
     "canonical_institutional_amount_daily",
+    "canonical_market_index_daily",
+    "canonical_futures_daily",
+    "canonical_regime_context_daily",
     "canonical_revenue_monthly",
     "canonical_broker_flow_daily",
     "canonical_broker_rank_daily",
@@ -336,6 +360,22 @@ def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def normalize_context_frame(df: pd.DataFrame) -> pd.DataFrame:
+    out = pd.DataFrame(df).copy()
+    out.columns = [str(col).strip() for col in out.columns]
+    date_col = next((col for col in out.columns if col.lower() in {"date", "trading_date", "data_date"} or col in {"日期", "年月", "月份"}), None)
+    if date_col:
+        parsed = pd.to_datetime(out[date_col], errors="coerce")
+        out = out[~parsed.isna()].copy()
+        out["date"] = parsed[~parsed.isna()].dt.strftime("%Y-%m-%d")
+        out.index = pd.to_datetime(out["date"], errors="coerce")
+        out = out[~out.index.isna()].sort_index()
+        return out
+    out = normalize_wide_index(out)
+    out.insert(0, "date", out.index.strftime("%Y-%m-%d"))
+    return out
+
+
 def filter_years(df: pd.DataFrame, years: int) -> pd.DataFrame:
     start = pd.Timestamp(start_date_for_years(years))
     return df[df.index >= start]
@@ -394,14 +434,20 @@ def d1_counts(start: str) -> dict[str, int]:
         "canonical_market_daily": "SELECT COUNT(*) AS n FROM canonical_market_daily WHERE date >= ?",
         "canonical_chip_daily": "SELECT COUNT(*) AS n FROM canonical_chip_daily WHERE date >= ?",
         "canonical_institutional_amount_daily": "SELECT COUNT(*) AS n FROM canonical_institutional_amount_daily WHERE date >= ?",
+        "canonical_market_index_daily": "SELECT COUNT(*) AS n FROM canonical_market_index_daily WHERE date >= ?",
+        "canonical_futures_daily": "SELECT COUNT(*) AS n FROM canonical_futures_daily WHERE date >= ?",
+        "canonical_regime_context_daily": "SELECT COUNT(*) AS n FROM canonical_regime_context_daily WHERE date >= ?",
         "canonical_revenue_monthly": "SELECT COUNT(*) AS n FROM canonical_revenue_monthly WHERE revenue_month >= ?",
         "canonical_broker_flow_daily": "SELECT COUNT(*) AS n FROM canonical_broker_flow_daily WHERE date >= ?",
         "canonical_broker_rank_daily": "SELECT COUNT(*) AS n FROM canonical_broker_rank_daily WHERE date >= ?",
     }
     counts: dict[str, int] = {}
     for key, sql in queries.items():
-        rows = d1_query(sql, [start])
-        counts[key] = int((rows[0] if rows else {}).get("n") or 0)
+        try:
+            rows = d1_query(sql, [start])
+            counts[key] = int((rows[0] if rows else {}).get("n") or 0)
+        except Exception:
+            counts[key] = 0
     return counts
 
 
@@ -417,6 +463,12 @@ def stockvision_count_for_lane(counts: dict[str, int], lane: str) -> int:
         )
     if lane == "institutional_amount_summary":
         return counts.get("canonical_institutional_amount_daily", 0)
+    if lane == "regime_context":
+        return max(
+            counts.get("canonical_market_index_daily", 0),
+            counts.get("canonical_futures_daily", 0),
+            counts.get("canonical_regime_context_daily", 0),
+        )
     if lane in {"revenue", "emerging_revenue_diversity"}:
         return counts.get("revenue", 0)
     return 0
@@ -650,6 +702,15 @@ def materialize_specs(
             for field, api_key_name in spec.keys.items():
                 frame = filter_years(normalize_wide_index(data.get(api_key_name)), years)
                 finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum() * frame.shape[1]))
+                latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
+                schema_fields.append(field)
+                path = lane_dir / f"{field}.parquet"
+                write_parquet(path, frame)
+                artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": non_null_cells(frame)})
+        elif spec.kind == "raw_frames":
+            for field, api_key_name in spec.keys.items():
+                frame = filter_years(normalize_context_frame(data.get(api_key_name)), years)
+                finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum()))
                 latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
                 schema_fields.append(field)
                 path = lane_dir / f"{field}.parquet"
@@ -1195,6 +1256,8 @@ def materialize_canonical_to_d1(
 
 
 def canonical_table_for_lane(lane: str) -> str:
+    if lane == "regime_context":
+        return "canonical_regime_context_daily"
     if "price" in lane or lane == "global_context":
         return "canonical_market_daily"
     if "chip" in lane:

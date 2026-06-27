@@ -36,6 +36,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   ml: { kind: 'trading_day', holidayGated: true, description: 'manual ML prediction alias' },
   recommendation: { kind: 'trading_day', holidayGated: true, description: 'daily recommendation after ML predict' },
   screener: { kind: 'trading_day', holidayGated: true, description: 'daily market screener' },
+  'screener-v2': { kind: 'trading_day', holidayGated: true, description: 'daily market screener Cloud Run Job trigger' },
   adapt: { kind: 'trading_day', holidayGated: true, description: 'adaptive parameter refresh' },
   'daily-report': { kind: 'trading_day', holidayGated: true, description: 'daily report after market close' },
   'obsidian-sync': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },

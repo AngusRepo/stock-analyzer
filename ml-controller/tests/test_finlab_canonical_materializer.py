@@ -41,6 +41,9 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     datasets = parse_canonical_datasets("")
     assert "canonical_market_daily" in datasets
     assert "canonical_institutional_amount_daily" in datasets
+    assert "canonical_market_index_daily" in datasets
+    assert "canonical_futures_daily" in datasets
+    assert "canonical_regime_context_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets
     assert "canonical_broker_rank_daily" in datasets
     assert parse_canonical_datasets("canonical_chip_daily, finlab_taxonomy_tags") == [
@@ -299,6 +302,65 @@ def test_materialize_outputs_include_institutional_amount_summary() -> None:
     assert otc_trust["net_amount"] == -20.0
     statements = build_d1_upsert_statements(outputs)
     assert any("INSERT INTO canonical_institutional_amount_daily" in sql for sql, _ in statements)
+
+
+def test_materialize_outputs_include_regime_context_market_index_and_futures() -> None:
+    root = _root("regime_context")
+    _write(
+        root / "raw" / "regime_context" / "tw_stock_market_ind.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "加權指數": [22500.0], "櫃買指數": [280.5]}),
+    )
+    _write(
+        root / "raw" / "regime_context" / "futures_contract_month.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "TX": ["202607"]}),
+    )
+    _write(
+        root / "raw" / "regime_context" / "futures_close.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "TX": [22480.0]}),
+    )
+    _write(
+        root / "raw" / "regime_context" / "business_signal_score.parquet",
+        pl.DataFrame({"date": ["2026-05-01"], "景氣對策信號(分)": [39.0]}),
+    )
+    _write(
+        root / "raw" / "regime_context" / "tw_option_put_call_ratio.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "pcr": [0.9]}),
+    )
+    _write(
+        root / "raw" / "regime_context" / "tw_taifex_futures_large_trader.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "net_position": [2315.0]}),
+    )
+    _write(
+        root / "raw" / "global_context" / "world_close.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "USDTWD": [31.825]}),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-27T00:00:00+00:00",
+        start_date="2026-05-01",
+        end_date="2026-06-27",
+        datasets=[
+            "canonical_market_index_daily",
+            "canonical_futures_daily",
+            "canonical_regime_context_daily",
+        ],
+    )
+
+    assert outputs.manifest["row_counts"]["canonical_market_index_daily"] == 2
+    assert outputs.manifest["row_counts"]["canonical_futures_daily"] == 1
+    assert outputs.manifest["row_counts"]["canonical_regime_context_daily"] == 4
+    assert {row["symbol"] for row in outputs.canonical_market_index_daily} == {"TWII", "TWOII"}
+    assert outputs.canonical_futures_daily[0]["symbol"] == "TXF"
+    context_fields = {(row["dataset"], row["field"]) for row in outputs.canonical_regime_context_daily}
+    assert ("tw_business_indicators", "business_signal_score") in context_fields
+    assert ("tw_option_put_call_ratio", "pcr") in context_fields
+    assert ("tw_taifex_futures_large_trader", "net_position") in context_fields
+    assert ("world_index", "world_close") in context_fields
+    statements = build_d1_upsert_statements(outputs)
+    assert any("INSERT INTO canonical_market_index_daily" in sql for sql, _ in statements)
+    assert any("INSERT INTO canonical_futures_daily" in sql for sql, _ in statements)
+    assert any("INSERT INTO canonical_regime_context_daily" in sql for sql, _ in statements)
 
 
 def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:

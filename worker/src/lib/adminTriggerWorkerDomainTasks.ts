@@ -218,6 +218,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
   return {
     'evening-chain': () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     screener: () => deps.runMarketScreener(requestedRunDate()),
+    'screener-v2': () => {
+      if (!deps.runScreenerV2) throw new Error('screener-v2 trigger dependency not configured')
+      return deps.runScreenerV2(requestedRunDate())
+    },
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),
     recommendation: () => deps.runDailyRecommendation(requestedRunDate()),

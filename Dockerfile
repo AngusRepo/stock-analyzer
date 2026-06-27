@@ -26,11 +26,21 @@ WORKDIR /app
 # System deps for subprocess modal CLI + git (audit, future needs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (ml-controller only; ml-service deps live on Modal cloud).
 COPY ml-controller/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Worker screener job runtime. The Cloud Run Job compiles and runs the same
+# TypeScript screener code with D1/KV REST adapters instead of Worker bindings.
+RUN mkdir -p /app/worker
+COPY worker/package.json worker/package-lock.json /app/worker/
+RUN cd /app/worker && npm ci
+COPY worker/ /app/worker/
+RUN cd /app/worker && npx tsc -p tsconfig.json --noEmit false --rootDir src --outDir /app/worker-dist --module commonjs --moduleResolution node --ignoreDeprecations 6.0
 
 # Application source.
 COPY ml-controller/ /app/

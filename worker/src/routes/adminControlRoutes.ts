@@ -5,6 +5,7 @@ import { requireAdminOrServiceToken } from '../lib/auth'
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 const REPORT_ARTIFACT_TASKS = new Set([
+  'screener',
   'pipeline',
   'finlab-v4-backfill',
   'backtest',
@@ -336,6 +337,45 @@ async function handleSchedulerCallback(c: any) {
         duration_ms: 0,
         error: body.error != null ? String(body.error) : undefined,
         run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+    }
+  }
+
+  if (body.task === 'screener' && ['success', 'error', 'skipped'].includes(String(body.status))) {
+    const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {}
+    const chainRunId = typeof body.chain_run_id === 'string'
+      ? body.chain_run_id
+      : typeof metadata.chain_run_id === 'string'
+        ? metadata.chain_run_id
+        : undefined
+    const shouldContinue = Boolean(
+      chainRunId ||
+      body.continue_post_screener_pipeline ||
+      metadata.continue_post_screener_pipeline,
+    )
+
+    if (callbackRunDate) {
+      await c.env.KV.delete(`lock:screener:${callbackRunDate}`).catch(() => {})
+    }
+
+    if (body.status === 'success' && callbackRunDate && shouldContinue) {
+      const continuationRunId = chainRunId || callbackRunId || `screener-callback-${callbackRunDate}`
+      const { enqueuePostScreenerPipelineContinuation } = await import('../lib/postScreenerContinuation')
+      await enqueuePostScreenerPipelineContinuation(c.env, {
+        triggerTime: callbackRunDate,
+        runId: continuationRunId,
+        shardCount: Number(body.shard_count ?? metadata.shard_count ?? 1),
+        source: 'screener-v2-callback',
+        summary: `event-driven chain accepted screener-v2 callback for ${callbackRunDate}; screener_run_id=${callbackRunId ?? 'n/a'}; chain_run_id=${continuationRunId}`,
+      })
+    } else if (body.status !== 'success' && callbackRunDate && shouldContinue) {
+      await logSchedulerResult(c.env.KV, 'evening-chain', {
+        status: body.status === 'skipped' ? 'skipped' : 'error',
+        summary: `root chain stopped at screener callback: ${String(body.summary ?? body.status)}`,
+        duration_ms: 0,
+        error: body.error != null ? String(body.error) : undefined,
+        run_id: chainRunId || callbackRunId,
         run_date: callbackRunDate,
       }, c.env as any)
     }

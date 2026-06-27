@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
 
-from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, strategy_similarity, strategy_mining
+from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, strategy_similarity, strategy_mining, screener
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -113,6 +113,7 @@ app.include_router(breeze2.router, dependencies=[Depends(verify_token)])
 app.include_router(finlab.router, dependencies=[Depends(verify_token)])
 app.include_router(strategy_similarity.router, dependencies=[Depends(verify_token)])
 app.include_router(strategy_mining.router, dependencies=[Depends(verify_token)])
+app.include_router(screener.router, dependencies=[Depends(verify_token)])
 # 2026-04-07 Phase 1.6: optuna routes 從 Modal 移到 Cloud Run
 if optuna_router:
     app.include_router(optuna_router.router, dependencies=[Depends(verify_token)])
@@ -123,6 +124,7 @@ def health():
     worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
     pipeline_job_name = os.environ.get("PIPELINE_JOB_NAME", "").strip()
     verify_job_name = os.environ.get("VERIFY_JOB_NAME", "").strip()
+    screener_job_name = os.environ.get("SCREENER_JOB_NAME", "").strip()
     optuna_job_name = os.environ.get("OPTUNA_JOB_NAME", "").strip()
     gcp_project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
     gcp_region = os.environ.get("GCP_REGION", "").strip()
@@ -135,6 +137,7 @@ def health():
         "callbackConfigured": bool(worker_url),
         "pipelineJobConfigured": all([pipeline_job_name, gcp_project_id, gcp_region]),
         "verifyJobConfigured": all([verify_job_name, gcp_project_id, gcp_region]),
+        "screenerJobConfigured": all([screener_job_name, gcp_project_id, gcp_region]),
         "optunaJobConfigured": all([optuna_job_name, gcp_project_id, gcp_region]),
         "batchPredictContract": batch_predict_contract(),
     }

@@ -11,6 +11,7 @@ import {
   runMarketScreener,
 } from './lib/pipelineOrchestrator'
 import { runMLAndRiskV2 } from './lib/mlPipelineTrigger'
+import { runScreenerV2 } from './lib/screenerJobTrigger'
 import { runDailySnapshot, runPaperAutoTrade } from './lib/paperWorkerTasks'
 import { runEODExit } from './lib/paperExitTasks'
 import { handleScheduledCron } from './lib/cronOrchestrator'
@@ -53,6 +54,7 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const adminTriggerRoutes = createAdminTriggerRoutes({
   buildTaskMap: (c: any) => buildAdminTriggerTaskMap(c, {
     runMarketScreener: (runDate?: string) => runMarketScreener(c.env, runDate),
+    runScreenerV2: (runDate?: string, options?: { chainRunId?: string }) => runScreenerV2(c.env, runDate, options),
     runDailyUpdate: (force?: boolean, runDate?: string) => runDailyUpdateWorkflow(c.env, force, runDate),
     runMLAndRiskV2: (runDate?: string) => runMLAndRiskV2(c.env, runDate),
     runDailyRecommendation: (runDate?: string) => runDailyRecommendation(c.env, runDate),
@@ -167,6 +169,7 @@ export default {
       try {
         await processUpdateBatch(msg.body, env, {
           runMarketScreener,
+          runMarketScreenerAsync: runScreenerV2,
           runMLAndRiskV2,
         })
         msg.ack()

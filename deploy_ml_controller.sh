@@ -59,10 +59,14 @@ GCP_PROJECT_ID="${GCP_PROJECT_ID:-gen-lang-client-0602998820}"
 GCP_REGION="${GCP_REGION:-asia-east1}"
 PIPELINE_JOB_NAME="${PIPELINE_JOB_NAME:-pipeline-v2}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
+SCREENER_JOB_NAME="${SCREENER_JOB_NAME:-screener-v2}"
 OPTUNA_JOB_NAME="${OPTUNA_JOB_NAME:-optuna-research-sweep}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-7200s}"
+SCREENER_JOB_TIMEOUT="${SCREENER_JOB_TIMEOUT:-7200s}"
 STRATEGY_MINING_JOB_TIMEOUT="${STRATEGY_MINING_JOB_TIMEOUT:-28800s}"
 STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
+CF_D1_DB_ID="${CF_D1_DB_ID:-6401a5f6-5767-4fa8-a1a7-ec8d4739ac79}"
+CF_KV_NAMESPACE_ID="${CF_KV_NAMESPACE_ID:-39dcebcf5b6848c98f269ef9a48dc3f8}"
 CF_API_TOKEN_SECRET="${CF_API_TOKEN_SECRET:-stockvision-cf-api-token:latest}"
 STOCKVISION_AUTH_TOKEN_SECRET="${STOCKVISION_AUTH_TOKEN_SECRET:-stockvision-stockvision-auth-token:latest}"
 ML_CONTROLLER_SECRET_SECRET="${ML_CONTROLLER_SECRET_SECRET:-stockvision-ml-controller-secret:latest}"
@@ -89,7 +93,10 @@ FINLAB_BACKFILL_EXECUTOR="${FINLAB_BACKFILL_EXECUTOR:-modal}"
 STRATEGY_MINING_JOB_NAME="${STRATEGY_MINING_JOB_NAME:-strategy-mining-research}"
 STRATEGY_MINING_EXECUTION_ENABLED="${STRATEGY_MINING_EXECUTION_ENABLED:-true}"
 STRATEGY_MINING_BACKEND="${STRATEGY_MINING_BACKEND:-modal}"
-RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},PIPELINE_STATE_SPACE_OVERLAY_MODE=${PIPELINE_STATE_SPACE_OVERLAY_MODE},PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS=${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
+RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},SCREENER_JOB_NAME=${SCREENER_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},CF_D1_DB_ID=${CF_D1_DB_ID},CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID},SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},PIPELINE_STATE_SPACE_OVERLAY_MODE=${PIPELINE_STATE_SPACE_OVERLAY_MODE},PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS=${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
+if [ -n "${CF_ACCOUNT_ID:-}" ]; then
+  RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_ACCOUNT_ID=${CF_ACCOUNT_ID}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MLC_DIR="$SCRIPT_DIR/ml-controller"
@@ -104,11 +111,14 @@ REQUIRED_ENV_VARS=(
   GCP_REGION
   PIPELINE_JOB_NAME
   VERIFY_JOB_NAME
+  SCREENER_JOB_NAME
   OPTUNA_JOB_NAME
   STRATEGY_MINING_JOB_NAME
   STRATEGY_MINING_EXECUTION_ENABLED
   STRATEGY_MINING_BACKEND
   STOCKVISION_WORKER_URL
+  CF_D1_DB_ID
+  CF_KV_NAMESPACE_ID
 )
 
 # ── Parse flags ──────────────────────────────────────────────────────────────
@@ -168,9 +178,13 @@ required = [
     "GCP_REGION",
     "PIPELINE_JOB_NAME",
     "VERIFY_JOB_NAME",
+    "SCREENER_JOB_NAME",
     "OPTUNA_JOB_NAME",
     "STOCKVISION_WORKER_URL",
     "CF_API_TOKEN",
+    "CF_ACCOUNT_ID",
+    "CF_D1_DB_ID",
+    "CF_KV_NAMESPACE_ID",
     "STOCKVISION_AUTH_TOKEN",
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
@@ -275,6 +289,12 @@ load_live_image_state() {
   LIVE_VERIFY_JOB_ENTRYPOINT=$(gcloud run jobs describe "$VERIFY_JOB_NAME" \
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
+  LIVE_SCREENER_JOB_IMG=$(gcloud run jobs describe "$SCREENER_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
+  LIVE_SCREENER_JOB_ENTRYPOINT=$(gcloud run jobs describe "$SCREENER_JOB_NAME" \
+    --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.containers[0].command[0],spec.template.spec.template.spec.containers[0].args)" 2>/dev/null || true)
   LIVE_OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" \
     --region="$REGION" \
     --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || true)
@@ -287,12 +307,18 @@ build_verify_job_env_file() {
   local env_file="$1"
   local meta_file="$2"
   local pipeline_job_json
+  local service_json
   pipeline_job_json=$(gcloud run jobs describe "$JOB" \
+    --region="$REGION" \
+    --format=json)
+  service_json=$(gcloud run services describe "$SERVICE" \
     --region="$REGION" \
     --format=json)
 
   PIPELINE_JOB_JSON="$pipeline_job_json" \
+  SERVICE_JSON="$service_json" \
   VERIFY_JOB_NAME="$VERIFY_JOB_NAME" \
+  SCREENER_JOB_NAME="$SCREENER_JOB_NAME" \
   STRATEGY_MINING_JOB_NAME="$STRATEGY_MINING_JOB_NAME" \
   STRATEGY_MINING_EXECUTION_ENABLED="$STRATEGY_MINING_EXECUTION_ENABLED" \
   STRATEGY_MINING_BACKEND="$STRATEGY_MINING_BACKEND" \
@@ -320,7 +346,22 @@ for item in container.get("env", []):
         continue
     envs[name] = item.get("value", "")
 
+service_doc = json.loads(os.environ["SERVICE_JSON"])
+service_containers = (
+    service_doc.get("spec", {})
+    .get("template", {})
+    .get("spec", {})
+    .get("containers", [])
+)
+service_container = service_containers[0] if service_containers else {}
+for item in service_container.get("env", []):
+    name = item.get("name")
+    if not name or "value" not in item:
+        continue
+    envs[name] = item.get("value", "")
+
 envs["VERIFY_JOB_NAME"] = os.environ["VERIFY_JOB_NAME"]
+envs["SCREENER_JOB_NAME"] = os.environ["SCREENER_JOB_NAME"]
 envs["OPTUNA_JOB_NAME"] = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep")
 envs["STRATEGY_MINING_JOB_NAME"] = os.environ["STRATEGY_MINING_JOB_NAME"]
 envs["STRATEGY_MINING_EXECUTION_ENABLED"] = os.environ["STRATEGY_MINING_EXECUTION_ENABLED"]
@@ -411,6 +452,59 @@ sync_verify_job() {
   echo ""
 }
 
+sync_screener_job() {
+  local env_file="$1"
+  local service_account_args=()
+  local screener_cpu="${SCREENER_JOB_CPU:-${VERIFY_JOB_CPU:-4}}"
+  local screener_memory="${SCREENER_JOB_MEMORY:-8Gi}"
+  if [ -n "${VERIFY_JOB_SERVICE_ACCOUNT:-}" ]; then
+    service_account_args=(--service-account="$VERIFY_JOB_SERVICE_ACCOUNT")
+  fi
+
+  if gcloud run jobs describe "$SCREENER_JOB_NAME" \
+      --region="$REGION" \
+      --format="value(metadata.name)" >/dev/null 2>&1; then
+    echo "=== Step 3c/4: Update Job $SCREENER_JOB_NAME image + entrypoint ==="
+    if ! gcloud run jobs update "$SCREENER_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=screener_job_main \
+        --cpu="$screener_cpu" \
+        --memory="$screener_memory" \
+        --task-timeout="$SCREENER_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --update-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "??Screener job update failed" >&2
+      exit 4
+    fi
+    echo "??Screener job update succeeded"
+  else
+    echo "=== Step 3c/4: Create Job $SCREENER_JOB_NAME ==="
+    if ! gcloud run jobs create "$SCREENER_JOB_NAME" \
+        --region="$REGION" \
+        --image="$NEW_IMAGE" \
+        --command=python \
+        --args=-m \
+        --args=screener_job_main \
+        --cpu="$screener_cpu" \
+        --memory="$screener_memory" \
+        --task-timeout="$SCREENER_JOB_TIMEOUT" \
+        --max-retries=0 \
+        "${service_account_args[@]}" \
+        --set-secrets="$RUN_SECRET_BINDINGS" \
+        --env-vars-file="$env_file"; then
+      echo "??Screener job create failed" >&2
+      exit 4
+    fi
+    echo "??Screener job create succeeded"
+  fi
+  echo ""
+}
+
 sync_optuna_job() {
   local env_file="$1"
   local service_account_args=()
@@ -421,7 +515,7 @@ sync_optuna_job() {
   if gcloud run jobs describe "$OPTUNA_JOB_NAME" \
       --region="$REGION" \
       --format="value(metadata.name)" >/dev/null 2>&1; then
-    echo "=== Step 3c/4: Update Job $OPTUNA_JOB_NAME image + entrypoint ==="
+    echo "=== Step 3d/4: Update Job $OPTUNA_JOB_NAME image + entrypoint ==="
     if ! gcloud run jobs update "$OPTUNA_JOB_NAME" \
         --region="$REGION" \
         --image="$NEW_IMAGE" \
@@ -440,7 +534,7 @@ sync_optuna_job() {
     fi
     echo "??Optuna job update succeeded"
   else
-    echo "=== Step 3c/4: Create Job $OPTUNA_JOB_NAME from $JOB template ==="
+    echo "=== Step 3d/4: Create Job $OPTUNA_JOB_NAME from $JOB template ==="
     if ! gcloud run jobs create "$OPTUNA_JOB_NAME" \
         --region="$REGION" \
         --image="$NEW_IMAGE" \
@@ -474,7 +568,7 @@ sync_strategy_mining_job() {
   if gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" \
       --region="$REGION" \
       --format="value(metadata.name)" >/dev/null 2>&1; then
-    echo "=== Step 3d/4: Update Job $STRATEGY_MINING_JOB_NAME image + entrypoint ==="
+    echo "=== Step 3e/4: Update Job $STRATEGY_MINING_JOB_NAME image + entrypoint ==="
     if ! gcloud run jobs update "$STRATEGY_MINING_JOB_NAME" \
         --region="$REGION" \
         --image="$NEW_IMAGE" \
@@ -493,7 +587,7 @@ sync_strategy_mining_job() {
     fi
     echo "??Strategy mining job update succeeded"
   else
-    echo "=== Step 3d/4: Create Job $STRATEGY_MINING_JOB_NAME ==="
+    echo "=== Step 3e/4: Create Job $STRATEGY_MINING_JOB_NAME ==="
     if ! gcloud run jobs create "$STRATEGY_MINING_JOB_NAME" \
         --region="$REGION" \
         --image="$NEW_IMAGE" \
@@ -523,6 +617,7 @@ run_preflight() {
   require_nonempty "GCP_REGION" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
   require_nonempty "PIPELINE_JOB_NAME" "Required by ml-controller /pipeline/v2/run Cloud Run Job trigger"
   require_nonempty "VERIFY_JOB_NAME" "Required by ml-controller /verify/run Cloud Run Job trigger"
+  require_nonempty "SCREENER_JOB_NAME" "Required by ml-controller /screener/v2/run Cloud Run Job trigger"
   require_nonempty "OPTUNA_JOB_NAME" "Required by ml-controller /optuna/research_sweep/run Cloud Run Job trigger"
   require_nonempty "CF_API_TOKEN_SECRET" "Secret Manager reference for Cloudflare API token, e.g. stockvision-cf-api-token:latest"
   require_nonempty "STOCKVISION_AUTH_TOKEN_SECRET" "Secret Manager reference for Worker service token, e.g. stockvision-stockvision-auth-token:latest"
@@ -540,6 +635,7 @@ run_preflight() {
   print_preflight_value "ML_CONTROLLER_SECRET_SECRET"
   print_preflight_value "MODAL_TOKEN_ID_SECRET"
   print_preflight_value "MODAL_TOKEN_SECRET_SECRET"
+  print_preflight_value "SCREENER_JOB_TIMEOUT"
   print_preflight_value "OPTUNA_JOB_TIMEOUT"
   echo ""
 
@@ -577,14 +673,18 @@ run_preflight() {
     echo "  Live verify image     : ${LIVE_VERIFY_JOB_IMG}"
     echo "  Live verify entrypoint: ${LIVE_VERIFY_JOB_ENTRYPOINT:-unknown}"
   fi
+  if [ -n "${LIVE_SCREENER_JOB_IMG:-}" ]; then
+    echo "  Live screener image   : ${LIVE_SCREENER_JOB_IMG}"
+    echo "  Live screener entrypt : ${LIVE_SCREENER_JOB_ENTRYPOINT:-unknown}"
+  fi
   if [ -n "${LIVE_OPTUNA_JOB_IMG:-}" ]; then
     echo "  Live optuna image     : ${LIVE_OPTUNA_JOB_IMG}"
     echo "  Live optuna entrypoint: ${LIVE_OPTUNA_JOB_ENTRYPOINT:-unknown}"
   fi
 
-  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ]; then
+  if [ -z "${LIVE_SERVICE_IMG:-}" ] || [ -z "${LIVE_JOB_IMG:-}" ] || [ -z "${LIVE_VERIFY_JOB_IMG:-}" ] || [ -z "${LIVE_SCREENER_JOB_IMG:-}" ] || [ -z "${LIVE_OPTUNA_JOB_IMG:-}" ]; then
     echo "  Unable to fully verify Service / Job image drift from current environment."
-  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ]; then
+  elif [ "$LIVE_SERVICE_IMG" = "$LIVE_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_VERIFY_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_SCREENER_JOB_IMG" ] && [ "$LIVE_SERVICE_IMG" = "$LIVE_OPTUNA_JOB_IMG" ]; then
     echo "  Service / Job image sync: OK"
   else
     echo "  Service / Job image sync: DRIFT DETECTED"
@@ -670,6 +770,7 @@ echo ""
 
 # ── Step 4/4: Verify ─────────────────────────────────────────────────────────
 sync_verify_job "$VERIFY_JOB_ENV_FILE"
+sync_screener_job "$VERIFY_JOB_ENV_FILE"
 sync_optuna_job "$VERIFY_JOB_ENV_FILE"
 sync_strategy_mining_job "$VERIFY_JOB_ENV_FILE"
 
@@ -680,6 +781,8 @@ JOB_IMG=$(gcloud run jobs describe "$JOB" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 VERIFY_JOB_IMG=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
+SCREENER_JOB_IMG=$(gcloud run jobs describe "$SCREENER_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].image)")
 OPTUNA_JOB_IMG=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].image)")
 STRATEGY_MINING_JOB_IMG=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
@@ -687,6 +790,10 @@ STRATEGY_MINING_JOB_IMG=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" -
 VERIFY_JOB_COMMAND=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
 VERIFY_JOB_ARGS=$(gcloud run jobs describe "$VERIFY_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].args)")
+SCREENER_JOB_COMMAND=$(gcloud run jobs describe "$SCREENER_JOB_NAME" --region="$REGION" \
+  --format="value(spec.template.spec.template.spec.containers[0].command[0])")
+SCREENER_JOB_ARGS=$(gcloud run jobs describe "$SCREENER_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
 OPTUNA_JOB_COMMAND=$(gcloud run jobs describe "$OPTUNA_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].command[0])")
@@ -697,11 +804,12 @@ STRATEGY_MINING_JOB_COMMAND=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAM
 STRATEGY_MINING_JOB_ARGS=$(gcloud run jobs describe "$STRATEGY_MINING_JOB_NAME" --region="$REGION" \
   --format="value(spec.template.spec.template.spec.containers[0].args)")
 
-if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$STRATEGY_MINING_JOB_IMG" ]; then
+if [ "$SERVICE_IMG" != "$JOB_IMG" ] || [ "$SERVICE_IMG" != "$VERIFY_JOB_IMG" ] || [ "$SERVICE_IMG" != "$SCREENER_JOB_IMG" ] || [ "$SERVICE_IMG" != "$OPTUNA_JOB_IMG" ] || [ "$SERVICE_IMG" != "$STRATEGY_MINING_JOB_IMG" ]; then
   echo "❌ VERIFICATION FAILED — images differ:" >&2
   echo "  Service: $SERVICE_IMG" >&2
   echo "  Job    : $JOB_IMG" >&2
   echo "  Verify : $VERIFY_JOB_IMG" >&2
+  echo "  Screener: $SCREENER_JOB_IMG" >&2
   echo "  Optuna : $OPTUNA_JOB_IMG" >&2
   echo "  Mining : $STRATEGY_MINING_JOB_IMG" >&2
   exit 5
@@ -711,6 +819,13 @@ if [ "$VERIFY_JOB_COMMAND" != "python" ] || [ "$VERIFY_JOB_ARGS" != "-m;verify_j
   echo "??VERIFICATION FAILED ??verify job entrypoint drift:" >&2
   echo "  command : $VERIFY_JOB_COMMAND" >&2
   echo "  args    : $VERIFY_JOB_ARGS" >&2
+  exit 5
+fi
+
+if [ "$SCREENER_JOB_COMMAND" != "python" ] || [ "$SCREENER_JOB_ARGS" != "-m;screener_job_main" ]; then
+  echo "??VERIFICATION FAILED ??screener job entrypoint drift:" >&2
+  echo "  command : $SCREENER_JOB_COMMAND" >&2
+  echo "  args    : $SCREENER_JOB_ARGS" >&2
   exit 5
 fi
 

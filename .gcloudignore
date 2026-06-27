@@ -16,6 +16,13 @@ frontend/
 worker/
 !worker/
 worker/*
+!worker/package.json
+!worker/package-lock.json
+!worker/tsconfig.json
+!worker/tsconfig.tests.json
+!worker/src/
+!worker/src/**
+worker/src/lib/canonicalTradeLifecycle.ts
 !worker/migration_strategy_mining_ledger_2026_06_18.sql
 
 .uv-cache/

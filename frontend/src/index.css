@@ -340,6 +340,27 @@
     filter: saturate(1.08) contrast(1.03);
   }
 
+  .sv-card-expanded-content .text-\[10px\] {
+    font-size: 0.75rem !important;
+    line-height: 1.2rem !important;
+  }
+
+  .sv-card-expanded-content .text-\[11px\],
+  .sv-card-expanded-content .text-xs {
+    font-size: 0.8125rem !important;
+    line-height: 1.35rem !important;
+  }
+
+  .sv-card-expanded-content .text-sm {
+    font-size: 0.9375rem !important;
+    line-height: 1.5rem !important;
+  }
+
+  .sv-card-expanded-content .text-lg {
+    font-size: 1.1875rem !important;
+    line-height: 1.65rem !important;
+  }
+
   .sv-stockintelli-page {
     min-height: 100%;
     background:

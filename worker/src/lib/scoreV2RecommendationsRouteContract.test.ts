@@ -25,6 +25,10 @@ assert(
   'daily recommendations route must not return L1 seed/observe rows as recommendation cards',
 )
 assert(
+  !/WHERE r\.date = \? AND \$\{FINAL_RECOMMENDATION_ROW_WHERE\}[\s\S]*ORDER BY r\.rank ASC\s+LIMIT 80/.test(route),
+  'daily recommendations route must return the complete final set before frontend card limits so BUY/potential BUY rows beyond rank 80 stay visible',
+)
+assert(
   !route.includes('function replaceChipReason'),
   'recommendations route should not keep legacy chip reason replacement helper',
 )

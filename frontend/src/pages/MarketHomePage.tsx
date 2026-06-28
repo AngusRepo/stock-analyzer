@@ -458,6 +458,12 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
   const marginBalanceUnits = asNumber(breadth.margin_balance ?? risk?.marginBalanceUnits ?? credit.marginBalanceUnits ?? risk?.marginBalance ?? credit.marginBalance)
   const shortBalanceValue = asNumber(risk?.shortBalanceValue ?? credit.shortBalanceValue)
   const shortBalanceUnits = asNumber(breadth.short_balance ?? risk?.shortBalanceUnits ?? credit.shortBalanceUnits ?? risk?.shortBalance ?? credit.shortBalance)
+  const estimatedMarginPositionValue = asNumber(risk?.estimatedMarginPositionValue ?? credit.estimatedMarginPositionValue)
+  const estimatedShortPositionValue = asNumber(risk?.estimatedShortPositionValue ?? credit.estimatedShortPositionValue)
+  const marginAmount = marginBalanceValue ?? estimatedMarginPositionValue
+  const shortAmount = shortBalanceValue ?? estimatedShortPositionValue
+  const marginAmountNote = marginBalanceValue != null ? '官方餘額金額' : estimatedMarginPositionValue != null ? '估算部位市值' : '金額未提供'
+  const shortAmountNote = shortBalanceValue != null ? '官方餘額金額' : estimatedShortPositionValue != null ? '估算部位市值' : '金額未提供'
   const creditScope = credit.scope ?? marketScope
   const marginChangePct = asNumber(risk?.marginBalanceChangePct ?? credit.marginBalanceChangePct)
   const shortChangePct = asNumber(risk?.shortBalanceChangePct ?? credit.shortBalanceChangePct)
@@ -521,16 +527,14 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <p className="text-xs text-slate-500">融資餘額（金額）</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(marginBalanceValue)}</p>
-            <p className="text-[11px] text-slate-500">{formatLots(marginBalanceUnits)}</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(marginAmount)}</p>
+            <p className="text-[11px] text-slate-500">{formatLots(marginBalanceUnits)} · {marginAmountNote}</p>
             <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(marginChangePct)))}>{formatPct(marginChangePct)}</p>
           </div>
           <div>
             <p className="text-xs text-slate-500">融券餘額（張數）</p>
             <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(shortBalanceUnits)}</p>
-            <p className="text-[11px] text-slate-500">
-              {shortBalanceValue == null ? '金額未提供' : formatCompactAmount(shortBalanceValue)}
-            </p>
+            <p className="text-[11px] text-slate-500">{formatCompactAmount(shortAmount)} · {shortAmountNote}</p>
             <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(shortChangePct)))}>{formatPct(shortChangePct)}</p>
           </div>
         </div>
@@ -593,6 +597,13 @@ function FearGreedCard({ risk }: { risk: any }) {
   const label = String(index.label ?? (score == null ? '待匯入' : score < 45 ? '恐懼' : score > 55 ? '貪婪' : '中性'))
   const marker = score == null ? 0 : Math.max(0, Math.min(100, score))
   const tone = fearGreedTone(score)
+  const factors = asArray<RiskFactor>(index.factors)
+  const byFactorId = (id: string) => factors.find((factor) => String(factor.id ?? '') === id) ?? null
+  const momentum = byFactorId('market_momentum')
+  const breadth = byFactorId('market_breadth')
+  const options = byFactorId('options_positioning')
+  const volatility = byFactorId('volatility_pressure')
+  const factorTone = (factor: RiskFactor | null) => fearGreedTone(asNumber(factor?.score))
 
   return (
     <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
@@ -624,6 +635,13 @@ function FearGreedCard({ risk }: { risk: any }) {
             style={{ left: `${marker}%` }}
           />
         )}
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <HedgeFactor label="市場動能" value={factorDisplay(momentum, '待接資料')} note="20MA 偏離" tone={factorTone(momentum)} />
+        <HedgeFactor label="市場廣度" value={factorDisplay(breadth, '待接資料')} note="上漲 / 下跌" tone={factorTone(breadth)} />
+        <HedgeFactor label="選擇權情緒" value={factorDisplay(options, '待接 PCR')} note="賣買權量比" tone={factorTone(options)} />
+        <HedgeFactor label="波動壓力" value={factorDisplay(volatility, '待接資料')} note="VIX / 台股波動" tone={factorTone(volatility)} />
       </div>
     </section>
   )
@@ -1128,7 +1146,7 @@ function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })
-  const limit = compact ? 5 : 8
+  const limit = compact ? 10 : 10
   const themeRows = asArray<any>(themeData?.flows).slice(0, limit)
   const industryRows = asArray<any>(industryData?.flows).slice(0, limit)
   const hotKeywordRows = [...themeRows, ...industryRows]
@@ -1142,11 +1160,11 @@ function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
         </div>
         <SourceBadge>{themeData?.date ?? industryData?.date ?? 'sector-flow'}</SourceBadge>
       </div>
-      <div className={cx('grid gap-6', compact ? 'grid-cols-1' : 'xl:grid-cols-2')}>
+      <HotKeywordCloud rows={hotKeywordRows} />
+      <div className={cx('mt-5 grid gap-6 border-t border-white/[0.07] pt-4', compact ? 'grid-cols-1' : 'xl:grid-cols-2')}>
         <FlowList title="題材資金流" rows={themeRows} />
         <FlowList title="產業資金流" rows={industryRows} />
       </div>
-      <HotKeywordCloud rows={hotKeywordRows} />
     </section>
   )
 }

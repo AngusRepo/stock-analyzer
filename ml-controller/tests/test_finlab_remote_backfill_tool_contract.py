@@ -47,10 +47,56 @@ def test_remote_backfill_tool_honors_requested_lanes_before_finlab_fetch():
     tool = _load_tool_module()
     source = TOOL_PATH.read_text(encoding="utf-8")
 
-    assert tool.parse_lanes("daily_price, chip_diversity") == ["daily_price", "chip_diversity"]
+    assert tool.parse_lanes("daily_price, chip_diversity, market_summary") == ["daily_price", "chip_diversity", "market_summary"]
     assert 'parser.add_argument("--lanes"' in source
     assert "spec.lane in requested_lanes" in source
     assert "unknown FinLab lanes" in source
+    assert 'lane="market_summary"' in source
+
+
+def test_official_market_summary_parser_materializes_margin_and_breadth(monkeypatch):
+    tool = _load_tool_module()
+
+    def fake_json_get(url, *, label, timeout=30.0):
+        if "twtazu_od" in url:
+            return [{"市場": "上市股票", "出表日期": "1150626", "上漲": "291", "持平": "84", "下跌": "1965"}]
+        if "MI_MARGN" in url:
+            return {
+                "stat": "OK",
+                "date": "20260626",
+                "tables": [
+                    {},
+                    {
+                        "data": [
+                            ["2330", "台積電", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+                            ["2317", "鴻海", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110"],
+                        ]
+                    },
+                ],
+            }
+        if "tpex_mainboard_margin_balance" in url:
+            return [
+                {
+                    "Date": "20260626",
+                    "SecuritiesCompanyCode": "6488",
+                    "MarginPurchase": "2",
+                    "MarginSales": "3",
+                    "MarginPurchaseBalance": "4",
+                    "ShortBuy": "5",
+                    "ShortSale": "6",
+                    "ShortSaleBalance": "7",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(tool, "official_json_get", fake_json_get)
+    monkeypatch.setattr(tool, "recent_calendar_dates", lambda _days: ["2026-06-26"])
+    frames = tool.fetch_official_market_summary_frames(lookback_days=1)
+
+    assert set(frames) == {"market_breadth_summary", "twse_margin_trading_summary", "tpex_margin_trading_summary"}
+    assert frames["market_breadth_summary"].iloc[0]["advance_count"] == 291
+    assert frames["twse_margin_trading_summary"].iloc[0]["margin_balance_units"] == 55
+    assert frames["tpex_margin_trading_summary"].iloc[0]["short_balance_units"] == 7
 
 
 def test_write_parquet_ignores_nonserializable_dataframe_attrs(tmp_path):

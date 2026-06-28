@@ -365,6 +365,34 @@ def test_materialize_outputs_include_regime_context_market_index_and_futures() -
     assert any("INSERT INTO canonical_regime_context_daily" in sql for sql, _ in statements)
 
 
+def test_materialize_outputs_include_official_tpex_index_artifact() -> None:
+    root = _root("official_tpex_index")
+    _write(
+        root / "raw" / "regime_context" / "official_tpex_index.parquet",
+        pl.DataFrame(
+            {
+                "date": ["2026-06-26"],
+                "symbol": ["TWOII"],
+                "name": ["櫃買指數"],
+                "close": [415.26],
+                "change": [-24.58],
+            }
+        ),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-27T00:00:00+00:00",
+        start_date="2026-06-26",
+        end_date="2026-06-26",
+        datasets=["canonical_market_index_daily"],
+    )
+
+    assert outputs.manifest["row_counts"]["canonical_market_index_daily"] == 1
+    assert outputs.canonical_market_index_daily[0]["symbol"] == "TWOII"
+    assert outputs.canonical_market_index_daily[0]["source"] == "tpex.openapi.tpex_index"
+
+
 def test_market_summary_rows_materialize_market_level_margin_amounts() -> None:
     root = _root("market_summary")
     _write(

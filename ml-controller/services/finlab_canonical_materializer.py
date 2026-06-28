@@ -474,6 +474,21 @@ def build_market_index_rows(
             end_date=end_date,
         ))
 
+    official_tpex = _read_parquet(regime_dir / "official_tpex_index.parquet")
+    if not official_tpex.is_empty():
+        rows.extend(_market_index_rows_from_frame(
+            official_tpex,
+            run_id=run_id,
+            generated_at=generated_at,
+            artifact_root=artifact_root,
+            lane="regime_context",
+            source="tpex.openapi.tpex_index",
+            default_symbol="TWOII",
+            default_name="櫃買指數",
+            start_date=start_date,
+            end_date=end_date,
+        ))
+
     benchmark = _read_parquet(regime_dir / "benchmark_twii_return_index.parquet")
     if not benchmark.is_empty():
         benchmark_rows = _market_index_rows_from_frame(

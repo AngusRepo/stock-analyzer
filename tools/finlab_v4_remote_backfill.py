@@ -68,6 +68,11 @@ CORE_SPECS = [
         },
     ),
     DatasetSpec(
+        lane="market_summary",
+        kind="official_market_summary",
+        keys={},
+    ),
+    DatasetSpec(
         lane="revenue",
         kind="wide_fields",
         keys={
@@ -404,6 +409,210 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str), encoding="utf-8")
 
 
+OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
+OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
+
+
+def official_json_get(url: str, *, label: str, timeout: float = 30.0) -> Any:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": OFFICIAL_USER_AGENT,
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8-sig"))
+    except Exception as exc:
+        print(f"[finlab-backfill] official_fetch_failed label={label} error={type(exc).__name__}:{exc}", flush=True)
+        return None
+
+
+def parse_official_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).replace(",", "").replace("%", "").strip()
+    if not text or text in {"-", "--", "N/A", "nan"}:
+        return None
+    try:
+        parsed = float(text)
+    except ValueError:
+        return None
+    return parsed if parsed == parsed else None
+
+
+def parse_official_date(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    if len(text) == 7 and text.isdigit():
+        year = int(text[:3]) + 1911
+        return f"{year}-{text[3:5]}-{text[5:7]}"
+    if "/" in text:
+        parts = [part.strip() for part in text.split("/") if part.strip()]
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            year = int(parts[0])
+            if year < 1911:
+                year += 1911
+            return f"{year:04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.notna(parsed):
+        return str(parsed.date())
+    return fallback
+
+
+def taipei_today() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
+
+
+def recent_calendar_dates(days: int) -> list[str]:
+    today = datetime.fromisoformat(taipei_today()).date()
+    return [(today - timedelta(days=offset)).isoformat() for offset in range(max(1, days))]
+
+
+def fetch_official_tpex_index_frame() -> pd.DataFrame:
+    body = official_json_get("https://www.tpex.org.tw/openapi/v1/tpex_index", label="tpex_index")
+    rows = body if isinstance(body, list) else []
+    output: list[dict[str, Any]] = []
+    fallback = taipei_today()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        date = parse_official_date(row.get("Date") or row.get("date") or row.get("日期"), fallback)
+        close = parse_official_number(row.get("Close") or row.get("close") or row.get("TPExIndex") or row.get("櫃買指數"))
+        if close is None:
+            continue
+        output.append({
+            "date": date,
+            "symbol": "TWOII",
+            "name": "櫃買指數",
+            "close": close,
+            "change": parse_official_number(row.get("Change") or row.get("change") or row.get("漲跌")),
+            "change_pct": parse_official_number(row.get("ChangePercent") or row.get("change_pct") or row.get("漲跌幅")),
+            "volume": parse_official_number(row.get("Volume") or row.get("volume") or row.get("成交量")),
+            "value": parse_official_number(row.get("Value") or row.get("value") or row.get("成交值") or row.get("成交金額")),
+        })
+    if not output:
+        return pd.DataFrame(columns=["date", "symbol", "name", "close", "change", "change_pct", "volume", "value"])
+    frame = pd.DataFrame(output).drop_duplicates(["date", "symbol"], keep="last")
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame[frame["date"].notna()].sort_values("date")
+    frame["date"] = frame["date"].dt.strftime("%Y-%m-%d")
+    return frame
+
+
+def _sum_values(rows: list[Any], column_index: int) -> float | None:
+    values = [
+        parse_official_number(row[column_index])
+        for row in rows
+        if isinstance(row, list) and len(row) > column_index
+    ]
+    values = [value for value in values if value is not None]
+    return float(sum(values)) if values else None
+
+
+def fetch_twse_margin_summary_rows(dates: list[str]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for iso_date in dates:
+        twse_day = iso_date.replace("-", "")
+        body = official_json_get(
+            f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={twse_day}&selectType=ALL&response=json",
+            label=f"twse_mi_margn_{twse_day}",
+        )
+        if not isinstance(body, dict) or body.get("stat") != "OK":
+            continue
+        tables = body.get("tables") or []
+        table = tables[1] if len(tables) > 1 and isinstance(tables[1], dict) else {}
+        rows = table.get("data") if isinstance(table, dict) else None
+        if not isinstance(rows, list) or not rows:
+            continue
+        output.append({
+            "date": parse_official_date(body.get("date") or twse_day, iso_date),
+            "market_segment": "LISTED",
+            "margin_buy_units": _sum_values(rows, 2),
+            "margin_sell_units": _sum_values(rows, 3),
+            "margin_return_units": _sum_values(rows, 4),
+            "margin_balance_units": _sum_values(rows, 6),
+            "short_buy_units": _sum_values(rows, 8),
+            "short_sell_units": _sum_values(rows, 9),
+            "short_return_units": _sum_values(rows, 10),
+            "short_balance_units": _sum_values(rows, 12),
+        })
+    return output
+
+
+def fetch_tpex_margin_summary_rows() -> list[dict[str, Any]]:
+    body = official_json_get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance", label="tpex_margin_balance")
+    rows = body if isinstance(body, list) else []
+    if not rows:
+        return []
+    fallback = taipei_today()
+    date = fallback
+    for row in rows:
+        if isinstance(row, dict):
+            date = parse_official_date(row.get("Date") or row.get("date") or row.get("資料日期"), fallback)
+            break
+
+    def sum_field(*names: str) -> float | None:
+        values: list[float] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for name in names:
+                value = parse_official_number(row.get(name))
+                if value is not None:
+                    values.append(value)
+                    break
+        return float(sum(values)) if values else None
+
+    return [{
+        "date": date,
+        "market_segment": "OTC",
+        "margin_buy_units": sum_field("MarginPurchase", "margin_buy", "融資買進"),
+        "margin_sell_units": sum_field("MarginSales", "margin_sell", "融資賣出"),
+        "margin_balance_units": sum_field("MarginPurchaseBalance", "margin_balance", "融資今日餘額"),
+        "short_buy_units": sum_field("ShortBuy", "ShortCovering", "short_buy", "融券買進"),
+        "short_sell_units": sum_field("ShortSale", "short_sell", "融券賣出"),
+        "short_balance_units": sum_field("ShortSaleBalance", "short_balance", "融券今日餘額"),
+    }]
+
+
+def fetch_market_breadth_summary_rows() -> list[dict[str, Any]]:
+    body = official_json_get("https://openapi.twse.com.tw/v1/opendata/twtazu_od", label="twse_twtazu_od")
+    rows = body if isinstance(body, list) else []
+    output: list[dict[str, Any]] = []
+    fallback = taipei_today()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        market = str(row.get("市場") or row.get("market") or "")
+        segment = "LISTED" if "上市" in market else "OTC" if "上櫃" in market else "ALL"
+        output.append({
+            "date": parse_official_date(row.get("出表日期") or row.get("date") or row.get("日期"), fallback),
+            "market_segment": segment,
+            "advance_count": parse_official_number(row.get("上漲") or row.get("advance_count")),
+            "unchanged_count": parse_official_number(row.get("持平") or row.get("unchanged_count")),
+            "decline_count": parse_official_number(row.get("下跌") or row.get("decline_count")),
+        })
+    return output
+
+
+def fetch_official_market_summary_frames(lookback_days: int) -> dict[str, pd.DataFrame]:
+    dates = recent_calendar_dates(lookback_days)
+    frames = {
+        "market_breadth_summary": pd.DataFrame(fetch_market_breadth_summary_rows()),
+        "twse_margin_trading_summary": pd.DataFrame(fetch_twse_margin_summary_rows(dates)),
+        "tpex_margin_trading_summary": pd.DataFrame(fetch_tpex_margin_summary_rows()),
+    }
+    return {
+        name: frame
+        for name, frame in frames.items()
+        if not frame.empty
+    }
+
+
 def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str) -> dict[str, Any]:
     from google.cloud import storage
 
@@ -719,6 +928,22 @@ def materialize_specs(
                 path = lane_dir / f"{field}.parquet"
                 write_parquet(path, frame)
                 artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": non_null_cells(frame)})
+            if spec.lane == "regime_context":
+                frame = fetch_official_tpex_index_frame()
+                if not frame.empty:
+                    field = "official_tpex_index"
+                    path = lane_dir / f"{field}.parquet"
+                    write_parquet(path, frame)
+                    finlab_rows = max(finlab_rows, int(len(frame)))
+                    latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
+                    schema_fields.append(field)
+                    artifacts.append({
+                        "field": field,
+                        "api_key": "tpex.openapi.tpex_index",
+                        "path": str(path),
+                        "shape": list(frame.shape),
+                        "non_null_cells": non_null_cells(frame),
+                    })
         elif spec.kind == "table":
             frame = pd.DataFrame(data.get(next(iter(spec.keys.values()))))
             path = lane_dir / "table.parquet"
@@ -727,6 +952,21 @@ def materialize_specs(
             latest = utc_now()
             schema_fields = [str(col) for col in frame.columns]
             artifacts.append({"field": next(iter(spec.keys)), "api_key": next(iter(spec.keys.values())), "path": str(path), "shape": list(frame.shape)})
+        elif spec.kind == "official_market_summary":
+            frames = fetch_official_market_summary_frames(OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS)
+            for field, frame in frames.items():
+                path = lane_dir / f"{field}.parquet"
+                write_parquet(path, normalize_context_frame(frame))
+                finlab_rows += int(len(frame))
+                latest = max([x for x in [latest, latest_index(normalize_context_frame(frame))] if x], default=None)
+                schema_fields.extend(str(col) for col in frame.columns if str(col) not in schema_fields)
+                artifacts.append({
+                    "field": field,
+                    "api_key": f"official.{field}",
+                    "path": str(path),
+                    "shape": list(frame.shape),
+                    "non_null_cells": non_null_cells(frame),
+                })
         elif spec.kind == "broker_aggregate":
             frame = pd.DataFrame(data.get("broker_transactions"))
             grouped = normalize_broker_transactions_daily(frame, start)

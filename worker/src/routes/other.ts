@@ -250,47 +250,6 @@ function buildIndexSnapshot(
   }
 }
 
-function parseTpexNumber(value: unknown): number | null {
-  if (value == null || value === '') return null
-  const n = Number(String(value).replace(/,/g, '').replace(/\s+/g, ''))
-  return Number.isFinite(n) ? n : null
-}
-
-function parseTpexIndexDate(value: unknown): string {
-  const text = String(value ?? '').trim()
-  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`
-  if (/^\d{7}$/.test(text)) {
-    const year = Number(text.slice(0, 3)) + 1911
-    return `${year}-${text.slice(3, 5)}-${text.slice(5, 7)}`
-  }
-  return text.slice(0, 10)
-}
-
-async function fetchTpexIndexSnapshot() {
-  try {
-    const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_index', {
-      headers: { Accept: 'application/json', 'User-Agent': 'StockVisionBot/1.0' },
-      signal: AbortSignal.timeout(20_000),
-    })
-    if (!res.ok) throw new Error(`TPEX index HTTP ${res.status}`)
-    const body = await res.json() as any
-    const rows = Array.isArray(body) ? body : []
-    const points = rows
-      .map((row: any) => {
-        const date = parseTpexIndexDate(row.Date ?? row.date)
-        const close = parseTpexNumber(row.Close ?? row.TPExIndex ?? row.close)
-        return date && close != null ? { date, close } : null
-      })
-      .filter((point): point is MarketSeriesPoint => Boolean(point))
-    return hasMarketSeriesData(buildIndexSnapshot('TWOII', '櫃買指數', points, 'TPEX OpenAPI tpex_index'))
-      ? buildIndexSnapshot('TWOII', '櫃買指數', points, 'TPEX OpenAPI tpex_index')
-      : null
-  } catch (e) {
-    console.warn('[market/indices] TPEX index fallback failed', e)
-    return null
-  }
-}
-
 async function loadFinlabSeries(
   db: D1Database,
   symbol: string,
@@ -460,10 +419,36 @@ async function loadCanonicalMarketOverview(db: D1Database) {
 
 async function loadCanonicalCreditTrading(db: D1Database) {
   const summary = await loadMarketSummaryCreditTrading(db)
-  if (summary) return summary
+  if (summary) {
+    const canonicalChip = await loadCanonicalChipCreditTrading(db)
+    return mergeCreditTradingSummaryWithCanonicalEstimate(summary, canonicalChip)
+  }
   const canonicalChip = await loadCanonicalChipCreditTrading(db)
   if (canonicalChip) return canonicalChip
   return loadLegacyMarginDataCreditTrading(db)
+}
+
+function mergeCreditTradingSummaryWithCanonicalEstimate(summary: any, canonicalChip: any | null) {
+  if (!canonicalChip || canonicalChip.date !== summary.date) return summary
+  const merged = { ...summary }
+  if (merged.estimatedMarginPositionValue == null && canonicalChip.estimatedMarginPositionValue != null) {
+    merged.estimatedMarginPositionValue = canonicalChip.estimatedMarginPositionValue
+    merged.estimatedMarginPositionValueChangePct = canonicalChip.estimatedMarginPositionValueChangePct ?? null
+  }
+  if (merged.estimatedShortPositionValue == null && canonicalChip.estimatedShortPositionValue != null) {
+    merged.estimatedShortPositionValue = canonicalChip.estimatedShortPositionValue
+    merged.estimatedShortPositionValueChangePct = canonicalChip.estimatedShortPositionValueChangePct ?? null
+  }
+  if (merged.marginBalanceUnits == null && canonicalChip.marginBalanceUnits != null) {
+    merged.marginBalanceUnits = canonicalChip.marginBalanceUnits
+  }
+  if (merged.shortBalanceUnits == null && canonicalChip.shortBalanceUnits != null) {
+    merged.shortBalanceUnits = canonicalChip.shortBalanceUnits
+  }
+  if (canonicalChip.pricedCount != null) merged.pricedCount = canonicalChip.pricedCount
+  merged.source = `${summary.source};${canonicalChip.source}:estimated_value`
+  merged.valueMethod = `${summary.valueMethod}+canonical_chip_estimated_value`
+  return merged
 }
 
 async function loadMarketSummaryCreditTrading(db: D1Database) {
@@ -1273,8 +1258,8 @@ async function loadCanonicalRegimeContext(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v5-tpex-index-fallback', async () => {
-    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii, tpexIndex] = await Promise.all([
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v7-gcp-canonical-only', async () => {
+    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
           sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
@@ -1342,12 +1327,11 @@ market.get('/indices', async (c) => {
       fetchTaifexDayClose().catch(() => null),
       fetchTaifexNightClose().catch(() => null),
       loadMarketRiskTwiiSeries(c.env.DB),
-      fetchTpexIndexSnapshot(),
     ])
     const twii = hasMarketSeriesData(finlabTwii) ? finlabTwii : marketRiskTwii
     const twoii = hasMarketSeriesData(finlabTwoii)
       ? finlabTwoii
-      : tpexIndex ?? missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab etl:finlab_tw_stock_market_ind not materialized; TPEX OpenAPI fallback unavailable')
+      : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab canonical_market_index_daily not materialized by GCP backfill')
     const txfDay = hasMarketSeriesData(finlabTxfDay)
       ? finlabTxfDay
       : taifexDay ? {
@@ -3083,8 +3067,9 @@ recommendations.get('/daily', async (c) => {
     WHERE r.date = ? AND ${FINAL_RECOMMENDATION_ROW_WHERE}
       AND COALESCE(r.recommendation_lane, '') != 'emerging_watchlist'
       AND UPPER(COALESCE(r.market_segment, s.market, '')) NOT IN ('EMERGING', 'ESB', 'ROTC')
+    -- Frontend panels need the complete final set so BUY / potential BUY rows
+    -- that rank beyond the card display limit are still eligible for priority UI.
     ORDER BY r.rank ASC
-    LIMIT 80
   `).bind(date).all<any>()
 
   const screenerFunnelBySymbol = new Map<string, any>()

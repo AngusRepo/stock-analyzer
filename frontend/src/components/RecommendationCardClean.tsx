@@ -749,10 +749,14 @@ function allocationSlotText(raw: unknown): string {
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
   STRONG_BUY: { label: '強買', color: 'bg-red-500 text-white', icon: Zap },
   BUY: { label: '買進', color: 'bg-orange-500 text-white', icon: TrendingUp },
-  POTENTIAL_BUY: { label: '潛在買進', color: 'border-amber-300/35 bg-amber-400/15 text-amber-100', icon: TrendingUp },
+  POTENTIAL_BUY: { label: '潛在買進', color: 'border-cyan-300/35 bg-cyan-400/[0.13] text-cyan-100 shadow-[0_0_18px_rgba(34,211,238,0.08)]', icon: TrendingUp },
   HOLD: { label: '觀望', color: 'bg-yellow-500 text-white', icon: Minus },
   SELL: { label: '賣出', color: 'bg-blue-500 text-white', icon: TrendingDown },
   STRONG_SELL: { label: '強賣', color: 'bg-purple-600 text-white', icon: TrendingDown },
+}
+
+function recommendationSignalKey(rec: any): string {
+  return String(rec?.signal ?? rec?.trade_signal ?? rec?.tradeSignal ?? rec?.signal_raw ?? '').trim().toUpperCase()
 }
 
 const ALPHA_BUCKET_TEXT: Record<string, { label: string; help: string }> = {
@@ -1261,10 +1265,10 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
   ].filter(Boolean)
 
   return (
-    <div className="mt-2 rounded-xl border border-emerald-300/18 bg-emerald-400/[0.055] p-2">
+    <div className="mt-2 rounded-xl border border-indigo-300/18 bg-indigo-400/[0.06] p-2">
       <div className="mb-1.5 flex flex-wrap gap-1.5">
         {chips.map((chip) => (
-          <Badge key={chip} variant="outline" className="border-emerald-300/25 bg-emerald-400/[0.09] px-1.5 py-0 text-[10px] text-emerald-200">
+          <Badge key={chip} variant="outline" className="border-indigo-300/25 bg-indigo-400/[0.10] px-1.5 py-0 text-[10px] text-indigo-100">
             {chip}
           </Badge>
         ))}
@@ -1814,7 +1818,7 @@ function InstitutionalBrokerFlowBlock({
     if (!rows.length) return <p className="text-[11px] text-muted-foreground">{emptyText}</p>
     return (
       <div className="space-y-1">
-        {rows.slice(0, 5).map((row, index) => {
+        {rows.slice(0, 3).map((row, index) => {
           const name = String(row.broker_name ?? row.broker_code ?? '-')
           const netLots = row.net_lots ?? row.net_shares ?? null
           return (
@@ -1872,7 +1876,7 @@ function InstitutionalBrokerFlowBlock({
 
         <div className="rounded-md border border-border/40 bg-background/55 p-2">
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <p className="font-medium text-foreground/85">當日券商分點</p>
+            <p className="font-medium text-foreground/85">當日券商分點前三大</p>
             {aggregate?.broker_count != null && (
               <span className="sv-num text-[11px] text-muted-foreground">{fmtInteger(aggregate.broker_count)} 家</span>
             )}
@@ -1880,17 +1884,17 @@ function InstitutionalBrokerFlowBlock({
           {hasBrokerRanks ? (
             <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
               <div>
-                <p className="mb-1 text-[11px] font-medium text-red-500 dark:text-red-300">買超前五大</p>
-                {renderBrokerRankRows(topBuy, '買超前五大尚無資料')}
+                <p className="mb-1 text-[11px] font-medium text-red-500 dark:text-red-300">買超前三大</p>
+                {renderBrokerRankRows(topBuy, '買超前三大尚無資料')}
               </div>
               <div>
-                <p className="mb-1 text-[11px] font-medium text-emerald-500 dark:text-emerald-300">賣超前五大</p>
-                {renderBrokerRankRows(topSell, '賣超前五大尚無資料')}
+                <p className="mb-1 text-[11px] font-medium text-emerald-500 dark:text-emerald-300">賣超前三大</p>
+                {renderBrokerRankRows(topSell, '賣超前三大尚無資料')}
               </div>
             </div>
           ) : (
             <div className="space-y-1.5 text-[11px] text-muted-foreground">
-              <p className="text-amber-600 dark:text-amber-300">分券商前五大尚未入庫；目前顯示 canonical 聚合分點。</p>
+              <p className="text-amber-600 dark:text-amber-300">分券商前三大尚未入庫；目前顯示 canonical 聚合分點。</p>
               {aggregate ? (
                 <div className="grid grid-cols-3 gap-1">
                   <MetricPill label="買" value={fmtLots(aggregate.buy_lots)} />
@@ -1995,11 +1999,19 @@ function tradePlanToneClass(tone: TradePlanReadRow['tone']) {
   return 'text-sky-700 dark:text-sky-300'
 }
 
+function tradePlanValueClass(row: TradePlanReadRow): string {
+  if (row.label.includes('籌碼')) {
+    if (row.value.includes('買超')) return 'text-red-500 dark:text-red-300'
+    if (row.value.includes('賣超')) return 'text-emerald-500 dark:text-emerald-300'
+  }
+  return tradePlanToneClass(row.tone)
+}
+
 function TradePlanRow({ row }: { row: TradePlanReadRow }) {
   return (
     <div className="grid gap-1 border-b border-border/30 py-2 last:border-b-0 sm:grid-cols-[6.5rem_8.5rem_1fr] sm:items-start">
       <span className="text-[11px] font-semibold text-foreground/85">{row.label}</span>
-      <span className={cn('w-fit rounded-sm border border-current/20 bg-background/70 px-1.5 py-0.5 sv-num text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+      <span className={cn('w-fit rounded-sm border border-current/20 bg-background/70 px-1.5 py-0.5 sv-num text-xs font-semibold tabular-nums', tradePlanValueClass(row))}>
         {row.value}
       </span>
       <span className="text-xs leading-relaxed text-muted-foreground">{row.note}</span>
@@ -2608,7 +2620,7 @@ function FocusedTradePlanRow({ row }: { row: TradePlanReadRow }) {
   return (
     <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-start gap-3 border-b border-border/30 py-2 last:border-b-0">
       <span className="text-[11px] font-semibold text-foreground/80">{row.label}</span>
-      <span className={cn('min-w-0 break-words sv-num text-xs font-semibold tabular-nums', tradePlanToneClass(row.tone))}>
+      <span className={cn('min-w-0 break-words sv-num text-xs font-semibold tabular-nums', tradePlanValueClass(row))}>
         {row.value}
       </span>
     </div>
@@ -2874,7 +2886,7 @@ function normalizeEvidenceLinks(raw: unknown): EvidenceLink[] {
 
 export function RecommendationCardClean({ rec, rank, context = 'full' }: RecommendationCardCleanProps) {
   const [expanded, setExpanded] = useState(false)
-  const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG.HOLD
+  const sig = SIGNAL_CONFIG[recommendationSignalKey(rec)] ?? SIGNAL_CONFIG.HOLD
   const SigIcon = sig.icon
   const isHomeContext = context === 'home'
   const showFullDecisionDetail = !isHomeContext
@@ -2955,7 +2967,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
               </span>
             )}
             {(mlSummary || mlMetadataGap) && (
-              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-teal-300/25 bg-teal-400/[0.09] px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-teal-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-indigo-300/25 bg-indigo-400/[0.10] px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-indigo-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
                 ML {mlSummary ?? `分數 ${fmtNumber(scoreComponentValue(rec, 'mlEdge'), 1)}，投票明細待同步`}
               </Badge>
             )}
@@ -3000,7 +3012,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
       )}
 
       {expanded && (
-        <div className="space-y-4 border-t border-white/[0.08] bg-[linear-gradient(180deg,rgba(17,20,28,0.92),rgba(9,11,16,0.98))] px-4 pb-4 pt-3">
+        <div className="sv-card-expanded-content space-y-4 border-t border-white/[0.08] bg-[linear-gradient(180deg,rgba(17,20,28,0.92),rgba(9,11,16,0.98))] px-4 pb-4 pt-3">
           <ScoreFormulaSummary viewModel={scoreViewModel} />
 
           <div className="space-y-1.5">
@@ -3024,8 +3036,8 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
           <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
 
           {showFullDecisionDetail && (mlSummary || mlMetadataGap || mlDiagnostics) && (
-            <div className="rounded-[18px] border border-emerald-300/20 bg-emerald-400/[0.065] p-3 text-xs leading-relaxed text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">
-              <p className="mb-1 font-semibold text-emerald-100">ML 解讀</p>
+            <div className="rounded-[18px] border border-indigo-300/20 bg-indigo-400/[0.07] p-3 text-xs leading-relaxed text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">
+              <p className="mb-1 font-semibold text-indigo-100">ML 解讀</p>
               <p className="text-slate-300">{mlSummary ?? mlMetadataGap}</p>
               <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
             </div>

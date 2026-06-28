@@ -747,10 +747,10 @@ function allocationSlotText(raw: unknown): string {
 }
 
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
-  STRONG_BUY: { label: '強買', color: 'bg-red-500 text-white', icon: Zap },
-  BUY: { label: '買進', color: 'bg-orange-500 text-white', icon: TrendingUp },
-  POTENTIAL_BUY: { label: '潛在買進', color: 'border-cyan-300/35 bg-cyan-400/[0.13] text-cyan-100 shadow-[0_0_18px_rgba(34,211,238,0.08)]', icon: TrendingUp },
-  HOLD: { label: '觀望', color: 'bg-yellow-500 text-white', icon: Minus },
+  STRONG_BUY: { label: '強買', color: 'border-red-300/55 bg-red-500/90 text-white shadow-[0_0_18px_rgba(239,68,68,0.20)]', icon: Zap },
+  BUY: { label: '買進', color: 'border-red-300/45 bg-red-500/80 text-white shadow-[0_0_16px_rgba(239,68,68,0.16)]', icon: TrendingUp },
+  POTENTIAL_BUY: { label: '潛在買進', color: 'border-[#f6b45f]/55 bg-[#f6b45f]/20 text-[#ffe6c4] shadow-[0_0_16px_rgba(246,180,95,0.12)]', icon: TrendingUp },
+  HOLD: { label: '觀望', color: 'border-slate-300/35 bg-slate-500/35 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.10)]', icon: Minus },
   SELL: { label: '賣出', color: 'bg-blue-500 text-white', icon: TrendingDown },
   STRONG_SELL: { label: '強賣', color: 'bg-purple-600 text-white', icon: TrendingDown },
 }
@@ -1268,7 +1268,7 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
     <div className="mt-2 rounded-xl border border-indigo-300/18 bg-indigo-400/[0.06] p-2">
       <div className="mb-1.5 flex flex-wrap gap-1.5">
         {chips.map((chip) => (
-          <Badge key={chip} variant="outline" className="border-indigo-300/25 bg-indigo-400/[0.10] px-1.5 py-0 text-[10px] text-indigo-100">
+          <Badge key={chip} variant="outline" className="border-indigo-300/25 bg-indigo-400/[0.10] px-2 py-0.5 text-[11px] text-indigo-100">
             {chip}
           </Badge>
         ))}
@@ -2948,12 +2948,12 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
             <span className="sv-num text-base font-bold text-slate-50">{rec.symbol}</span>
             <span className="truncate text-sm font-semibold text-slate-300">{rec.name}</span>
             {rec.sector && (
-              <Badge variant="outline" className="shrink-0 border-sky-300/18 bg-sky-400/[0.08] px-1.5 py-0 text-[10px] text-sky-200">{rec.sector}</Badge>
+              <Badge variant="outline" className="shrink-0 border-sky-300/18 bg-sky-400/[0.08] px-2 py-0.5 text-[11px] text-sky-200">{rec.sector}</Badge>
             )}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-3">
-            <Badge className={cn('border px-1.5 py-0 text-[10px] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]', sig.color)}>
-              <SigIcon className="mr-1 h-2.5 w-2.5" />
+            <Badge className={cn('border px-2 py-0.5 text-[11px] leading-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]', sig.color)}>
+              <SigIcon className="mr-1 h-3 w-3" />
               {sig.label}
             </Badge>
             <span className={cn('flex items-center gap-1 text-xs font-semibold', signedFlowClass(chipBadge.signedValue))}>
@@ -2967,13 +2967,13 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
               </span>
             )}
             {(mlSummary || mlMetadataGap) && (
-              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-indigo-300/25 bg-indigo-400/[0.10] px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-indigo-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-indigo-300/25 bg-indigo-400/[0.10] px-2 py-1 text-left text-[11px] leading-5 text-indigo-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
                 ML {mlSummary ?? `分數 ${fmtNumber(scoreComponentValue(rec, 'mlEdge'), 1)}，投票明細待同步`}
               </Badge>
             )}
             {alphaContext?.bucket && (
-              <Badge variant="outline" className="gap-1 border-sky-300/25 bg-sky-400/[0.09] px-1.5 py-0 text-[10px] text-sky-200">
-                <ShieldCheck className="h-2.5 w-2.5" />
+              <Badge variant="outline" className="gap-1 border-sky-300/25 bg-sky-400/[0.09] px-2 py-0.5 text-[11px] text-sky-200">
+                <ShieldCheck className="h-3 w-3" />
                 {labelFor(alphaContext.bucket)}
               </Badge>
             )}

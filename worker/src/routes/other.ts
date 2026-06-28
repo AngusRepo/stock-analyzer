@@ -142,6 +142,20 @@ async function buildMarketRiskFallback(reason: string) {
     calculatedAt: new Date().toISOString(),
     contextFactors: [],
     usMarketSignal: null,
+    globalEventContext: {
+      source: 'gdelt_events',
+      provider: 'GDELT',
+      status: 'missing',
+      label: '尚未匯入',
+      date: null,
+      eventCount: 0,
+      sourceQuality: null,
+      entityConfidence: null,
+      decisionEffect: 'risk_context_only',
+      allowedUse: 'shadow_global_event_context',
+      events: [],
+      missingReason: 'market_risk_fallback',
+    },
     fearGreedIndex: {
       schemaVersion: 'stockvision_fear_greed_v1',
       date: new Date().toISOString().slice(0, 10),
@@ -707,6 +721,103 @@ async function loadLatestUsMarketSignal(db: D1Database) {
   }
 }
 
+function parseJsonStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean)
+  if (typeof value !== 'string' || !value.trim()) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+async function loadGdeltGlobalEventContext(db: D1Database) {
+  try {
+    const { results } = await db.prepare(
+      `SELECT source_kind, title, source_url, published_at, themes_json, symbols_json,
+              allowed_use, decision_effect, source_quality_score, entity_linking_confidence
+         FROM external_evidence_items
+        WHERE source_id = 'gdelt_events'
+          AND accepted = 1
+          AND date(published_at) >= date('now', '-14 days')
+        ORDER BY published_at DESC
+        LIMIT 6`
+    ).all<any>()
+    const rows = (results ?? []).map((row: any) => ({
+      title: String(row.title ?? '').trim(),
+      url: String(row.source_url ?? '').trim(),
+      publishedAt: String(row.published_at ?? '').slice(0, 19),
+      sourceKind: String(row.source_kind ?? 'global_event_graph'),
+      allowedUse: String(row.allowed_use ?? 'shadow_global_event_context'),
+      decisionEffect: String(row.decision_effect ?? 'risk_context_only'),
+      sourceQuality: numberOrNull(row.source_quality_score),
+      entityConfidence: numberOrNull(row.entity_linking_confidence),
+      themes: parseJsonStringArray(row.themes_json).slice(0, 4),
+      symbols: parseJsonStringArray(row.symbols_json).slice(0, 4),
+    })).filter((row) => row.title)
+
+    if (!rows.length) {
+      return {
+        source: 'gdelt_events',
+        provider: 'GDELT',
+        status: 'missing',
+        label: '尚未匯入',
+        date: null,
+        eventCount: 0,
+        sourceQuality: null,
+        entityConfidence: null,
+        decisionEffect: 'risk_context_only',
+        allowedUse: 'shadow_global_event_context',
+        events: [],
+        missingReason: 'no_accepted_gdelt_events_last_14d',
+      }
+    }
+
+    const sourceQuality = averageNumbers(rows.map((row) => row.sourceQuality))
+    const entityConfidence = averageNumbers(rows.map((row) => row.entityConfidence))
+    const latest = rows[0]
+    const label = sourceQuality == null
+      ? '全球事件脈絡'
+      : sourceQuality >= 0.65
+        ? '高品質事件脈絡'
+        : sourceQuality >= 0.4
+          ? '中等品質事件脈絡'
+          : '低品質事件脈絡'
+
+    return {
+      source: 'gdelt_events',
+      provider: 'GDELT',
+      status: 'ok',
+      label,
+      date: latest?.publishedAt?.slice(0, 10) ?? null,
+      eventCount: rows.length,
+      sourceQuality,
+      entityConfidence,
+      decisionEffect: 'risk_context_only',
+      allowedUse: 'shadow_global_event_context',
+      events: rows,
+      missingReason: null,
+    }
+  } catch (e) {
+    console.warn('[market/risk] gdelt global event context failed', e)
+    return {
+      source: 'gdelt_events',
+      provider: 'GDELT',
+      status: 'unavailable',
+      label: '尚未匯入',
+      date: null,
+      eventCount: 0,
+      sourceQuality: null,
+      entityConfidence: null,
+      decisionEffect: 'risk_context_only',
+      allowedUse: 'shadow_global_event_context',
+      events: [],
+      missingReason: 'external_evidence_items_unavailable',
+    }
+  }
+}
+
 function clamp100(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)))
 }
@@ -791,6 +902,9 @@ function buildFearGreedIndex(args: {
   const largeTraderNet = numberOrNull(regimeContext?.largeTraderNet)
   const gspcReturnPct = usSignal?.gspcReturn == null ? null : numberOrNull(usSignal.gspcReturn)! * 100
   const soxReturnPct = usSignal?.soxReturn == null ? null : numberOrNull(usSignal.soxReturn)! * 100
+  const businessCycleLatest = regimeContext?.businessCycle?.latest ?? null
+  const businessCycleScore = numberOrNull(businessCycleLatest?.score)
+  const businessCycleLabel = businessCycleLatest?.label == null ? null : String(businessCycleLatest.label)
 
   const volatilityScore = averageNumbers([
     scoreFromFearGreedRange(usVix, 35, 12),
@@ -829,6 +943,14 @@ function buildFearGreedIndex(args: {
       advance != null && decline != null ? `上漲 ${advance.toLocaleString('zh-TW')} / 下跌 ${decline.toLocaleString('zh-TW')}` : '待匯入',
       'canonical_market_daily.finlab.price',
       '上漲家數占上漲加下跌家數比例；廣度越好越偏貪婪。',
+    ),
+    fearGreedFactor(
+      'business_cycle_heat',
+      '景氣熱度',
+      scoreFromFearGreedRange(businessCycleScore, 9, 45),
+      businessCycleScore == null ? '待匯入' : `${Math.round(businessCycleScore)} ${businessCycleLabel ?? cycleSignalLabel(businessCycleScore)}`,
+      'canonical_regime_context_daily.tw_business_indicators',
+      '景氣對策信號越熱，通常代表市場風險偏好越高。',
     ),
     fearGreedFactor(
       'options_positioning',
@@ -883,11 +1005,11 @@ function buildFearGreedIndex(args: {
   const rounded = score == null ? null : clamp100(score)
 
   return {
-    schemaVersion: 'stockvision_fear_greed_v1',
+    schemaVersion: 'stockvision_fear_greed_v2',
     date: row?.date ?? null,
     score: rounded,
     label: fearGreedLabel(rounded),
-    source: 'StockVision composite: trend, breadth, options, volatility, credit, FX, positioning, global risk',
+    source: 'StockVision composite: trend, breadth, business cycle, options, volatility, credit, FX, positioning, global risk',
     methodology: '0=恐懼、100=貪婪；有效因子等權平均，缺資料因子不硬補。',
     factors,
     missingFactors: factors.filter((factor) => factor.score == null).map((factor) => factor.id),
@@ -1964,7 +2086,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v14-fear-greed-hedge-factors-fallback'
+  const cacheKey = 'market:risk:latest:v16-global-event-context'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -2028,12 +2150,13 @@ market.get('/risk', async (c) => {
   } else {
     factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
   }
-  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal] = await Promise.all([
+  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal, globalEventContext] = await Promise.all([
     loadCanonicalMarketOverview(c.env.DB),
     loadCanonicalCreditTrading(c.env.DB),
     loadCanonicalInstitutionalFlows(c.env.DB),
     loadCanonicalRegimeContext(c.env.DB),
     loadLatestUsMarketSignal(c.env.DB),
+    loadGdeltGlobalEventContext(c.env.DB),
   ])
   const creditTrading = creditTradingBase
   const businessCycle = regimeContext?.businessCycle ?? businessCycleFromFactorPacket(factorPacket, row.date)
@@ -2109,6 +2232,7 @@ market.get('/risk', async (c) => {
     businessCycle,
     regimeContext,
     usMarketSignal,
+    globalEventContext,
     fearGreedIndex,
     hedgeSentiment,
     hedgeSentimentFactors,

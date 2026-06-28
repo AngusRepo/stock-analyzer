@@ -57,12 +57,13 @@ function pctClass(pct: number): string {
 function signalBadge(signal: string) {
   const s = signal?.toUpperCase() ?? ''
   // 台股慣例：紅=買/漲, 綠=賣/跌
-  if (s.includes('STRONG_BUY')) return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>STRONG BUY</Badge>
-  if (s.includes('BUY'))        return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(178,34,34,0.15)', color: '#B22222', borderColor: 'rgba(178,34,34,0.3)' }}>BUY</Badge>
-  if (s.includes('STRONG_SELL'))return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>STRONG SELL</Badge>
-  if (s.includes('SELL'))       return <Badge className="border text-[10px] px-1.5 py-0" style={{ background: 'rgba(34,139,34,0.15)', color: '#228B22', borderColor: 'rgba(34,139,34,0.3)' }}>SELL</Badge>
-  if (s.includes('NO_SIGNAL'))  return <Badge className="bg-muted/50 text-muted-foreground border-border/30 text-[10px] px-1.5 py-0">—</Badge>
-  return <Badge className="bg-muted/50 text-muted-foreground border-border/30 text-[10px] px-1.5 py-0">HOLD</Badge>
+  if (s.includes('POTENTIAL_BUY')) return <Badge className="border border-[#f6b45f]/55 bg-[#f6b45f]/20 px-2 py-0.5 text-[11px] text-[#ffe6c4]">POTENTIAL BUY</Badge>
+  if (s.includes('STRONG_BUY')) return <Badge className="border border-red-300/55 bg-red-500/85 px-2 py-0.5 text-[11px] text-white">STRONG BUY</Badge>
+  if (s.includes('BUY'))        return <Badge className="border border-red-300/45 bg-red-500/80 px-2 py-0.5 text-[11px] text-white">BUY</Badge>
+  if (s.includes('STRONG_SELL'))return <Badge className="border border-emerald-300/45 bg-emerald-500/20 px-2 py-0.5 text-[11px] text-emerald-100">STRONG SELL</Badge>
+  if (s.includes('SELL'))       return <Badge className="border border-emerald-300/35 bg-emerald-500/18 px-2 py-0.5 text-[11px] text-emerald-100">SELL</Badge>
+  if (s.includes('NO_SIGNAL'))  return <Badge className="border-border/30 bg-slate-500/35 px-2 py-0.5 text-[11px] text-white">—</Badge>
+  return <Badge className="border-border/30 bg-slate-500/35 px-2 py-0.5 text-[11px] text-white">HOLD</Badge>
 }
 
 function recommendationSignalText(rec: any): string {
@@ -466,6 +467,21 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   const pendingState = pbData?.state
   const pendingMeta = pbData?.meta
   const pendingExecutionPolicy = pbData?.execution_policy
+  const pendingSourceRecoDate = typeof pendingExecutionPolicy?.source_reco_date === 'string'
+    ? pendingExecutionPolicy.source_reco_date
+    : typeof pendingMeta?.source_reco_date === 'string'
+      ? pendingMeta.source_reco_date
+      : undefined
+
+  const { data: recContextData } = useQuery({
+    queryKey: ['recommendations', 'daily', 'pending-buy-context', pendingSourceRecoDate ?? 'latest'],
+    queryFn: () => recommendationsApi.daily(pendingSourceRecoDate),
+    enabled: buys.length > 0,
+    staleTime: 5 * 60_000,
+  })
+  const recContextBySymbol = new Map(
+    recommendationRowsFromPayload(recContextData).map((row: any) => [String(row?.symbol ?? '').trim(), row]),
+  )
 
   // Quadrant filter
   const { data: qfData } = useQuery({
@@ -503,6 +519,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
+        const sourceRec = recContextBySymbol.get(String(b.symbol ?? '').trim())
         const executionBadge = formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const partialRemaining = formatPartialFillRemaining(b.watch_points)
@@ -519,16 +536,26 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         }
         const cleanReason = b.reason ? stripProvenance(b.reason) : ''
         const rec = {
-          symbol: b.symbol, name: b.name, signal: b.signal, confidence: b.confidence,
-          current_price: b.ml_entry_price, score: b.score ?? 0, sector: qf?.quadrant ?? '',
+          ...(sourceRec ?? {}),
+          symbol: b.symbol ?? sourceRec?.symbol,
+          name: b.name ?? sourceRec?.name,
+          signal: b.signal ?? sourceRec?.signal,
+          confidence: b.confidence ?? sourceRec?.confidence,
+          current_price: b.ml_entry_price ?? sourceRec?.current_price,
+          score: b.score ?? sourceRec?.score ?? b.score_v2?.finalScore ?? b.score_v2?.total ?? 0,
+          sector: qf?.quadrant ?? sourceRec?.sector ?? '',
           reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
-          watch_points: b.watch_points ?? null,
-          chip_score: b.chip_score ?? null, tech_score: b.tech_score ?? null, ml_score: b.ml_score ?? null,
-          score_components: b.score_components ?? buildScoreV2PayloadFromProjectedScores(b),
-          alpha_context: b.alpha_context ?? null,
-          alpha_allocation: b.alpha_allocation ?? null,
-          ml_vote_summary: b.ml_vote_summary ?? null,
-          prediction_forecast_data: b.prediction_forecast_data ?? null,
+          watch_points: b.watch_points ?? sourceRec?.watch_points ?? null,
+          chip_score: b.chip_score ?? sourceRec?.chip_score ?? null,
+          tech_score: b.tech_score ?? sourceRec?.tech_score ?? null,
+          ml_score: b.ml_score ?? sourceRec?.ml_score ?? null,
+          score_components: b.score_components ?? b.score_v2 ?? sourceRec?.score_components ?? buildScoreV2PayloadFromProjectedScores(sourceRec ?? b),
+          alpha_context: b.alpha_context ?? sourceRec?.alpha_context ?? null,
+          alpha_allocation: b.alpha_allocation ?? sourceRec?.alpha_allocation ?? null,
+          ml_vote_summary: b.ml_vote_summary ?? sourceRec?.ml_vote_summary ?? null,
+          prediction_forecast_data: b.prediction_forecast_data ?? sourceRec?.prediction_forecast_data ?? null,
+          institutional_raw_today: b.institutional_raw_today ?? sourceRec?.institutional_raw_today ?? null,
+          broker_top_flows_today: b.broker_top_flows_today ?? sourceRec?.broker_top_flows_today ?? null,
         }
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
@@ -608,26 +635,26 @@ function CandidateRecommendationColumn({
 }) {
   const toneClass = tone === 'buy'
     ? {
-        box: 'border-emerald-500/18 bg-emerald-500/[0.03]',
-        label: 'text-emerald-300',
-        badge: 'border-emerald-500/30 text-emerald-300',
-        ring: 'ring-emerald-500/40',
+        box: 'border-red-500/18 bg-red-500/[0.03]',
+        label: 'text-red-300',
+        badge: 'border-red-300/40 bg-red-500/12 text-red-100',
+        ring: 'ring-red-500/40',
       }
     : {
-        box: 'border-amber-500/18 bg-amber-500/[0.035]',
-        label: 'text-amber-300',
-        badge: 'border-amber-500/30 text-amber-300',
-        ring: 'ring-amber-500/40',
+        box: 'border-[#f6b45f]/20 bg-[#f6b45f]/[0.04]',
+        label: 'text-[#ffe0b3]',
+        badge: 'border-[#f6b45f]/45 bg-[#f6b45f]/15 text-[#ffe6c4]',
+        ring: 'ring-[#f6b45f]/40',
       }
 
   return (
     <div className={`space-y-2 rounded-[20px] border p-2 ${toneClass.box}`}>
       <div className="flex items-center justify-between gap-3 px-1">
         <div className="min-w-0">
-          <p className={`text-[12px] font-semibold ${toneClass.label}`}>{title}</p>
-          <p className="text-[10px] leading-4 text-muted-foreground/70">{subtitle}</p>
+          <p className={`text-[13px] font-semibold ${toneClass.label}`}>{title}</p>
+          <p className="text-[11px] leading-4 text-muted-foreground/75">{subtitle}</p>
         </div>
-        <Badge variant="outline" className={`h-5 px-1.5 text-[9px] ${toneClass.badge}`}>
+        <Badge variant="outline" className={`h-6 px-2 text-[11px] ${toneClass.badge}`}>
           {rows.length} 檔
         </Badge>
       </div>
@@ -667,15 +694,15 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
   return (
     <div className="bot-fallback-recommendations space-y-3">
-      <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{recData?.date} BUY SIGNAL 候選（與晨間概覽同源）</div>
-      <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] sv-num">
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+      <div className="px-1 text-[11px] text-muted-foreground/60 sv-num">{recData?.date} BUY SIGNAL 候選（與晨間概覽同源）</div>
+      <div className="px-1 flex items-center gap-2 flex-wrap text-[11px] sv-num">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-300/40 bg-red-500/12 text-red-100">
           BUY {buyRecs.length}
         </Badge>
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 bg-amber-500/10 text-amber-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-[#f6b45f]/45 bg-[#f6b45f]/15 text-[#ffe6c4]">
           potential BUY {potentialBuyRecs.length}
         </Badge>
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">
           source: daily recommendations
         </Badge>
         {strategyPortfolioHealth && (
@@ -683,7 +710,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
             variant="outline"
             title={strategyPortfolioHealth.degraded_reason ?? strategyPortfolioHealth.source ?? 'L1.25 strategy portfolio intelligence'}
             className={[
-              'h-5 px-1.5 text-[9px]',
+              'h-6 px-2 text-[11px]',
               strategyPortfolioHealth.used_live_strategy_asset_metrics
                 ? 'border-teal-500/30 bg-teal-500/10 text-teal-300'
                 : 'border-amber-500/30 bg-amber-500/10 text-amber-300',

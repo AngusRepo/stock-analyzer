@@ -6,6 +6,7 @@ import {
   CalendarDays,
   CircleDollarSign,
   Gauge,
+  Globe2,
   Newspaper,
   PieChart,
   Radar,
@@ -601,8 +602,8 @@ function FearGreedCard({ risk }: { risk: any }) {
   const byFactorId = (id: string) => factors.find((factor) => String(factor.id ?? '') === id) ?? null
   const momentum = byFactorId('market_momentum')
   const breadth = byFactorId('market_breadth')
-  const options = byFactorId('options_positioning')
-  const volatility = byFactorId('volatility_pressure')
+  const globalRisk = byFactorId('global_risk_appetite')
+  const businessCycle = byFactorId('business_cycle_heat')
   const factorTone = (factor: RiskFactor | null) => fearGreedTone(asNumber(factor?.score))
 
   return (
@@ -640,8 +641,8 @@ function FearGreedCard({ risk }: { risk: any }) {
       <div className="mt-4 grid grid-cols-2 gap-3">
         <HedgeFactor label="市場動能" value={factorDisplay(momentum, '待接資料')} note="20MA 偏離" tone={factorTone(momentum)} />
         <HedgeFactor label="市場廣度" value={factorDisplay(breadth, '待接資料')} note="上漲 / 下跌" tone={factorTone(breadth)} />
-        <HedgeFactor label="選擇權情緒" value={factorDisplay(options, '待接 PCR')} note="賣買權量比" tone={factorTone(options)} />
-        <HedgeFactor label="波動壓力" value={factorDisplay(volatility, '待接資料')} note="VIX / 台股波動" tone={factorTone(volatility)} />
+        <HedgeFactor label="全球風險偏好" value={factorDisplay(globalRisk, '待接資料')} note="S&P 500 / SOX" tone={factorTone(globalRisk)} />
+        <HedgeFactor label="景氣熱度" value={factorDisplay(businessCycle, '待接資料')} note="景氣對策信號" tone={factorTone(businessCycle)} />
       </div>
     </section>
   )
@@ -971,7 +972,10 @@ function MarketOverviewBlock() {
               </div>
               <HedgeSentimentCard risk={risk} />
             </div>
-            <NewsBlock embedded />
+            <div className="grid gap-4 self-stretch xl:grid-rows-[minmax(0,1fr)_auto]">
+              <NewsBlock embedded />
+              <GlobalEventContextCard risk={risk} />
+            </div>
           </div>
         </div>
       </div>
@@ -1030,6 +1034,71 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
       ) : (
         <div className="px-5 py-8 text-sm text-slate-500">暫無股票相關新聞；請檢查 /market/news RSS ingestion。</div>
       )}
+    </section>
+  )
+}
+
+function GlobalEventContextCard({ risk }: { risk: any }) {
+  const context = risk?.globalEventContext ?? {}
+  const events = asArray<any>(context.events)
+  const sourceQuality = asNumber(context.sourceQuality)
+  const entityConfidence = asNumber(context.entityConfidence)
+  const status = String(context.status ?? 'missing')
+  const isReady = status === 'ok'
+  const statusText = isReady ? String(context.label ?? '全球事件脈絡') : '尚未匯入'
+  const qualityText = sourceQuality == null ? '待匯入' : `${Math.round(sourceQuality * 100)}%`
+  const confidenceText = entityConfidence == null ? '待匯入' : `${Math.round(entityConfidence * 100)}%`
+
+  return (
+    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Globe2 className={cx('h-4 w-4 shrink-0', isReady ? 'text-cyan-300' : 'text-slate-500')} />
+          <h3 className="truncate font-bold text-slate-100">全球事件風險脈絡</h3>
+        </div>
+        <SourceBadge>{context.provider ?? 'GDELT'}</SourceBadge>
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-3">
+        <div>
+          <p className="text-xs text-slate-500">狀態</p>
+          <p className={cx('mt-1 text-sm font-bold', isReady ? 'text-cyan-200' : 'text-amber-300')}>{statusText}</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500">來源品質</p>
+          <p className="mt-1 text-sm font-bold tabular-nums text-slate-100">{qualityText}</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500">連結信心</p>
+          <p className="mt-1 text-sm font-bold tabular-nums text-slate-100">{confidenceText}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2 border-t border-white/[0.07] pt-3">
+        {events.length ? events.slice(0, 2).map((event, index) => (
+          <a
+            key={`${event.url ?? event.title}-${index}`}
+            href={event.url || undefined}
+            target={event.url ? '_blank' : undefined}
+            rel="noreferrer"
+            className="block rounded-[14px] border border-white/[0.055] bg-black/15 px-3 py-2 transition-colors hover:border-cyan-300/20 hover:bg-cyan-400/[0.04]"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[11px] font-semibold text-cyan-200">risk context only</span>
+              <span className="text-[11px] text-slate-600">{String(event.publishedAt ?? '').slice(0, 10)}</span>
+            </div>
+            <p className="mt-1 line-clamp-2 text-sm font-semibold leading-5 text-slate-200">{event.title}</p>
+            {asArray<string>(event.themes).length > 0 && (
+              <p className="mt-1 truncate text-[11px] text-slate-500">{asArray<string>(event.themes).slice(0, 3).join(' / ')}</p>
+            )}
+          </a>
+        )) : (
+          <div className="rounded-[14px] border border-amber-300/12 bg-amber-400/[0.055] px-3 py-3">
+            <p className="text-sm font-semibold text-amber-200">GDELT formal shadow 尚未有可展示事件</p>
+            <p className="mt-1 text-[11px] leading-5 text-slate-500">{context.missingReason ?? 'no_accepted_gdelt_events_last_14d'}</p>
+          </div>
+        )}
+      </div>
     </section>
   )
 }
@@ -1146,7 +1215,7 @@ function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })
-  const limit = compact ? 10 : 10
+  const limit = 15
   const themeRows = asArray<any>(themeData?.flows).slice(0, limit)
   const industryRows = asArray<any>(industryData?.flows).slice(0, limit)
   const hotKeywordRows = [...themeRows, ...industryRows]

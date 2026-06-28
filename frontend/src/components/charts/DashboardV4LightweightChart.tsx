@@ -33,7 +33,6 @@ function chartOptions(width: number): DeepPartial<ChartOptions> {
   return {
     width,
     height: 430,
-    autoSize: true,
     layout: {
       background: { type: ColorType.Solid, color: '#0a0b0f' },
       textColor: '#8992a3',
@@ -124,7 +123,7 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0]
       if (!entry) return
-      chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)) })
+      chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)), height: 430 })
     })
     resizeObserver.observe(container)
 
@@ -161,7 +160,7 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
         </div>
       </header>
 
-      <div ref={containerRef} className="min-h-[430px] w-full bg-[#0a0b0f]" />
+      <div ref={containerRef} className="h-[430px] min-h-[430px] max-h-[430px] w-full overflow-hidden bg-[#0a0b0f]" />
 
       <footer className="grid gap-2 border-t border-white/[0.07] bg-[#101116] p-3 text-[11px] text-[#8b9bab] lg:grid-cols-[minmax(0,1fr)_auto]">
         <div className="min-w-0">

@@ -44,6 +44,44 @@ function parseRssItems(xml: string, source: string, limit: number) {
     })
     .filter((item) => item.title && item.url)
 }
+function stripNewsHtml(value: unknown): string {
+  return decodeXmlEntities(String(value ?? ''))
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+async function fetchCnyesStockNews(limit: number) {
+  try {
+    const url = `https://api.cnyes.com/media/api/v1/newslist/category/tw_stock?limit=${Math.max(limit * 6, 12)}`
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'StockVisionBot/1.0 (+https://stockvision)',
+      },
+    })
+    if (!res.ok) throw new Error(`cnyes_http_${res.status}`)
+    const body = await res.json() as any
+    const rows = Array.isArray(body?.items?.data) ? body.items.data : []
+    return rows
+      .map((row: any) => {
+        const newsId = row?.newsId ?? row?.id
+        const publishedAt = Number(row?.publishAt ?? row?.publishedAt)
+        return {
+          source: '鉅亨網',
+          title: String(row?.title ?? row?.summary ?? '').trim(),
+          url: newsId ? `https://news.cnyes.com/news/id/${newsId}` : null,
+          published_at: Number.isFinite(publishedAt) ? new Date(publishedAt * 1000).toISOString() : null,
+          summary: stripNewsHtml(row?.summary ?? row?.content).slice(0, 180),
+        }
+      })
+      .filter((item: any) => item.title && item.url)
+      .filter(isStockMarketNews)
+      .slice(0, limit)
+  } catch (e) {
+    console.warn('[market/news] Cnyes API failed:', e)
+    return []
+  }
+}
 const STOCK_NEWS_PATTERN = /股票|台股|股市|上市|上櫃|櫃買|個股|類股|股價|收盤|開盤|盤中|盤後|外資|投信|自營商|三大法人|成交量|融資|融券|台積電|鴻海|聯發科|電子股|金融股|權值股|ETF|除權息|營收|法說|財報|殖利率|現金股利|當沖|期貨|台指期/i
 function isStockMarketNews(item: { title?: string | null; summary?: string | null; url?: string | null }): boolean {
   const text = `${item.title ?? ''} ${item.summary ?? ''}`
@@ -334,6 +372,135 @@ async function loadCanonicalMarketOverview(db: D1Database) {
 }
 
 async function loadCanonicalCreditTrading(db: D1Database) {
+  const summary = await loadMarketSummaryCreditTrading(db)
+  if (summary) return summary
+  const legacyMargin = await loadLegacyMarginDataCreditTrading(db)
+  if (legacyMargin) return legacyMargin
+  return loadCanonicalChipCreditTrading(db)
+}
+
+async function loadMarketSummaryCreditTrading(db: D1Database) {
+  try {
+    const { results } = await db.prepare(
+      `WITH ordered_dates AS (
+         SELECT date
+         FROM canonical_market_summary_daily
+         WHERE margin_balance_value IS NOT NULL
+            OR margin_balance_units IS NOT NULL
+            OR short_balance_units IS NOT NULL
+         GROUP BY date
+         ORDER BY date DESC
+         LIMIT 2
+       ),
+       scoped AS (
+         SELECT s.*,
+                CASE WHEN s.market_segment = 'ALL' THEN 1 ELSE 0 END AS is_all
+         FROM canonical_market_summary_daily s
+         JOIN ordered_dates d ON s.date = d.date
+       ),
+       mode AS (
+         SELECT
+           date,
+           MAX(CASE WHEN is_all = 1 AND (
+             margin_balance_value IS NOT NULL
+             OR margin_balance_units IS NOT NULL
+             OR short_balance_units IS NOT NULL
+           ) THEN 1 ELSE 0 END) AS has_all_credit
+         FROM scoped
+         GROUP BY date
+       )
+       SELECT
+         s.date,
+         SUM(CASE WHEN m.has_all_credit = 1 AND s.market_segment <> 'ALL' THEN NULL ELSE s.margin_balance_value END) AS margin_balance_value,
+         SUM(CASE WHEN m.has_all_credit = 1 AND s.market_segment <> 'ALL' THEN NULL ELSE s.margin_balance_units END) AS margin_balance_units,
+         SUM(CASE WHEN m.has_all_credit = 1 AND s.market_segment <> 'ALL' THEN NULL ELSE s.short_balance_units END) AS short_balance_units,
+         AVG(CASE WHEN m.has_all_credit = 1 AND s.market_segment <> 'ALL' THEN NULL ELSE s.margin_balance_change_pct END) AS margin_balance_change_pct,
+         AVG(CASE WHEN m.has_all_credit = 1 AND s.market_segment <> 'ALL' THEN NULL ELSE s.short_balance_change_pct END) AS short_balance_change_pct,
+         COUNT(*) AS coverage_count,
+         GROUP_CONCAT(DISTINCT s.source) AS sources
+       FROM scoped s
+       JOIN mode m ON m.date = s.date
+       GROUP BY s.date
+       ORDER BY s.date DESC`
+    ).all<any>()
+    const latest = results?.[0]
+    const previous = results?.[1]
+    if (!latest?.date) return null
+    const marginBalanceValue = numberOrNull(latest.margin_balance_value)
+    const marginBalanceUnits = numberOrNull(latest.margin_balance_units)
+    const shortBalanceUnits = numberOrNull(latest.short_balance_units)
+    const previousMarginBalanceValue = numberOrNull(previous?.margin_balance_value)
+    const previousMarginBalanceUnits = numberOrNull(previous?.margin_balance_units)
+    const previousShortBalanceUnits = numberOrNull(previous?.short_balance_units)
+    return {
+      date: latest.date,
+      marginBalance: marginBalanceValue ?? marginBalanceUnits,
+      marginBalanceValue,
+      marginBalanceUnits,
+      marginBalanceUnit: marginBalanceValue != null ? 'TWD' : 'lots',
+      shortBalance: shortBalanceUnits,
+      shortBalanceUnits,
+      marginBalanceChangePct: numberOrNull(latest.margin_balance_change_pct)
+        ?? percentChange(marginBalanceValue ?? marginBalanceUnits, previousMarginBalanceValue ?? previousMarginBalanceUnits),
+      shortBalanceChangePct: numberOrNull(latest.short_balance_change_pct) ?? percentChange(shortBalanceUnits, previousShortBalanceUnits),
+      maintenanceRate: null,
+      coverageCount: numberOrNull(latest.coverage_count),
+      source: `canonical_market_summary_daily:${latest.sources ?? 'market_summary'}`,
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical_market_summary_daily credit trading failed', e)
+    return null
+  }
+}
+
+async function loadLegacyMarginDataCreditTrading(db: D1Database) {
+  try {
+    const { results } = await db.prepare(
+      `WITH ordered_dates AS (
+         SELECT date
+         FROM margin_data
+         GROUP BY date
+         ORDER BY date DESC
+         LIMIT 2
+       )
+       SELECT
+         m.date,
+         SUM(COALESCE(m.margin_balance, 0)) AS margin_balance_units,
+         SUM(COALESCE(m.short_balance, 0)) AS short_balance_units,
+         COUNT(*) AS coverage_count
+       FROM margin_data m
+       JOIN ordered_dates d ON m.date = d.date
+       GROUP BY m.date
+       ORDER BY m.date DESC`
+    ).all<any>()
+    const latest = results?.[0]
+    const previous = results?.[1]
+    if (!latest?.date) return null
+    const marginBalanceUnits = numberOrNull(latest.margin_balance_units)
+    const shortBalanceUnits = numberOrNull(latest.short_balance_units)
+    const previousMarginBalanceUnits = numberOrNull(previous?.margin_balance_units)
+    const previousShortBalanceUnits = numberOrNull(previous?.short_balance_units)
+    return {
+      date: latest.date,
+      marginBalance: marginBalanceUnits,
+      marginBalanceValue: null,
+      marginBalanceUnits,
+      marginBalanceUnit: 'lots',
+      shortBalance: shortBalanceUnits,
+      shortBalanceUnits,
+      marginBalanceChangePct: percentChange(marginBalanceUnits, previousMarginBalanceUnits),
+      shortBalanceChangePct: percentChange(shortBalanceUnits, previousShortBalanceUnits),
+      maintenanceRate: null,
+      coverageCount: numberOrNull(latest.coverage_count),
+      source: 'margin_data.twse_tpex_official',
+    }
+  } catch (e) {
+    console.warn('[market/risk] margin_data credit trading failed', e)
+    return null
+  }
+}
+
+async function loadCanonicalChipCreditTrading(db: D1Database) {
   try {
     const { results } = await db.prepare(
       `WITH ordered_dates AS (
@@ -364,6 +531,10 @@ async function loadCanonicalCreditTrading(db: D1Database) {
       date: latest.date,
       marginBalance,
       shortBalance,
+      marginBalanceValue: null,
+      marginBalanceUnits: marginBalance,
+      marginBalanceUnit: 'lots',
+      shortBalanceUnits: shortBalance,
       marginBalanceChangePct: percentChange(marginBalance, previousMarginBalance),
       shortBalanceChangePct: percentChange(shortBalance, previousShortBalance),
       maintenanceRate: null,
@@ -710,28 +881,31 @@ market.get('/indices', async (c) => {
 
 market.get('/news', async (c) => {
   const limitPerSource = Math.min(parsePosInt(c.req.query('perSource'), 3), 6)
-  const data = await withCache(c.env.KV, `market:news:v4:stock-filter:${limitPerSource}`, async () => {
+  const data = await withCache(c.env.KV, `market:news:v5:cnyes-stock-filter:${limitPerSource}`, async () => {
     const feeds = [
       { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5591' },
       { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5588' },
     ]
-    const rssGroups = await Promise.all(feeds.map(async (feed) => {
-      try {
-        const res = await fetch(feed.url, {
-          headers: {
-            Accept: 'application/rss+xml, application/xml, text/xml',
-            'User-Agent': 'StockVisionBot/1.0 (+https://stockvision)',
-          },
-        })
-        if (!res.ok) throw new Error(`rss_http_${res.status}`)
-        return parseRssItems(await res.text(), feed.source, limitPerSource * 10)
-          .filter(isStockMarketNews)
-          .slice(0, limitPerSource)
-      } catch (e) {
-        console.warn(`[market/news] RSS failed ${feed.url}:`, e)
-        return []
-      }
-    }))
+    const [rssGroups, cnyesRows] = await Promise.all([
+      Promise.all(feeds.map(async (feed) => {
+        try {
+          const res = await fetch(feed.url, {
+            headers: {
+              Accept: 'application/rss+xml, application/xml, text/xml',
+              'User-Agent': 'StockVisionBot/1.0 (+https://stockvision)',
+            },
+          })
+          if (!res.ok) throw new Error(`rss_http_${res.status}`)
+          return parseRssItems(await res.text(), feed.source, limitPerSource * 10)
+            .filter(isStockMarketNews)
+            .slice(0, limitPerSource)
+        } catch (e) {
+          console.warn(`[market/news] RSS failed ${feed.url}:`, e)
+          return []
+        }
+      })),
+      fetchCnyesStockNews(limitPerSource),
+    ])
 
     const d1Rows = await c.env.DB.prepare(`
       SELECT source, title, url, published_at, summary
@@ -759,7 +933,7 @@ market.get('/news', async (c) => {
     }
 
     const merged = new Map<string, any>()
-    for (const item of rssGroups.flat()) merged.set(item.url || item.title, item)
+    for (const item of [...rssGroups.flat(), ...cnyesRows]) merged.set(item.url || item.title, item)
     for (const rows of bySource.values()) {
       for (const item of rows) merged.set(item.url || `${item.source}:${item.title}`, item)
     }
@@ -1405,7 +1579,11 @@ market.get('/risk', async (c) => {
     marketTurnoverAmount:   canonicalOverview?.marketStats?.amount ?? null,
     creditTrading,
     marginBalance:          creditTrading?.marginBalance ?? null,
+    marginBalanceValue:     creditTrading?.marginBalanceValue ?? null,
+    marginBalanceUnits:     creditTrading?.marginBalanceUnits ?? null,
+    marginBalanceUnit:      creditTrading?.marginBalanceUnit ?? null,
     shortBalance:           creditTrading?.shortBalance ?? null,
+    shortBalanceUnits:      creditTrading?.shortBalanceUnits ?? null,
     marginBalanceChangePct: creditTrading?.marginBalanceChangePct ?? null,
     shortBalanceChangePct:  creditTrading?.shortBalanceChangePct ?? null,
     marginMaintenanceRate:  creditTrading?.maintenanceRate ?? null,

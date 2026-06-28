@@ -24,6 +24,7 @@ class FinLabCanonicalOutputs:
     canonical_institutional_amount_daily: list[dict[str, Any]]
     canonical_market_index_daily: list[dict[str, Any]]
     canonical_futures_daily: list[dict[str, Any]]
+    canonical_market_summary_daily: list[dict[str, Any]]
     canonical_regime_context_daily: list[dict[str, Any]]
     canonical_revenue_monthly: list[dict[str, Any]]
     canonical_broker_flow_daily: list[dict[str, Any]]
@@ -171,11 +172,16 @@ def _clean_text(value: Any) -> str | None:
 
 
 def _first_row_value(row: dict[str, Any], names: Iterable[str]) -> Any:
+    match = _first_row_match(row, names)
+    return match[1] if match else None
+
+
+def _first_row_match(row: dict[str, Any], names: Iterable[str]) -> tuple[str, Any] | None:
     lowered = {str(key).strip().lower(): value for key, value in row.items()}
     for name in names:
         key = name.strip().lower()
         if key in lowered:
-            return lowered[key]
+            return key, lowered[key]
     return None
 
 
@@ -725,6 +731,233 @@ def build_regime_context_rows(
     return output[:limit] if limit and limit > 0 else output
 
 
+def _market_summary_number(row: dict[str, Any], names: Iterable[str]) -> float | None:
+    match = _first_row_match(row, names)
+    if not match:
+        return None
+    key, value = match
+    parsed = _coerce_number(value)
+    if parsed is None:
+        return None
+    if "仟元" in key or "千元" in key:
+        return parsed * 1000
+    return parsed
+
+
+def _market_summary_segment(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return "ALL"
+    if text in {"ALL", "MARKET", "TOTAL"} or "合計" in text or "全市場" in text:
+        return "ALL"
+    if text in {"TWSE", "LISTED"} or "上市" in text:
+        return "LISTED"
+    if text in {"TPEX", "OTC"} or "上櫃" in text or "櫃買" in text:
+        return "OTC"
+    if "興櫃" in text or "EMERGING" in text:
+        return "EMERGING"
+    return text
+
+
+def _market_summary_field(value: Any, *, kind: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "融資金額" in text:
+        return "margin_value"
+    if "融資" in text:
+        return "margin_units"
+    if "融券" in text:
+        return "short_units"
+    if kind == "breadth" and ("漲跌" in text or "家數" in text):
+        return "breadth"
+    return None
+
+
+def _market_summary_amount_row(
+    raw: dict[str, Any],
+    *,
+    generated_at: str,
+    source: str,
+    lineage: str,
+) -> dict[str, Any] | None:
+    date = _date_value(raw)
+    if not date:
+        return None
+    segment = _market_summary_segment(_first_row_value(raw, ["market_segment", "segment", "market", "市場別", "市場"]))
+    row = {
+        "date": date,
+        "market_segment": segment,
+        "advance_count": _market_summary_number(raw, ["advance_count", "advance", "rising", "up", "上漲", "上漲家數"]),
+        "unchanged_count": _market_summary_number(raw, ["unchanged_count", "unchanged", "flat", "平盤", "持平", "平盤家數"]),
+        "decline_count": _market_summary_number(raw, ["decline_count", "decline", "falling", "down", "下跌", "下跌家數"]),
+        "total_volume": _market_summary_number(raw, ["total_volume", "market_volume", "volume", "成交股數", "成交量", "總成交量"]),
+        "total_value": _market_summary_number(raw, ["total_value", "market_value", "amount", "value", "成交金額", "成交值", "總成交額"]),
+        "margin_buy_units": _market_summary_number(raw, ["margin_buy_units", "margin_buy", "融資買進", "融資買進(交易單位)"]),
+        "margin_sell_units": _market_summary_number(raw, ["margin_sell_units", "margin_sell", "融資賣出", "融資賣出(交易單位)"]),
+        "margin_return_units": _market_summary_number(raw, ["margin_return_units", "margin_return", "cash_redemption", "融資現償", "融資現金償還"]),
+        "margin_balance_units": _market_summary_number(raw, ["margin_balance_units", "margin_balance", "margin_today_balance_units", "融資今日餘額", "融資餘額"]),
+        "margin_buy_value": _market_summary_number(raw, ["margin_buy_value", "margin_buy_amount", "融資買進金額", "融資買進(仟元)"]),
+        "margin_sell_value": _market_summary_number(raw, ["margin_sell_value", "margin_sell_amount", "融資賣出金額", "融資賣出(仟元)"]),
+        "margin_return_value": _market_summary_number(raw, ["margin_return_value", "margin_return_amount", "融資現償金額", "融資現償(仟元)"]),
+        "margin_balance_value": _market_summary_number(raw, ["margin_balance_value", "margin_balance_amount", "margin_today_balance_value", "融資金額", "融資金額(仟元)", "融資今日餘額金額"]),
+        "margin_balance_change_pct": _market_summary_number(raw, ["margin_balance_change_pct", "margin_change_pct", "融資餘額變動率"]),
+        "short_buy_units": _market_summary_number(raw, ["short_buy_units", "short_buy", "融券買進", "融券買進(交易單位)"]),
+        "short_sell_units": _market_summary_number(raw, ["short_sell_units", "short_sell", "融券賣出", "融券賣出(交易單位)"]),
+        "short_return_units": _market_summary_number(raw, ["short_return_units", "short_return", "short_cover", "融券現償", "融券償還"]),
+        "short_balance_units": _market_summary_number(raw, ["short_balance_units", "short_balance", "short_today_balance_units", "融券今日餘額", "融券餘額"]),
+        "short_balance_change_pct": _market_summary_number(raw, ["short_balance_change_pct", "short_change_pct", "融券餘額變動率"]),
+        "source": source,
+        "lineage_json": lineage,
+        "as_of_date": generated_at[:10],
+    }
+    if all(row.get(key) is None for key in row.keys() - {"date", "market_segment", "source", "lineage_json", "as_of_date"}):
+        return None
+    return row
+
+
+def _market_summary_rows_from_item_table(
+    frame: pl.DataFrame,
+    *,
+    generated_at: str,
+    source: str,
+    lineage: str,
+    start_date: str | None,
+    end_date: str | None,
+) -> list[dict[str, Any]]:
+    frame = _filter_dates(frame, start_date=start_date, end_date=end_date) if "date" in frame.columns else frame
+    if frame.is_empty():
+        return []
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in _rows(frame):
+        date = _date_value(raw)
+        if not date:
+            continue
+        segment = _market_summary_segment(_first_row_value(raw, ["market_segment", "segment", "market", "市場別", "市場"]))
+        field = _market_summary_field(_first_row_value(raw, ["item", "項目", "name", "category", "類別"]), kind="credit")
+        if not field:
+            continue
+        bucket = buckets.setdefault((date, segment), {
+            "date": date,
+            "market_segment": segment,
+            "advance_count": None,
+            "unchanged_count": None,
+            "decline_count": None,
+            "total_volume": None,
+            "total_value": None,
+            "margin_buy_units": None,
+            "margin_sell_units": None,
+            "margin_return_units": None,
+            "margin_balance_units": None,
+            "margin_buy_value": None,
+            "margin_sell_value": None,
+            "margin_return_value": None,
+            "margin_balance_value": None,
+            "margin_balance_change_pct": None,
+            "short_buy_units": None,
+            "short_sell_units": None,
+            "short_return_units": None,
+            "short_balance_units": None,
+            "short_balance_change_pct": None,
+            "source": source,
+            "lineage_json": lineage,
+            "as_of_date": generated_at[:10],
+        })
+        multiplier = 1000 if field == "margin_value" else 1
+        buy = _market_summary_number(raw, ["buy", "buy_amount", "買進"])
+        sell = _market_summary_number(raw, ["sell", "sell_amount", "賣出"])
+        returned = _market_summary_number(raw, ["return", "return_amount", "現金(券)償還", "現償", "償還"])
+        today = _market_summary_number(raw, ["today_balance", "balance", "今日餘額", "今餘"])
+        if field == "margin_value":
+            bucket["margin_buy_value"] = None if buy is None else buy * multiplier
+            bucket["margin_sell_value"] = None if sell is None else sell * multiplier
+            bucket["margin_return_value"] = None if returned is None else returned * multiplier
+            bucket["margin_balance_value"] = None if today is None else today * multiplier
+        elif field == "margin_units":
+            bucket["margin_buy_units"] = buy
+            bucket["margin_sell_units"] = sell
+            bucket["margin_return_units"] = returned
+            bucket["margin_balance_units"] = today
+        elif field == "short_units":
+            bucket["short_buy_units"] = buy
+            bucket["short_sell_units"] = sell
+            bucket["short_return_units"] = returned
+            bucket["short_balance_units"] = today
+    return list(buckets.values())
+
+
+def build_market_summary_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    specs = [
+        ("market_summary", "market_summary_daily", "finlab.market_summary"),
+        ("market_summary", "market_breadth_summary", "finlab.market_breadth"),
+        ("market_summary", "twse_margin_trading_summary", "twse.mi_margn.official"),
+        ("market_summary", "tpex_margin_trading_summary", "tpex.margin_balance.official"),
+    ]
+    rows: list[dict[str, Any]] = []
+    for lane, filename, source in specs:
+        frame = _read_parquet(artifact_root / "raw" / lane / f"{filename}.parquet")
+        if frame.is_empty():
+            continue
+        frame = _filter_dates(frame, start_date=start_date, end_date=end_date) if "date" in frame.columns else frame
+        lineage = _lineage(run_id, lane, list(frame.columns), artifact_root)
+        direct_rows = [
+            row
+            for raw in _rows(frame)
+            if (row := _market_summary_amount_row(raw, generated_at=generated_at, source=source, lineage=lineage)) is not None
+        ]
+        rows.extend(direct_rows)
+        if not direct_rows:
+            rows.extend(_market_summary_rows_from_item_table(
+                frame,
+                generated_at=generated_at,
+                source=source,
+                lineage=lineage,
+                start_date=start_date,
+                end_date=end_date,
+            ))
+
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row["date"], row["market_segment"])
+        existing = merged.setdefault(key, {**row})
+        if existing is row:
+            continue
+        for field, value in row.items():
+            if field in {"date", "market_segment"}:
+                continue
+            if value is None:
+                continue
+            if field == "source":
+                current = str(existing.get("source") or "")
+                incoming = str(value)
+                if incoming and incoming not in current.split(";"):
+                    existing["source"] = ";".join(part for part in [current, incoming] if part)
+                continue
+            if field == "lineage_json":
+                current = str(existing.get("lineage_json") or "")
+                incoming = str(value)
+                if incoming and incoming != current:
+                    existing["lineage_json"] = _json({
+                        "schema_version": SCHEMA_VERSION,
+                        "dataset_lane": "market_summary",
+                        "sources": [part for part in [current, incoming] if part],
+                    })
+                continue
+            if existing.get(field) is None or (field in {"source", "lineage_json"} and row["source"].startswith("finlab.")):
+                existing[field] = value
+    output = list(merged.values())
+    output.sort(key=lambda row: (row["date"], row["market_segment"]))
+    return output[:limit] if limit and limit > 0 else output
+
+
 def build_emerging_broker_rows(
     artifact_root: Path,
     *,
@@ -1218,6 +1451,14 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_futures_daily") else []
+    market_summary = build_market_summary_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_market_summary_daily") else []
     regime_context = build_regime_context_rows(
         root,
         run_id=rid,
@@ -1310,6 +1551,8 @@ def materialize_finlab_canonical_outputs(
         output_rows["canonical_market_index_daily"] = market_index
     if wants("canonical_futures_daily"):
         output_rows["canonical_futures_daily"] = futures
+    if wants("canonical_market_summary_daily"):
+        output_rows["canonical_market_summary_daily"] = market_summary
     if wants("canonical_regime_context_daily"):
         output_rows["canonical_regime_context_daily"] = regime_context
     if wants("canonical_revenue_monthly"):
@@ -1347,6 +1590,7 @@ def materialize_finlab_canonical_outputs(
         canonical_institutional_amount_daily=output_rows.get("canonical_institutional_amount_daily", []),
         canonical_market_index_daily=output_rows.get("canonical_market_index_daily", []),
         canonical_futures_daily=output_rows.get("canonical_futures_daily", []),
+        canonical_market_summary_daily=output_rows.get("canonical_market_summary_daily", []),
         canonical_regime_context_daily=output_rows.get("canonical_regime_context_daily", []),
         canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
         canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
@@ -1427,6 +1671,61 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["symbol", "date", "contract_month", "session", "open", "high", "low", "close", "change", "change_pct", "volume", "open_interest", "source", "lineage_json", "as_of_date"],
         ["symbol", "date", "contract_month", "session", "source"],
         ["open", "high", "low", "close", "change", "change_pct", "volume", "open_interest", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_market_summary_daily",
+        outputs.canonical_market_summary_daily,
+        [
+            "date",
+            "market_segment",
+            "advance_count",
+            "unchanged_count",
+            "decline_count",
+            "total_volume",
+            "total_value",
+            "margin_buy_units",
+            "margin_sell_units",
+            "margin_return_units",
+            "margin_balance_units",
+            "margin_buy_value",
+            "margin_sell_value",
+            "margin_return_value",
+            "margin_balance_value",
+            "margin_balance_change_pct",
+            "short_buy_units",
+            "short_sell_units",
+            "short_return_units",
+            "short_balance_units",
+            "short_balance_change_pct",
+            "source",
+            "lineage_json",
+            "as_of_date",
+        ],
+        ["date", "market_segment"],
+        [
+            "advance_count",
+            "unchanged_count",
+            "decline_count",
+            "total_volume",
+            "total_value",
+            "margin_buy_units",
+            "margin_sell_units",
+            "margin_return_units",
+            "margin_balance_units",
+            "margin_buy_value",
+            "margin_sell_value",
+            "margin_return_value",
+            "margin_balance_value",
+            "margin_balance_change_pct",
+            "short_buy_units",
+            "short_sell_units",
+            "short_return_units",
+            "short_balance_units",
+            "short_balance_change_pct",
+            "source",
+            "lineage_json",
+            "as_of_date",
+        ],
     ))
     statements.extend(_row_statements(
         "canonical_regime_context_daily",

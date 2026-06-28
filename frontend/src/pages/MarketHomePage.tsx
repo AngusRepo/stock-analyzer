@@ -16,7 +16,7 @@ import {
   Waves,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
-import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
+import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 
@@ -389,8 +389,13 @@ function MarketStatsRibbon({ risk }: { risk: any }) {
   const total = (advance ?? 0) + (unchanged ?? 0) + (decline ?? 0)
   const volume = asNumber(risk?.marketVolume ?? risk?.turnoverVolume ?? risk?.marketStats?.volume)
   const amount = asNumber(risk?.marketTurnoverAmount ?? risk?.turnoverAmount ?? risk?.marketStats?.amount)
-  const marginBalance = asNumber(breadth.margin_balance ?? risk?.marginBalance ?? risk?.creditTrading?.marginBalance)
-  const shortBalance = asNumber(breadth.short_balance ?? risk?.shortBalance ?? risk?.creditTrading?.shortBalance)
+  const marginBalanceValue = asNumber(risk?.marginBalanceValue ?? risk?.creditTrading?.marginBalanceValue)
+  const marginBalanceUnits = asNumber(breadth.margin_balance ?? risk?.marginBalanceUnits ?? risk?.creditTrading?.marginBalanceUnits)
+  const marginBalance = marginBalanceUnits ?? asNumber(risk?.marginBalance ?? risk?.creditTrading?.marginBalance)
+  const shortBalance = asNumber(breadth.short_balance ?? risk?.shortBalanceUnits ?? risk?.creditTrading?.shortBalanceUnits ?? risk?.shortBalance ?? risk?.creditTrading?.shortBalance)
+  const marginBalanceDisplay = marginBalanceValue != null
+    ? formatCompactAmount(marginBalanceValue)
+    : marginBalance == null ? '待接資料' : `${formatCompactAmount(marginBalance)}張`
   const maintenance = asNumber(breadth.margin_maintenance ?? risk?.marginMaintenanceRate ?? risk?.creditTrading?.maintenanceRate)
   const marginChangePct = asNumber(risk?.marginBalanceChangePct ?? risk?.creditTrading?.marginBalanceChangePct)
   const shortChangePct = asNumber(risk?.shortBalanceChangePct ?? risk?.creditTrading?.shortBalanceChangePct)
@@ -451,7 +456,7 @@ function MarketStatsRibbon({ risk }: { risk: any }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <p className="text-xs text-slate-500">融資餘額</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(marginBalance)}</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{marginBalanceDisplay}</p>
             <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(marginChangePct)))}>{formatPct(marginChangePct)}</p>
           </div>
           <div>
@@ -552,13 +557,6 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   )
 }
 
-function monthKeyOffset(monthKey: string, offset: number) {
-  const [yearRaw, monthRaw] = monthKey.split('-').map((part) => Number(part))
-  if (!Number.isFinite(yearRaw) || !Number.isFinite(monthRaw)) return monthKey
-  const date = new Date(Date.UTC(yearRaw, monthRaw - 1 + offset, 1))
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
-}
-
 function businessSignalTone(score: number | null) {
   if (score == null) return 'bg-slate-600 shadow-none'
   if (score <= 16) return 'bg-blue-600 shadow-[0_0_18px_rgba(37,99,235,0.38)]'
@@ -569,16 +567,12 @@ function businessSignalTone(score: number | null) {
 }
 
 function BusinessSignalCard({ risk }: { risk: any }) {
-  const months = asArray<any>(risk?.businessCycle?.months ?? risk?.businessSignal?.months).slice(-6)
-  const hasData = months.length > 0
-  const latestMonth = String(months[months.length - 1]?.month ?? '')
-  const byMonth = new Map(months.map((row) => [String(row.month), row]))
-  const rows = hasData && latestMonth
-    ? Array.from({ length: 6 }, (_, index) => {
-        const key = monthKeyOffset(latestMonth, index - 5)
-        return byMonth.get(key) ?? { month: key, score: null, label: '待匯入' }
-      })
-    : Array.from({ length: 6 }, (_, index) => ({ month: `M-${5 - index}`, score: null, label: '待匯入' }))
+  const latest = risk?.businessCycle?.latest ?? risk?.businessSignal?.latest
+  const months = asArray<any>(risk?.businessCycle?.months ?? risk?.businessSignal?.months)
+  const latestRow = latest ?? months[months.length - 1] ?? null
+  const score = asNumber(latestRow?.score ?? latestRow?.value)
+  const month = String(latestRow?.month ?? latestRow?.sourceDate ?? '').slice(0, 7)
+  const hasData = score != null
 
   return (
     <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
@@ -590,18 +584,13 @@ function BusinessSignalCard({ risk }: { risk: any }) {
         <SourceBadge>{hasData ? 'FinLab / NDC' : '待匯入'}</SourceBadge>
       </div>
 
-      <div className="mt-5 grid grid-cols-3 gap-3 sm:grid-cols-6">
-        {rows.map((row, index) => {
-          const score = asNumber(row.score ?? row.value)
-          return (
-            <div key={`${row.month}-${index}`} className="text-center">
-              <span className={cx('mx-auto block h-4 w-4 rounded-full', businessSignalTone(score))} />
-              <span className="mt-3 inline-flex rounded-full bg-white/[0.055] px-2.5 py-1 text-xs text-slate-500">{row.month}</span>
-              <p className="mt-2 text-xl font-bold tabular-nums text-slate-100">{score == null ? '--' : score}</p>
-              <p className="text-xs text-slate-400">{score == null ? '待匯入' : (row.label ?? '已匯入')}</p>
-            </div>
-          )
-        })}
+      <div className="mt-5 flex items-center justify-center">
+        <div className="text-center">
+          <span className={cx('mx-auto block h-5 w-5 rounded-full', businessSignalTone(score))} />
+          <span className="mt-3 inline-flex rounded-full bg-white/[0.055] px-3 py-1 text-xs text-slate-500">{month || '上月'}</span>
+          <p className="mt-2 text-2xl font-bold tabular-nums text-slate-100">{score == null ? '--' : score}</p>
+          <p className="text-xs text-slate-400">{score == null ? '待匯入' : (latestRow?.label ?? '已匯入')}</p>
+        </div>
       </div>
 
       <div className="mt-6 border-t border-white/[0.07] pt-4">
@@ -710,7 +699,7 @@ function MarketOverviewBlock() {
         action={<SourceBadge>{shortDate(risk?.date ?? indices?.updatedAt)}</SourceBadge>}
       />
 
-      <div className="grid gap-px border-t border-white/[0.055] bg-white/[0.045] xl:grid-cols-[minmax(0,1fr)_clamp(470px,28vw,680px)]">
+      <div className="border-t border-white/[0.055] bg-white/[0.045]">
         <div className="space-y-px bg-white/[0.045]">
           <div className="grid bg-[#101116] md:grid-cols-2 xl:grid-cols-4">
             {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} />)}
@@ -718,24 +707,23 @@ function MarketOverviewBlock() {
           <div className="bg-[#101116] p-4">
             <MarketStatsRibbon risk={risk} />
           </div>
-          <div className="grid gap-px bg-white/[0.045] xl:grid-cols-[minmax(360px,0.78fr)_minmax(0,1.22fr)]">
+          <div className="grid gap-px bg-white/[0.045] xl:grid-cols-3">
+            <div className="space-y-px bg-white/[0.045]">
+              <div className="bg-[#101116] p-4">
+                <InstitutionFlowCard risk={risk} />
+              </div>
+              <div className="bg-[#101116] p-4">
+                <BusinessSignalCard risk={risk} />
+              </div>
+            </div>
             <div className="bg-[#101116] p-4">
-              <InstitutionFlowCard risk={risk} />
+              <HedgeSentimentCard risk={risk} />
             </div>
             <div className="bg-[#101116] p-4">
               <NewsBlock embedded />
             </div>
           </div>
         </div>
-
-        <aside className="space-y-px bg-white/[0.045]">
-          <div className="bg-[#101116] p-4">
-            <HedgeSentimentCard risk={risk} />
-          </div>
-          <div className="bg-[#101116] p-4">
-            <BusinessSignalCard risk={risk} />
-          </div>
-        </aside>
       </div>
 
     </section>
@@ -917,7 +905,7 @@ function RecommendationPanel() {
                 平均熱度 {avgHeat == null ? '待接資料' : avgHeat.toFixed(1)}
               </span>
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500">{AI_TOP_PICK_EXPLANATION}</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">依最新交易日條件排序，點開牌卡查看個股籌碼、技術分數、模型判讀與交易計劃。</p>
           </div>
           <button
             type="button"

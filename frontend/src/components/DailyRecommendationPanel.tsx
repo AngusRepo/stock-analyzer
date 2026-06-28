@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { Treemap, ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, Cell, ReferenceLine } from 'recharts'
 import { paperApi } from '@/lib/api'
-import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
+import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 
@@ -115,7 +115,7 @@ export function DailyRecommendationPanel() {
             {recData?.date ?? today} · 模型、籌碼與理由整理
           </p>
           <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-[#b9b1a1]">
-            {AI_TOP_PICK_EXPLANATION}
+            依最新交易日條件排序，點開牌卡查看個股籌碼、技術分數、模型判讀與交易計劃。
           </p>
         </div>
         <Button

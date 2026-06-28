@@ -443,9 +443,6 @@ function isAlphaPredictionModelName(raw: unknown): boolean {
   return DIRECT_ALPHA_VOTE_MODEL_SET.has(normalizeModelName(raw))
 }
 
-export const AI_TOP_PICK_EXPLANATION =
-  '閱讀提示：基礎分由 ML Edge、籌碼流、技術結構、基本面與新聞題材組成；Alpha 調整會依風控與市場狀態加減分；Slate 只影響清單分散與配置順序，不再直接加到預測分數。ML 摘要提供模型共識與校準後預期報酬，最後仍要搭配 alpha bucket、market structure 與盤中再評估。'
-
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
   if (value == null || value === '') return '-'
   const numeric = Number(value)
@@ -2010,7 +2007,6 @@ function klineChartOptions(width: number): DeepPartial<ChartOptions> {
   return {
     width,
     height: 260,
-    autoSize: true,
     layout: {
       background: { type: ColorType.Solid, color: '#0a0b0f' },
       textColor: '#8992a3',
@@ -2402,7 +2398,7 @@ function KLinePlanSketch({
       resizeObserver = new ResizeObserver((entries) => {
         const entry = entries[0]
         if (!entry) return
-        chart.applyOptions({ width: Math.max(280, Math.floor(entry.contentRect.width)) })
+        chart.applyOptions({ width: Math.max(280, Math.floor(entry.contentRect.width)), height: 260 })
       })
       resizeObserver.observe(container)
     }
@@ -2431,7 +2427,7 @@ function KLinePlanSketch({
         <span className="text-xs font-semibold text-slate-100">K線交易計劃圖</span>
         <span className="sv-num text-[11px] text-slate-500">Lightweight Charts</span>
       </div>
-      <div ref={containerRef} className="h-[260px] w-full bg-[#0a0b0f]" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
+      <div ref={containerRef} className="h-[260px] min-h-[260px] max-h-[260px] w-full overflow-hidden bg-[#0a0b0f]" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
       <div className="grid gap-1 border-t border-white/[0.07] px-3 py-2 text-[11px] sm:grid-cols-4 lg:grid-cols-8">
         <span className="sv-num text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
         <span className="sv-num text-sky-500">轉強 {confirmation ? fmtNumber(confirmation, 2) : '-'}</span>
@@ -2905,7 +2901,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
   return (
     <div className={cn(
-      'rounded-xl border transition-all',
+      'sv-recommendation-card-detail sv-stockintelli-rec-card rounded-xl border transition-all',
       rank === 1
         ? 'border-amber-500/40 bg-amber-500/[0.06] shadow-sm'
         : 'border-border/50 bg-card hover:border-border',

@@ -14,6 +14,7 @@ from services.finlab_canonical_materializer import (
     build_broker_rank_rows,
     build_emerging_broker_rows,
     build_listed_broker_flow_rows,
+    build_market_summary_rows,
     build_taxonomy_rows,
     materialize_finlab_canonical_outputs,
     normalize_symbol,
@@ -43,6 +44,7 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     assert "canonical_institutional_amount_daily" in datasets
     assert "canonical_market_index_daily" in datasets
     assert "canonical_futures_daily" in datasets
+    assert "canonical_market_summary_daily" in datasets
     assert "canonical_regime_context_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets
     assert "canonical_broker_rank_daily" in datasets
@@ -361,6 +363,50 @@ def test_materialize_outputs_include_regime_context_market_index_and_futures() -
     assert any("INSERT INTO canonical_market_index_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO canonical_futures_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO canonical_regime_context_daily" in sql for sql, _ in statements)
+
+
+def test_market_summary_rows_materialize_market_level_margin_amounts() -> None:
+    root = _root("market_summary")
+    _write(
+        root / "raw" / "market_summary" / "twse_margin_trading_summary.parquet",
+        pl.DataFrame(
+            {
+                "date": ["2026-06-26", "2026-06-26", "2026-06-26"],
+                "market_segment": ["LISTED", "LISTED", "LISTED"],
+                "item": ["融資(交易單位)", "融券(交易單位)", "融資金額(仟元)"],
+                "買進": [209790.0, 10000.0, 15_000_000.0],
+                "賣出": [160478.0, 9000.0, 14_000_000.0],
+                "現金(券)償還": [17028.0, 1000.0, 500_000.0],
+                "今日餘額": [8_826_342.0, 203_932.0, 590_925_882.0],
+            }
+        ),
+    )
+
+    rows = build_market_summary_rows(
+        root,
+        run_id="finlab-v4-test",
+        generated_at="2026-06-27T00:00:00+00:00",
+        start_date="2026-06-26",
+        end_date="2026-06-26",
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["market_segment"] == "LISTED"
+    assert row["margin_balance_units"] == 8_826_342.0
+    assert row["margin_balance_value"] == 590_925_882_000.0
+    assert row["short_balance_units"] == 203_932.0
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-27T00:00:00+00:00",
+        start_date="2026-06-26",
+        end_date="2026-06-26",
+        datasets=["canonical_market_summary_daily"],
+    )
+    assert outputs.manifest["row_counts"] == {"canonical_market_summary_daily": 1}
+    statements = build_d1_upsert_statements(outputs)
+    assert any("INSERT INTO canonical_market_summary_daily" in sql for sql, _ in statements)
 
 
 def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:

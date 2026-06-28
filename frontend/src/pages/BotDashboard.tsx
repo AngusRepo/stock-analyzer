@@ -17,7 +17,7 @@ import {
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
 import { BotThemeFlowPanel } from '@/components/DailyRecommendationPanel'
-import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
+import { RecommendationCardClean as RecommendationCard } from '@/components/RecommendationCardClean'
 import CandlestickChart from '@/components/CandlestickChart'
 import AppShell from '@/components/AppShell'
 import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
@@ -536,7 +536,6 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
 // Fallback: 無掛單時顯示最新 daily recommendations
 function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
-  const [activeTab, setActiveTab] = useState<'summary' | 'trade-flow'>('summary')
   const { data: recData, isLoading } = useQuery({
     queryKey: ['recommendations', 'daily', 'latest'],
     queryFn: () => recommendationsApi.daily(),
@@ -573,61 +572,32 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
         <span className="text-muted-foreground/70">Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.</span>
       </div>
 
-      <div className="rounded-xl border border-white/[0.08] bg-[#101116]/90 p-1">
-        <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.035] p-1">
-          {[
-            { key: 'summary', label: '推薦摘要' },
-            { key: 'trade-flow', label: '上市櫃交易流' },
-          ].map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => setActiveTab(item.key as 'summary' | 'trade-flow')}
-              className={[
-                'rounded-full px-3 py-1.5 text-[11px] font-semibold transition-colors',
-                activeTab === item.key ? 'bg-amber-300/15 text-amber-200' : 'text-muted-foreground hover:text-foreground',
-              ].join(' ')}
-            >
-              {item.label}
-            </button>
+      <div className="space-y-2 rounded-[20px] border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
+        <div className="flex items-center justify-between px-1">
+          <div>
+            <p className="text-[11px] font-semibold text-emerald-300">今日推薦候選</p>
+            <p className="text-[10px] text-muted-foreground/70">與晨間概覽同源，點開牌卡查看個股細節。</p>
+          </div>
+          <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-300">
+            {recs.length} 檔
+          </Badge>
+        </div>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {recs.map((r: any, idx: number) => (
+            <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
+              <RecommendationCard rec={r} rank={idx + 1} />
+              <button
+                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
+                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                title="查看 K 線"
+              >
+                <Activity className="w-3.5 h-3.5" />
+              </button>
+            </div>
           ))}
         </div>
+        {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有推薦候選。</div>}
       </div>
-
-      {activeTab === 'summary' ? (
-        <div className="rounded-xl border border-white/[0.08] bg-[#101116]/80 p-3 text-xs leading-5 text-muted-foreground">
-          {recs.length
-            ? '此區只提供每日推薦 fallback 摘要；真正會進 morning setup / debate / pending buys 的候選已移到「上市櫃交易流」分頁。'
-            : '目前沒有 Daily Recommendations 可顯示；上市櫃交易流分頁會保留空狀態，方便確認 pipeline 是否產出候選。'}
-        </div>
-      ) : (
-        <div className="space-y-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
-          <div className="flex items-center justify-between px-1">
-            <div>
-              <p className="text-[11px] font-semibold text-emerald-300">上市櫃交易流</p>
-              <p className="text-[10px] text-muted-foreground/70">L4 selected rows can enter pending buys.</p>
-            </div>
-            <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-300">
-              {recs.length} 檔
-            </Badge>
-          </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {recs.slice(0, 16).map((r: any, idx: number) => (
-              <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
-                <RecommendationCard rec={r} rank={idx + 1} />
-                <button
-                  onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-                  className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                  title="查看 K 線"
-                >
-                  <Activity className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-          {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有上市櫃交易候選。</div>}
-        </div>
-      )}
     </div>
   )
 }
@@ -1424,17 +1394,15 @@ export default function BotDashboard() {
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">
           <WorkstationPanel
-            title="AI 候選清單"
-            kicker="post-debate execution candidates"
-            action={<WorkstationPill tone="info">T2 aware</WorkstationPill>}
+            title="推薦候選"
+            kicker="daily trading candidates"
+            action={<WorkstationPill tone="info">latest</WorkstationPill>}
           >
             <div className="border-b border-[#263247] px-4 pb-2 pt-3">
               <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 sv-num normal-case">
-                <TrendingUp className="w-3.5 h-3.5" /> AI 候選清單
+                <TrendingUp className="w-3.5 h-3.5" /> 推薦候選
               </div>
-              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">
-                {AI_TOP_PICK_EXPLANATION}
-              </p>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">與晨間概覽同源，點開牌卡查看個股資訊與交易計劃。</p>
             </div>
             <div className="p-2">
               <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />

@@ -161,6 +161,7 @@ DEFAULT_CANONICAL_DATASETS = [
     "canonical_institutional_amount_daily",
     "canonical_market_index_daily",
     "canonical_futures_daily",
+    "canonical_market_summary_daily",
     "canonical_regime_context_daily",
     "canonical_revenue_monthly",
     "canonical_broker_flow_daily",
@@ -436,6 +437,7 @@ def d1_counts(start: str) -> dict[str, int]:
         "canonical_institutional_amount_daily": "SELECT COUNT(*) AS n FROM canonical_institutional_amount_daily WHERE date >= ?",
         "canonical_market_index_daily": "SELECT COUNT(*) AS n FROM canonical_market_index_daily WHERE date >= ?",
         "canonical_futures_daily": "SELECT COUNT(*) AS n FROM canonical_futures_daily WHERE date >= ?",
+        "canonical_market_summary_daily": "SELECT COUNT(*) AS n FROM canonical_market_summary_daily WHERE date >= ?",
         "canonical_regime_context_daily": "SELECT COUNT(*) AS n FROM canonical_regime_context_daily WHERE date >= ?",
         "canonical_revenue_monthly": "SELECT COUNT(*) AS n FROM canonical_revenue_monthly WHERE revenue_month >= ?",
         "canonical_broker_flow_daily": "SELECT COUNT(*) AS n FROM canonical_broker_flow_daily WHERE date >= ?",
@@ -467,6 +469,7 @@ def stockvision_count_for_lane(counts: dict[str, int], lane: str) -> int:
         return max(
             counts.get("canonical_market_index_daily", 0),
             counts.get("canonical_futures_daily", 0),
+            counts.get("canonical_market_summary_daily", 0),
             counts.get("canonical_regime_context_daily", 0),
         )
     if lane in {"revenue", "emerging_revenue_diversity"}:
@@ -1256,6 +1259,8 @@ def materialize_canonical_to_d1(
 
 
 def canonical_table_for_lane(lane: str) -> str:
+    if lane == "market_summary":
+        return "canonical_market_summary_daily"
     if lane == "regime_context":
         return "canonical_regime_context_daily"
     if "price" in lane or lane == "global_context":

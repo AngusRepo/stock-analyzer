@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Activity, BarChart3, RefreshCw, Star } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { AI_TOP_PICK_EXPLANATION, RecommendationCardClean } from '@/components/RecommendationCardClean'
+import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { RecommendationLaneExplainer } from '@/components/workstation/DecisionArchitecture'
 import { recommendationsApi } from '@/lib/api'
 import { queryTtl, recommendationDailyKey, selectRecommendationLanes, twToday } from '@/lib/queryPolicy'
@@ -39,7 +39,7 @@ export function DailyRecommendationPanelV2() {
   })
   const payload = data?.payload
   const tradable = data?.tradable ?? []
-  const explanation = AI_TOP_PICK_EXPLANATION.replace(/^名詞解釋：/, '')
+  const explanation = '依最新交易日條件排序，點開牌卡查看個股籌碼、技術分數、模型判讀與交易計劃。'
 
   return (
     <div className="space-y-5">

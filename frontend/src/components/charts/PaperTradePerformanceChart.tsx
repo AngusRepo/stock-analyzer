@@ -169,8 +169,7 @@ function buildExecutionMarkers(orders: unknown = [], pendingBuys: unknown = [], 
 function chartOptions(width: number): DeepPartial<ChartOptions> {
   return {
     width,
-    height: 340,
-    autoSize: true,
+    height: 360,
     layout: {
       background: { type: ColorType.Solid, color: '#0a0b0f' },
       textColor: '#8992a3',
@@ -279,7 +278,7 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
     chart.timeScale().fitContent()
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0]
-      if (entry) chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)) })
+      if (entry) chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)), height: 360 })
     })
     resizeObserver.observe(container)
 
@@ -349,7 +348,7 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
         </div>
       </div>
 
-      <div ref={containerRef} className="min-h-[340px] w-full bg-[#0a0b0f]" />
+      <div ref={containerRef} className="h-[360px] min-h-[360px] max-h-[360px] w-full overflow-hidden bg-[#0a0b0f]" />
     </section>
   )
 }

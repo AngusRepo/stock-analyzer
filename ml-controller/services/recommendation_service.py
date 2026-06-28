@@ -57,6 +57,15 @@ D1_IN_CLAUSE_CHUNK_SIZE = 80
 POTENTIAL_BUY_SIGNAL = "POTENTIAL_BUY"
 POTENTIAL_BUY_SELECTION_REASON = "positive_edge_but_zero_weight_due_to_better_alternative"
 POTENTIAL_BUY_POLICY = "positive_expected_edge_zero_sparse_weight_not_final_buy"
+FORMAL_BUY_SIGNALS = {"BUY", "STRONG_BUY"}
+
+
+def _normalized_signal(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _is_formal_buy_signal(value: Any) -> bool:
+    return _normalized_signal(value) in FORMAL_BUY_SIGNALS
 
 
 def _dedupe_preserve_order(values: list[Any]) -> list[Any]:
@@ -309,11 +318,11 @@ def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> 
         ev2_reason = str(ev2.get("reason") or "")
         if weight_total <= 0 or ev2_reason == "no_positive_lifecycle_weight":
             return 0.0
-    sig = (prediction.get("signal") or "").upper()
+    sig = _normalized_signal(prediction.get("signal"))
     score = 0.0
-    if "STRONG_BUY" in sig:
+    if sig == "STRONG_BUY":
         score += 25
-    elif "BUY" in sig:
+    elif sig == "BUY":
         score += 18
     elif sig == "HOLD":
         score += 8
@@ -408,7 +417,7 @@ def _sorted_payload_rows(payload: dict, key: str) -> list[dict]:
 
 def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str, int]) -> str:
     """Build recommendation-facing ML text from the same source used for scoring."""
-    signal = str(eff_ml.get("signal") or "").upper()
+    signal = _normalized_signal(eff_ml.get("signal"))
     source = str(eff_ml.get("signal_source") or "")
     forecast_raw = eff_ml.get("forecast_pct")
     forecast_text = "forecast unavailable" if forecast_raw is None else f"{float(forecast_raw) * 100:+.1f}%"
@@ -418,7 +427,7 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     if ev2 and float(ev2.get("weight_total") or 0.0) <= 0:
         return "V2 ensemble 暫無正 IC 權重；持續驗證 IC evidence。"
     if contributors:
-        label = "buy" if "BUY" in signal else "hold" if signal == "HOLD" else "sell"
+        label = "buy" if _is_formal_buy_signal(signal) else "hold" if signal == "HOLD" else "sell"
         return f"V2 ensemble {label}: {len(contributors)} contributing models, forecast {forecast_text}."
 
     total = legacy_counts.get("total", 0)
@@ -426,7 +435,7 @@ def build_ml_vote_summary(ml: dict | None, eff_ml: dict, legacy_counts: dict[str
     down = legacy_counts.get("down", 0)
     if total <= 0:
         return "ML evidence unavailable"
-    if "BUY" in signal:
+    if _is_formal_buy_signal(signal):
         return f"ML buy: {up}/{total} models point up, forecast {forecast_text}."
     if signal == "HOLD":
         if up > down:
@@ -1364,7 +1373,7 @@ def build_watch_points(s: dict) -> list[str]:
     points: list[str] = []
     rsi = float(s.get("rsi14") or 50.0)
     conf = float(s.get("ml_confidence") or 0.0)
-    sig = str(s.get("_signal") or "").upper()
+    sig = _normalized_signal(s.get("_signal"))
     forecast_pct = float(s.get("ml_forecast_pct") or 0.0)
 
     if rsi > 80:
@@ -1389,7 +1398,7 @@ def build_watch_points(s: dict) -> list[str]:
         points.append("Emerging-market chip evidence uses FinLab broker flow; validate liquidity and broker concentration.")
     elif market_segment == "EMERGING" or int(s.get("chip_rows") or 0) == 0:
         points.append("Emerging-market chip evidence is limited; rely more on price, volume, and ML confirmation.")
-    if "BUY" in sig and forecast_pct < 0:
+    if _is_formal_buy_signal(sig) and forecast_pct < 0:
         points.append("BUY signal has a negative forecast; require stronger confirmation.")
     elif conf < 0.45:
         points.append("ML confidence is below 0.45; treat as low-conviction evidence.")
@@ -1683,7 +1692,7 @@ def filter_and_score_recommendations(
             "recommendation_lane": recommendation_lane,
             "eligible_for_ml": bool(stock_meta.get("eligible_for_ml", True)),
             "eligible_for_pending_buy": eligible_for_pending_buy,
-            "has_buy_signal": 1 if (eligible_for_pending_buy and sig and "BUY" in sig) else 0,
+            "has_buy_signal": 1 if (eligible_for_pending_buy and _is_formal_buy_signal(sig)) else 0,
             "watch_points": watch_points,
             "foreign_net_5d": foreign_net_5d,
             "trust_net_5d": trust_net_5d,
@@ -1730,12 +1739,12 @@ def filter_and_score_recommendations(
 # ?????????????????????????????????????????????????????????????????????????????
 
 def _signal_tier(sig: Optional[str]) -> float:
-    if not sig:
+    s = _normalized_signal(sig)
+    if not s:
         return 0.20
-    s = sig.upper()
-    if "STRONG_BUY" in s:
+    if s == "STRONG_BUY":
         return 1.00
-    if "BUY" in s:
+    if s == "BUY":
         return 0.70
     if s == "HOLD":
         return 0.35
@@ -2859,7 +2868,7 @@ def write_predictions_to_d1(
         raw_signal = (ev2_signal if (use_ev2 and ev2_signal) else legacy_signal) or "NO_SIGNAL"
         if raw_signal == "NO_SIGNAL":
             trade_signal = None
-        elif "BUY" in raw_signal:
+        elif _is_formal_buy_signal(raw_signal):
             trade_signal = "buy"
         elif "SELL" in raw_signal:
             trade_signal = "sell"

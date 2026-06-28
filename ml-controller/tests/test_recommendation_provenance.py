@@ -686,7 +686,10 @@ def test_sparse_tangent_allocation_reowns_existing_buy_labels():
     assert promoted[0]["signal_source_raw"] == "ensemble_v2_topk_policy"
     assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
     assert promoted[0]["sparse_tangent_selected"] is True
-    assert promoted[1]["signal"] == "HOLD"
+    assert promoted[1]["signal"] == "POTENTIAL_BUY"
+    assert promoted[1]["has_buy_signal"] == 0
+    assert promoted[1]["alpha_allocation"]["selected"] is False
+    assert promoted[1]["alpha_allocation"]["potential_buy"] is True
     assert promoted[1].get("sparse_tangent_selected") is not True
 
 

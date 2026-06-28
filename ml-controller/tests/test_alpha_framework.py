@@ -614,6 +614,18 @@ def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatc
     assert ccc["alpha_allocation"]["selection_reason"] == "no_positive_expected_edge"
 
 
+def test_potential_buy_is_not_a_formal_buy_signal():
+    assert recommendation_service._is_formal_buy_signal("BUY") is True
+    assert recommendation_service._is_formal_buy_signal("STRONG_BUY") is True
+    assert recommendation_service._is_formal_buy_signal("POTENTIAL_BUY") is False
+    assert recommendation_service._signal_tier("POTENTIAL_BUY") == 0.0
+    assert recommendation_service.calculate_ml_score({
+        "signal": "POTENTIAL_BUY",
+        "confidence": 0.70,
+        "forecast_pct": 0.02,
+    }) == pytest.approx(9.0)
+
+
 def test_regime_aware_allocate_uses_policy_weights_and_slate_size():
     rows = [
         _allocation_row("A1", 99, "trend_following"),

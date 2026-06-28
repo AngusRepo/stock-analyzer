@@ -16,6 +16,10 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert "tools import finlab_v4_remote_backfill" in modal_app
     assert "tools import finlab_macro_context_snapshot" in modal_app
     assert "macro_context_writeback" in modal_app
+    assert "canonical_rows" in modal_app
+    assert "collect_canonical_regime_context_rows" in modal_app
+    assert "external_evidence_writeback" in modal_app
+    assert "materialize_external_evidence_once" in modal_app
     assert "api/admin/scheduler-callback" in modal_app
     assert "controller_callback_url" in modal_app
     assert "except (Exception, SystemExit) as exc" in modal_app

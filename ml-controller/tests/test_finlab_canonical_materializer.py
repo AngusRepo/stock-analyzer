@@ -365,6 +365,55 @@ def test_materialize_outputs_include_regime_context_market_index_and_futures() -
     assert any("INSERT INTO canonical_regime_context_daily" in sql for sql, _ in statements)
 
 
+def test_market_index_single_score_column_defaults_to_twii_symbol() -> None:
+    root = _root("regime_context_market_index_score_alias")
+    _write(
+        root / "raw" / "regime_context" / "tw_stock_market_ind.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "score": [44571.76]}),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-27T00:00:00+00:00",
+        start_date="2026-06-20",
+        end_date="2026-06-27",
+        datasets=["canonical_market_index_daily"],
+    )
+
+    assert outputs.manifest["row_counts"]["canonical_market_index_daily"] == 1
+    assert outputs.canonical_market_index_daily[0]["symbol"] == "TWII"
+    assert outputs.canonical_market_index_daily[0]["close"] == 44571.76
+    statements = build_d1_upsert_statements(outputs)
+    assert any(params[0] == "TWII" for sql, params in statements if "INSERT INTO canonical_market_index_daily" in sql)
+
+
+def test_regime_context_keeps_monthly_business_signal_outside_daily_window() -> None:
+    root = _root("regime_context_monthly_business_signal")
+    _write(
+        root / "raw" / "regime_context" / "business_signal_score.parquet",
+        pl.DataFrame({"date": ["2026-05-01"], "景氣對策信號(分)": [39.0]}),
+    )
+    _write(
+        root / "raw" / "regime_context" / "tw_option_put_call_ratio.parquet",
+        pl.DataFrame({"date": ["2026-06-26"], "pcr": [0.9]}),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-27T00:00:00+00:00",
+        start_date="2026-06-20",
+        end_date="2026-06-27",
+        datasets=["canonical_regime_context_daily"],
+    )
+
+    fields = {
+        (row["dataset"], row["field"], row["date"], row["value"])
+        for row in outputs.canonical_regime_context_daily
+    }
+    assert ("tw_business_indicators", "business_signal_score", "2026-05-01", 39.0) in fields
+    assert ("tw_option_put_call_ratio", "pcr", "2026-06-26", 0.9) in fields
+
+
 def test_materialize_outputs_include_official_tpex_index_artifact() -> None:
     root = _root("official_tpex_index")
     _write(

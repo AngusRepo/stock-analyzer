@@ -96,6 +96,26 @@ interface CountRow {
   stock_theme_feature_total?: number
   stock_theme_feature_symbols?: number
   stock_theme_feature_latest_generated_at?: string | null
+  market_breadth_rows?: number
+  turnover_rows?: number
+  margin_rows?: number
+  short_rows?: number
+  freshness_status?: string | null
+  latest_materialization?: string | null
+  root_cause?: string | null
+}
+
+interface MarketDashboardMaterializationSource {
+  key: string
+  label: string
+  source: string
+  rows?: number | null
+  latestDate?: string | null
+  warnLagDays: number
+  failLagDays: number
+  required?: boolean
+  scope?: string
+  rootCause?: string | null
 }
 
 export const EXPECTED_V2_MODELS = [
@@ -822,6 +842,79 @@ export function buildPendingBuyAllocatorOwnerCheck(input: {
   }
 }
 
+function normalizedDate(value: string | null | undefined): string | null {
+  const raw = String(value ?? '').trim()
+  return raw ? raw.slice(0, 10) : null
+}
+
+export function buildMarketDashboardMaterializationCheck(input: {
+  targetDate: string
+  sources: MarketDashboardMaterializationSource[]
+}): DataQualityCheck {
+  const items = input.sources.map((source) => {
+    const rows = Math.max(0, Math.trunc(Number(source.rows ?? 0)))
+    const latestDate = normalizedDate(source.latestDate)
+    const lagDays = daysBetweenDates(latestDate, input.targetDate)
+    const required = source.required !== false
+    let status: DataQualityStatus = 'ok'
+    let rootCause = source.rootCause ?? null
+
+    if (rows <= 0 || !latestDate) {
+      status = required ? 'fail' : 'warn'
+      rootCause = rootCause ?? 'not_materialized'
+    } else if (lagDays == null || lagDays > source.failLagDays) {
+      status = required ? 'fail' : 'warn'
+      rootCause = rootCause ?? 'stale_materialization'
+    } else if (lagDays > source.warnLagDays) {
+      status = 'warn'
+      rootCause = rootCause ?? 'freshness_lag'
+    }
+
+    return {
+      key: source.key,
+      label: source.label,
+      status,
+      rows,
+      latest_date: latestDate,
+      lag_days: lagDays,
+      warn_lag_days: source.warnLagDays,
+      fail_lag_days: source.failLagDays,
+      required,
+      source: source.source,
+      scope: source.scope ?? 'market_dashboard',
+      root_cause: rootCause,
+    }
+  })
+
+  const failItems = items.filter((item) => item.status === 'fail')
+  const warnItems = items.filter((item) => item.status === 'warn')
+  const status: DataQualityStatus = failItems.length ? 'fail' : warnItems.length ? 'warn' : 'ok'
+
+  return {
+    id: 'market_dashboard_materialization',
+    label: 'Market dashboard materialization',
+    status,
+    summary: status === 'ok'
+      ? 'homepage market dashboard sources are materialized'
+      : `market dashboard gaps fail=${failItems.length} warn=${warnItems.length}`,
+    metrics: {
+      target_date: input.targetDate,
+      materialization_checks: items,
+      missing_required: failItems.map((item) => item.key),
+      stale_or_optional_gaps: warnItems.map((item) => item.key),
+      source_of_truth: [
+        'canonical_market_daily',
+        'canonical_market_index_daily',
+        'canonical_futures_daily',
+        'canonical_market_summary_daily',
+        'canonical_institutional_amount_daily',
+        'canonical_regime_context_daily',
+        'external_evidence_items',
+      ],
+    },
+  }
+}
+
 function buildSchemaCheck(columns: string[]): DataQualityCheck {
   const required = [
     'date',
@@ -956,7 +1049,37 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
   const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
 
-  const [priceStats, chipStats, tiStats, recommendationStats, screenerSeedStats, classificationStats, rrgTaxonomyStats, screenerFunnelStats, pendingBuyStats, boardLaneStats, predictionGroups, featureVersionStats, modelIcEvidence, schemaRows, datasetManifestStats, themeSignalStats, stockThemeFeatureStats, retrainFollowupStats] = await Promise.all([
+  const [
+    priceStats,
+    chipStats,
+    tiStats,
+    recommendationStats,
+    screenerSeedStats,
+    classificationStats,
+    rrgTaxonomyStats,
+    screenerFunnelStats,
+    pendingBuyStats,
+    boardLaneStats,
+    predictionGroups,
+    featureVersionStats,
+    modelIcEvidence,
+    schemaRows,
+    datasetManifestStats,
+    themeSignalStats,
+    stockThemeFeatureStats,
+    retrainFollowupStats,
+    marketIndexTwiiStats,
+    marketIndexTwoiiStats,
+    futuresDayStats,
+    canonicalMarketDailyOverviewStats,
+    marketSummaryStats,
+    institutionalAmountStats,
+    pcrStats,
+    largeTraderStats,
+    businessSignalStats,
+    gdeltStats,
+    gdeltQualityStats,
+  ] = await Promise.all([
     latestTableStats(env.DB, 'stock_prices'),
     latestTableStats(env.DB, 'chip_data'),
     latestTableStats(env.DB, 'technical_indicators'),
@@ -1247,6 +1370,169 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
           AND status = 'orchestrator_dispatched'
           AND downstream_notes = 'await_modal_followup'`,
     ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_market_index_daily
+          WHERE symbol IN ('TWII', 'TAIEX')
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest
+         FROM canonical_market_index_daily
+        WHERE symbol IN ('TWII', 'TAIEX')
+          AND date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_market_index_daily
+          WHERE symbol IN ('TWOII', 'OTC', 'TPEX')
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest
+         FROM canonical_market_index_daily
+        WHERE symbol IN ('TWOII', 'OTC', 'TPEX')
+          AND date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_futures_daily
+          WHERE symbol IN ('TXF', 'TX')
+            AND session = 'day'
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest
+         FROM canonical_futures_daily
+        WHERE symbol IN ('TXF', 'TX')
+          AND session = 'day'
+          AND date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH ordered_dates AS (
+         SELECT date
+           FROM canonical_market_daily
+          WHERE market_segment = 'LISTED_OTC'
+          GROUP BY date
+          ORDER BY date DESC
+          LIMIT 2
+       ),
+       latest_date AS (
+         SELECT MAX(date) AS date FROM ordered_dates
+       ),
+       previous_date AS (
+         SELECT MIN(date) AS date FROM ordered_dates
+       ),
+       joined_rows AS (
+         SELECT cur.date,
+                cur.stock_id,
+                cur.close,
+                prev.close AS prev_close,
+                cur.volume,
+                cur.value
+           FROM canonical_market_daily cur
+           JOIN latest_date ld ON cur.date = ld.date
+           LEFT JOIN canonical_market_daily prev
+             ON prev.stock_id = cur.stock_id
+            AND prev.date = (SELECT date FROM previous_date)
+            AND prev.market_segment = cur.market_segment
+          WHERE cur.close IS NOT NULL
+            AND cur.market_segment = 'LISTED_OTC'
+       )
+       SELECT (SELECT date FROM latest_date) AS latest_date,
+              COUNT(CASE WHEN prev_close IS NOT NULL THEN 1 END) AS market_breadth_rows,
+              COUNT(CASE WHEN volume IS NOT NULL OR value IS NOT NULL THEN 1 END) AS turnover_rows,
+              COUNT(*) AS rows_on_latest
+         FROM joined_rows`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_market_summary_daily
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest,
+              SUM(CASE WHEN advance_count IS NOT NULL AND decline_count IS NOT NULL THEN 1 ELSE 0 END) AS market_breadth_rows,
+              SUM(CASE WHEN total_volume IS NOT NULL AND total_value IS NOT NULL THEN 1 ELSE 0 END) AS turnover_rows,
+              SUM(CASE WHEN margin_balance_value IS NOT NULL OR margin_balance_units IS NOT NULL THEN 1 ELSE 0 END) AS margin_rows,
+              SUM(CASE WHEN short_balance_units IS NOT NULL THEN 1 ELSE 0 END) AS short_rows
+         FROM canonical_market_summary_daily
+        WHERE date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_institutional_amount_daily
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest
+         FROM canonical_institutional_amount_daily
+        WHERE date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_regime_context_daily
+          WHERE dataset = 'tw_option_put_call_ratio'
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest
+         FROM canonical_regime_context_daily
+        WHERE dataset = 'tw_option_put_call_ratio'
+          AND date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_regime_context_daily
+          WHERE dataset = 'tw_taifex_futures_large_trader'
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest
+         FROM canonical_regime_context_daily
+        WHERE dataset = 'tw_taifex_futures_large_trader'
+          AND date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `WITH latest AS (
+         SELECT MAX(date) AS latest_date
+           FROM canonical_regime_context_daily
+          WHERE dataset = 'tw_business_indicators'
+       )
+       SELECT (SELECT latest_date FROM latest) AS latest_date,
+              COUNT(*) AS rows_on_latest
+         FROM canonical_regime_context_daily
+        WHERE dataset = 'tw_business_indicators'
+          AND date = (SELECT latest_date FROM latest)`,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT SUM(CASE WHEN date(published_at) >= date(?, '-14 days') THEN 1 ELSE 0 END) AS rows_on_latest,
+              MAX(published_at) AS latest_date
+         FROM external_evidence_items
+        WHERE source_id = 'gdelt_events'
+          AND accepted = 1`,
+      targetDate,
+    ).catch((): CountRow => ({})),
+    firstCount(
+      env.DB,
+      `SELECT freshness_status,
+              latest_materialization,
+              CASE WHEN json_valid(metrics_json) THEN json_extract(metrics_json, '$.root_cause') ELSE NULL END AS root_cause
+         FROM source_quality_metrics
+        WHERE source = 'gdelt_events'
+        ORDER BY as_of_date DESC
+        LIMIT 1`,
+    ).catch((): CountRow => ({})),
   ])
 
   const predictionRows = (predictionGroups.results ?? []).reduce((sum, row) => sum + Number(row.count ?? 0), 0)
@@ -1280,6 +1566,123 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       warnLagDays: 0,
       failLagDays: 0,
       minRows: 1000,
+    }),
+    buildMarketDashboardMaterializationCheck({
+      targetDate,
+      sources: [
+        {
+          key: 'twii_index',
+          label: '加權指數',
+          source: 'canonical_market_index_daily symbol=TWII/TAIEX',
+          rows: marketIndexTwiiStats.rows_on_latest,
+          latestDate: marketIndexTwiiStats.latest_date,
+          warnLagDays: 1,
+          failLagDays: 3,
+          scope: '首頁第一列指數',
+        },
+        {
+          key: 'twoii_index',
+          label: '櫃買指數',
+          source: 'canonical_market_index_daily symbol=TWOII/OTC/TPEX',
+          rows: marketIndexTwoiiStats.rows_on_latest,
+          latestDate: marketIndexTwoiiStats.latest_date,
+          warnLagDays: 1,
+          failLagDays: 3,
+          scope: '首頁第一列指數',
+        },
+        {
+          key: 'txf_day_futures',
+          label: '台指期貨日盤',
+          source: 'canonical_futures_daily symbol=TXF/TX session=day',
+          rows: futuresDayStats.rows_on_latest,
+          latestDate: futuresDayStats.latest_date,
+          warnLagDays: 1,
+          failLagDays: 3,
+          scope: '首頁第一列指數',
+        },
+        {
+          key: 'market_breadth',
+          label: '漲跌家數',
+          source: 'canonical_market_daily LISTED_OTC close vs previous close',
+          rows: canonicalMarketDailyOverviewStats.market_breadth_rows,
+          latestDate: canonicalMarketDailyOverviewStats.latest_date,
+          warnLagDays: 1,
+          failLagDays: 3,
+          scope: '首頁第二列市場概況',
+        },
+        {
+          key: 'market_turnover',
+          label: '成交量與成交金額',
+          source: 'canonical_market_daily LISTED_OTC volume/value',
+          rows: canonicalMarketDailyOverviewStats.turnover_rows,
+          latestDate: canonicalMarketDailyOverviewStats.latest_date,
+          warnLagDays: 1,
+          failLagDays: 3,
+          scope: '首頁第二列市場概況',
+        },
+        {
+          key: 'margin_short_balance',
+          label: '融資融券',
+          source: 'canonical_market_summary_daily margin_balance/short_balance',
+          rows: Math.min(Number(marketSummaryStats.margin_rows ?? 0), Number(marketSummaryStats.short_rows ?? 0)),
+          latestDate: marketSummaryStats.latest_date,
+          warnLagDays: 1,
+          failLagDays: 3,
+          scope: '首頁第二列市場概況',
+        },
+        {
+          key: 'institutional_amount',
+          label: '主要法人資金動向',
+          source: 'canonical_institutional_amount_daily',
+          rows: institutionalAmountStats.rows_on_latest,
+          latestDate: institutionalAmountStats.latest_date,
+          warnLagDays: 1,
+          failLagDays: 3,
+          scope: '首頁資金流',
+        },
+        {
+          key: 'put_call_ratio',
+          label: '買賣權量比',
+          source: 'canonical_regime_context_daily dataset=tw_option_put_call_ratio',
+          rows: pcrStats.rows_on_latest,
+          latestDate: pcrStats.latest_date,
+          warnLagDays: 2,
+          failLagDays: 5,
+          scope: '市場避險情緒',
+        },
+        {
+          key: 'large_trader_net',
+          label: '期貨大戶淨部位',
+          source: 'canonical_regime_context_daily dataset=tw_taifex_futures_large_trader',
+          rows: largeTraderStats.rows_on_latest,
+          latestDate: largeTraderStats.latest_date,
+          warnLagDays: 2,
+          failLagDays: 5,
+          scope: '市場避險情緒',
+        },
+        {
+          key: 'business_signal',
+          label: '景氣對策信號',
+          source: 'canonical_regime_context_daily dataset=tw_business_indicators',
+          rows: businessSignalStats.rows_on_latest,
+          latestDate: businessSignalStats.latest_date,
+          warnLagDays: 65,
+          failLagDays: 95,
+          scope: '景氣月頻資料',
+        },
+        {
+          key: 'gdelt_global_news',
+          label: 'GDELT 全球新聞脈絡',
+          source: 'external_evidence_items source_id=gdelt_events',
+          rows: gdeltStats.rows_on_latest,
+          latestDate: gdeltStats.latest_date ?? gdeltQualityStats.latest_materialization,
+          warnLagDays: 7,
+          failLagDays: 14,
+          required: false,
+          scope: '最新消息下方全球脈絡',
+          rootCause: gdeltQualityStats.root_cause ?? gdeltQualityStats.freshness_status ?? null,
+        },
+      ],
     }),
     buildPredictionCoverageCheck(predictionGroups.results ?? []),
     buildRecommendationMlOwnerCheck({

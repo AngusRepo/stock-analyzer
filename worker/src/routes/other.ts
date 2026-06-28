@@ -883,14 +883,8 @@ function buildFearGreedIndex(args: {
   regimeContext: any | null
   usSignal: any | null
 }) {
-  const { row, canonicalOverview, regimeContext, usSignal } = args
+  const { row, regimeContext, usSignal } = args
   const twiiBias = numberOrNull(row?.twii_bias)
-  const breadth = canonicalOverview?.breadthSnapshot ?? null
-  const advance = numberOrNull(breadth?.advance_count)
-  const decline = numberOrNull(breadth?.decline_count)
-  const breadthScore = advance != null && decline != null && advance + decline > 0
-    ? clamp100((advance / (advance + decline)) * 100)
-    : scoreFromFearGreedRange(numberOrNull(row?.bull_alignment_pct), 20, 80)
   const pcr = numberOrNull(regimeContext?.putCallRatio)
   const usVix = numberOrNull(row?.vix) ?? numberOrNull(usSignal?.vixClose)
   const twVol20 = numberOrNull(row?.twii_vol20)
@@ -898,13 +892,8 @@ function buildFearGreedIndex(args: {
   const hySpreadChange = numberOrNull(usSignal?.hySpreadChange)
   const dxyReturnPct = usSignal?.dxyReturn == null ? null : numberOrNull(usSignal.dxyReturn)! * 100
   const usdTwdChangePct = numberOrNull(regimeContext?.usdTwdChangePct)
-  const foreignNet5d = numberOrNull(row?.foreign_net_5d)
-  const largeTraderNet = numberOrNull(regimeContext?.largeTraderNet)
   const gspcReturnPct = usSignal?.gspcReturn == null ? null : numberOrNull(usSignal.gspcReturn)! * 100
   const soxReturnPct = usSignal?.soxReturn == null ? null : numberOrNull(usSignal.soxReturn)! * 100
-  const businessCycleLatest = regimeContext?.businessCycle?.latest ?? null
-  const businessCycleScore = numberOrNull(businessCycleLatest?.score)
-  const businessCycleLabel = businessCycleLatest?.label == null ? null : String(businessCycleLatest.label)
 
   const volatilityScore = averageNumbers([
     scoreFromFearGreedRange(usVix, 35, 12),
@@ -917,10 +906,6 @@ function buildFearGreedIndex(args: {
   const fxScore = averageNumbers([
     scoreFromFearGreedRange(dxyReturnPct, 1.2, -1.2),
     scoreFromFearGreedRange(usdTwdChangePct, 1.0, -0.8),
-  ])
-  const positioningScore = averageNumbers([
-    scoreFromFearGreedRange(foreignNet5d, -3500, 3500),
-    scoreFromFearGreedRange(largeTraderNet, -6000, 6000),
   ])
   const globalRiskScore = averageNumbers([
     scoreFromFearGreedRange(gspcReturnPct, -2, 2),
@@ -935,22 +920,6 @@ function buildFearGreedIndex(args: {
       signedPctText(twiiBias),
       'market_risk.twii_bias',
       '加權指數相對 20MA；越強代表風險偏好越高。',
-    ),
-    fearGreedFactor(
-      'market_breadth',
-      '市場廣度',
-      breadthScore,
-      advance != null && decline != null ? `上漲 ${advance.toLocaleString('zh-TW')} / 下跌 ${decline.toLocaleString('zh-TW')}` : '待匯入',
-      'canonical_market_daily.finlab.price',
-      '上漲家數占上漲加下跌家數比例；廣度越好越偏貪婪。',
-    ),
-    fearGreedFactor(
-      'business_cycle_heat',
-      '景氣熱度',
-      scoreFromFearGreedRange(businessCycleScore, 9, 45),
-      businessCycleScore == null ? '待匯入' : `${Math.round(businessCycleScore)} ${businessCycleLabel ?? cycleSignalLabel(businessCycleScore)}`,
-      'canonical_regime_context_daily.tw_business_indicators',
-      '景氣對策信號越熱，通常代表市場風險偏好越高。',
     ),
     fearGreedFactor(
       'options_positioning',
@@ -985,14 +954,6 @@ function buildFearGreedIndex(args: {
       '美元與美元兌台幣走強通常代表避險需求上升。',
     ),
     fearGreedFactor(
-      'positioning_flow',
-      '資金籌碼',
-      positioningScore == null ? null : clamp100(positioningScore),
-      `${signedBillionText(foreignNet5d)} / ${signedContractsText(largeTraderNet)}`,
-      'market_risk.foreign_net_5d / canonical_regime_context_daily.tw_taifex_futures_large_trader',
-      '外資 5 日買賣超與期貨大戶淨部位衡量本地籌碼風險偏好。',
-    ),
-    fearGreedFactor(
       'global_risk_appetite',
       '全球風險偏好',
       globalRiskScore == null ? null : clamp100(globalRiskScore),
@@ -1005,12 +966,12 @@ function buildFearGreedIndex(args: {
   const rounded = score == null ? null : clamp100(score)
 
   return {
-    schemaVersion: 'stockvision_fear_greed_v2',
+    schemaVersion: 'stockvision_fear_greed_v4',
     date: row?.date ?? null,
     score: rounded,
     label: fearGreedLabel(rounded),
-    source: 'StockVision composite: trend, breadth, business cycle, options, volatility, credit, FX, positioning, global risk',
-    methodology: '0=恐懼、100=貪婪；有效因子等權平均，缺資料因子不硬補。',
+    source: 'StockVision composite: price momentum, options positioning, volatility, credit, safe-haven FX, global equity appetite',
+    methodology: '0=恐懼、100=貪婪；有效因子等權平均，缺資料因子不硬補；不納入景氣燈號、法人買賣超、期貨大戶部位，避免混入非核心或避險情緒因子。',
     factors,
     missingFactors: factors.filter((factor) => factor.score == null).map((factor) => factor.id),
   }
@@ -1104,7 +1065,7 @@ function hedgeSentimentLabel(score: number | null): string {
   if (score == null) return '待匯入'
   if (score >= 70) return '偏高避險'
   if (score >= 46) return '中高避險'
-  if (score >= 28) return '表現中性'
+  if (score >= 28) return '中性避險'
   return '低避險'
 }
 
@@ -1143,7 +1104,7 @@ function buildHedgeSentiment(args: {
     score: rounded,
     label: hedgeSentimentLabel(rounded),
     source: 'StockVision composite hedge sentiment',
-    methodology: '0=低避險、100=高避險；PCR、大戶部位、外資5日流、波動、信用利差、美元避險有效因子等權平均。',
+    methodology: '0=低避險、100=高避險；PCR、大戶淨部位、外資5日流、台股/美股波動、信用利差、美元避險壓力有效因子等權平均；不納入景氣燈號或新聞事件主觀判讀。',
     factors,
   }
 }
@@ -2086,7 +2047,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v16-global-event-context'
+  const cacheKey = 'market:risk:latest:v18-fear-greed-core-factors'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 

@@ -163,6 +163,13 @@ type SparseAllocationSummary = {
   controller?: string | null
   selected?: boolean | number | string
   allocation_weight?: number | string | null
+  single_name_weight?: number | string | null
+  expected_return?: number | string | null
+  risk_estimate?: number | string | null
+  allocation_rank?: number | string | null
+  selection_reason?: string | null
+  potential_buy_reason?: string | null
+  sparse_weight_state?: string | null
   buy_signal_count?: number | string | null
   return_history_coverage?: number | string | null
   return_history_symbol_count?: number | string | null
@@ -749,8 +756,8 @@ function allocationSlotText(raw: unknown): string {
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
   STRONG_BUY: { label: '強買', color: 'border-red-300/55 bg-red-500/90 text-white shadow-[0_0_18px_rgba(239,68,68,0.20)]', icon: Zap },
   BUY: { label: '買進', color: 'border-red-300/45 bg-red-500/80 text-white shadow-[0_0_16px_rgba(239,68,68,0.16)]', icon: TrendingUp },
-  POTENTIAL_BUY: { label: '潛在買進', color: 'border-[#f6b45f]/55 bg-[#f6b45f]/20 text-[#ffe6c4] shadow-[0_0_16px_rgba(246,180,95,0.12)]', icon: TrendingUp },
-  HOLD: { label: '觀望', color: 'border-slate-300/35 bg-slate-500/35 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.10)]', icon: Minus },
+  POTENTIAL_BUY: { label: '潛在買進', color: 'border-yellow-200/70 bg-yellow-300/28 text-yellow-50 shadow-[0_0_18px_rgba(250,204,21,0.18)]', icon: TrendingUp },
+  HOLD: { label: '觀望', color: 'border-sky-200/45 bg-sky-500/28 text-sky-50 shadow-[0_0_14px_rgba(56,189,248,0.12)]', icon: Minus },
   SELL: { label: '賣出', color: 'bg-blue-500 text-white', icon: TrendingDown },
   STRONG_SELL: { label: '強賣', color: 'bg-purple-600 text-white', icon: TrendingDown },
 }
@@ -1436,6 +1443,54 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
   )
 }
 
+function fmtPercentValue(value: unknown, decimals = 1): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '-'
+  const pct = Math.abs(numeric) <= 1 ? numeric * 100 : numeric
+  return `${fmtNumber(pct, decimals)}%`
+}
+
+function FundamentalSnapshotBlock({ rec }: { rec: any }) {
+  const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
+  const score = scoreComponentValue(rec, 'fundamentalQuality')
+  const { data: rows = [], isLoading } = useQuery({
+    queryKey: ['recommendation-card-financials', stockId],
+    queryFn: () => stocksApi.financials(stockId, 1),
+    enabled: Number.isFinite(stockId) && stockId > 0,
+    staleTime: 6 * 60 * 60_000,
+  })
+  const latest = Array.isArray(rows) ? rows[0] as any : null
+  if (!latest && !isLoading && score <= 0) return null
+  const metrics = [
+    { label: 'EPS', value: latest?.eps == null ? '-' : fmtNumber(latest.eps, 2), note: latest?.period ?? 'latest' },
+    { label: 'ROE', value: latest?.roe == null ? '-' : fmtPercentValue(latest.roe), note: '獲利效率' },
+    { label: 'P/E', value: latest?.pe == null ? '-' : fmtNumber(latest.pe, 1), note: '估值' },
+    { label: 'P/B', value: latest?.pb == null ? '-' : fmtNumber(latest.pb, 1), note: '淨值評價' },
+    { label: '殖利率', value: latest?.dividend_yield == null ? '-' : fmtPercentValue(latest.dividend_yield), note: '股利' },
+    { label: '營收 YoY', value: latest?.revenue_growth_yoy == null ? '-' : fmtPercentValue(latest.revenue_growth_yoy), note: '成長' },
+  ]
+
+  return (
+    <div className="rounded-[18px] border border-amber-300/18 bg-amber-300/[0.055] p-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="font-semibold text-amber-100">基本面摘要</p>
+        <span className="sv-num rounded-full border border-amber-200/20 bg-amber-300/10 px-2 py-0.5 text-[11px] text-amber-100">
+          Score V2 基本面 {fmtNumber(score, 1)}/20
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {metrics.map((item) => (
+          <div key={item.label} className="rounded-xl border border-white/[0.06] bg-black/15 p-2">
+            <p className="text-[11px] font-medium text-slate-400">{item.label}</p>
+            <p className="mt-1 sv-num text-sm font-bold text-slate-100">{isLoading ? '讀取中' : item.value}</p>
+            <p className="mt-0.5 text-[10px] text-slate-500">{item.note}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary | null }) {
   if (!router) return null
   const routerDecision = String(router?.strategy_router_decision ?? 'observe').replace(/_/g, ' ')
@@ -1746,6 +1801,8 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
   const inputScope = allocation.input_scope ?? 'post_l3_5_evidence_fusion_candidates'
   const selectionPolicy = allocation.selection_policy ?? 'positive_expected_edge_sparse_weights_no_forced_fill'
   const upstreamPolicy = allocation.upstream_conflict_policy ?? 'l3_5_flags_conflict_l4_decides_weight_not_drop'
+  const allocationWeight = allocation.allocation_weight ?? allocation.single_name_weight
+  const selectionReason = allocation.selection_reason ?? allocation.potential_buy_reason ?? allocation.sparse_weight_state ?? 'reason unavailable'
 
   return (
     <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs">
@@ -1757,7 +1814,7 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
           <p className="text-[10px] normal-case text-muted-foreground">decision</p>
           <p className={cn('mt-0.5 sv-num text-sm font-semibold', selected ? 'text-emerald-600 dark:text-emerald-300' : 'text-muted-foreground')}>
-            {selected ? `BUY weight ${allocationWeightText(allocation.allocation_weight)}` : 'not selected / HOLD'}
+            {selected ? `BUY weight ${allocationWeightText(allocationWeight)}` : 'not selected / potential'}
           </p>
         </div>
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
@@ -1779,6 +1836,22 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
           <p className="text-[10px] normal-case text-muted-foreground">controller</p>
           <p className="mt-0.5 break-words sv-num text-[11px] font-semibold text-foreground">{controller}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] normal-case text-muted-foreground">expected return</p>
+          <p className="mt-0.5 sv-num text-sm font-semibold text-foreground">{percentText(allocation.expected_return, 2)}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] normal-case text-muted-foreground">risk estimate</p>
+          <p className="mt-0.5 sv-num text-sm font-semibold text-foreground">{percentText(allocation.risk_estimate, 2)}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] normal-case text-muted-foreground">allocator rank</p>
+          <p className="mt-0.5 sv-num text-sm font-semibold text-foreground">{countText(allocation.allocation_rank)}</p>
+        </div>
+        <div className="rounded-md border border-border/40 bg-background/50 p-2">
+          <p className="text-[10px] normal-case text-muted-foreground">selection reason</p>
+          <p className="mt-0.5 break-words text-[11px] font-semibold text-foreground">{selectionReason}</p>
         </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
@@ -2491,7 +2564,7 @@ function chipPlanNote(rec: any): string {
     const amount = Number(evidence.broker_net_amount_5d_billion)
     const direction = amount >= 0 ? '買超' : '賣超'
     const brokerCount = evidence.broker_count_latest ?? evidence.broker_count ?? null
-    return `興櫃券商分點近5日${direction}${fmtChipAmount(amount)}${brokerCount ? `，參與券商 ${brokerCount} 家` : ''}，只作籌碼輔助判讀。`
+    return `券商分點近5日${direction}${fmtChipAmount(amount)}${brokerCount ? `，參與券商 ${brokerCount} 家` : ''}，只作籌碼輔助判讀。`
   }
   const net = Number(rec.chip_cash_total_5d ?? rec.foreign_net_5d)
   if (Number.isFinite(net)) {
@@ -3030,6 +3103,8 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
           </div>
 
           <ScoreBreakdownV2 rec={rec} />
+
+          <FundamentalSnapshotBlock rec={rec} />
 
           <InstitutionalBrokerFlowBlock institutional={institutionalRaw} brokerFlow={brokerTopFlows} />
 

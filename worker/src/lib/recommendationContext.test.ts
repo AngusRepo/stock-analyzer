@@ -277,10 +277,18 @@ const forecastData = {
     latest_open: 900,
     latest_avg_price: 905,
     ml_diagnostics: buildMlDiagnostics(forecastData),
+    score_components: '{"version":"score_v2"}',
+    alpha_allocation: '{"engine":"sparse_tangent_inverse_risk"}',
+    institutional_raw_today: { schema_version: 'institutional_raw_today_v1' },
+    broker_top_flows_today: { schema_version: 'broker_level_top5_v1' },
   })
 
   assert(!('prediction_forecast_data' in card), 'card view should drop bulky forecast payload')
   assert(!('screener_funnel_timeline' in card), 'card view should drop bulky screener timeline')
   assert(card.ml_diagnostics?.dispersion?.rawRankStd === 0.073, 'card view must keep compact ML diagnostics')
   assert(card.ml_diagnostics?.forecastCalibration?.method === 'empirical_rank_bins_monotonic', 'card view must keep forecast calibration evidence')
+  assert(card.score_components === '{"version":"score_v2"}', 'card view must keep Score V2 payload')
+  assert(card.alpha_allocation === '{"engine":"sparse_tangent_inverse_risk"}', 'card view must keep sparse allocator payload')
+  assert(card.institutional_raw_today?.schema_version === 'institutional_raw_today_v1', 'card view must keep institutional raw card data')
+  assert(card.broker_top_flows_today?.schema_version === 'broker_level_top5_v1', 'card view must keep broker top-flow card data')
 }

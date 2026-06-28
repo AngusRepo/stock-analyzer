@@ -117,6 +117,80 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
   )
 }
 
+type MarketMaterializationItem = {
+  key: string
+  label: string
+  status: string
+  rows: number
+  latest_date: string | null
+  lag_days: number | null
+  required: boolean
+  source: string
+  scope: string
+  root_cause: string | null
+}
+
+function marketMaterializationItems(checks: DataQualityCheck[]): { check?: DataQualityCheck; items: MarketMaterializationItem[] } {
+  const check = checks.find((row) => row.id === 'market_dashboard_materialization')
+  const raw = check?.metrics?.materialization_checks
+  return {
+    check,
+    items: Array.isArray(raw) ? raw as MarketMaterializationItem[] : [],
+  }
+}
+
+function MarketMaterializationPanel({ checks }: { checks: DataQualityCheck[] }) {
+  const { check, items } = marketMaterializationItems(checks)
+  const tone = statusTone(check?.status)
+  return (
+    <WorkstationPanel title="Market Dashboard Materialization / 首頁資料匯入" kicker="canonical market sources used by the home dashboard">
+      <div className="border-b border-[#263247] bg-[#05070c] p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-sky-300" />
+            <p className="text-sm font-semibold text-slate-100">{check?.summary ?? '尚未取得首頁資料匯入檢查'}</p>
+          </div>
+          <WorkstationPill tone={tone}>{check?.status ?? 'missing'}</WorkstationPill>
+        </div>
+      </div>
+      <div className="grid gap-px bg-[#263247] md:grid-cols-2 xl:grid-cols-4">
+        {items.map((item) => {
+          const itemTone = statusTone(item.status)
+          const freshness = item.lag_days == null ? 'lag n/a' : `lag ${item.lag_days}d`
+          const colorClass = itemTone === 'ok'
+            ? 'text-emerald-300'
+            : itemTone === 'warn'
+              ? 'text-amber-300'
+              : itemTone === 'error'
+                ? 'text-rose-300'
+                : 'text-slate-300'
+          return (
+            <div key={item.key} className="min-w-0 bg-[#05070c] p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-slate-100">{item.label}</p>
+                  <p className="mt-1 truncate text-[11px] text-slate-500">{item.scope}</p>
+                </div>
+                <WorkstationPill tone={itemTone}>{item.status}</WorkstationPill>
+              </div>
+              <p className={`mt-3 sv-num text-xl font-semibold ${colorClass}`}>{item.rows}</p>
+              <MiniBar tone={itemTone} value={itemTone === 'ok' ? 92 : itemTone === 'warn' ? 58 : 100} />
+              <p className="mt-2 truncate sv-num text-[11px] normal-case text-slate-400">{item.latest_date ?? 'no date'} / {freshness}</p>
+              <p className="mt-1 truncate text-[11px] text-slate-500">{item.source}</p>
+              {item.root_cause && <p className="mt-1 truncate text-[11px] text-amber-300">{item.root_cause}</p>}
+            </div>
+          )
+        })}
+        {!items.length && (
+          <div className="bg-[#05070c] p-4 text-sm text-amber-200">
+            Data Quality report 尚未包含 market_dashboard_materialization。
+          </div>
+        )}
+      </div>
+    </WorkstationPanel>
+  )
+}
+
 function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boolean }) {
   const tone = statusTone(check.status)
   return (
@@ -221,6 +295,8 @@ export default function DataQualityPage() {
         />
 
         <DataRuntimeSourcePanel runtime={runtime.data} />
+
+        <MarketMaterializationPanel checks={checks} />
 
         <WorkstationPanel title="Actionable Data Gaps / 可處理缺口" kicker="fail and warn first">
           <div className="overflow-hidden">

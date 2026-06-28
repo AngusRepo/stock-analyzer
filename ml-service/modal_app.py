@@ -2448,38 +2448,53 @@ def _write_finlab_macro_context_to_d1() -> dict:
 
     finlab_macro_context_snapshot.login_finlab()
     rows = finlab_macro_context_snapshot.collect_snapshot()
-    statements = []
-    sql = """
-      INSERT INTO source_quality_metrics (
-        source, dataset, as_of_date, freshness_status, missing_rate,
-        duplicate_rate, schema_drift_status, entity_link_confidence,
-        latest_materialization, metrics_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(source, dataset, as_of_date) DO UPDATE SET
-        freshness_status=excluded.freshness_status,
-        missing_rate=excluded.missing_rate,
-        duplicate_rate=excluded.duplicate_rate,
-        schema_drift_status=excluded.schema_drift_status,
-        entity_link_confidence=excluded.entity_link_confidence,
-        latest_materialization=excluded.latest_materialization,
-        metrics_json=excluded.metrics_json,
-        created_at=datetime('now')
-    """.strip()
-    for row in rows:
-        statements.append((sql, [
-            row["source"],
-            row["dataset"],
-            row["as_of_date"],
-            row["freshness_status"],
-            row["missing_rate"],
-            row["duplicate_rate"],
-            row["schema_drift_status"],
-            row.get("entity_link_confidence"),
-            row.get("latest_materialization"),
-            json.dumps(row["metrics_json"], ensure_ascii=False, default=str),
-        ]))
+    canonical_rows = finlab_macro_context_snapshot.collect_canonical_regime_context_rows(rows)
+    statements = finlab_macro_context_snapshot.build_d1_upsert_statements(rows, canonical_rows)
     result = d1_client.batch_execute(statements, timeout=60.0, chunk_size=50)
-    return {"rows": len(rows), "writeback": result}
+    return {"rows": len(rows), "canonical_rows": len(canonical_rows), "writeback": result}
+
+
+def _write_external_evidence_to_d1(payload: dict, result: dict | None = None) -> dict:
+    import contextlib
+    import io
+    import json
+    import sys
+
+    for path in ("/root", "/root/tools"):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    target_date = str(payload.get("run_date") or (result or {}).get("target_date") or "").strip()
+    if target_date:
+        os.environ["TARGET_DATE"] = target_date
+        os.environ.setdefault("AS_OF_DATE", target_date)
+
+    from tools import materialize_external_evidence_once
+
+    if target_date:
+        materialize_external_evidence_once.TARGET_DATE = target_date
+        materialize_external_evidence_once.AS_OF_DATE = os.environ.get("AS_OF_DATE", target_date)
+
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        materialize_external_evidence_once.main()
+    output = stdout.getvalue()
+    parsed: dict = {}
+    for line in reversed([line.strip() for line in output.splitlines() if line.strip()]):
+        try:
+            candidate = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(candidate, dict):
+            parsed = candidate
+            break
+    return {
+        "status": "ok",
+        "target_date": materialize_external_evidence_once.TARGET_DATE,
+        "as_of_date": materialize_external_evidence_once.AS_OF_DATE,
+        "summary": parsed,
+        "stdout_tail": output[-4000:],
+    }
 
 
 @app.function(
@@ -2572,15 +2587,21 @@ def finlab_v4_backfill(payload: dict) -> dict:
             result["macro_context_writeback"] = _write_finlab_macro_context_to_d1()
         except Exception as exc:
             result["macro_context_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        try:
+            result["external_evidence_writeback"] = _write_external_evidence_to_d1(payload, result)
+        except Exception as exc:
+            result["external_evidence_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
         result["continue_evening_chain"] = bool(payload.get("continue_evening_chain"))
         duration_ms = int((time.time() - started) * 1000)
         macro_error = isinstance(result.get("macro_context_writeback"), dict) and result["macro_context_writeback"].get("status") == "error"
-        status = "success" if int(exit_code or 0) == 0 and not macro_error else "error"
+        external_error = isinstance(result.get("external_evidence_writeback"), dict) and result["external_evidence_writeback"].get("status") == "error"
+        status = "success" if int(exit_code or 0) == 0 and not macro_error and not external_error else "error"
         summary = (
             f"FinLab V4 backfill run_id={result.get('run_id', run_id)} "
             f"canonical={result.get('canonical_d1_apply') is not None} "
             f"rows={result.get('summary', {}).get('finlab_rows', 'n/a')} "
-            f"macro_context={result.get('macro_context_writeback', {}).get('status', 'ok')}"
+            f"macro_context={result.get('macro_context_writeback', {}).get('status', 'ok')} "
+            f"external_evidence={result.get('external_evidence_writeback', {}).get('status', 'ok')}"
         )
         callback = _post_worker_scheduler_callback(payload, result, status, summary, duration_ms)
         result["callback"] = callback

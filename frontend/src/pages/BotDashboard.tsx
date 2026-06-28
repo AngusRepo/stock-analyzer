@@ -57,13 +57,13 @@ function pctClass(pct: number): string {
 function signalBadge(signal: string) {
   const s = signal?.toUpperCase() ?? ''
   // 台股慣例：紅=買/漲, 綠=賣/跌
-  if (s.includes('POTENTIAL_BUY')) return <Badge className="border border-[#f6b45f]/55 bg-[#f6b45f]/20 px-2 py-0.5 text-[11px] text-[#ffe6c4]">POTENTIAL BUY</Badge>
+  if (s.includes('POTENTIAL_BUY')) return <Badge className="border border-yellow-200/70 bg-yellow-300/28 px-2 py-0.5 text-[11px] text-yellow-50">POTENTIAL BUY</Badge>
   if (s.includes('STRONG_BUY')) return <Badge className="border border-red-300/55 bg-red-500/85 px-2 py-0.5 text-[11px] text-white">STRONG BUY</Badge>
   if (s.includes('BUY'))        return <Badge className="border border-red-300/45 bg-red-500/80 px-2 py-0.5 text-[11px] text-white">BUY</Badge>
   if (s.includes('STRONG_SELL'))return <Badge className="border border-emerald-300/45 bg-emerald-500/20 px-2 py-0.5 text-[11px] text-emerald-100">STRONG SELL</Badge>
   if (s.includes('SELL'))       return <Badge className="border border-emerald-300/35 bg-emerald-500/18 px-2 py-0.5 text-[11px] text-emerald-100">SELL</Badge>
-  if (s.includes('NO_SIGNAL'))  return <Badge className="border-border/30 bg-slate-500/35 px-2 py-0.5 text-[11px] text-white">—</Badge>
-  return <Badge className="border-border/30 bg-slate-500/35 px-2 py-0.5 text-[11px] text-white">HOLD</Badge>
+  if (s.includes('NO_SIGNAL'))  return <Badge className="border border-sky-200/45 bg-sky-500/28 px-2 py-0.5 text-[11px] text-sky-50">—</Badge>
+  return <Badge className="border border-sky-200/45 bg-sky-500/28 px-2 py-0.5 text-[11px] text-sky-50">HOLD</Badge>
 }
 
 function recommendationSignalText(rec: any): string {
@@ -546,16 +546,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           sector: qf?.quadrant ?? sourceRec?.sector ?? '',
           reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
           watch_points: b.watch_points ?? sourceRec?.watch_points ?? null,
-          chip_score: b.chip_score ?? sourceRec?.chip_score ?? null,
-          tech_score: b.tech_score ?? sourceRec?.tech_score ?? null,
-          ml_score: b.ml_score ?? sourceRec?.ml_score ?? null,
-          score_components: b.score_components ?? b.score_v2 ?? sourceRec?.score_components ?? buildScoreV2PayloadFromProjectedScores(sourceRec ?? b),
+          chip_score: sourceRec?.chip_score ?? b.chip_score ?? null,
+          tech_score: sourceRec?.tech_score ?? b.tech_score ?? null,
+          ml_score: sourceRec?.ml_score ?? b.ml_score ?? null,
+          score_components: sourceRec?.score_components ?? b.score_components ?? b.score_v2 ?? buildScoreV2PayloadFromProjectedScores(sourceRec ?? b),
           alpha_context: b.alpha_context ?? sourceRec?.alpha_context ?? null,
           alpha_allocation: b.alpha_allocation ?? sourceRec?.alpha_allocation ?? null,
           ml_vote_summary: b.ml_vote_summary ?? sourceRec?.ml_vote_summary ?? null,
           prediction_forecast_data: b.prediction_forecast_data ?? sourceRec?.prediction_forecast_data ?? null,
-          institutional_raw_today: b.institutional_raw_today ?? sourceRec?.institutional_raw_today ?? null,
-          broker_top_flows_today: b.broker_top_flows_today ?? sourceRec?.broker_top_flows_today ?? null,
+          institutional_raw_today: sourceRec?.institutional_raw_today ?? b.institutional_raw_today ?? null,
+          broker_top_flows_today: sourceRec?.broker_top_flows_today ?? b.broker_top_flows_today ?? null,
         }
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
@@ -641,10 +641,10 @@ function CandidateRecommendationColumn({
         ring: 'ring-red-500/40',
       }
     : {
-        box: 'border-[#f6b45f]/20 bg-[#f6b45f]/[0.04]',
-        label: 'text-[#ffe0b3]',
-        badge: 'border-[#f6b45f]/45 bg-[#f6b45f]/15 text-[#ffe6c4]',
-        ring: 'ring-[#f6b45f]/40',
+        box: 'border-yellow-300/24 bg-yellow-300/[0.055]',
+        label: 'text-yellow-100',
+        badge: 'border-yellow-200/55 bg-yellow-300/20 text-yellow-50',
+        ring: 'ring-yellow-300/45',
       }
 
   return (
@@ -699,7 +699,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
         <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-300/40 bg-red-500/12 text-red-100">
           BUY {buyRecs.length}
         </Badge>
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-[#f6b45f]/45 bg-[#f6b45f]/15 text-[#ffe6c4]">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-yellow-200/55 bg-yellow-300/20 text-yellow-50">
           potential BUY {potentialBuyRecs.length}
         </Badge>
         <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">

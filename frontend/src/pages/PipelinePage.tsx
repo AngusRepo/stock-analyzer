@@ -547,12 +547,12 @@ function PipelineColumn({
   className?: string
 }) {
   return (
-    <Card className={`min-h-[520px] border-[#283140] bg-[#111319]/95 shadow-[0_18px_60px_rgba(0,0,0,0.18)] ${className}`}>
-      <CardHeader className="pb-2">
+    <Card className={`min-h-[520px] max-w-full overflow-hidden border-[#283140] bg-[#111319]/95 shadow-[0_18px_60px_rgba(0,0,0,0.18)] ${className}`}>
+      <CardHeader className="min-w-0 pb-2">
         <CardTitle className="text-base text-[#f5f7fb]">{title}</CardTitle>
-        <p className="text-sm leading-6 text-[#8f9bb0]">{subtitle}</p>
+        <p className="break-words text-sm leading-6 text-[#8f9bb0]">{subtitle}</p>
       </CardHeader>
-      <CardContent className="space-y-3 pt-0">
+      <CardContent className="min-w-0 space-y-3 overflow-hidden pt-0">
         {children}
       </CardContent>
     </Card>
@@ -619,7 +619,7 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
       title="Active strategy"
       subtitle={summary?.source_of_truth ?? 'strategy_pool_ids 尚未彙總；等待後端 funnel summary。'}
     >
-      <div className="grid gap-3 text-sm lg:grid-cols-3">
+      <div className="grid min-w-0 gap-3 text-sm lg:grid-cols-3">
         <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] p-3">
           <p className="text-xs text-cyan-200/80">策略數</p>
           <p className="mt-1 sv-num text-2xl font-semibold text-cyan-100">{countValue(summary?.active_strategy_count ?? strategies.length)}</p>
@@ -634,8 +634,8 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-        <div>
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+        <div className="min-w-0">
           <div className="mb-2 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-[#f5f7fb]">活躍策略</p>
             <Badge variant="outline" className="border-white/[0.12] bg-white/[0.04] text-[10px] text-[#9aa4b7]">
@@ -664,18 +664,18 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
           </div>
         </div>
 
-        <div>
+        <div className="min-w-0">
           <p className="mb-2 text-sm font-semibold text-[#f5f7fb]">策略 overlap / corr</p>
-          <div className="grid gap-2">
+          <div className="grid min-w-0 gap-2">
             {strongestPairs.length ? strongestPairs.map((row: any, index: number) => {
               const accent = SECTOR_ACCENTS[(index + 2) % SECTOR_ACCENTS.length]
               return (
-                <div key={`${row.left}-${row.right}`} className={`rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-xs`}>
-                  <div className={`truncate sv-num font-semibold ${accent.text}`} title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
-                  <div className="mt-2 grid grid-cols-3 gap-2 text-[#9aa4b7]">
-                    <span>overlap <b className="sv-num text-[#f5f7fb]">{countValue(row.overlap)}</b></span>
-                    <span>J <b className="sv-num text-[#f5f7fb]">{ratioValue(row.jaccard)}</b></span>
-                    <span>corr <b className="sv-num text-[#f5f7fb]">{ratioValue(row.corr)}</b></span>
+                <div key={`${row.left}-${row.right}`} className={`min-w-0 overflow-hidden rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-xs`}>
+                  <div className={`min-w-0 truncate sv-num font-semibold ${accent.text}`} title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
+                  <div className="mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,0.8fr)] gap-2 text-[#9aa4b7]">
+                    <span className="min-w-0 truncate">overlap <b className="sv-num text-[#f5f7fb]">{countValue(row.overlap)}</b></span>
+                    <span className="min-w-0 truncate">J <b className="sv-num text-[#f5f7fb]">{ratioValue(row.jaccard)}</b></span>
+                    <span className="min-w-0 truncate">corr <b className="sv-num text-[#f5f7fb]">{ratioValue(row.corr)}</b></span>
                   </div>
                 </div>
               )

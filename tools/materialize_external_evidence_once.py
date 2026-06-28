@@ -30,8 +30,8 @@ ACCOUNT = os.environ["CF_ACCOUNT_ID"]
 DB_ID = os.environ["CF_D1_DB_ID"]
 CF_TOKEN = os.environ["CF_API_TOKEN"]
 D1_ENDPOINT = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/d1/database/{DB_ID}/query"
-TARGET_DATE = os.environ.get("TARGET_DATE", "2026-05-15")
-AS_OF_DATE = os.environ.get("AS_OF_DATE", "2026-05-18")
+TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()
+AS_OF_DATE = os.environ.get("AS_OF_DATE", "").strip()
 GENERATED_AT = datetime.now(timezone.utc).isoformat()
 SSL_CTX = ssl._create_unverified_context()
 UA = "Mozilla/5.0 StockVision/4.1 ExternalEvidenceMaterializer"
@@ -59,6 +59,25 @@ def d1(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     if not first.get("success", True):
         raise RuntimeError(json.dumps(first, ensure_ascii=False)[:1000])
     return first.get("results") or []
+
+
+def resolve_run_dates() -> None:
+    global TARGET_DATE, AS_OF_DATE
+    if not TARGET_DATE:
+        rows = d1(
+            """
+            SELECT MAX(date) AS date
+            FROM daily_recommendations
+            WHERE signal IS NOT NULL
+              AND confidence IS NOT NULL
+              AND score_components LIKE '%score_v2%'
+            """
+        )
+        TARGET_DATE = str((rows[0] if rows else {}).get("date") or "").strip()
+    if not TARGET_DATE:
+        raise RuntimeError("TARGET_DATE not provided and no daily_recommendations date found")
+    if not AS_OF_DATE:
+        AS_OF_DATE = TARGET_DATE
 
 
 def fetch_text(url: str, timeout: int = 20, limit: int = 1_500_000) -> tuple[str, str]:
@@ -354,7 +373,7 @@ def build_gdelt_items(
 
     max_symbols = max(0, int(os.environ.get("GDELT_MAX_SYMBOLS", str(max_symbols))))
     max_total_items = max(1, int(os.environ.get("GDELT_MAX_TOTAL_ITEMS", str(max_total_items))))
-    timeout_seconds = max(2, int(os.environ.get("GDELT_FETCH_TIMEOUT_SECONDS", "5")))
+    timeout_seconds = max(2, int(os.environ.get("GDELT_FETCH_TIMEOUT_SECONDS", "12")))
     if max_symbols <= 0:
         return [], "disabled_max_symbols_0"
 
@@ -369,12 +388,15 @@ def build_gdelt_items(
     seen_urls: set[str] = set()
     failures = 0
 
-    for row in recommendations[:max_symbols]:
-        symbol = str(row.get("symbol") or "").strip()
-        name = str(row.get("name") or "").strip()
-        if not symbol or not name:
-            continue
-        query = f'"{name}"'
+    def append_articles(
+        *,
+        query: str,
+        symbols: list[str],
+        themes: list[str],
+        source_quality_score: float,
+        entity_linking_confidence: float,
+    ) -> None:
+        nonlocal failures
         try:
             articles = fetch_gdelt_doc_events(
                 query=query,
@@ -385,8 +407,7 @@ def build_gdelt_items(
             )
         except Exception:
             failures += 1
-            continue
-        themes = ["global_event_pressure", *tags_by_symbol.get(symbol, [])[:3]]
+            return
         for article in articles:
             url = str(article.get("url") or article.get("source_url") or "").strip()
             if not url or url in seen_urls:
@@ -394,20 +415,53 @@ def build_gdelt_items(
             seen_urls.add(url)
             item = normalize_gdelt_article(
                 {**article, "stockvision_query": query},
-                symbols=[symbol],
+                symbols=symbols,
                 themes=themes,
-                source_quality_score=0.52,
-                entity_linking_confidence=0.48,
+                source_quality_score=source_quality_score,
+                entity_linking_confidence=entity_linking_confidence,
             )
             item["source_kind"] = "gdelt_doc_article"
             item["allowed_use"] = "formal_shadow"
             item["decision_effect"] = "risk_context_only"
             items.append(item)
-            if len(items) >= max_total_items:
-                return items, "ok" if items else "no_rows"
+
+    for row in recommendations[:max_symbols]:
+        symbol = str(row.get("symbol") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not symbol or not name:
+            continue
+        query = f'"{name}"'
+        themes = ["global_event_pressure", *tags_by_symbol.get(symbol, [])[:3]]
+        append_articles(
+            query=query,
+            symbols=[symbol],
+            themes=themes,
+            source_quality_score=0.52,
+            entity_linking_confidence=0.48,
+        )
+        if len(items) >= max_total_items:
+            return items, "ok"
 
     if items:
         return items, "ok"
+
+    fallback_queries = [
+        '"Taiwan stock market" OR TAIEX',
+        '"Taiwan semiconductor" OR TSMC OR "AI chip"',
+        '"global market risk" OR "US dollar" OR VIX',
+    ]
+    for query in fallback_queries:
+        append_articles(
+            query=query,
+            symbols=[],
+            themes=["global_event_pressure", "market_risk_context"],
+            source_quality_score=0.46,
+            entity_linking_confidence=0.35,
+        )
+        if len(items) >= max_total_items:
+            return items[:max_total_items], "ok"
+    if items:
+        return items[:max_total_items], "ok"
     return [], "fetch_failed" if failures else "no_rows"
 
 
@@ -685,6 +739,7 @@ def upsert_quality(
 
 def main() -> None:
     d1("SELECT 1 AS ok")
+    resolve_run_dates()
     recommendations = d1(
         "SELECT symbol, name, market_segment, score FROM daily_recommendations WHERE date=? ORDER BY rank ASC LIMIT 80",
         [TARGET_DATE],

@@ -28,6 +28,23 @@ FIELDS = {
     },
 }
 
+CANONICAL_FIELD_ALIASES = {
+    "tw_business_indicators": {
+        "景氣對策信號(分)": "business_signal_score",
+        "領先指標綜合指數(點)": "leading_index",
+        "同時指標綜合指數(點)": "coincident_index",
+    },
+    "tw_total_pmi": {
+        "製造業PMI": "manufacturing_pmi",
+    },
+    "tw_total_nmi": {
+        "臺灣非製造業NMI": "non_manufacturing_nmi",
+    },
+    "tw_monetary_aggregates": {
+        "年增率(%)": "m2_yoy_pct",
+    },
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -98,19 +115,118 @@ def collect_snapshot() -> list[dict[str, Any]]:
     return out
 
 
+def collect_canonical_regime_context_rows(
+    rows: list[dict[str, Any]],
+    *,
+    generated_at: str | None = None,
+) -> list[dict[str, Any]]:
+    timestamp = generated_at or utc_now()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        dataset = str(row.get("dataset") or "").strip()
+        fields = ((row.get("metrics_json") or {}).get("fields") or {})
+        if not isinstance(fields, dict):
+            continue
+        for label, meta in fields.items():
+            if not isinstance(meta, dict):
+                continue
+            date = str(meta.get("date") or "").strip()[:10]
+            value = meta.get("value")
+            if not date or value is None:
+                continue
+            field = CANONICAL_FIELD_ALIASES.get(dataset, {}).get(str(label), str(label))
+            lineage = {
+                "schema_version": "finlab-macro-context-snapshot-v2",
+                "generated_at": timestamp,
+                "api_key": meta.get("api_key"),
+                "label": label,
+            }
+            out.append({
+                "date": date,
+                "dataset": dataset,
+                "field": field,
+                "category": "market",
+                "value": float(value),
+                "text_value": None,
+                "source": f"finlab.{dataset}",
+                "lineage_json": json.dumps(lineage, ensure_ascii=False, sort_keys=True),
+                "as_of_date": timestamp[:10],
+            })
+    return out
+
+
+def build_d1_upsert_statements(
+    rows: list[dict[str, Any]],
+    canonical_rows: list[dict[str, Any]] | None = None,
+) -> list[tuple[str, list[Any]]]:
+    statements: list[tuple[str, list[Any]]] = []
+    source_quality_sql = """
+      INSERT INTO source_quality_metrics (
+        source, dataset, as_of_date, freshness_status, missing_rate, duplicate_rate, schema_drift_status,
+        entity_link_confidence, latest_materialization, metrics_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(source, dataset, as_of_date) DO UPDATE SET
+        freshness_status=excluded.freshness_status,
+        missing_rate=excluded.missing_rate,
+        duplicate_rate=excluded.duplicate_rate,
+        schema_drift_status=excluded.schema_drift_status,
+        entity_link_confidence=excluded.entity_link_confidence,
+        latest_materialization=excluded.latest_materialization,
+        metrics_json=excluded.metrics_json,
+        created_at=datetime('now')
+    """.strip()
+    for row in rows:
+        statements.append((source_quality_sql, [
+            row["source"],
+            row["dataset"],
+            row["as_of_date"],
+            row["freshness_status"],
+            row["missing_rate"],
+            row["duplicate_rate"],
+            row["schema_drift_status"],
+            row.get("entity_link_confidence"),
+            row.get("latest_materialization"),
+            json.dumps(row["metrics_json"], ensure_ascii=False, default=str),
+        ]))
+
+    canonical_sql = """
+      INSERT INTO canonical_regime_context_daily (
+        date, dataset, field, category, value, text_value, source, lineage_json, as_of_date
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date, dataset, field, category, source) DO UPDATE SET
+        value=excluded.value,
+        text_value=excluded.text_value,
+        lineage_json=excluded.lineage_json,
+        as_of_date=excluded.as_of_date
+    """.strip()
+    canonical_source = canonical_rows if canonical_rows is not None else collect_canonical_regime_context_rows(rows)
+    for row in canonical_source:
+        statements.append((canonical_sql, [
+            row["date"],
+            row["dataset"],
+            row["field"],
+            row["category"],
+            row.get("value"),
+            row.get("text_value"),
+            row["source"],
+            row["lineage_json"],
+            row["as_of_date"],
+        ]))
+    return statements
+
+
+def _render_sql(statement: str, params: list[Any]) -> str:
+    parts = statement.split("?")
+    rendered = [parts[0]]
+    for idx, param in enumerate(params):
+        rendered.append(sql_quote(param))
+        rendered.append(parts[idx + 1])
+    return "".join(rendered).strip() + ";"
+
+
 def write_sql_file(rows: list[dict[str, Any]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = []
-    for row in rows:
-        lines.append(
-            "INSERT INTO source_quality_metrics "
-            "(source, dataset, as_of_date, freshness_status, missing_rate, duplicate_rate, schema_drift_status, "
-            "entity_link_confidence, latest_materialization, metrics_json, created_at) VALUES ("
-            f"{sql_quote(row['source'])}, {sql_quote(row['dataset'])}, {sql_quote(row['as_of_date'])}, "
-            f"{sql_quote(row['freshness_status'])}, {sql_quote(row['missing_rate'])}, {sql_quote(row['duplicate_rate'])}, "
-            f"{sql_quote(row['schema_drift_status'])}, {sql_quote(row['entity_link_confidence'])}, "
-            f"{sql_quote(row['latest_materialization'])}, {sql_quote(json.dumps(row['metrics_json'], ensure_ascii=False))}, datetime('now'));"
-        )
+    lines = [_render_sql(sql, params) for sql, params in build_d1_upsert_statements(rows)]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

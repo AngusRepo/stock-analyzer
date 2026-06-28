@@ -311,20 +311,20 @@ function volatilityStressScore(usVix: number | null, twVol20: number | null) {
 }
 
 function deriveHedgeSentimentScore(risk: any) {
+  const hedgeSource = risk?.hedgeSentiment?.source ?? '專屬避險分數'
   if (risk?.hedgeSentiment) {
     const explicitHedgeScore = asNumber(risk.hedgeSentiment.score)
-    return {
-      score: explicitHedgeScore == null ? null : clampScore(explicitHedgeScore),
-      source: risk.hedgeSentiment.source ?? '專屬避險分數',
-    }
+    if (explicitHedgeScore != null) return { score: clampScore(explicitHedgeScore), source: hedgeSource }
   }
+  const hedgeFactors = asArray<RiskFactor>(risk?.hedgeSentimentFactors)
+  const hedgeRaw = (id: string) => asNumber(hedgeFactors.find((factor) => String(factor.id ?? '') === id)?.raw_value)
   const explicit = asNumber(risk?.hedgeScore ?? risk?.hedgeRiskValue)
   const riskScore = asNumber(risk?.riskScore ?? risk?.risk_score)
-  const usVix = asNumber(risk?.vix ?? risk?.usVix)
-  const twVol20 = asNumber(risk?.twiiVol20 ?? risk?.realizedVol20)
+  const usVix = asNumber(risk?.vix ?? risk?.usVix ?? hedgeRaw('us_vix'))
+  const twVol20 = asNumber(risk?.twiiVol20 ?? risk?.realizedVol20 ?? hedgeRaw('twii_vol20'))
   const volScore = volatilityStressScore(usVix, twVol20)
 
-  if (explicit != null) return { score: clampScore(explicit), source: risk?.hedgeSentiment?.source ?? '專屬避險分數' }
+  if (explicit != null) return { score: clampScore(explicit), source: hedgeSource }
   if (riskScore != null && volScore != null) return { score: clampScore(riskScore * 0.75 + volScore * 0.25), source: '市場風險 + 波動 overlay' }
   if (riskScore != null) return { score: clampScore(riskScore), source: '市場風險 fallback' }
   if (volScore != null) return { score: clampScore(volScore), source: 'VIX / 台股波動 fallback' }
@@ -601,9 +601,9 @@ function FearGreedCard({ risk }: { risk: any }) {
   const factors = asArray<RiskFactor>(index.factors)
   const byFactorId = (id: string) => factors.find((factor) => String(factor.id ?? '') === id) ?? null
   const momentum = byFactorId('market_momentum')
-  const breadth = byFactorId('market_breadth')
-  const globalRisk = byFactorId('global_risk_appetite')
-  const businessCycle = byFactorId('business_cycle_heat')
+  const optionsPositioning = byFactorId('options_positioning')
+  const volatilityPressure = byFactorId('volatility_pressure')
+  const creditStress = byFactorId('credit_stress')
   const factorTone = (factor: RiskFactor | null) => fearGreedTone(asNumber(factor?.score))
 
   return (
@@ -640,9 +640,9 @@ function FearGreedCard({ risk }: { risk: any }) {
 
       <div className="mt-4 grid grid-cols-2 gap-3">
         <HedgeFactor label="市場動能" value={factorDisplay(momentum, '待接資料')} note="20MA 偏離" tone={factorTone(momentum)} />
-        <HedgeFactor label="市場廣度" value={factorDisplay(breadth, '待接資料')} note="上漲 / 下跌" tone={factorTone(breadth)} />
-        <HedgeFactor label="全球風險偏好" value={factorDisplay(globalRisk, '待接資料')} note="S&P 500 / SOX" tone={factorTone(globalRisk)} />
-        <HedgeFactor label="景氣熱度" value={factorDisplay(businessCycle, '待接資料')} note="景氣對策信號" tone={factorTone(businessCycle)} />
+        <HedgeFactor label="選擇權情緒" value={factorDisplay(optionsPositioning, '待接 PCR')} note="賣買權量比" tone={factorTone(optionsPositioning)} />
+        <HedgeFactor label="波動壓力" value={factorDisplay(volatilityPressure, '待接資料')} note="VIX / 台股波動" tone={factorTone(volatilityPressure)} />
+        <HedgeFactor label="信用風險" value={factorDisplay(creditStress, '待接資料')} note="高收益債利差" tone={factorTone(creditStress)} />
       </div>
     </section>
   )
@@ -676,6 +676,7 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   const usVix = asNumber(usVixFactor?.raw_value ?? risk?.vix ?? risk?.usVix)
   const twVol20 = asNumber(twVolFactor?.raw_value ?? risk?.twiiVol20 ?? risk?.realizedVol20)
   const hedgeLabel = risk?.hedgeSentiment?.label ?? riskLevelLabel(normalized, null)
+  const hedgeMarker = normalized == null ? 0 : Math.max(0, Math.min(100, normalized))
 
   return (
     <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
@@ -698,7 +699,14 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
             <p className={cx('mt-1 text-2xl font-bold tabular-nums', toneText(riskTone(normalized)))}>{normalized == null ? '待接資料' : normalized.toFixed(0)}</p>
           </div>
         </div>
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[linear-gradient(90deg,#22c55e_0%,#84cc16_28%,#f59e0b_52%,#f97316_73%,#ef4444_100%)]" />
+        <div className="relative mt-3 h-1.5 rounded-full bg-[linear-gradient(90deg,#22c55e_0%,#84cc16_28%,#f59e0b_52%,#f97316_73%,#ef4444_100%)]">
+          {normalized != null && (
+            <span
+              className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,0.45)]"
+              style={{ left: `${hedgeMarker}%` }}
+            />
+          )}
+        </div>
         <div className="mt-2 flex justify-between text-[11px] text-slate-500">
           <span>正常</span>
           <span>中性</span>
@@ -1331,7 +1339,7 @@ function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_L
 function RecommendationPanel() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['recommendations', 'daily', 'home'],
-    queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }).catch(() => ({ recommendations: [] })),
+    queryFn: () => recommendationsApi.daily().catch(() => ({ recommendations: [] })),
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })

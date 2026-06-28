@@ -4,7 +4,7 @@ import ast
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -76,6 +76,16 @@ def _filter_dates(df: pl.DataFrame, *, start_date: str | None, end_date: str | N
     if end_date:
         out = out.filter(pl.col(date_col) <= end_date)
     return out
+
+
+def _shift_start_date(start_date: str | None, lookback_days: int | None) -> str | None:
+    if not start_date or not lookback_days or lookback_days <= 0:
+        return start_date
+    try:
+        parsed = datetime.fromisoformat(start_date[:10]).date()
+    except ValueError:
+        return start_date
+    return (parsed - timedelta(days=lookback_days)).isoformat()
 
 
 def _wide_field_to_long(path: Path, field: str, *, start_date: str | None, end_date: str | None) -> pl.DataFrame:
@@ -470,6 +480,7 @@ def build_market_index_rows(
             artifact_root=artifact_root,
             lane="regime_context",
             source="finlab.etl.finlab_tw_stock_market_ind",
+            default_symbol="TWII",
             start_date=start_date,
             end_date=end_date,
         ))
@@ -715,17 +726,18 @@ def build_regime_context_rows(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     specs = [
-        ("regime_context", "tw_business_indicators", "business_signal_score", "finlab.tw_business_indicators", "business_signal_score"),
-        ("regime_context", "tw_option_put_call_ratio", None, "finlab.tw_option_put_call_ratio", "tw_option_put_call_ratio"),
-        ("regime_context", "tw_taifex_futures_large_trader", None, "finlab.tw_taifex_futures_large_trader", "tw_taifex_futures_large_trader"),
-        ("regime_context", "tw_taifex_option_large_trader", None, "finlab.tw_taifex_option_large_trader", "tw_taifex_option_large_trader"),
-        ("global_context", "world_index", "world_close", "finlab.world_index", "world_close"),
+        ("regime_context", "tw_business_indicators", "business_signal_score", "finlab.tw_business_indicators", "business_signal_score", 370),
+        ("regime_context", "tw_option_put_call_ratio", None, "finlab.tw_option_put_call_ratio", "tw_option_put_call_ratio", None),
+        ("regime_context", "tw_taifex_futures_large_trader", None, "finlab.tw_taifex_futures_large_trader", "tw_taifex_futures_large_trader", None),
+        ("regime_context", "tw_taifex_option_large_trader", None, "finlab.tw_taifex_option_large_trader", "tw_taifex_option_large_trader", None),
+        ("global_context", "world_index", "world_close", "finlab.world_index", "world_close", None),
     ]
     rows: list[dict[str, Any]] = []
-    for lane, dataset, field_alias, source, filename in specs:
+    for lane, dataset, field_alias, source, filename, lookback_days in specs:
         frame = _read_parquet(artifact_root / "raw" / lane / f"{filename}.parquet")
         if frame.is_empty():
             continue
+        context_start_date = _shift_start_date(start_date, lookback_days)
         rows.extend(_context_rows_from_frame(
             frame,
             run_id=run_id,
@@ -735,7 +747,7 @@ def build_regime_context_rows(
             dataset=dataset,
             source=source,
             field_alias=field_alias,
-            start_date=start_date,
+            start_date=context_start_date,
             end_date=end_date,
         ))
 

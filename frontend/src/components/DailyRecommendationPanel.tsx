@@ -461,7 +461,7 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
       quadrant: f.quadrant,
     }))
 
-  if (!data.length) return <p className="text-xs text-muted-foreground">RRG 資料尚未產生（需累積 5+ 交易日）</p>
+  if (!data.length) return <p className="text-sm text-muted-foreground">RRG 資料尚未產生（需累積 5+ 交易日）</p>
 
   const QUADRANT_COLORS: Record<string, string> = {
     Leading: '#10b981', Improving: '#3b82f6', Weakening: '#f59e0b', Lagging: '#ef4444',
@@ -469,15 +469,15 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
 
   return (
     <div>
-      <p className="text-xs text-muted-foreground mb-2">RRG 四象限圖</p>
+      <p className="mb-3 text-sm font-medium text-slate-300">RRG 四象限圖</p>
       <div className="h-96 min-h-[24rem] w-full overflow-visible pb-2">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 28, right: 28, bottom: 48, left: 28 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
             <XAxis type="number" dataKey="x" name="RS-Ratio" domain={['auto', 'auto']}
-              tick={{ fontSize: 12, fill: '#999' }} label={{ value: 'RS-Ratio', position: 'bottom', fontSize: 12, fill: '#888' }} />
+              tick={{ fontSize: 13, fill: '#aab4c6' }} label={{ value: 'RS-Ratio', position: 'bottom', fontSize: 13, fill: '#9aa4b7' }} />
             <YAxis type="number" dataKey="y" name="RS-Momentum" domain={['auto', 'auto']}
-              tick={{ fontSize: 12, fill: '#999' }} label={{ value: 'Momentum', angle: -90, position: 'insideLeft', fontSize: 12, fill: '#888' }} />
+              tick={{ fontSize: 13, fill: '#aab4c6' }} label={{ value: 'Momentum', angle: -90, position: 'insideLeft', fontSize: 13, fill: '#9aa4b7' }} />
             <ZAxis type="number" dataKey="z" range={[40, 300]} />
             <ReferenceLine x={100} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 4" />
             <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 4" />
@@ -486,7 +486,7 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
                 if (!payload?.length) return null
                 const d = payload[0].payload
                 return (
-                  <div className="bg-card border border-border rounded px-2 py-1 text-xs">
+                  <div className="rounded border border-border bg-card px-3 py-2 text-sm">
                     <p className="font-medium">{d.name}</p>
                     <p className="text-muted-foreground">RS: {d.x?.toFixed(1)} | Mom: {d.y?.toFixed(1)}</p>
                     <p style={{ color: QUADRANT_COLORS[d.quadrant] }}>{d.quadrant}</p>
@@ -500,7 +500,7 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
                 const d = data[index]
                 if (!d) return null
                 return (
-                  <text x={x} y={y - 10} textAnchor="middle" fontSize={10} fontWeight={500}
+                  <text x={x} y={y - 12} textAnchor="middle" fontSize={12} fontWeight={700}
                     fill={QUADRANT_COLORS[d.quadrant] ?? '#888'} opacity={0.9}>
                     {d.name}
                   </text>
@@ -515,10 +515,10 @@ function RRGScatterChart({ flows }: { flows: any[] }) {
         </ResponsiveContainer>
       </div>
       {/* Quadrant legend */}
-      <div className="flex justify-center gap-4 mt-1">
+      <div className="mt-2 flex justify-center gap-4">
         {Object.entries(QUADRANT_COLORS).map(([q, c]) => (
-          <span key={q} className="flex items-center gap-1 text-xs text-muted-foreground">
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: c }} />
+          <span key={q} className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c }} />
             {q}
           </span>
         ))}
@@ -547,22 +547,22 @@ function QuadrantFilterLog() {
 
   return (
     <div>
-      <p className="text-xs text-muted-foreground mb-2">T2 精篩紀錄（{data?.date ?? today}）</p>
+      <p className="mb-2 text-sm font-medium text-slate-300">T2 精篩紀錄（{data?.date ?? today}）</p>
       <div className="space-y-1">
         {log.map((entry: any, i: number) => (
-          <div key={i} className="flex items-center gap-2 text-xs">
+          <div key={i} className="flex items-center gap-2 text-sm">
             <span className="w-16 sv-num">{entry.symbol}</span>
             <span className="text-muted-foreground truncate flex-1">{entry.name}</span>
-            <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0',
+            <Badge variant="outline" className={cn('px-2 py-0.5 text-xs',
               QUADRANT_STYLE[entry.quadrant]?.cls ?? '')}>
               {entry.quadrant}
             </Badge>
             {entry.momentum_dir && (
-              <span className={cn('text-[10px]', entry.momentum_dir === 'up' ? 'text-red-400' : 'text-emerald-400')}>
+              <span className={cn('text-xs', entry.momentum_dir === 'up' ? 'text-red-400' : 'text-emerald-400')}>
                 {entry.momentum_dir === 'up' ? '▲' : '▼'}
               </span>
             )}
-            <span className={cn('font-medium text-[10px] w-16 text-right', ACTION_STYLE[entry.action] ?? '')}>
+            <span className={cn('w-16 text-right text-xs font-medium', ACTION_STYLE[entry.action] ?? '')}>
               {entry.action}
             </span>
           </div>
@@ -599,7 +599,7 @@ export function BotThemeFlowPanel() {
 
   return (
     <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/80 p-4">
-      <h3 className="text-sm font-medium mb-3 flex items-center gap-2 text-[#fff7e8]">
+      <h3 className="mb-3 flex items-center gap-2 text-base font-semibold text-[#fff7e8]">
         <BarChart3 className="w-4 h-4 text-[#d6a85f]" />
         主題輪動 + RRG 四象限
       </h3>
@@ -609,7 +609,7 @@ export function BotThemeFlowPanel() {
           {[1, 2, 3, 4].map(i => <div key={i} className="h-5 rounded bg-muted/40 animate-pulse" />)}
         </div>
       ) : allFlows.length === 0 ? (
-        <p className="text-xs text-muted-foreground">尚無主題資料</p>
+        <p className="text-sm text-muted-foreground">尚無主題資料</p>
       ) : (
         <div className="space-y-5">
           {/* RRG Scatter */}

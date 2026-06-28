@@ -25,6 +25,28 @@ const SIGNAL_STYLE: Record<string, { label: string; cls: string }> = {
   STRONG_SELL:{ label: '強烈賣出', cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
 }
 
+const SECTOR_ACCENTS = [
+  { border: 'border-cyan-400/25', bg: 'bg-cyan-400/[0.07]', text: 'text-cyan-200', bar: 'bg-cyan-400' },
+  { border: 'border-amber-400/25', bg: 'bg-amber-400/[0.08]', text: 'text-amber-200', bar: 'bg-amber-400' },
+  { border: 'border-emerald-400/25', bg: 'bg-emerald-400/[0.07]', text: 'text-emerald-200', bar: 'bg-emerald-400' },
+  { border: 'border-rose-400/25', bg: 'bg-rose-400/[0.07]', text: 'text-rose-200', bar: 'bg-rose-400' },
+  { border: 'border-violet-400/25', bg: 'bg-violet-400/[0.07]', text: 'text-violet-200', bar: 'bg-violet-400' },
+  { border: 'border-blue-400/25', bg: 'bg-blue-400/[0.07]', text: 'text-blue-200', bar: 'bg-blue-400' },
+]
+
+const FLOW_STEP_ACCENTS = [
+  'border-cyan-400/25 bg-cyan-400/[0.07] text-cyan-200',
+  'border-amber-400/25 bg-amber-400/[0.08] text-amber-200',
+  'border-violet-400/25 bg-violet-400/[0.07] text-violet-200',
+  'border-emerald-400/25 bg-emerald-400/[0.07] text-emerald-200',
+]
+
+function sectorAccent(seed: string, index: number) {
+  let hash = index
+  for (const char of seed) hash = (hash * 31 + char.charCodeAt(0)) % 997
+  return SECTOR_ACCENTS[Math.abs(hash) % SECTOR_ACCENTS.length]
+}
+
 function fmt(n: number | null | undefined, decimals = 0): string {
   if (n == null) return '-'
   return n.toLocaleString('zh-TW', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
@@ -513,12 +535,22 @@ function ratioValue(value: unknown): string {
   return Number.isFinite(numeric) ? numeric.toFixed(3) : 'N/A'
 }
 
-function PipelineColumn({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+function PipelineColumn({
+  title,
+  subtitle,
+  children,
+  className = '',
+}: {
+  title: string
+  subtitle: string
+  children: React.ReactNode
+  className?: string
+}) {
   return (
-    <Card className="min-h-[520px] border-border bg-card">
+    <Card className={`min-h-[520px] border-[#283140] bg-[#111319]/95 shadow-[0_18px_60px_rgba(0,0,0,0.18)] ${className}`}>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        <p className="text-xs leading-5 text-muted-foreground">{subtitle}</p>
+        <CardTitle className="text-base text-[#f5f7fb]">{title}</CardTitle>
+        <p className="text-sm leading-6 text-[#8f9bb0]">{subtitle}</p>
       </CardHeader>
       <CardContent className="space-y-3 pt-0">
         {children}
@@ -543,29 +575,32 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
       subtitle={summary?.run_id ? `${summary.run_id} / BUY ${countValue(summary?.buy_signal_count)} / published ${countValue(summary?.recommendation_count ?? summary?.final_count)}` : 'API 尚未提供完整 funnel stage counts；先顯示推薦列可觀測數。'}
     >
       <div className="space-y-2">
-        {layers.map((row: any) => (
-          <div key={row.layer} className="rounded-lg border border-border bg-background/35 p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <p className="sv-num text-sm font-semibold text-primary">{row.layer}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">{row.label}</p>
+        {layers.map((row: any, index: number) => {
+          const accent = SECTOR_ACCENTS[index % SECTOR_ACCENTS.length]
+          return (
+            <div key={row.layer} className={`rounded-xl border ${accent.border} ${accent.bg} p-3`}>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className={`sv-num text-base font-semibold ${accent.text}`}>{row.layer}</p>
+                  <p className="mt-1 text-xs text-[#9aa4b7]">{row.label}</p>
+                </div>
+                <Badge variant="outline" className="max-w-[10rem] truncate border-white/[0.12] bg-black/20 sv-num text-[10px]" title={row.stage}>
+                  {row.stage}
+                </Badge>
               </div>
-              <Badge variant="outline" className="max-w-[10rem] truncate sv-num text-[10px]" title={row.stage}>
-                {row.stage}
-              </Badge>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-2">
+                  <p className="text-[10px] text-emerald-300">通過</p>
+                  <p className="mt-1 sv-num text-lg font-semibold text-emerald-200">{countValue(row.passed)}</p>
+                </div>
+                <div className="rounded-md border border-rose-500/20 bg-rose-500/10 p-2">
+                  <p className="text-[10px] text-rose-300">淘汰</p>
+                  <p className="mt-1 sv-num text-lg font-semibold text-rose-200">{countValue(row.eliminated)}</p>
+                </div>
+              </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-2">
-                <p className="text-[10px] text-emerald-300">通過</p>
-                <p className="mt-1 sv-num text-lg font-semibold text-emerald-200">{countValue(row.passed)}</p>
-              </div>
-              <div className="rounded-md border border-rose-500/20 bg-rose-500/10 p-2">
-                <p className="text-[10px] text-rose-300">淘汰</p>
-                <p className="mt-1 sv-num text-lg font-semibold text-rose-200">{countValue(row.eliminated)}</p>
-              </div>
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </PipelineColumn>
   )
@@ -574,81 +609,111 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
 function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: ReturnType<typeof buildScreenerSectorSummary> }) {
   const strategies = Array.isArray(summary?.strategies) ? summary.strategies : []
   const pairwise = Array.isArray(summary?.pairwise) ? summary.pairwise : []
+  const visibleStrategies = strategies.slice(0, 12)
   const strongestPairs = [...pairwise]
     .sort((a: any, b: any) => Number(b.jaccard ?? -1) - Number(a.jaccard ?? -1))
-    .slice(0, 6)
+    .slice(0, 4)
   return (
     <PipelineColumn
+      className="xl:col-span-2"
       title="Active strategy"
       subtitle={summary?.source_of_truth ?? 'strategy_pool_ids 尚未彙總；等待後端 funnel summary。'}
     >
-      <div className="grid grid-cols-3 gap-2 text-xs">
-        <div className="rounded-md border border-border bg-background/35 p-2">
-          <p className="text-[10px] text-muted-foreground">策略數</p>
-          <p className="mt-1 sv-num text-base font-semibold">{countValue(summary?.active_strategy_count ?? strategies.length)}</p>
+      <div className="grid gap-3 text-sm lg:grid-cols-3">
+        <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] p-3">
+          <p className="text-xs text-cyan-200/80">策略數</p>
+          <p className="mt-1 sv-num text-2xl font-semibold text-cyan-100">{countValue(summary?.active_strategy_count ?? strategies.length)}</p>
         </div>
-        <div className="rounded-md border border-border bg-background/35 p-2">
-          <p className="text-[10px] text-muted-foreground">Avg Jaccard</p>
-          <p className="mt-1 sv-num text-base font-semibold">{ratioValue(summary?.avg_jaccard)}</p>
+        <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.07] p-3">
+          <p className="text-xs text-amber-200/80">Avg Jaccard</p>
+          <p className="mt-1 sv-num text-2xl font-semibold text-amber-100">{ratioValue(summary?.avg_jaccard)}</p>
         </div>
-        <div className="rounded-md border border-border bg-background/35 p-2">
-          <p className="text-[10px] text-muted-foreground">Avg Corr</p>
-          <p className="mt-1 sv-num text-base font-semibold">{ratioValue(summary?.avg_corr)}</p>
+        <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-3">
+          <p className="text-xs text-emerald-200/80">Avg Corr</p>
+          <p className="mt-1 sv-num text-2xl font-semibold text-emerald-100">{ratioValue(summary?.avg_corr)}</p>
         </div>
       </div>
 
-      <div className="max-h-[210px] space-y-1 overflow-y-auto pr-1">
-        {strategies.length ? strategies.map((row: any) => (
-          <div key={row.strategy_id} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-xs">
-            <span className="truncate sv-num" title={row.strategy_id}>{row.strategy_id}</span>
-            <Badge variant="outline" className="sv-num text-[10px]">{countValue(row.selected_count)} 檔</Badge>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+        <div>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-[#f5f7fb]">活躍策略</p>
+            <Badge variant="outline" className="border-white/[0.12] bg-white/[0.04] text-[10px] text-[#9aa4b7]">
+              {visibleStrategies.length}/{strategies.length || 0}
+            </Badge>
           </div>
-        )) : (
-          <p className="rounded-md border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground">今日推薦列沒有 strategy_pool_ids 彙總資料。</p>
-        )}
-      </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {visibleStrategies.length ? visibleStrategies.map((row: any, index: number) => {
+              const accent = SECTOR_ACCENTS[index % SECTOR_ACCENTS.length]
+              return (
+                <div key={row.strategy_id ?? index} className={`rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-sm`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`truncate sv-num font-semibold ${accent.text}`} title={row.strategy_id}>{row.strategy_id}</span>
+                    <Badge variant="outline" className="border-white/[0.12] bg-black/20 sv-num text-[10px]">
+                      {countValue(row.selected_count)} 檔
+                    </Badge>
+                  </div>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/30">
+                    <div className={`h-full rounded-full ${accent.bar}`} style={{ width: `${Math.min(100, Math.max(8, Number(row.selected_count ?? 0) * 12))}%` }} />
+                  </div>
+                </div>
+              )
+            }) : (
+              <p className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-3 text-sm text-[#9aa4b7] md:col-span-2">今日推薦列沒有 strategy_pool_ids 彙總資料。</p>
+            )}
+          </div>
+        </div>
 
-      <div className="space-y-1">
-        <p className="text-[11px] font-semibold text-muted-foreground">策略 overlap / corr</p>
-        {strongestPairs.length ? strongestPairs.map((row: any) => (
-          <div key={`${row.left}-${row.right}`} className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-[11px]">
-            <div className="truncate sv-num text-foreground" title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
-            <div className="mt-1 flex gap-2 text-muted-foreground">
-              <span>overlap {countValue(row.overlap)}</span>
-              <span>J {ratioValue(row.jaccard)}</span>
-              <span>corr {ratioValue(row.corr)}</span>
-            </div>
+        <div>
+          <p className="mb-2 text-sm font-semibold text-[#f5f7fb]">策略 overlap / corr</p>
+          <div className="grid gap-2">
+            {strongestPairs.length ? strongestPairs.map((row: any, index: number) => {
+              const accent = SECTOR_ACCENTS[(index + 2) % SECTOR_ACCENTS.length]
+              return (
+                <div key={`${row.left}-${row.right}`} className={`rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-xs`}>
+                  <div className={`truncate sv-num font-semibold ${accent.text}`} title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-[#9aa4b7]">
+                    <span>overlap <b className="sv-num text-[#f5f7fb]">{countValue(row.overlap)}</b></span>
+                    <span>J <b className="sv-num text-[#f5f7fb]">{ratioValue(row.jaccard)}</b></span>
+                    <span>corr <b className="sv-num text-[#f5f7fb]">{ratioValue(row.corr)}</b></span>
+                  </div>
+                </div>
+              )
+            }) : (
+              <p className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-3 text-sm text-[#9aa4b7]">策略兩兩比較需要至少 2 個策略且有選股集合。</p>
+            )}
           </div>
-        )) : (
-          <p className="rounded-md border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground">策略兩兩比較需要至少 2 個策略且有選股集合。</p>
-        )}
+        </div>
       </div>
 
       {sectors.length > 0 && (
-        <div className="space-y-1 border-t border-border pt-3">
-          <p className="text-[11px] font-semibold text-muted-foreground">產業/題材脈絡</p>
-          {sectors.slice(0, 3).map((row) => (
-            <div key={row.sector} className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5 text-[11px]">
-              <p className="font-semibold">{row.sector} · {row.count} 檔</p>
-              <p className="mt-0.5 text-muted-foreground">{row.strategyText}</p>
-            </div>
-          ))}
+        <div className="border-t border-white/[0.08] pt-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-[#f5f7fb]">產業/題材脈絡</p>
+            <span className="text-xs text-[#8f9bb0]">依推薦列彙總，每個產業保留不同色彩提示</span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            {sectors.slice(0, 8).map((row, index) => {
+              const accent = sectorAccent(row.sector, index)
+              return (
+                <div key={row.sector} className={`rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-xs`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className={`font-semibold ${accent.text}`}>{row.sector}</p>
+                    <span className="rounded-full border border-white/[0.12] bg-black/20 px-2 py-0.5 sv-num text-[10px] text-[#dfe7f5]">{row.count} 檔</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {row.symbols.map((symbol) => (
+                      <span key={symbol} className="rounded-full border border-white/[0.08] bg-black/20 px-2 py-0.5 sv-num text-[10px] text-[#dfe7f5]">{symbol}</span>
+                    ))}
+                  </div>
+                  <p className="mt-2 leading-5 text-[#a5afc2]">{row.themeText}</p>
+                  <p className="mt-1 leading-5 text-[#7f8da3]">{row.rotationText}</p>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
-    </PipelineColumn>
-  )
-}
-
-function RecommendationSummaryColumn({ rows }: { rows: any[] }) {
-  return (
-    <PipelineColumn title="今日推薦股票" subtitle="包含 BUY 與 HOLD；按 Score V2 最終分排序。">
-      <div className="max-h-[470px] space-y-1 overflow-y-auto pr-1">
-        {rows.length ? rows.map((rec: any, index: number) => (
-          <StockRow key={rec.symbol ?? index} rec={rec} rank={index + 1} />
-        )) : (
-          <p className="rounded-md border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有 BUY/HOLD 推薦列。</p>
-        )}
-      </div>
     </PipelineColumn>
   )
 }
@@ -674,13 +739,13 @@ function ExecutionFlowColumn({
     <PipelineColumn title="辯論與模擬掛單" subtitle={`BUY signal only → debate → quote sanity → execution audit（${pbDate || 'latest'}）`}>
       <div className="grid gap-2">
         {steps.map((step, index) => (
-          <div key={step.label} className="grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs">
-            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-[#3a3125] sv-num text-[#d6a85f]">{index + 1}</span>
+          <div key={step.label} className={`grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-xl border p-2 text-sm ${FLOW_STEP_ACCENTS[index % FLOW_STEP_ACCENTS.length]}`}>
+            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.12] bg-black/25 sv-num">{index + 1}</span>
             <div>
-              <p className="font-semibold text-foreground">{step.label}</p>
-              <p className="text-[11px] text-muted-foreground">{step.detail}</p>
+              <p className="font-semibold text-[#f5f7fb]">{step.label}</p>
+              <p className="text-xs text-[#9aa4b7]">{step.detail}</p>
             </div>
-            <span className="text-right sv-num text-sm font-semibold text-primary">{step.value}</span>
+            <span className="text-right sv-num text-base font-semibold">{step.value}</span>
           </div>
         ))}
       </div>
@@ -811,7 +876,6 @@ export default function PipelinePage() {
           <div className="grid gap-4 xl:grid-cols-4">
             <FunnelSummaryColumn summary={recData?.funnel_summary} fallbackCount={recommendationRows.length} />
             <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
-            <RecommendationSummaryColumn rows={recommendationRows} />
             <ExecutionFlowColumn pendingBuys={pendingBuys} pbDate={pbDate} qfList={qfList} candidateCount={l4BuyCount} />
           </div>
         )}

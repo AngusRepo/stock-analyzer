@@ -33,7 +33,6 @@ import {
   WorkstationPanel,
   WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
-import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 import { buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -73,6 +72,54 @@ function recommendationSignalText(rec: any): string {
 function isBuySignalRecommendation(rec: any): boolean {
   if (rec?.has_buy_signal === 1 || rec?.has_buy_signal === true) return true
   return ['BUY', 'STRONG_BUY'].includes(recommendationSignalText(rec))
+}
+
+function recommendationRowsFromPayload(payload: any): any[] {
+  const explicitAll = Array.isArray(payload?.all_recommendations) ? payload.all_recommendations : []
+  const direct = Array.isArray(payload?.recommendations)
+    ? payload.recommendations
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : []
+  const merged = explicitAll.length
+    ? explicitAll
+    : [
+        ...direct,
+        ...(Array.isArray(payload?.tradable_recommendations) ? payload.tradable_recommendations : []),
+        ...(Array.isArray(payload?.research_only_recommendations) ? payload.research_only_recommendations : []),
+      ]
+
+  const seen = new Set<string>()
+  return merged.filter((row: any, index: number) => {
+    const key = String(row?.stock_id ?? row?.symbol ?? index)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function parseRecommendationRecord(value: unknown): Record<string, any> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : null
+  } catch {
+    return null
+  }
+}
+
+function isPotentialBuyRecommendation(rec: any): boolean {
+  if (recommendationSignalText(rec) === 'POTENTIAL_BUY') return true
+  const allocation = parseRecommendationRecord(rec?.alpha_allocation)
+  if (allocation?.potential_buy === true || allocation?.potential_buy === 1) return true
+  const points = Array.isArray(rec?.watch_points)
+    ? rec.watch_points
+    : typeof rec?.watch_points === 'string'
+      ? [rec.watch_points]
+      : []
+  return points.some((point: any) => String(point).includes('allocation:potential_buy'))
 }
 
 // ─── Conviction Gauge（半圓 SVG）──────────────────────────────────────────────
@@ -544,14 +591,78 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 }
 
 // Fallback: 無掛單時顯示最新 daily recommendations
+function CandidateRecommendationColumn({
+  title,
+  subtitle,
+  tone,
+  rows,
+  selectedSymbol,
+  onSelectSymbol,
+}: {
+  title: string
+  subtitle: string
+  tone: 'buy' | 'potential'
+  rows: any[]
+  selectedSymbol?: string | null
+  onSelectSymbol?: (s: string) => void
+}) {
+  const toneClass = tone === 'buy'
+    ? {
+        box: 'border-emerald-500/18 bg-emerald-500/[0.03]',
+        label: 'text-emerald-300',
+        badge: 'border-emerald-500/30 text-emerald-300',
+        ring: 'ring-emerald-500/40',
+      }
+    : {
+        box: 'border-amber-500/18 bg-amber-500/[0.035]',
+        label: 'text-amber-300',
+        badge: 'border-amber-500/30 text-amber-300',
+        ring: 'ring-amber-500/40',
+      }
+
+  return (
+    <div className={`space-y-2 rounded-[20px] border p-2 ${toneClass.box}`}>
+      <div className="flex items-center justify-between gap-3 px-1">
+        <div className="min-w-0">
+          <p className={`text-[12px] font-semibold ${toneClass.label}`}>{title}</p>
+          <p className="text-[10px] leading-4 text-muted-foreground/70">{subtitle}</p>
+        </div>
+        <Badge variant="outline" className={`h-5 px-1.5 text-[9px] ${toneClass.badge}`}>
+          {rows.length} 檔
+        </Badge>
+      </div>
+      <div className="grid grid-cols-1 gap-3">
+        {rows.map((r: any, idx: number) => (
+          <div key={r.symbol ?? r.stock_id ?? idx} className={`relative ${selectedSymbol === r.symbol ? `ring-1 ${toneClass.ring} rounded-xl` : ''}`}>
+            <RecommendationCard rec={r} rank={idx + 1} />
+            <button
+              onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
+              className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              title="查看 K 線"
+            >
+              <Activity className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+      {!rows.length && (
+        <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">
+          今日沒有{title}候選。
+        </div>
+      )}
+    </div>
+  )
+}
+
 function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
   const { data: recData, isLoading } = useQuery({
     queryKey: ['recommendations', 'daily', 'latest'],
     queryFn: () => recommendationsApi.daily(),
     staleTime: 5 * 60_000,
   })
-  const { tradable: tradableRecs } = splitRecommendationLanes<any>(recData)
-  const recs = tradableRecs.filter(isBuySignalRecommendation)
+  const rows = recommendationRowsFromPayload(recData)
+  const buyRecs = rows.filter(isBuySignalRecommendation)
+  const potentialBuyRecs = rows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row))
   const strategyPortfolioHealth = recData?.strategy_portfolio_intelligence_health
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
   return (
@@ -559,7 +670,10 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
       <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{recData?.date} BUY SIGNAL 候選（與晨間概覽同源）</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] sv-num">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
-          BUY SIGNAL {recs.length}
+          BUY {buyRecs.length}
+        </Badge>
+        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 bg-amber-500/10 text-amber-300">
+          potential BUY {potentialBuyRecs.length}
         </Badge>
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
@@ -578,34 +692,26 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
             L1.25 {strategyPortfolioHealth.portfolio_metric_status ?? 'unknown'} metrics {strategyPortfolioHealth.metric_count_max ?? 0}
           </Badge>
         )}
-        <span className="text-muted-foreground/70">Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.</span>
+        <span className="text-muted-foreground/70">以 daily recommendations 的正式 BUY SIGNAL 為準；pending buys 仍由 L4 / debate / quote sanity 決定。</span>
       </div>
 
-      <div className="space-y-2 rounded-[20px] border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
-        <div className="flex items-center justify-between px-1">
-          <div>
-            <p className="text-[11px] font-semibold text-emerald-300">BUY SIGNAL 候選</p>
-            <p className="text-[10px] text-muted-foreground/70">只顯示可進入 L4 / pending-buy 的買進訊號，點開牌卡查看個股細節。</p>
-          </div>
-          <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-300">
-            {recs.length} 檔
-          </Badge>
-        </div>
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {recs.map((r: any, idx: number) => (
-            <div key={r.symbol} className={`relative ${selectedSymbol === r.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
-              <RecommendationCard rec={r} rank={idx + 1} />
-              <button
-                onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-                className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                title="查看 K 線"
-              >
-                <Activity className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-        {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有 BUY SIGNAL 推薦候選。</div>}
+      <div className="grid gap-3 xl:grid-cols-2">
+        <CandidateRecommendationColumn
+          title="BUY 候選"
+          subtitle="evening chain 正式買進訊號，可進入 L4 / pending-buy 決策。"
+          tone="buy"
+          rows={buyRecs}
+          selectedSymbol={selectedSymbol}
+          onSelectSymbol={onSelectSymbol}
+        />
+        <CandidateRecommendationColumn
+          title="potential BUY 候選"
+          subtitle="正期望值但 sparse allocation 未給權重，保留作次順位觀察。"
+          tone="potential"
+          rows={potentialBuyRecs}
+          selectedSymbol={selectedSymbol}
+          onSelectSymbol={onSelectSymbol}
+        />
       </div>
     </div>
   )

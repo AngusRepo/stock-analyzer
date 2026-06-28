@@ -1,4 +1,4 @@
-import { useMemo, type ComponentType, type ReactNode } from 'react'
+import { useMemo, type ComponentType, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -48,6 +48,8 @@ type RiskFactor = {
   source?: string
   detail?: string
 }
+
+const HOME_RECOMMENDATION_LIMIT = 80
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
@@ -943,21 +945,15 @@ function MarketOverviewBlock() {
           <div className="bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />
           </div>
-          <div className="grid items-start gap-4 bg-[#101116] p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <div className="grid gap-4 self-start">
-              <div>
+          <div className="grid items-stretch gap-4 bg-[#101116] p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="grid gap-4 self-stretch">
+              <div className="grid gap-4 lg:grid-cols-2">
                 <FearGreedCard risk={risk} />
-              </div>
-              <div>
-                <HedgeSentimentCard risk={risk} />
-              </div>
-              <div>
                 <BusinessSignalCard risk={risk} />
               </div>
+              <HedgeSentimentCard risk={risk} />
             </div>
-            <div className="self-start">
-              <NewsBlock embedded />
-            </div>
+            <NewsBlock embedded />
           </div>
         </div>
       </div>
@@ -1057,6 +1053,68 @@ function keywordFromFlowRow(row: any): string | null {
   return text && text !== '-' ? text : null
 }
 
+function flowRowValue(row: any): number | null {
+  return asNumber(row?.total_net ?? row?.net_flow ?? row?.turnover_share_delta ?? row?.avg_momentum_5d ?? row?.score)
+}
+
+function HotKeywordCloud({ rows }: { rows: any[] }) {
+  const seen = new Set<string>()
+  const keywords = rows
+    .map((row) => {
+      const keyword = keywordFromFlowRow(row)
+      if (!keyword || seen.has(keyword)) return null
+      seen.add(keyword)
+      const value = flowRowValue(row)
+      return {
+        keyword,
+        value,
+        tone: value == null ? (seen.size % 2 === 0 ? 'red' : 'green') : toneBySigned(value),
+      }
+    })
+    .filter((item): item is { keyword: string; value: number | null; tone: Tone } => Boolean(item))
+    .slice(0, 14)
+
+  if (!keywords.length) return null
+
+  return (
+    <div className="mt-5 overflow-hidden border-t border-white/[0.07] pt-4">
+      <p className="mb-3 text-sm font-bold text-slate-200">熱門關鍵字</p>
+      <div className="relative min-h-[104px] rounded-[18px] border border-white/[0.055] bg-[#0b0d12] px-3 py-4">
+        <div className="flex flex-wrap justify-center gap-x-5 gap-y-4">
+          {keywords.map((item, index) => {
+            const size = index < 3 ? 'text-base sm:text-lg' : index < 8 ? 'text-sm sm:text-base' : 'text-xs sm:text-sm'
+            const style = {
+              ['--wc-dx' as any]: `${6 + (index % 4) * 3}`,
+              ['--wc-dy' as any]: `${5 + (index % 5) * 2}`,
+              ['--wc-rot' as any]: `${(index % 5) - 2}deg`,
+              animation: `wc-float-${(index % 3) + 1} ${8 + (index % 4)}s ease-in-out infinite`,
+              animationDelay: `${index * -0.55}s`,
+            } as CSSProperties
+            return (
+              <span
+                key={item.keyword}
+                style={style}
+                className={cx(
+                  'inline-flex rounded-full border px-3 py-1.5 font-extrabold leading-none tracking-normal shadow-[0_0_24px_rgba(0,0,0,0.25)]',
+                  size,
+                  item.tone === 'red'
+                    ? 'border-red-400/25 bg-red-500/[0.07] text-red-300'
+                    : item.tone === 'green'
+                      ? 'border-emerald-400/25 bg-emerald-500/[0.07] text-emerald-300'
+                      : 'border-cyan-400/20 bg-cyan-500/[0.06] text-cyan-200',
+                )}
+                title={item.value == null ? item.keyword : `${item.keyword} ${item.value >= 0 ? '+' : ''}${item.value.toFixed(1)}`}
+              >
+                {item.keyword}
+              </span>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
   const { data: themeData } = useQuery({
     queryKey: ['recommendations', 'sector-flow', 'theme', 'home'],
@@ -1073,11 +1131,7 @@ function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
   const limit = compact ? 5 : 8
   const themeRows = asArray<any>(themeData?.flows).slice(0, limit)
   const industryRows = asArray<any>(industryData?.flows).slice(0, limit)
-  const hotKeywords = [...themeRows, ...industryRows]
-    .map(keywordFromFlowRow)
-    .filter((item): item is string => Boolean(item))
-    .filter((item, index, list) => list.indexOf(item) === index)
-    .slice(0, 12)
+  const hotKeywordRows = [...themeRows, ...industryRows]
 
   return (
     <section className={panelClass('h-full p-5')}>
@@ -1092,21 +1146,7 @@ function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
         <FlowList title="題材資金流" rows={themeRows} />
         <FlowList title="產業資金流" rows={industryRows} />
       </div>
-      {hotKeywords.length > 0 && (
-        <div className="mt-5 border-t border-white/[0.07] pt-4">
-          <p className="mb-3 text-sm font-bold text-slate-200">熱門關鍵字</p>
-          <div className="flex flex-wrap gap-2">
-            {hotKeywords.map((keyword) => (
-              <span
-                key={keyword}
-                className="rounded-full border border-white/[0.08] bg-white/[0.045] px-3 py-1.5 text-xs font-semibold text-slate-300"
-              >
-                {keyword}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      <HotKeywordCloud rows={hotKeywordRows} />
     </section>
   )
 }
@@ -1133,6 +1173,74 @@ function recommendationRowsFromPayload(payload: any) {
   })
 }
 
+function parseRecord(value: unknown): Record<string, any> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : null
+  } catch {
+    return null
+  }
+}
+
+function recommendationSignalText(rec: any): string {
+  return String(rec?.signal ?? rec?.trade_signal ?? rec?.tradeSignal ?? rec?.signal_raw ?? '').toUpperCase()
+}
+
+function isBuySignalRecommendation(rec: any): boolean {
+  if (rec?.has_buy_signal === 1 || rec?.has_buy_signal === true) return true
+  return ['BUY', 'STRONG_BUY'].includes(recommendationSignalText(rec))
+}
+
+function isPotentialBuyRecommendation(rec: any): boolean {
+  if (recommendationSignalText(rec) === 'POTENTIAL_BUY') return true
+  const allocation = parseRecord(rec?.alpha_allocation)
+  if (allocation?.potential_buy === true || allocation?.potential_buy === 1) return true
+  const points = Array.isArray(rec?.watch_points)
+    ? rec.watch_points
+    : typeof rec?.watch_points === 'string'
+      ? [rec.watch_points]
+      : []
+  return points.some((point: any) => String(point).includes('allocation:potential_buy'))
+}
+
+function recommendationScoreValue(rec: any): number {
+  const scoreComponents = parseRecord(rec?.score_components)
+  const direct = asNumber(
+    rec?.score_v2_final
+      ?? rec?.final_score
+      ?? rec?.finalScore
+      ?? scoreComponents?.finalScore
+      ?? scoreComponents?.final_score
+      ?? rec?.score
+      ?? rec?.total_score,
+  )
+  return direct ?? Number.NEGATIVE_INFINITY
+}
+
+function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_LIMIT) {
+  const seen = new Set<string>()
+  const takeUnique = (row: any, index: number) => {
+    const key = String(row?.stock_id ?? row?.symbol ?? index)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }
+
+  const buyRows = rows.filter(isBuySignalRecommendation)
+  const potentialRows = rows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row))
+  const priorityRows = [...buyRows, ...potentialRows].filter(takeUnique)
+  const remainingCapacity = Math.max(0, limit - priorityRows.length)
+  const fillerRows = rows
+    .filter((row, index) => takeUnique(row, index))
+    .sort((a, b) => recommendationScoreValue(b) - recommendationScoreValue(a))
+    .slice(0, remainingCapacity)
+
+  return [...priorityRows, ...fillerRows]
+}
+
 function RecommendationPanel() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['recommendations', 'daily', 'home'],
@@ -1142,6 +1250,9 @@ function RecommendationPanel() {
   })
   const { tradable, researchOnly } = splitRecommendationLanes<any>(data)
   const allRows = recommendationRowsFromPayload(data)
+  const displayRows = selectHomeRecommendationRows(allRows)
+  const buyCount = allRows.filter(isBuySignalRecommendation).length
+  const potentialBuyCount = allRows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row)).length
   const heatValues = allRows
     .map((row: any) => asNumber(row?.market_heat_score ?? row?.strategy_router_components?.market_heat_score ?? row?.score_components?.market_heat_score))
     .filter((value): value is number => value != null)
@@ -1151,14 +1262,20 @@ function RecommendationPanel() {
     <section className={panelClass('overflow-hidden')}>
       <SectionHeader
         icon={Sparkles}
-        title="AI 推薦名單"
-        action={<SourceBadge>{data?.date ?? 'latest'} · {allRows.length} 檔</SourceBadge>}
+        title="選股推薦名單"
+        action={<SourceBadge>{data?.date ?? 'latest'} · 顯示 {displayRows.length}/{allRows.length} 檔</SourceBadge>}
       />
       <div className="border-t border-white/[0.06] bg-[#101116] px-5 py-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
+                BUY {buyCount}
+              </span>
+              <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300">
+                potential BUY {potentialBuyCount}
+              </span>
+              <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.07] px-2.5 py-1 text-[11px] font-bold text-emerald-300">
                 可交易 {tradable.length}
               </span>
               <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300">
@@ -1168,7 +1285,7 @@ function RecommendationPanel() {
                 平均熱度 {avgHeat == null ? '待接資料' : avgHeat.toFixed(1)}
               </span>
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500">依最新交易日條件排序，點開牌卡查看個股籌碼、技術分數、模型判讀與交易計劃。</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">依最新交易日條件排序，點開牌卡快速查看個股籌碼、技術分數與交易計劃摘要。</p>
           </div>
           <button
             type="button"
@@ -1187,10 +1304,10 @@ function RecommendationPanel() {
             <div key={index} className="h-28 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.035]" />
           ))}
         </div>
-      ) : allRows.length ? (
+      ) : displayRows.length ? (
         <div className="grid gap-3 bg-[#101116] p-4 lg:grid-cols-2">
-          {allRows.map((rec: any, index: number) => (
-            <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} />
+          {displayRows.map((rec: any, index: number) => (
+            <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} context="home" />
           ))}
         </div>
       ) : (

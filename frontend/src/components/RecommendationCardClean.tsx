@@ -55,6 +55,14 @@ type AlphaContext = {
   latestClose?: string | number | null
 }
 
+type RecommendationCardContext = 'full' | 'home'
+
+type RecommendationCardCleanProps = {
+  rec: any
+  rank: number
+  context?: RecommendationCardContext
+}
+
 type EntryPriceModelV2Ui = {
   anchorSource: string
   entry: string | null
@@ -510,8 +518,8 @@ function fmtAbsLotsFromShares(value: number | string | null | undefined): string
 
 function signedFlowClass(value: unknown): string {
   const numeric = Number(value)
-  if (!Number.isFinite(numeric) || numeric === 0) return 'text-muted-foreground'
-  return numeric > 0 ? 'text-red-500 dark:text-red-300' : 'text-emerald-500 dark:text-emerald-300'
+  if (!Number.isFinite(numeric) || numeric === 0) return 'text-slate-400'
+  return numeric > 0 ? 'text-red-300' : 'text-emerald-300'
 }
 
 function institutionalRawFromRec(rec: any): { date?: string; rows: InstitutionalRawCardRow[]; total_net_shares?: number | string | null } | null {
@@ -741,6 +749,7 @@ function allocationSlotText(raw: unknown): string {
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
   STRONG_BUY: { label: '強買', color: 'bg-red-500 text-white', icon: Zap },
   BUY: { label: '買進', color: 'bg-orange-500 text-white', icon: TrendingUp },
+  POTENTIAL_BUY: { label: '潛在買進', color: 'border-amber-300/35 bg-amber-400/15 text-amber-100', icon: TrendingUp },
   HOLD: { label: '觀望', color: 'bg-yellow-500 text-white', icon: Minus },
   SELL: { label: '賣出', color: 'bg-blue-500 text-white', icon: TrendingDown },
   STRONG_SELL: { label: '強賣', color: 'bg-purple-600 text-white', icon: TrendingDown },
@@ -1252,16 +1261,16 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
   ].filter(Boolean)
 
   return (
-    <div className="mt-2 rounded-md border border-emerald-500/15 bg-background/45 p-2">
+    <div className="mt-2 rounded-xl border border-emerald-300/18 bg-emerald-400/[0.055] p-2">
       <div className="mb-1.5 flex flex-wrap gap-1.5">
         {chips.map((chip) => (
-          <Badge key={chip} variant="outline" className="border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700 dark:text-emerald-300">
+          <Badge key={chip} variant="outline" className="border-emerald-300/25 bg-emerald-400/[0.09] px-1.5 py-0 text-[10px] text-emerald-200">
             {chip}
           </Badge>
         ))}
       </div>
       {warnings.length > 0 && (
-        <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+        <p className="text-[11px] leading-relaxed text-amber-200">
           {warnings.join('；')}。
         </p>
       )}
@@ -1309,11 +1318,11 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
   const pct = safeMax > 0 ? Math.max(0, Math.min(100, Math.round((safeValue / safeMax) * 100))) : 0
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="min-w-16 shrink-0 text-muted-foreground">{label}</span>
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+      <span className="min-w-16 shrink-0 font-medium text-slate-400">{label}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.09]">
         <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-14 text-right sv-num text-muted-foreground">
+      <span className="w-14 text-right sv-num font-medium text-slate-300">
         {fmtNumber(safeValue, 1)}/{fmtNumber(safeMax, 0)}
       </span>
     </div>
@@ -1328,29 +1337,29 @@ function signedText(value: number | null | undefined, decimals = 1): string {
 
 function ScoreFormulaSummary({ viewModel }: { viewModel: ReturnType<typeof buildScoreBreakdownViewModel> }) {
   return (
-    <div className="rounded-lg border border-border/50 bg-background/50 p-3">
+    <div className="rounded-[18px] border border-white/[0.08] bg-[linear-gradient(135deg,rgba(22,26,35,0.88),rgba(12,14,20,0.96))] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-medium text-muted-foreground">基礎分數與 Alpha 調整</p>
-        <span className="sv-num text-xs text-muted-foreground">
+        <p className="text-xs font-semibold text-slate-200">基礎分數與 Alpha 調整</p>
+        <span className="sv-num text-xs font-medium text-slate-400">
           {fmtNumber(viewModel.finalScore, 1)} = {fmtNumber(viewModel.baseScore, 1)} {viewModel.alphaAdjustment >= 0 ? '+' : '-'} {fmtNumber(Math.abs(viewModel.alphaAdjustment), 1)}
         </span>
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
-        <div className="rounded-md border border-border/40 bg-muted/20 p-2">
-          <p className="text-[10px] text-muted-foreground">基礎分數</p>
-          <p className="mt-0.5 sv-num text-lg font-semibold">{fmtNumber(viewModel.baseScore, 1)}</p>
+        <div className="rounded-xl border border-cyan-400/18 bg-cyan-400/[0.055] p-2">
+          <p className="text-[10px] font-medium text-cyan-200/80">基礎分數</p>
+          <p className="mt-0.5 sv-num text-lg font-semibold text-cyan-100">{fmtNumber(viewModel.baseScore, 1)}</p>
         </div>
-        <div className="rounded-md border border-sky-500/25 bg-sky-500/[0.06] p-2">
-          <p className="text-[10px] text-sky-700 dark:text-sky-300">Alpha 調整</p>
-          <p className="mt-0.5 sv-num text-lg font-semibold text-sky-700 dark:text-sky-300">{signedText(viewModel.alphaAdjustment)}</p>
+        <div className="rounded-xl border border-amber-400/18 bg-amber-400/[0.07] p-2">
+          <p className="text-[10px] font-medium text-amber-200/80">Alpha 調整</p>
+          <p className="mt-0.5 sv-num text-lg font-semibold text-amber-100">{signedText(viewModel.alphaAdjustment)}</p>
         </div>
-        <div className="rounded-md border border-primary/25 bg-primary/[0.06] p-2">
-          <p className="text-[10px] text-muted-foreground">最終分數</p>
-          <p className="mt-0.5 sv-num text-lg font-semibold text-primary">{fmtNumber(viewModel.finalScore, 1)}</p>
+        <div className="rounded-xl border border-emerald-400/18 bg-emerald-400/[0.06] p-2">
+          <p className="text-[10px] font-medium text-emerald-200/80">最終分數</p>
+          <p className="mt-0.5 sv-num text-lg font-semibold text-emerald-100">{fmtNumber(viewModel.finalScore, 1)}</p>
         </div>
       </div>
       {Math.abs(viewModel.residual) >= 0.1 && (
-        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
           資料校準差 {signedText(viewModel.residual)}，代表後端總分與目前可拆解欄位仍有不同步。
         </p>
       )}
@@ -1388,19 +1397,19 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
   if (technicalRows.length === 0 && !showAlpha) return null
 
   return (
-    <div className="rounded-lg border border-border/50 bg-background/50 p-3 text-xs">
+    <div className="rounded-[18px] border border-white/[0.08] bg-[linear-gradient(135deg,rgba(20,23,31,0.9),rgba(11,13,19,0.96))] p-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-muted-foreground">Score V2 分解</span>
-        <span className="sv-num text-[11px] text-muted-foreground">技術結構 + Alpha 明細</span>
+        <span className="font-semibold text-slate-200">Score V2 分解</span>
+        <span className="sv-num text-[11px] font-medium text-slate-500">技術結構 + Alpha 明細</span>
       </div>
       {technicalRows.length > 0 && (
-        <div className="mt-2 space-y-2 rounded-md border border-violet-500/20 bg-violet-500/[0.05] p-2">
-          <p className="font-medium text-foreground/80">技術結構細項</p>
+        <div className="mt-2 space-y-2 rounded-xl border border-violet-400/20 bg-violet-400/[0.06] p-2">
+          <p className="font-semibold text-violet-100">技術結構細項</p>
           {technicalRows.map((item) => (
             <div key={item.key} className="space-y-1">
               <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
               {item.explanation && (
-                <p className="pl-[72px] text-[11px] leading-relaxed text-muted-foreground/85 sm:pl-[74px]">
+                <p className="pl-[72px] text-[11px] leading-relaxed text-slate-400 sm:pl-[74px]">
                   {item.explanation}
                 </p>
               )}
@@ -1409,8 +1418,8 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
         </div>
       )}
       {showAlpha && (
-        <div className="mt-2 space-y-1 rounded-md border border-border/40 bg-muted/20 p-2 text-[11px] leading-relaxed text-muted-foreground/90">
-          <p className="font-medium text-foreground/80">Alpha 調整明細</p>
+        <div className="mt-2 space-y-1 rounded-xl border border-amber-400/18 bg-amber-400/[0.055] p-2 text-[11px] leading-relaxed text-slate-300">
+          <p className="font-semibold text-amber-100">Alpha 調整明細</p>
           {alphaDetails.map((item, index) => (
             <p key={`${item.key ?? item.label}-${index}`}>
               {item.label ?? item.key}: {Number(item.value) >= 0 ? '+' : ''}{fmtNumber(item.value, 1)}
@@ -2863,10 +2872,12 @@ function normalizeEvidenceLinks(raw: unknown): EvidenceLink[] {
   return links
 }
 
-export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number }) {
+export function RecommendationCardClean({ rec, rank, context = 'full' }: RecommendationCardCleanProps) {
   const [expanded, setExpanded] = useState(false)
   const sig = SIGNAL_CONFIG[rec.signal] ?? SIGNAL_CONFIG.HOLD
   const SigIcon = sig.icon
+  const isHomeContext = context === 'home'
+  const showFullDecisionDetail = !isHomeContext
   const watchPoints = normalizeWatchPoints(rec.watch_points)
   const noticePoints = displayWatchPoints(watchPoints)
   const alphaContext = alphaContextFromRec(rec, watchPoints)
@@ -2901,55 +2912,55 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
   return (
     <div className={cn(
-      'sv-recommendation-card-detail sv-stockintelli-rec-card rounded-xl border transition-all',
+      'sv-recommendation-card-detail sv-stockintelli-rec-card overflow-hidden rounded-[20px] border transition-all duration-200',
       rank === 1
-        ? 'border-amber-500/40 bg-amber-500/[0.06] shadow-sm'
-        : 'border-border/50 bg-card hover:border-border',
+        ? 'border-amber-300/30 bg-[radial-gradient(circle_at_92%_8%,rgba(245,158,11,0.13),transparent_34%),linear-gradient(135deg,rgba(28,28,24,0.96),rgba(14,16,22,0.99))] shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_18px_48px_rgba(0,0,0,0.22)]'
+        : 'border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,24,33,0.96),rgba(12,14,20,0.99))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] hover:border-sky-300/20 hover:bg-[#151923]',
     )}>
       <div
         className="flex cursor-pointer select-none items-center gap-3 p-3 sm:p-4"
         onClick={() => setExpanded((value) => !value)}
       >
         <div className={cn(
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold',
-          rank === 1 ? 'bg-amber-400 text-white' :
-          rank === 2 ? 'bg-gray-400 text-white' :
-          rank === 3 ? 'bg-orange-400 text-white' :
-          'bg-muted text-muted-foreground',
+          'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-sm font-bold shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]',
+          rank === 1 ? 'border-amber-300/40 bg-amber-400/20 text-amber-100' :
+          rank === 2 ? 'border-slate-300/30 bg-slate-300/12 text-slate-100' :
+          rank === 3 ? 'border-orange-300/35 bg-orange-400/16 text-orange-100' :
+          'border-white/[0.08] bg-white/[0.06] text-slate-300',
         )}>
           {rank}
         </div>
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold">{rec.symbol}</span>
-            <span className="truncate text-sm text-muted-foreground">{rec.name}</span>
+            <span className="sv-num text-base font-bold text-slate-50">{rec.symbol}</span>
+            <span className="truncate text-sm font-semibold text-slate-300">{rec.name}</span>
             {rec.sector && (
-              <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">{rec.sector}</Badge>
+              <Badge variant="outline" className="shrink-0 border-sky-300/18 bg-sky-400/[0.08] px-1.5 py-0 text-[10px] text-sky-200">{rec.sector}</Badge>
             )}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-3">
-            <Badge className={cn('px-1.5 py-0 text-[10px]', sig.color)}>
+            <Badge className={cn('border px-1.5 py-0 text-[10px] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]', sig.color)}>
               <SigIcon className="mr-1 h-2.5 w-2.5" />
               {sig.label}
             </Badge>
-            <span className={cn('flex items-center gap-1 text-xs', signedFlowClass(chipBadge.signedValue))}>
+            <span className={cn('flex items-center gap-1 text-xs font-semibold', signedFlowClass(chipBadge.signedValue))}>
               <Users className="h-3 w-3" />
               {chipBadge.label} {chipBadge.text}
             </span>
             {rec.rsi14 != null && (
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1 text-xs font-medium text-slate-400">
                 <BarChart3 className="h-3 w-3" />
                 RSI {fmtNumber(rec.rsi14, 1)}
               </span>
             )}
             {(mlSummary || mlMetadataGap) && (
-              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-emerald-700 dark:text-emerald-300">
+              <Badge variant="outline" className="h-auto max-w-full shrink whitespace-normal break-words overflow-visible border-teal-300/25 bg-teal-400/[0.09] px-1.5 py-0.5 text-left text-[10px] leading-relaxed text-teal-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
                 ML {mlSummary ?? `分數 ${fmtNumber(scoreComponentValue(rec, 'mlEdge'), 1)}，投票明細待同步`}
               </Badge>
             )}
             {alphaContext?.bucket && (
-              <Badge variant="outline" className="gap-1 border-sky-500/40 bg-sky-500/10 px-1.5 py-0 text-[10px] text-sky-700 dark:text-sky-300">
+              <Badge variant="outline" className="gap-1 border-sky-300/25 bg-sky-400/[0.09] px-1.5 py-0 text-[10px] text-sky-200">
                 <ShieldCheck className="h-2.5 w-2.5" />
                 {labelFor(alphaContext.bucket)}
               </Badge>
@@ -2958,19 +2969,19 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
         </div>
 
         <div className="shrink-0 text-right">
-          <div className="text-lg font-bold text-primary">{Math.round(scoreViewModel.finalScore)}</div>
-          <div className="text-[10px] text-muted-foreground">最終分</div>
+          <div className="sv-num text-xl font-bold text-amber-200">{Math.round(scoreViewModel.finalScore)}</div>
+          <div className="text-[10px] font-medium text-slate-500">最終分</div>
         </div>
 
         {expanded ? (
-          <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" />
         ) : (
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
         )}
       </div>
 
       {evidenceLinks.length > 0 && (
-        <div className="flex flex-wrap gap-2 border-t border-border/30 px-4 py-2">
+        <div className="flex flex-wrap gap-2 border-t border-white/[0.07] bg-black/10 px-4 py-2">
           {evidenceLinks.map((link) => (
             <a
               key={`${link.source}:${link.url}`}
@@ -2978,7 +2989,7 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
               target="_blank"
               rel="noreferrer"
               onClick={(event) => event.stopPropagation()}
-              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/[0.07] px-2 py-1 text-[11px] leading-tight text-sky-700 hover:border-sky-500/45 dark:text-sky-300"
+              className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-300/20 bg-sky-400/[0.075] px-2 py-1 text-[11px] leading-tight text-sky-200 hover:border-sky-300/40"
             >
               <ExternalLink className="h-3 w-3 shrink-0" />
               <span className="shrink-0 sv-num normal-case">{link.source}</span>
@@ -2989,16 +3000,16 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
       )}
 
       {expanded && (
-        <div className="space-y-4 border-t border-border/40 px-4 pb-4 pt-3">
+        <div className="space-y-4 border-t border-white/[0.08] bg-[linear-gradient(180deg,rgba(17,20,28,0.92),rgba(9,11,16,0.98))] px-4 pb-4 pt-3">
           <ScoreFormulaSummary viewModel={scoreViewModel} />
 
           <div className="space-y-1.5">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">五構面基礎分數</p>
+            <p className="mb-2 text-xs font-semibold text-slate-200">五構面基礎分數</p>
             {scoreViewModel.rows.map((item) => (
               <div key={item.key} className="space-y-1">
                 <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
                 {item.explanation && (
-                  <p className="pl-[72px] text-[11px] leading-relaxed text-muted-foreground/85 sm:pl-[74px]">
+                  <p className="pl-[72px] text-[11px] leading-relaxed text-slate-400 sm:pl-[74px]">
                     {item.explanation}
                   </p>
                 )}
@@ -3012,23 +3023,23 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
 
           <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
 
-          {(mlSummary || mlMetadataGap || mlDiagnostics) && (
-            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-xs leading-relaxed text-muted-foreground">
-              <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-300">ML 解讀</p>
-              <p>{mlSummary ?? mlMetadataGap}</p>
+          {showFullDecisionDetail && (mlSummary || mlMetadataGap || mlDiagnostics) && (
+            <div className="rounded-[18px] border border-emerald-300/20 bg-emerald-400/[0.065] p-3 text-xs leading-relaxed text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">
+              <p className="mb-1 font-semibold text-emerald-100">ML 解讀</p>
+              <p className="text-slate-300">{mlSummary ?? mlMetadataGap}</p>
               <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
             </div>
           )}
 
-          {noticePoints.length > 0 && (
+          {showFullDecisionDetail && noticePoints.length > 0 && (
             <div>
-              <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              <p className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-slate-300">
                 <AlertCircle className="h-3 w-3" />
                 注意事項
               </p>
               <ul className="space-y-1">
                 {noticePoints.map((point, index) => (
-                  <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+                  <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-slate-300">
                     <span className="mt-0.5 shrink-0 text-amber-500">!</span>
                     {normalizeWatchPoint(point)}
                   </li>
@@ -3037,8 +3048,8 @@ export function RecommendationCardClean({ rec, rank }: { rec: any; rank: number 
             </div>
           )}
 
-          {rec.confidence != null && (
-            <p className="text-[11px] text-muted-foreground">
+          {showFullDecisionDetail && rec.confidence != null && (
+            <p className="text-[11px] text-slate-400">
               ML 信心度 {(Number(rec.confidence) * 100).toFixed(0)}%
               {rec.current_price != null && (
                 <span className="ml-3">{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>

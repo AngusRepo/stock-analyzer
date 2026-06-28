@@ -97,6 +97,13 @@ function formatCompactAmount(value: number | null) {
   return value.toLocaleString('zh-TW', { maximumFractionDigits: 1 })
 }
 
+function formatLots(value: number | null) {
+  if (value == null) return '待匯入'
+  const abs = Math.abs(value)
+  if (abs >= 10_000) return `${(value / 10_000).toFixed(1)}萬張`
+  return `${Math.round(value).toLocaleString('zh-TW')}張`
+}
+
 function formatBillion(value: number | null) {
   if (value == null) return '待接資料'
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}億`
@@ -144,6 +151,32 @@ function SourceBadge({ children }: { children: ReactNode }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.045] px-2.5 py-1 text-[11px] font-semibold text-slate-400">
       {children}
+    </span>
+  )
+}
+
+function scopeLabel(scope: any) {
+  return typeof scope?.label === 'string' && scope.label.trim()
+    ? scope.label.trim()
+    : scope?.includesEmerging === true
+      ? '含興櫃'
+      : scope?.includesEmerging === false
+        ? '上市櫃，不含興櫃'
+        : null
+}
+
+function ScopeBadge({ scope }: { scope: any }) {
+  const label = scopeLabel(scope)
+  if (!label) return null
+  const includesEmerging = scope?.includesEmerging === true
+  return (
+    <span className={cx(
+      'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold',
+      includesEmerging
+        ? 'border-amber-300/25 bg-amber-400/10 text-amber-200'
+        : 'border-emerald-300/25 bg-emerald-400/10 text-emerald-200',
+    )}>
+      {label}
     </span>
   )
 }
@@ -357,12 +390,14 @@ function StatTrack({
   icon: Icon,
   title,
   date,
+  scope,
   bar,
   children,
 }: {
   icon: ComponentType<{ className?: string }>
   title: string
   date?: string | null
+  scope?: any
   bar: ReactNode
   children: ReactNode
 }) {
@@ -373,7 +408,10 @@ function StatTrack({
           <Icon className="h-4 w-4 shrink-0 text-orange-400" />
           <h3 className="truncate text-sm font-bold text-slate-100">{title}</h3>
         </div>
-        <span className="rounded-full bg-white/[0.055] px-2 py-1 text-[11px] text-slate-500">{shortDate(date)}</span>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          <ScopeBadge scope={scope} />
+          <span className="rounded-full bg-white/[0.055] px-2 py-1 text-[11px] text-slate-500">{shortDate(date)}</span>
+        </div>
       </div>
       {bar}
       <div className="mt-5">{children}</div>
@@ -479,6 +517,120 @@ function MarketStatsRibbon({ risk }: { risk: any }) {
             {maintenance == null ? '待接資料' : `${maintenance.toFixed(2)}%`}
           </p>
           <p className="mt-2 text-[11px] leading-5 text-slate-500">信用交易日況來源接上後，這裡會用真實維持率與日變化。</p>
+        </div>
+      </StatTrack>
+    </div>
+  )
+}
+
+function MarketStatsRibbonClean({ risk }: { risk: any }) {
+  const breadth = risk?.breadthSnapshot ?? risk?.breadth ?? {}
+  const marketStats = risk?.marketStats ?? {}
+  const credit = risk?.creditTrading ?? {}
+  const advance = asNumber(breadth.advance_count ?? breadth.advanceCount ?? breadth.up ?? breadth.rising)
+  const unchanged = asNumber(breadth.unchanged_count ?? breadth.unchangedCount ?? breadth.flat ?? breadth.unchanged)
+  const decline = asNumber(breadth.decline_count ?? breadth.declineCount ?? breadth.down ?? breadth.falling)
+  const total = (advance ?? 0) + (unchanged ?? 0) + (decline ?? 0)
+
+  const volumeShares = asNumber(risk?.marketVolume ?? risk?.turnoverVolume ?? marketStats.volume)
+  const volumeLots = volumeShares == null ? null : volumeShares / 1000
+  const amount = asNumber(risk?.marketTurnoverAmount ?? risk?.turnoverAmount ?? marketStats.amount)
+  const marketScope = marketStats.scope ?? breadth.scope ?? risk?.marketDataScope
+
+  const marginBalanceValue = asNumber(risk?.marginBalanceValue ?? credit.marginBalanceValue)
+  const marginBalanceUnits = asNumber(breadth.margin_balance ?? risk?.marginBalanceUnits ?? credit.marginBalanceUnits ?? risk?.marginBalance ?? credit.marginBalance)
+  const shortBalanceValue = asNumber(risk?.shortBalanceValue ?? credit.shortBalanceValue)
+  const shortBalanceUnits = asNumber(breadth.short_balance ?? risk?.shortBalanceUnits ?? credit.shortBalanceUnits ?? risk?.shortBalance ?? credit.shortBalance)
+  const creditScope = credit.scope ?? marketScope
+  const maintenance = asNumber(breadth.margin_maintenance ?? risk?.marginMaintenanceRate ?? credit.maintenanceRate)
+  const marginChangePct = asNumber(risk?.marginBalanceChangePct ?? credit.marginBalanceChangePct)
+  const shortChangePct = asNumber(risk?.shortBalanceChangePct ?? credit.shortBalanceChangePct)
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-4">
+      <StatTrack
+        icon={TrendingDown}
+        title="漲跌家數"
+        date={breadth.date ?? risk?.date}
+        scope={breadth.scope ?? marketScope}
+        bar={<SplitBar values={[advance ?? 0, unchanged ?? 0, decline ?? 0]} colors={['#ef4444', '#6b7280', '#22c55e']} />}
+      >
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <p className="text-xs text-slate-500">上漲</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-red-400">{formatInteger(advance)}</p>
+            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((advance ?? 0) / total) * 100, 1, false) : '--'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">平盤</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-300">{formatInteger(unchanged)}</p>
+            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((unchanged ?? 0) / total) * 100, 1, false) : '--'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">下跌</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-emerald-400">{formatInteger(decline)}</p>
+            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((decline ?? 0) / total) * 100, 1, false) : '--'}</p>
+          </div>
+        </div>
+      </StatTrack>
+
+      <StatTrack
+        icon={BarChart3}
+        title="成交量"
+        date={risk?.date}
+        scope={marketScope}
+        bar={<SplitBar values={[volumeLots ?? 0, amount == null ? 0 : amount / 100_000_000]} colors={['#3b82f6', '#8b5cf6']} />}
+      >
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <p className="text-xs text-slate-500">成交張數</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(volumeLots)}</p>
+            <p className="text-[11px] text-slate-500">由股數換算</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">成交金額</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(amount)}</p>
+            <p className="text-[11px] text-slate-500">TWD turnover</p>
+          </div>
+        </div>
+      </StatTrack>
+
+      <StatTrack
+        icon={CircleDollarSign}
+        title="融資融券"
+        date={credit.date ?? risk?.date}
+        scope={creditScope}
+        bar={<SplitBar values={[marginBalanceUnits ?? 0, shortBalanceUnits ?? 0]} colors={['#22c55e', '#8b5cf6']} />}
+      >
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <p className="text-xs text-slate-500">融資餘額</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(marginBalanceValue)}</p>
+            <p className="text-[11px] text-slate-500">{formatLots(marginBalanceUnits)}</p>
+            <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(marginChangePct)))}>{formatPct(marginChangePct)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">融券餘額</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(shortBalanceValue)}</p>
+            <p className="text-[11px] text-slate-500">{formatLots(shortBalanceUnits)}</p>
+            <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(shortChangePct)))}>{formatPct(shortChangePct)}</p>
+          </div>
+        </div>
+      </StatTrack>
+
+      <StatTrack
+        icon={Shield}
+        title="融資維持率"
+        date={credit.date ?? risk?.date}
+        scope={creditScope}
+        bar={<SplitBar values={[maintenance ?? 0, maintenance == null ? 0 : Math.max(0, 220 - maintenance)]} colors={['#14b8a6', '#30343d']} />}
+      >
+        <div>
+          <p className="text-xs text-slate-500">當前維持率</p>
+          <p className={cx('mt-1 text-xl font-bold tabular-nums', maintenance != null && maintenance < 150 ? 'text-amber-300' : 'text-emerald-400')}>
+            {maintenance == null ? '待匯入' : `${maintenance.toFixed(2)}%`}
+          </p>
+          <p className="mt-2 text-[11px] leading-5 text-slate-500">需待 FinLab 維持率欄位 materialize。</p>
         </div>
       </StatTrack>
     </div>
@@ -599,7 +751,7 @@ function BusinessSignalCard({ risk }: { risk: any }) {
           <span>信號分數區間</span>
           <span>熱 (45)</span>
         </div>
-        <div className="grid h-6 overflow-hidden rounded-full text-center text-sm font-semibold text-white sm:grid-cols-5">
+        <div className="grid h-6 grid-cols-5 overflow-hidden rounded-full text-center text-[11px] font-semibold text-white sm:text-sm">
           <div className="bg-blue-600">9-16</div>
           <div className="bg-yellow-400 text-slate-900">17-22</div>
           <div className="bg-emerald-500">23-31</div>
@@ -669,6 +821,60 @@ function InstitutionFlowCard({ risk }: { risk: any }) {
   )
 }
 
+function InstitutionFlowCardClean({ risk }: { risk: any }) {
+  const flow = risk?.institutionalFlows ?? {}
+  const foreign = asNumber(flow.foreignNet ?? flow.foreign ?? risk?.foreignNet5d)
+  const trust = asNumber(flow.trustNet ?? flow.trust)
+  const dealer = asNumber(flow.dealerNet ?? flow.dealer)
+  const available = foreign != null || trust != null || dealer != null
+  const total = asNumber(flow.totalNet) ?? (available ? (foreign ?? 0) + (trust ?? 0) + (dealer ?? 0) : null)
+  const max = Math.max(1, Math.abs(foreign ?? 0), Math.abs(trust ?? 0), Math.abs(dealer ?? 0))
+  const rows = [
+    { label: '外資', value: foreign, tone: toneBySigned(foreign) },
+    { label: '投信', value: trust, tone: toneBySigned(trust) },
+    { label: '自營商', value: dealer, tone: toneBySigned(dealer) },
+  ]
+
+  return (
+    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <PieChart className="h-4 w-4 text-amber-300" />
+          <h3 className="font-bold text-slate-100">主要法人資金動向</h3>
+        </div>
+        <div className="flex flex-wrap justify-end gap-1.5">
+          <ScopeBadge scope={flow.scope} />
+          <SourceBadge>{shortDate(flow.date ?? risk?.date)}</SourceBadge>
+        </div>
+      </div>
+
+      <div className="flex items-end justify-between gap-4 border-b border-white/[0.07] pb-4">
+        <div>
+          <p className="text-xs text-slate-500">當日合計買賣超</p>
+          <p className={cx('mt-1 text-2xl font-bold tabular-nums', toneText(toneBySigned(total)))}>
+            {total == null ? '待匯入' : formatBillion(total)}
+          </p>
+        </div>
+        <span className="text-[11px] text-slate-500">全市場三大法人資金流</span>
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        {rows.map((row) => (
+          <div key={row.label}>
+            <p className="text-xs font-semibold text-slate-500">{row.label}</p>
+            <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(row.tone))}>
+              {row.value == null ? '待匯入' : formatBillion(row.value)}
+            </p>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+              <div className={cx('h-full rounded-full', toneBar(row.tone))} style={{ width: `${row.value == null ? 0 : Math.max(8, Math.abs(row.value) / max * 100)}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function MarketOverviewBlock() {
   const { data: indices } = useQuery({
     queryKey: ['market', 'indices', 'home'],
@@ -705,12 +911,12 @@ function MarketOverviewBlock() {
             {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} />)}
           </div>
           <div className="bg-[#101116] p-4">
-            <MarketStatsRibbon risk={risk} />
+            <MarketStatsRibbonClean risk={risk} />
           </div>
           <div className="grid gap-px bg-white/[0.045] xl:grid-cols-3">
             <div className="space-y-px bg-white/[0.045]">
               <div className="bg-[#101116] p-4">
-                <InstitutionFlowCard risk={risk} />
+                <InstitutionFlowCardClean risk={risk} />
               </div>
               <div className="bg-[#101116] p-4">
                 <BusinessSignalCard risk={risk} />

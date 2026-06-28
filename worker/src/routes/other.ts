@@ -269,6 +269,22 @@ function percentChange(current: number | null, previous: number | null): number 
   return Math.round(((current - previous) / previous) * 10_000) / 100
 }
 
+const LISTED_OTC_SCOPE = {
+  label: '上市櫃，不含興櫃',
+  marketSegment: 'LISTED_OTC',
+  includesListed: true,
+  includesOtc: true,
+  includesEmerging: false,
+}
+
+const TRACKED_UNIVERSE_SCOPE = {
+  label: '追蹤股票池，不含興櫃',
+  marketSegment: 'TRACKED_LISTED_OTC',
+  includesListed: true,
+  includesOtc: true,
+  includesEmerging: false,
+}
+
 function missingMaterializationSnapshot(symbol: string, name: string, source: string) {
   return {
     symbol,
@@ -309,11 +325,12 @@ async function loadCanonicalMarketOverview(db: D1Database) {
   try {
     const row = await db.prepare(
       `WITH ordered_dates AS (
-         SELECT date
-         FROM canonical_market_daily
-         GROUP BY date
-         ORDER BY date DESC
-         LIMIT 2
+       SELECT date
+       FROM canonical_market_daily
+       WHERE market_segment = 'LISTED_OTC'
+       GROUP BY date
+       ORDER BY date DESC
+       LIMIT 2
        ),
        latest_date AS (
          SELECT MAX(date) AS date FROM ordered_dates
@@ -334,7 +351,9 @@ async function loadCanonicalMarketOverview(db: D1Database) {
          LEFT JOIN canonical_market_daily prev
            ON prev.stock_id = cur.stock_id
           AND prev.date = (SELECT date FROM previous_date)
+          AND prev.market_segment = cur.market_segment
          WHERE cur.close IS NOT NULL
+           AND cur.market_segment = 'LISTED_OTC'
        )
        SELECT
          (SELECT date FROM latest_date) AS date,
@@ -356,6 +375,7 @@ async function loadCanonicalMarketOverview(db: D1Database) {
         decline_count: numberOrNull(row.decline_count),
         compared_count: numberOrNull(row.compared_count),
         source: 'canonical_market_daily.finlab.price',
+        scope: LISTED_OTC_SCOPE,
       },
       marketStats: {
         date: row.date,
@@ -363,6 +383,11 @@ async function loadCanonicalMarketOverview(db: D1Database) {
         amount: numberOrNull(row.market_value),
         comparedCount: numberOrNull(row.compared_count),
         source: 'canonical_market_daily.finlab.price',
+        scope: LISTED_OTC_SCOPE,
+        unit: {
+          volume: 'shares',
+          amount: 'TWD',
+        },
       },
     }
   } catch (e) {
@@ -374,9 +399,9 @@ async function loadCanonicalMarketOverview(db: D1Database) {
 async function loadCanonicalCreditTrading(db: D1Database) {
   const summary = await loadMarketSummaryCreditTrading(db)
   if (summary) return summary
-  const legacyMargin = await loadLegacyMarginDataCreditTrading(db)
-  if (legacyMargin) return legacyMargin
-  return loadCanonicalChipCreditTrading(db)
+  const canonicalChip = await loadCanonicalChipCreditTrading(db)
+  if (canonicalChip) return canonicalChip
+  return loadLegacyMarginDataCreditTrading(db)
 }
 
 async function loadMarketSummaryCreditTrading(db: D1Database) {
@@ -440,12 +465,15 @@ async function loadMarketSummaryCreditTrading(db: D1Database) {
       marginBalanceUnit: marginBalanceValue != null ? 'TWD' : 'lots',
       shortBalance: shortBalanceUnits,
       shortBalanceUnits,
+      shortBalanceValue: null,
       marginBalanceChangePct: numberOrNull(latest.margin_balance_change_pct)
         ?? percentChange(marginBalanceValue ?? marginBalanceUnits, previousMarginBalanceValue ?? previousMarginBalanceUnits),
       shortBalanceChangePct: numberOrNull(latest.short_balance_change_pct) ?? percentChange(shortBalanceUnits, previousShortBalanceUnits),
       maintenanceRate: null,
       coverageCount: numberOrNull(latest.coverage_count),
       source: `canonical_market_summary_daily:${latest.sources ?? 'market_summary'}`,
+      scope: LISTED_OTC_SCOPE,
+      valueMethod: marginBalanceValue != null ? 'official_market_summary' : 'official_units',
     }
   } catch (e) {
     console.warn('[market/risk] canonical_market_summary_daily credit trading failed', e)
@@ -488,11 +516,14 @@ async function loadLegacyMarginDataCreditTrading(db: D1Database) {
       marginBalanceUnit: 'lots',
       shortBalance: shortBalanceUnits,
       shortBalanceUnits,
+      shortBalanceValue: null,
       marginBalanceChangePct: percentChange(marginBalanceUnits, previousMarginBalanceUnits),
       shortBalanceChangePct: percentChange(shortBalanceUnits, previousShortBalanceUnits),
       maintenanceRate: null,
       coverageCount: numberOrNull(latest.coverage_count),
       source: 'margin_data.twse_tpex_official',
+      scope: TRACKED_UNIVERSE_SCOPE,
+      valueMethod: 'official_units_tracked_universe',
     }
   } catch (e) {
     console.warn('[market/risk] margin_data credit trading failed', e)
@@ -506,6 +537,7 @@ async function loadCanonicalChipCreditTrading(db: D1Database) {
       `WITH ordered_dates AS (
          SELECT date
          FROM canonical_chip_daily
+         WHERE market_segment = 'LISTED_OTC'
          GROUP BY date
          ORDER BY date DESC
          LIMIT 2
@@ -514,9 +546,18 @@ async function loadCanonicalChipCreditTrading(db: D1Database) {
          c.date,
          SUM(COALESCE(c.margin_balance, 0)) AS margin_balance,
          SUM(COALESCE(c.short_balance, 0)) AS short_balance,
-         COUNT(*) AS coverage_count
+         SUM(CASE WHEN p.close IS NOT NULL THEN COALESCE(c.margin_balance, 0) * p.close * 1000 ELSE NULL END) AS margin_balance_value,
+         SUM(CASE WHEN p.close IS NOT NULL THEN COALESCE(c.short_balance, 0) * p.close * 1000 ELSE NULL END) AS short_balance_value,
+         COUNT(*) AS coverage_count,
+         SUM(CASE WHEN p.close IS NOT NULL THEN 1 ELSE 0 END) AS priced_count
        FROM canonical_chip_daily c
        JOIN ordered_dates d ON c.date = d.date
+       LEFT JOIN canonical_market_daily p
+         ON p.stock_id = c.stock_id
+        AND p.date = c.date
+        AND p.market_segment = 'LISTED_OTC'
+        AND p.source = 'finlab.price'
+       WHERE c.market_segment = 'LISTED_OTC'
        GROUP BY c.date
        ORDER BY c.date DESC`
     ).all<any>()
@@ -525,21 +566,31 @@ async function loadCanonicalChipCreditTrading(db: D1Database) {
     if (!latest?.date) return null
     const marginBalance = numberOrNull(latest.margin_balance)
     const shortBalance = numberOrNull(latest.short_balance)
+    const marginBalanceValue = numberOrNull(latest.margin_balance_value)
+    const shortBalanceValue = numberOrNull(latest.short_balance_value)
     const previousMarginBalance = numberOrNull(previous?.margin_balance)
     const previousShortBalance = numberOrNull(previous?.short_balance)
+    const previousMarginBalanceValue = numberOrNull(previous?.margin_balance_value)
+    const previousShortBalanceValue = numberOrNull(previous?.short_balance_value)
     return {
       date: latest.date,
       marginBalance,
       shortBalance,
-      marginBalanceValue: null,
+      marginBalanceValue,
       marginBalanceUnits: marginBalance,
       marginBalanceUnit: 'lots',
       shortBalanceUnits: shortBalance,
+      shortBalanceValue,
       marginBalanceChangePct: percentChange(marginBalance, previousMarginBalance),
       shortBalanceChangePct: percentChange(shortBalance, previousShortBalance),
+      marginBalanceValueChangePct: percentChange(marginBalanceValue, previousMarginBalanceValue),
+      shortBalanceValueChangePct: percentChange(shortBalanceValue, previousShortBalanceValue),
       maintenanceRate: null,
       coverageCount: numberOrNull(latest.coverage_count),
+      pricedCount: numberOrNull(latest.priced_count),
       source: 'canonical_chip_daily.finlab.margin_transactions',
+      scope: LISTED_OTC_SCOPE,
+      valueMethod: 'units_from_finlab_plus_close_estimated_value',
     }
   } catch (e) {
     console.warn('[market/risk] canonical_chip_daily credit trading failed', e)
@@ -573,6 +624,7 @@ async function loadCanonicalInstitutionalFlows(db: D1Database) {
       totalNet: numberOrNull(row.total_net),
       rowCount: numberOrNull(row.row_count),
       source: 'canonical_institutional_amount_daily.finlab.institutional_investors_trading_all_market_summary',
+      scope: LISTED_OTC_SCOPE,
     }
   } catch (e) {
     console.warn('[market/risk] canonical_institutional_amount_daily flows failed', e)
@@ -1468,7 +1520,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v9-finlab-regime-context'
+  const cacheKey = 'market:risk:latest:v10-clean-scope-credit-value'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -1575,6 +1627,7 @@ market.get('/risk', async (c) => {
     calculatedAt:           row.calculated_at,
     breadthSnapshot:        canonicalOverview?.breadthSnapshot ?? null,
     marketStats:            canonicalOverview?.marketStats ?? null,
+    marketDataScope:        canonicalOverview?.marketStats?.scope ?? null,
     marketVolume:           canonicalOverview?.marketStats?.volume ?? null,
     marketTurnoverAmount:   canonicalOverview?.marketStats?.amount ?? null,
     creditTrading,
@@ -1583,6 +1636,7 @@ market.get('/risk', async (c) => {
     marginBalanceUnits:     creditTrading?.marginBalanceUnits ?? null,
     marginBalanceUnit:      creditTrading?.marginBalanceUnit ?? null,
     shortBalance:           creditTrading?.shortBalance ?? null,
+    shortBalanceValue:      creditTrading?.shortBalanceValue ?? null,
     shortBalanceUnits:      creditTrading?.shortBalanceUnits ?? null,
     marginBalanceChangePct: creditTrading?.marginBalanceChangePct ?? null,
     shortBalanceChangePct:  creditTrading?.shortBalanceChangePct ?? null,

@@ -214,8 +214,19 @@
 
   .sv-safe-shell {
     min-height: 100dvh;
-    padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .sv-app-header {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .sv-app-header-inner {
+    height: 3.5rem;
+  }
+
+  .sv-app-main {
+    padding-top: calc(3.5rem + env(safe-area-inset-top));
   }
 
   .sv-horizontal-scroll {

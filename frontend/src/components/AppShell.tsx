@@ -140,8 +140,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="sv-safe-shell min-h-screen overflow-x-hidden bg-[#090a0d] text-slate-100">
-      <header className="fixed inset-x-0 top-0 z-50 border-b border-white/[0.08] bg-[#111218]/95 shadow-[0_10px_32px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-        <div className="flex h-14 w-full max-w-none items-center gap-4 px-4 md:px-8 2xl:px-10">
+      <header className="sv-app-header fixed inset-x-0 top-0 z-50 border-b border-white/[0.08] bg-[#111218]/95 shadow-[0_10px_32px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+        <div className="sv-app-header-inner flex w-full max-w-none items-center gap-4 px-4 md:px-8 2xl:px-10">
           <button
             type="button"
             className="grid h-9 w-9 place-items-center rounded-full border border-white/[0.08] bg-white/[0.06] text-slate-300 lg:hidden"
@@ -184,7 +184,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main className="sv-stockintelli-page min-h-screen pt-14">{children}</main>
+      <main className="sv-app-main sv-stockintelli-page min-h-screen">{children}</main>
     </div>
   )
 }

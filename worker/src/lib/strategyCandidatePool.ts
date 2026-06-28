@@ -17,6 +17,7 @@ import { buildMultiStrategyPleRoutingPlan, type StrategyPortfolioMetrics } from 
 import type { StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 
 export const STRATEGY_CANDIDATE_POOL_VERSION = 'strategy-candidate-pool-v1'
+export const ADAPTIVE_STRATEGY_POLICY_VERSION = 'adaptive-strategy-policy-v1'
 
 export type StrategyBudgetMode = 'base' | 'normal' | 'low_load' | 'hard_cap'
 export type StrategyQueueDecision = 'ml_queue' | 'research_only_queue' | 'dropped'
@@ -26,6 +27,32 @@ export interface StrategyCandidateRuntimePolicy {
   costBudget?: number
   evidenceRequirements?: string[]
   maxMlShare?: number
+  allocationMode?: 'active' | 'research_only'
+}
+
+export interface StrategyAdaptiveRuntimePolicy {
+  version: typeof ADAPTIVE_STRATEGY_POLICY_VERSION
+  policy: 'data_driven_strategy_runtime_budget'
+  static_pool_quota: number
+  static_cost_budget: number
+  static_max_ml_share: number | null
+  adaptive_pool_quota: number
+  adaptive_cost_budget: number
+  adaptive_max_ml_share: number | null
+  strict_match_count: number
+  source_universe_count: number
+  active_production_strategy_count: number
+  support_ratio: number
+  demand_score: number
+  prior_weight: number
+  reliability: number
+  crowding_score: number
+  diversification_value: number
+  uniqueness_score: number
+  drawdown_penalty: number
+  edge_score: number
+  quality_score: number
+  reason: string
 }
 
 export interface StrategyCandidatePoolPolicy {
@@ -73,6 +100,7 @@ export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   average_turnover?: number | null
   liquidity_value?: number | null
   strategy_runtime_policy?: StrategyCandidateRuntimePolicy
+  strategy_adaptive_policy?: StrategyAdaptiveRuntimePolicy
   strategy_pool_score?: number
   strategy_pool_rank?: number
   strategy_pool_ids?: string[]
@@ -123,8 +151,13 @@ export interface StrategyPoolEntry<T extends StrategyCandidatePoolCandidate = St
   promotion_status: StrategyPromotionStatus
   quota: number
   cost_budget: number
+  static_quota: number
+  static_cost_budget: number
   evidence_requirements: string[]
   max_ml_share: number | null
+  static_max_ml_share: number | null
+  adaptive_policy: StrategyAdaptiveRuntimePolicy
+  daily_match_status: StrategyPool['daily_match_status']
   regime_weight: number
   candidate: T
   raw_score: number
@@ -144,7 +177,12 @@ export interface StrategyPool<T extends StrategyCandidatePoolCandidate = Strateg
   promotion_status: StrategyPromotionStatus
   quota: number
   cost_budget: number
+  static_quota: number
+  static_cost_budget: number
   evidence_requirements: string[]
+  max_ml_share: number | null
+  static_max_ml_share: number | null
+  adaptive_policy: StrategyAdaptiveRuntimePolicy
   regime_scope: string[]
   regime_weight: number
   status: 'ready' | 'adaptive_near_match' | 'out_of_regime' | 'invalid_spec'
@@ -198,7 +236,7 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
   researchOnlyQueue: T[]
   selection: StrategyCandidateSelection<T>
   telemetry: {
-    selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe'
+    selection_order: 'full_feature_enriched_universe_strategy_only_no_raw_signal_forced_fill'
     target_size: number
     soft_capacity_baseline?: number
     adaptive_target_size?: number
@@ -208,6 +246,17 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     adaptive_capacity_reason?: string
     adaptive_capacity_eligible_count?: number
     adaptive_capacity_source_universe_count?: number
+    adaptive_target_size_before_dynamic_quota?: number
+    dynamic_effective_quota_policy?: string
+    dynamic_effective_quota_total?: number
+    dynamic_effective_quota_by_strategy?: Record<string, number>
+    adaptive_strategy_policy_version?: string
+    adaptive_pool_quota_by_strategy?: Record<string, number>
+    adaptive_cost_budget_by_strategy?: Record<string, number>
+    adaptive_max_ml_share_by_strategy?: Record<string, number | null>
+    static_pool_quota_by_strategy?: Record<string, number>
+    static_cost_budget_by_strategy?: Record<string, number>
+    static_max_ml_share_by_strategy?: Record<string, number | null>
     breadth_evidence_target_size?: number
     coarse_ml_queue_size: number
     coarse_ml_target_size: number
@@ -278,6 +327,10 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000
+}
+
 function cleanText(value: unknown): string {
   return String(value ?? '').trim()
 }
@@ -297,6 +350,254 @@ function boundedQuota(value: unknown, policy: StrategyCandidatePoolPolicy): numb
   const n = finiteNumber(value)
   const quota = n == null ? policy.defaultPoolQuota : Math.round(n)
   return clamp(quota, policy.minPoolQuota, policy.maxPoolQuota)
+}
+
+function boundedCostBudget(value: unknown, policy: StrategyCandidatePoolPolicy): number {
+  const n = finiteNumber(value)
+  const budget = n == null ? policy.defaultCostBudget : Math.round(n)
+  const maxCostBudget = Math.max(policy.defaultCostBudget, Math.ceil(policy.maxPoolQuota * 1.5))
+  return clamp(budget, 1, maxCostBudget)
+}
+
+function metricValue(metrics: Partial<StrategyPortfolioMetrics> | undefined, key: keyof StrategyPortfolioMetrics): number | null {
+  return finiteNumber(metrics?.[key])
+}
+
+function priorWeightScore(value: number): number {
+  return clamp((value - 0.15) / 1.65, 0, 1)
+}
+
+function edgeScoreFromMetrics(metrics: Partial<StrategyPortfolioMetrics> | undefined): number {
+  const rankIc = metricValue(metrics, 'rank_ic')
+  const recentAlpha = metricValue(metrics, 'recent_alpha')
+  const sharpe = metricValue(metrics, 'rolling_sharpe')
+  const rankIcScore = rankIc == null ? null : clamp((rankIc + 0.08) / 0.28, 0, 1)
+  const alphaScore = recentAlpha == null ? null : clamp((recentAlpha + 0.08) / 0.2, 0, 1)
+  const sharpeScore = sharpe == null ? null : clamp((sharpe + 0.5) / 2.5, 0, 1)
+  const scores = [rankIcScore, alphaScore, sharpeScore].filter((score): score is number => score != null)
+  return scores.length ? round3(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0.5
+}
+
+function adaptiveDemandScore(strictMatchCount: number, sourceUniverseCount: number, policy: StrategyCandidatePoolPolicy): number {
+  if (strictMatchCount <= 0 || sourceUniverseCount <= 0) return 0
+  const breadth = Math.log1p(strictMatchCount) / Math.log1p(Math.max(policy.maxPoolQuota * 2, 1))
+  const coverage = strictMatchCount / Math.max(1, sourceUniverseCount)
+  return round3(clamp(breadth * 0.82 + Math.sqrt(coverage) * 0.18, 0, 1.35))
+}
+
+function resolveAdaptiveRuntimePolicy(input: {
+  spec: StrategySpec
+  runtimePolicy: StrategyCandidateRuntimePolicy
+  policy: StrategyCandidatePoolPolicy
+  strictMatchCount: number
+  sourceUniverseCount: number
+  activeProductionStrategyCount: number
+  regimeWeight: number
+  strategyWeight: number
+  strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
+  strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
+}): StrategyAdaptiveRuntimePolicy {
+  const staticPoolQuota = boundedQuota(input.runtimePolicy.poolQuota, input.policy)
+  const staticCostBudget = boundedCostBudget(input.runtimePolicy.costBudget, input.policy)
+  const staticMaxMlShare = finiteNumber(input.runtimePolicy.maxMlShare)
+  const productionOwner = canOwnProductionAllocation({
+    strategy_status: input.spec.status,
+    owner_type: input.spec.ownerType!,
+    promotion_status: input.spec.promotionStatus!,
+  })
+  const metrics = input.strategyPortfolioMetrics?.[input.spec.id]
+  const graphCrowding = finiteNumber(input.strategySimilarityGraphEvidence?.strategy_cluster_crowding_score?.[input.spec.id])
+  const graphUniqueness = finiteNumber(input.strategySimilarityGraphEvidence?.strategy_cluster_uniqueness_score?.[input.spec.id])
+  const priorWeight = round3(clamp(
+    metricValue(metrics, 'prior_weight') ?? input.strategyWeight ?? 1,
+    0.15,
+    1.8,
+  ))
+  const reliability = round3(clamp(metricValue(metrics, 'reliability') ?? 0.55, 0, 1))
+  const crowdingScore = round3(clamp(
+    metricValue(metrics, 'crowding_score')
+      ?? graphCrowding
+      ?? metricValue(metrics, 'holding_overlap')
+      ?? metricValue(metrics, 'return_correlation')
+      ?? 0,
+    0,
+    1,
+  ))
+  const diversificationValue = round3(clamp(
+    metricValue(metrics, 'diversification_value')
+      ?? graphUniqueness
+      ?? (1 - crowdingScore),
+    0,
+    1,
+  ))
+  const uniquenessScore = round3(clamp(graphUniqueness ?? diversificationValue, 0, 1))
+  const maxDrawdown = metricValue(metrics, 'max_drawdown')
+  const drawdownPenalty = round3(clamp(((maxDrawdown ?? 0.12) - 0.08) / 0.42, 0, 1))
+  const edgeScore = edgeScoreFromMetrics(metrics)
+  const demandScore = adaptiveDemandScore(input.strictMatchCount, input.sourceUniverseCount, input.policy)
+  const supportRatio = round3(input.sourceUniverseCount > 0 ? input.strictMatchCount / input.sourceUniverseCount : 0)
+  const qualityScore = round3(clamp(
+    priorWeightScore(priorWeight) * 0.26
+    + reliability * 0.24
+    + diversificationValue * 0.18
+    + uniquenessScore * 0.12
+    + edgeScore * 0.14
+    + clamp(input.regimeWeight, 0, 1.4) * 0.06
+    - crowdingScore * 0.16
+    - drawdownPenalty * 0.08,
+    0,
+    1,
+  ))
+
+  if (!productionOwner || input.regimeWeight <= 0 || input.strictMatchCount <= 0) {
+    return {
+      version: ADAPTIVE_STRATEGY_POLICY_VERSION,
+      policy: 'data_driven_strategy_runtime_budget',
+      static_pool_quota: staticPoolQuota,
+      static_cost_budget: staticCostBudget,
+      static_max_ml_share: staticMaxMlShare,
+      adaptive_pool_quota: staticPoolQuota,
+      adaptive_cost_budget: staticCostBudget,
+      adaptive_max_ml_share: productionOwner ? null : 0,
+      strict_match_count: input.strictMatchCount,
+      source_universe_count: input.sourceUniverseCount,
+      active_production_strategy_count: input.activeProductionStrategyCount,
+      support_ratio: supportRatio,
+      demand_score: demandScore,
+      prior_weight: priorWeight,
+      reliability,
+      crowding_score: crowdingScore,
+      diversification_value: diversificationValue,
+      uniqueness_score: uniquenessScore,
+      drawdown_penalty: drawdownPenalty,
+      edge_score: edgeScore,
+      quality_score: qualityScore,
+      reason: productionOwner ? 'no_strict_match_keep_static_prior' : 'not_active_production_owner_no_ml_share',
+    }
+  }
+
+  const quotaMultiplier = clamp(0.62 + qualityScore * 0.72 + demandScore * 0.24, 0.5, 1.45)
+  const costMultiplier = clamp(0.58 + qualityScore * 0.62 + demandScore * 0.3 - crowdingScore * 0.12, 0.45, 1.5)
+  const activeCount = Math.max(1, input.activeProductionStrategyCount)
+  const equalShare = 1 / activeCount
+  const priorShare = staticMaxMlShare != null && staticMaxMlShare > 0
+    ? staticMaxMlShare
+    : input.policy.maxOneStrategyShare
+  const shareMultiplier = clamp(
+    0.82
+    + priorWeightScore(priorWeight) * 0.38
+    + reliability * 0.34
+    + uniquenessScore * 0.28
+    + edgeScore * 0.18
+    - crowdingScore * 0.38
+    - drawdownPenalty * 0.22,
+    0.62,
+    2.2,
+  )
+  const adaptivePoolQuota = Math.min(
+    input.strictMatchCount,
+    boundedQuota(Math.round(staticPoolQuota * quotaMultiplier), input.policy),
+  )
+  const adaptiveCostBudget = Math.min(
+    input.strictMatchCount,
+    boundedCostBudget(Math.round(staticCostBudget * costMultiplier), input.policy),
+  )
+  const adaptiveMaxMlShare = round3(clamp(
+    equalShare * shareMultiplier * 0.72 + priorShare * 0.28,
+    Math.min(input.policy.maxOneStrategyShare, Math.max(equalShare * 0.65, 0.04)),
+    input.policy.maxOneStrategyShare,
+  ))
+
+  return {
+    version: ADAPTIVE_STRATEGY_POLICY_VERSION,
+    policy: 'data_driven_strategy_runtime_budget',
+    static_pool_quota: staticPoolQuota,
+    static_cost_budget: staticCostBudget,
+    static_max_ml_share: staticMaxMlShare,
+    adaptive_pool_quota: Math.max(1, adaptivePoolQuota),
+    adaptive_cost_budget: Math.max(1, adaptiveCostBudget),
+    adaptive_max_ml_share: adaptiveMaxMlShare,
+    strict_match_count: input.strictMatchCount,
+    source_universe_count: input.sourceUniverseCount,
+    active_production_strategy_count: input.activeProductionStrategyCount,
+    support_ratio: supportRatio,
+    demand_score: demandScore,
+    prior_weight: priorWeight,
+    reliability,
+    crowding_score: crowdingScore,
+    diversification_value: diversificationValue,
+    uniqueness_score: uniquenessScore,
+    drawdown_penalty: drawdownPenalty,
+    edge_score: edgeScore,
+    quality_score: qualityScore,
+    reason: 'adaptive_from_daily_breadth_portfolio_metrics_similarity_and_active_strategy_count',
+  }
+}
+
+function canOwnProductionAllocation(input: {
+  strategy_status: StrategySpecStatus
+  owner_type: StrategyOwnerType
+  promotion_status: StrategyPromotionStatus
+}): boolean {
+  return input.strategy_status === 'active' && input.owner_type === 'strategy' && input.promotion_status === 'production'
+}
+
+function dynamicEffectiveQuotaForPool<T extends StrategyCandidatePoolCandidate>(pool: StrategyPool<T>): number {
+  if (!canOwnProductionAllocation(pool)) return 0
+  if (pool.daily_match_status !== 'strict_match') return 0
+  return Math.max(0, Math.min(
+    pool.quota,
+    pool.cost_budget,
+    pool.strict_match_count,
+    pool.candidates.length,
+  ))
+}
+
+function resolveDynamicEffectiveQuota<T extends StrategyCandidatePoolCandidate>(
+  pools: Array<StrategyPool<T>>,
+): { total: number; byStrategy: Record<string, number> } {
+  const byStrategy: Record<string, number> = {}
+  let total = 0
+  for (const pool of pools) {
+    const effectiveQuota = dynamicEffectiveQuotaForPool(pool)
+    if (canOwnProductionAllocation(pool)) byStrategy[pool.strategy_id] = effectiveQuota
+    total += effectiveQuota
+  }
+  return { total, byStrategy }
+}
+
+function resolveAdaptivePolicyTelemetry<T extends StrategyCandidatePoolCandidate>(
+  pools: Array<StrategyPool<T>>,
+): {
+  adaptivePoolQuotaByStrategy: Record<string, number>
+  adaptiveCostBudgetByStrategy: Record<string, number>
+  adaptiveMaxMlShareByStrategy: Record<string, number | null>
+  staticPoolQuotaByStrategy: Record<string, number>
+  staticCostBudgetByStrategy: Record<string, number>
+  staticMaxMlShareByStrategy: Record<string, number | null>
+} {
+  const adaptivePoolQuotaByStrategy: Record<string, number> = {}
+  const adaptiveCostBudgetByStrategy: Record<string, number> = {}
+  const adaptiveMaxMlShareByStrategy: Record<string, number | null> = {}
+  const staticPoolQuotaByStrategy: Record<string, number> = {}
+  const staticCostBudgetByStrategy: Record<string, number> = {}
+  const staticMaxMlShareByStrategy: Record<string, number | null> = {}
+  for (const pool of pools) {
+    adaptivePoolQuotaByStrategy[pool.strategy_id] = pool.quota
+    adaptiveCostBudgetByStrategy[pool.strategy_id] = pool.cost_budget
+    adaptiveMaxMlShareByStrategy[pool.strategy_id] = pool.max_ml_share
+    staticPoolQuotaByStrategy[pool.strategy_id] = pool.static_quota
+    staticCostBudgetByStrategy[pool.strategy_id] = pool.static_cost_budget
+    staticMaxMlShareByStrategy[pool.strategy_id] = pool.static_max_ml_share
+  }
+  return {
+    adaptivePoolQuotaByStrategy,
+    adaptiveCostBudgetByStrategy,
+    adaptiveMaxMlShareByStrategy,
+    staticPoolQuotaByStrategy,
+    staticCostBudgetByStrategy,
+    staticMaxMlShareByStrategy,
+  }
 }
 
 function statusWeight(status: string): number {
@@ -441,7 +742,7 @@ function eligibleForMl(candidate: StrategyCandidatePoolCandidate): boolean {
 }
 
 function strategyCanEnterMlQueue(entry: StrategyPoolEntry): boolean {
-  return entry.strategy_status === 'active' && entry.owner_type === 'strategy' && finiteNumber(entry.max_ml_share) !== 0
+  return canOwnProductionAllocation(entry) && entry.daily_match_status === 'strict_match'
 }
 
 function mergeActiveStrategyRefs(
@@ -650,27 +951,49 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
     regime?: AlphaFrameworkRegime | string | null
     policy?: StrategyCandidatePoolPolicy
     strategyWeights?: Record<string, number>
+    strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
+    strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
   } = {},
 ): Array<StrategyPool<T>> {
   assertOwnerCanOwn('screener', 'candidate_discovery')
   assertOwnerCanOwn('strategy', 'strategy_spec')
   const policy = options.policy ?? DEFAULT_STRATEGY_CANDIDATE_POOL_POLICY
-
-  return specs
+  const normalizedSpecs = specs
     .filter((spec) => spec.status !== 'retired')
-    .map((rawSpec) => {
-      const spec = normalizeStrategySpecGovernance(rawSpec)
+    .map(normalizeStrategySpecGovernance)
+  const activeProductionStrategyCount = normalizedSpecs.filter((spec) => canOwnProductionAllocation({
+    strategy_status: spec.status,
+    owner_type: spec.ownerType!,
+    promotion_status: spec.promotionStatus!,
+  })).length
+
+  return normalizedSpecs
+    .map((spec) => {
       const validation = validateStrategySpec(spec)
       const runtimePolicy = policyForSpec(spec)
-      const quota = boundedQuota(runtimePolicy.poolQuota, policy)
-      const costBudget = Math.max(1, Math.round(finiteNumber(runtimePolicy.costBudget) ?? policy.defaultCostBudget))
-      const maxMlShare = finiteNumber(runtimePolicy.maxMlShare)
+      const staticQuota = boundedQuota(runtimePolicy.poolQuota, policy)
+      const staticCostBudget = boundedCostBudget(runtimePolicy.costBudget, policy)
+      const staticMaxMlShare = finiteNumber(runtimePolicy.maxMlShare)
       const evidenceRequirements = runtimePolicy.evidenceRequirements?.map(cleanText).filter(Boolean)
         ?? ['price', 'chip_or_flow', 'technical']
-      const rWeight = regimeWeight(spec, options.regime) * (finiteNumber(options.strategyWeights?.[spec.id]) ?? 1)
+      const configuredStrategyWeight = finiteNumber(options.strategyWeights?.[spec.id]) ?? 1
+      const specRegimeWeight = regimeWeight(spec, options.regime)
+      const rWeight = specRegimeWeight * configuredStrategyWeight
       const missingEvidence = validation.ok ? [] : validation.errors
 
       if (!validation.ok) {
+        const adaptivePolicy = resolveAdaptiveRuntimePolicy({
+          spec,
+          runtimePolicy,
+          policy,
+          strictMatchCount: 0,
+          sourceUniverseCount: candidates.length,
+          activeProductionStrategyCount,
+          regimeWeight: 0,
+          strategyWeight: configuredStrategyWeight,
+          strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+          strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
+        })
         return {
           strategy_id: spec.id,
           strategy_name: spec.name,
@@ -679,9 +1002,14 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           family_id: spec.familyId!,
           owner_type: spec.ownerType!,
           promotion_status: spec.promotionStatus!,
-          quota,
-          cost_budget: costBudget,
+          quota: adaptivePolicy.adaptive_pool_quota,
+          cost_budget: adaptivePolicy.adaptive_cost_budget,
+          static_quota: staticQuota,
+          static_cost_budget: staticCostBudget,
           evidence_requirements: evidenceRequirements,
+          max_ml_share: adaptivePolicy.adaptive_max_ml_share,
+          static_max_ml_share: staticMaxMlShare,
+          adaptive_policy: adaptivePolicy,
           regime_scope: spec.supportedRegimes.map(String),
           regime_weight: 0,
           status: 'invalid_spec',
@@ -694,6 +1022,18 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       }
 
       if (rWeight <= 0) {
+        const adaptivePolicy = resolveAdaptiveRuntimePolicy({
+          spec,
+          runtimePolicy,
+          policy,
+          strictMatchCount: 0,
+          sourceUniverseCount: candidates.length,
+          activeProductionStrategyCount,
+          regimeWeight: 0,
+          strategyWeight: configuredStrategyWeight,
+          strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+          strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
+        })
         return {
           strategy_id: spec.id,
           strategy_name: spec.name,
@@ -702,9 +1042,14 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
           family_id: spec.familyId!,
           owner_type: spec.ownerType!,
           promotion_status: spec.promotionStatus!,
-          quota,
-          cost_budget: costBudget,
+          quota: adaptivePolicy.adaptive_pool_quota,
+          cost_budget: adaptivePolicy.adaptive_cost_budget,
+          static_quota: staticQuota,
+          static_cost_budget: staticCostBudget,
           evidence_requirements: evidenceRequirements,
+          max_ml_share: adaptivePolicy.adaptive_max_ml_share,
+          static_max_ml_share: staticMaxMlShare,
+          adaptive_policy: adaptivePolicy,
           regime_scope: spec.supportedRegimes.map(String),
           regime_weight: 0,
           status: 'out_of_regime',
@@ -719,104 +1064,116 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       let usedAdaptiveNearMatch = false
       let strictEmptyMissingEvidence: string[] = []
       const blockAdaptiveNearMatch = mustFailClosedOnStrictFeatureRefs(spec, evidenceRequirements)
-      let entries = candidates
+      type RawStrategyMatch = {
+        candidate: T
+        raw_score: number
+        strategy_score: number
+        reason: string
+      }
+      const strictMatches = candidates
         .map((candidate) => {
           const assessment = assessCandidateAgainstStrategySpecs(strategyInputFromPoolCandidate(candidate), [spec])
           if (!assessment.matches.length) return null
           const scored = strategyScore(candidate, spec, rWeight)
           return {
-            strategy_id: spec.id,
-            strategy_name: spec.name,
-            alpha_bucket: spec.alphaBucket,
-            strategy_status: spec.status,
-            family_id: spec.familyId!,
-            variant_id: spec.variantId!,
-            owner_type: spec.ownerType!,
-            promotion_status: spec.promotionStatus!,
-            quota,
-            cost_budget: costBudget,
-            evidence_requirements: evidenceRequirements,
-            max_ml_share: maxMlShare,
-            regime_weight: rWeight,
-            candidate: cloneCandidate(candidate),
+            candidate,
             raw_score: rawScoreForEntry(candidate, spec),
             strategy_score: scored,
-            rank: 0,
             reason: assessment.matches[0]?.reason ?? spec.thesis,
-          } satisfies StrategyPoolEntry<T>
+          } satisfies RawStrategyMatch
         })
-        .filter((entry): entry is StrategyPoolEntry<T> => entry != null)
+        .filter((entry): entry is RawStrategyMatch => entry != null)
         .sort((a, b) => b.strategy_score - a.strategy_score)
+      const strictMatchCount = strictMatches.length
+      const adaptivePolicy = resolveAdaptiveRuntimePolicy({
+        spec,
+        runtimePolicy,
+        policy,
+        strictMatchCount,
+        sourceUniverseCount: candidates.length,
+        activeProductionStrategyCount,
+        regimeWeight: specRegimeWeight,
+        strategyWeight: configuredStrategyWeight,
+        strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+        strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
+      })
+      const quota = adaptivePolicy.adaptive_pool_quota
+      const costBudget = adaptivePolicy.adaptive_cost_budget
+      const maxMlShare = adaptivePolicy.adaptive_max_ml_share
+      const entryFromMatch = (
+        match: RawStrategyMatch,
+        index: number,
+        dailyMatchStatus: StrategyPool['daily_match_status'],
+      ): StrategyPoolEntry<T> => ({
+        strategy_id: spec.id,
+        strategy_name: spec.name,
+        alpha_bucket: spec.alphaBucket,
+        strategy_status: spec.status,
+        family_id: spec.familyId!,
+        variant_id: spec.variantId!,
+        owner_type: spec.ownerType!,
+        promotion_status: spec.promotionStatus!,
+        quota,
+        cost_budget: costBudget,
+        static_quota: staticQuota,
+        static_cost_budget: staticCostBudget,
+        evidence_requirements: evidenceRequirements,
+        max_ml_share: maxMlShare,
+        static_max_ml_share: staticMaxMlShare,
+        adaptive_policy: adaptivePolicy,
+        daily_match_status: dailyMatchStatus,
+        regime_weight: rWeight,
+        candidate: cloneCandidate(match.candidate),
+        raw_score: match.raw_score,
+        strategy_score: match.strategy_score,
+        rank: index + 1,
+        reason: match.reason,
+      })
+      let entries = strictMatches
         .slice(0, Math.min(quota, costBudget))
-        .map((entry, index) => ({ ...entry, rank: index + 1 }))
-      const strictMatchCount = entries.length
+        .map((match, index) => entryFromMatch(match, index, 'strict_match'))
 
-      if (!entries.length && blockAdaptiveNearMatch) {
+      if (!strictMatches.length && blockAdaptiveNearMatch) {
         strictEmptyMissingEvidence = ['strict_feature_ref_match_empty']
       }
 
-      if (!entries.length && !blockAdaptiveNearMatch && !spec.thresholds.dsl) {
+      if (!strictMatches.length && !blockAdaptiveNearMatch && !spec.thresholds.dsl) {
         usedAdaptiveNearMatch = true
-        entries = candidates
+        const nearMatches = candidates
           .map((candidate) => {
             const misses = thresholdNearMisses(candidate, spec)
             if (!misses) return null
             const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.92 - misses.length * 1.5) * 1000) / 1000
             return {
-              strategy_id: spec.id,
-              strategy_name: spec.name,
-              alpha_bucket: spec.alphaBucket,
-              strategy_status: spec.status,
-              family_id: spec.familyId!,
-              variant_id: spec.variantId!,
-              owner_type: spec.ownerType!,
-              promotion_status: spec.promotionStatus!,
-              quota,
-              cost_budget: costBudget,
-              evidence_requirements: evidenceRequirements,
-              max_ml_share: maxMlShare,
-              regime_weight: rWeight,
-              candidate: cloneCandidate(candidate),
+              candidate,
               raw_score: rawScoreForEntry(candidate, spec),
               strategy_score: scored,
-              rank: 0,
               reason: `adaptive_near_match:${misses.join('|')}`,
-            } satisfies StrategyPoolEntry<T>
+            } satisfies RawStrategyMatch
           })
-          .filter((entry): entry is StrategyPoolEntry<T> => entry != null)
+          .filter((entry): entry is RawStrategyMatch => entry != null)
           .sort((a, b) => b.strategy_score - a.strategy_score)
+        entries = nearMatches
           .slice(0, Math.min(quota, costBudget))
-          .map((entry, index) => ({ ...entry, rank: index + 1 }))
+          .map((match, index) => entryFromMatch(match, index, 'shadow_near_match'))
       }
-      if (!entries.length && !blockAdaptiveNearMatch && spec.status !== 'active') {
+      if (!strictMatches.length && !entries.length && !blockAdaptiveNearMatch && spec.status !== 'active') {
         usedAdaptiveNearMatch = true
-        entries = candidates
+        const nearMatches = candidates
           .map((candidate) => {
             const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.86) * 1000) / 1000
             return {
-              strategy_id: spec.id,
-              strategy_name: spec.name,
-              alpha_bucket: spec.alphaBucket,
-              strategy_status: spec.status,
-              family_id: spec.familyId!,
-              variant_id: spec.variantId!,
-              owner_type: spec.ownerType!,
-              promotion_status: spec.promotionStatus!,
-              quota,
-              cost_budget: costBudget,
-              evidence_requirements: evidenceRequirements,
-              max_ml_share: maxMlShare,
-              regime_weight: rWeight,
-              candidate: cloneCandidate(candidate),
+              candidate,
               raw_score: rawScoreForEntry(candidate, spec),
               strategy_score: scored,
-              rank: 0,
               reason: 'adaptive_empty_pool_ranked_near_match',
-            } satisfies StrategyPoolEntry<T>
+            } satisfies RawStrategyMatch
           })
+          .filter((entry): entry is RawStrategyMatch => entry != null)
           .sort((a, b) => b.strategy_score - a.strategy_score)
+        entries = nearMatches
           .slice(0, Math.min(quota, costBudget))
-          .map((entry, index) => ({ ...entry, rank: index + 1 }))
+          .map((match, index) => entryFromMatch(match, index, 'shadow_near_match'))
       }
       const nearMatchCount = usedAdaptiveNearMatch ? entries.length : 0
       const dailyMatchStatus: StrategyPool['daily_match_status'] = strictMatchCount > 0
@@ -837,7 +1194,12 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         promotion_status: spec.promotionStatus!,
         quota,
         cost_budget: costBudget,
+        static_quota: staticQuota,
+        static_cost_budget: staticCostBudget,
         evidence_requirements: evidenceRequirements,
+        max_ml_share: maxMlShare,
+        static_max_ml_share: staticMaxMlShare,
+        adaptive_policy: adaptivePolicy,
         regime_scope: spec.supportedRegimes.map(String),
         regime_weight: rWeight,
         status: usedAdaptiveNearMatch && entries.length ? 'adaptive_near_match' : 'ready',
@@ -867,6 +1229,7 @@ function annotateSelection<T extends StrategyCandidatePoolCandidate>(
   candidate.research_strategy_ids = entry.research_strategy_ids
   candidate.strategy_pool_decision = decision
   candidate.strategy_pool_reason = reason
+  candidate.strategy_adaptive_policy = entry.adaptive_policy
   candidate.strategy_tags = uniqueTexts([
     ...(candidate.strategy_tags ?? []),
     `strategy_pool:${STRATEGY_CANDIDATE_POOL_VERSION}`,
@@ -927,18 +1290,20 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
     const nextStrategyCount = (strategyUsage.get(primaryStrategy) ?? 0) + 1
     const nextIndustryCount = (industryUsage.get(industry) ?? 0) + 1
     const entryMaxMlShare = finiteNumber(entry.max_ml_share)
-    const entryStrategyCap = entryMaxMlShare == null
-      ? strategyCap
-      : Math.max(1, Math.floor(capacity.mlQueueCap * clamp(entryMaxMlShare, 0, 1)))
+    const entryStrategyCap = entryMaxMlShare != null && entryMaxMlShare > 0
+      ? Math.max(1, Math.floor(capacity.mlQueueCap * clamp(entryMaxMlShare, 0, 1)))
+      : strategyCap
     let reason = cleanText(entry.reason) || 'selected_by_strategy_pool'
     let decision: StrategyQueueDecision = 'ml_queue'
 
     if (!eligibleForMl(entry.candidate)) {
       decision = 'research_only_queue'
       reason = entry.candidate.restricted === true ? 'restricted_or_attention' : 'not_ml_eligible_segment'
-    } else if (entryMaxMlShare === 0) {
+    } else if (!strategyCanEnterMlQueue(entry)) {
       decision = 'research_only_queue'
-      reason = 'strategy_research_discovery_lane_only'
+      reason = entry.daily_match_status !== 'strict_match'
+        ? 'strategy_not_strict_match_today'
+        : 'strategy_not_active_production_owner'
     } else if (nextStrategyCount > entryStrategyCap) {
       decision = 'research_only_queue'
       reason = 'strategy_share_cap'
@@ -992,6 +1357,8 @@ export function planStrategyFirstCandidateSelection<T extends StrategyCandidateP
     capacity?: StrategyCapacityInput
     policy?: StrategyCandidatePoolPolicy
     strategyWeights?: Record<string, number>
+    strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
+    strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
     mlQueueCapOverride?: number
   } = {},
 ): StrategyCandidateSelection<T> {
@@ -1005,39 +1372,10 @@ export function planStrategyFirstCandidateSelection<T extends StrategyCandidateP
     regime: options.regime,
     policy,
     strategyWeights: options.strategyWeights,
+    strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+    strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
   })
   return mergeStrategyCandidatePools(pools, capacity, policy)
-}
-
-function rawSignalFallbackValue(candidate: StrategyCandidatePoolCandidate): number {
-  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
-  const liquidity = candidateLiquidity(candidate)
-  const liquidityBonus = liquidity == null ? 0 : clamp(Math.log10(Math.max(liquidity, 1)) - 7, 0, 3)
-  return Math.round(rawSignalSuitabilityScore(raw, liquidityBonus) * 1000) / 1000
-}
-
-function annotateLayer1TopUp<T extends StrategyCandidatePoolCandidate>(
-  candidate: T,
-  rank: number,
-): T {
-  const cloned = cloneCandidate(candidate)
-  cloned.strategy_pool_decision = 'research_only_queue'
-  cloned.strategy_pool_reason = 'raw_signal_top_up_observe_after_l15_adaptive_slate'
-  cloned.strategy_pool_rank = rank
-  cloned.strategy_pool_ids = []
-  cloned.strategy_family_ids = []
-  cloned.strategy_variant_ids = []
-  cloned.strategy_owner_types = ['observe']
-  cloned.research_strategy_ids = []
-  cloned.strategy_pool_fallback_source = 'raw_signal_top_up'
-  cloned.strategy_pool_score = rawSignalFallbackValue(candidate)
-  cloned.strategy_tags = uniqueTexts([...(cloned.strategy_tags ?? []), 'strategy_pool:raw_signal_top_up_observe'])
-  cloned.strategy_watch_points = uniqueTexts([
-    ...(cloned.strategy_watch_points ?? []),
-    'strategy_pool:raw_signal_top_up_observe_after_l15_adaptive_slate',
-    'strategy_pool:not_formal_l2_queue',
-  ])
-  return cloned
 }
 
 export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandidate>(
@@ -1082,14 +1420,29 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     activeLabeledCandidateCount: provisionalRouterPlan.telemetry.active_labeled_candidates,
     matchedCandidateCount: provisionalRouterPlan.telemetry.matched_candidates,
   })
-  const adaptiveTargetSize = adaptiveCapacity.target
-  const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
+  const adaptiveTargetSizeBeforeDynamicQuota = adaptiveCapacity.target
+  const preliminarySelection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
     regime: options.regime,
     strategyWeights: options.strategyWeights,
+    strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+    strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
     policy,
-    capacity: { requestedTotalCap: Math.max(1, adaptiveTargetSize) },
-    mlQueueCapOverride: Math.max(1, adaptiveTargetSize),
+    capacity: { requestedTotalCap: Math.max(1, adaptiveTargetSizeBeforeDynamicQuota) },
+    mlQueueCapOverride: Math.max(1, adaptiveTargetSizeBeforeDynamicQuota),
   })
+  const dynamicEffectiveQuota = resolveDynamicEffectiveQuota(preliminarySelection.pools)
+  const adaptiveTargetSize = Math.min(adaptiveTargetSizeBeforeDynamicQuota, dynamicEffectiveQuota.total)
+  const selection = adaptiveTargetSize === adaptiveTargetSizeBeforeDynamicQuota
+    ? preliminarySelection
+    : planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
+        regime: options.regime,
+        strategyWeights: options.strategyWeights,
+        strategyPortfolioMetrics: options.strategyPortfolioMetrics,
+        strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
+        policy,
+        capacity: { requestedTotalCap: Math.max(1, adaptiveTargetSize) },
+        mlQueueCapOverride: Math.max(1, adaptiveTargetSize),
+      })
   const routerPlan = adaptiveTargetSize > 0 && adaptiveTargetSize < adaptiveCapacity.max
     ? buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
         maxSlateSize: adaptiveTargetSize,
@@ -1101,23 +1454,13 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       })
     : provisionalRouterPlan
 
-  const selectedSymbols = new Set(routerPlan.mlSlate.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
   const strategySelected = adaptiveTargetSize > 0 ? routerPlan.mlSlate.slice(0, adaptiveTargetSize) : []
-  const breadthEvidenceTargetSize = Math.max(adaptiveTargetSize, Math.min(targetSize, featureEnrichedUniverse.length))
-  const topUp = featureEnrichedUniverse
-    .filter((candidate) => {
-      const symbol = cleanText(candidate.symbol).toUpperCase()
-      if (!symbol || selectedSymbols.has(symbol)) return false
-      if (!eligibleForMl(candidate)) return false
-      if (!passesLayer1TopUpQualityGuard(candidate)) return false
-      return true
-    })
-    .sort((a, b) => rawSignalFallbackValue(b) - rawSignalFallbackValue(a))
-    .slice(0, Math.max(0, breadthEvidenceTargetSize - strategySelected.length))
-    .map((candidate, index) => annotateLayer1TopUp(candidate, strategySelected.length + index + 1))
+  const breadthEvidenceTargetSize = adaptiveTargetSize
+  const topUp: T[] = []
 
   const breadthPool = [...strategySelected, ...topUp].slice(0, breadthEvidenceTargetSize)
   const formalCoarseQueue = strategySelected
+  const adaptivePolicyTelemetry = resolveAdaptivePolicyTelemetry(selection.pools)
 
   return {
     version: `${STRATEGY_CANDIDATE_POOL_VERSION}:layer1-breadth-v1`,
@@ -1127,7 +1470,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     researchOnlyQueue: selection.researchOnlyQueue,
     selection,
     telemetry: {
-      selection_order: 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe',
+      selection_order: 'full_feature_enriched_universe_strategy_only_no_raw_signal_forced_fill',
       target_size: adaptiveTargetSize,
       soft_capacity_baseline: adaptiveCapacity.baseline,
       adaptive_target_size: adaptiveTargetSize,
@@ -1137,6 +1480,17 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       adaptive_capacity_reason: adaptiveCapacity.reason,
       adaptive_capacity_eligible_count: adaptiveCapacity.eligibleAboveFloor,
       adaptive_capacity_source_universe_count: adaptiveCapacity.sourceUniverseCount,
+      adaptive_target_size_before_dynamic_quota: adaptiveTargetSizeBeforeDynamicQuota,
+      dynamic_effective_quota_policy: 'sum_active_production_strict_matches_bounded_by_adaptive_pool_quota_and_adaptive_cost_budget',
+      dynamic_effective_quota_total: dynamicEffectiveQuota.total,
+      dynamic_effective_quota_by_strategy: dynamicEffectiveQuota.byStrategy,
+      adaptive_strategy_policy_version: ADAPTIVE_STRATEGY_POLICY_VERSION,
+      adaptive_pool_quota_by_strategy: adaptivePolicyTelemetry.adaptivePoolQuotaByStrategy,
+      adaptive_cost_budget_by_strategy: adaptivePolicyTelemetry.adaptiveCostBudgetByStrategy,
+      adaptive_max_ml_share_by_strategy: adaptivePolicyTelemetry.adaptiveMaxMlShareByStrategy,
+      static_pool_quota_by_strategy: adaptivePolicyTelemetry.staticPoolQuotaByStrategy,
+      static_cost_budget_by_strategy: adaptivePolicyTelemetry.staticCostBudgetByStrategy,
+      static_max_ml_share_by_strategy: adaptivePolicyTelemetry.staticMaxMlShareByStrategy,
       breadth_evidence_target_size: breadthEvidenceTargetSize,
       coarse_ml_queue_size: formalCoarseQueue.length,
       coarse_ml_target_size: coarseMlQueueSize,

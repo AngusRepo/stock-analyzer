@@ -170,6 +170,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
       momentumScore: 12,
     }),
     raw_signals: rawSignalPayload({ closeAboveMa20Pct: 0.06, volumeExpansion20: 1.45, return20d: 0.1 }),
+    current_price: 40,
     market_segment: 'LISTED',
     eligible_for_ml: 1,
   }
@@ -199,7 +200,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     supportedRegimes: ['bull' as const],
     thesis: 'Niche strategy should source L1 breadth directly from full feature-enriched universe.',
     thresholds: { minCloseAboveMa20Pct: 0.03, minVolumeExpansion20: 1.2, minReturn20d: 0.03, includeIndustries: ['Niche'], minPrice: 10 },
-    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8, maxMlShare: 0 },
     riskNotes: ['test only'],
     createdBy: 'p5_strategy_governance' as const,
   }
@@ -222,7 +223,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 
   assert(!oldTopScoreSymbols.has('8999'), 'test fixture must keep niche candidate outside old score-top pool')
   assert(plan.breadthPool.some((candidate) => candidate.symbol === '8999'), 'L1 breadth pool should include raw-signal priced strategy fit outside old score-top pool')
-  assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_only_with_raw_signal_observe', 'L1 selection order must keep raw-signal top-up in observe-only evidence')
+  assert(plan.telemetry.selection_order === 'full_feature_enriched_universe_strategy_only_no_raw_signal_forced_fill', 'L1 selection order must not force-fill ML breadth with raw-signal observe evidence')
   assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_decision === 'ml_queue'), 'Layer2 coarse queue should contain formal strategy hits before controller-side coarse ML pruning')
   assert(Number((plan.telemetry as any).coarse_ml_target_size) === 8, 'Layer2 coarse queue should preserve the controller target size as telemetry')
   assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_fallback_source !== 'raw_signal_top_up'), 'raw-signal top-up must not enter formal L2 coarse queue')
@@ -276,6 +277,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert((plan.telemetry as any).soft_capacity_baseline === 12, 'L1.5 targetSize should be a soft baseline, not a hard top-k cap')
   assert((plan.telemetry as any).adaptive_capacity_policy === 'soft_baseline_adaptive_ceiling_no_forced_fill', 'L1.5 capacity policy should document adaptive ceiling semantics')
   assert(Number((plan.telemetry as any).adaptive_target_size) > 12, 'L1.5 should expand above soft baseline when broad quality-floor evidence exists')
+  assert(Number((plan.telemetry as any).adaptive_target_size_before_dynamic_quota) > 12, 'L1.5 should preserve the pre-dynamic adaptive target for audit')
+  assert(Number((plan.telemetry as any).dynamic_effective_quota_total) >= Number((plan.telemetry as any).adaptive_target_size), 'dynamic effective quota should cap, not inflate, the adaptive target')
   assert(plan.breadthPool.length === Number((plan.telemetry as any).adaptive_target_size), 'L1.5 breadth pool should follow adaptive target size')
   assert((plan.telemetry as any).strategy_matrix_candidate_count === broadCandidates.length, 'soft capacity must not reduce full-universe strategy labeling scope')
   assert((plan.telemetry as any).strategy_matrix_cell_count === broadCandidates.length, 'single-strategy matrix should still evaluate every candidate')
@@ -431,7 +434,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     supportedRegimes: ['bull' as const],
     thesis: 'Heat should be a router feature, not a hard quota.',
     thresholds: { minPrice: 10 },
-    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8, maxMlShare: 0 },
     riskNotes: ['test only'],
     createdBy: 'p5_strategy_governance' as const,
   }
@@ -568,6 +571,82 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
+  const adaptiveSpecs = [
+    {
+      id: 'adaptive_high_edge_v1',
+      version: STRATEGY_SPEC_VERSION,
+      name: 'Adaptive high edge',
+      status: 'active' as const,
+      owner: 'strategy' as const,
+      familyId: 'TREND_RECLAIM_CONTINUATION' as const,
+      variantId: 'adaptive_high_edge_v1',
+      ownerType: 'strategy' as const,
+      promotionStatus: 'production' as const,
+      alphaBucket: 'trend_following' as const,
+      supportedRegimes: ['bull' as const],
+      thesis: 'High evidence strategy should receive a larger runtime budget.',
+      thresholds: { minPrice: 10 },
+      candidatePolicy: { poolQuota: 12, costBudget: 12, maxMlShare: 0.2 },
+      riskNotes: ['test only'],
+      createdBy: 'p5_strategy_governance' as const,
+    },
+    {
+      id: 'adaptive_crowded_low_edge_v1',
+      version: STRATEGY_SPEC_VERSION,
+      name: 'Adaptive crowded low edge',
+      status: 'active' as const,
+      owner: 'strategy' as const,
+      familyId: 'SMART_MONEY_ACCUMULATION' as const,
+      variantId: 'adaptive_crowded_low_edge_v1',
+      ownerType: 'strategy' as const,
+      promotionStatus: 'production' as const,
+      alphaBucket: 'defensive_accumulation' as const,
+      supportedRegimes: ['bull' as const],
+      thesis: 'Crowded weak evidence strategy should receive a smaller runtime budget.',
+      thresholds: { minPrice: 10 },
+      candidatePolicy: { poolQuota: 12, costBudget: 12, maxMlShare: 0.2 },
+      riskNotes: ['test only'],
+      createdBy: 'p5_strategy_governance' as const,
+    },
+  ]
+  const pools = buildStrategyCandidatePools(candidates, adaptiveSpecs, {
+    regime: 'bull',
+    strategyPortfolioMetrics: {
+      adaptive_high_edge_v1: {
+        prior_weight: 1.55,
+        reliability: 0.92,
+        diversification_value: 0.88,
+        crowding_score: 0.04,
+        rank_ic: 0.16,
+        recent_alpha: 0.08,
+        rolling_sharpe: 1.4,
+        max_drawdown: 0.05,
+      },
+      adaptive_crowded_low_edge_v1: {
+        prior_weight: 0.35,
+        reliability: 0.24,
+        diversification_value: 0.12,
+        crowding_score: 0.91,
+        rank_ic: -0.05,
+        recent_alpha: -0.05,
+        rolling_sharpe: -0.4,
+        max_drawdown: 0.32,
+      },
+    },
+  })
+  const high = pools.find((pool) => pool.strategy_id === 'adaptive_high_edge_v1') as any
+  const low = pools.find((pool) => pool.strategy_id === 'adaptive_crowded_low_edge_v1') as any
+  assert(high && low, 'adaptive policy test pools should be built')
+  assert(high.static_quota === 12 && low.static_quota === 12, 'fixture must start from equal static poolQuota priors')
+  assert(high.static_cost_budget === 12 && low.static_cost_budget === 12, 'fixture must start from equal static costBudget priors')
+  assert(high.strict_match_count > high.quota, 'strict_match_count should remain raw breadth, not truncated by runtime quota')
+  assert(high.quota > low.quota, 'adaptive poolQuota should reward reliable unique edge over crowded weak edge')
+  assert(high.cost_budget > low.cost_budget, 'adaptive costBudget should follow marginal expected value evidence')
+  assert(Number(high.max_ml_share) > Number(low.max_ml_share), 'adaptive maxMlShare should be a soft risk budget, not the static prior')
+  assert(high.adaptive_policy.reason === 'adaptive_from_daily_breadth_portfolio_metrics_similarity_and_active_strategy_count', 'adaptive policy should expose its runtime reason')
+}
+
+{
   const legacyScoreV2Spec = {
     ...DEFAULT_STRATEGY_SPECS[0],
     id: 'legacy_score_v2_compat_test_v1',
@@ -691,8 +770,9 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     'pool candidate reason should explain which thresholds were near misses',
   )
   const selection = mergeStrategyCandidatePools(pools, resolveStrategyCapacityBudget({ requestedTotalCap: 8 }))
-  assert(selection.mlQueue.length > 0, 'adaptive near-match candidates should be able to enter shadow ML queue')
-  const firstNearMatch = selection.mlQueue[0] as any
+  assert(selection.mlQueue.length === 0, 'adaptive near-match candidates must not enter formal production ML queue')
+  assert(selection.researchOnlyQueue.length > 0, 'adaptive near-match candidates should remain visible as research-only evidence')
+  const firstNearMatch = selection.researchOnlyQueue[0] as any
   assert(
     String(firstNearMatch.strategy_pool_reason || '').length > 0,
     'merged candidate should preserve a strategy pool reason',
@@ -816,7 +896,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     supportedRegimes: ['bull' as const],
     thesis: 'Active strategy owns the production ML queue evidence.',
     thresholds: { minPrice: 10, minCloseAboveMa20Pct: 0, minVolumeExpansion20: 1.1 },
-    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8, maxMlShare: 0 },
     riskNotes: ['test only'],
     createdBy: 'p5_strategy_governance' as const,
   }
@@ -833,6 +913,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const selected = selection.mlQueue.find((candidate) => candidate.symbol === '9988')
   assert(selected, 'shared active/research match should enter ML queue through the active strategy')
   assert(selected?.strategy_pool_ids?.includes('active_shared_signal_v1'), 'ML queue evidence should retain the active strategy id')
+  assert(selected?.strategy_pool_reason !== 'strategy_not_active_production_owner', 'active production maxMlShare=0 must not be treated as research-only')
   assert(!selected?.strategy_pool_ids?.includes('research_shared_signal_v1'), 'ML queue evidence must not leak research strategy ids')
 }
 
@@ -905,11 +986,9 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     coarseMlQueueSize: 2,
     regime: 'bull',
   })
-  const topUp = plan.breadthPool.find((candidate: any) => candidate.strategy_pool_reason === 'raw_signal_top_up_observe_after_l15_adaptive_slate') as any
-  assert(topUp, 'empty strategy pools should still expose raw signals as Layer1 observe evidence')
-  assert((topUp.strategy_pool_ids ?? []).length === 0, 'raw signal top-up must not masquerade as a registered production strategy id')
-  assert(topUp.strategy_pool_fallback_source === 'raw_signal_top_up', 'raw signal top-up source should be explicit outside strategy ids')
-  assert(topUp.strategy_pool_decision === 'research_only_queue', 'raw signal top-up must not enter formal production ML queue')
+  assert(plan.breadthPool.length === 0, 'empty strategy pools must not force-fill Layer1 breadth with raw signal observe names')
+  assert((plan.telemetry as any).dynamic_effective_quota_total === 0, 'empty strategy pools should expose zero dynamic effective quota')
+  assert((plan.telemetry as any).raw_signal_top_up_count === 0, 'raw signal top-up must not inflate final Layer1 count when active strategy evidence is zero')
   assert(plan.coarseQueue.length === 0, 'empty strategy pools must not fill formal L2 queue with raw-signal observe candidates')
 }
 

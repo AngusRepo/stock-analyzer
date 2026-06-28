@@ -117,12 +117,12 @@ const [
   latestRunRows,
   runHistoryRows,
 ] = d1(`
-SELECT run_id, status, universe_count, candidate_count, final_count, emerging_count, created_at
+SELECT run_id, status, universe_count, candidate_count, final_count, emerging_count, metadata, created_at
   FROM screener_funnel_runs
  WHERE date='${date}' AND status='success'
  ORDER BY created_at DESC
  LIMIT 1;
-SELECT run_id, status, universe_count, candidate_count, final_count, emerging_count, created_at
+SELECT run_id, status, universe_count, candidate_count, final_count, emerging_count, metadata, created_at
   FROM screener_funnel_runs
  WHERE date='${date}'
  ORDER BY created_at DESC
@@ -135,6 +135,10 @@ if (!latestRunRows.length) {
 
 const run = latestRunRows[0]
 const runId = run.run_id
+const runMetadata = parseJson(run.metadata, {})
+const strategyPoolMetadata = runMetadata.strategyCandidatePool ?? {}
+const poolStatusByStrategy = new Map((Array.isArray(strategyPoolMetadata.pool_status) ? strategyPoolMetadata.pool_status : [])
+  .map((row) => [row.strategy_id, row]))
 
 const [
   stageCounts,
@@ -248,6 +252,8 @@ for (const row of strategyMatchRows) {
 
 const activeStrategyCounts = activeStrategiesRaw.map((strategy) => {
   const policy = parseJson(strategy.candidate_policy_json, {})
+  const poolStatus = poolStatusByStrategy.get(strategy.strategy_id) ?? {}
+  const adaptivePolicy = poolStatus.adaptive_policy ?? {}
   const finalSymbols = uniqueSorted([...strategyFinalSets.get(strategy.strategy_id)])
   const buySymbols = uniqueSorted([...strategyBuySets.get(strategy.strategy_id)])
   const strict = strictMatches.get(strategy.strategy_id)
@@ -261,7 +267,18 @@ const activeStrategyCounts = activeStrategiesRaw.map((strategy) => {
     daily_match_status: strict ? 'strict_match' : 'strict_empty_threshold',
     strict_match_count: strict?.symbols ?? 0,
     near_match_count: 0,
-    quota: policy.poolQuota ?? '',
+    static_pool_quota: poolStatus.static_quota ?? policy.poolQuota ?? '',
+    adaptive_pool_quota: poolStatus.quota ?? strategyPoolMetadata.l15_adaptive_pool_quota_by_strategy?.[strategy.strategy_id] ?? '',
+    static_cost_budget: poolStatus.static_cost_budget ?? policy.costBudget ?? '',
+    adaptive_cost_budget: poolStatus.cost_budget ?? strategyPoolMetadata.l15_adaptive_cost_budget_by_strategy?.[strategy.strategy_id] ?? '',
+    static_max_ml_share: poolStatus.static_max_ml_share ?? policy.maxMlShare ?? '',
+    adaptive_max_ml_share: poolStatus.max_ml_share ?? strategyPoolMetadata.l15_adaptive_max_ml_share_by_strategy?.[strategy.strategy_id] ?? '',
+    adaptive_policy_reason: adaptivePolicy.reason ?? '',
+    adaptive_policy_quality_score: adaptivePolicy.quality_score ?? '',
+    adaptive_policy_demand_score: adaptivePolicy.demand_score ?? '',
+    adaptive_policy_crowding_score: adaptivePolicy.crowding_score ?? '',
+    adaptive_policy_uniqueness_score: adaptivePolicy.uniqueness_score ?? '',
+    quota: poolStatus.quota ?? strategyPoolMetadata.l15_adaptive_pool_quota_by_strategy?.[strategy.strategy_id] ?? policy.poolQuota ?? '',
     l1_attribution_count: finalSymbols.length,
     final160_attribution_count: finalSymbols.length,
     l4_buy5_attribution_count: buySymbols.length,
@@ -345,7 +362,7 @@ const stageRows = [
   { layer: 'L0', stage: 'universe', decision: 'pass', rows: stageByKey.get('universe:pass')?.rows ?? 0, symbols: stageByKey.get('universe:pass')?.symbols ?? 0, note: 'tradable universe after universe gate' },
   { layer: 'L0', stage: 'universe', decision: 'drop', rows: stageByKey.get('universe:drop')?.rows ?? 0, symbols: stageByKey.get('universe:drop')?.symbols ?? 0, note: 'universe gate dropped' },
   { layer: 'L0', stage: 'scoring', decision: 'pass', rows: stageByKey.get('scoring:pass')?.rows ?? 0, symbols: stageByKey.get('scoring:pass')?.symbols ?? 0, note: 'scored candidates' },
-  { layer: 'L1', stage: 'l1_candidate_seed_after_overlay', decision: 'selected', rows: stageByKey.get('l1_candidate_seed_after_overlay:selected')?.rows ?? 0, symbols: stageByKey.get('l1_candidate_seed_after_overlay:selected')?.symbols ?? 0, note: 'candidate seed after overlays' },
+  { layer: 'L1', stage: 'l1_candidate_seed_after_overlay', decision: 'selected', rows: stageByKey.get('l1_candidate_seed_after_overlay:selected')?.rows ?? 0, symbols: stageByKey.get('l1_candidate_seed_after_overlay:selected')?.symbols ?? 0, note: `candidate seed after overlays; adaptive_before_dynamic=${strategyPoolMetadata.l15_adaptive_target_size_before_dynamic_quota ?? ''}; dynamic_effective_quota=${strategyPoolMetadata.l15_dynamic_effective_quota_total ?? ''}` },
   { layer: 'L1', stage: 'layer1_strategy_breadth_gate', decision: 'pass', rows: stageByKey.get('layer1_strategy_breadth_gate:pass')?.rows ?? 0, symbols: stageByKey.get('layer1_strategy_breadth_gate:pass')?.symbols ?? 0, note: 'strategy breadth gate' },
   { layer: 'L1.5', stage: 'l15_ml_slate_queue', decision: 'observe', rows: stageByKey.get('l15_ml_slate_queue:observe')?.rows ?? 0, symbols: stageByKey.get('l15_ml_slate_queue:observe')?.symbols ?? 0, note: 'ML slate queue rows can include paired evidence per symbol' },
   { layer: 'L2', stage: 'layer2_timesfm_enrichment', decision: 'observe', rows: stageByKey.get('layer2_timesfm_enrichment:observe')?.rows ?? 0, symbols: stageByKey.get('layer2_timesfm_enrichment:observe')?.symbols ?? 0, note: 'TimesFM sidecar enrichment' },
@@ -365,6 +382,18 @@ const summary = {
   candidate_count: run.candidate_count,
   final_count: run.final_count,
   emerging_count: run.emerging_count,
+  adaptive_target_size_before_dynamic_quota: strategyPoolMetadata.l15_adaptive_target_size_before_dynamic_quota ?? null,
+  adaptive_target_size: strategyPoolMetadata.l15_adaptive_target_size ?? null,
+  dynamic_effective_quota_total: strategyPoolMetadata.l15_dynamic_effective_quota_total ?? null,
+  dynamic_effective_quota_policy: strategyPoolMetadata.l15_dynamic_effective_quota_policy ?? null,
+  dynamic_effective_quota_by_strategy: strategyPoolMetadata.l15_dynamic_effective_quota_by_strategy ?? null,
+  adaptive_strategy_policy_version: strategyPoolMetadata.l15_adaptive_strategy_policy_version ?? null,
+  adaptive_pool_quota_by_strategy: strategyPoolMetadata.l15_adaptive_pool_quota_by_strategy ?? null,
+  adaptive_cost_budget_by_strategy: strategyPoolMetadata.l15_adaptive_cost_budget_by_strategy ?? null,
+  adaptive_max_ml_share_by_strategy: strategyPoolMetadata.l15_adaptive_max_ml_share_by_strategy ?? null,
+  static_pool_quota_by_strategy: strategyPoolMetadata.l15_static_pool_quota_by_strategy ?? null,
+  static_cost_budget_by_strategy: strategyPoolMetadata.l15_static_cost_budget_by_strategy ?? null,
+  static_max_ml_share_by_strategy: strategyPoolMetadata.l15_static_max_ml_share_by_strategy ?? null,
   daily_recommendations: dailyRows.length,
   daily_tradable_recommendations: tradableDailyRows.length,
   daily_emerging_watchlist: emergingRows.length,

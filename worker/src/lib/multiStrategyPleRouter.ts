@@ -273,8 +273,7 @@ function specRegimeWeight(spec: StrategySpec, regime?: string | null): number {
 }
 
 function specCanEnterMlSlate(spec: StrategySpec): boolean {
-  const maxMlShare = finiteNumber(spec.candidatePolicy?.maxMlShare)
-  return spec.status === 'active' && spec.ownerType === 'strategy' && maxMlShare !== 0
+  return spec.status === 'active' && spec.ownerType === 'strategy' && spec.promotionStatus === 'production'
 }
 
 function strategyInputFromCandidate(candidate: StrategyCandidatePoolCandidate): StrategyCandidateInput {

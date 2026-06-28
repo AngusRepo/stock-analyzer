@@ -511,6 +511,109 @@ def test_normalize_alpha_policy_preserves_worker_allocator_contract():
     assert policy["allocation"]["utility_iterations"] == 220
 
 
+def _sparse_score_v2(final_score: float, ml_edge: float) -> dict:
+    return {
+        "version": "score_v2",
+        "components": {
+            "mlEdge": ml_edge,
+            "chipFlow": max(0.0, final_score - ml_edge),
+            "technicalStructure": 0.0,
+            "fundamentalQuality": 0.0,
+            "newsTheme": 0.0,
+        },
+        "total": final_score,
+        "finalScore": final_score,
+    }
+
+
+def _sparse_recommendation_row(
+    symbol: str,
+    *,
+    forecast_pct: float,
+    final_score: float,
+    signal: str = "HOLD",
+) -> dict:
+    return {
+        "symbol": symbol,
+        "name": symbol,
+        "score": final_score,
+        "signal": signal,
+        "signal_source": "ensemble_v2",
+        "confidence": 0.72,
+        "ml_forecast_pct": forecast_pct,
+        "recommendation_lane": "tradable",
+        "eligible_for_pending_buy": True,
+        "has_buy_signal": 1 if signal == "BUY" else 0,
+        "score_components": _sparse_score_v2(final_score, ml_edge=12.0),
+        "watch_points": [],
+    }
+
+
+def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatch):
+    def _fake_sparse_allocator(candidates, return_history, **kwargs):
+        assert [row["symbol"] for row in candidates] == ["AAA", "BBB", "CCC"]
+        return {
+            "weights": {"AAA": 1.0},
+            "candidate_diagnostics": {},
+            "allocation_objective": "test_sparse_allocator",
+            "evaluated_candidate_count": len(candidates),
+        }
+
+    monkeypatch.setattr(
+        recommendation_service,
+        "allocate_sparse_tangent_with_evidence",
+        _fake_sparse_allocator,
+    )
+
+    rows = [
+        _sparse_recommendation_row("AAA", forecast_pct=0.04, final_score=82.0),
+        _sparse_recommendation_row("BBB", forecast_pct=0.025, final_score=78.0),
+        _sparse_recommendation_row("CCC", forecast_pct=0.0, final_score=74.0, signal="POTENTIAL_BUY"),
+    ]
+    allocated = recommendation_service._apply_sparse_tangent_buy_selection(
+        rows,
+        {"enabled": True, "promoteMinForecastPct": 0.0, "promoteMinMlEdge": 0.0},
+        {
+            "allocation": {
+                "engine": "sparse_tangent_inverse_risk",
+                "controller": "SparseTangent",
+                "buy_signal_count": 1,
+            }
+        },
+        confidence_floor=0.60,
+        return_history={},
+    )
+
+    by_symbol = {row["symbol"]: row for row in allocated}
+
+    assert by_symbol["AAA"]["signal"] == "BUY"
+    assert by_symbol["AAA"]["has_buy_signal"] == 1
+    assert by_symbol["AAA"]["alpha_allocation"]["selected"] is True
+    assert by_symbol["AAA"]["alpha_allocation"]["potential_buy"] is False
+
+    bbb = by_symbol["BBB"]
+    assert bbb["signal"] == "POTENTIAL_BUY"
+    assert bbb["has_buy_signal"] == 0
+    assert bbb["sparse_tangent_selected"] is False
+    assert bbb["signal_raw"] == "HOLD"
+    assert bbb["alpha_allocation"]["selected"] is False
+    assert bbb["alpha_allocation"]["potential_buy"] is True
+    assert bbb["alpha_allocation"]["selection_reason"] == (
+        "positive_edge_but_zero_weight_due_to_better_alternative"
+    )
+    assert bbb["alpha_allocation"]["potential_buy_policy"] == (
+        "positive_expected_edge_zero_sparse_weight_not_final_buy"
+    )
+    assert "allocation:potential_buy:positive_edge_zero_weight" in bbb["watch_points"]
+
+    ccc = by_symbol["CCC"]
+    assert ccc["signal"] == "HOLD"
+    assert ccc["has_buy_signal"] == 0
+    assert ccc["alpha_allocation"]["selected"] is False
+    assert ccc["alpha_allocation"]["potential_buy"] is False
+    assert ccc["alpha_allocation"]["selection_reason"] == "no_positive_expected_edge"
+
+
 def test_regime_aware_allocate_uses_policy_weights_and_slate_size():
     rows = [
         _allocation_row("A1", 99, "trend_following"),

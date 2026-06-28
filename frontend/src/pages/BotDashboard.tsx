@@ -66,6 +66,15 @@ function signalBadge(signal: string) {
   return <Badge className="bg-muted/50 text-muted-foreground border-border/30 text-[10px] px-1.5 py-0">HOLD</Badge>
 }
 
+function recommendationSignalText(rec: any): string {
+  return String(rec?.signal ?? rec?.trade_signal ?? rec?.tradeSignal ?? rec?.signal_raw ?? '').toUpperCase()
+}
+
+function isBuySignalRecommendation(rec: any): boolean {
+  if (rec?.has_buy_signal === 1 || rec?.has_buy_signal === true) return true
+  return ['BUY', 'STRONG_BUY'].includes(recommendationSignalText(rec))
+}
+
 // ─── Conviction Gauge（半圓 SVG）──────────────────────────────────────────────
 function ConvictionGauge({ value, size = 48 }: { value: number; size?: number }) {
   const pct = Math.max(0, Math.min(100, value * 100))
@@ -542,15 +551,15 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
     staleTime: 5 * 60_000,
   })
   const { tradable: tradableRecs } = splitRecommendationLanes<any>(recData)
-  const recs = tradableRecs
+  const recs = tradableRecs.filter(isBuySignalRecommendation)
   const strategyPortfolioHealth = recData?.strategy_portfolio_intelligence_health
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
   return (
     <div className="bot-fallback-recommendations space-y-3">
-      <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{recData?.date} 今日推薦候選（與晨間概覽同源）</div>
+      <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{recData?.date} BUY SIGNAL 候選（與晨間概覽同源）</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] sv-num">
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
-          tradable {recs.length}
+          BUY SIGNAL {recs.length}
         </Badge>
         <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-400">
           source: daily recommendations
@@ -575,8 +584,8 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
       <div className="space-y-2 rounded-[20px] border border-emerald-500/15 bg-emerald-500/[0.025] p-2">
         <div className="flex items-center justify-between px-1">
           <div>
-            <p className="text-[11px] font-semibold text-emerald-300">今日推薦候選</p>
-            <p className="text-[10px] text-muted-foreground/70">與晨間概覽同源，點開牌卡查看個股細節。</p>
+            <p className="text-[11px] font-semibold text-emerald-300">BUY SIGNAL 候選</p>
+            <p className="text-[10px] text-muted-foreground/70">只顯示可進入 L4 / pending-buy 的買進訊號，點開牌卡查看個股細節。</p>
           </div>
           <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-300">
             {recs.length} 檔
@@ -596,7 +605,7 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
             </div>
           ))}
         </div>
-        {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有推薦候選。</div>}
+        {!recs.length && <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">今日沒有 BUY SIGNAL 推薦候選。</div>}
       </div>
     </div>
   )

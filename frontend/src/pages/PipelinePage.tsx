@@ -46,6 +46,32 @@ function scoreFinalValue(rec: any): number {
   return buildScoreBreakdownViewModel(rec ?? {}).finalScore
 }
 
+function signalText(rec: any): string {
+  return String(rec?.signal ?? rec?.trade_signal ?? rec?.tradeSignal ?? rec?.signal_raw ?? '').toUpperCase()
+}
+
+function isBuySignalRecommendation(rec: any): boolean {
+  if (rec?.has_buy_signal === 1 || rec?.has_buy_signal === true) return true
+  return ['BUY', 'STRONG_BUY'].includes(signalText(rec))
+}
+
+function recommendationRowsFromPayload(payload: any): any[] {
+  const source = Array.isArray(payload?.all_recommendations)
+    ? payload.all_recommendations
+    : Array.isArray(payload?.recommendations)
+      ? payload.recommendations
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : []
+  const seen = new Set<string>()
+  return source.filter((row: any, index: number) => {
+    const key = String(row?.stock_id ?? row?.symbol ?? index)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 type LayerTraceRow = {
   layer: string
   title: string
@@ -514,7 +540,7 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
   return (
     <PipelineColumn
       title="L0-L4 通過 / 淘汰"
-      subtitle={summary?.run_id ? `${summary.run_id} / ${summary.source_of_truth}` : 'API 尚未提供完整 funnel stage counts；先顯示推薦列可觀測數。'}
+      subtitle={summary?.run_id ? `${summary.run_id} / BUY ${countValue(summary?.buy_signal_count)} / published ${countValue(summary?.recommendation_count ?? summary?.final_count)}` : 'API 尚未提供完整 funnel stage counts；先顯示推薦列可觀測數。'}
     >
       <div className="space-y-2">
         {layers.map((row: any) => (
@@ -639,13 +665,13 @@ function ExecutionFlowColumn({
   candidateCount: number
 }) {
   const steps = [
-    { label: '候選', value: countValue(candidateCount), detail: 'final allocation' },
+    { label: '候選', value: countValue(candidateCount), detail: 'BUY signal allocation' },
     { label: '辯論', value: String(pendingBuys.length), detail: 'T2 pending buys' },
     { label: '報價', value: String(qfList.length), detail: 'RRG / quote sanity' },
     { label: '掛單', value: String(pendingBuys.filter((buy: any) => String(buy.execution_status ?? '').toLowerCase().includes('filled')).length), detail: 'paper fills' },
   ]
   return (
-    <PipelineColumn title="辯論與模擬掛單" subtitle={`Morning setup → debate → quote sanity → execution audit（${pbDate || 'latest'}）`}>
+    <PipelineColumn title="辯論與模擬掛單" subtitle={`BUY signal only → debate → quote sanity → execution audit（${pbDate || 'latest'}）`}>
       <div className="grid gap-2">
         {steps.map((step, index) => (
           <div key={step.label} className="grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs">
@@ -720,7 +746,7 @@ export default function PipelinePage() {
     staleTime: 10 * 60_000,
   })
 
-  const allRecs = recData?.recommendations ?? []
+  const allRecs = recommendationRowsFromPayload(recData)
   const recDate = recData?.date ?? today
   const pendingBuys = pbData?.pendingBuys ?? []
   const pbDate = pbData?.date ?? ''
@@ -728,11 +754,18 @@ export default function PipelinePage() {
 
   // Stage breakdown
   const screenerPassed = allRecs
-  const mlBuy = allRecs.filter((r: any) => ['BUY', 'STRONG_BUY'].includes(r.signal))
-  const mlHold = allRecs.filter((r: any) => r.signal === 'HOLD')
+  const mlBuy = allRecs.filter(isBuySignalRecommendation)
+  const mlHold = allRecs.filter((r: any) => signalText(r) === 'HOLD')
   const screenerSectorSummary = buildScreenerSectorSummary(screenerPassed)
   const recommendationRows = [...mlBuy, ...mlHold]
     .sort((a: any, b: any) => scoreFinalValue(b) - scoreFinalValue(a))
+  const funnelSummary = recData?.funnel_summary ?? {}
+  const l4BuyCount = Number.isFinite(Number(funnelSummary.buy_signal_count))
+    ? Number(funnelSummary.buy_signal_count)
+    : mlBuy.length
+  const publishedCount = Number.isFinite(Number(funnelSummary.recommendation_count ?? funnelSummary.final_count))
+    ? Number(funnelSummary.recommendation_count ?? funnelSummary.final_count)
+    : recommendationRows.length
 
   const isLoading = recLoading || pbLoading
 
@@ -765,7 +798,7 @@ export default function PipelinePage() {
           </div>
           <div className="hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 text-xs text-[#b9b1a1] md:flex">
             <span className="sv-num">
-              L4 {countValue(recData?.funnel_summary?.final_count ?? recommendationRows.length)} · BUY {mlBuy.length} · HOLD {mlHold.length} · 掛單 {pendingBuys.length}
+              L4 BUY {countValue(l4BuyCount)} · 推薦 {countValue(publishedCount)} · HOLD {mlHold.length} · 掛單 {pendingBuys.length}
             </span>
           </div>
         </div>
@@ -779,7 +812,7 @@ export default function PipelinePage() {
             <FunnelSummaryColumn summary={recData?.funnel_summary} fallbackCount={recommendationRows.length} />
             <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
             <RecommendationSummaryColumn rows={recommendationRows} />
-            <ExecutionFlowColumn pendingBuys={pendingBuys} pbDate={pbDate} qfList={qfList} candidateCount={recommendationRows.length} />
+            <ExecutionFlowColumn pendingBuys={pendingBuys} pbDate={pbDate} qfList={qfList} candidateCount={l4BuyCount} />
           </div>
         )}
       </div>

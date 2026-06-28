@@ -54,6 +54,9 @@ from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 logger = logging.getLogger(__name__)
 
 D1_IN_CLAUSE_CHUNK_SIZE = 80
+POTENTIAL_BUY_SIGNAL = "POTENTIAL_BUY"
+POTENTIAL_BUY_SELECTION_REASON = "positive_edge_but_zero_weight_due_to_better_alternative"
+POTENTIAL_BUY_POLICY = "positive_expected_edge_zero_sparse_weight_not_final_buy"
 
 
 def _dedupe_preserve_order(values: list[Any]) -> list[Any]:
@@ -2201,6 +2204,20 @@ def _allocation_method(policy: dict) -> str:
     return str(value or "").strip()
 
 
+def _is_sparse_potential_buy_evidence(evidence: dict[str, Any]) -> bool:
+    if evidence.get("selection_reason") != POTENTIAL_BUY_SELECTION_REASON:
+        return False
+    if evidence.get("eligible_for_sparse") is not True:
+        return False
+    if evidence.get("positive_expected_edge") is not True:
+        return False
+    try:
+        single_name_weight = float(evidence.get("single_name_weight") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(single_name_weight) and single_name_weight <= 0.0
+
+
 def _row_expected_return(row: dict) -> float:
     value, _source = _row_expected_return_with_source(row)
     return value
@@ -2368,14 +2385,22 @@ def _apply_sparse_tangent_buy_selection(
     eligible_row_ids = {id(row) for row in eligible_rows}
     allocation_contract["allocation_candidate_pool_size"] = len(eligible_rows)
     controller = str(allocation.get("controller") or "OnlinePortfolioBandit").strip()
+
+    def _preserve_signal_raw(row: dict) -> None:
+        if "signal_raw" not in row:
+            row["signal_raw"] = row.get("signal")
+        if "signal_source_raw" not in row:
+            row["signal_source_raw"] = row.get("signal_source")
+
     for row in scored:
-        had_buy_signal = str(row.get("signal") or "").upper() == "BUY" or int(row.get("has_buy_signal") or 0) == 1
+        signal_text = str(row.get("signal") or "").upper()
+        had_allocator_signal = (
+            signal_text in {"BUY", POTENTIAL_BUY_SIGNAL}
+            or int(row.get("has_buy_signal") or 0) == 1
+        )
         row["has_buy_signal"] = 0
-        if had_buy_signal:
-            if "signal_raw" not in row:
-                row["signal_raw"] = row.get("signal")
-            if "signal_source_raw" not in row:
-                row["signal_source_raw"] = row.get("signal_source")
+        if had_allocator_signal:
+            _preserve_signal_raw(row)
             row["signal"] = "HOLD"
             row["signal_source"] = "sparse_tangent_inverse_risk"
             row["ranking_promoted"] = False
@@ -2386,6 +2411,7 @@ def _apply_sparse_tangent_buy_selection(
                 **allocation_contract,
                 "selected": False,
                 "controller": controller,
+                "potential_buy": False,
             }
 
     allocation_candidates: list[dict[str, Any]] = []
@@ -2656,11 +2682,8 @@ def _apply_sparse_tangent_buy_selection(
         row = selected_by_symbol.get(symbol)
         if not row:
             continue
-        if "signal_raw" not in row:
-            row["signal_raw"] = row.get("signal")
+        _preserve_signal_raw(row)
         row["signal"] = "BUY"
-        if "signal_source_raw" not in row:
-            row["signal_source_raw"] = row.get("signal_source")
         row["signal_source"] = "sparse_tangent_inverse_risk"
         row["has_buy_signal"] = 1
         row["confidence"] = max(float(row.get("confidence") or 0.0), confidence_floor)
@@ -2677,6 +2700,7 @@ def _apply_sparse_tangent_buy_selection(
             "return_history_coverage": history_coverage,
             "return_history_symbols": sorted(symbol for symbol in selected_symbols if risk_history.get(symbol)),
             **_sparse_allocation_evidence(row, selected=True, weight=float(weight)),
+            "potential_buy": False,
             "opb_controller": {
                 "enabled": opb_packet is not None,
                 "stage": opb_packet.get("stage") if opb_packet else None,
@@ -2697,17 +2721,34 @@ def _apply_sparse_tangent_buy_selection(
         alpha_allocation = row.get("alpha_allocation")
         if isinstance(alpha_allocation, dict) or id(row) in eligible_row_ids:
             symbol = str(row.get("symbol") or "").strip()
+            allocation_evidence = _sparse_allocation_evidence(
+                row,
+                selected=False,
+                weight=float(weights.get(symbol, 0.0) or 0.0),
+            )
+            is_potential_buy = _is_sparse_potential_buy_evidence(allocation_evidence)
             row["alpha_allocation"] = {
                 **(alpha_allocation if isinstance(alpha_allocation, dict) else {}),
                 **allocation_contract,
                 "selected": False,
                 "controller": controller,
-                **_sparse_allocation_evidence(
-                    row,
-                    selected=False,
-                    weight=float(weights.get(symbol, 0.0) or 0.0),
-                ),
+                **allocation_evidence,
+                "potential_buy": is_potential_buy,
             }
+            if is_potential_buy:
+                _preserve_signal_raw(row)
+                row["signal"] = POTENTIAL_BUY_SIGNAL
+                row["signal_source"] = "sparse_tangent_inverse_risk_potential_buy"
+                row["has_buy_signal"] = 0
+                row["ranking_promoted"] = False
+                row["sparse_tangent_selected"] = False
+                row["alpha_allocation"]["potential_buy_policy"] = POTENTIAL_BUY_POLICY
+                row["alpha_allocation"]["potential_buy_reason"] = POTENTIAL_BUY_SELECTION_REASON
+                watch_points = row.get("watch_points")
+                if not isinstance(watch_points, list):
+                    watch_points = []
+                watch_points.append("allocation:potential_buy:positive_edge_zero_weight")
+                row["watch_points"] = watch_points
 
     logger.info(
         "[Ranking] sparse_tangent_inverse_risk selected "

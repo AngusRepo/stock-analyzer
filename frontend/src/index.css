@@ -139,6 +139,7 @@
     min-height: 100%;
   }
   html {
+    font-size: 17px;
     overflow-x: hidden;
     scroll-behavior: smooth;
   }

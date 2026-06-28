@@ -141,6 +141,27 @@ async function buildMarketRiskFallback(reason: string) {
     riskSummary: `本機 market_risk 資料不可用，暫以 Yahoo VIX / TWII 20日波動率顯示。原因：${reason}`,
     calculatedAt: new Date().toISOString(),
     contextFactors: [],
+    usMarketSignal: null,
+    fearGreedIndex: {
+      schemaVersion: 'stockvision_fear_greed_v1',
+      date: new Date().toISOString().slice(0, 10),
+      score: null,
+      label: '待匯入',
+      source: 'local_fallback',
+      methodology: '0=恐懼、100=貪婪；有效因子等權平均，缺資料因子不硬補。',
+      factors: [],
+      missingFactors: ['market_risk_empty'],
+    },
+    hedgeSentiment: {
+      schemaVersion: 'stockvision_hedge_sentiment_v1',
+      date: new Date().toISOString().slice(0, 10),
+      score: null,
+      label: '待匯入',
+      source: 'local_fallback',
+      methodology: '0=低避險、100=高避險；PCR、大戶部位、外資5日流、波動、信用利差、美元避險有效因子等權平均。',
+      factors: [],
+    },
+    hedgeSentimentFactors: [],
   }
 }
 
@@ -226,6 +247,47 @@ function buildIndexSnapshot(
     source,
     status: current == null ? 'missing_finlab_source' : 'ok',
     history: series.map((point) => ({ date: point.date, close: Math.round(point.close * 100) / 100 })),
+  }
+}
+
+function parseTpexNumber(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Number(String(value).replace(/,/g, '').replace(/\s+/g, ''))
+  return Number.isFinite(n) ? n : null
+}
+
+function parseTpexIndexDate(value: unknown): string {
+  const text = String(value ?? '').trim()
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`
+  if (/^\d{7}$/.test(text)) {
+    const year = Number(text.slice(0, 3)) + 1911
+    return `${year}-${text.slice(3, 5)}-${text.slice(5, 7)}`
+  }
+  return text.slice(0, 10)
+}
+
+async function fetchTpexIndexSnapshot() {
+  try {
+    const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_index', {
+      headers: { Accept: 'application/json', 'User-Agent': 'StockVisionBot/1.0' },
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!res.ok) throw new Error(`TPEX index HTTP ${res.status}`)
+    const body = await res.json() as any
+    const rows = Array.isArray(body) ? body : []
+    const points = rows
+      .map((row: any) => {
+        const date = parseTpexIndexDate(row.Date ?? row.date)
+        const close = parseTpexNumber(row.Close ?? row.TPExIndex ?? row.close)
+        return date && close != null ? { date, close } : null
+      })
+      .filter((point): point is MarketSeriesPoint => Boolean(point))
+    return hasMarketSeriesData(buildIndexSnapshot('TWOII', '櫃買指數', points, 'TPEX OpenAPI tpex_index'))
+      ? buildIndexSnapshot('TWOII', '櫃買指數', points, 'TPEX OpenAPI tpex_index')
+      : null
+  } catch (e) {
+    console.warn('[market/indices] TPEX index fallback failed', e)
+    return null
   }
 }
 
@@ -546,8 +608,8 @@ async function loadCanonicalChipCreditTrading(db: D1Database) {
          c.date,
          SUM(COALESCE(c.margin_balance, 0)) AS margin_balance,
          SUM(COALESCE(c.short_balance, 0)) AS short_balance,
-         SUM(CASE WHEN p.close IS NOT NULL THEN COALESCE(c.margin_balance, 0) * p.close * 1000 ELSE NULL END) AS margin_balance_value,
-         SUM(CASE WHEN p.close IS NOT NULL THEN COALESCE(c.short_balance, 0) * p.close * 1000 ELSE NULL END) AS short_balance_value,
+         SUM(CASE WHEN p.close IS NOT NULL THEN COALESCE(c.margin_balance, 0) * p.close * 1000 ELSE NULL END) AS estimated_margin_position_value,
+         SUM(CASE WHEN p.close IS NOT NULL THEN COALESCE(c.short_balance, 0) * p.close * 1000 ELSE NULL END) AS estimated_short_position_value,
          COUNT(*) AS coverage_count,
          SUM(CASE WHEN p.close IS NOT NULL THEN 1 ELSE 0 END) AS priced_count
        FROM canonical_chip_daily c
@@ -566,31 +628,33 @@ async function loadCanonicalChipCreditTrading(db: D1Database) {
     if (!latest?.date) return null
     const marginBalance = numberOrNull(latest.margin_balance)
     const shortBalance = numberOrNull(latest.short_balance)
-    const marginBalanceValue = numberOrNull(latest.margin_balance_value)
-    const shortBalanceValue = numberOrNull(latest.short_balance_value)
+    const estimatedMarginPositionValue = numberOrNull(latest.estimated_margin_position_value)
+    const estimatedShortPositionValue = numberOrNull(latest.estimated_short_position_value)
     const previousMarginBalance = numberOrNull(previous?.margin_balance)
     const previousShortBalance = numberOrNull(previous?.short_balance)
-    const previousMarginBalanceValue = numberOrNull(previous?.margin_balance_value)
-    const previousShortBalanceValue = numberOrNull(previous?.short_balance_value)
+    const previousEstimatedMarginPositionValue = numberOrNull(previous?.estimated_margin_position_value)
+    const previousEstimatedShortPositionValue = numberOrNull(previous?.estimated_short_position_value)
     return {
       date: latest.date,
       marginBalance,
       shortBalance,
-      marginBalanceValue,
+      marginBalanceValue: null,
       marginBalanceUnits: marginBalance,
       marginBalanceUnit: 'lots',
       shortBalanceUnits: shortBalance,
-      shortBalanceValue,
+      shortBalanceValue: null,
+      estimatedMarginPositionValue,
+      estimatedShortPositionValue,
       marginBalanceChangePct: percentChange(marginBalance, previousMarginBalance),
       shortBalanceChangePct: percentChange(shortBalance, previousShortBalance),
-      marginBalanceValueChangePct: percentChange(marginBalanceValue, previousMarginBalanceValue),
-      shortBalanceValueChangePct: percentChange(shortBalanceValue, previousShortBalanceValue),
+      estimatedMarginPositionValueChangePct: percentChange(estimatedMarginPositionValue, previousEstimatedMarginPositionValue),
+      estimatedShortPositionValueChangePct: percentChange(estimatedShortPositionValue, previousEstimatedShortPositionValue),
       maintenanceRate: null,
       coverageCount: numberOrNull(latest.coverage_count),
       pricedCount: numberOrNull(latest.priced_count),
       source: 'canonical_chip_daily.finlab.margin_transactions',
       scope: LISTED_OTC_SCOPE,
-      valueMethod: 'units_from_finlab_plus_close_estimated_value',
+      valueMethod: 'official_units_pending_market_summary_value',
     }
   } catch (e) {
     console.warn('[market/risk] canonical_chip_daily credit trading failed', e)
@@ -629,6 +693,351 @@ async function loadCanonicalInstitutionalFlows(db: D1Database) {
   } catch (e) {
     console.warn('[market/risk] canonical_institutional_amount_daily flows failed', e)
     return null
+  }
+}
+
+async function loadLatestUsMarketSignal(db: D1Database) {
+  try {
+    const row = await db.prepare(
+      `SELECT date, sox_return, gspc_return, dxy_return, hy_spread, hy_spread_chg, vix_close, sentiment
+       FROM us_market_signals
+       ORDER BY date DESC
+       LIMIT 1`
+    ).first<any>()
+    if (!row?.date) return null
+    return {
+      date: String(row.date ?? '').slice(0, 10),
+      soxReturn: numberOrNull(row.sox_return),
+      gspcReturn: numberOrNull(row.gspc_return),
+      dxyReturn: numberOrNull(row.dxy_return),
+      hySpread: numberOrNull(row.hy_spread),
+      hySpreadChange: numberOrNull(row.hy_spread_chg),
+      vixClose: numberOrNull(row.vix_close),
+      sentiment: row.sentiment == null ? null : String(row.sentiment),
+      source: 'us_market_signals',
+    }
+  } catch (e) {
+    console.warn('[market/risk] us_market_signals failed', e)
+    return null
+  }
+}
+
+function clamp100(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function averageNumbers(values: Array<number | null | undefined>): number | null {
+  const valid = values.filter((value): value is number => Number.isFinite(value))
+  if (!valid.length) return null
+  return valid.reduce((sum, value) => sum + value, 0) / valid.length
+}
+
+function scoreFromFearGreedRange(value: number | null, fearAt: number, greedAt: number): number | null {
+  if (value == null) return null
+  if (fearAt === greedAt) return null
+  return clamp100(((value - fearAt) / (greedAt - fearAt)) * 100)
+}
+
+function signedPctText(value: number | null, digits = 2): string {
+  if (value == null) return '待匯入'
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}%`
+}
+
+function signedBillionText(value: number | null, digits = 1): string {
+  if (value == null) return '待匯入'
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}億`
+}
+
+function signedContractsText(value: number | null): string {
+  if (value == null) return '待匯入'
+  return `${value >= 0 ? '+' : ''}${Math.round(value).toLocaleString('zh-TW')}口`
+}
+
+function fearGreedLabel(score: number | null): string {
+  if (score == null) return '待匯入'
+  if (score < 20) return '極度恐懼'
+  if (score < 45) return '恐懼'
+  if (score < 55) return '中性'
+  if (score < 75) return '貪婪'
+  return '極度貪婪'
+}
+
+function fearGreedFactor(
+  id: string,
+  label: string,
+  score: number | null,
+  value: string,
+  source: string,
+  detail: string,
+) {
+  return {
+    id,
+    label,
+    score,
+    value,
+    status: score == null ? 'missing' : 'ok',
+    source,
+    detail,
+  }
+}
+
+function buildFearGreedIndex(args: {
+  row: any
+  canonicalOverview: any | null
+  regimeContext: any | null
+  usSignal: any | null
+}) {
+  const { row, canonicalOverview, regimeContext, usSignal } = args
+  const twiiBias = numberOrNull(row?.twii_bias)
+  const breadth = canonicalOverview?.breadthSnapshot ?? null
+  const advance = numberOrNull(breadth?.advance_count)
+  const decline = numberOrNull(breadth?.decline_count)
+  const breadthScore = advance != null && decline != null && advance + decline > 0
+    ? clamp100((advance / (advance + decline)) * 100)
+    : scoreFromFearGreedRange(numberOrNull(row?.bull_alignment_pct), 20, 80)
+  const pcr = numberOrNull(regimeContext?.putCallRatio)
+  const usVix = numberOrNull(row?.vix) ?? numberOrNull(usSignal?.vixClose)
+  const twVol20 = numberOrNull(row?.twii_vol20)
+  const hySpread = numberOrNull(usSignal?.hySpread)
+  const hySpreadChange = numberOrNull(usSignal?.hySpreadChange)
+  const dxyReturnPct = usSignal?.dxyReturn == null ? null : numberOrNull(usSignal.dxyReturn)! * 100
+  const usdTwdChangePct = numberOrNull(regimeContext?.usdTwdChangePct)
+  const foreignNet5d = numberOrNull(row?.foreign_net_5d)
+  const largeTraderNet = numberOrNull(regimeContext?.largeTraderNet)
+  const gspcReturnPct = usSignal?.gspcReturn == null ? null : numberOrNull(usSignal.gspcReturn)! * 100
+  const soxReturnPct = usSignal?.soxReturn == null ? null : numberOrNull(usSignal.soxReturn)! * 100
+
+  const volatilityScore = averageNumbers([
+    scoreFromFearGreedRange(usVix, 35, 12),
+    scoreFromFearGreedRange(twVol20, 55, 12),
+  ])
+  const creditScore = averageNumbers([
+    scoreFromFearGreedRange(hySpread, 5.5, 2.5),
+    scoreFromFearGreedRange(hySpreadChange, 0.35, -0.2),
+  ])
+  const fxScore = averageNumbers([
+    scoreFromFearGreedRange(dxyReturnPct, 1.2, -1.2),
+    scoreFromFearGreedRange(usdTwdChangePct, 1.0, -0.8),
+  ])
+  const positioningScore = averageNumbers([
+    scoreFromFearGreedRange(foreignNet5d, -3500, 3500),
+    scoreFromFearGreedRange(largeTraderNet, -6000, 6000),
+  ])
+  const globalRiskScore = averageNumbers([
+    scoreFromFearGreedRange(gspcReturnPct, -2, 2),
+    scoreFromFearGreedRange(soxReturnPct, -4, 4),
+  ])
+
+  const factors = [
+    fearGreedFactor(
+      'market_momentum',
+      '市場動能',
+      scoreFromFearGreedRange(twiiBias, -6, 6),
+      signedPctText(twiiBias),
+      'market_risk.twii_bias',
+      '加權指數相對 20MA；越強代表風險偏好越高。',
+    ),
+    fearGreedFactor(
+      'market_breadth',
+      '市場廣度',
+      breadthScore,
+      advance != null && decline != null ? `上漲 ${advance.toLocaleString('zh-TW')} / 下跌 ${decline.toLocaleString('zh-TW')}` : '待匯入',
+      'canonical_market_daily.finlab.price',
+      '上漲家數占上漲加下跌家數比例；廣度越好越偏貪婪。',
+    ),
+    fearGreedFactor(
+      'options_positioning',
+      '選擇權情緒',
+      scoreFromFearGreedRange(pcr, 1.4, 0.6),
+      pcr == null ? '待匯入' : pcr.toFixed(2),
+      'canonical_regime_context_daily.tw_option_put_call_ratio',
+      '賣買權量比越高通常代表避險需求越強。',
+    ),
+    fearGreedFactor(
+      'volatility_pressure',
+      '波動壓力',
+      volatilityScore == null ? null : clamp100(volatilityScore),
+      usVix == null ? '待匯入' : `VIX ${usVix.toFixed(2)} / 台股波動 ${twVol20 == null ? '--' : `${twVol20.toFixed(2)}%`}`,
+      'market_risk.vix_twii_vol20 / us_market_signals.vix_close',
+      '隱含波動與台股實現波動越高，分數越偏恐懼。',
+    ),
+    fearGreedFactor(
+      'credit_stress',
+      '信用風險',
+      creditScore == null ? null : clamp100(creditScore),
+      hySpread == null ? '待匯入' : `高收益債利差 ${hySpread.toFixed(2)}%`,
+      'us_market_signals.hy_spread',
+      '信用利差擴大通常代表市場風險承受度下降。',
+    ),
+    fearGreedFactor(
+      'safe_haven_fx',
+      '避險匯率',
+      fxScore == null ? null : clamp100(fxScore),
+      dxyReturnPct == null ? '待匯入' : `美元指數 ${signedPctText(dxyReturnPct)}`,
+      'us_market_signals.dxy_return / canonical_regime_context_daily.world_index',
+      '美元與美元兌台幣走強通常代表避險需求上升。',
+    ),
+    fearGreedFactor(
+      'positioning_flow',
+      '資金籌碼',
+      positioningScore == null ? null : clamp100(positioningScore),
+      `${signedBillionText(foreignNet5d)} / ${signedContractsText(largeTraderNet)}`,
+      'market_risk.foreign_net_5d / canonical_regime_context_daily.tw_taifex_futures_large_trader',
+      '外資 5 日買賣超與期貨大戶淨部位衡量本地籌碼風險偏好。',
+    ),
+    fearGreedFactor(
+      'global_risk_appetite',
+      '全球風險偏好',
+      globalRiskScore == null ? null : clamp100(globalRiskScore),
+      gspcReturnPct == null ? '待匯入' : `S&P 500 ${signedPctText(gspcReturnPct)} / SOX ${soxReturnPct == null ? '--' : signedPctText(soxReturnPct)}`,
+      'us_market_signals.gspc_return_sox_return',
+      '美股與半導體風險偏好會外溢到台股。',
+    ),
+  ]
+  const score = averageNumbers(factors.map((factor) => factor.score))
+  const rounded = score == null ? null : clamp100(score)
+
+  return {
+    schemaVersion: 'stockvision_fear_greed_v1',
+    date: row?.date ?? null,
+    score: rounded,
+    label: fearGreedLabel(rounded),
+    source: 'StockVision composite: trend, breadth, options, volatility, credit, FX, positioning, global risk',
+    methodology: '0=恐懼、100=貪婪；有效因子等權平均，缺資料因子不硬補。',
+    factors,
+    missingFactors: factors.filter((factor) => factor.score == null).map((factor) => factor.id),
+  }
+}
+
+function buildHedgeSentimentFactors(args: {
+  row: any
+  regimeContext: any | null
+  usSignal: any | null
+}) {
+  const { row, regimeContext, usSignal } = args
+  const foreignNet5d = numberOrNull(row?.foreign_net_5d)
+  const largeTraderNet = numberOrNull(regimeContext?.largeTraderNet)
+  const pcr = numberOrNull(regimeContext?.putCallRatio)
+  const twVol20 = numberOrNull(row?.twii_vol20)
+  const usVix = numberOrNull(row?.vix) ?? numberOrNull(usSignal?.vixClose)
+  const hySpread = numberOrNull(usSignal?.hySpread)
+  const dxyReturnPct = usSignal?.dxyReturn == null ? null : numberOrNull(usSignal.dxyReturn)! * 100
+  const usdTwd = numberOrNull(regimeContext?.usdTwd)
+  const usdTwdChangePct = numberOrNull(regimeContext?.usdTwdChangePct)
+
+  return [
+    {
+      id: 'foreign_net_5d',
+      label: '外資5日買賣超',
+      value: signedBillionText(foreignNet5d),
+      raw_value: foreignNet5d,
+      source: 'market_risk.foreign_net_5d',
+      detail: '外資連續買超代表風險偏好較強；賣超代表籌碼壓力。',
+    },
+    {
+      id: 'large_trader_net',
+      label: '期貨大戶淨部位',
+      value: signedContractsText(largeTraderNet),
+      raw_value: largeTraderNet,
+      source: 'canonical_regime_context_daily.tw_taifex_futures_large_trader',
+      detail: '前五大交易人買方部位減賣方部位；正值偏多，負值偏避險。',
+    },
+    {
+      id: 'put_call_ratio',
+      label: '賣買權量比',
+      value: pcr == null ? '待匯入' : pcr.toFixed(2),
+      raw_value: pcr,
+      source: 'canonical_regime_context_daily.tw_option_put_call_ratio',
+      detail: '賣權相對買權越高，代表避險需求越強。',
+    },
+    {
+      id: 'twii_vol20',
+      label: '台股波動率',
+      value: twVol20 == null ? '待匯入' : `${twVol20.toFixed(2)}%`,
+      raw_value: twVol20,
+      source: 'market_risk.twii_vol20',
+      detail: '加權指數 20 日實現波動率；越高代表市場震盪越大。',
+    },
+    {
+      id: 'us_vix',
+      label: '美股 VIX',
+      value: usVix == null ? '待匯入' : usVix.toFixed(2),
+      raw_value: usVix,
+      source: 'market_risk.vix / us_market_signals.vix_close',
+      detail: 'S&P 500 選擇權隱含波動，常作為全球避險壓力 proxy。',
+    },
+    {
+      id: 'hy_spread',
+      label: '高收益債利差',
+      value: hySpread == null ? '待匯入' : `${hySpread.toFixed(2)}%`,
+      raw_value: hySpread,
+      source: 'us_market_signals.hy_spread',
+      detail: '信用利差擴大通常代表市場要求更高風險補償。',
+    },
+    {
+      id: 'dxy_return',
+      label: '美元指數變動',
+      value: signedPctText(dxyReturnPct),
+      raw_value: dxyReturnPct,
+      source: 'us_market_signals.dxy_return',
+      detail: '美元走強常見於全球資金轉向避險。',
+    },
+    {
+      id: 'usd_twd',
+      label: '美元兌台幣',
+      value: usdTwd == null ? '待匯入' : usdTwd.toFixed(3),
+      raw_value: usdTwd,
+      source: 'canonical_regime_context_daily.world_index',
+      detail: usdTwdChangePct == null ? '匯率避險因子。' : `日變動 ${signedPctText(usdTwdChangePct)}；台幣轉弱通常代表風險偏好下降。`,
+    },
+  ]
+}
+
+function hedgeSentimentLabel(score: number | null): string {
+  if (score == null) return '待匯入'
+  if (score >= 70) return '偏高避險'
+  if (score >= 46) return '中高避險'
+  if (score >= 28) return '表現中性'
+  return '低避險'
+}
+
+function buildHedgeSentiment(args: {
+  row: any
+  regimeContext: any | null
+  usSignal: any | null
+  factors: any[]
+}) {
+  const { row, regimeContext, usSignal, factors } = args
+  const foreignNet5d = numberOrNull(row?.foreign_net_5d)
+  const largeTraderNet = numberOrNull(regimeContext?.largeTraderNet)
+  const pcr = numberOrNull(regimeContext?.putCallRatio)
+  const twVol20 = numberOrNull(row?.twii_vol20)
+  const usVix = numberOrNull(row?.vix) ?? numberOrNull(usSignal?.vixClose)
+  const hySpread = numberOrNull(usSignal?.hySpread)
+  const hySpreadChange = numberOrNull(usSignal?.hySpreadChange)
+  const dxyReturnPct = usSignal?.dxyReturn == null ? null : numberOrNull(usSignal.dxyReturn)! * 100
+  const usdTwdChangePct = numberOrNull(regimeContext?.usdTwdChangePct)
+  const score = averageNumbers([
+    scoreFromFearGreedRange(pcr, 0.6, 1.4),
+    scoreFromFearGreedRange(largeTraderNet, 6000, -6000),
+    scoreFromFearGreedRange(foreignNet5d, 3500, -3500),
+    scoreFromFearGreedRange(twVol20, 12, 55),
+    scoreFromFearGreedRange(usVix, 12, 35),
+    scoreFromFearGreedRange(hySpread, 2.5, 5.5),
+    scoreFromFearGreedRange(hySpreadChange, -0.2, 0.35),
+    scoreFromFearGreedRange(dxyReturnPct, -1.2, 1.2),
+    scoreFromFearGreedRange(usdTwdChangePct, -0.8, 1.0),
+  ])
+  const rounded = score == null ? null : clamp100(score)
+
+  return {
+    schemaVersion: 'stockvision_hedge_sentiment_v1',
+    date: row?.date ?? null,
+    score: rounded,
+    label: hedgeSentimentLabel(rounded),
+    source: 'StockVision composite hedge sentiment',
+    methodology: '0=低避險、100=高避險；PCR、大戶部位、外資5日流、波動、信用利差、美元避險有效因子等權平均。',
+    factors,
   }
 }
 
@@ -696,6 +1105,56 @@ function pickContextRow(rows: CanonicalRegimeContextRow[], patterns: RegExp[]) {
   return rows.find((row) => patterns.some((pattern) => pattern.test(`${row.field} ${row.category}`))) ?? rows[0] ?? null
 }
 
+function latestContextRows(rows: CanonicalRegimeContextRow[]) {
+  const latestDate = rows.map((row) => row.date).sort().at(-1)
+  return latestDate ? rows.filter((row) => row.date === latestDate) : []
+}
+
+function derivedContextRow(
+  base: CanonicalRegimeContextRow,
+  field: string,
+  value: number,
+): CanonicalRegimeContextRow {
+  return {
+    ...base,
+    field,
+    value,
+    textValue: null,
+  }
+}
+
+function derivePutCallVolumeRatio(rows: CanonicalRegimeContextRow[]): CanonicalRegimeContextRow | null {
+  const latestRows = latestContextRows(rows)
+  const ratio = latestRows.find((row) => /買賣權成交量比率|賣買權成交量比率|put.*call.*volume/i.test(row.field) && row.value != null)
+  if (ratio?.value != null) {
+    const normalized = ratio.value > 10 ? ratio.value / 100 : ratio.value
+    return derivedContextRow(ratio, '賣買權量比', Math.round(normalized * 1000) / 1000)
+  }
+  const putVolume = latestRows.find((row) => /賣權成交量|put.*volume/i.test(row.field) && row.value != null)
+  const callVolume = latestRows.find((row) => /買權成交量|call.*volume/i.test(row.field) && row.value != null)
+  if (putVolume?.value != null && callVolume?.value) {
+    return derivedContextRow(putVolume, '賣買權量比', Math.round((putVolume.value / callVolume.value) * 1000) / 1000)
+  }
+  return null
+}
+
+function deriveLargeTraderNet(rows: CanonicalRegimeContextRow[]): CanonicalRegimeContextRow | null {
+  const latestRows = latestContextRows(rows)
+  const indexRows = latestRows.filter((row) => /臺股期貨|台股期貨|TX\+MTX|台指|臺指/i.test(row.category))
+  const scopedRows = indexRows.length ? indexRows : latestRows
+  const buyTop5 = scopedRows.find((row) => /買方前五大交易人部位數/.test(row.field) && row.value != null)
+  const sellTop5 = scopedRows.find((row) => /賣方前五大交易人部位數/.test(row.field) && row.value != null)
+  if (buyTop5?.value != null && sellTop5?.value != null) {
+    return derivedContextRow(buyTop5, '前五大交易人淨部位', Math.round(buyTop5.value - sellTop5.value))
+  }
+  const buyTop10 = scopedRows.find((row) => /買方前十大交易人部位數/.test(row.field) && row.value != null)
+  const sellTop10 = scopedRows.find((row) => /賣方前十大交易人部位數/.test(row.field) && row.value != null)
+  if (buyTop10?.value != null && sellTop10?.value != null) {
+    return derivedContextRow(buyTop10, '前十大交易人淨部位', Math.round(buyTop10.value - sellTop10.value))
+  }
+  return null
+}
+
 function contextFactor(
   id: string,
   label: string,
@@ -727,8 +1186,16 @@ async function loadCanonicalRegimeContext(db: D1Database) {
          'world_index',
          'margin_context'
        )
+       AND (
+         dataset NOT IN ('tw_taifex_futures_large_trader', 'tw_taifex_option_large_trader')
+         OR category LIKE '%臺股期貨%'
+         OR category LIKE '%台股期貨%'
+         OR category LIKE '%TX+MTX%'
+         OR category LIKE '%台指%'
+         OR category LIKE '%臺指%'
+       )
        ORDER BY date DESC
-       LIMIT 420`
+       LIMIT 720`
     ).all<any>()
     const rows: CanonicalRegimeContextRow[] = (results ?? [])
       .map((row: any) => ({
@@ -750,13 +1217,8 @@ async function loadCanonicalRegimeContext(db: D1Database) {
     const usdRows = rows
       .filter((row) => row.dataset === 'world_index' && row.value != null)
       .filter((row) => /usd|twd|美元|台幣|匯率/i.test(`${row.field} ${row.category}`))
-    const maintenanceRows = rows
-      .filter((row) => row.value != null)
-      .filter((row) => /maintenance|維持/.test(`${row.dataset} ${row.field} ${row.category}`))
-
-    const pcr = pickContextRow(pcrRows, [/pcr/i, /put.*call/i, /ratio/i, /賣買權|買賣權|賣權.*買權/])
-    const largeTrader = pickContextRow(largeRows, [/net/i, /淨|部位|大戶|未平倉/])
-    const maintenance = pickContextRow(maintenanceRows, [/maintenance/i, /維持/])
+    const pcr = derivePutCallVolumeRatio(pcrRows) ?? pickContextRow(pcrRows, [/pcr/i, /put.*call/i, /ratio/i, /賣買權|買賣權|賣權.*買權/])
+    const largeTrader = deriveLargeTraderNet(largeRows) ?? pickContextRow(largeRows, [/net/i, /淨|部位|大戶|未平倉/])
     const usdTwd = pickContextRow(usdRows, [/usd.*twd/i, /twd.*usd/i, /美元|台幣|匯率/])
     const usdPrevious = usdTwd
       ? usdRows.find((row) => row.field === usdTwd.field && row.category === usdTwd.category && row.date < usdTwd.date) ?? null
@@ -776,7 +1238,6 @@ async function loadCanonicalRegimeContext(db: D1Database) {
       contextFactor('put_call_ratio', '賣買權量比', pcr, 'info'),
       contextFactor('large_trader_net', '大戶淨部位', largeTrader, (largeTrader?.value ?? 0) < 0 ? 'warn' : 'info'),
       contextFactor('usd_twd', '美元兌台幣', usdTwd, 'info'),
-      contextFactor('margin_maintenance_rate', '融資維持率', maintenance, maintenance?.value != null && maintenance.value < 150 ? 'warn' : 'info'),
     ]
 
     return {
@@ -786,7 +1247,6 @@ async function loadCanonicalRegimeContext(db: D1Database) {
       usdTwd: usdTwd?.value ?? null,
       usdTwdChangePct: percentChange(usdTwd?.value ?? null, usdPrevious?.value ?? null),
       fxStatus: usdTwd?.value == null ? null : '穩定',
-      marginMaintenanceRate: maintenance?.value ?? null,
       businessCycle: latestBusiness ? {
         source: latestBusiness.source,
         status: 'ok',
@@ -803,7 +1263,6 @@ async function loadCanonicalRegimeContext(db: D1Database) {
         putCallRatio: pcr == null,
         largeTraderNet: largeTrader == null,
         usdTwd: usdTwd == null,
-        marginMaintenanceRate: maintenance == null,
         businessSignal: latestBusiness == null,
       },
     }
@@ -814,8 +1273,8 @@ async function loadCanonicalRegimeContext(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v4', async () => {
-    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii] = await Promise.all([
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v5-tpex-index-fallback', async () => {
+    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii, tpexIndex] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
           sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
@@ -883,11 +1342,12 @@ market.get('/indices', async (c) => {
       fetchTaifexDayClose().catch(() => null),
       fetchTaifexNightClose().catch(() => null),
       loadMarketRiskTwiiSeries(c.env.DB),
+      fetchTpexIndexSnapshot(),
     ])
     const twii = hasMarketSeriesData(finlabTwii) ? finlabTwii : marketRiskTwii
     const twoii = hasMarketSeriesData(finlabTwoii)
       ? finlabTwoii
-      : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab etl:finlab_tw_stock_market_ind not materialized')
+      : tpexIndex ?? missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab etl:finlab_tw_stock_market_ind not materialized; TPEX OpenAPI fallback unavailable')
     const txfDay = hasMarketSeriesData(finlabTxfDay)
       ? finlabTxfDay
       : taifexDay ? {
@@ -1520,7 +1980,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v10-clean-scope-credit-value'
+  const cacheKey = 'market:risk:latest:v14-fear-greed-hedge-factors-fallback'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -1584,15 +2044,14 @@ market.get('/risk', async (c) => {
   } else {
     factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
   }
-  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext] = await Promise.all([
+  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal] = await Promise.all([
     loadCanonicalMarketOverview(c.env.DB),
     loadCanonicalCreditTrading(c.env.DB),
     loadCanonicalInstitutionalFlows(c.env.DB),
     loadCanonicalRegimeContext(c.env.DB),
+    loadLatestUsMarketSignal(c.env.DB),
   ])
   const creditTrading = creditTradingBase
-    ? { ...creditTradingBase, maintenanceRate: creditTradingBase.maintenanceRate ?? regimeContext?.marginMaintenanceRate ?? null }
-    : null
   const businessCycle = regimeContext?.businessCycle ?? businessCycleFromFactorPacket(factorPacket, row.date)
   const contextFactors = [
     ...(regimeContext?.factors ?? []),
@@ -1602,6 +2061,23 @@ market.get('/risk', async (c) => {
     marketRiskRow: row,
     regimeState,
     factorPacket,
+  })
+  const fearGreedIndex = buildFearGreedIndex({
+    row,
+    canonicalOverview,
+    regimeContext,
+    usSignal: usMarketSignal,
+  })
+  const hedgeSentimentFactors = buildHedgeSentimentFactors({
+    row,
+    regimeContext,
+    usSignal: usMarketSignal,
+  })
+  const hedgeSentiment = buildHedgeSentiment({
+    row,
+    regimeContext,
+    usSignal: usMarketSignal,
+    factors: hedgeSentimentFactors,
   })
   const rawSummary = String(row.risk_summary ?? '').trim()
   const packetSummary = rawSummary && !rawSummary.includes('V4 weighted factors')
@@ -1640,7 +2116,6 @@ market.get('/risk', async (c) => {
     shortBalanceUnits:      creditTrading?.shortBalanceUnits ?? null,
     marginBalanceChangePct: creditTrading?.marginBalanceChangePct ?? null,
     shortBalanceChangePct:  creditTrading?.shortBalanceChangePct ?? null,
-    marginMaintenanceRate:  creditTrading?.maintenanceRate ?? null,
     putCallRatio:           regimeContext?.putCallRatio ?? null,
     largeTraderNet:         regimeContext?.largeTraderNet ?? null,
     usdTwd:                 regimeContext?.usdTwd ?? null,
@@ -1649,13 +2124,16 @@ market.get('/risk', async (c) => {
     institutionalFlows,
     businessCycle,
     regimeContext,
+    usMarketSignal,
+    fearGreedIndex,
+    hedgeSentiment,
+    hedgeSentimentFactors,
     dataSourcePriority: [
       'FinLab canonical materialized tables',
       'market_risk / market_regime_factor_packets',
       'TAIFEX MIS only for live night futures',
     ],
     materializationGaps: {
-      marginMaintenanceRate: creditTrading?.maintenanceRate == null ? 'FinLab margin maintenance rate not materialized' : null,
       putCallRatio: regimeContext?.missing?.putCallRatio ? 'FinLab tw_option_put_call_ratio not materialized' : null,
       largeTraderNet: regimeContext?.missing?.largeTraderNet ? 'FinLab tw_taifex_futures_large_trader not materialized' : null,
       usdTwd: regimeContext?.missing?.usdTwd ? 'FinLab world_index USD/TWD not materialized' : null,
@@ -2263,6 +2741,13 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
   `).bind(latestRun.run_id).all<any>()
   const byStage = new Map<string, Record<string, any>>((stageRows ?? []).map((row: any) => [String(row.stage ?? ''), row]))
   const pickStage = (...names: string[]) => names.map((name) => byStage.get(name)).find(Boolean) ?? null
+  const signalCounts = await db.prepare(`
+    SELECT COUNT(DISTINCT symbol) AS recommendation_count,
+           COUNT(DISTINCT CASE WHEN signal IN ('BUY', 'STRONG_BUY') OR has_buy_signal = 1 THEN symbol END) AS buy_signal_count,
+           COUNT(DISTINCT CASE WHEN signal = 'HOLD' THEN symbol END) AS hold_count
+      FROM daily_recommendations
+     WHERE date = ?
+  `).bind(date).first<any>().catch(() => null)
   const layer0Stage = pickStage('universe')
   const layer1Stage = pickStage('l1_candidate_seed_after_overlay', 'layer1_strategy_breadth_gate', 'final_selection')
   const layer2Stage = pickStage('l15_ml_slate_queue', 'layer2_coarse_ml_gate', 'layer2_timesfm_enrichment')
@@ -2272,7 +2757,10 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
   const l1Pass = stageEffectivePass(layer1Stage)
   const l2Pass = stageEffectivePass(layer2Stage)
   const l3Pass = stageEffectivePass(layer3Stage)
-  const l4Pass = finiteNumber(latestRun.final_count)
+  const recommendationCount = finiteNumber(signalCounts?.recommendation_count) ?? finiteNumber(latestRun.final_count)
+  const buySignalCount = finiteNumber(signalCounts?.buy_signal_count)
+  const holdCount = finiteNumber(signalCounts?.hold_count)
+  const l4Pass = buySignalCount ?? finiteNumber(latestRun.final_count)
   type PipelineLayerDef = {
     layer: string
     label: string
@@ -2283,10 +2771,10 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
   }
   const layerDefs: PipelineLayerDef[] = [
     { layer: 'L0', label: 'Universe gate', stage: String(layer0Stage?.stage ?? 'universe'), passed: l0Pass, eliminated: l0Drop },
-    { layer: 'L1', label: 'Active strategy breadth', stage: String(layer1Stage?.stage ?? 'l1_candidate_seed_after_overlay'), passed: l1Pass, previous: l0Pass },
-    { layer: 'L2', label: 'ML slate queue', stage: String(layer2Stage?.stage ?? 'l15_ml_slate_queue'), passed: l2Pass, previous: l1Pass },
-    { layer: 'L3', label: 'Formal ML gate', stage: String(layer3Stage?.stage ?? 'layer3_formal_ml_gate'), passed: l3Pass, previous: l2Pass },
-    { layer: 'L4', label: 'Sparse allocation final', stage: 'daily_recommendations.final_count', passed: l4Pass, previous: l3Pass ?? l2Pass ?? l1Pass },
+    { layer: 'L1', label: 'Active strategy breadth', stage: String(layer1Stage?.stage ?? 'l1_candidate_seed_after_overlay'), passed: l1Pass, eliminated: finiteNumber(layer1Stage?.drop_count), previous: l0Pass },
+    { layer: 'L2', label: 'ML slate queue', stage: String(layer2Stage?.stage ?? 'l15_ml_slate_queue'), passed: l2Pass, eliminated: finiteNumber(layer2Stage?.drop_count), previous: l1Pass },
+    { layer: 'L3', label: 'Formal ML gate', stage: String(layer3Stage?.stage ?? 'layer3_formal_ml_gate'), passed: l3Pass, eliminated: finiteNumber(layer3Stage?.drop_count), previous: l2Pass },
+    { layer: 'L4', label: 'BUY signal allocation', stage: 'daily_recommendations.signal BUY', passed: l4Pass, previous: l3Pass ?? l2Pass ?? l1Pass },
   ]
   const layers = layerDefs.map((row) => {
     const eliminated = row.eliminated != null
@@ -2364,6 +2852,9 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
       universe_count: finiteNumber(latestRun.universe_count),
       candidate_count: finiteNumber(latestRun.candidate_count),
       final_count: finiteNumber(latestRun.final_count),
+      recommendation_count: recommendationCount,
+      buy_signal_count: buySignalCount,
+      hold_count: holdCount,
       emerging_count: finiteNumber(latestRun.emerging_count),
       layers,
       stage_counts: stageRows ?? [],

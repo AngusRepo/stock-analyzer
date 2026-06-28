@@ -34,7 +34,6 @@ export interface MarketRiskResult {
   // ── Phase 2: FinLab 大盤綜合指標強化 ────────────────────────────────────────
   adlValue: number | null           // 騰落線（累積 上漲家數-下跌家數）
   adlTrend: 'up' | 'down' | 'flat' | null  // ADL 5日趨勢
-  marginMaintenanceRate: number | null  // 融資維持率 %（整體市場）
   bullAlignmentCount: number | null    // 多空排列家數（MA5>MA20>MA60）
   bullAlignmentPct: number | null      // 多空排列比例 %
   riskScore: number
@@ -164,13 +163,6 @@ async function fetchADL(db: D1Database): Promise<{
   } catch { return { adlValue: null, adlTrend: null } }
 }
 
-// ── 6. 融資維持率（同一 Controller proxy API）──────────────────────────────
-async function fetchMarginMaintenanceRate(controllerUrl?: string, controllerSecret?: string): Promise<number | null> {
-  const data = await fetchTwseMarginSummary(controllerUrl, controllerSecret)
-  if (!data) return null
-  return Math.round((data.limit / data.balance) * 10000) / 100
-}
-
 // ── 7. 多空排列家數（D1 stock_prices 計算 MA5/MA20/MA60）───────────────────
 async function fetchBullAlignmentCount(db: D1Database): Promise<{
   count: number | null
@@ -288,15 +280,6 @@ function calcRiskScore(data: Omit<MarketRiskResult, 'riskScore' | 'riskLevel' | 
     score += 8; triggers.push('騰落線（ADL）呈下降趨勢，市場廣度萎縮')
   }
 
-  // 融資維持率（最多 8 分）— 低於 150% 代表追繳壓力上升
-  if (data.marginMaintenanceRate != null) {
-    if (data.marginMaintenanceRate < 130) {
-      score += 8; triggers.push(`融資維持率偏低 ${data.marginMaintenanceRate.toFixed(0)}%（<130%），追繳壓力高`)
-    } else if (data.marginMaintenanceRate < 150) {
-      score += 4; triggers.push(`融資維持率偏低 ${data.marginMaintenanceRate.toFixed(0)}%（<150%）`)
-    }
-  }
-
   // 多空排列比例（最多 8 分）— 低於 30% 代表空頭擴散
   if (data.bullAlignmentPct != null) {
     if (data.bullAlignmentPct < 20) {
@@ -330,14 +313,13 @@ export async function calcMarketRisk(
   const today = runDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   _marginCache = null  // 清除快取
 
-  // 平行抓所有資料（Phase 2: 加入 ADL + 融資維持率 + 多空排列）
-  const [vix, twiiHistory, foreignChip, marginRatio, adlData, marginMaintenance, bullAlignment] = await Promise.all([
+  // 平行抓所有資料（Phase 2: 加入 ADL + 多空排列）
+  const [vix, twiiHistory, foreignChip, marginRatio, adlData, bullAlignment] = await Promise.all([
     fetchVIX(),
     fetchTWIIHistory(),
     fetchMarketForeignChip(db),
     fetchMarginRatio(controllerUrl, controllerSecret),
     fetchADL(db),
-    fetchMarginMaintenanceRate(controllerUrl, controllerSecret),
     fetchBullAlignmentCount(db),
   ])
 
@@ -363,7 +345,6 @@ export async function calcMarketRisk(
     limitDownPct: null,
     adlValue: adlData.adlValue,
     adlTrend: adlData.adlTrend,
-    marginMaintenanceRate: marginMaintenance,
     bullAlignmentCount: bullAlignment.count,
     bullAlignmentPct: bullAlignment.pct,
   }
@@ -412,7 +393,6 @@ async function generateRiskSummary(
 - 外資近5日買賣超：${data.foreignNet5d ?? 'N/A'} 億，連續動向：${data.foreignConsecutiveSell} 日
 - 融資使用率：${data.marginRatio ?? 'N/A'}%
 - 騰落線(ADL)趨勢：${data.adlTrend ?? 'N/A'}（${data.adlValue ?? 'N/A'}）
-- 融資維持率：${data.marginMaintenanceRate ?? 'N/A'}%
 - 多頭排列家數：${data.bullAlignmentCount ?? 'N/A'}（${data.bullAlignmentPct ?? 'N/A'}%）
 - 綜合風險評分：${score}/100，等級：${levelText[level]}
 - 觸發警示：${triggers.length ? triggers.join('、') : '無'}

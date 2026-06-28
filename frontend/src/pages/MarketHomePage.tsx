@@ -9,7 +9,6 @@ import {
   Newspaper,
   PieChart,
   Radar,
-  Shield,
   ShieldAlert,
   Sparkles,
   TrendingDown,
@@ -120,6 +119,15 @@ function riskTone(score: number | null): Tone {
   if (score >= 46) return 'amber'
   if (score >= 28) return 'blue'
   return 'green'
+}
+
+function fearGreedTone(score: number | null): Tone {
+  if (score == null) return 'slate'
+  if (score < 20) return 'green'
+  if (score < 45) return 'amber'
+  if (score < 55) return 'blue'
+  if (score < 75) return 'red'
+  return 'red'
 }
 
 function toneText(tone: Tone) {
@@ -300,13 +308,20 @@ function volatilityStressScore(usVix: number | null, twVol20: number | null) {
 }
 
 function deriveHedgeSentimentScore(risk: any) {
+  if (risk?.hedgeSentiment) {
+    const explicitHedgeScore = asNumber(risk.hedgeSentiment.score)
+    return {
+      score: explicitHedgeScore == null ? null : clampScore(explicitHedgeScore),
+      source: risk.hedgeSentiment.source ?? '專屬避險分數',
+    }
+  }
   const explicit = asNumber(risk?.hedgeScore ?? risk?.hedgeRiskValue)
   const riskScore = asNumber(risk?.riskScore ?? risk?.risk_score)
   const usVix = asNumber(risk?.vix ?? risk?.usVix)
   const twVol20 = asNumber(risk?.twiiVol20 ?? risk?.realizedVol20)
   const volScore = volatilityStressScore(usVix, twVol20)
 
-  if (explicit != null) return { score: clampScore(explicit), source: '專屬避險分數' }
+  if (explicit != null) return { score: clampScore(explicit), source: risk?.hedgeSentiment?.source ?? '專屬避險分數' }
   if (riskScore != null && volScore != null) return { score: clampScore(riskScore * 0.75 + volScore * 0.25), source: '市場風險 + 波動 overlay' }
   if (riskScore != null) return { score: clampScore(riskScore), source: '市場風險 fallback' }
   if (volScore != null) return { score: clampScore(volScore), source: 'VIX / 台股波動 fallback' }
@@ -420,107 +435,7 @@ function StatTrack({
 }
 
 function MarketStatsRibbon({ risk }: { risk: any }) {
-  const breadth = risk?.breadthSnapshot ?? risk?.breadth ?? {}
-  const advance = asNumber(breadth.advance_count ?? breadth.advanceCount ?? breadth.up ?? breadth.rising)
-  const unchanged = asNumber(breadth.unchanged_count ?? breadth.unchangedCount ?? breadth.flat ?? breadth.unchanged)
-  const decline = asNumber(breadth.decline_count ?? breadth.declineCount ?? breadth.down ?? breadth.falling)
-  const total = (advance ?? 0) + (unchanged ?? 0) + (decline ?? 0)
-  const volume = asNumber(risk?.marketVolume ?? risk?.turnoverVolume ?? risk?.marketStats?.volume)
-  const amount = asNumber(risk?.marketTurnoverAmount ?? risk?.turnoverAmount ?? risk?.marketStats?.amount)
-  const marginBalanceValue = asNumber(risk?.marginBalanceValue ?? risk?.creditTrading?.marginBalanceValue)
-  const marginBalanceUnits = asNumber(breadth.margin_balance ?? risk?.marginBalanceUnits ?? risk?.creditTrading?.marginBalanceUnits)
-  const marginBalance = marginBalanceUnits ?? asNumber(risk?.marginBalance ?? risk?.creditTrading?.marginBalance)
-  const shortBalance = asNumber(breadth.short_balance ?? risk?.shortBalanceUnits ?? risk?.creditTrading?.shortBalanceUnits ?? risk?.shortBalance ?? risk?.creditTrading?.shortBalance)
-  const marginBalanceDisplay = marginBalanceValue != null
-    ? formatCompactAmount(marginBalanceValue)
-    : marginBalance == null ? '待接資料' : `${formatCompactAmount(marginBalance)}張`
-  const maintenance = asNumber(breadth.margin_maintenance ?? risk?.marginMaintenanceRate ?? risk?.creditTrading?.maintenanceRate)
-  const marginChangePct = asNumber(risk?.marginBalanceChangePct ?? risk?.creditTrading?.marginBalanceChangePct)
-  const shortChangePct = asNumber(risk?.shortBalanceChangePct ?? risk?.creditTrading?.shortBalanceChangePct)
-
-  return (
-    <div className="grid gap-4 xl:grid-cols-4">
-      <StatTrack
-        icon={TrendingDown}
-        title="漲跌家數"
-        date={breadth.date ?? risk?.date}
-        bar={<SplitBar values={[advance ?? 0, unchanged ?? 0, decline ?? 0]} colors={['#ef4444', '#6b7280', '#22c55e']} />}
-      >
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <p className="text-xs text-slate-500">上漲</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-red-400">{formatInteger(advance)}</p>
-            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((advance ?? 0) / total) * 100, 1, false) : '--'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">平盤</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-300">{formatInteger(unchanged)}</p>
-            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((unchanged ?? 0) / total) * 100, 1, false) : '--'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">下跌</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-emerald-400">{formatInteger(decline)}</p>
-            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((decline ?? 0) / total) * 100, 1, false) : '--'}</p>
-          </div>
-        </div>
-      </StatTrack>
-
-      <StatTrack
-        icon={BarChart3}
-        title="成交量"
-        date={risk?.date}
-        bar={<SplitBar values={[volume ?? 0, amount ?? 0]} colors={['#3b82f6', '#8b5cf6']} />}
-      >
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <p className="text-xs text-slate-500">總成交量</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(volume)}</p>
-            <p className="text-[11px] text-slate-500">TWSE/TPEX daily</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">總成交額</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(amount)}</p>
-            <p className="text-[11px] text-slate-500">market turnover</p>
-          </div>
-        </div>
-      </StatTrack>
-
-      <StatTrack
-        icon={CircleDollarSign}
-        title="融資融券"
-        date={breadth.date ?? risk?.date}
-        bar={<SplitBar values={[marginBalance ?? 0, shortBalance ?? 0]} colors={['#22c55e', '#8b5cf6']} />}
-      >
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <p className="text-xs text-slate-500">融資餘額</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{marginBalanceDisplay}</p>
-            <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(marginChangePct)))}>{formatPct(marginChangePct)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">融券餘額</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{shortBalance == null ? '待接資料' : `${formatCompactAmount(shortBalance)}張`}</p>
-            <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(shortChangePct)))}>{formatPct(shortChangePct)}</p>
-          </div>
-        </div>
-      </StatTrack>
-
-      <StatTrack
-        icon={Shield}
-        title="融資維持率"
-        date={breadth.date ?? risk?.date}
-        bar={<SplitBar values={[maintenance ?? 0, maintenance == null ? 0 : Math.max(0, 220 - maintenance)]} colors={['#14b8a6', '#30343d']} />}
-      >
-        <div>
-          <p className="text-xs text-slate-500">當前維持率</p>
-          <p className={cx('mt-1 text-xl font-bold tabular-nums', maintenance != null && maintenance < 150 ? 'text-amber-300' : 'text-emerald-400')}>
-            {maintenance == null ? '待接資料' : `${maintenance.toFixed(2)}%`}
-          </p>
-          <p className="mt-2 text-[11px] leading-5 text-slate-500">信用交易日況來源接上後，這裡會用真實維持率與日變化。</p>
-        </div>
-      </StatTrack>
-    </div>
-  )
+  return <MarketStatsRibbonClean risk={risk} />
 }
 
 function MarketStatsRibbonClean({ risk }: { risk: any }) {
@@ -542,7 +457,6 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
   const shortBalanceValue = asNumber(risk?.shortBalanceValue ?? credit.shortBalanceValue)
   const shortBalanceUnits = asNumber(breadth.short_balance ?? risk?.shortBalanceUnits ?? credit.shortBalanceUnits ?? risk?.shortBalance ?? credit.shortBalance)
   const creditScope = credit.scope ?? marketScope
-  const maintenance = asNumber(breadth.margin_maintenance ?? risk?.marginMaintenanceRate ?? credit.maintenanceRate)
   const marginChangePct = asNumber(risk?.marginBalanceChangePct ?? credit.marginBalanceChangePct)
   const shortChangePct = asNumber(risk?.shortBalanceChangePct ?? credit.shortBalanceChangePct)
 
@@ -590,7 +504,7 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
           <div>
             <p className="text-xs text-slate-500">成交金額</p>
             <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(amount)}</p>
-            <p className="text-[11px] text-slate-500">TWD turnover</p>
+            <p className="text-[11px] text-slate-500">成交金額（TWD）</p>
           </div>
         </div>
       </StatTrack>
@@ -604,36 +518,112 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
       >
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <p className="text-xs text-slate-500">融資餘額</p>
+            <p className="text-xs text-slate-500">融資餘額（金額）</p>
             <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(marginBalanceValue)}</p>
             <p className="text-[11px] text-slate-500">{formatLots(marginBalanceUnits)}</p>
             <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(marginChangePct)))}>{formatPct(marginChangePct)}</p>
           </div>
           <div>
-            <p className="text-xs text-slate-500">融券餘額</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(shortBalanceValue)}</p>
-            <p className="text-[11px] text-slate-500">{formatLots(shortBalanceUnits)}</p>
+            <p className="text-xs text-slate-500">融券餘額（張數）</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(shortBalanceUnits)}</p>
+            <p className="text-[11px] text-slate-500">
+              {shortBalanceValue == null ? '金額未提供' : formatCompactAmount(shortBalanceValue)}
+            </p>
             <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(shortChangePct)))}>{formatPct(shortChangePct)}</p>
           </div>
         </div>
       </StatTrack>
 
-      <StatTrack
-        icon={Shield}
-        title="融資維持率"
-        date={credit.date ?? risk?.date}
-        scope={creditScope}
-        bar={<SplitBar values={[maintenance ?? 0, maintenance == null ? 0 : Math.max(0, 220 - maintenance)]} colors={['#14b8a6', '#30343d']} />}
-      >
-        <div>
-          <p className="text-xs text-slate-500">當前維持率</p>
-          <p className={cx('mt-1 text-xl font-bold tabular-nums', maintenance != null && maintenance < 150 ? 'text-amber-300' : 'text-emerald-400')}>
-            {maintenance == null ? '待匯入' : `${maintenance.toFixed(2)}%`}
-          </p>
-          <p className="mt-2 text-[11px] leading-5 text-slate-500">需待 FinLab 維持率欄位 materialize。</p>
-        </div>
-      </StatTrack>
+      <InstitutionFlowStatTrack risk={risk} />
     </div>
+  )
+}
+
+function InstitutionFlowStatTrack({ risk }: { risk: any }) {
+  const flow = risk?.institutionalFlows ?? {}
+  const foreign = asNumber(flow.foreignNet ?? flow.foreign ?? risk?.foreignNet5d)
+  const trust = asNumber(flow.trustNet ?? flow.trust)
+  const dealer = asNumber(flow.dealerNet ?? flow.dealer)
+  const available = foreign != null || trust != null || dealer != null
+  const total = asNumber(flow.totalNet) ?? (available ? (foreign ?? 0) + (trust ?? 0) + (dealer ?? 0) : null)
+  const rows = [
+    { label: '外資', value: foreign },
+    { label: '投信', value: trust },
+    { label: '自營商', value: dealer },
+  ]
+
+  return (
+    <StatTrack
+      icon={PieChart}
+      title="主要法人資金動向"
+      date={flow.date ?? risk?.date}
+      scope={flow.scope ?? risk?.marketDataScope}
+      bar={<SplitBar values={rows.map((row) => Math.abs(row.value ?? 0))} colors={['#22c55e', '#ef4444', '#14b8a6']} />}
+    >
+      <div>
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="text-xs text-slate-500">當日合計買賣超</p>
+            <p className={cx('mt-1 text-xl font-bold tabular-nums', toneText(toneBySigned(total)))}>
+              {total == null ? '待匯入' : formatBillion(total)}
+            </p>
+          </div>
+          <span className="text-[11px] text-slate-500">三大法人</span>
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          {rows.map((row) => (
+            <div key={row.label}>
+              <p className="text-xs text-slate-500">{row.label}</p>
+              <p className={cx('mt-1 text-sm font-bold tabular-nums', toneText(toneBySigned(row.value)))}>
+                {row.value == null ? '待匯入' : formatBillion(row.value)}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </StatTrack>
+  )
+}
+
+function FearGreedCard({ risk }: { risk: any }) {
+  const index = risk?.fearGreedIndex ?? {}
+  const score = asNumber(index.score)
+  const label = String(index.label ?? (score == null ? '待匯入' : score < 45 ? '恐懼' : score > 55 ? '貪婪' : '中性'))
+  const marker = score == null ? 0 : Math.max(0, Math.min(100, score))
+  const tone = fearGreedTone(score)
+
+  return (
+    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <Gauge className={cx('h-4 w-4 shrink-0', score == null ? 'text-slate-500' : toneText(tone))} />
+          <h3 className="truncate font-bold text-slate-100">貪婪指數</h3>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full bg-white/[0.055] p-2">
+            <BarChart3 className="h-3.5 w-3.5 text-slate-400" />
+          </span>
+          <SourceBadge>{shortDate(index.date ?? risk?.date)}</SourceBadge>
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-end justify-between gap-4">
+        <p className={cx('text-2xl font-semibold tabular-nums', score == null ? 'text-slate-500' : toneText(tone))}>
+          {score == null ? '--' : score}
+          <span className="ml-1 text-sm font-medium text-slate-500">/100</span>
+        </p>
+        <p className={cx('text-sm font-bold', score == null ? 'text-slate-500' : toneText(tone))}>{label}</p>
+      </div>
+
+      <div className="relative mt-4 h-1.5 rounded-full bg-[linear-gradient(90deg,#10b981_0%,#a3e635_26%,#f59e0b_50%,#f97316_72%,#db2777_100%)]">
+        {score != null && (
+          <span
+            className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,0.45)]"
+            style={{ left: `${marker}%` }}
+          />
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -650,13 +640,21 @@ function HedgeFactor({ label, value, note, tone = 'slate' }: { label: string; va
 function HedgeSentimentCard({ risk }: { risk: any }) {
   const sentiment = deriveHedgeSentimentScore(risk)
   const normalized = sentiment.score
-  const pcr = findFactor(risk, ['put_call', 'pcr', 'options'], ['賣買權', 'PCR'])
-  const largeTrader = findFactor(risk, ['large_trader', 'smart_money'], ['大戶', '未平倉'])
-  const usdTwdFactor = findFactor(risk, ['usd_twd', 'fx'], ['匯率', '美元兌台幣'])
+  const hedgeFactors = asArray<RiskFactor>(risk?.hedgeSentimentFactors)
+  const byHedgeId = (id: string) => hedgeFactors.find((factor) => String(factor.id ?? '') === id) ?? null
+  const foreign5d = byHedgeId('foreign_net_5d')
+  const pcr = byHedgeId('put_call_ratio') ?? findFactor(risk, ['put_call', 'pcr', 'options'], ['賣買權', 'PCR'])
+  const largeTrader = byHedgeId('large_trader_net') ?? findFactor(risk, ['large_trader', 'smart_money'], ['大戶', '未平倉'])
+  const twVolFactor = byHedgeId('twii_vol20')
+  const usVixFactor = byHedgeId('us_vix')
+  const hySpreadFactor = byHedgeId('hy_spread')
+  const dxyFactor = byHedgeId('dxy_return')
+  const usdTwdFactor = byHedgeId('usd_twd') ?? findFactor(risk, ['usd_twd', 'fx'], ['匯率', '美元兌台幣'])
   const usdTwd = asNumber(risk?.usdTwd ?? risk?.usdtwd ?? usdTwdFactor?.raw_value)
   const fxChange = asNumber(risk?.usdTwdChangePct ?? risk?.fxChangePct)
-  const usVix = asNumber(risk?.vix ?? risk?.usVix)
-  const twVol20 = asNumber(risk?.twiiVol20 ?? risk?.realizedVol20)
+  const usVix = asNumber(usVixFactor?.raw_value ?? risk?.vix ?? risk?.usVix)
+  const twVol20 = asNumber(twVolFactor?.raw_value ?? risk?.twiiVol20 ?? risk?.realizedVol20)
+  const hedgeLabel = risk?.hedgeSentiment?.label ?? riskLevelLabel(normalized, null)
 
   return (
     <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
@@ -672,7 +670,7 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
         <div className="flex items-end justify-between gap-4">
           <div>
             <p className="text-xs text-slate-500">避險評級</p>
-            <p className={cx('mt-1 text-sm font-bold', toneText(riskTone(normalized)))}>{riskLevelLabel(normalized, null)}</p>
+            <p className={cx('mt-1 text-sm font-bold', toneText(riskTone(normalized)))}>{hedgeLabel}</p>
           </div>
           <div className="text-right">
             <p className="text-xs text-slate-500">避險值</p>
@@ -688,22 +686,54 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
       </div>
 
       <div className="mt-4 grid gap-4 border-t border-white/[0.07] pt-4 sm:grid-cols-2">
-        <HedgeFactor label="賣買權量比" value={factorDisplay(pcr, '待接 PCR')} note={pcr?.status ?? 'options positioning'} tone="blue" />
-        <HedgeFactor label="大戶淨部位" value={factorDisplay(largeTrader, '待接資料')} note="期貨大戶與籌碼壓力" tone={toneBySigned(asNumber(largeTrader?.raw_value))} />
+        <HedgeFactor
+          label="外資5日買賣超"
+          value={factorDisplay(foreign5d, '待接資料')}
+          note={foreign5d?.detail ?? '外資連續買超/賣超反映本地籌碼風險。'}
+          tone={toneBySigned(asNumber(foreign5d?.raw_value))}
+        />
+        <HedgeFactor
+          label="期貨大戶淨部位"
+          value={factorDisplay(largeTrader, '待接資料')}
+          note={largeTrader?.detail ?? '前五大交易人買方減賣方部位。'}
+          tone={toneBySigned(asNumber(largeTrader?.raw_value))}
+        />
+        <HedgeFactor
+          label="賣買權量比"
+          value={factorDisplay(pcr, '待接 PCR')}
+          note={pcr?.detail ?? '賣權相對買權越高，代表避險需求越強。'}
+          tone="blue"
+        />
         <HedgeFactor
           label="台股波動率"
-          value={twVol20 == null ? '待接資料' : `${twVol20.toFixed(2)}%`}
-          note="TWII 20日實現波動率"
+          value={twVolFactor ? factorDisplay(twVolFactor) : twVol20 == null ? '待接資料' : `${twVol20.toFixed(2)}%`}
+          note={twVolFactor?.detail ?? '加權指數 20 日實現波動率。'}
           tone={riskTone(twVol20)}
         />
         <HedgeFactor
           label="美股 VIX"
-          value={usVix == null ? '待接資料' : usVix.toFixed(2)}
-          note={risk?.vixLevel ? `CBOE ${risk.vixLevel}` : 'S&P 500 options implied volatility'}
+          value={usVixFactor ? factorDisplay(usVixFactor) : usVix == null ? '待接資料' : usVix.toFixed(2)}
+          note={usVixFactor?.detail ?? 'S&P 500 選擇權隱含波動。'}
           tone={riskTone(usVix == null ? null : usVix * 2.4)}
         />
-        <HedgeFactor label="美元兌台幣" value={usdTwd == null ? factorDisplay(usdTwdFactor) : usdTwd.toFixed(3)} note={fxChange == null ? '匯率因子' : `日變動 ${formatPct(fxChange)}`} tone={toneBySigned(fxChange)} />
-        <HedgeFactor label="匯率狀態" value={risk?.fxStatus ?? '穩定'} note="宏觀避險因子" tone="slate" />
+        <HedgeFactor
+          label="高收益債利差"
+          value={factorDisplay(hySpreadFactor, '待接資料')}
+          note={hySpreadFactor?.detail ?? '信用利差擴大代表風險補償上升。'}
+          tone="amber"
+        />
+        <HedgeFactor
+          label="美元指數變動"
+          value={factorDisplay(dxyFactor, '待接資料')}
+          note={dxyFactor?.detail ?? '美元走強常見於全球資金轉向避險。'}
+          tone={toneBySigned(asNumber(dxyFactor?.raw_value))}
+        />
+        <HedgeFactor
+          label="美元兌台幣"
+          value={usdTwd == null ? factorDisplay(usdTwdFactor) : usdTwd.toFixed(3)}
+          note={usdTwdFactor?.detail ?? (fxChange == null ? '匯率避險因子。' : `日變動 ${formatPct(fxChange)}`)}
+          tone={toneBySigned(fxChange)}
+        />
       </div>
     </section>
   )
@@ -913,19 +943,19 @@ function MarketOverviewBlock() {
           <div className="bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />
           </div>
-          <div className="grid gap-px bg-white/[0.045] xl:grid-cols-3">
-            <div className="space-y-px bg-white/[0.045]">
-              <div className="bg-[#101116] p-4">
-                <InstitutionFlowCardClean risk={risk} />
+          <div className="grid items-start gap-4 bg-[#101116] p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="grid gap-4 self-start">
+              <div>
+                <FearGreedCard risk={risk} />
               </div>
-              <div className="bg-[#101116] p-4">
+              <div>
+                <HedgeSentimentCard risk={risk} />
+              </div>
+              <div>
                 <BusinessSignalCard risk={risk} />
               </div>
             </div>
-            <div className="bg-[#101116] p-4">
-              <HedgeSentimentCard risk={risk} />
-            </div>
-            <div className="bg-[#101116] p-4">
+            <div className="self-start">
               <NewsBlock embedded />
             </div>
           </div>
@@ -1021,7 +1051,13 @@ function FlowList({ title, rows }: { title: string; rows: any[] }) {
   )
 }
 
-function ThemeFlowPanel() {
+function keywordFromFlowRow(row: any): string | null {
+  const raw = row?.theme ?? row?.concept ?? row?.industry ?? row?.sector ?? row?.name
+  const text = String(raw ?? '').trim()
+  return text && text !== '-' ? text : null
+}
+
+function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
   const { data: themeData } = useQuery({
     queryKey: ['recommendations', 'sector-flow', 'theme', 'home'],
     queryFn: () => recommendationsApi.sectorFlow(undefined, 'theme').catch(() => ({ flows: [] })),
@@ -1034,11 +1070,17 @@ function ThemeFlowPanel() {
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })
-  const themeRows = asArray<any>(themeData?.flows).slice(0, 8)
-  const industryRows = asArray<any>(industryData?.flows).slice(0, 8)
+  const limit = compact ? 5 : 8
+  const themeRows = asArray<any>(themeData?.flows).slice(0, limit)
+  const industryRows = asArray<any>(industryData?.flows).slice(0, limit)
+  const hotKeywords = [...themeRows, ...industryRows]
+    .map(keywordFromFlowRow)
+    .filter((item): item is string => Boolean(item))
+    .filter((item, index, list) => list.indexOf(item) === index)
+    .slice(0, 12)
 
   return (
-    <section className={panelClass('p-5')}>
+    <section className={panelClass('h-full p-5')}>
       <div className="mb-5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Radar className="h-4 w-4 text-cyan-300" />
@@ -1046,10 +1088,25 @@ function ThemeFlowPanel() {
         </div>
         <SourceBadge>{themeData?.date ?? industryData?.date ?? 'sector-flow'}</SourceBadge>
       </div>
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className={cx('grid gap-6', compact ? 'grid-cols-1' : 'xl:grid-cols-2')}>
         <FlowList title="題材資金流" rows={themeRows} />
         <FlowList title="產業資金流" rows={industryRows} />
       </div>
+      {hotKeywords.length > 0 && (
+        <div className="mt-5 border-t border-white/[0.07] pt-4">
+          <p className="mb-3 text-sm font-bold text-slate-200">熱門關鍵字</p>
+          <div className="flex flex-wrap gap-2">
+            {hotKeywords.map((keyword) => (
+              <span
+                key={keyword}
+                className="rounded-full border border-white/[0.08] bg-white/[0.045] px-3 py-1.5 text-xs font-semibold text-slate-300"
+              >
+                {keyword}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   )
 }
@@ -1171,8 +1228,10 @@ export default function MarketHomePage() {
           </div>
 
           <MarketOverviewBlock />
-          <RecommendationPanel />
-          <ThemeFlowPanel />
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(360px,1fr)]">
+            <RecommendationPanel />
+            <ThemeFlowPanel compact />
+          </div>
         </main>
       </div>
     </AppShell>

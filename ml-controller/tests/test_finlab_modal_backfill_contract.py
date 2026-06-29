@@ -64,3 +64,15 @@ def test_finlab_backfill_uses_controller_d1_proxy_before_cloudflare_rest() -> No
     assert 'ML_CONTROLLER_SECRET_SECRET="${ML_CONTROLLER_SECRET_SECRET:-stockvision-ml-controller-secret:latest}"' in deploy
     assert "ML_CONTROLLER_SECRET=${ML_CONTROLLER_SECRET_SECRET}" in deploy
     assert "ML_CONTROLLER_PUBLIC_URL" in deploy
+
+
+def test_finlab_external_evidence_writeback_does_not_block_evening_chain_callback() -> None:
+    modal_app = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    start = modal_app.index("macro_error =")
+    end = modal_app.index("summary = (", start)
+    status_block = modal_app[start:end]
+
+    assert "external_error =" in status_block
+    assert "External evidence is supplemental" in status_block
+    assert "and not macro_error else" in status_block
+    assert "and not external_error" not in status_block

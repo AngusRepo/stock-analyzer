@@ -2595,7 +2595,9 @@ def finlab_v4_backfill(payload: dict) -> dict:
         duration_ms = int((time.time() - started) * 1000)
         macro_error = isinstance(result.get("macro_context_writeback"), dict) and result["macro_context_writeback"].get("status") == "error"
         external_error = isinstance(result.get("external_evidence_writeback"), dict) and result["external_evidence_writeback"].get("status") == "error"
-        status = "success" if int(exit_code or 0) == 0 and not macro_error and not external_error else "error"
+        # External evidence is supplemental to the FinLab canonical refresh; do not
+        # block the evening-chain callback after canonical D1 apply succeeds.
+        status = "success" if int(exit_code or 0) == 0 and not macro_error else "error"
         summary = (
             f"FinLab V4 backfill run_id={result.get('run_id', run_id)} "
             f"canonical={result.get('canonical_d1_apply') is not None} "

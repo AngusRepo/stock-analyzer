@@ -112,6 +112,20 @@ def test_write_parquet_ignores_nonserializable_dataframe_attrs(tmp_path):
     assert frame.attrs["broker_rank_daily"].equals(rank_rows)
 
 
+def test_latest_index_uses_date_column_before_range_index():
+    tool = _load_tool_module()
+    frame = pd.DataFrame({"date": ["2026-06-28", "2026-06-29"], "close": [100.0, 101.0]})
+
+    assert tool.latest_index(frame) == "2026-06-29"
+
+
+def test_latest_index_does_not_parse_plain_numeric_index_as_epoch_date():
+    tool = _load_tool_module()
+    frame = pd.DataFrame({"close": [100.0, 101.0]})
+
+    assert tool.latest_index(frame) is None
+
+
 def test_apply_canonical_d1_is_not_gated_by_summary_writeback():
     source = TOOL_PATH.read_text(encoding="utf-8")
 

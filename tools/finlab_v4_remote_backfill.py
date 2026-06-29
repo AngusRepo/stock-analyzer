@@ -414,10 +414,51 @@ def non_null_cells(df: pd.DataFrame) -> int:
     return int(df.notna().sum().sum())
 
 
+def latest_date_value(values: Any) -> str | None:
+    series = pd.Series(values).dropna()
+    if series.empty:
+        return None
+
+    if pd.api.types.is_datetime64_any_dtype(series):
+        parsed = pd.to_datetime(series, errors="coerce")
+    else:
+        text = series.astype(str).str.strip()
+        text = text[text.ne("") & ~text.str.lower().isin({"nan", "nat", "none"})]
+        if text.empty:
+            return None
+        text = text.str.replace(r"\.0$", "", regex=True)
+        ymd_mask = text.str.fullmatch(r"\d{8}")
+        roc_mask = text.str.fullmatch(r"\d{7}")
+        numeric_mask = text.str.fullmatch(r"\d+")
+
+        parts: list[pd.Series] = []
+        if ymd_mask.any():
+            parts.append(pd.to_datetime(text[ymd_mask], format="%Y%m%d", errors="coerce"))
+        if roc_mask.any():
+            roc_dates = text[roc_mask].map(lambda value: f"{int(value[:3]) + 1911}-{value[3:5]}-{value[5:7]}")
+            parts.append(pd.to_datetime(roc_dates, errors="coerce"))
+        textual = text[~ymd_mask & ~roc_mask & ~numeric_mask]
+        if not textual.empty:
+            parts.append(pd.to_datetime(textual, errors="coerce"))
+        if not parts:
+            return None
+        parsed = pd.concat(parts)
+
+    parsed = parsed[pd.notna(parsed)]
+    if parsed.empty:
+        return None
+    return str(parsed.max().date())
+
+
 def latest_index(df: pd.DataFrame) -> str | None:
     if df.empty:
         return None
-    return str(df.index.max().date())
+    date_col = _first_existing_column(df, ("date", "trading_date", "data_date"))
+    if date_col:
+        latest = latest_date_value(df[date_col])
+        if latest:
+            return latest
+    return latest_date_value(df.index)
 
 
 def write_parquet(path: Path, df: pd.DataFrame) -> None:

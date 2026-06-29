@@ -150,7 +150,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     consolidationClass: 'downstream_evidence',
     currentFunction: 'Computes sector leaders/correlation rotation evidence from D1.',
     replacementOwner: 'screener/evening-chain evidence builder',
-    upstream: ['market-data-update', 'sector-tags'],
+    upstream: ['market-close-refresh', 'update', 'sector-tags'],
     downstream: ['screener', 'dashboard-sector-flow'],
     requiredBeforeDisable: [
       'screener/evening-chain must compute or refresh sector leaders',

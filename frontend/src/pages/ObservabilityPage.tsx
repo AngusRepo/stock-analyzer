@@ -8,7 +8,6 @@ import {
   RadioTower,
   ShieldAlert,
   TimerReset,
-  TriangleAlert,
   Workflow,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -121,34 +120,6 @@ function Sparkline({ values, tone = 'info' }: { values: number[]; tone?: Worksta
   )
 }
 
-function MetricCell({
-  label,
-  value,
-  tone = 'neutral',
-  count,
-  detail,
-}: {
-  label: string
-  value: string
-  tone?: WorkstationTone
-  count?: string
-  detail?: string
-}) {
-  return (
-    <div className="border border-[#2b3a49] bg-[#070a10] p-3">
-      <div className="flex items-start justify-between gap-2">
-        <p className="sv-num text-[10px] normal-case text-[#7f8ba0]">{label}</p>
-        <WorkstationPill tone={tone}>{count ?? tone}</WorkstationPill>
-      </div>
-      <p className={`mt-2 text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : tone === 'info' ? 'text-sky-300' : 'text-slate-200'}`}>
-        {value}
-      </p>
-      <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 64 : tone === 'ok' ? 92 : 48} tone={tone} />
-      {detail && <p className="mt-2 text-xs leading-4 text-slate-500">{detail}</p>}
-    </div>
-  )
-}
-
 type ReadinessStatus = 'ready' | 'running' | 'waiting' | 'blocked' | 'pending'
 
 type ReadinessStage = {
@@ -199,7 +170,7 @@ const READINESS_STAGES: Array<{
     label: '收盤資料刷新',
     owner: 'FinLab / TWSE-TPEX',
     detail: '價格、成交額、指數、期貨與信用交易先進 canonical。',
-    jobIds: ['evening-chain', 'market-data-update', 'finlab-v4-backfill'],
+    jobIds: ['market-close-refresh', 'finlab-v4-backfill', 'update'],
     nextAction: '等待 FinLab canonical callback 或 TWSE/TPEX supplemental refresh。',
   },
   {
@@ -207,7 +178,7 @@ const READINESS_STAGES: Array<{
     label: '資料就緒閘門',
     owner: 'readiness probe',
     detail: '檢查 primary canonical 與官方補件是否達到今日交易日。',
-    jobIds: ['source-readiness-retry', 'indicator-queue'],
+    jobIds: ['source-readiness-probe', 'evening-chain'],
     nextAction: '若未 ready，持續 polling；超時才標記 degraded。',
   },
   {
@@ -452,8 +423,8 @@ const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
     label: 'Daily readiness chain',
     purpose: '收盤資料、指標、推薦、驗證與隔日 evidence 的主鏈。',
     tone: 'info',
-    expectedCount: 19,
-    examples: ['Evening Chain', 'Pipeline', 'Verify', 'Daily Report'],
+    expectedCount: 23,
+    examples: ['Market Close Refresh', 'Readiness Probe', 'Pipeline', 'Verify'],
   },
   intraday: {
     label: 'Intraday execution',
@@ -486,6 +457,10 @@ const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
 }
 
 const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'intraday', 'daily', 'weekly', 'monthly']
+const EXPECTED_SCHEDULER_COUNT = SCHEDULER_GROUP_ORDER.reduce(
+  (sum, group) => sum + SCHEDULER_GROUP_META[group].expectedCount,
+  0,
+)
 
 function summarizeSchedulerGroup(jobs: SchedulerJob[]) {
   const failed = jobs.filter((job) => job.lastStatus === 'failed').length
@@ -502,6 +477,60 @@ function summarizeSchedulerGroup(jobs: SchedulerJob[]) {
     jobs[0]
 
   return { failed, running, waiting, success, inactive, tone, focus }
+}
+
+function schedulerJobTone(job: SchedulerJob): WorkstationTone {
+  const status = String(job.lastStatus ?? '').toLowerCase()
+  if (status === 'failed' || status === 'error') return 'error'
+  if (status === 'running' || status === 'waiting') return 'warn'
+  if (status === 'success') return 'ok'
+  if (status === 'sleep' || status === 'skip' || status === 'skipped') return 'neutral'
+  return 'info'
+}
+
+function schedulerJobPriority(job: SchedulerJob) {
+  const status = String(job.lastStatus ?? '').toLowerCase()
+  if (status === 'failed' || status === 'error') return 0
+  if (status === 'running') return 1
+  if (status === 'waiting') return 2
+  if (status === 'success') return 3
+  if (status === 'sleep') return 4
+  if (status === 'skip' || status === 'skipped') return 5
+  return 6
+}
+
+function schedulerGroupSpanClass(group: SchedulerJob['group']) {
+  if (group === 'pipeline_chain') return 'xl:col-span-2 2xl:col-span-3'
+  if (group === 'weekly') return '2xl:col-span-2'
+  return ''
+}
+
+function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?: boolean }) {
+  const tone = schedulerJobTone(job)
+  return (
+    <div className={`group rounded-xl border bg-[#070a10]/88 transition duration-200 hover:-translate-y-0.5 hover:bg-[#0b1118] ${compact ? 'p-2.5' : 'p-3'}`} style={{ borderColor: `${toneColor(tone)}40` }}>
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_12px_currentColor]" style={{ color: toneColor(tone), backgroundColor: toneColor(tone) }} />
+            <p className="truncate text-sm font-semibold text-[#f8efe0]">{job.name}</p>
+          </div>
+          <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#7f8ba0]">{job.id} · {job.schedule}</p>
+        </div>
+        <WorkstationPill tone={tone}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-1 sv-num text-[11px] normal-case text-[#9badbf]">
+        <span className="truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">last {job.lastRun || '-'}</span>
+        <span className="truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">next {job.nextRun || '-'}</span>
+        <span className="truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">7d {job.rate7d || '-'}</span>
+      </div>
+      {(job.summary || job.lastError || job.durationConcernReason) && (
+        <p className={`mt-2 line-clamp-2 text-xs leading-5 ${tone === 'error' ? 'text-rose-200' : tone === 'warn' ? 'text-amber-100' : 'text-[#9badbf]'}`}>
+          {job.lastError || job.summary || job.durationConcernReason}
+        </p>
+      )}
+    </div>
+  )
 }
 
 function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
@@ -521,17 +550,21 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
           <p className="text-sm font-semibold text-[#f2ead8]">Scheduler Inventory / 全排程分層</p>
         </div>
         <WorkstationPill tone={hasRuntimeJobs ? 'neutral' : 'warn'}>
-          {hasRuntimeJobs ? `${jobs.length} runtime schedulers` : '41 expected / API offline'}
+          {hasRuntimeJobs ? `${jobs.length} runtime schedulers` : `${EXPECTED_SCHEDULER_COUNT} expected / API offline`}
         </WorkstationPill>
       </div>
-      <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-5">
+      <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-6">
         {SCHEDULER_GROUP_ORDER.map((group) => {
-          const groupJobs = jobsByGroup.get(group) ?? []
+          const groupJobs = [...(jobsByGroup.get(group) ?? [])].sort((a, b) =>
+            schedulerJobPriority(a) - schedulerJobPriority(b) ||
+            Number(a.chainIndex ?? 999) - Number(b.chainIndex ?? 999) ||
+            a.name.localeCompare(b.name),
+          )
           const meta = SCHEDULER_GROUP_META[group]
           const summary = summarizeSchedulerGroup(groupJobs)
           const cardTone = hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
           return (
-            <div key={group} className={`rounded-2xl border p-3 ${statusRingClass(cardTone)}`}>
+            <div key={group} className={`rounded-2xl border p-3 ${statusRingClass(cardTone)} ${schedulerGroupSpanClass(group)}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
@@ -546,16 +579,12 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
                 <>
                   <div className="mt-3 grid grid-cols-4 gap-1 sv-num text-[11px] normal-case">
                     <span className="rounded-lg border border-emerald-400/15 bg-emerald-400/[0.06] px-2 py-1 text-emerald-200">ok {summary.success}</span>
-                    <span className="rounded-lg border border-sky-400/15 bg-sky-400/[0.06] px-2 py-1 text-sky-200">run {summary.running}</span>
+                    <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">run {summary.running}</span>
                     <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">wait {summary.waiting}</span>
-                    <span className="rounded-lg border border-slate-400/15 bg-slate-400/[0.05] px-2 py-1 text-slate-300">off {summary.inactive}</span>
+                    <span className="rounded-lg border border-rose-400/15 bg-rose-400/[0.06] px-2 py-1 text-rose-200">fail {summary.failed}</span>
                   </div>
-                  <div className="mt-3 rounded-xl border border-[#263247] bg-[#070a10] p-2">
-                    <p className="sv-num text-[10px] normal-case text-[#70809b]">focus</p>
-                    <p className="mt-1 truncate text-sm font-semibold text-[#f2ead8]">{summary.focus?.name ?? 'no job'}</p>
-                    <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#8b9bab]">
-                      {summary.focus ? `${schedulerStatusLabel(summary.focus.lastStatus)} / next ${summary.focus.nextRun || '-'}` : '-'}
-                    </p>
+                  <div className={`mt-3 grid gap-2 ${group === 'pipeline_chain' ? 'lg:grid-cols-2' : ''}`}>
+                    {groupJobs.map((job) => <SchedulerJobRow key={job.id} job={job} compact={group !== 'pipeline_chain'} />)}
                   </div>
                 </>
               ) : (
@@ -563,14 +592,15 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
                   Runtime 狀態等待 `/api/scheduler/status`；此卡只提示預期 job universe，不當作執行結果。
                 </div>
               )}
-              <div className="mt-2 flex flex-wrap gap-1">
-                {(hasRuntimeJobs ? groupJobs.slice(0, 4).map((job) => ({ id: job.id, label: job.name, tone: statusTone(job.lastStatus) })) : meta.examples.map((label) => ({ id: `${group}-${label}`, label, tone: meta.tone }))).map((item) => (
-                  <span key={item.id} className="max-w-full truncate rounded-full border border-[#2f3c4c] bg-[#171d27] px-2 py-1 text-[11px] font-semibold text-[#dbeafe]" style={{ borderColor: `${toneColor(item.tone)}55`, color: toneColor(item.tone) }}>
-                    {item.label}
-                  </span>
-                ))}
-                {hasRuntimeJobs && groupJobs.length > 4 && <WorkstationPill tone="neutral">+{groupJobs.length - 4}</WorkstationPill>}
-              </div>
+              {!hasRuntimeJobs && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {meta.examples.map((label) => (
+                    <span key={`${group}-${label}`} className="max-w-full truncate rounded-full border border-[#2f3c4c] bg-[#171d27] px-2 py-1 text-[11px] font-semibold text-[#dbeafe]" style={{ borderColor: `${toneColor(meta.tone)}55`, color: toneColor(meta.tone) }}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )
         })}
@@ -578,6 +608,57 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
       <p className="mt-3 text-xs leading-5 text-[#8b9bab]">
         上方 readiness flow 是把主鏈濃縮成 operator 需要看的 6 個放行階段；這裡保留完整 scheduler 拓撲，非 daily-chain 的盤中、週度、月度任務不混進 daily readiness 判斷。Runtime 資料仍以 `/api/scheduler/status` 為唯一狀態來源。
       </p>
+    </div>
+  )
+}
+
+function CriticalSchedulerErrors({ jobs }: { jobs: SchedulerJob[] }) {
+  const failed = jobs
+    .filter((job) => schedulerHasRootCause(job))
+    .sort((a, b) => {
+      const aTime = a.lastRunAt ? Date.parse(a.lastRunAt) : 0
+      const bTime = b.lastRunAt ? Date.parse(b.lastRunAt) : 0
+      return bTime - aTime
+    })
+    .slice(0, 6)
+
+  if (!failed.length) return null
+
+  return (
+    <div className="mt-3 rounded-2xl border border-rose-400/25 bg-[linear-gradient(135deg,rgba(127,29,29,0.18),rgba(15,21,29,0.96)_42%,rgba(7,10,16,0.98))] p-3 shadow-[0_0_34px_rgba(244,63,94,0.08)]">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="h-4 w-4 text-rose-300" />
+          <p className="text-sm font-semibold text-[#f8efe0]">Critical Scheduler Errors / 錯誤追蹤</p>
+        </div>
+        <WorkstationPill tone="error">{failed.length} failed rows</WorkstationPill>
+      </div>
+      <div className="space-y-2">
+        {failed.map((job) => (
+          <div key={job.id} className="grid gap-3 rounded-2xl border border-rose-400/20 bg-[#070a10]/90 p-3 text-xs leading-5 xl:grid-cols-[minmax(180px,0.7fr)_minmax(0,1.15fr)_minmax(0,1.25fr)_minmax(0,1fr)_88px]">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <WorkstationPill tone="error">{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
+                <p className="truncate text-base font-semibold text-[#f8efe0]">{job.name}</p>
+              </div>
+              <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#71839a]">{job.group} / {job.schedule}</p>
+              <p className="mt-2 sv-num text-[11px] normal-case text-[#9badbf]">發生 {job.lastRun || '-'} · {job.lastDuration || '-'}</p>
+            </div>
+            <p className="min-w-0 text-[#a9d7ff]">
+              <span className="font-semibold text-[#f8efe0]">狀態紀錄：</span>{schedulerStatusLog(job)}
+            </p>
+            <p className="min-w-0 text-rose-200">
+              <span className="font-semibold text-[#f8efe0]">Root cause：</span>{schedulerRootCause(job)}
+            </p>
+            <p className="min-w-0 text-[#c5d3e2]">
+              <span className="font-semibold text-[#f8efe0]">可能影響：</span>{schedulerImpact(job)}
+            </p>
+            <a href="/scheduler" className="inline-flex items-start justify-end gap-1 sv-num text-[11px] normal-case text-sky-200 hover:text-sky-100">
+              Drilldown <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -616,17 +697,10 @@ function OperationalReadinessDeck({
       ? 'warn'
       : 'ok'
   const currentStage = blockedStages[0] ?? waitingStages[0] ?? stages.find((stage) => stage.status !== 'ready')
-  const blockers = [
-    ...apiErrors.map((item) => `${item.label}: ${item.message}`),
-    ...blockedStages.map((stage) => `${stage.label}: ${stage.job?.lastError || schedulerRootCause(stage.job as SchedulerJob)}`),
-    ...blockedGates.map((gate) => `${gate.label}: ${gate.detail}`),
-    ...waitingStages.slice(0, 2).map((stage) => `${stage.label}: ${stage.nextAction}`),
-    ...waitingGates.slice(0, 2).map((gate) => `${gate.label}: ${gate.detail}`),
-  ].filter(Boolean)
 
   return (
     <div className="border-b border-[#263247] bg-[#080b11] p-3">
-      <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.55fr)]">
+      <div className="grid gap-3">
         <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
@@ -636,7 +710,7 @@ function OperationalReadinessDeck({
               </div>
               <h3 className="mt-3 font-['Space_Grotesk'] text-2xl font-semibold text-[#f8efe0]">Readiness-gated Chain Control</h3>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[#a8b6c5]">
-                用資料 freshness 與 scheduler callback 決定是否放行，不靠固定晚上十點硬跑。OBS 只負責顯示事實：目前階段、阻塞原因、下一步動作與影響範圍。
+                用資料 freshness 與 scheduler callback 決定是否放行，不靠固定晚上十點硬跑。錯誤細節集中在下方 Critical Scheduler Errors 與分組 scheduler rows，不再重複維護另一份阻塞清單。
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-3">
@@ -682,24 +756,9 @@ function OperationalReadinessDeck({
             </div>
           </div>
         </div>
-
-        <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              {decisionTone === 'error' ? <ShieldAlert className="h-4 w-4 text-rose-300" /> : decisionTone === 'warn' ? <TriangleAlert className="h-4 w-4 text-amber-300" /> : <CheckCircle2 className="h-4 w-4 text-emerald-300" />}
-              <p className="text-sm font-semibold text-[#f2ead8]">阻塞與下一步</p>
-            </div>
-            <WorkstationPill tone={decisionTone}>{blockers.length ? `${blockers.length} items` : 'clear'}</WorkstationPill>
-          </div>
-          <div className="mt-3 space-y-2">
-            {(blockers.length ? blockers : ['目前沒有 blocking item；等下一個 scheduler callback 或交易日流程。']).slice(0, 6).map((item, index) => (
-              <div key={`${item}-${index}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
-                <p className="text-xs leading-5 text-[#a8b6c5]">{item}</p>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
+
+      <CriticalSchedulerErrors jobs={jobs} />
 
       <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
         <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
@@ -728,123 +787,6 @@ function OperationalReadinessDeck({
 
       <div className="mt-3">
         <SchedulerInventoryPanel jobs={jobs} />
-      </div>
-    </div>
-  )
-}
-
-function SchedulerRunsPanel({ jobs }: { jobs: SchedulerJob[] }) {
-  if (!jobs.length) return <div className="p-4 text-sm text-slate-500">目前沒有 scheduler payload。</div>
-  const sortedJobs = [...jobs].sort((a, b) => {
-    const statusRank = (status: string) => status === 'failed' ? 0 : status === 'running' ? 1 : status === 'waiting' ? 2 : status === 'success' ? 3 : status === 'sleep' ? 4 : status === 'skip' ? 5 : 6
-    return statusRank(a.lastStatus) - statusRank(b.lastStatus) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name)
-  })
-  return (
-    <div className="space-y-3">
-      <SchedulerExecutionMap jobs={jobs} />
-      <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
-        {sortedJobs.map((job) => (
-          <div key={job.id} className="grid gap-2 border-b border-[#263247] bg-[#05070c] p-2 text-xs last:border-0 xl:grid-cols-[minmax(0,1fr)_0.75fr_0.7fr_120px]">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <WorkstationPill tone={statusTone(job.lastStatus)}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
-                <p className="truncate text-sm font-semibold text-slate-100">{job.name}</p>
-              </div>
-              <p className="mt-1 sv-num text-[10px] normal-case text-[#70809b]">{job.group} / {job.schedule}</p>
-            </div>
-            <div className="min-w-0 sv-num text-slate-400">
-              <p>發生 {job.lastRun || '-'}</p>
-              <p className="text-slate-600">next {job.nextRun || '-'}</p>
-            </div>
-            <div className="min-w-0 sv-num text-slate-400">
-              <p>{job.lastDuration || '-'}</p>
-              <p className="text-slate-600">7d {job.rate7d || '-'}</p>
-            </div>
-            <a href="/scheduler" className="inline-flex items-center justify-end gap-1 self-start sv-num text-[10px] normal-case text-sky-200 hover:text-sky-100">
-              Drilldown <ExternalLink className="h-3 w-3" />
-            </a>
-            <div className={`xl:col-span-4 grid gap-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 ${schedulerHasRootCause(job) ? 'md:grid-cols-3' : 'md:grid-cols-1'}`}>
-              <p className="text-slate-400">
-                <span className="font-semibold text-slate-200">{schedulerStatusLogLabel(job)}：</span>{schedulerStatusLog(job)}
-              </p>
-              {schedulerHasRootCause(job) && (
-                <>
-                  <p className="text-rose-300">
-                    <span className="font-semibold text-slate-200">Root cause：</span>{schedulerRootCause(job)}
-                  </p>
-                  <p className="text-slate-400">
-                    <span className="font-semibold text-slate-200">可能影響：</span>{schedulerImpact(job)}
-                  </p>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-const SCHEDULER_FLOW = [
-  { id: 'evening-chain', label: 'Chain root' },
-  { id: 'indicator-queue', label: 'Indicators' },
-  { id: 'screener', label: 'Screener' },
-  { id: 'pipeline', label: 'Pipeline' },
-  { id: 'ml-predict', label: 'ML predict' },
-  { id: 'recommendation', label: 'Recommendation' },
-  { id: 'verify-v2', label: 'Verify' },
-  { id: 'model-ic-tracker', label: 'IC tracker' },
-  { id: 'linucb-reward-ledger', label: 'Reward ledger' },
-  { id: 'meta-learning-shadow', label: 'Meta shadow' },
-] as const
-
-function SchedulerExecutionMap({ jobs }: { jobs: SchedulerJob[] }) {
-  const jobById = new Map(jobs.map((job) => [job.id, job]))
-  const stages = SCHEDULER_FLOW.map((stage) => {
-    const job = jobById.get(stage.id)
-    const status = String(job?.lastStatus ?? 'waiting').toLowerCase()
-    return {
-      ...stage,
-      job,
-      status,
-      tone: statusTone(status),
-    }
-  })
-  const active = stages.find((stage) => ['running', 'waiting', 'failed'].includes(stage.status)) ?? stages.find((stage) => stage.status !== 'success')
-  const waiting = active ? stages.slice(stages.indexOf(active) + 1).filter((stage) => stage.status !== 'success').map((stage) => stage.label) : []
-
-  return (
-    <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="sv-num text-[10px] normal-case text-[#70809b]">Scheduler execution flow / 執行流程</p>
-          <p className="mt-1 text-xs text-slate-400">
-            目前階段：{active?.label ?? 'complete'}；等待：{waiting.slice(0, 4).join(' -> ') || 'none'}
-          </p>
-        </div>
-        <a href="/scheduler" className="inline-flex items-center gap-1 sv-num text-[10px] normal-case text-sky-200 hover:text-sky-100">
-          Full scheduler <ExternalLink className="h-3 w-3" />
-        </a>
-      </div>
-      <div className="flex flex-wrap items-stretch gap-2">
-        {stages.map((stage, index) => (
-          <div key={stage.id} className="flex items-center gap-2">
-            <div className={`min-w-[118px] rounded-lg border px-2 py-2 ${
-              stage.tone === 'ok' ? 'border-emerald-500/25 bg-emerald-500/10'
-                : stage.tone === 'warn' ? 'border-amber-500/25 bg-amber-500/10'
-                  : stage.tone === 'error' ? 'border-rose-500/25 bg-rose-500/10'
-                    : stage.tone === 'neutral' ? 'border-slate-600/30 bg-slate-800/20'
-                      : 'border-sky-500/25 bg-sky-500/10'
-            }`}>
-              <p className="truncate text-xs font-semibold text-slate-100">{stage.label}</p>
-              <p className="mt-1 sv-num text-[10px] normal-case" style={{ color: toneColor(stage.tone) }}>
-                {schedulerStatusLabel(stage.status)}
-              </p>
-              <p className="mt-1 truncate sv-num text-[10px] text-slate-500">{stage.job?.lastDuration || '-'}</p>
-            </div>
-            {index < stages.length - 1 && <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-600" />}
-          </div>
-        ))}
       </div>
     </div>
   )
@@ -1208,10 +1150,6 @@ function schedulerHasRootCause(job: SchedulerJob) {
   return Boolean(job.durationConcern && job.durationConcern !== 'expected_short')
 }
 
-function schedulerStatusLogLabel(job: SchedulerJob) {
-  return schedulerHasRootCause(job) ? '狀態紀錄' : '執行摘要'
-}
-
 function schedulerRootCause(job: SchedulerJob) {
   if (job.lastError) return job.lastError
   if (job.durationConcern && job.durationConcern !== 'expected_short') {
@@ -1258,7 +1196,6 @@ export default function ObservabilityPage() {
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const deployScore = deployGate.data ? deployGate.data.decision === 'PASS' ? 100 : deployGate.data.decision === 'WARN' ? 70 : 30 : 0
-  const failedJobs = jobs.filter((job) => job.lastStatus === 'failed').length
   const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
   const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
   const apiErrors = [
@@ -1325,16 +1262,7 @@ export default function ObservabilityPage() {
               </div>
             </div>
           </div>
-          <div className="grid gap-3 p-3 xl:grid-cols-2">
-            <div>
-              <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap sv-num text-[10px] normal-case text-slate-400">Scheduler Runs / 排程執行</p>
-                <div className="hidden w-32 shrink-0 sm:block">
-                  <Sparkline values={(jobs.length ? jobs : []).slice(0, 12).map((job) => job.lastStatus === 'success' ? 100 : job.lastStatus === 'waiting' ? 70 : job.lastStatus === 'sleep' || job.lastStatus === 'skip' ? 45 : 5)} tone={failedJobs ? 'warn' : 'ok'} />
-                </div>
-              </div>
-              <SchedulerRunsPanel jobs={jobs} />
-            </div>
+          <div className="grid gap-3 p-3">
             <div>
               <div className="mb-2 flex items-center justify-between gap-4">
                 <p className="shrink-0 whitespace-nowrap sv-num text-[10px] normal-case text-slate-400">Data Quality / 資料品質</p>

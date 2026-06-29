@@ -113,6 +113,18 @@ assert(
 )
 
 const manifestTaskSet = new Set(manifest.jobs.map((job) => job.task))
+assert(
+  schedulerStatus.includes("id: 'market-close-refresh'") &&
+    schedulerStatus.includes("id: 'source-readiness-probe'") &&
+    schedulerStatus.indexOf("id: 'market-close-refresh'") < schedulerStatus.indexOf("id: 'source-readiness-probe'") &&
+    schedulerStatus.indexOf("id: 'source-readiness-probe'") < schedulerStatus.indexOf("id: 'evening-chain'"),
+  'scheduler status must show real readiness-gated jobs before the 22:00 fallback evening-chain',
+)
+assert(
+  !schedulerStatus.includes('market-data-update') &&
+    !schedulerStatus.includes('source-readiness-retry'),
+  'scheduler status must not expose UI-only or legacy readiness pseudo jobs',
+)
 for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
   if (spec.owner === 'gcp_scheduler') {
     assert(

@@ -3,7 +3,7 @@ import { checkAlerts } from './localMaintenance'
 import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
-import { assertMarketDataReady } from './marketDataReadiness'
+import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import { runFinLabV4Backfill } from './controllerResearchWorkflows'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
@@ -43,7 +43,7 @@ function resolveUpdateDate(runDate?: string | null): string {
 
 function isBulkPriceSourceNotReady(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
-  return /Bulk price source incomplete|TWSE source failed|TPEX source failed|price rows=\d+\//i.test(message)
+  return /Bulk price source incomplete|TWSE source failed|TPEX source failed|price rows=\d+\/|chip latest=|chip rows=\d+\/|margin rows=\d+\//i.test(message)
 }
 
 function isFinLabCanonicalReadinessError(error: unknown): boolean {
@@ -95,6 +95,163 @@ async function assertFinLabCanonicalDailyReady(db: D1Database, targetDate: strin
     throw new Error(`FinLab canonical daily not ready: ${errors.join('; ')}`)
   }
   return `FinLab canonical ready for ${targetDate}: ${stats.map((row) => `${row.table}=${row.rowsOnTarget}`).join(' ')}`
+}
+
+type ReadinessCheck = {
+  key: string
+  ok: boolean
+  summary: string
+}
+
+type SchedulerRunSnapshot = {
+  status?: string
+  summary?: string
+  timestamp?: string
+}
+
+async function readSchedulerRunLog(
+  env: Bindings,
+  task: string,
+  runDate: string,
+): Promise<SchedulerRunSnapshot | null> {
+  return (
+    await env.KV.get(`scheduler:run:${task}:${runDate}`, 'json') as SchedulerRunSnapshot | null
+  ) ?? (
+    await env.KV.get(`cron:log:${task}:${runDate}`, 'json') as SchedulerRunSnapshot | null
+  )
+}
+
+async function hasEveningChainSucceeded(env: Bindings, runDate: string): Promise<boolean> {
+  const entry = await readSchedulerRunLog(env, 'evening-chain', runDate)
+  return entry?.status === 'success'
+}
+
+async function hasEveningChainInFlight(env: Bindings, runDate: string): Promise<boolean> {
+  const entry = await readSchedulerRunLog(env, 'evening-chain', runDate)
+  return entry?.status === 'running' || entry?.status === 'triggered'
+}
+
+async function countReadinessRows(
+  db: D1Database,
+  key: string,
+  sql: string,
+  params: unknown[],
+  minRows: number,
+): Promise<ReadinessCheck> {
+  try {
+    const row = await db.prepare(sql).bind(...params).first<{ count: number }>()
+    const count = Number(row?.count ?? 0)
+    return {
+      key,
+      ok: count >= minRows,
+      summary: count >= minRows ? `${key}=${count}` : `${key} rows=${count}/${minRows}`,
+    }
+  } catch (e) {
+    return {
+      key,
+      ok: false,
+      summary: `${key} query failed: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+async function checkEveningChainSourceReadiness(
+  env: Bindings,
+  targetDate: string,
+): Promise<{ ok: boolean; checks: ReadinessCheck[]; summary: string; missingKeys: string[] }> {
+  const checks: ReadinessCheck[] = []
+
+  try {
+    const summary = await assertFinLabCanonicalDailyReady(env.DB, targetDate)
+    checks.push({ key: 'finlab_primary_canonical', ok: true, summary })
+  } catch (e) {
+    checks.push({
+      key: 'finlab_primary_canonical',
+      ok: false,
+      summary: e instanceof Error ? e.message : String(e),
+    })
+  }
+
+  try {
+    const ready = await assertMarketDataReady(env.DB, targetDate, { requireIndicators: false })
+    checks.push({ key: 'official_supplemental_market_data', ok: true, summary: ready.summary })
+  } catch (e) {
+    checks.push({
+      key: 'official_supplemental_market_data',
+      ok: false,
+      summary: e instanceof Error ? e.message : String(e),
+    })
+  }
+
+  const canonicalChecks = await Promise.all([
+    countReadinessRows(
+      env.DB,
+      'canonical_market_index_daily:twii',
+      "SELECT COUNT(*) AS count FROM canonical_market_index_daily WHERE date = ? AND symbol IN ('TWII', 'TAIEX')",
+      [targetDate],
+      1,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_market_index_daily:twoii',
+      "SELECT COUNT(*) AS count FROM canonical_market_index_daily WHERE date = ? AND symbol IN ('TWOII', 'OTC', 'TPEX')",
+      [targetDate],
+      1,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_futures_daily:txf_day',
+      "SELECT COUNT(*) AS count FROM canonical_futures_daily WHERE date = ? AND symbol IN ('TXF', 'TX') AND session = 'day'",
+      [targetDate],
+      1,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_market_summary_daily',
+      'SELECT COUNT(*) AS count FROM canonical_market_summary_daily WHERE date = ?',
+      [targetDate],
+      1,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_regime_context_daily:pcr',
+      "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_option_put_call_ratio'",
+      [targetDate],
+      1,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_regime_context_daily:large_trader',
+      "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_taifex_futures_large_trader'",
+      [targetDate],
+      1,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_broker_flow_daily',
+      'SELECT COUNT(*) AS count FROM canonical_broker_flow_daily WHERE date = ?',
+      [targetDate],
+      1000,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_broker_rank_daily',
+      'SELECT COUNT(*) AS count FROM canonical_broker_rank_daily WHERE date = ?',
+      [targetDate],
+      1000,
+    ),
+  ])
+  checks.push(...canonicalChecks)
+
+  const missing = checks.filter((check) => !check.ok)
+  return {
+    ok: missing.length === 0,
+    checks,
+    missingKeys: missing.map((check) => check.key),
+    summary: missing.length
+      ? `source readiness waiting for ${targetDate}: ${missing.map((check) => check.summary).join('; ')}`
+      : `source readiness ready for ${targetDate}: ${checks.map((check) => check.summary).join('; ')}`,
+  }
 }
 
 async function scheduleSourceReadinessRetry(
@@ -763,8 +920,230 @@ async function continueAfterFinLabBackfill(
   return `${canonicalSummary}; TWSE/TPEX supplemental refresh complete; ${bulkSummary}; indicator queue accepted`
 }
 
+export async function runMarketCloseRefresh(env: Bindings, force = false, runDate?: string): Promise<string> {
+  const twDate = resolveUpdateDate(runDate)
+  const lockKey = `cron:market-close-refresh:${twDate}`
+  if (!force && await env.KV.get(lockKey)) {
+    const stats = await loadMarketDataReadinessStats(env.DB, twDate)
+    return `SKIP: market-close-refresh already ran for ${twDate}; price=${stats.priceRowsOnLatest} latest=${stats.priceLatestDate ?? 'none'}`
+  }
+
+  const started = Date.now()
+  const parts: string[] = []
+  let sourceWaiting = false
+
+  try {
+    const { bulkFetchAndStorePrices } = await import('./twseApi')
+    const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
+    const priceCount = await bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET)
+    parts.push(`official_prices=${priceCount}`)
+  } catch (e) {
+    sourceWaiting = true
+    parts.push(`official_prices_waiting=${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  try {
+    await fetchWave2Data(env, twDate)
+    parts.push('wave2=attempted')
+  } catch (e) {
+    parts.push(`wave2_warn=${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  try {
+    const { fetchTaifexDayClose, fetchTaifexNightClose } = await import('./twseApi')
+    const [dayClose, nightClose] = await Promise.all([
+      fetchTaifexDayClose(),
+      fetchTaifexNightClose(),
+    ])
+    if (dayClose) {
+      await env.KV.put(`market:taifex_day_close:${twDate}`, JSON.stringify(dayClose), { expirationTtl: 2 * 86400 })
+      parts.push(`taifex_day=${dayClose.lastPrice}`)
+    } else {
+      parts.push('taifex_day=missing')
+    }
+    if (nightClose) {
+      await env.KV.put(`market:taifex_night_close:${twDate}`, JSON.stringify(nightClose), { expirationTtl: 2 * 86400 })
+      parts.push(`taifex_night=${nightClose.lastPrice}`)
+    } else {
+      parts.push('taifex_night=missing')
+    }
+  } catch (e) {
+    parts.push(`taifex_warn=${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  const stats = await loadMarketDataReadinessStats(env.DB, twDate)
+  const priceReady =
+    stats.priceLatestDate === twDate &&
+    stats.priceRowsOnLatest >= 1000 &&
+    Number(stats.priceTwseRowsOnLatest ?? 0) >= 900 &&
+    Number(stats.priceOtcRowsOnLatest ?? 0) >= 700
+  const status = priceReady && !sourceWaiting ? 'success' : 'running'
+  const summary = [
+    status === 'running' ? 'running: market-close refresh waiting for complete close data' : 'market-close refresh complete',
+    `date=${twDate}`,
+    `price_latest=${stats.priceLatestDate ?? 'none'}`,
+    `price_rows=${stats.priceRowsOnLatest}`,
+    ...parts,
+  ].join('; ')
+
+  await logSchedulerResult(env.KV, 'market-close-refresh', {
+    status,
+    summary,
+    duration_ms: Date.now() - started,
+    run_date: twDate,
+  })
+  if (status === 'success') await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+  return summary
+}
+
+export async function runSourceReadinessProbe(env: Bindings, force = false, runDate?: string): Promise<string> {
+  const twDate = resolveUpdateDate(runDate)
+  const started = Date.now()
+  if (!force && await hasEveningChainSucceeded(env, twDate)) {
+    const summary = `SKIP: full evening chain already succeeded for ${twDate}; readiness probe will not rerun`
+    await logSchedulerResult(env.KV, 'source-readiness-probe', {
+      status: 'skipped',
+      summary,
+      duration_ms: Date.now() - started,
+      run_date: twDate,
+    })
+    return summary
+  }
+  if (!force && await hasEveningChainInFlight(env, twDate)) {
+    const summary = `running: full evening chain already in flight for ${twDate}; readiness probe will not duplicate trigger`
+    await logSchedulerResult(env.KV, 'source-readiness-probe', {
+      status: 'running',
+      summary,
+      duration_ms: Date.now() - started,
+      run_date: twDate,
+    })
+    return summary
+  }
+
+  let readiness = await checkEveningChainSourceReadiness(env, twDate)
+  if (!readiness.ok && readiness.missingKeys.includes('finlab_primary_canonical')) {
+    const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+    const finlabInFlight = finlabLog?.status === 'running' || finlabLog?.status === 'triggered'
+    if (!finlabInFlight || force) {
+      const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, { continueEveningChain: false }))
+      const finlabStatus = classifySchedulerSummary(finlabSummary)
+      await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+        status: finlabStatus,
+        summary: `readiness probe triggered canonical refresh without continuation; ${finlabSummary}`,
+        duration_ms: 0,
+        run_date: twDate,
+      })
+      if (finlabStatus === 'error') {
+        await logSchedulerResult(env.KV, 'source-readiness-probe', {
+          status: 'error',
+          summary: `FinLab canonical refresh failed before readiness gate: ${finlabSummary}`,
+          duration_ms: Date.now() - started,
+          error: finlabSummary,
+          run_date: twDate,
+        }, env as any)
+        throw new Error(`FinLab canonical refresh failed before readiness gate: ${finlabSummary}`)
+      }
+      if (finlabStatus !== 'success') {
+        const summary = `running: ${readiness.summary}; finlab_refresh=${finlabSummary}`
+        await logSchedulerResult(env.KV, 'source-readiness-probe', {
+          status: 'running',
+          summary,
+          duration_ms: Date.now() - started,
+          run_date: twDate,
+        })
+        return summary
+      }
+      readiness = await checkEveningChainSourceReadiness(env, twDate)
+    } else {
+      const summary = `running: ${readiness.summary}; finlab_refresh already ${finlabLog?.status ?? 'in-flight'}`
+      await logSchedulerResult(env.KV, 'source-readiness-probe', {
+        status: 'running',
+        summary,
+        duration_ms: Date.now() - started,
+        run_date: twDate,
+      })
+      return summary
+    }
+  }
+
+  if (!readiness.ok && readiness.missingKeys.includes('official_supplemental_market_data')) {
+    try {
+      const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./twseApi')
+      const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
+      const [{ chipCount, marginCount }, priceCount] = await Promise.all([
+        bulkFetchAndStoreChipData(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+        bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
+      ])
+      await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] readiness probe refresh failed:', e))
+      readiness = await checkEveningChainSourceReadiness(env, twDate)
+      readiness.summary = `${readiness.summary}; supplemental_probe_fetch price=${priceCount} chip=${chipCount} margin=${marginCount}`
+    } catch (e) {
+      if (!isBulkPriceSourceNotReady(e)) throw e
+      const summary = `running: ${readiness.summary}; supplemental_fetch_waiting=${e instanceof Error ? e.message : String(e)}`
+      await logSchedulerResult(env.KV, 'source-readiness-probe', {
+        status: 'running',
+        summary,
+        duration_ms: Date.now() - started,
+        run_date: twDate,
+      })
+      return summary
+    }
+  }
+
+  if (!readiness.ok) {
+    const summary = `running: ${readiness.summary}`
+    await logSchedulerResult(env.KV, 'source-readiness-probe', {
+      status: 'running',
+      summary,
+      duration_ms: Date.now() - started,
+      run_date: twDate,
+    })
+    return summary
+  }
+
+  const runId = `readiness-gated-${twDate}-${Date.now().toString(36)}`
+  await env.KV.put(`readiness-gated:evening-chain-triggered:${twDate}`, runId, { expirationTtl: 2 * 86400 })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'triggered',
+    summary: `readiness probe accepted for ${twDate}; full evening chain starting; ${readiness.summary}`,
+    duration_ms: 0,
+    run_id: runId,
+    run_date: twDate,
+  })
+  const continuation = await continueAfterFinLabBackfill(env, twDate, force, runId)
+  const summary = `triggered evening-chain: source readiness ready for ${twDate}; ${continuation}`
+  await logSchedulerResult(env.KV, 'source-readiness-probe', {
+    status: 'triggered',
+    summary,
+    duration_ms: Date.now() - started,
+    run_id: runId,
+    run_date: twDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `readiness-gated evening chain started; ${summary}`,
+    duration_ms: 0,
+    run_id: runId,
+    run_date: twDate,
+  })
+  return summary
+}
+
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
+  if (!force && await hasEveningChainSucceeded(env, twDate)) {
+    return `readiness-gated full chain already succeeded for ${twDate}; 22:00 fallback suppressed`
+  }
+  if (!force && await hasEveningChainInFlight(env, twDate)) {
+    const summary = `running: readiness-gated full chain already in flight for ${twDate}; 22:00 fallback suppressed`
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'running',
+      summary,
+      duration_ms: 0,
+      run_date: twDate,
+    })
+    return summary
+  }
   if (force && runDate && isHistoricalReplayDate(twDate)) {
     try {
       const canonicalSummary = await assertFinLabCanonicalDailyReady(env.DB, twDate)

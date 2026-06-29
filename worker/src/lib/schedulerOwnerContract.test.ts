@@ -36,6 +36,8 @@ const tradingDayTasks = [
   'intraday-rescore',
   'eod-exit',
   'daily-snapshot',
+  'market-close-refresh',
+  'source-readiness-probe',
   'evening-chain',
   'indicator-queue',
   'post-pipeline-chain',
@@ -65,7 +67,7 @@ for (const task of tradingDayTasks) {
   assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
-for (const required of ['evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['market-close-refresh', 'source-readiness-probe', 'evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
@@ -90,6 +92,9 @@ for (const chained of ['ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'r
 
 for (const critical of [
   'evening-chain',
+  'market-close-refresh',
+  'source-readiness-probe-1830-1850',
+  'source-readiness-probe-1910-2150',
   'rescore-10',
   'rescore-11',
   'rescore-12',

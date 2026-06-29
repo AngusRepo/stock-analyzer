@@ -24,6 +24,8 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'intraday-rescore': { kind: 'trading_day', holidayGated: true, description: 'market-hours intraday ML re-score' },
   'eod-exit': { kind: 'trading_day', holidayGated: true, description: 'market close exit workflow' },
   'daily-snapshot': { kind: 'trading_day', holidayGated: true, description: 'post-market account snapshot' },
+  'market-close-refresh': { kind: 'trading_day', holidayGated: true, description: '18:10 market-close data refresh before readiness probe' },
+  'source-readiness-probe': { kind: 'trading_day', holidayGated: true, description: 'readiness-gated probe that starts full evening chain once FinLab/official sources are current' },
   'evening-chain': { kind: 'trading_day', holidayGated: true, description: 'post-market event-driven chain root' },
   update: { kind: 'trading_day', holidayGated: true, description: 'post-market TWSE/TPEX market data update' },
   'indicator-queue': { kind: 'trading_day', holidayGated: true, description: 'post-market full-market technical indicator queue' },

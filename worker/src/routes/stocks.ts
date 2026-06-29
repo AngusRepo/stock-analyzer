@@ -15,18 +15,20 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function firstFinite(rows: Record<string, any>[], key: string): number | null {
+function firstFinite(rows: Record<string, any>[], key: string, opts: { skipZero?: boolean } = {}): number | null {
   for (const row of rows) {
     const value = finiteNumber(row[key])
+    if (opts.skipZero && value === 0) continue
     if (value != null) return value
   }
   return null
 }
 
-function normalizePercentUnit(value: unknown): number | null {
+function normalizePercentUnit(value: unknown, maxAbs = 300): number | null {
   const n = finiteNumber(value)
   if (n == null) return null
-  return Math.abs(n) <= 1 ? n * 100 : n
+  const normalized = Math.abs(n) <= 1 ? n * 100 : n
+  return Math.abs(normalized) > maxAbs ? null : normalized
 }
 
 function operatingMarginFromFinancial(row: Record<string, any> | null | undefined): number | null {
@@ -34,6 +36,44 @@ function operatingMarginFromFinancial(row: Record<string, any> | null | undefine
   const operatingIncome = finiteNumber(row?.operating_income)
   if (revenue == null || operatingIncome == null || revenue === 0) return null
   return (operatingIncome / revenue) * 100
+}
+
+function firstMarkdownMetricValue(lines: unknown, label: string): number | null {
+  if (!Array.isArray(lines)) return null
+  const line = lines.find((item) => typeof item === 'string' && item.includes(label))
+  if (typeof line !== 'string') return null
+  const cells = line
+    .split('|')
+    .map((cell) => cell.trim())
+    .filter(Boolean)
+  for (const cell of cells.slice(1)) {
+    const value = finiteNumber(cell.replace(/,/g, ''))
+    if (value != null) return value
+  }
+  return null
+}
+
+function extractProfileMargins(raw: unknown): { grossMargin: number | null; operatingMargin: number | null; source: string | null } {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { grossMargin: null, operatingMargin: null, source: null }
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    for (const key of ['quarterly', 'annual']) {
+      const grossMargin = normalizePercentUnit(firstMarkdownMetricValue(parsed?.[key], 'Gross Margin'), 100)
+      const operatingMargin = normalizePercentUnit(firstMarkdownMetricValue(parsed?.[key], 'Operating Margin'), 100)
+      if (grossMargin != null || operatingMargin != null) {
+        return {
+          grossMargin,
+          operatingMargin,
+          source: `stock_profiles.financials_summary.${key}`,
+        }
+      }
+    }
+  } catch {
+    return { grossMargin: null, operatingMargin: null, source: null }
+  }
+  return { grossMargin: null, operatingMargin: null, source: null }
 }
 
 import type { Bindings, Variables } from '../types'
@@ -181,13 +221,16 @@ stocks.get('/:id/financials', async (c) => {
   if (!stock) return c.json({ error: '股票不存在' }, 404)
   const symbol = String(stock.symbol ?? '').trim()
 
-  const [financialResult, canonicalResult, revenueRow, epsTrendResult] = await Promise.all([
+  const [financialResult, canonicalResult, revenueRow, epsTrendResult, profileRow] = await Promise.all([
     c.env.DB.prepare(
       'SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT ?'
     ).bind(id, limit).all<any>(),
     c.env.DB.prepare(`
       SELECT period, gross_margin, operating_margin, roe, eps, pe, pb,
-             dividend_yield, debt_ratio, current_ratio, source, as_of_date
+             dividend_yield, debt_ratio, current_ratio, operating_cash_flow,
+             roa, free_cash_flow, capital_amount, common_stock_capital,
+             preferred_stock_capital, total_assets, total_liabilities,
+             equity_parent, source, as_of_date
         FROM canonical_fundamental_features
        WHERE stock_id = ?
        ORDER BY period DESC, as_of_date DESC
@@ -199,20 +242,31 @@ stocks.get('/:id/financials', async (c) => {
     c.env.DB.prepare(
       "SELECT period, eps FROM financials WHERE stock_id=? AND eps IS NOT NULL AND period LIKE '%Q%' ORDER BY period DESC LIMIT 4"
     ).bind(id).all<any>().catch(() => ({ results: [] as any[] })),
+    c.env.DB.prepare(
+      'SELECT financials_summary FROM stock_profiles WHERE symbol=? LIMIT 1'
+    ).bind(symbol).first<any>().catch(() => null),
   ])
 
   const financialRows = financialResult.results ?? []
   const canonicalRows = canonicalResult.results ?? []
-  const canonicalPe = firstFinite(canonicalRows, 'pe')
-  const canonicalPb = firstFinite(canonicalRows, 'pb')
-  const canonicalDividendYield = firstFinite(canonicalRows, 'dividend_yield')
-  const canonicalRoe = firstFinite(canonicalRows, 'roe')
-  const canonicalEps = firstFinite(canonicalRows, 'eps')
-  const canonicalGrossMargin = normalizePercentUnit(firstFinite(canonicalRows, 'gross_margin'))
-  const canonicalOperatingMargin = normalizePercentUnit(firstFinite(canonicalRows, 'operating_margin'))
+  const canonicalPe = firstFinite(canonicalRows, 'pe', { skipZero: true })
+  const canonicalPb = firstFinite(canonicalRows, 'pb', { skipZero: true })
+  const canonicalDividendYield = normalizePercentUnit(firstFinite(canonicalRows, 'dividend_yield'), 30)
+  const canonicalRoe = firstFinite(canonicalRows, 'roe', { skipZero: true })
+  const canonicalEps = firstFinite(canonicalRows, 'eps', { skipZero: true })
+  const profileMargins = extractProfileMargins(profileRow?.financials_summary)
+  const canonicalGrossMargin = normalizePercentUnit(firstFinite(canonicalRows, 'gross_margin', { skipZero: true }), 100)
+  const canonicalOperatingMargin = normalizePercentUnit(firstFinite(canonicalRows, 'operating_margin', { skipZero: true }), 100)
+  const canonicalCapitalAmount = firstFinite(canonicalRows, 'capital_amount', { skipZero: true })
+  const grossMarginFallback = canonicalGrossMargin ?? profileMargins.grossMargin
+  const operatingMarginFallback = canonicalOperatingMargin ?? profileMargins.operatingMargin
+  const capitalSource = canonicalCapitalAmount != null
+    ? 'finlab.financial_statement.股本'
+    : null
   const canonicalSource = canonicalRows.find((row: any) => (
     row.pe != null || row.pb != null || row.dividend_yield != null ||
-    row.gross_margin != null || row.operating_margin != null
+    row.gross_margin != null || row.operating_margin != null ||
+    row.capital_amount != null
   ))?.source ?? null
   const epsTrend = (epsTrendResult.results ?? [])
     .map((row: any) => ({
@@ -237,7 +291,7 @@ stocks.get('/:id/financials', async (c) => {
       }]
 
   const enriched = baseRows.map((row: any, index: number) => {
-    const operatingMargin = canonicalOperatingMargin ?? operatingMarginFromFinancial(row)
+    const operatingMargin = operatingMarginFallback ?? operatingMarginFromFinancial(row)
     return {
       ...row,
       eps: index === 0 ? (canonicalEps ?? row.eps ?? null) : row.eps,
@@ -245,25 +299,26 @@ stocks.get('/:id/financials', async (c) => {
       pe: index === 0 ? (canonicalPe ?? row.pe ?? null) : row.pe,
       pb: index === 0 ? (canonicalPb ?? row.pb ?? null) : row.pb,
       dividend_yield: index === 0
-        ? normalizePercentUnit(canonicalDividendYield ?? row.dividend_yield)
-        : normalizePercentUnit(row.dividend_yield),
-      gross_margin: canonicalGrossMargin,
+        ? (canonicalDividendYield ?? normalizePercentUnit(row.dividend_yield, 30))
+        : normalizePercentUnit(row.dividend_yield, 30),
+      gross_margin: grossMarginFallback,
       operating_margin: operatingMargin,
       revenue_mom: finiteNumber(revenueRow?.revenue_mom),
       revenue_yoy: finiteNumber(revenueRow?.revenue_yoy ?? row.revenue_growth_yoy),
       revenue_month: revenueRow?.date ?? null,
       eps_trend: epsTrend,
-      capital_amount: null,
-      capital_source: 'not_materialized',
+      capital_amount: canonicalCapitalAmount,
+      capital_source: capitalSource,
       fundamental_source: {
         quarterly: 'financials',
         valuation: canonicalSource ?? 'financials',
         monthly_revenue: revenueRow ? 'monthly_revenue' : null,
-        capital: null,
+        profile: profileMargins.source,
+        capital: capitalSource,
       },
       missing_fields: {
-        gross_margin: canonicalGrossMargin == null,
-        capital_amount: true,
+        gross_margin: grossMarginFallback == null,
+        capital_amount: canonicalCapitalAmount == null,
       },
     }
   })

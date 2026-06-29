@@ -90,6 +90,41 @@ CREATE TABLE IF NOT EXISTS financials (
 );
 CREATE INDEX IF NOT EXISTS idx_fin_stock_period ON financials(stock_id, period);
 
+CREATE TABLE IF NOT EXISTS canonical_fundamental_features (
+  stock_id                    TEXT NOT NULL,
+  period                      TEXT NOT NULL,
+  market_segment              TEXT,
+  report_date                 TEXT,
+  available_date              TEXT,
+  revenue_growth_yoy          REAL,
+  gross_margin                REAL,
+  operating_margin            REAL,
+  roe                         REAL,
+  eps                         REAL,
+  pe                          REAL,
+  pb                          REAL,
+  dividend_yield              REAL,
+  debt_ratio                  REAL,
+  current_ratio               REAL,
+  operating_cash_flow         REAL,
+  industry_quality_percentile REAL,
+  roa                         REAL,
+  free_cash_flow              REAL,
+  capital_amount              REAL,
+  common_stock_capital        REAL,
+  preferred_stock_capital     REAL,
+  total_assets                REAL,
+  total_liabilities           REAL,
+  equity_parent               REAL,
+  source                      TEXT NOT NULL,
+  lineage_json                TEXT,
+  as_of_date                  TEXT,
+  created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(stock_id, period, source)
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_fundamental_symbol_date
+  ON canonical_fundamental_features(stock_id, available_date DESC, period DESC);
+
 CREATE TABLE IF NOT EXISTS chip_data (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   symbol         TEXT NOT NULL,

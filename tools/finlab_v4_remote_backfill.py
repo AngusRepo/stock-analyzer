@@ -94,6 +94,28 @@ CORE_SPECS = [
         },
     ),
     DatasetSpec(
+        lane="fundamental_factor_diversity",
+        kind="wide_fields",
+        keys={
+            "revenue_growth_yoy": "fundamental_features:營收成長率",
+            "gross_margin": "fundamental_features:營業毛利率",
+            "operating_margin": "fundamental_features:營業利益率",
+            "roe": "fundamental_features:ROE稅後",
+            "eps": "fundamental_features:每股稅後淨利",
+            "debt_ratio": "fundamental_features:負債比率",
+            "current_ratio": "fundamental_features:流動比率",
+            "operating_cash_flow": "fundamental_features:營運現金流",
+            "roa": "fundamental_features:ROA稅後息前",
+            "free_cash_flow": "fundamental_features:自由現金流量",
+            "capital_amount": "financial_statement:股本",
+            "common_stock_capital": "financial_statement:普通股股本",
+            "preferred_stock_capital": "financial_statement:特別股股本",
+            "total_assets": "financial_statement:資產總額",
+            "total_liabilities": "financial_statement:負債總額",
+            "equity_parent": "financial_statement:母公司股東權益合計",
+        },
+    ),
+    DatasetSpec(
         lane="emerging_revenue_diversity",
         kind="wide_fields",
         keys={
@@ -169,6 +191,7 @@ DEFAULT_CANONICAL_DATASETS = [
     "canonical_market_summary_daily",
     "canonical_regime_context_daily",
     "canonical_revenue_monthly",
+    "canonical_fundamental_features",
     "canonical_broker_flow_daily",
     "canonical_broker_rank_daily",
     "finlab_taxonomy_tags",
@@ -1509,6 +1532,8 @@ def canonical_table_for_lane(lane: str) -> str:
         return "canonical_chip_daily"
     if "revenue" in lane:
         return "canonical_revenue_monthly"
+    if "fundamental" in lane or lane == "financial_statement":
+        return "canonical_fundamental_features"
     return "data_source_inventory"
 
 

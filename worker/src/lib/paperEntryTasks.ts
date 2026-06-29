@@ -1594,10 +1594,13 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           s12Assessment,
           s12Mode,
         )
-        s12PrimaryStructureOwnerActive =
+        const s12PrimaryOwnerEnabled =
           s12Mode === 'assist_entry' &&
-          enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true) &&
-          s12Assessment != null
+          enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
+        s12PrimaryStructureOwnerActive =
+          s12PrimaryOwnerEnabled &&
+          s12Assessment != null &&
+          (s12Assessment.ready || s12Assessment.invalidated)
         if (s12PrimaryStructureOwnerActive && !s12Assessment.invalidated && !s12AssistEntryOverlay) {
           entryModelV2 = null
           recordExecutionNote(
@@ -1605,6 +1608,13 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             'checked_waiting',
             's12_primary_structure_owner_waiting',
             `${s12Assessment.detail};replaced=entry_model_v2,intraday_technical_veto`,
+          )
+        } else if (s12PrimaryOwnerEnabled && s12Assessment && !s12Assessment.ready && !s12Assessment.invalidated) {
+          recordExecutionNote(
+            pending.symbol,
+            'checked_waiting',
+            's12_structure_advisory_waiting',
+            `${s12Assessment.detail};advisory_only=true;kept=entry_model_v2,intraday_technical_veto`,
           )
         }
         if (s12TechnicalDecision) {

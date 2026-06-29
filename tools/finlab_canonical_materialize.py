@@ -57,6 +57,7 @@ def main() -> int:
         "canonical_market_summary_daily": outputs.canonical_market_summary_daily,
         "canonical_regime_context_daily": outputs.canonical_regime_context_daily,
         "canonical_revenue_monthly": outputs.canonical_revenue_monthly,
+        "canonical_fundamental_features": outputs.canonical_fundamental_features,
         "canonical_broker_flow_daily": outputs.canonical_broker_flow_daily,
         "canonical_broker_rank_daily": outputs.canonical_broker_rank_daily,
         "finlab_taxonomy_tags": outputs.finlab_taxonomy_tags,

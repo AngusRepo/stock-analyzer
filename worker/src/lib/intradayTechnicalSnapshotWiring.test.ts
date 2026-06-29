@@ -12,6 +12,16 @@ assert(paperEntryTasks.includes('resolveIntradayTechnicalDecision'), 'intraday e
 assert(paperEntryTasks.includes('effectiveTechnicalDecision'), 'pre-trade policy should consume the effective technical owner')
 assert(paperEntryTasks.includes('S12_INTRADAY_PRIMARY_OWNER_ENABLED'), 'S12 primary owner must be feature flagged')
 assert(paperEntryTasks.includes('s12PrimaryStructureOwnerActive'), 'S12 primary owner must be able to replace overlapping intraday technical vetoes')
+assert(
+  paperEntryTasks.includes('(s12Assessment.ready || s12Assessment.invalidated)') &&
+  paperEntryTasks.includes('s12_structure_advisory_waiting'),
+  'S12 must stay advisory until the intraday structure is ready or invalidated',
+)
+assert(
+  readFileSync('src/lib/s12IntradayStructure.ts', 'utf8').includes("policy: 'advisory_until_reaction_ready_or_invalidated'") &&
+  readFileSync('src/lib/s12IntradayStructure.ts', 'utf8').includes('takeover_eligible'),
+  'S12 assessment must expose takeover maturity policy and blocker telemetry',
+)
 assert(paperEntryTasks.includes('s12PrimaryMomentumContext'), 'S12 ready owner must replace overlapping momentum direction gates')
 assert(paperEntryTasks.includes('slope5min: null') && paperEntryTasks.includes('rangePosition: null'), 'S12 ready owner should clear slope/range vetoes while keeping liquidity gates')
 assert(paperEntryTasks.includes("'intraday_technical_decision'"), 'intraday execution should persist active technical decision events')

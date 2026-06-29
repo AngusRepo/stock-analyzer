@@ -27,6 +27,7 @@ class FinLabCanonicalOutputs:
     canonical_market_summary_daily: list[dict[str, Any]]
     canonical_regime_context_daily: list[dict[str, Any]]
     canonical_revenue_monthly: list[dict[str, Any]]
+    canonical_fundamental_features: list[dict[str, Any]]
     canonical_broker_flow_daily: list[dict[str, Any]]
     canonical_broker_rank_daily: list[dict[str, Any]]
     finlab_taxonomy_tags: list[dict[str, Any]]
@@ -1267,6 +1268,98 @@ def build_revenue_rows(
     return _rows(df, limit)
 
 
+def build_fundamental_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    fields = [
+        "revenue_growth_yoy",
+        "gross_margin",
+        "operating_margin",
+        "roe",
+        "eps",
+        "debt_ratio",
+        "current_ratio",
+        "operating_cash_flow",
+        "roa",
+        "free_cash_flow",
+        "capital_amount",
+        "common_stock_capital",
+        "preferred_stock_capital",
+        "total_assets",
+        "total_liabilities",
+        "equity_parent",
+    ]
+    df = _join_wide_fields(
+        artifact_root / "raw" / "fundamental_factor_diversity",
+        fields,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if df.is_empty():
+        return []
+
+    financial_statement_amount_fields = [
+        "capital_amount",
+        "common_stock_capital",
+        "preferred_stock_capital",
+        "total_assets",
+        "total_liabilities",
+        "equity_parent",
+    ]
+    df = df.with_columns([
+        (pl.col(field) * 1000).alias(field)
+        for field in financial_statement_amount_fields
+        if field in df.columns
+    ])
+
+    lineage = _lineage(run_id, "fundamental_factor_diversity", fields, artifact_root)
+    df = df.with_columns(
+        pl.col("date").alias("period"),
+        pl.col("date").alias("report_date"),
+        pl.col("date").alias("available_date"),
+        pl.lit("LISTED_OTC").alias("market_segment"),
+        pl.lit("finlab.fundamental_factor_diversity").alias("source"),
+        pl.lit(lineage).alias("lineage_json"),
+        pl.lit(generated_at[:10]).alias("as_of_date"),
+    ).select([
+        "stock_id",
+        "period",
+        "market_segment",
+        "report_date",
+        "available_date",
+        "revenue_growth_yoy",
+        "gross_margin",
+        "operating_margin",
+        "roe",
+        "eps",
+        pl.lit(None, dtype=pl.Float64).alias("pe"),
+        pl.lit(None, dtype=pl.Float64).alias("pb"),
+        pl.lit(None, dtype=pl.Float64).alias("dividend_yield"),
+        "debt_ratio",
+        "current_ratio",
+        "operating_cash_flow",
+        pl.lit(None, dtype=pl.Float64).alias("industry_quality_percentile"),
+        "roa",
+        "free_cash_flow",
+        "capital_amount",
+        "common_stock_capital",
+        "preferred_stock_capital",
+        "total_assets",
+        "total_liabilities",
+        "equity_parent",
+        "source",
+        "lineage_json",
+        "as_of_date",
+    ])
+    return _rows(df, limit)
+
+
 def _parse_category_list(value: Any) -> list[str]:
     raw = str(value or "").strip()
     if not raw:
@@ -1565,6 +1658,14 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if include_emerging and wants("canonical_revenue_monthly") else []
+    fundamentals = build_fundamental_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_fundamental_features") else []
     taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
 
     output_rows: dict[str, list[dict[str, Any]]] = {}
@@ -1584,6 +1685,8 @@ def materialize_finlab_canonical_outputs(
         output_rows["canonical_regime_context_daily"] = regime_context
     if wants("canonical_revenue_monthly"):
         output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
+    if wants("canonical_fundamental_features"):
+        output_rows["canonical_fundamental_features"] = fundamentals
     if wants("canonical_broker_flow_daily"):
         output_rows["canonical_broker_flow_daily"] = broker_flow
     if wants("canonical_broker_rank_daily"):
@@ -1620,6 +1723,7 @@ def materialize_finlab_canonical_outputs(
         canonical_market_summary_daily=output_rows.get("canonical_market_summary_daily", []),
         canonical_regime_context_daily=output_rows.get("canonical_regime_context_daily", []),
         canonical_revenue_monthly=output_rows.get("canonical_revenue_monthly", []),
+        canonical_fundamental_features=output_rows.get("canonical_fundamental_features", []),
         canonical_broker_flow_daily=output_rows.get("canonical_broker_flow_daily", []),
         canonical_broker_rank_daily=output_rows.get("canonical_broker_rank_daily", []),
         finlab_taxonomy_tags=output_rows.get("finlab_taxonomy_tags", []),
@@ -1767,6 +1871,68 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["stock_id", "revenue_month", "market_segment", "revenue", "mom", "yoy", "source", "lineage_json", "as_of_date"],
         ["stock_id", "revenue_month", "source"],
         ["market_segment", "revenue", "mom", "yoy", "lineage_json", "as_of_date"],
+    ))
+    statements.extend(_row_statements(
+        "canonical_fundamental_features",
+        outputs.canonical_fundamental_features,
+        [
+            "stock_id",
+            "period",
+            "market_segment",
+            "report_date",
+            "available_date",
+            "revenue_growth_yoy",
+            "gross_margin",
+            "operating_margin",
+            "roe",
+            "eps",
+            "pe",
+            "pb",
+            "dividend_yield",
+            "debt_ratio",
+            "current_ratio",
+            "operating_cash_flow",
+            "industry_quality_percentile",
+            "roa",
+            "free_cash_flow",
+            "capital_amount",
+            "common_stock_capital",
+            "preferred_stock_capital",
+            "total_assets",
+            "total_liabilities",
+            "equity_parent",
+            "source",
+            "lineage_json",
+            "as_of_date",
+        ],
+        ["stock_id", "period", "source"],
+        [
+            "market_segment",
+            "report_date",
+            "available_date",
+            "revenue_growth_yoy",
+            "gross_margin",
+            "operating_margin",
+            "roe",
+            "eps",
+            "pe",
+            "pb",
+            "dividend_yield",
+            "debt_ratio",
+            "current_ratio",
+            "operating_cash_flow",
+            "industry_quality_percentile",
+            "roa",
+            "free_cash_flow",
+            "capital_amount",
+            "common_stock_capital",
+            "preferred_stock_capital",
+            "total_assets",
+            "total_liabilities",
+            "equity_parent",
+            "lineage_json",
+            "as_of_date",
+        ],
     ))
     statements.extend(_row_statements(
         "canonical_broker_flow_daily",

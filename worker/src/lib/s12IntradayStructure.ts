@@ -69,6 +69,12 @@ export interface S12IntradayAssessment {
     atr15m?: number | null
     rMultiple?: number | null
   }
+  maturity: {
+    takeoverEligible: boolean
+    policy: 'advisory_until_reaction_ready_or_invalidated'
+    blocker: S12IntradayState
+    stage: 'data' | 'higher_timeframe_bias' | 'setup' | 'trigger_sequence' | 'ready' | 'invalidated'
+  }
 }
 
 interface S12IntradayInput {
@@ -197,6 +203,38 @@ function detailText(parts: Record<string, unknown>): string {
     .join(';')
 }
 
+function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity']['stage'] {
+  switch (state) {
+    case 'waiting_15m_completed_bars':
+    case 'waiting_4h_completed_bar':
+    case 'waiting_1h_completed_bar':
+      return 'data'
+    case 'waiting_4h_long_bias':
+      return 'higher_timeframe_bias'
+    case 'waiting_1h_demand_zone':
+    case 'waiting_15m_zone_touch':
+      return 'setup'
+    case 'waiting_sweep':
+    case 'waiting_choch':
+    case 'waiting_bos':
+    case 'waiting_retest':
+      return 'trigger_sequence'
+    case 'reaction_ready':
+      return 'ready'
+    case 'invalidated':
+      return 'invalidated'
+  }
+}
+
+function maturitySnapshot(state: S12IntradayState): S12IntradayAssessment['maturity'] {
+  return {
+    takeoverEligible: state === 'reaction_ready' || state === 'invalidated',
+    policy: 'advisory_until_reaction_ready_or_invalidated',
+    blocker: state,
+    stage: maturityStage(state),
+  }
+}
+
 function setupKey(symbol: string, ...parts: Array<number | null | undefined>): string {
   const suffix = parts
     .filter((value): value is number => Number.isFinite(Number(value)))
@@ -228,6 +266,7 @@ function emptyAssessment(
     demandZone1h: null,
     sequence: {},
     execution: {},
+    maturity: maturitySnapshot(state),
   }
 }
 
@@ -356,6 +395,9 @@ function completeAssessment(params: {
       t3: price(params.execution?.target3),
       atr15m: price(params.execution?.atr15m),
       r: params.execution?.rMultiple == null ? null : round(params.execution.rMultiple, 4),
+      takeover_eligible: ready || invalidated ? 'true' : 'false',
+      maturity_stage: maturityStage(params.state),
+      maturity_policy: 'advisory_until_reaction_ready_or_invalidated',
       ...params.extraDetail,
     }),
     setupId: params.setupId ?? null,
@@ -365,6 +407,7 @@ function completeAssessment(params: {
     demandZone1h: params.demandZone1h,
     sequence: params.sequence,
     execution: params.execution ?? {},
+    maturity: maturitySnapshot(params.state),
   }
 }
 

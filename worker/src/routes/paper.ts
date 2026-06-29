@@ -109,10 +109,13 @@ function buildInstitutionalRawToday(row: Record<string, any> | null | undefined)
 }
 
 function normalizeBrokerRankRow(row: Record<string, any>): Record<string, any> {
+  const rank = finiteNumber(row.rank_no)
+  const brokerCode = row.broker_code == null ? null : String(row.broker_code)
+  const brokerName = row.broker_name == null ? null : String(row.broker_name)
   return {
-    rank: finiteNumber(row.rank_no),
-    broker_code: row.broker_code == null ? null : String(row.broker_code),
-    broker_name: row.broker_name == null ? null : String(row.broker_name),
+    rank,
+    broker_code: brokerCode,
+    broker_name: brokerName ?? brokerCode ?? (rank != null ? `分點 #${rank}` : null),
     buy_lots: finiteNumber(row.buy_lots ?? row.buy_shares),
     sell_lots: finiteNumber(row.sell_lots ?? row.sell_shares),
     net_lots: finiteNumber(row.net_lots ?? row.net_shares),

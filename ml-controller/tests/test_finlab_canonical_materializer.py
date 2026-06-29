@@ -48,6 +48,7 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
     assert "canonical_regime_context_daily" in datasets
     assert "canonical_broker_flow_daily" in datasets
     assert "canonical_broker_rank_daily" in datasets
+    assert "canonical_fundamental_features" in datasets
     assert parse_canonical_datasets("canonical_chip_daily, finlab_taxonomy_tags") == [
         "canonical_chip_daily",
         "finlab_taxonomy_tags",
@@ -505,3 +506,45 @@ def test_materialize_outputs_can_apply_revenue_dataset_only() -> None:
     assert outputs.canonical_chip_daily == []
     assert outputs.canonical_revenue_monthly[0]["stock_id"] == "2330"
     assert outputs.source_quality_metrics[0]["dataset"] == "canonical_revenue_monthly"
+
+
+def test_materialize_outputs_include_finlab_fundamental_capital_fields() -> None:
+    root = _root("fundamental_features")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    fields = {
+        "revenue_growth_yoy": 12.5,
+        "gross_margin": 53.2,
+        "operating_margin": 42.1,
+        "roe": 25.3,
+        "eps": 9.87,
+        "debt_ratio": 38.4,
+        "current_ratio": 210.0,
+        "operating_cash_flow": 1_000_000.0,
+        "roa": 13.5,
+        "free_cash_flow": 800_000.0,
+        "capital_amount": 259_303_800.0,
+        "common_stock_capital": 259_303_800.0,
+        "preferred_stock_capital": 0.0,
+        "total_assets": 4_000_000_000.0,
+        "total_liabilities": 1_000_000_000.0,
+        "equity_parent": 3_000_000_000.0,
+    }
+    for field, value in fields.items():
+        _write(lane / f"{field}.parquet", pl.DataFrame({"date": ["2026-03-31"], "2330": [value]}))
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-27T00:00:00+00:00",
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        datasets=["canonical_fundamental_features"],
+    )
+
+    assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 1}
+    row = outputs.canonical_fundamental_features[0]
+    assert row["stock_id"] == "2330"
+    assert row["gross_margin"] == 53.2
+    assert row["capital_amount"] == 259_303_800_000.0
+    assert row["source"] == "finlab.fundamental_factor_diversity"
+    statements = build_d1_upsert_statements(outputs)
+    assert any("INSERT INTO canonical_fundamental_features" in sql for sql, _ in statements)

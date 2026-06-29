@@ -108,6 +108,7 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
   s12_waiting_retest: 'S12 等待回測 OB/FVG 進場區',
   s12_reaction_ready: 'S12 結構進場訊號成熟',
   s12_assist_entry_ready: 'S12 進場輔助已啟用',
+  s12_structure_advisory_waiting: 'S12 結構觀察，尚未接手',
   s12_primary_structure_owner_waiting: 'S12 主控結構，等待條件成熟',
   s12_primary_cleared_momentum_directional_gate: 'S12 已接手方向判斷',
   s12_structure_invalidated: 'S12 盤中結構失效',

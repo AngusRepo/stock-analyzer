@@ -10,6 +10,32 @@ function parsePosInt(s: string | undefined | null, fallback: number): number {
   return isNaN(n) || n <= 0 ? fallback : n
 }
 
+function finiteNumber(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function firstFinite(rows: Record<string, any>[], key: string): number | null {
+  for (const row of rows) {
+    const value = finiteNumber(row[key])
+    if (value != null) return value
+  }
+  return null
+}
+
+function normalizePercentUnit(value: unknown): number | null {
+  const n = finiteNumber(value)
+  if (n == null) return null
+  return Math.abs(n) <= 1 ? n * 100 : n
+}
+
+function operatingMarginFromFinancial(row: Record<string, any> | null | undefined): number | null {
+  const revenue = finiteNumber(row?.revenue)
+  const operatingIncome = finiteNumber(row?.operating_income)
+  if (revenue == null || operatingIncome == null || revenue === 0) return null
+  return (operatingIncome / revenue) * 100
+}
+
 import type { Bindings, Variables } from '../types'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { withCache, TTL } from '../lib/cache'
@@ -151,10 +177,98 @@ stocks.get('/:id/financials', async (c) => {
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const limit = parsePosInt(c.req.query('limit'), 12)
 
-  const { results } = await c.env.DB.prepare(
-    'SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT ?'
-  ).bind(id, limit).all()
-  return c.json(results)
+  const stock = await c.env.DB.prepare('SELECT id, symbol FROM stocks WHERE id=?').bind(id).first<any>()
+  if (!stock) return c.json({ error: '股票不存在' }, 404)
+  const symbol = String(stock.symbol ?? '').trim()
+
+  const [financialResult, canonicalResult, revenueRow, epsTrendResult] = await Promise.all([
+    c.env.DB.prepare(
+      'SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT ?'
+    ).bind(id, limit).all<any>(),
+    c.env.DB.prepare(`
+      SELECT period, gross_margin, operating_margin, roe, eps, pe, pb,
+             dividend_yield, debt_ratio, current_ratio, source, as_of_date
+        FROM canonical_fundamental_features
+       WHERE stock_id = ?
+       ORDER BY period DESC, as_of_date DESC
+       LIMIT 180
+    `).bind(symbol).all<any>().catch(() => ({ results: [] as any[] })),
+    c.env.DB.prepare(
+      'SELECT date, revenue, revenue_mom, revenue_yoy FROM monthly_revenue WHERE stock_id=? ORDER BY date DESC LIMIT 1'
+    ).bind(id).first<any>().catch(() => null),
+    c.env.DB.prepare(
+      "SELECT period, eps FROM financials WHERE stock_id=? AND eps IS NOT NULL AND period LIKE '%Q%' ORDER BY period DESC LIMIT 4"
+    ).bind(id).all<any>().catch(() => ({ results: [] as any[] })),
+  ])
+
+  const financialRows = financialResult.results ?? []
+  const canonicalRows = canonicalResult.results ?? []
+  const canonicalPe = firstFinite(canonicalRows, 'pe')
+  const canonicalPb = firstFinite(canonicalRows, 'pb')
+  const canonicalDividendYield = firstFinite(canonicalRows, 'dividend_yield')
+  const canonicalRoe = firstFinite(canonicalRows, 'roe')
+  const canonicalEps = firstFinite(canonicalRows, 'eps')
+  const canonicalGrossMargin = normalizePercentUnit(firstFinite(canonicalRows, 'gross_margin'))
+  const canonicalOperatingMargin = normalizePercentUnit(firstFinite(canonicalRows, 'operating_margin'))
+  const canonicalSource = canonicalRows.find((row: any) => (
+    row.pe != null || row.pb != null || row.dividend_yield != null ||
+    row.gross_margin != null || row.operating_margin != null
+  ))?.source ?? null
+  const epsTrend = (epsTrendResult.results ?? [])
+    .map((row: any) => ({
+      period: row.period,
+      eps: finiteNumber(row.eps),
+    }))
+    .filter((row: any) => row.eps != null)
+
+  const baseRows = financialRows.length
+    ? financialRows
+    : [{
+        stock_id: id,
+        period: canonicalRows[0]?.period ?? revenueRow?.date ?? null,
+        eps: null,
+        roe: null,
+        pe: null,
+        pb: null,
+        dividend_yield: null,
+        revenue_growth_yoy: null,
+        revenue: null,
+        operating_income: null,
+      }]
+
+  const enriched = baseRows.map((row: any, index: number) => {
+    const operatingMargin = canonicalOperatingMargin ?? operatingMarginFromFinancial(row)
+    return {
+      ...row,
+      eps: index === 0 ? (canonicalEps ?? row.eps ?? null) : row.eps,
+      roe: index === 0 ? normalizePercentUnit(canonicalRoe ?? row.roe) : normalizePercentUnit(row.roe),
+      pe: index === 0 ? (canonicalPe ?? row.pe ?? null) : row.pe,
+      pb: index === 0 ? (canonicalPb ?? row.pb ?? null) : row.pb,
+      dividend_yield: index === 0
+        ? normalizePercentUnit(canonicalDividendYield ?? row.dividend_yield)
+        : normalizePercentUnit(row.dividend_yield),
+      gross_margin: canonicalGrossMargin,
+      operating_margin: operatingMargin,
+      revenue_mom: finiteNumber(revenueRow?.revenue_mom),
+      revenue_yoy: finiteNumber(revenueRow?.revenue_yoy ?? row.revenue_growth_yoy),
+      revenue_month: revenueRow?.date ?? null,
+      eps_trend: epsTrend,
+      capital_amount: null,
+      capital_source: 'not_materialized',
+      fundamental_source: {
+        quarterly: 'financials',
+        valuation: canonicalSource ?? 'financials',
+        monthly_revenue: revenueRow ? 'monthly_revenue' : null,
+        capital: null,
+      },
+      missing_fields: {
+        gross_margin: canonicalGrossMargin == null,
+        capital_amount: true,
+      },
+    }
+  })
+
+  return c.json(enriched)
 })
 
 // ─── GET /api/stocks/:id/monthly-revenue?months=12 ──────────────────────────

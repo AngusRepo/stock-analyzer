@@ -17,6 +17,7 @@ function Row({ label, value }: { label: string; value: any }) {
 
 const fmt = (n: number) => n >= 1e8 ? `${(n / 1e8).toFixed(1)}億` : n >= 1e4 ? `${(n / 1e4).toFixed(0)}萬` : `${n}`
 const pctClass = (v: number | null) => !v ? '' : v > 0 ? 'text-red-400' : 'text-green-400'
+const fmtCapital = (v: number | null | undefined) => v && Number.isFinite(Number(v)) ? fmt(Number(v)) : null
 
 // ── PE River helpers ──────────────────────────────────────────────────────────
 const PE_ZONES = [
@@ -133,7 +134,11 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
   if (isLoading) return <div className="space-y-2">{[...Array(6)].map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>
 
   const latest = financials[0] as any
-  const pct = (v: number | null) => v != null ? `${v.toFixed(2)}%` : null
+  const pct = (v: number | null) => {
+    if (v == null) return null
+    const normalized = Math.abs(v) <= 1 ? v * 100 : v
+    return `${normalized.toFixed(2)}%`
+  }
 
   // Chart data
   const revenueChartData = buildRevenueChartData(monthlyRevenue as any[])
@@ -156,7 +161,20 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
           <Row label="殖利率" value={pct(latest.dividend_yield)} />
           <Row label="每股股息" value={latest.dividend_per_share?.toFixed(2)} />
           <Row label="ROE" value={pct(latest.roe)} />
-          <Row label="營收成長 (YoY)" value={latest.revenue_growth_yoy != null ? `${latest.revenue_growth_yoy.toFixed(1)}%` : null} />
+          <Row label="毛利率" value={pct(latest.gross_margin)} />
+          <Row label="營益率" value={pct(latest.operating_margin)} />
+          <Row label="營收 MoM" value={pct(latest.revenue_mom)} />
+          <Row label="資本額" value={fmtCapital(latest.capital_amount) ?? (latest.capital_source === 'not_materialized' ? '待匯入' : null)} />
+          <Row label="營收成長 (YoY)" value={pct(latest.revenue_yoy ?? latest.revenue_growth_yoy)} />
+          {Array.isArray(latest.eps_trend) && latest.eps_trend.length > 0 && (
+            <Row
+              label="近四季 EPS"
+              value={latest.eps_trend
+                .slice(0, 4)
+                .map((item: any) => `${item.period} ${Number(item.eps).toFixed(2)}`)
+                .join(' / ')}
+            />
+          )}
         </div>
       ) : (
         <div className="text-sm text-muted-foreground text-center py-4">

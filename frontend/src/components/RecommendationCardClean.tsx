@@ -1450,24 +1450,37 @@ function fmtPercentValue(value: unknown, decimals = 1): string {
   return `${fmtNumber(pct, decimals)}%`
 }
 
+function fmtCapitalAmount(value: unknown): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return '-'
+  if (numeric >= 1e8) return `${fmtNumber(numeric / 1e8, 1)}億`
+  if (numeric >= 1e4) return `${fmtNumber(numeric / 1e4, 0)}萬`
+  return fmtInteger(numeric)
+}
+
 function FundamentalSnapshotBlock({ rec }: { rec: any }) {
   const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
   const score = scoreComponentValue(rec, 'fundamentalQuality')
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ['recommendation-card-financials', stockId],
-    queryFn: () => stocksApi.financials(stockId, 1),
+    queryFn: () => stocksApi.financials(stockId, 4),
     enabled: Number.isFinite(stockId) && stockId > 0,
     staleTime: 6 * 60 * 60_000,
   })
   const latest = Array.isArray(rows) ? rows[0] as any : null
   if (!latest && !isLoading && score <= 0) return null
+  const epsTrend = Array.isArray(latest?.eps_trend)
+    ? latest.eps_trend.filter((item: any) => item?.eps != null).slice(0, 4)
+    : []
   const metrics = [
     { label: 'EPS', value: latest?.eps == null ? '-' : fmtNumber(latest.eps, 2), note: latest?.period ?? 'latest' },
     { label: 'ROE', value: latest?.roe == null ? '-' : fmtPercentValue(latest.roe), note: '獲利效率' },
+    { label: '毛利率', value: latest?.gross_margin == null ? '-' : fmtPercentValue(latest.gross_margin), note: latest?.missing_fields?.gross_margin ? '待匯入' : '產品利差' },
+    { label: '營益率', value: latest?.operating_margin == null ? '-' : fmtPercentValue(latest.operating_margin), note: '營運效率' },
+    { label: '營收 MoM', value: latest?.revenue_mom == null ? '-' : fmtPercentValue(latest.revenue_mom), note: latest?.revenue_month ?? '月營收' },
+    { label: '殖利率', value: latest?.dividend_yield == null ? '-' : fmtPercentValue(latest.dividend_yield), note: latest?.fundamental_source?.valuation ?? '股利' },
     { label: 'P/E', value: latest?.pe == null ? '-' : fmtNumber(latest.pe, 1), note: '估值' },
-    { label: 'P/B', value: latest?.pb == null ? '-' : fmtNumber(latest.pb, 1), note: '淨值評價' },
-    { label: '殖利率', value: latest?.dividend_yield == null ? '-' : fmtPercentValue(latest.dividend_yield), note: '股利' },
-    { label: '營收 YoY', value: latest?.revenue_growth_yoy == null ? '-' : fmtPercentValue(latest.revenue_growth_yoy), note: '成長' },
+    { label: '資本額', value: fmtCapitalAmount(latest?.capital_amount), note: latest?.capital_source === 'not_materialized' ? '待匯入' : '股本規模' },
   ]
 
   return (
@@ -1478,7 +1491,7 @@ function FundamentalSnapshotBlock({ rec }: { rec: any }) {
           Score V2 基本面 {fmtNumber(score, 1)}/20
         </span>
       </div>
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-4">
         {metrics.map((item) => (
           <div key={item.label} className="rounded-xl border border-white/[0.06] bg-black/15 p-2">
             <p className="text-[11px] font-medium text-slate-400">{item.label}</p>
@@ -1486,6 +1499,27 @@ function FundamentalSnapshotBlock({ rec }: { rec: any }) {
             <p className="mt-0.5 text-[10px] text-slate-500">{item.note}</p>
           </div>
         ))}
+      </div>
+      <div className="mt-2 rounded-xl border border-white/[0.06] bg-black/15 p-2">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <p className="text-[11px] font-medium text-slate-400">近四季 EPS 趨勢</p>
+          <p className="sv-num text-[10px] text-slate-500">{epsTrend.length ? 'latest 4Q' : '待資料'}</p>
+        </div>
+        {epsTrend.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {epsTrend.map((item: any) => (
+              <span
+                key={`${item.period}-${item.eps}`}
+                className="rounded-full border border-sky-300/18 bg-sky-300/[0.08] px-2 py-0.5 text-[11px] text-sky-100"
+              >
+                <span className="text-slate-400">{item.period}</span>
+                <span className="sv-num ml-1 font-semibold">{fmtNumber(item.eps, 2)}</span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-slate-500">季度 EPS 尚未入庫。</p>
+        )}
       </div>
     </div>
   )

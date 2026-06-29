@@ -411,6 +411,14 @@ function s12KbarStartDate(tradeDate: string): string {
 function parseTwKbarTimeMs(value: unknown): number | null {
   if (!value) return null
   const text = String(value).trim()
+  if (/^\d{10,19}$/.test(text)) {
+    const raw = Number(text)
+    if (!Number.isFinite(raw)) return null
+    if (text.length >= 18) return Math.floor(raw / 1_000_000)
+    if (text.length >= 15) return Math.floor(raw / 1_000)
+    if (text.length >= 13) return Math.floor(raw)
+    return Math.floor(raw * 1000)
+  }
   const direct = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text) ? Date.parse(text) : Number.NaN
   if (Number.isFinite(direct)) return direct
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/)

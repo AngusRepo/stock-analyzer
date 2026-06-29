@@ -56,6 +56,238 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return chunks
 }
 
+function finiteNumber(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+type InstitutionalRawCardRow = {
+  key: string
+  label: string
+  buy_shares: number | null
+  sell_shares: number | null
+  net_shares: number | null
+}
+
+function buildInstitutionalRawToday(row: Record<string, any> | null | undefined): Record<string, any> | null {
+  if (!row) return null
+  const rows: InstitutionalRawCardRow[] = [
+    {
+      key: 'foreign',
+      label: '外資',
+      buy_shares: finiteNumber(row.foreign_buy),
+      sell_shares: finiteNumber(row.foreign_sell),
+      net_shares: finiteNumber(row.foreign_net),
+    },
+    {
+      key: 'trust',
+      label: '投信',
+      buy_shares: finiteNumber(row.trust_buy),
+      sell_shares: finiteNumber(row.trust_sell),
+      net_shares: finiteNumber(row.trust_net),
+    },
+    {
+      key: 'dealer',
+      label: '自營商',
+      buy_shares: finiteNumber(row.dealer_buy),
+      sell_shares: finiteNumber(row.dealer_sell),
+      net_shares: finiteNumber(row.dealer_net),
+    },
+  ]
+  const hasData = rows.some((item) => (
+    item.buy_shares != null || item.sell_shares != null || item.net_shares != null
+  ))
+  if (!hasData) return null
+  return {
+    schema_version: 'institutional_raw_card_v1',
+    date: String(row.date ?? ''),
+    source: 'chip_data',
+    unit: 'shares',
+    rows,
+    total_net_shares: rows.reduce((sum, item) => sum + (item.net_shares ?? 0), 0),
+  }
+}
+
+function normalizeBrokerRankRow(row: Record<string, any>): Record<string, any> {
+  return {
+    rank: finiteNumber(row.rank_no),
+    broker_code: row.broker_code == null ? null : String(row.broker_code),
+    broker_name: row.broker_name == null ? null : String(row.broker_name),
+    buy_lots: finiteNumber(row.buy_lots ?? row.buy_shares),
+    sell_lots: finiteNumber(row.sell_lots ?? row.sell_shares),
+    net_lots: finiteNumber(row.net_lots ?? row.net_shares),
+  }
+}
+
+function buildBrokerTopFlowsToday(
+  row: Record<string, any> | null | undefined,
+  date: string,
+  rankRows: Record<string, any>[] = [],
+): Record<string, any> {
+  const topBuy = rankRows
+    .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'buy')
+    .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
+    .slice(0, 5)
+    .map(normalizeBrokerRankRow)
+  const topSell = rankRows
+    .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'sell')
+    .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
+    .slice(0, 5)
+    .map(normalizeBrokerRankRow)
+  if (!row) {
+    return {
+      schema_version: 'broker_top_flows_card_v1',
+      date,
+      source: 'canonical_broker_flow_daily',
+      unit: 'lots',
+      top_buy: topBuy,
+      top_sell: topSell,
+      aggregate: null,
+      missing_reason: topBuy.length || topSell.length ? null : 'no_canonical_broker_flow_row_for_symbol_date',
+      materialization_gap: topBuy.length || topSell.length ? null : 'broker_level_top5_not_materialized_in_d1',
+    }
+  }
+  return {
+    schema_version: 'broker_top_flows_card_v1',
+    date: String(row.date ?? date),
+    source: String(row.source ?? 'canonical_broker_flow_daily'),
+    unit: 'lots',
+    top_buy: topBuy,
+    top_sell: topSell,
+    aggregate: {
+      market_segment: row.market_segment ?? null,
+      buy_lots: finiteNumber(row.buy_shares),
+      sell_lots: finiteNumber(row.sell_shares),
+      net_lots: finiteNumber(row.net_shares),
+      dominant_net_lots: finiteNumber(row.dominant_net_shares),
+      gross_imbalance_lots: finiteNumber(row.gross_imbalance_shares),
+      estimated_amount: finiteNumber(row.estimated_amount),
+      broker_count: finiteNumber(row.broker_count),
+      concentration: finiteNumber(row.concentration),
+    },
+    missing_reason: topBuy.length || topSell.length ? null : 'broker_level_detail_table_missing',
+    materialization_gap: topBuy.length || topSell.length
+      ? null
+      : 'FinLab broker_transactions was compressed into canonical_broker_flow_daily aggregates; broker_code/name top5 rows are not persisted yet.',
+  }
+}
+
+async function loadPendingBuyCardChipContext(
+  db: D1Database,
+  symbols: string[],
+  sourceRecoDate: string,
+): Promise<{
+  institutionalRawBySymbol: Map<string, Record<string, any>>
+  brokerTopFlowsBySymbol: Map<string, Record<string, any>>
+}> {
+  const institutionalRawBySymbol = new Map<string, Record<string, any>>()
+  const brokerTopFlowsBySymbol = new Map<string, Record<string, any>>()
+  if (!symbols.length) return { institutionalRawBySymbol, brokerTopFlowsBySymbol }
+
+  const placeholders = symbols.map(() => '?').join(',')
+  try {
+    const { results: chipRows } = await db.prepare(`
+      WITH latest_chip AS (
+        SELECT symbol, MAX(date) AS date
+          FROM chip_data
+         WHERE date <= ?
+           AND symbol IN (${placeholders})
+         GROUP BY symbol
+      )
+      SELECT c.symbol, c.date,
+             c.foreign_buy, c.foreign_sell, c.foreign_net,
+             c.trust_buy, c.trust_sell, c.trust_net,
+             c.dealer_buy, c.dealer_sell, c.dealer_net
+        FROM chip_data c
+        JOIN latest_chip l
+          ON l.symbol = c.symbol
+         AND l.date = c.date
+    `).bind(sourceRecoDate, ...symbols).all<any>()
+    for (const row of chipRows ?? []) {
+      const payload = buildInstitutionalRawToday(row)
+      if (payload) institutionalRawBySymbol.set(String(row.symbol ?? '').trim(), payload)
+    }
+  } catch (e) {
+    console.warn('[paper/pending-buys] institutional raw card data unavailable:', e)
+  }
+
+  const brokerRankRowsBySymbol = new Map<string, any[]>()
+  try {
+    const rankTable = await db.prepare(`
+      SELECT name FROM sqlite_master
+       WHERE type = 'table'
+         AND name = 'canonical_broker_rank_daily'
+       LIMIT 1
+    `).first<{ name: string }>()
+    if (rankTable?.name) {
+      const { results: rankRows } = await db.prepare(`
+        WITH latest_rank AS (
+          SELECT stock_id, MAX(date) AS date
+            FROM canonical_broker_rank_daily
+           WHERE date <= ?
+             AND stock_id IN (${placeholders})
+           GROUP BY stock_id
+        )
+        SELECT r.stock_id, r.date, r.market_segment, r.rank_side, r.rank_no,
+               r.broker_code, r.broker_name, r.buy_lots, r.sell_lots, r.net_lots, r.source
+          FROM canonical_broker_rank_daily r
+          JOIN latest_rank l
+            ON l.stock_id = r.stock_id
+           AND l.date = r.date
+         WHERE r.rank_side IN ('buy', 'sell')
+         ORDER BY r.stock_id ASC, r.rank_side ASC, r.rank_no ASC
+      `).bind(sourceRecoDate, ...symbols).all<any>()
+      for (const row of rankRows ?? []) {
+        const symbol = String(row.stock_id ?? '').trim()
+        const rows = brokerRankRowsBySymbol.get(symbol) ?? []
+        rows.push(row)
+        brokerRankRowsBySymbol.set(symbol, rows)
+      }
+    }
+  } catch (e) {
+    console.warn('[paper/pending-buys] broker rank card data unavailable:', e)
+  }
+
+  try {
+    const { results: brokerRows } = await db.prepare(`
+      WITH latest_broker_flow AS (
+        SELECT stock_id, MAX(date) AS date
+          FROM canonical_broker_flow_daily
+         WHERE date <= ?
+           AND stock_id IN (${placeholders})
+         GROUP BY stock_id
+      )
+      SELECT f.stock_id, f.date, f.market_segment, f.buy_shares, f.sell_shares, f.net_shares,
+             f.dominant_net_shares, f.gross_imbalance_shares, f.estimated_amount,
+             f.broker_count, f.concentration, f.source
+        FROM canonical_broker_flow_daily f
+        JOIN latest_broker_flow l
+          ON l.stock_id = f.stock_id
+         AND l.date = f.date
+    `).bind(sourceRecoDate, ...symbols).all<any>()
+    for (const row of brokerRows ?? []) {
+      const symbol = String(row.stock_id ?? '').trim()
+      brokerTopFlowsBySymbol.set(
+        symbol,
+        buildBrokerTopFlowsToday(row, String(row.date ?? sourceRecoDate), brokerRankRowsBySymbol.get(symbol) ?? []),
+      )
+    }
+  } catch (e) {
+    console.warn('[paper/pending-buys] broker flow card data unavailable:', e)
+  }
+
+  for (const symbol of symbols) {
+    if (!brokerTopFlowsBySymbol.has(symbol) && brokerRankRowsBySymbol.has(symbol)) {
+      const rankRows = brokerRankRowsBySymbol.get(symbol) ?? []
+      brokerTopFlowsBySymbol.set(
+        symbol,
+        buildBrokerTopFlowsToday(null, String(rankRows[0]?.date ?? sourceRecoDate), rankRows),
+      )
+    }
+  }
+  return { institutionalRawBySymbol, brokerTopFlowsBySymbol }
+}
+
 async function loadPaperEtfBenchmarks(db: D1Database, dates: string[]): Promise<BenchmarkPriceMap> {
   const cleanDates = Array.from(new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))).sort()
   const out: BenchmarkPriceMap = {}
@@ -133,6 +365,11 @@ async function enrichPendingBuyContext(
   if (pendingBuys.length === 0) return pendingBuys
   const symbols = [...new Set(pendingBuys.map((item) => String(item.symbol ?? '').trim()).filter(Boolean))]
   if (symbols.length === 0) return pendingBuys
+  const { institutionalRawBySymbol, brokerTopFlowsBySymbol } = await loadPendingBuyCardChipContext(
+    db,
+    symbols,
+    sourceRecoDate,
+  )
 
   const placeholders = symbols.map(() => '?').join(',')
   const { results } = await db.prepare(`
@@ -236,13 +473,16 @@ async function enrichPendingBuyContext(
   }
 
   return pendingBuys.map((item) => {
-    const context = contextBySymbol.get(item.symbol)
+    const symbol = String(item.symbol ?? '').trim()
+    const context = contextBySymbol.get(symbol)
     const fallbackScoreV2 = item.score_v2
       ?? null
     if (!context) {
       return {
         ...item,
         score_v2: fallbackScoreV2,
+        institutional_raw_today: item.institutional_raw_today ?? institutionalRawBySymbol.get(symbol) ?? null,
+        broker_top_flows_today: item.broker_top_flows_today ?? brokerTopFlowsBySymbol.get(symbol) ?? null,
       }
     }
     let watchPoints = Array.isArray(item.watch_points) ? item.watch_points : []
@@ -260,6 +500,8 @@ async function enrichPendingBuyContext(
       ml_vote_summary: context.ml_vote_summary,
       prediction_forecast_data: context.prediction_forecast_data,
       watch_points: watchPoints,
+      institutional_raw_today: item.institutional_raw_today ?? institutionalRawBySymbol.get(symbol) ?? null,
+      broker_top_flows_today: item.broker_top_flows_today ?? brokerTopFlowsBySymbol.get(symbol) ?? null,
     }
   })
 }

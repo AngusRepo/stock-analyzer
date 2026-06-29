@@ -37,6 +37,22 @@ const SCORE_V2_WEIGHTS = {
   newsTheme: 5,
 } as const
 
+const SCORE_V2_COMPONENT_ROWS = [
+  ['mlEdge', 'ML Edge', 25, 'bg-emerald-500'],
+  ['chipFlow', '籌碼流', 25, 'bg-blue-500'],
+  ['technicalStructure', '技術結構', 25, 'bg-violet-500'],
+  ['fundamentalQuality', '基本面品質', 20, 'bg-amber-500'],
+  ['newsTheme', '新聞題材', 5, 'bg-cyan-500'],
+] as const
+
+const SCORE_V2_TECHNICAL_ROWS = [
+  ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '衡量均線、突破與價格結構是否支持多方延續。'],
+  ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '衡量波動是否收斂或擴張到適合進場的區間。'],
+  ['reversalExtreme', '反轉極值', 5, 'bg-fuchsia-500', '衡量是否接近過熱、過冷或容易反轉的位置。'],
+  ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '衡量成交量與價格推進是否互相確認。'],
+  ['executionRisk', '執行風險', 2, 'bg-rose-500', '衡量追價、流動性與盤中執行的不利風險。'],
+] as const
+
 const SCORE_V2_TECHNICAL = [
   ['trendStructure', '趨勢結構', 7, 'bg-violet-500', '趨勢結構分數反映均線、動能與方向延續品質。'],
   ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '波動結構分數反映波動穩定度與突破後回測風險。'],
@@ -145,14 +161,14 @@ function row(
 function scoreV2Rows(payload: Record<string, any>): ScoreBreakdownRow[] {
   const components = parseObject(payload.components) ?? {}
   const weights = parseObject(payload.weights) ?? {}
-  return SCORE_V2_COMPONENTS.map(([key, label, fallbackMax, color]) =>
+  return SCORE_V2_COMPONENT_ROWS.map(([key, label, fallbackMax, color]) =>
     row(key, label, components[key], weights[key] ?? fallbackMax, color),
   )
 }
 
 function scoreV2TechnicalRows(payload: Record<string, any>): ScoreBreakdownRow[] {
   const breakdown = parseObject(payload.technicalBreakdown) ?? {}
-  return SCORE_V2_TECHNICAL
+  return SCORE_V2_TECHNICAL_ROWS
     .filter(([key]) => breakdown[key] != null)
     .map(([key, label, max, color, explanation]) => {
       const item = row(key, label, breakdown[key], max, color, undefined)
@@ -176,7 +192,7 @@ function storageRows(rec: Record<string, any>, payload: Record<string, any> | nu
     fundamentalQuality: 0,
     newsTheme: 0,
   }
-  return SCORE_V2_COMPONENTS.map(([key, label, max, color]) => row(key, label, values[key], max, color))
+  return SCORE_V2_COMPONENT_ROWS.map(([key, label, max, color]) => row(key, label, values[key], max, color))
 }
 
 function storageTechnicalRows(rec: Record<string, any>, payload: Record<string, any> | null): ScoreBreakdownRow[] {

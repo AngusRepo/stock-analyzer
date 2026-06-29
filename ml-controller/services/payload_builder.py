@@ -757,6 +757,8 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
     if not stock_ids:
         return {}
     out: dict[int, dict] = {sid: {} for sid in stock_ids}
+    symbol_by_id = symbol_by_id or {}
+    id_by_symbol = {symbol: sid for sid, symbol in symbol_by_id.items() if symbol}
     # margin: latest
     margin_rows: list[dict] = []
     for chunk in _d1_bind_chunks(stock_ids):
@@ -799,33 +801,31 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
         if sid in out:
             out[sid]["retail_pct"] = r.get("retail_pct")
 
-    # monthly_revenue: latest revenue_yoy/revenue_mom
+    # canonical_revenue_monthly: latest revenue_yoy/revenue_mom
     rev_rows: list[dict] = []
-    for chunk in _d1_bind_chunks(stock_ids):
+    symbols = [symbol_by_id.get(sid) for sid in stock_ids if symbol_by_id.get(sid)]
+    for chunk in _d1_bind_chunks(symbols):
         placeholders = ",".join("?" * len(chunk))
         rev_rows.extend(d1_client.query(
-            f"SELECT r1.stock_id, r1.revenue_yoy, r1.revenue_mom, r1.revenue "
-            f"FROM monthly_revenue r1 "
+            f"SELECT r1.stock_id AS symbol, r1.yoy AS revenue_yoy, r1.mom AS revenue_mom, r1.revenue "
+            f"FROM canonical_revenue_monthly r1 "
             f"INNER JOIN ("
-            f"  SELECT stock_id, MAX(date) as max_date "
-            f"  FROM monthly_revenue WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
-            f") r2 ON r1.stock_id = r2.stock_id AND r1.date = r2.max_date",
+            f"  SELECT stock_id, MAX(revenue_month) as max_month "
+            f"  FROM canonical_revenue_monthly WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
+            f") r2 ON r1.stock_id = r2.stock_id AND r1.revenue_month = r2.max_month",
             list(chunk),
             timeout=60.0,
         ))
     for r in rev_rows:
-        sid = r["stock_id"]
+        sid = id_by_symbol.get(str(r.get("symbol")))
         if sid in out:
             out[sid]["revenue_yoy"] = r.get("revenue_yoy")
             out[sid]["revenue_mom"] = r.get("revenue_mom")
             out[sid]["revenue"] = r.get("revenue")
 
-    # financials/canonical_fundamental_features: latest point-in-time snapshot.
+    # canonical_fundamental_features: latest point-in-time snapshot.
     fin_rows: list[dict] = []
-    symbol_by_id = symbol_by_id or {}
-    id_by_symbol = {symbol: sid for sid, symbol in symbol_by_id.items() if symbol}
     try:
-        symbols = [symbol_by_id.get(sid) for sid in stock_ids if symbol_by_id.get(sid)]
         for chunk in _d1_bind_chunks(symbols):
             placeholders = ",".join("?" * len(chunk))
             fin_rows.extend(d1_client.query(
@@ -842,19 +842,6 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
             ))
     except Exception:
         fin_rows = []
-    if not fin_rows:
-        for chunk in _d1_bind_chunks(stock_ids):
-            placeholders = ",".join("?" * len(chunk))
-            fin_rows.extend(d1_client.query(
-                f"SELECT f.stock_id, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
-                f"FROM financials f "
-                f"INNER JOIN ("
-                f"  SELECT stock_id, MAX(period) as max_period "
-                f"  FROM financials WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
-                f") latest ON f.stock_id = latest.stock_id AND f.period = latest.max_period",
-                list(chunk),
-                timeout=60.0,
-            ))
     for r in fin_rows:
         sid = r.get("stock_id")
         if sid is None and r.get("symbol") is not None:

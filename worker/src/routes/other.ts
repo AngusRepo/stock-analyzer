@@ -1,5 +1,7 @@
 ﻿import { Hono } from 'hono'
 
+import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/fundamentalData'
+
 // ── 安全的 ID 解析（parseInt NaN 防護）─────────────────────────────────────
 function parseId(s: string | undefined | null): number | null {
   const n = parseInt(s ?? '')
@@ -1641,11 +1643,11 @@ llm.post('/analyst-summary', authMiddleware, async (c) => {
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
-    c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
+    loadLatestStockFinancialSnapshot(c.env.DB, stockId),
     c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
   ])
 
-  const financials = latestFin ? { eps: latestFin.eps, pe: latestFin.pe, pb: latestFin.pb, roe: latestFin.roe, dividendYield: latestFin.dividend_yield, revenueGrowth: latestFin.revenue_growth_yoy ? latestFin.revenue_growth_yoy / 100 : null } : null
+  const financials = toLlmFinancialContext(latestFin)
   const chipData   = latestChip ? { foreignNetBuy: latestChip.foreign_net, investmentTrustNetBuy: latestChip.trust_net, dealerNetBuy: latestChip.dealer_net, marginBalance: latestChip.margin_balance } : null
 
   const summary = await generateAnalystSummary(c.env.ANTHROPIC_API_KEY, { snapshot: result.snapshot, financials, chipData, rich: result.rich })
@@ -1661,14 +1663,14 @@ llm.post('/ask', authMiddleware, async (c) => {
   if (!result) return c.json({ error: '股票不存在' }, 404)
 
   const [latestFin, latestChip] = await Promise.all([
-    c.env.DB.prepare('SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT 1').bind(stockId).first<any>(),
+    loadLatestStockFinancialSnapshot(c.env.DB, stockId),
     c.env.DB.prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
   ])
 
   const answer = await answerStockQuestion(c.env.ANTHROPIC_API_KEY, {
     question,
     snapshot: result.snapshot,
-    financials: latestFin ? { eps: latestFin.eps, pe: latestFin.pe, dividendYield: latestFin.dividend_yield, roe: latestFin.roe } : null,
+    financials: toLlmFinancialContext(latestFin),
     chipData: latestChip ? { foreignNetBuy: latestChip.foreign_net, marginBalance: latestChip.margin_balance } : null,
     conversationHistory,
   })

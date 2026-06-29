@@ -20,91 +20,117 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function firstFinite(rows: Record<string, any>[], key: string, opts: { skipZero?: boolean } = {}): number | null {
-  for (const row of rows) {
-    const value = finiteNumber(row[key])
-    if (opts.skipZero && value === 0) continue
-    if (value != null) return value
+type InstitutionalRawCardRow = {
+  key: string
+  label: string
+  buy_shares: number | null
+  sell_shares: number | null
+  net_shares: number | null
+}
+
+function buildInstitutionalRawCard(row: Record<string, any> | null | undefined): Record<string, any> | null {
+  if (!row) return null
+  const rows: InstitutionalRawCardRow[] = [
+    {
+      key: 'foreign',
+      label: '外資',
+      buy_shares: finiteNumber(row.foreign_buy),
+      sell_shares: finiteNumber(row.foreign_sell),
+      net_shares: finiteNumber(row.foreign_net),
+    },
+    {
+      key: 'trust',
+      label: '投信',
+      buy_shares: finiteNumber(row.trust_buy),
+      sell_shares: finiteNumber(row.trust_sell),
+      net_shares: finiteNumber(row.trust_net),
+    },
+    {
+      key: 'dealer',
+      label: '自營商',
+      buy_shares: finiteNumber(row.dealer_buy),
+      sell_shares: finiteNumber(row.dealer_sell),
+      net_shares: finiteNumber(row.dealer_net),
+    },
+  ]
+  if (!rows.some((item) => item.buy_shares != null || item.sell_shares != null || item.net_shares != null)) {
+    return null
   }
-  return null
-}
-
-function normalizePercentUnit(value: unknown, maxAbs = 300): number | null {
-  const n = finiteNumber(value)
-  if (n == null) return null
-  const normalized = Math.abs(n) <= 1 ? n * 100 : n
-  return Math.abs(normalized) > maxAbs ? null : normalized
-}
-
-function operatingMarginFromFinancial(row: Record<string, any> | null | undefined): number | null {
-  const revenue = finiteNumber(row?.revenue)
-  const operatingIncome = finiteNumber(row?.operating_income)
-  if (revenue == null || operatingIncome == null || revenue === 0) return null
-  return (operatingIncome / revenue) * 100
-}
-
-function netProfitMarginFromFinancial(row: Record<string, any> | null | undefined): number | null {
-  const revenue = finiteNumber(row?.revenue)
-  const netIncome = finiteNumber(row?.net_income)
-  if (revenue == null || netIncome == null || revenue === 0) return null
-  return (netIncome / revenue) * 100
-}
-
-function buildEpsTrend(
-  financialRows: Record<string, any>[],
-  canonicalRows: Record<string, any>[],
-  limit: number,
-): Array<{ period: string; eps: number; source: string }> {
-  const byPeriod = new Map<string, { period: string; eps: number; source: string }>()
-  const add = (row: Record<string, any>, source: string) => {
-    const period = String(row.period ?? '').trim()
-    const eps = finiteNumber(row.eps)
-    if (!period || eps == null) return
-    if (!byPeriod.has(period)) byPeriod.set(period, { period, eps, source })
+  return {
+    schema_version: 'institutional_raw_card_v1',
+    date: String(row.date ?? ''),
+    source: 'chip_data',
+    unit: 'shares',
+    rows,
+    total_net_shares: rows.reduce((sum, item) => sum + (item.net_shares ?? 0), 0),
   }
-  for (const row of financialRows) add(row, 'financials')
-  for (const row of canonicalRows) add(row, 'canonical_fundamental_features')
-  return [...byPeriod.values()]
-    .sort((a, b) => b.period.localeCompare(a.period))
-    .slice(0, limit)
 }
 
-function firstMarkdownMetricValue(lines: unknown, label: string): number | null {
-  if (!Array.isArray(lines)) return null
-  const line = lines.find((item) => typeof item === 'string' && item.includes(label))
-  if (typeof line !== 'string') return null
-  const cells = line
-    .split('|')
-    .map((cell) => cell.trim())
-    .filter(Boolean)
-  for (const cell of cells.slice(1)) {
-    const value = finiteNumber(cell.replace(/,/g, ''))
-    if (value != null) return value
+function normalizeBrokerRankCardRow(row: Record<string, any>): Record<string, any> {
+  const rank = finiteNumber(row.rank_no)
+  const brokerCode = row.broker_code == null ? null : String(row.broker_code)
+  const brokerName = row.broker_name == null ? null : String(row.broker_name)
+  return {
+    rank,
+    broker_code: brokerCode,
+    broker_name: brokerName ?? brokerCode ?? (rank != null ? `分點 #${rank}` : null),
+    buy_lots: finiteNumber(row.buy_lots ?? row.buy_shares),
+    sell_lots: finiteNumber(row.sell_lots ?? row.sell_shares),
+    net_lots: finiteNumber(row.net_lots ?? row.net_shares),
   }
-  return null
 }
 
-function extractProfileMargins(raw: unknown): { grossMargin: number | null; operatingMargin: number | null; source: string | null } {
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return { grossMargin: null, operatingMargin: null, source: null }
-  }
-  try {
-    const parsed = JSON.parse(raw)
-    for (const key of ['quarterly', 'annual']) {
-      const grossMargin = normalizePercentUnit(firstMarkdownMetricValue(parsed?.[key], 'Gross Margin'), 100)
-      const operatingMargin = normalizePercentUnit(firstMarkdownMetricValue(parsed?.[key], 'Operating Margin'), 100)
-      if (grossMargin != null || operatingMargin != null) {
-        return {
-          grossMargin,
-          operatingMargin,
-          source: `stock_profiles.financials_summary.${key}`,
-        }
-      }
+function buildBrokerTopFlowsCard(
+  row: Record<string, any> | null | undefined,
+  date: string,
+  rankRows: Record<string, any>[] = [],
+): Record<string, any> {
+  const topBuy = rankRows
+    .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'buy')
+    .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
+    .slice(0, 5)
+    .map(normalizeBrokerRankCardRow)
+  const topSell = rankRows
+    .filter((rankRow) => String(rankRow.rank_side ?? '').toLowerCase() === 'sell')
+    .sort((a, b) => Number(a.rank_no ?? 999) - Number(b.rank_no ?? 999))
+    .slice(0, 5)
+    .map(normalizeBrokerRankCardRow)
+  if (!row) {
+    return {
+      schema_version: 'broker_top_flows_card_v1',
+      date,
+      source: 'canonical_broker_flow_daily',
+      unit: 'lots',
+      top_buy: topBuy,
+      top_sell: topSell,
+      aggregate: null,
+      missing_reason: topBuy.length || topSell.length ? null : 'no_canonical_broker_flow_row_for_symbol_date',
+      materialization_gap: topBuy.length || topSell.length ? null : 'broker_level_top5_not_materialized_in_d1',
     }
-  } catch {
-    return { grossMargin: null, operatingMargin: null, source: null }
   }
-  return { grossMargin: null, operatingMargin: null, source: null }
+  return {
+    schema_version: 'broker_top_flows_card_v1',
+    date: String(row.date ?? date),
+    source: String(row.source ?? 'canonical_broker_flow_daily'),
+    unit: 'lots',
+    top_buy: topBuy,
+    top_sell: topSell,
+    aggregate: {
+      market_segment: row.market_segment ?? null,
+      buy_lots: finiteNumber(row.buy_shares),
+      sell_lots: finiteNumber(row.sell_shares),
+      net_lots: finiteNumber(row.net_shares),
+      dominant_net_lots: finiteNumber(row.dominant_net_shares),
+      gross_imbalance_lots: finiteNumber(row.gross_imbalance_shares),
+      estimated_amount: finiteNumber(row.estimated_amount),
+      broker_count: finiteNumber(row.broker_count),
+      concentration: finiteNumber(row.concentration),
+    },
+    missing_reason: topBuy.length || topSell.length ? null : 'broker_level_detail_table_missing',
+    materialization_gap: topBuy.length || topSell.length
+      ? null
+      : 'FinLab broker_transactions was compressed into canonical_broker_flow_daily aggregates; broker_code/name top5 rows are not persisted yet.',
+  }
 }
 
 import type { Bindings, Variables } from '../types'
@@ -119,6 +145,7 @@ import {
   parsePredictionForecastData,
 } from '../lib/recommendationContext'
 import { computeAndStoreIndicators } from '../lib/technicalIndicators'
+import { loadLatestStockFinancialSnapshot, loadStockFinancialRows, loadStockMonthlyRevenueRows } from '../lib/fundamentalData'
 
 const stocks = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -249,118 +276,72 @@ stocks.get('/:id/financials', async (c) => {
   const limit = parsePosInt(c.req.query('limit'), 12)
   const asOfDate = parseIsoDate(c.req.query('asOf'))
 
+  const rows = await loadStockFinancialRows(c.env.DB, id, { limit, asOf: asOfDate })
+  if (!rows.length) return c.json({ error: 'stock_not_found' }, 404)
+  return c.json(rows)
+})
+
+stocks.get('/:id/card-chip-context', async (c) => {
+  const id = parseId(c.req.param('id'))
+  if (!id) return c.json({ error: '無效 ID' }, 400)
+  const asOfDate = parseIsoDate(c.req.query('asOf'))
+    ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+
   const stock = await c.env.DB.prepare('SELECT id, symbol FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
   const symbol = String(stock.symbol ?? '').trim()
-  const revenueQuery = asOfDate
-    ? c.env.DB.prepare(
-        'SELECT date, revenue, revenue_mom, revenue_yoy FROM monthly_revenue WHERE stock_id=? AND date<=? ORDER BY date DESC LIMIT 1'
-      ).bind(id, asOfDate)
-    : c.env.DB.prepare(
-        'SELECT date, revenue, revenue_mom, revenue_yoy FROM monthly_revenue WHERE stock_id=? ORDER BY date DESC LIMIT 1'
-      ).bind(id)
+  if (!symbol) return c.json({ error: '股票代號不存在' }, 404)
 
-  const [financialResult, canonicalResult, revenueRow, epsTrendResult, profileRow] = await Promise.all([
-    c.env.DB.prepare(
-      'SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT ?'
-    ).bind(id, limit).all<any>(),
+  const [chipRow, rankTable, brokerRow] = await Promise.all([
     c.env.DB.prepare(`
-      SELECT period, gross_margin, operating_margin, roe, eps, pe, pb,
-             dividend_yield, debt_ratio, current_ratio, operating_cash_flow,
-             roa, free_cash_flow, capital_amount, common_stock_capital,
-             preferred_stock_capital, total_assets, total_liabilities,
-             equity_parent, source, as_of_date
-        FROM canonical_fundamental_features
+      SELECT symbol, date,
+             foreign_buy, foreign_sell, foreign_net,
+             trust_buy, trust_sell, trust_net,
+             dealer_buy, dealer_sell, dealer_net
+        FROM chip_data
+       WHERE symbol = ?
+         AND date <= ?
+       ORDER BY date DESC
+       LIMIT 1
+    `).bind(symbol, asOfDate).first<any>().catch(() => null),
+    c.env.DB.prepare(`
+      SELECT name FROM sqlite_master
+       WHERE type = 'table'
+         AND name = 'canonical_broker_rank_daily'
+       LIMIT 1
+    `).first<{ name: string }>().catch(() => null),
+    c.env.DB.prepare(`
+      SELECT stock_id, date, market_segment, buy_shares, sell_shares, net_shares,
+             dominant_net_shares, gross_imbalance_shares, estimated_amount,
+             broker_count, concentration, source
+        FROM canonical_broker_flow_daily
        WHERE stock_id = ?
-       ORDER BY period DESC, as_of_date DESC
-       LIMIT 180
-    `).bind(symbol).all<any>().catch(() => ({ results: [] as any[] })),
-    revenueQuery.first<any>().catch(() => null),
-    c.env.DB.prepare(
-      "SELECT period, eps FROM financials WHERE stock_id=? AND eps IS NOT NULL AND period LIKE '%Q%' ORDER BY period DESC LIMIT 4"
-    ).bind(id).all<any>().catch(() => ({ results: [] as any[] })),
-    c.env.DB.prepare(
-      'SELECT financials_summary FROM stock_profiles WHERE symbol=? LIMIT 1'
-    ).bind(symbol).first<any>().catch(() => null),
+         AND date <= ?
+       ORDER BY date DESC
+       LIMIT 1
+    `).bind(symbol, asOfDate).first<any>().catch(() => null),
   ])
 
-  const financialRows = financialResult.results ?? []
-  const canonicalRows = canonicalResult.results ?? []
-  const canonicalPe = firstFinite(canonicalRows, 'pe', { skipZero: true })
-  const canonicalPb = firstFinite(canonicalRows, 'pb', { skipZero: true })
-  const canonicalDividendYield = normalizePercentUnit(firstFinite(canonicalRows, 'dividend_yield'), 30)
-  const canonicalRoe = firstFinite(canonicalRows, 'roe', { skipZero: true })
-  const canonicalEps = firstFinite(canonicalRows, 'eps', { skipZero: true })
-  const profileMargins = extractProfileMargins(profileRow?.financials_summary)
-  const canonicalGrossMargin = normalizePercentUnit(firstFinite(canonicalRows, 'gross_margin', { skipZero: true }), 100)
-  const canonicalOperatingMargin = normalizePercentUnit(firstFinite(canonicalRows, 'operating_margin', { skipZero: true }), 100)
-  const canonicalCapitalAmount = firstFinite(canonicalRows, 'capital_amount', { skipZero: true })
-  const grossMarginFallback = canonicalGrossMargin ?? profileMargins.grossMargin
-  const operatingMarginFallback = canonicalOperatingMargin ?? profileMargins.operatingMargin
-  const capitalSource = canonicalCapitalAmount != null
-    ? 'finlab.financial_statement.股本'
-    : null
-  const canonicalSource = canonicalRows.find((row: any) => (
-    row.pe != null || row.pb != null || row.dividend_yield != null ||
-    row.gross_margin != null || row.operating_margin != null ||
-    row.capital_amount != null
-  ))?.source ?? null
-  const epsTrend = buildEpsTrend(epsTrendResult.results ?? [], canonicalRows, 4)
+  const brokerDate = String(brokerRow?.date ?? asOfDate)
+  const rankRows = rankTable?.name
+    ? (await c.env.DB.prepare(`
+        SELECT stock_id, date, market_segment, rank_side, rank_no,
+               broker_code, broker_name, buy_lots, sell_lots, net_lots, source
+          FROM canonical_broker_rank_daily
+         WHERE stock_id = ?
+           AND date = ?
+           AND rank_side IN ('buy', 'sell')
+         ORDER BY rank_side ASC, rank_no ASC
+      `).bind(symbol, brokerDate).all<any>().catch(() => ({ results: [] as any[] }))).results ?? []
+    : []
 
-  const baseRows = financialRows.length
-    ? financialRows
-    : [{
-        stock_id: id,
-        period: canonicalRows[0]?.period ?? revenueRow?.date ?? null,
-        eps: null,
-        roe: null,
-        pe: null,
-        pb: null,
-        dividend_yield: null,
-        revenue_growth_yoy: null,
-        revenue: null,
-        operating_income: null,
-        net_income: null,
-      }]
-
-  const enriched = baseRows.map((row: any, index: number) => {
-    const operatingMargin = operatingMarginFallback ?? operatingMarginFromFinancial(row)
-    const netProfitMargin = netProfitMarginFromFinancial(row)
-    return {
-      ...row,
-      eps: index === 0 ? (canonicalEps ?? row.eps ?? null) : row.eps,
-      roe: index === 0 ? normalizePercentUnit(canonicalRoe ?? row.roe) : normalizePercentUnit(row.roe),
-      pe: index === 0 ? (canonicalPe ?? row.pe ?? null) : row.pe,
-      pb: index === 0 ? (canonicalPb ?? row.pb ?? null) : row.pb,
-      dividend_yield: index === 0
-        ? (canonicalDividendYield ?? normalizePercentUnit(row.dividend_yield, 30))
-        : normalizePercentUnit(row.dividend_yield, 30),
-      gross_margin: grossMarginFallback,
-      operating_margin: operatingMargin,
-      net_profit_margin: netProfitMargin,
-      revenue_mom: finiteNumber(revenueRow?.revenue_mom),
-      revenue_yoy: finiteNumber(revenueRow?.revenue_yoy ?? row.revenue_growth_yoy),
-      revenue_month: revenueRow?.date ?? null,
-      revenue_as_of: asOfDate,
-      eps_trend: epsTrend,
-      capital_amount: canonicalCapitalAmount,
-      capital_source: capitalSource,
-      fundamental_source: {
-        quarterly: 'financials',
-        valuation: canonicalSource ?? 'financials',
-        net_profit_margin: netProfitMargin == null ? null : 'financials.net_income/revenue',
-        monthly_revenue: revenueRow ? 'monthly_revenue' : null,
-        profile: profileMargins.source,
-        capital: capitalSource,
-      },
-      missing_fields: {
-        gross_margin: grossMarginFallback == null,
-        capital_amount: canonicalCapitalAmount == null,
-      },
-    }
+  return c.json({
+    stock_id: id,
+    symbol,
+    as_of_date: asOfDate,
+    institutional_raw_today: buildInstitutionalRawCard(chipRow),
+    broker_top_flows_today: buildBrokerTopFlowsCard(brokerRow, brokerDate, rankRows),
   })
-
-  return c.json(enriched)
 })
 
 // ─── GET /api/stocks/:id/monthly-revenue?months=12 ──────────────────────────
@@ -368,10 +349,7 @@ stocks.get('/:id/monthly-revenue', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
   const months = parsePosInt(c.req.query('months'), 12)
-  const { results } = await c.env.DB.prepare(
-    'SELECT * FROM monthly_revenue WHERE stock_id=? ORDER BY date DESC LIMIT ?'
-  ).bind(id, months).all()
-  return c.json(results ?? [])
+  return c.json(await loadStockMonthlyRevenueRows(c.env.DB, id, { months }))
 })
 
 // ─── GET /api/stocks/:id/chips?days=60 ───────────────────────────────────────
@@ -456,14 +434,8 @@ stocks.get('/:id/valuations', async (c) => {
   const stock = await c.env.DB.prepare('SELECT * FROM stocks WHERE id=?').bind(id).first<any>()
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
-  const [current, history] = await Promise.all([
-    c.env.DB.prepare(
-      "SELECT * FROM financials WHERE stock_id=? AND period_type='quarterly' ORDER BY period DESC LIMIT 1"
-    ).bind(id).first(),
-    c.env.DB.prepare(
-      "SELECT * FROM financials WHERE stock_id=? AND period_type='quarterly' ORDER BY period DESC LIMIT 8"
-    ).bind(id).all().then(r => r.results),
-  ])
+  const history = await loadStockFinancialRows(c.env.DB, id, { limit: 8 })
+  const current = history[0] ?? null
 
   return c.json({ stock, current, history })
 })
@@ -570,9 +542,7 @@ stocks.get('/:id/ai-summary', async (c) => {
       'SELECT business_desc, key_customers, key_suppliers FROM stock_profiles WHERE symbol=?'
     ).bind(stock.symbol).first<any>().catch(() => null),
     // 最新財報
-    c.env.DB.prepare(
-      "SELECT period, eps, pe, pb, dividend_yield, roe FROM financials WHERE stock_id=? AND period LIKE '%Q%' ORDER BY period DESC LIMIT 1"
-    ).bind(id).first<any>().catch(() => null),
+    loadLatestStockFinancialSnapshot(c.env.DB, id).catch(() => null),
   ])
 
   let recommendation = recRow

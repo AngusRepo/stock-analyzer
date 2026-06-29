@@ -2588,11 +2588,17 @@ function technicalPlanNote(rec: any): string {
     || '技術資料不足，先以盤中量價確認。'
 }
 
-function chipPlanNote(rec: any): string {
-  const institutional = institutionalRawFromRec(rec)
+function chipPlanNote(rec: any, institutionalOverride?: ReturnType<typeof institutionalRawFromRec>, brokerFlowOverride?: any | null): string {
+  const institutional = institutionalOverride ?? institutionalRawFromRec(rec)
   const todayNetShares = institutionalNetShares(institutional)
   if (todayNetShares != null) {
     return `法人今日${flowDirectionText(todayNetShares)}${fmtAbsLotsFromShares(todayNetShares)}，來源為 chip_data 法人原始買賣超。`
+  }
+  const brokerAggregate = parseObject(brokerFlowOverride?.aggregate)
+  const brokerNetLots = Number(brokerAggregate?.net_lots ?? brokerAggregate?.dominant_net_lots)
+  if (Number.isFinite(brokerNetLots)) {
+    const direction = brokerNetLots >= 0 ? '買超' : '賣超'
+    return `券商分點當日${direction}${fmtLots(Math.abs(brokerNetLots))}，來源為 canonical broker flow。`
   }
   const scoreV2 = scoreV2PayloadFromRec(rec)
   const evidence = parseObject(scoreV2?.chipEvidence) ?? parseObject(rec.chip_evidence)
@@ -2610,7 +2616,14 @@ function chipPlanNote(rec: any): string {
   return '籌碼來源不足，不能把法人流向當主要理由。'
 }
 
-function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanReadRow[] {
+function buildTradePlanRows(
+  rec: any,
+  context: AlphaContext | null,
+  chipContext: {
+    institutional?: ReturnType<typeof institutionalRawFromRec>
+    brokerFlow?: any | null
+  } = {},
+): TradePlanReadRow[] {
   const vm = buildScoreBreakdownViewModel(rec)
   const ml = vm.rows.find((row) => row.key === 'mlEdge')?.value ?? 0
   const chip = vm.rows.find((row) => row.key === 'chipFlow')?.value ?? 0
@@ -2634,7 +2647,7 @@ function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanRe
     {
       label: '籌碼流',
       value: `${fmtNumber(chip, 1)}/25`,
-      note: chipPlanNote(rec),
+      note: chipPlanNote(rec, chipContext.institutional, chipContext.brokerFlow),
       tone: scoreTone(chip, 18, 10),
     },
     {
@@ -2658,11 +2671,16 @@ function buildTradePlanRows(rec: any, context: AlphaContext | null): TradePlanRe
   ]
 }
 
-function chipPlanValue(rec: any): string {
-  const institutional = institutionalRawFromRec(rec)
+function chipPlanValue(rec: any, institutionalOverride?: ReturnType<typeof institutionalRawFromRec>, brokerFlowOverride?: any | null): string {
+  const institutional = institutionalOverride ?? institutionalRawFromRec(rec)
   const todayNetShares = institutionalNetShares(institutional)
   if (todayNetShares != null) {
     return `${flowDirectionText(todayNetShares)} ${fmtAbsLotsFromShares(todayNetShares)}`
+  }
+  const brokerAggregate = parseObject(brokerFlowOverride?.aggregate)
+  const brokerNetLots = Number(brokerAggregate?.net_lots ?? brokerAggregate?.dominant_net_lots)
+  if (Number.isFinite(brokerNetLots)) {
+    return `${brokerNetLots >= 0 ? '買超' : '賣超'} ${fmtLots(Math.abs(brokerNetLots))}`
   }
   const evidence = parseObject(scoreV2PayloadFromRec(rec)?.chipEvidence) ?? parseObject(rec.chip_evidence)
   const brokerAmount = Number(evidence?.broker_net_amount_5d_billion)
@@ -2687,7 +2705,15 @@ function alphaStructureValue(context: AlphaContext | null): string {
   return parts.length ? parts.join(' / ') : 'Alpha 結構資料不足'
 }
 
-function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan: TradePlanContext): TradePlanReadRow[] {
+function buildFocusedTradePlanRows(
+  rec: any,
+  context: AlphaContext | null,
+  plan: TradePlanContext,
+  chipContext: {
+    institutional?: ReturnType<typeof institutionalRawFromRec>
+    brokerFlow?: any | null
+  } = {},
+): TradePlanReadRow[] {
   const zones = buildTradePlanStructureZones(plan, context, STRONG_BREAKOUT_CHASE_PCT)
   const modelEntry = planPrice(rec.ml_entry_price ?? rec.entry_price ?? rec.entryPrice)
   const entryModel: EntryPriceModelV2Ui = plan.entryModelV2 ?? {
@@ -2708,6 +2734,7 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan:
   const optimisticTarget = planPrice(plan.optimisticHigh ?? context?.optimisticValueHigh)
   const pocSource = `${entryModel.poc ?? '-'} / ${entryModel.anchorSource}`
   const sourceNote = entryModel.fallback ?? ''
+  const chipValue = chipPlanValue(rec, chipContext.institutional, chipContext.brokerFlow)
   return [
     { label: '現價', value: zones.latest ?? '-', note: '', tone: 'neutral' },
     { label: '偏好買入價', value: preferredEntry, note: '', tone: 'neutral' },
@@ -2720,7 +2747,7 @@ function buildFocusedTradePlanRows(rec: any, context: AlphaContext | null, plan:
     { label: 'ATR 防守', value: zones.atrDefense ?? '-', note: '', tone: 'warn' },
     { label: 'POC / 量能節點來源', value: pocSource, note: '', tone: isTrueVolumeAnchor ? 'good' : 'warn' },
     { label: '線位來源', value: sourceText, note: sourceNote, tone: isTrueVolumeAnchor ? 'good' : 'warn' },
-    { label: '籌碼', value: chipPlanValue(rec), note: '', tone: String(chipPlanValue(rec)).includes('買超') ? 'good' : 'warn' },
+    { label: '籌碼', value: chipValue, note: '', tone: String(chipValue).includes('買超') ? 'good' : 'warn' },
     { label: 'Alpha 結構', value: alphaStructureValue(context), note: '', tone: context?.skip ? 'warn' : 'neutral' },
   ]
 }
@@ -2736,7 +2763,19 @@ function FocusedTradePlanRow({ row }: { row: TradePlanReadRow }) {
   )
 }
 
-function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: AlphaContext | null; reason: string }) {
+function TradingPlanNarrative({
+  rec,
+  context,
+  reason,
+  institutionalRaw,
+  brokerFlow,
+}: {
+  rec: any
+  context: AlphaContext | null
+  reason: string
+  institutionalRaw?: ReturnType<typeof institutionalRawFromRec>
+  brokerFlow?: any | null
+}) {
   const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
   const inlineRows = Array.isArray(rec.price_candles)
     ? rec.price_candles
@@ -2765,7 +2804,10 @@ function TradingPlanNarrative({ rec, context, reason }: { rec: any; context: Alp
     support ? `關鍵支撐 ${support}` : null,
     atrDefense ? `ATR 防守 ${atrDefense}` : null,
   ].filter(Boolean).join('，')
-  const tradePlanRows = buildFocusedTradePlanRows(rec, context, plan)
+  const tradePlanRows = buildFocusedTradePlanRows(rec, context, plan, {
+    institutional: institutionalRaw,
+    brokerFlow,
+  })
 
   return (
     <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
@@ -3018,7 +3060,28 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
   const institutionalRaw = institutionalRawFromRec(rec)
   const brokerTopFlows = brokerTopFlowsFromRec(rec)
-  const todayInstitutionalNetShares = institutionalNetShares(institutionalRaw)
+  const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
+  const chipContextAsOf = String(rec.recommendation_date ?? rec.date ?? rec.prediction_date ?? '').slice(0, 10)
+  const brokerHasData = Boolean(
+    brokerTopFlows?.aggregate
+      || (Array.isArray(brokerTopFlows?.top_buy) && brokerTopFlows.top_buy.length > 0)
+      || (Array.isArray(brokerTopFlows?.top_sell) && brokerTopFlows.top_sell.length > 0),
+  )
+  const shouldFetchChipContext = expanded
+    && Number.isFinite(stockId)
+    && stockId > 0
+    && (!institutionalRaw || !brokerHasData)
+  const { data: fallbackChipContext } = useQuery({
+    queryKey: ['recommendation-card-chip-context', stockId, chipContextAsOf || 'latest'],
+    queryFn: () => stocksApi.cardChipContext(stockId, chipContextAsOf || undefined),
+    enabled: shouldFetchChipContext,
+    staleTime: 10 * 60_000,
+  })
+  const fallbackInstitutionalRaw = institutionalRawFromRec(fallbackChipContext)
+  const fallbackBrokerTopFlows = brokerTopFlowsFromRec(fallbackChipContext)
+  const effectiveInstitutionalRaw = institutionalRaw ?? fallbackInstitutionalRaw
+  const effectiveBrokerTopFlows = brokerHasData ? brokerTopFlows : (fallbackBrokerTopFlows ?? brokerTopFlows)
+  const todayInstitutionalNetShares = institutionalNetShares(effectiveInstitutionalRaw)
   const chipBadge = todayInstitutionalNetShares != null
     ? {
         label: '法人今日',
@@ -3142,9 +3205,15 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
 
           <FundamentalSnapshotBlock rec={rec} />
 
-          <InstitutionalBrokerFlowBlock institutional={institutionalRaw} brokerFlow={brokerTopFlows} />
+          <InstitutionalBrokerFlowBlock institutional={effectiveInstitutionalRaw} brokerFlow={effectiveBrokerTopFlows} />
 
-          <TradingPlanNarrative rec={rec} context={alphaContext} reason={displayReason} />
+          <TradingPlanNarrative
+            rec={rec}
+            context={alphaContext}
+            reason={displayReason}
+            institutionalRaw={effectiveInstitutionalRaw}
+            brokerFlow={effectiveBrokerTopFlows}
+          />
 
           {showFullDecisionDetail && (mlSummary || mlMetadataGap || mlDiagnostics) && (
             <div className="rounded-[18px] border border-indigo-300/20 bg-indigo-400/[0.07] p-3 text-xs leading-relaxed text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">

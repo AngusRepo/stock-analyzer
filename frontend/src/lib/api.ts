@@ -77,6 +77,12 @@ export const stocksApi = {
     if (asOf) params.set('asOf', asOf)
     return get<any[]>(`/stocks/${id}/financials?${params}`)
   },
+  cardChipContext: (id: number, asOf?: string) => {
+    const params = new URLSearchParams()
+    if (asOf) params.set('asOf', asOf)
+    const query = params.toString()
+    return get<any>(`/stocks/${id}/card-chip-context${query ? `?${query}` : ''}`)
+  },
   chips:       (id: number, days = 60) => get<any[]>(`/stocks/${id}/chips?days=${days}`),
   news:        (id: number, days = 30) => get<any[]>(`/stocks/${id}/news?days=${days}`),
   predictions: (id: number) => get<any[]>(`/stocks/${id}/predictions`),

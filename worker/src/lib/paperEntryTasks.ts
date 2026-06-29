@@ -60,8 +60,7 @@ import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { shouldMarkPendingDebateSlaReached } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
-import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
-import { loadTradingRestrictionSet, refreshOfficialTradingRestrictions } from './tradingRestrictions'
+import { loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 import {
   buildFiveSlotCapitalPlan,
@@ -206,87 +205,12 @@ function parseEventTimeMs(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function addRestrictedSymbolsFromRaw(target: Set<string>, raw: string | null): void {
-  if (!raw) return
-  try {
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return
-    for (const item of parsed) {
-      const symbol = typeof item === 'string' ? item : item?.symbol ?? item?.code
-      if (symbol) target.add(String(symbol))
-    }
-  } catch {
-    // Ignore malformed optional cache; execution still tries live refresh below.
-  }
-}
-
-async function addD1TradingRestrictions(env: Bindings, target: Set<string>, tradeDate: string): Promise<void> {
-  try {
-    const canonical = await loadTradingRestrictionSet(env, tradeDate, { refreshOfficialIfStale: false })
-    for (const symbol of canonical.symbols) target.add(symbol)
-  } catch {
-    // Canonical FinLab/official restriction table is additive; fall back below.
-  }
-  try {
-    const { results } = await env.DB.prepare(`
-      SELECT symbol
-        FROM stock_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
-         AND (start_date IS NULL OR start_date <= ?)
-         AND (end_date IS NULL OR end_date >= ?)
-    `).bind(tradeDate, tradeDate).all<{ symbol: string | null }>()
-    for (const row of results ?? []) {
-      if (row.symbol) target.add(String(row.symbol))
-    }
-  } catch {
-    // Older D1 snapshots may not have this optional governance table.
-  }
-}
-
 async function loadExecutionBlockedSymbols(env: Bindings, tradeDate: string): Promise<Set<string>> {
-  const blocked = new Set<string>()
-  const [
-    punishedRaw,
-    attentionRaw,
-    tpexPunishedRaw,
-    tpexAttentionRaw,
-    delistingRaw,
-    checkedAtRaw,
-  ] = await Promise.all([
-    env.KV.get('market:punished_stocks'),
-    env.KV.get('market:attention_stocks'),
-    env.KV.get('market:tpex_punished_stocks'),
-    env.KV.get('market:tpex_attention_stocks'),
-    env.KV.get('market:delisting_risk'),
-    env.KV.get('market:restricted_execution_checked_at'),
-  ])
-
-  addRestrictedSymbolsFromRaw(blocked, punishedRaw)
-  addRestrictedSymbolsFromRaw(blocked, attentionRaw)
-  addRestrictedSymbolsFromRaw(blocked, tpexPunishedRaw)
-  addRestrictedSymbolsFromRaw(blocked, tpexAttentionRaw)
-  addRestrictedSymbolsFromRaw(blocked, delistingRaw)
-  await addD1TradingRestrictions(env, blocked, tradeDate)
-
-  const checkedAtMs = checkedAtRaw ? Date.parse(checkedAtRaw) : 0
-  const shouldRefresh = !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs > EXECUTION_RESTRICTED_REFRESH_TTL_MS
-  if (!shouldRefresh) return blocked
-
-  const [punishedResult, attentionResult] = await Promise.allSettled([
-    fetchPunishedStocks(),
-    fetchAttentionStocks(),
-  ])
-  if (punishedResult.status === 'fulfilled' && punishedResult.value.length > 0) {
-    for (const symbol of punishedResult.value) blocked.add(symbol)
-    await env.KV.put('market:punished_stocks', JSON.stringify(punishedResult.value), { expirationTtl: 86400 })
-  }
-  if (attentionResult.status === 'fulfilled' && attentionResult.value.length > 0) {
-    for (const symbol of attentionResult.value) blocked.add(symbol)
-    await env.KV.put('market:attention_stocks', JSON.stringify(attentionResult.value), { expirationTtl: 86400 })
-  }
-  await refreshOfficialTradingRestrictions(env, tradeDate).catch(() => ({}))
-  await env.KV.put('market:restricted_execution_checked_at', new Date().toISOString(), { expirationTtl: 3600 })
-  return blocked
+  const policy = await loadTradingRestrictionBuckets(env, tradeDate, {
+    refreshOfficialIfStale: true,
+    refreshTtlMs: EXECUTION_RESTRICTED_REFRESH_TTL_MS,
+  }).catch(() => null)
+  return policy?.hardBlockedSymbols ?? new Set<string>()
 }
 
 interface IntradayTechnicalBaseline {
@@ -1356,7 +1280,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     if (blockedSymbols.has(pending.symbol)) {
       console.warn(`[Intraday] ${pending.symbol} restricted execution gate`)
-      recordExecutionEvent(pending.symbol, 'skipped', 'restricted_execution_gate', 'punished_or_attention_or_delisting')
+      recordExecutionEvent(pending.symbol, 'skipped', 'restricted_execution_gate', 'delisting_or_execution_block')
       stateChanged = true
       continue
     }

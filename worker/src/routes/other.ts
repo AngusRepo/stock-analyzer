@@ -3168,13 +3168,21 @@ recommendations.get('/daily', async (c) => {
     const placeholders = resultSymbols.map(() => '?').join(',')
     try {
       const { results: chipRows } = await c.env.DB.prepare(`
-        SELECT symbol, date,
-               foreign_buy, foreign_sell, foreign_net,
-               trust_buy, trust_sell, trust_net,
-               dealer_buy, dealer_sell, dealer_net
-          FROM chip_data
-         WHERE date = ?
-           AND symbol IN (${placeholders})
+        WITH latest_chip AS (
+          SELECT symbol, MAX(date) AS date
+            FROM chip_data
+           WHERE date <= ?
+             AND symbol IN (${placeholders})
+           GROUP BY symbol
+        )
+        SELECT c.symbol, c.date,
+               c.foreign_buy, c.foreign_sell, c.foreign_net,
+               c.trust_buy, c.trust_sell, c.trust_net,
+               c.dealer_buy, c.dealer_sell, c.dealer_net
+          FROM chip_data c
+          JOIN latest_chip l
+            ON l.symbol = c.symbol
+           AND l.date = c.date
       `).bind(String(date), ...resultSymbols).all<any>()
       for (const row of chipRows ?? []) {
         const payload = buildInstitutionalRawToday(row)
@@ -3192,13 +3200,21 @@ recommendations.get('/daily', async (c) => {
       `).first<{ name: string }>()
       if (rankTable?.name) {
         const { results: rankRows } = await c.env.DB.prepare(`
-          SELECT stock_id, date, market_segment, rank_side, rank_no,
-                 broker_code, broker_name, buy_lots, sell_lots, net_lots, source
-            FROM canonical_broker_rank_daily
-           WHERE date = ?
-             AND stock_id IN (${placeholders})
-             AND rank_side IN ('buy', 'sell')
-           ORDER BY stock_id ASC, rank_side ASC, rank_no ASC
+          WITH latest_rank AS (
+            SELECT stock_id, MAX(date) AS date
+              FROM canonical_broker_rank_daily
+             WHERE date <= ?
+               AND stock_id IN (${placeholders})
+             GROUP BY stock_id
+          )
+          SELECT r.stock_id, r.date, r.market_segment, r.rank_side, r.rank_no,
+                 r.broker_code, r.broker_name, r.buy_lots, r.sell_lots, r.net_lots, r.source
+            FROM canonical_broker_rank_daily r
+            JOIN latest_rank l
+              ON l.stock_id = r.stock_id
+             AND l.date = r.date
+           WHERE r.rank_side IN ('buy', 'sell')
+           ORDER BY r.stock_id ASC, r.rank_side ASC, r.rank_no ASC
         `).bind(String(date), ...resultSymbols).all<any>()
         for (const row of rankRows ?? []) {
           const symbol = String(row.stock_id ?? '').trim()
@@ -3212,12 +3228,20 @@ recommendations.get('/daily', async (c) => {
     }
     try {
       const { results: brokerRows } = await c.env.DB.prepare(`
-        SELECT stock_id, date, market_segment, buy_shares, sell_shares, net_shares,
-               dominant_net_shares, gross_imbalance_shares, estimated_amount,
-               broker_count, concentration, source
-          FROM canonical_broker_flow_daily
-         WHERE date = ?
-           AND stock_id IN (${placeholders})
+        WITH latest_broker_flow AS (
+          SELECT stock_id, MAX(date) AS date
+            FROM canonical_broker_flow_daily
+           WHERE date <= ?
+             AND stock_id IN (${placeholders})
+           GROUP BY stock_id
+        )
+        SELECT f.stock_id, f.date, f.market_segment, f.buy_shares, f.sell_shares, f.net_shares,
+               f.dominant_net_shares, f.gross_imbalance_shares, f.estimated_amount,
+               f.broker_count, f.concentration, f.source
+          FROM canonical_broker_flow_daily f
+          JOIN latest_broker_flow l
+            ON l.stock_id = f.stock_id
+           AND l.date = f.date
       `).bind(String(date), ...resultSymbols).all<any>()
       for (const row of brokerRows ?? []) {
         const symbol = String(row.stock_id ?? '').trim()
@@ -3371,8 +3395,12 @@ recommendations.get('/daily', async (c) => {
       screener_funnel_evidence: screenerFunnelEvidence,
       screener_funnel_timeline: screenerFunnel?.timeline ?? [],
       institutional_raw_today: institutionalRawBySymbol.get(String(r.symbol ?? '').trim()) ?? null,
-      broker_top_flows_today: brokerTopFlowsBySymbol.get(String(r.symbol ?? '').trim())
-        ?? buildBrokerTopFlowsToday(null, String(r.date ?? date), brokerRankRowsBySymbol.get(String(r.symbol ?? '').trim()) ?? []),
+      broker_top_flows_today: (() => {
+        const symbol = String(r.symbol ?? '').trim()
+        const rankRows = brokerRankRowsBySymbol.get(symbol) ?? []
+        return brokerTopFlowsBySymbol.get(symbol)
+          ?? buildBrokerTopFlowsToday(null, String(rankRows[0]?.date ?? r.date ?? date), rankRows)
+      })(),
       watch_points: watchPoints,
     }
   })

@@ -601,8 +601,8 @@ function FearGreedCard({ risk }: { risk: any }) {
   const factors = asArray<RiskFactor>(index.factors)
   const byFactorId = (id: string) => factors.find((factor) => String(factor.id ?? '') === id) ?? null
   const momentum = byFactorId('market_momentum')
-  const optionsPositioning = byFactorId('options_positioning')
-  const volatilityPressure = byFactorId('volatility_pressure')
+  const globalRiskAppetite = byFactorId('global_risk_appetite')
+  const safeHavenFx = byFactorId('safe_haven_fx')
   const creditStress = byFactorId('credit_stress')
   const factorTone = (factor: RiskFactor | null) => fearGreedTone(asNumber(factor?.score))
 
@@ -640,9 +640,9 @@ function FearGreedCard({ risk }: { risk: any }) {
 
       <div className="mt-4 grid grid-cols-2 gap-3">
         <HedgeFactor label="市場動能" value={factorDisplay(momentum, '待接資料')} note="20MA 偏離" tone={factorTone(momentum)} />
-        <HedgeFactor label="選擇權情緒" value={factorDisplay(optionsPositioning, '待接 PCR')} note="賣買權量比" tone={factorTone(optionsPositioning)} />
-        <HedgeFactor label="波動壓力" value={factorDisplay(volatilityPressure, '待接資料')} note="VIX / 台股波動" tone={factorTone(volatilityPressure)} />
-        <HedgeFactor label="信用風險" value={factorDisplay(creditStress, '待接資料')} note="高收益債利差" tone={factorTone(creditStress)} />
+        <HedgeFactor label="全球風險偏好" value={factorDisplay(globalRiskAppetite, '待接資料')} note="美股 / 半導體外溢" tone={factorTone(globalRiskAppetite)} />
+        <HedgeFactor label="避險匯率" value={factorDisplay(safeHavenFx, '待接資料')} note="美元避險壓力" tone={factorTone(safeHavenFx)} />
+        <HedgeFactor label="信用風險" value={factorDisplay(creditStress, '待接資料')} note="風險補償需求" tone={factorTone(creditStress)} />
       </div>
     </section>
   )
@@ -668,8 +668,6 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   const largeTrader = byHedgeId('large_trader_net') ?? findFactor(risk, ['large_trader', 'smart_money'], ['大戶', '未平倉'])
   const twVolFactor = byHedgeId('twii_vol20')
   const usVixFactor = byHedgeId('us_vix')
-  const hySpreadFactor = byHedgeId('hy_spread')
-  const dxyFactor = byHedgeId('dxy_return')
   const usdTwdFactor = byHedgeId('usd_twd') ?? findFactor(risk, ['usd_twd', 'fx'], ['匯率', '美元兌台幣'])
   const usdTwd = asNumber(risk?.usdTwd ?? risk?.usdtwd ?? usdTwdFactor?.raw_value)
   const fxChange = asNumber(risk?.usdTwdChangePct ?? risk?.fxChangePct)
@@ -744,18 +742,6 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
           value={usVixFactor ? factorDisplay(usVixFactor) : usVix == null ? '待接資料' : usVix.toFixed(2)}
           note={usVixFactor?.detail ?? 'S&P 500 選擇權隱含波動。'}
           tone={riskTone(usVix == null ? null : usVix * 2.4)}
-        />
-        <HedgeFactor
-          label="高收益債利差"
-          value={factorDisplay(hySpreadFactor, '待接資料')}
-          note={hySpreadFactor?.detail ?? '信用利差擴大代表風險補償上升。'}
-          tone="amber"
-        />
-        <HedgeFactor
-          label="美元指數變動"
-          value={factorDisplay(dxyFactor, '待接資料')}
-          note={dxyFactor?.detail ?? '美元走強常見於全球資金轉向避險。'}
-          tone={toneBySigned(asNumber(dxyFactor?.raw_value))}
         />
         <HedgeFactor
           label="美元兌台幣"
@@ -1211,15 +1197,15 @@ function HotKeywordCloud({ rows }: { rows: any[] }) {
 }
 
 function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
-  const { data: themeData } = useQuery({
+  const { data: themeData, error: themeError, isError: themeIsError } = useQuery({
     queryKey: ['recommendations', 'sector-flow', 'theme', 'home'],
-    queryFn: () => recommendationsApi.sectorFlow(undefined, 'theme').catch(() => ({ flows: [] })),
+    queryFn: () => recommendationsApi.sectorFlow(undefined, 'theme'),
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })
-  const { data: industryData } = useQuery({
+  const { data: industryData, error: industryError, isError: industryIsError } = useQuery({
     queryKey: ['recommendations', 'sector-flow', 'industry', 'home'],
-    queryFn: () => recommendationsApi.sectorFlow(undefined, 'industry').catch(() => ({ flows: [] })),
+    queryFn: () => recommendationsApi.sectorFlow(undefined, 'industry'),
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })
@@ -1227,6 +1213,9 @@ function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
   const themeRows = asArray<any>(themeData?.flows).slice(0, limit)
   const industryRows = asArray<any>(industryData?.flows).slice(0, limit)
   const hotKeywordRows = [...themeRows, ...industryRows]
+  const errorText = themeIsError || industryIsError
+    ? String((themeError as Error | null)?.message ?? (industryError as Error | null)?.message ?? 'sector-flow API error')
+    : null
 
   return (
     <section className={panelClass('h-full p-5')}>
@@ -1237,11 +1226,19 @@ function ThemeFlowPanel({ compact = false }: { compact?: boolean }) {
         </div>
         <SourceBadge>{themeData?.date ?? industryData?.date ?? 'sector-flow'}</SourceBadge>
       </div>
-      <HotKeywordCloud rows={hotKeywordRows} />
-      <div className={cx('mt-5 grid gap-6 border-t border-white/[0.07] pt-4', compact ? 'grid-cols-1' : 'xl:grid-cols-2')}>
-        <FlowList title="題材資金流" rows={themeRows} />
-        <FlowList title="產業資金流" rows={industryRows} />
-      </div>
+      {errorText ? (
+        <div className="rounded-[16px] border border-amber-300/15 bg-amber-400/[0.055] p-4 text-sm text-amber-100">
+          法人資金流與題材輪動讀取失敗：{errorText}
+        </div>
+      ) : (
+        <>
+          <HotKeywordCloud rows={hotKeywordRows} />
+          <div className={cx('mt-5 grid gap-6 border-t border-white/[0.07] pt-4', compact ? 'grid-cols-1' : 'xl:grid-cols-2')}>
+            <FlowList title="題材資金流" rows={themeRows} />
+            <FlowList title="產業資金流" rows={industryRows} />
+          </div>
+        </>
+      )}
     </section>
   )
 }
@@ -1337,9 +1334,9 @@ function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_L
 }
 
 function RecommendationPanel() {
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['recommendations', 'daily', 'home'],
-    queryFn: () => recommendationsApi.daily().catch(() => ({ recommendations: [] })),
+    queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
     staleTime: 30 * 60 * 1000,
     retry: 1,
   })
@@ -1398,6 +1395,14 @@ function RecommendationPanel() {
           {[1, 2, 3, 4].map((index) => (
             <div key={index} className="h-28 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.035]" />
           ))}
+        </div>
+      ) : isError ? (
+        <div className="bg-[#111216] p-8 text-center text-sm text-slate-500">
+          <div className="mx-auto max-w-md rounded-[18px] border border-amber-300/15 bg-amber-400/[0.055] p-6 text-left">
+            <Sparkles className="mb-3 h-8 w-8 text-amber-300" />
+            <p className="font-semibold text-amber-100">選股推薦名單讀取失敗</p>
+            <p className="mt-2 break-words text-xs leading-5 text-slate-400">{String((error as Error | null)?.message ?? 'recommendations/daily API error')}</p>
+          </div>
         </div>
       ) : displayRows.length ? (
         <div className="grid gap-3 bg-[#101116] p-4 lg:grid-cols-2">

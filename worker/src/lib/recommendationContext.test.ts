@@ -6,6 +6,7 @@ import {
   buildSparseAllocationSummary,
   compactRecommendationForCard,
 } from './recommendationContext'
+import { readFileSync } from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -291,4 +292,26 @@ const forecastData = {
   assert(card.alpha_allocation === '{"engine":"sparse_tangent_inverse_risk"}', 'card view must keep sparse allocator payload')
   assert(card.institutional_raw_today?.schema_version === 'institutional_raw_today_v1', 'card view must keep institutional raw card data')
   assert(card.broker_top_flows_today?.schema_version === 'broker_level_top5_v1', 'card view must keep broker top-flow card data')
+}
+
+{
+  const recommendationsRoute = readFileSync('src/routes/other.ts', 'utf8')
+  assert(
+    recommendationsRoute.includes('WITH latest_chip AS') &&
+      recommendationsRoute.includes('FROM chip_data') &&
+      recommendationsRoute.includes('WHERE date <= ?'),
+    'recommendation card institutional raw data must fall back to latest chip_data date <= recommendation date',
+  )
+  assert(
+    recommendationsRoute.includes('WITH latest_rank AS') &&
+      recommendationsRoute.includes('FROM canonical_broker_rank_daily') &&
+      recommendationsRoute.includes('WHERE date <= ?'),
+    'recommendation card broker rank data must fall back to latest rank date <= recommendation date',
+  )
+  assert(
+    recommendationsRoute.includes('WITH latest_broker_flow AS') &&
+      recommendationsRoute.includes('FROM canonical_broker_flow_daily') &&
+      recommendationsRoute.includes('WHERE date <= ?'),
+    'recommendation card broker aggregate data must fall back to latest broker flow date <= recommendation date',
+  )
 }

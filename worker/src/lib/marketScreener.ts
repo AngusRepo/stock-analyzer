@@ -19,7 +19,7 @@ import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateShape } from './breeze2Runtime'
 import { controllerPostJson } from './controllerClient'
-import { loadTradingRestrictionSet } from './tradingRestrictions'
+import { loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { isEtfPatternSymbol } from './boardTradability'
 import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
@@ -172,59 +172,31 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return chunks
 }
 
-async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
-  try {
-    const value = await kv.get(key, 'json') as unknown
-    return Array.isArray(value) ? value.map(String).filter(Boolean) : []
-  } catch {
-    return []
-  }
-}
-
 async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Promise<{
   hardBlockedSymbols: Set<string>
   riskEvidenceSymbols: Set<string>
   sourceCounts: Record<string, number>
 }> {
-  const restricted = await loadTradingRestrictionSet(env, runDate, {
+  const restricted = await loadTradingRestrictionBuckets(env, runDate, {
     refreshOfficialIfStale: true,
     refreshTtlMs: 12 * 60 * 60_000,
   })
-  const hardBlockedSymbols = new Set<string>()
-  const delistingRisk = await readSymbolList(env.KV, 'market:delisting_risk')
-  for (const symbol of delistingRisk) hardBlockedSymbols.add(symbol)
-  try {
-    const { results } = await env.DB.prepare(`
-      SELECT symbol
-        FROM stock_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
-         AND (start_date IS NULL OR start_date <= ?)
-         AND (end_date IS NULL OR end_date >= ?)
-         AND LOWER(COALESCE(restriction_type, '')) IN ('delisting','suspended','halted','untradable','data_untrusted','execution_block')
-    `).bind(runDate, runDate).all<{ symbol: string | null }>()
-    for (const row of results ?? []) {
-      const symbol = String(row.symbol ?? '').match(/\b(\d{4,6})\b/)?.[1]
-      if (symbol) hardBlockedSymbols.add(symbol)
-    }
-  } catch {
-    // Older D1 snapshots may not carry restriction_type; attention/disposition
-    // must stay risk evidence, so absence of this query should not hard block.
-  }
   await env.KV.put(
     `market:trading_restrictions:summary:${runDate}`,
     JSON.stringify({
-      count: restricted.symbols.size,
-      hard_block_count: hardBlockedSymbols.size,
-      risk_evidence_count: [...restricted.symbols].filter((symbol) => !hardBlockedSymbols.has(symbol)).length,
+      count: restricted.riskEvidenceSymbols.size,
+      hard_block_count: restricted.hardBlockedSymbols.size,
+      risk_evidence_count: [...restricted.riskEvidenceSymbols].filter((symbol) => !restricted.hardBlockedSymbols.has(symbol)).length,
       source_counts: restricted.sourceCounts,
+      hard_source_counts: restricted.hardSourceCounts,
       freshness: restricted.freshness,
       generated_at: new Date().toISOString(),
     }),
     { expirationTtl: 7 * 86400 },
   ).catch(() => {})
   return {
-    hardBlockedSymbols,
-    riskEvidenceSymbols: restricted.symbols,
+    hardBlockedSymbols: restricted.hardBlockedSymbols,
+    riskEvidenceSymbols: restricted.riskEvidenceSymbols,
     sourceCounts: restricted.sourceCounts,
   }
 }

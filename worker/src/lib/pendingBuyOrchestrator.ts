@@ -32,7 +32,7 @@ import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring
 import { checkP1Mdd } from './riskChecks/p1Mdd'
 import { checkP2Accuracy } from './riskChecks/p2Accuracy'
 import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
-import { loadTradingRestrictionSet } from './tradingRestrictions'
+import { loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { checkP4Breadth } from './riskChecks/p4Breadth'
 import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
@@ -118,6 +118,7 @@ interface PendingBuyFilterAuditSummary {
   rrg_unmapped_neutral: number
   rrg_lagging_soft_downgrade: number
   rrg_weakening_downgrade: number
+  trading_attention_risk_evidence: number
   rrg_pass: number
   gap_reject: number
   final_candidates: number
@@ -228,6 +229,7 @@ function newFilterAuditSummary(initialBuySignals: number): PendingBuyFilterAudit
     rrg_unmapped_neutral: 0,
     rrg_lagging_soft_downgrade: 0,
     rrg_weakening_downgrade: 0,
+    trading_attention_risk_evidence: 0,
     rrg_pass: 0,
     gap_reject: 0,
     final_candidates: 0,
@@ -439,49 +441,19 @@ async function loadStockProfiles(db: D1Database, symbols: string[]): Promise<Map
   return profileMap
 }
 
-async function addRestrictedKvList(kv: KVNamespace, key: string, target: Set<string>): Promise<void> {
+async function loadPendingBuyRestrictionPolicy(db: D1Database, kv: KVNamespace, tradeDate: string): Promise<{
+  hardBlockedSymbols: Set<string>
+  riskEvidenceSymbols: Set<string>
+}> {
   try {
-    const raw = await kv.get(key, 'json') as unknown
-    if (!Array.isArray(raw)) return
-    for (const item of raw) {
-      const symbol = typeof item === 'string' ? item : (item as any)?.symbol ?? (item as any)?.code
-      if (symbol) target.add(String(symbol))
+    const policy = await loadTradingRestrictionBuckets({ DB: db, KV: kv } as any, tradeDate, { refreshOfficialIfStale: false })
+    return {
+      hardBlockedSymbols: policy.hardBlockedSymbols,
+      riskEvidenceSymbols: policy.riskEvidenceSymbols,
     }
   } catch {
-    // Optional market-risk caches should not break morning setup.
+    return { hardBlockedSymbols: new Set(), riskEvidenceSymbols: new Set() }
   }
-}
-
-async function loadRestrictedSet(db: D1Database, kv: KVNamespace, tradeDate: string): Promise<Set<string>> {
-  const restricted = new Set<string>()
-  try {
-    const canonical = await loadTradingRestrictionSet({ DB: db, KV: kv } as any, tradeDate, { refreshOfficialIfStale: false })
-    for (const symbol of canonical.symbols) restricted.add(symbol)
-  } catch {
-    // Canonical restrictions are additive; continue with legacy KV/governance.
-  }
-  await Promise.all([
-    addRestrictedKvList(kv, 'market:punished_stocks', restricted),
-    addRestrictedKvList(kv, 'market:attention_stocks', restricted),
-    addRestrictedKvList(kv, 'market:tpex_punished_stocks', restricted),
-    addRestrictedKvList(kv, 'market:tpex_attention_stocks', restricted),
-    addRestrictedKvList(kv, 'market:delisting_risk', restricted),
-  ])
-  try {
-    const { results } = await db.prepare(`
-      SELECT symbol
-        FROM stock_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
-         AND (start_date IS NULL OR start_date <= ?)
-         AND (end_date IS NULL OR end_date >= ?)
-    `).bind(tradeDate, tradeDate).all<{ symbol: string | null }>()
-    for (const row of results ?? []) {
-      if (row.symbol) restricted.add(String(row.symbol))
-    }
-  } catch {
-    // Optional governance table may not exist in older D1 snapshots; KV still blocks known punished stocks.
-  }
-  return restricted
 }
 
 const RRG_TAXONOMY_CHUNK_SIZE = 40
@@ -925,7 +897,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
     }
 
-    const restrictedSet = await loadRestrictedSet(env.DB, env.KV, pendingDate)
+    const restrictionPolicy = await loadPendingBuyRestrictionPolicy(env.DB, env.KV, pendingDate)
     const { cooldownSet, stopDayFrozen } = await collectCooldownSet(env.KV, pendingDate, buyRecs)
     if (stopDayFrozen) {
       await persistPendingBuys(env, pendingDate, [], {
@@ -947,7 +919,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         open: rec.latest_open,
         avg_price: rec.latest_avg_price,
         symbol: rec.symbol,
-        restricted: restrictedSet.has(rec.symbol),
+        restricted: restrictionPolicy.hardBlockedSymbols.has(rec.symbol),
       })
       if (!board.eligibleForPendingBuy) {
         quadrantFilterLog.push({
@@ -1030,6 +1002,22 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
       riskPct *= alphaSizing
       const softRiskWatchPoints: string[] = []
+      const hasTradingRestrictionRiskEvidence = restrictionPolicy.riskEvidenceSymbols.has(rec.symbol)
+        && !restrictionPolicy.hardBlockedSymbols.has(rec.symbol)
+      if (hasTradingRestrictionRiskEvidence) {
+        softRiskWatchPoints.push('trading_attention_risk_evidence:hard_block=false:debate_required=true')
+        quadrantFilterLog.push({
+          symbol: rec.symbol,
+          name: rec.name ?? rec.symbol,
+          theme: 'trading_attention',
+          quadrant: 'risk_evidence',
+          action: 'TRADING_ATTENTION_DEBATE_REQUIRED',
+          stage: 'soft_risk_overlay',
+          reason_code: 'TRADING_ATTENTION_RISK_EVIDENCE',
+          details: { policy: 'attention_is_risk_evidence_not_hard_block', debate_required: true },
+        })
+        incAudit(filterAudit, 'trading_attention_risk_evidence')
+      }
       const rotationDetails = quadrant ? {
         rotation_score: quadrant.rotation_score ?? null,
         rotation_regime: quadrant.rotation_regime ?? null,

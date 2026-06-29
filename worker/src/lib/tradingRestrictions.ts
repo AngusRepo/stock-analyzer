@@ -19,7 +19,32 @@ export interface TradingRestrictionSet {
   }
 }
 
+export interface TradingRestrictionBuckets {
+  hardBlockedSymbols: Set<string>
+  riskEvidenceSymbols: Set<string>
+  sourceCounts: Record<string, number>
+  hardSourceCounts: Record<string, number>
+  freshness: TradingRestrictionSet['freshness']
+}
+
 const FINLAB_TRADING_RESTRICTION_RETENTION_DAYS = 31
+const HARD_RESTRICTION_TYPES = new Set([
+  'delisting',
+  'suspended',
+  'halted',
+  'untradable',
+  'data_untrusted',
+  'execution_block',
+])
+
+function isHardRestrictionType(type: unknown, source: unknown): boolean {
+  const normalizedType = String(type ?? '').trim().toLowerCase()
+  const normalizedSource = String(source ?? '').trim().toLowerCase()
+  if (HARD_RESTRICTION_TYPES.has(normalizedType)) return true
+  if (normalizedType === 'attention' || normalizedSource.includes('attention') || normalizedSource.includes('notice')) return false
+  if (normalizedType === 'disposition' || normalizedSource.includes('punish') || normalizedSource.includes('disposition')) return false
+  return false
+}
 
 function addSourceCount(counts: Record<string, number>, source: string, amount = 1): void {
   counts[source] = (counts[source] ?? 0) + amount
@@ -216,5 +241,68 @@ export async function loadTradingRestrictionSet(
       canonicalLatestSourceDate: canonical.latestSourceDate,
       officialCheckedAt: checkedAtRaw,
     },
+  }
+}
+
+export async function loadTradingRestrictionBuckets(
+  env: Bindings,
+  tradeDate: string,
+  options: { refreshOfficialIfStale?: boolean; refreshTtlMs?: number } = {},
+): Promise<TradingRestrictionBuckets> {
+  const allRestrictions = await loadTradingRestrictionSet(env, tradeDate, options)
+  const hardBlockedSymbols = new Set<string>()
+  const hardSourceCounts: Record<string, number> = {}
+  const finlabCutoff = finlabTradingRestrictionCutoff(tradeDate)
+
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT symbol, restriction_type, source
+        FROM canonical_trading_restrictions
+       WHERE COALESCE(active, 1) = 1
+         AND (start_date IS NULL OR start_date <= ?)
+         AND (end_date IS NULL OR end_date >= ?)
+         AND (source != 'finlab.trading_attention' OR source_date >= ?)
+    `).bind(tradeDate, tradeDate, finlabCutoff).all<{ symbol: string | null; restriction_type: string | null; source: string | null }>()
+    for (const row of results ?? []) {
+      const symbol = cleanSymbol(row.symbol)
+      if (!symbol || !isHardRestrictionType(row.restriction_type, row.source)) continue
+      hardBlockedSymbols.add(symbol)
+      addSourceCount(hardSourceCounts, row.source || 'canonical_trading_restrictions')
+    }
+  } catch {
+    // Canonical restriction details are additive; continue with governance/KV hard sources.
+  }
+
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT symbol, restriction_type, source
+        FROM stock_trading_restrictions
+       WHERE COALESCE(active, 1) = 1
+         AND (start_date IS NULL OR start_date <= ?)
+         AND (end_date IS NULL OR end_date >= ?)
+         AND LOWER(COALESCE(restriction_type, '')) IN ('delisting','suspended','halted','untradable','data_untrusted','execution_block')
+    `).bind(tradeDate, tradeDate).all<{ symbol: string | null; restriction_type: string | null; source: string | null }>()
+    for (const row of results ?? []) {
+      const symbol = cleanSymbol(row.symbol)
+      if (!symbol) continue
+      hardBlockedSymbols.add(symbol)
+      addSourceCount(hardSourceCounts, row.source || 'stock_trading_restrictions')
+    }
+  } catch {
+    // Older D1 snapshots may not carry restriction_type.
+  }
+
+  const [delisting] = await Promise.all([
+    readSymbolList(env.KV, 'market:delisting_risk'),
+  ])
+  for (const symbol of delisting) hardBlockedSymbols.add(symbol)
+  if (delisting.length) addSourceCount(hardSourceCounts, 'market:delisting_risk', delisting.length)
+
+  return {
+    hardBlockedSymbols,
+    riskEvidenceSymbols: allRestrictions.symbols,
+    sourceCounts: allRestrictions.sourceCounts,
+    hardSourceCounts,
+    freshness: allRestrictions.freshness,
   }
 }

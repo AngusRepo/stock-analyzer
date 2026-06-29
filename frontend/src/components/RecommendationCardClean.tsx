@@ -1920,7 +1920,7 @@ function InstitutionalBrokerFlowBlock({
       <div className="grid gap-3 2xl:grid-cols-2">
         <div className="rounded-md border border-border/40 bg-background/55 p-2">
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <p className="font-medium text-foreground/85">法人原始資料（今日）</p>
+            <p className="font-medium text-foreground/85">法人原始資料（最新交易日）</p>
             <span className={cn('sv-num text-[11px]', signedFlowClass(institutional?.total_net_shares))}>
               淨 {fmtShares(institutional?.total_net_shares)}
             </span>
@@ -1943,13 +1943,13 @@ function InstitutionalBrokerFlowBlock({
               ))}
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground">今日法人 raw 尚未入庫。</p>
+            <p className="text-[11px] text-muted-foreground">最新交易日法人 raw 尚未入庫。</p>
           )}
         </div>
 
         <div className="rounded-md border border-border/40 bg-background/55 p-2">
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <p className="font-medium text-foreground/85">當日券商分點前三大</p>
+            <p className="font-medium text-foreground/85">最新交易日券商分點前三大</p>
             {aggregate?.broker_count != null && (
               <span className="sv-num text-[11px] text-muted-foreground">{fmtInteger(aggregate.broker_count)} 家</span>
             )}

@@ -3051,6 +3051,7 @@ recommendations.get('/daily', async (c) => {
     }
   }
   const requestedOrToday = requestedDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const cardDataAsOfDate = String(requestedOrToday)
   const { results } = await c.env.DB.prepare(`
     SELECT r.*, s.market, p.forecast_data AS prediction_forecast_data,
            ROUND(COALESCE(r.foreign_net_5d, 0), 6) AS chip_cash_foreign_5d,
@@ -3183,7 +3184,7 @@ recommendations.get('/daily', async (c) => {
           JOIN latest_chip l
             ON l.symbol = c.symbol
            AND l.date = c.date
-      `).bind(String(date), ...resultSymbols).all<any>()
+      `).bind(cardDataAsOfDate, ...resultSymbols).all<any>()
       for (const row of chipRows ?? []) {
         const payload = buildInstitutionalRawToday(row)
         if (payload) institutionalRawBySymbol.set(String(row.symbol ?? '').trim(), payload)
@@ -3215,7 +3216,7 @@ recommendations.get('/daily', async (c) => {
              AND l.date = r.date
            WHERE r.rank_side IN ('buy', 'sell')
            ORDER BY r.stock_id ASC, r.rank_side ASC, r.rank_no ASC
-        `).bind(String(date), ...resultSymbols).all<any>()
+        `).bind(cardDataAsOfDate, ...resultSymbols).all<any>()
         for (const row of rankRows ?? []) {
           const symbol = String(row.stock_id ?? '').trim()
           const rows = brokerRankRowsBySymbol.get(symbol) ?? []
@@ -3242,12 +3243,12 @@ recommendations.get('/daily', async (c) => {
           JOIN latest_broker_flow l
             ON l.stock_id = f.stock_id
            AND l.date = f.date
-      `).bind(String(date), ...resultSymbols).all<any>()
+      `).bind(cardDataAsOfDate, ...resultSymbols).all<any>()
       for (const row of brokerRows ?? []) {
         const symbol = String(row.stock_id ?? '').trim()
         brokerTopFlowsBySymbol.set(
           symbol,
-          buildBrokerTopFlowsToday(row, String(date), brokerRankRowsBySymbol.get(symbol) ?? []),
+          buildBrokerTopFlowsToday(row, String(row.date ?? cardDataAsOfDate), brokerRankRowsBySymbol.get(symbol) ?? []),
         )
       }
     } catch (e) {

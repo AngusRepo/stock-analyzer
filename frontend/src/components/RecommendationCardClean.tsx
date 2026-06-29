@@ -1461,9 +1461,10 @@ function fmtCapitalAmount(value: unknown): string {
 function FundamentalSnapshotBlock({ rec }: { rec: any }) {
   const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
   const score = scoreComponentValue(rec, 'fundamentalQuality')
+  const financialAsOf = String(rec.recommendation_date ?? rec.date ?? rec.prediction_date ?? '').slice(0, 10)
   const { data: rows = [], isLoading } = useQuery({
-    queryKey: ['recommendation-card-financials', stockId],
-    queryFn: () => stocksApi.financials(stockId, 4),
+    queryKey: ['recommendation-card-financials', stockId, financialAsOf || 'latest'],
+    queryFn: () => stocksApi.financials(stockId, 4, financialAsOf || undefined),
     enabled: Number.isFinite(stockId) && stockId > 0,
     staleTime: 6 * 60 * 60_000,
   })
@@ -1472,14 +1473,15 @@ function FundamentalSnapshotBlock({ rec }: { rec: any }) {
   const epsTrend = Array.isArray(latest?.eps_trend)
     ? latest.eps_trend.filter((item: any) => item?.eps != null).slice(0, 4)
     : []
+  const revenueNote = latest?.revenue_month ? `最新月營收 ${latest.revenue_month}` : '月營收'
   const metrics = [
     { label: 'EPS', value: latest?.eps == null ? '-' : fmtNumber(latest.eps, 2), note: latest?.period ?? 'latest' },
     { label: 'ROE', value: latest?.roe == null ? '-' : fmtPercentValue(latest.roe), note: '獲利效率' },
     { label: '毛利率', value: latest?.gross_margin == null ? '-' : fmtPercentValue(latest.gross_margin), note: latest?.missing_fields?.gross_margin ? '待匯入' : '產品利差' },
     { label: '營益率', value: latest?.operating_margin == null ? '-' : fmtPercentValue(latest.operating_margin), note: '營運效率' },
-    { label: '營收 MoM', value: latest?.revenue_mom == null ? '-' : fmtPercentValue(latest.revenue_mom), note: latest?.revenue_month ?? '月營收' },
-    { label: '殖利率', value: latest?.dividend_yield == null ? '-' : fmtPercentValue(latest.dividend_yield), note: latest?.fundamental_source?.valuation ?? '股利' },
-    { label: 'P/E', value: latest?.pe == null ? '-' : fmtNumber(latest.pe, 1), note: '估值' },
+    { label: '營收 MoM', value: latest?.revenue_mom == null ? '-' : fmtPercentValue(latest.revenue_mom), note: revenueNote },
+    { label: '稅後淨利率', value: latest?.net_profit_margin == null ? '-' : fmtPercentValue(latest.net_profit_margin), note: latest?.fundamental_source?.net_profit_margin ?? '待資料' },
+    { label: '股價淨值比 P/B', value: latest?.pb == null ? '-' : fmtNumber(latest.pb, 2), note: latest?.fundamental_source?.valuation ?? '估值' },
     { label: '資本額', value: fmtCapitalAmount(latest?.capital_amount), note: latest?.capital_source === 'not_materialized' ? '待匯入' : '股本規模' },
   ]
 

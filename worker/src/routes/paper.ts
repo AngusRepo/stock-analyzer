@@ -179,6 +179,7 @@ async function loadPendingBuyCardChipContext(
   db: D1Database,
   symbols: string[],
   sourceRecoDate: string,
+  cardDataAsOfDate = sourceRecoDate,
 ): Promise<{
   institutionalRawBySymbol: Map<string, Record<string, any>>
   brokerTopFlowsBySymbol: Map<string, Record<string, any>>
@@ -205,7 +206,7 @@ async function loadPendingBuyCardChipContext(
         JOIN latest_chip l
           ON l.symbol = c.symbol
          AND l.date = c.date
-    `).bind(sourceRecoDate, ...symbols).all<any>()
+    `).bind(cardDataAsOfDate, ...symbols).all<any>()
     for (const row of chipRows ?? []) {
       const payload = buildInstitutionalRawToday(row)
       if (payload) institutionalRawBySymbol.set(String(row.symbol ?? '').trim(), payload)
@@ -239,7 +240,7 @@ async function loadPendingBuyCardChipContext(
            AND l.date = r.date
          WHERE r.rank_side IN ('buy', 'sell')
          ORDER BY r.stock_id ASC, r.rank_side ASC, r.rank_no ASC
-      `).bind(sourceRecoDate, ...symbols).all<any>()
+      `).bind(cardDataAsOfDate, ...symbols).all<any>()
       for (const row of rankRows ?? []) {
         const symbol = String(row.stock_id ?? '').trim()
         const rows = brokerRankRowsBySymbol.get(symbol) ?? []
@@ -267,12 +268,12 @@ async function loadPendingBuyCardChipContext(
         JOIN latest_broker_flow l
           ON l.stock_id = f.stock_id
          AND l.date = f.date
-    `).bind(sourceRecoDate, ...symbols).all<any>()
+    `).bind(cardDataAsOfDate, ...symbols).all<any>()
     for (const row of brokerRows ?? []) {
       const symbol = String(row.stock_id ?? '').trim()
       brokerTopFlowsBySymbol.set(
         symbol,
-        buildBrokerTopFlowsToday(row, String(row.date ?? sourceRecoDate), brokerRankRowsBySymbol.get(symbol) ?? []),
+        buildBrokerTopFlowsToday(row, String(row.date ?? cardDataAsOfDate), brokerRankRowsBySymbol.get(symbol) ?? []),
       )
     }
   } catch (e) {
@@ -284,7 +285,7 @@ async function loadPendingBuyCardChipContext(
       const rankRows = brokerRankRowsBySymbol.get(symbol) ?? []
       brokerTopFlowsBySymbol.set(
         symbol,
-        buildBrokerTopFlowsToday(null, String(rankRows[0]?.date ?? sourceRecoDate), rankRows),
+        buildBrokerTopFlowsToday(null, String(rankRows[0]?.date ?? cardDataAsOfDate), rankRows),
       )
     }
   }
@@ -368,10 +369,12 @@ async function enrichPendingBuyContext(
   if (pendingBuys.length === 0) return pendingBuys
   const symbols = [...new Set(pendingBuys.map((item) => String(item.symbol ?? '').trim()).filter(Boolean))]
   if (symbols.length === 0) return pendingBuys
+  const cardDataAsOfDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const { institutionalRawBySymbol, brokerTopFlowsBySymbol } = await loadPendingBuyCardChipContext(
     db,
     symbols,
     sourceRecoDate,
+    cardDataAsOfDate,
   )
 
   const placeholders = symbols.map(() => '?').join(',')

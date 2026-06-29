@@ -72,7 +72,11 @@ export const stocksApi = {
   refresh:     (id: number) => post<any>(`/stocks/${id}/refresh`),
   prices:      (id: number, days = 365) => get<any[]>(`/stocks/${id}/prices?days=${days}`),
   indicators:  (id: number, days = 365) => get<any[]>(`/stocks/${id}/indicators?days=${days}`),
-  financials:  (id: number, limit = 12) => get<any[]>(`/stocks/${id}/financials?limit=${limit}`),
+  financials:  (id: number, limit = 12, asOf?: string) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (asOf) params.set('asOf', asOf)
+    return get<any[]>(`/stocks/${id}/financials?${params}`)
+  },
   chips:       (id: number, days = 60) => get<any[]>(`/stocks/${id}/chips?days=${days}`),
   news:        (id: number, days = 30) => get<any[]>(`/stocks/${id}/news?days=${days}`),
   predictions: (id: number) => get<any[]>(`/stocks/${id}/predictions`),

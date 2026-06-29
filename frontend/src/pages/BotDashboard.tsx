@@ -554,8 +554,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           alpha_allocation: b.alpha_allocation ?? sourceRec?.alpha_allocation ?? null,
           ml_vote_summary: b.ml_vote_summary ?? sourceRec?.ml_vote_summary ?? null,
           prediction_forecast_data: b.prediction_forecast_data ?? sourceRec?.prediction_forecast_data ?? null,
-          institutional_raw_today: sourceRec?.institutional_raw_today ?? b.institutional_raw_today ?? null,
-          broker_top_flows_today: sourceRec?.broker_top_flows_today ?? b.broker_top_flows_today ?? null,
+          institutional_raw_today: b.institutional_raw_today ?? sourceRec?.institutional_raw_today ?? null,
+          broker_top_flows_today: b.broker_top_flows_today ?? sourceRec?.broker_top_flows_today ?? null,
         }
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>

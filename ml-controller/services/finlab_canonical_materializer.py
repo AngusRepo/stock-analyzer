@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1303,6 +1304,15 @@ def build_fundamental_rows(
     )
     if df.is_empty():
         return []
+    missing_fields = [field for field in fields if field not in df.columns]
+    if missing_fields:
+        df = df.with_columns([pl.lit(None, dtype=pl.Float64).alias(field) for field in missing_fields])
+    df = df.filter(pl.any_horizontal([
+        pl.col(field).is_not_null() & ~pl.col(field).is_nan()
+        for field in fields
+    ]))
+    if df.is_empty():
+        return []
 
     financial_statement_amount_fields = [
         "capital_amount",
@@ -1757,7 +1767,13 @@ def _row_statements(
     update_columns: list[str],
 ) -> list[tuple[str, list[Any]]]:
     sql = _upsert_statement(table, columns, conflict_columns, update_columns)
-    return [(sql, [row.get(column) for column in columns]) for row in rows]
+    return [(sql, [_d1_param(row.get(column)) for column in columns]) for row in rows]
+
+
+def _d1_param(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[str, list[Any]]]:

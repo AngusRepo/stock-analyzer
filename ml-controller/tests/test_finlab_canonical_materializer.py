@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -249,6 +250,28 @@ def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
     assert statements
     assert any("INSERT INTO canonical_market_daily" in sql for sql, _ in statements)
     assert any("INSERT INTO finlab_materialization_manifest" in sql for sql, _ in statements)
+
+
+def test_d1_upsert_statements_sanitize_non_finite_values() -> None:
+    root = _root("non_finite_d1_params")
+    _write(root / "raw" / "daily_price" / "close.parquet", pl.DataFrame({"date": ["2026-05-15"], "2330": [math.nan]}))
+    for field in ["open", "high", "low", "volume", "value"]:
+        _write(root / "raw" / "daily_price" / f"{field}.parquet", pl.DataFrame({"date": ["2026-05-15"], "2330": [1.0]}))
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-05-18T00:00:00+00:00",
+        start_date="2026-05-15",
+        end_date="2026-05-15",
+        datasets=["canonical_market_daily"],
+    )
+
+    market_statement = next(
+        params
+        for sql, params in build_d1_upsert_statements(outputs)
+        if "INSERT INTO canonical_market_daily" in sql
+    )
+    assert market_statement[6] is None
 
 
 def test_materialize_outputs_can_exclude_emerging_rows_from_daily_primary() -> None:
@@ -548,3 +571,23 @@ def test_materialize_outputs_include_finlab_fundamental_capital_fields() -> None
     assert row["source"] == "finlab.fundamental_factor_diversity"
     statements = build_d1_upsert_statements(outputs)
     assert any("INSERT INTO canonical_fundamental_features" in sql for sql, _ in statements)
+
+
+def test_fundamental_materialization_drops_all_null_sparse_dates() -> None:
+    root = _root("fundamental_sparse_null_dates")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    _write(lane / "gross_margin.parquet", pl.DataFrame({"date": ["2026-01-01", "2026-06-02"], "2330": [66.2, None]}))
+    _write(lane / "eps.parquet", pl.DataFrame({"date": ["2026-01-01", "2026-06-02"], "2330": [22.0, None]}))
+    _write(lane / "capital_amount.parquet", pl.DataFrame({"date": ["2026-01-01", "2026-06-02"], "2330": [259_303_800.0, None]}))
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-29T00:00:00+00:00",
+        start_date="2026-01-01",
+        end_date="2026-06-02",
+        datasets=["canonical_fundamental_features"],
+    )
+
+    assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 1}
+    assert outputs.canonical_fundamental_features[0]["available_date"] == "2026-01-01"
+    assert outputs.canonical_fundamental_features[0]["capital_amount"] == 259_303_800_000.0

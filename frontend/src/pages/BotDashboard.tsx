@@ -328,87 +328,87 @@ function PendingBuyStateBadges({ state, stale, meta, policy }: { state?: any; st
                 : 'border-muted-foreground/30 text-muted-foreground'
 
   return (
-    <div className="px-1 flex items-center gap-2 flex-wrap text-[10px] sv-num">
-      <Badge variant="outline" className={`h-5 px-1.5 text-[9px] ${stateClass}`}>
+    <div className="px-1 flex items-center gap-2 flex-wrap text-xs sv-num">
+      <Badge variant="outline" className={`h-6 px-2 text-[11px] ${stateClass}`}>
         {state?.label ?? 'pending buys'}
       </Badge>
-      <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-emerald-500/30 text-emerald-400">
+      <Badge variant="outline" className="h-6 px-2 text-[11px] border-emerald-500/30 text-emerald-400">
         active {state?.active_count ?? 0}/{state?.total_count ?? 0}
       </Badge>
       <Badge
         variant="outline"
         title={executionPolicy}
-        className="h-5 px-1.5 text-[9px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+        className="h-6 px-2 text-[11px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
       >
         L4 sparse final BUY
       </Badge>
       {watchFallbackOff && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-zinc-500/30 text-zinc-300">
           watch fallback off
         </Badge>
       )}
       {sourceRecoDate && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">
           src {sourceRecoDate}
         </Badge>
       )}
       {(execution.filled ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-cyan-500/30 text-cyan-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-cyan-500/30 text-cyan-300">
           filled {execution.filled}
         </Badge>
       )}
       {(execution.partially_filled ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
           partial {execution.partially_filled}
         </Badge>
       )}
       {(execution.submitted ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-sky-500/30 text-sky-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">
           submitted {execution.submitted}
         </Badge>
       )}
       {(execution.checked_waiting ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
           checked waiting {execution.checked_waiting}
         </Badge>
       )}
       {(execution.requoted ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
           requoted {execution.requoted}
         </Badge>
       )}
       {(execution.stale_quote ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
           stale quote {execution.stale_quote}
         </Badge>
       )}
       {(execution.quote_unavailable ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-red-500/40 text-red-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-500/40 text-red-300">
           quote missing {execution.quote_unavailable}
         </Badge>
       )}
       {(execution.skipped ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/30 text-amber-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
           skipped {execution.skipped}
         </Badge>
       )}
       {(execution.cancelled ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-zinc-500/30 text-zinc-300">
           cancelled {execution.cancelled}
         </Badge>
       )}
       {(execution.expired ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-zinc-500/30 text-zinc-400">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-zinc-500/30 text-zinc-400">
           expired {execution.expired}
         </Badge>
       )}
       {(execution.rejected ?? 0) > 0 && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-red-500/40 text-red-300">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-500/40 text-red-300">
           rejected {execution.rejected}
         </Badge>
       )}
       {stale && (
-        <Badge variant="outline" className="h-5 px-1.5 text-[9px] border-amber-500/40 text-amber-400">
+        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/40 text-amber-400">
           stale
         </Badge>
       )}
@@ -501,11 +501,11 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     return (
       <div className="space-y-3">
         <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
-        <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
+        <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
         <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
           {pendingBuyEmptyMessage(pendingMeta)}
-          <div className="mt-2 sv-num text-[10px] text-muted-foreground/70">
+          <div className="mt-2 sv-num text-xs text-muted-foreground/70">
             Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.
           </div>
         </div>
@@ -515,7 +515,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[10px] text-muted-foreground/60 sv-num">{showingDate} · L4 sparse final-buy execution pool</div>
+      <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate} · L4 sparse final-buy execution pool</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
@@ -560,55 +560,55 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         return (
           <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
             <RecommendationCard rec={rec} rank={idx + 1} />
-            <div className="mx-2 -mt-2 mb-2 rounded-lg border border-muted/40 bg-background/40 px-3 py-2 text-[10px] sv-num text-muted-foreground">
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <div className="mx-2 -mt-2 mb-2 rounded-xl border border-muted/40 bg-background/45 px-4 py-3 text-[12px] leading-relaxed sv-num text-muted-foreground md:text-[13px]">
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
                 <span>execution: {executionBadge.label}</span>
                 <span>debate: {b.debate_status ?? 'pending'}</span>
                 <span>source: {b.source ?? 'morning_setup'}</span>
                 <span className="break-all">policy: {pendingExecutionPolicy?.execution_pool_policy ?? 'l4_sparse_final_buy_only'}</span>
                 <span>retry: {b.retry_count ?? 0}</span>
               </div>
-              <div className="mt-1 text-muted-foreground/70">
+              <div className="mt-2 text-[12px] text-muted-foreground/80 md:text-[13px]">
                 base {b.original_entry ? `$${b.original_entry}` : 'N/A'} {'->'} limit {b.ml_entry_price ? `$${b.ml_entry_price}` : 'N/A'} | risk {(Number(b.risk_pct ?? 0) * 100).toFixed(1)}%
               </div>
               <div className={[
-                'mt-2 rounded-md border px-2 py-1.5',
+                'mt-2 rounded-lg border px-3 py-2',
                 executionToneClass(executionBadge.tone),
               ].join(' ')}>
-                <div className="font-semibold">盤中原因：{executionBadge.label}</div>
-                <div className="mt-0.5 text-muted-foreground/85">
+                <div className="text-[13px] font-semibold md:text-sm">盤中原因：{executionBadge.label}</div>
+                <div className="mt-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">
                   {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
                 </div>
               </div>
               {s12Badge && (
                 <div className={[
-                  'mt-2 rounded-md border px-2 py-1.5',
+                  'mt-2 rounded-lg border px-3 py-2',
                   executionToneClass(s12Badge.tone),
                 ].join(' ')}>
-                  <div className="font-semibold">S12 盤中結構：{s12Badge.label}</div>
-                  <div className="mt-0.5 text-muted-foreground/85">{s12Badge.description}</div>
+                  <div className="text-[13px] font-semibold md:text-sm">S12 盤中結構：{s12Badge.label}</div>
+                  <div className="mt-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">{s12Badge.description}</div>
                 </div>
               )}
               {allocatorSummary && (
                 <div className={[
-                  'mt-2 rounded-md border px-2 py-1.5',
+                  'mt-2 rounded-lg border px-3 py-2',
                   allocatorSummary.tone === 'ok'
                     ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
                     : allocatorSummary.tone === 'warn'
                       ? 'border-amber-500/25 bg-amber-500/10 text-amber-200'
                       : 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200',
                 ].join(' ')}>
-                  <div className="font-semibold">{allocatorSummary.title}</div>
-                  <div className="mt-0.5 text-muted-foreground/80">{allocatorSummary.detail}</div>
+                  <div className="text-[13px] font-semibold md:text-sm">{allocatorSummary.title}</div>
+                  <div className="mt-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">{allocatorSummary.detail}</div>
                 </div>
               )}
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
-              className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              className="absolute top-3 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
               title="查看 K 線"
             >
-              <Activity className="w-3.5 h-3.5" />
+              <Activity className="h-4 w-4" />
             </button>
           </div>
         )
@@ -664,10 +664,10 @@ function CandidateRecommendationColumn({
             <RecommendationCard rec={r} rank={idx + 1} />
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-              className="absolute top-2 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              className="absolute top-3 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
               title="查看 K 線"
             >
-              <Activity className="w-3.5 h-3.5" />
+              <Activity className="h-4 w-4" />
             </button>
           </div>
         ))}

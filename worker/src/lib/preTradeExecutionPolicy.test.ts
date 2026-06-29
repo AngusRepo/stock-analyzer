@@ -32,6 +32,44 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
   }
 }
 
+function intradayProfileEntryModel(
+  overrides: Partial<NonNullable<Parameters<typeof evaluatePreTradeExecution>[0]['entryModelV2']>> = {},
+): NonNullable<Parameters<typeof evaluatePreTradeExecution>[0]['entryModelV2']> {
+  return {
+    modelVersion: 'entry_price_model_v2',
+    anchorSource: 'intraday_volume_profile',
+    poc: 100,
+    vah: 101,
+    val: 99.5,
+    discountLow: 94,
+    discountHigh: 100,
+    equilibrium: 100,
+    premiumLow: 100,
+    premiumHigh: 104,
+    orderBlockLow: null,
+    orderBlockHigh: null,
+    fvgLow: null,
+    fvgHigh: null,
+    smcBias: 'neutral',
+    smcScore: 0,
+    smcBullishScore: 0,
+    smcBearishScore: 0,
+    liquiditySweepLow: null,
+    structureBreakHigh: null,
+    chochLevel: null,
+    displacementPct: null,
+    retestStatus: 'none',
+    entryLow: 99.5,
+    entryHigh: 100,
+    preferredEntry: 100,
+    chaseCeiling: 103,
+    stopAnchor: 94,
+    l5Support: { quoteAgeMs: null, spreadPct: null, depthOk: true, imbalance: 0.1 },
+    confidence: 0.72,
+    ...overrides,
+  }
+}
+
 {
   const decision = evaluatePreTradeExecution(baseInput({ marketRiskLevel: 'unknown' }))
   assert(decision.action === 'DEFER', 'unknown market risk must fail closed')
@@ -657,4 +695,81 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePreTradeExecutio
   assert(s12Assisted.action === 'BUY_AT', 'S12 assist-entry overlay should allow a bounded long entry inside its chase ceiling')
   assert(s12Assisted.reason === 'entry_chase_confirmed:1.10%', 'S12 assisted entry should expose the bounded chase premium')
   assert(s12Assisted.limitPrice === 101.1, 'S12 assisted entry should use executable best ask as limit')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 100.35,
+    bestAsk: 100.4,
+    entryPrice: 94,
+    momentum: {
+      volumeRatio: 1.2,
+      minVolumeRatio: 0.8,
+      slope5min: 0.01,
+      rangePosition: 0.42,
+      minRangePosition: 0.12,
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.006,
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 103,
+      resistance: 102,
+      support: 90,
+      atrDefense: 93.5,
+      volumeNode: 94,
+      buyReferenceLow: 92,
+      buyReferenceHigh: 94,
+      optimisticLow: 103,
+      optimisticHigh: 105,
+    },
+    entryModelV2: intradayProfileEntryModel(),
+  }))
+  assert(decision.action === 'BUY_AT', 'intraday profile reclaim should bridge a stale deep pullback anchor')
+  assert(decision.reason === 'intraday_profile_reclaim_entry:0.40%', 'profile reclaim should expose bounded premium over POC entry')
+  assert(decision.limitPrice === 100.4, 'profile reclaim should use executable best ask as limit')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 101,
+    bestAsk: 101,
+    entryPrice: 94,
+    momentum: {
+      volumeRatio: 1.2,
+      minVolumeRatio: 0.8,
+      slope5min: 0.01,
+      rangePosition: 0.42,
+      minRangePosition: 0.12,
+    },
+    policy: {
+      limitUpPct: 0.095,
+      requoteDeviationMax: 0.05,
+      requoteDiscount: 0.985,
+      requoteStopFallback: 0.92,
+      maxEntryChasePct: 0.006,
+    },
+    tradePlan: {
+      source: 'ohlcv',
+      mode: 'pullback',
+      confirmation: 103,
+      resistance: 102,
+      support: 90,
+      atrDefense: 93.5,
+      volumeNode: 94,
+      buyReferenceLow: 92,
+      buyReferenceHigh: 94,
+      optimisticLow: 103,
+      optimisticHigh: 105,
+    },
+    entryModelV2: intradayProfileEntryModel(),
+  }))
+  assert(decision.action === 'DEFER', 'profile reclaim must remain bounded by maxEntryChasePct')
+  assert(decision.reason === 'between_buy_reference_and_confirmation', 'over-premium profile reclaim should keep waiting')
 }

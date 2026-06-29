@@ -265,6 +265,9 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
     const chaseCeiling = finitePositive(entryModelV2?.chaseCeiling ?? tradePlan.optimisticHigh ?? tradePlan.resistance)
     const buyReferenceHigh = finitePositive(tradePlan.buyReferenceHigh ?? tradePlan.volumeNode ?? tradePlan.support)
     const mode = String(tradePlan.mode ?? '').toLowerCase()
+    const intradayProfilePreferredEntry = entryModelV2?.anchorSource === 'intraday_volume_profile'
+      ? finitePositive(entryModelV2.preferredEntry)
+      : null
 
     if ((support != null && currentPrice < support) || (atrDefense != null && currentPrice < atrDefense)) {
       return {
@@ -295,6 +298,35 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
       ((currentPrice - entryPrice) / entryPrice) <= openingMaxPremiumPct &&
       (chaseCeiling == null || currentPrice <= chaseCeiling)
     if (mode === 'pullback' && buyReferenceHigh != null && confirmation != null && currentPrice > buyReferenceHigh && currentPrice < confirmation && !openingPullbackFastPath) {
+      const profileChaseLimit = finitePositive(input.bestAsk) ?? currentPrice
+      const profileMaxChasePct = Math.max(
+        Number(input.policy.maxEntryChasePct ?? 0),
+        openingFastPathActive ? Number(input.openingFastPath?.maxPremiumPct ?? 0) : 0,
+      )
+      const profilePremiumPct = intradayProfilePreferredEntry != null
+        ? (profileChaseLimit - intradayProfilePreferredEntry) / intradayProfilePreferredEntry
+        : Number.POSITIVE_INFINITY
+      if (
+        intradayProfilePreferredEntry != null &&
+        profileMaxChasePct > 0 &&
+        profilePremiumPct >= 0 &&
+        profilePremiumPct <= profileMaxChasePct &&
+        profileChaseLimit < confirmation &&
+        (chaseCeiling == null || profileChaseLimit <= chaseCeiling)
+      ) {
+        return {
+          action: 'BUY_AT',
+          reason: `intraday_profile_reclaim_entry:${(profilePremiumPct * 100).toFixed(2)}%`,
+          detail: [
+            `current=${roundPrice(currentPrice)}`,
+            `profile_entry=${roundPrice(intradayProfilePreferredEntry)}`,
+            `limit=${roundPrice(profileChaseLimit)}`,
+            `confirmation=${roundPrice(confirmation)}`,
+            `max=${roundMetric(profileMaxChasePct)}`,
+          ].join(';'),
+          limitPrice: roundPrice(profileChaseLimit),
+        }
+      }
       return {
         action: 'DEFER',
         reason: 'between_buy_reference_and_confirmation',

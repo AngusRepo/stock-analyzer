@@ -1,5 +1,16 @@
 ﻿import { useMutation, useQuery } from '@tanstack/react-query'
-import { ArrowRight, ExternalLink, Loader2 } from 'lucide-react'
+import {
+  ArrowRight,
+  CheckCircle2,
+  Database,
+  ExternalLink,
+  Loader2,
+  RadioTower,
+  ShieldAlert,
+  TimerReset,
+  TriangleAlert,
+  Workflow,
+} from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
 import {
@@ -78,6 +89,12 @@ function computeDataQualityScore(report?: DataQualityReport) {
   return Math.round((score / checks.length) * 100)
 }
 
+function errorMessage(error: unknown) {
+  if (!error) return null
+  if (error instanceof Error && error.message) return error.message
+  return String(error)
+}
+
 function MiniBar({ value, tone }: { value: number; tone: WorkstationTone }) {
   const clamped = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0))
   return (
@@ -128,6 +145,583 @@ function MetricCell({
       </p>
       <MiniBar value={tone === 'error' ? 100 : tone === 'warn' ? 64 : tone === 'ok' ? 92 : 48} tone={tone} />
       {detail && <p className="mt-2 text-xs leading-4 text-slate-500">{detail}</p>}
+    </div>
+  )
+}
+
+type ReadinessStatus = 'ready' | 'running' | 'waiting' | 'blocked' | 'pending'
+
+type ReadinessStage = {
+  id: string
+  label: string
+  owner: string
+  detail: string
+  status: ReadinessStatus
+  tone: WorkstationTone
+  job?: SchedulerJob
+  nextAction: string
+}
+
+type ReadinessGate = {
+  id: string
+  label: string
+  status: ReadinessStatus
+  tone: WorkstationTone
+  value: string
+  source: string
+  detail: string
+  latestDate?: string | null
+}
+
+type MarketMaterializationItem = {
+  key: string
+  label: string
+  status: string
+  rows: number
+  latest_date: string | null
+  lag_days: number | null
+  required: boolean
+  source: string
+  scope: string
+  root_cause: string | null
+}
+
+const READINESS_STAGES: Array<{
+  id: string
+  label: string
+  owner: string
+  detail: string
+  jobIds: string[]
+  nextAction: string
+}> = [
+  {
+    id: 'market-close-refresh',
+    label: '收盤資料刷新',
+    owner: 'FinLab / TWSE-TPEX',
+    detail: '價格、成交額、指數、期貨與信用交易先進 canonical。',
+    jobIds: ['evening-chain', 'market-data-update', 'finlab-v4-backfill'],
+    nextAction: '等待 FinLab canonical callback 或 TWSE/TPEX supplemental refresh。',
+  },
+  {
+    id: 'source-readiness',
+    label: '資料就緒閘門',
+    owner: 'readiness probe',
+    detail: '檢查 primary canonical 與官方補件是否達到今日交易日。',
+    jobIds: ['source-readiness-retry', 'indicator-queue'],
+    nextAction: '若未 ready，持續 polling；超時才標記 degraded。',
+  },
+  {
+    id: 'indicator-queue',
+    label: '指標計算',
+    owner: 'worker queue',
+    detail: '技術、籌碼、題材、風險特徵入庫後才放行 screener。',
+    jobIds: ['indicator-queue'],
+    nextAction: '補齊指標產物，確認 downstream row count。',
+  },
+  {
+    id: 'screener',
+    label: '候選池',
+    owner: 'screener',
+    detail: 'L0-L2 篩選產生可辯論候選，不在 OBS 手動跳關。',
+    jobIds: ['screener'],
+    nextAction: '確認候選數與 hard gate reason 分布。',
+  },
+  {
+    id: 'ml-pipeline',
+    label: '模型與推薦',
+    owner: 'pipeline-v2',
+    detail: 'pipeline、ML predict、recommendation 必須共用同一 run date。',
+    jobIds: ['pipeline', 'ml-predict', 'recommendation'],
+    nextAction: '若卡住，先看前序 readiness，不直接 rerun recommendation。',
+  },
+  {
+    id: 'post-verify',
+    label: '驗證與回饋',
+    owner: 'verify / learner',
+    detail: 'verify、IC、LinUCB、adaptive evidence 回寫後形成隔日 guard。',
+    jobIds: ['verify-v2', 'model-ic-tracker', 'linucb-reward-ledger', 'adapt'],
+    nextAction: '確認 reward ledger 與 adaptive meta 沒有 stale evidence。',
+  },
+]
+
+function readinessTone(status: ReadinessStatus): WorkstationTone {
+  if (status === 'ready') return 'ok'
+  if (status === 'running') return 'info'
+  if (status === 'waiting' || status === 'pending') return 'warn'
+  return 'error'
+}
+
+function readinessLabel(status: ReadinessStatus) {
+  if (status === 'ready') return 'READY'
+  if (status === 'running') return 'RUNNING'
+  if (status === 'waiting') return 'WAITING'
+  if (status === 'blocked') return 'BLOCKED'
+  return 'PENDING'
+}
+
+function readinessStatusFromScheduler(status?: string | null): ReadinessStatus {
+  const value = String(status ?? '').toLowerCase()
+  if (value === 'success') return 'ready'
+  if (value === 'running') return 'running'
+  if (value === 'failed' || value === 'error') return 'blocked'
+  if (value === 'waiting') return 'waiting'
+  if (value === 'sleep' || value === 'skip' || value === 'skipped') return 'pending'
+  return 'pending'
+}
+
+function chooseRepresentativeJob(jobs: SchedulerJob[], ids: string[]) {
+  const byId = new Map(jobs.map((job) => [job.id, job]))
+  const candidates = ids.map((id) => byId.get(id)).filter((job): job is SchedulerJob => Boolean(job))
+  return candidates.find((job) => ['failed', 'running', 'waiting'].includes(job.lastStatus)) ?? candidates.find((job) => job.lastStatus === 'success') ?? candidates[0]
+}
+
+function stageFromDefinition(def: typeof READINESS_STAGES[number], jobs: SchedulerJob[]): ReadinessStage {
+  const job = chooseRepresentativeJob(jobs, def.jobIds)
+  const status = readinessStatusFromScheduler(job?.lastStatus)
+  return {
+    id: def.id,
+    label: def.label,
+    owner: def.owner,
+    detail: job?.summary || def.detail,
+    status,
+    tone: readinessTone(status),
+    job,
+    nextAction: status === 'ready' ? '已放行下一段；保留 evidence 供 drilldown。' : def.nextAction,
+  }
+}
+
+function parseMarketMaterialization(checks: DataQualityCheck[]): { check?: DataQualityCheck; items: MarketMaterializationItem[] } {
+  const check = checks.find((row) => row.id === 'market_dashboard_materialization')
+  const raw = check?.metrics?.materialization_checks
+  return {
+    check,
+    items: Array.isArray(raw) ? raw as MarketMaterializationItem[] : [],
+  }
+}
+
+function gateStatusFromQuality(status?: string | null): ReadinessStatus {
+  const value = String(status ?? '').toLowerCase()
+  if (value === 'ok' || value === 'success' || value === 'ready') return 'ready'
+  if (value === 'warn' || value === 'waiting') return 'waiting'
+  if (value === 'fail' || value === 'failed' || value === 'blocked') return 'blocked'
+  return 'pending'
+}
+
+function buildReadinessGates(checks: DataQualityCheck[]): ReadinessGate[] {
+  const { check, items } = parseMarketMaterialization(checks)
+  if (items.length) {
+    return items.map((item) => {
+      const status = gateStatusFromQuality(item.status)
+      const freshness = item.lag_days == null ? 'lag n/a' : `lag ${item.lag_days}d`
+      return {
+        id: item.key,
+        label: item.label,
+        status,
+        tone: readinessTone(status),
+        value: `${Number(item.rows ?? 0).toLocaleString()} rows`,
+        source: item.source || 'canonical',
+        detail: item.root_cause || `${item.scope || 'market dashboard'} / ${freshness}`,
+        latestDate: item.latest_date,
+      }
+    })
+  }
+
+  const fallbackIds = ['price_freshness', 'market_dashboard_materialization', 'recommendation_payload', 'canonical_chip_daily']
+  const selected = checks.filter((checkRow) => fallbackIds.some((id) => checkRow.id.includes(id))).slice(0, 8)
+  if (selected.length) {
+    return selected.map((checkRow) => {
+      const status = gateStatusFromQuality(checkRow.status)
+      return {
+        id: checkRow.id,
+        label: checkRow.label,
+        status,
+        tone: readinessTone(status),
+        value: checkRow.status.toUpperCase(),
+        source: 'data-quality report',
+        detail: checkRow.summary,
+        latestDate: null,
+      }
+    })
+  }
+
+  return [
+    {
+      id: 'finlab-canonical',
+      label: 'FinLab canonical',
+      status: 'pending',
+      tone: 'warn',
+      value: '待 API payload',
+      source: 'data-quality API',
+      detail: '目前 OBS 尚未取得 market_dashboard_materialization；local preview 只顯示結構。',
+    },
+    {
+      id: 'official-supplement',
+      label: 'TWSE/TPEX 補件',
+      status: 'pending',
+      tone: 'warn',
+      value: '待 API payload',
+      source: 'official supplemental',
+      detail: '補件包含券商分點、融資融券與市場缺口修補。',
+    },
+  ]
+}
+
+function statusRingClass(tone: WorkstationTone) {
+  if (tone === 'ok') return 'border-emerald-400/35 bg-emerald-400/10 text-emerald-200 shadow-[0_0_28px_rgba(16,185,129,0.10)]'
+  if (tone === 'warn') return 'border-amber-400/35 bg-amber-400/10 text-amber-100 shadow-[0_0_28px_rgba(251,191,36,0.10)]'
+  if (tone === 'error') return 'border-rose-400/35 bg-rose-400/10 text-rose-100 shadow-[0_0_28px_rgba(244,63,94,0.10)]'
+  if (tone === 'info') return 'border-sky-400/35 bg-sky-400/10 text-sky-100 shadow-[0_0_28px_rgba(56,189,248,0.10)]'
+  return 'border-slate-500/35 bg-slate-500/10 text-slate-200'
+}
+
+function ReadinessGauge({ score, tone }: { score: number; tone: WorkstationTone }) {
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
+  const color = toneColor(tone)
+  return (
+    <div className="relative grid h-28 w-28 shrink-0 place-items-center rounded-full border border-[#2b3a49] bg-[#070a10]">
+      <div
+        className="absolute inset-2 rounded-full"
+        style={{ background: `conic-gradient(${color} ${clamped * 3.6}deg, rgba(148,163,184,0.14) 0deg)` }}
+      />
+      <div className="relative grid h-[74px] w-[74px] place-items-center rounded-full bg-[#0f151d] shadow-[inset_0_0_20px_rgba(0,0,0,0.45)]">
+        <div className="text-center">
+          <p className="sv-num text-2xl font-semibold text-[#f2ead8]">{clamped}</p>
+          <p className="sv-num text-[10px] normal-case text-[#7f8ba0]">readiness</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
+  return (
+    <div className="overflow-visible pb-1 md:overflow-x-auto">
+      <div className="grid gap-2 md:flex md:min-w-[920px] md:items-stretch">
+        {stages.map((stage, index) => (
+          <div key={stage.id} className="grid min-w-0 gap-2 md:flex md:flex-1 md:items-center">
+            <div className={`min-h-[148px] flex-1 rounded-2xl border p-3 ${statusRingClass(stage.tone)}`}>
+              <div className="flex items-start justify-between gap-3">
+                <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-black/20 sv-num text-[12px] text-[#ffd87f]">{index + 1}</span>
+                <WorkstationPill tone={stage.tone}>{readinessLabel(stage.status)}</WorkstationPill>
+              </div>
+              <p className="mt-3 text-base font-semibold text-[#f8efe0]">{stage.label}</p>
+              <p className="mt-1 sv-num text-[11px] normal-case text-[#9badbf]">{stage.owner}</p>
+              <p className="mt-3 line-clamp-2 text-xs leading-5 text-[#a8b6c5]">{stage.detail}</p>
+              <p className="mt-2 truncate sv-num text-[11px] normal-case text-[#70809b]">{stage.job?.lastRun || stage.job?.nextRun || 'no runtime evidence yet'}</p>
+            </div>
+            {index < stages.length - 1 && <ArrowRight className="hidden h-4 w-4 shrink-0 text-[#4d5b70] md:block" />}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ReadinessGateMatrix({ gates }: { gates: ReadinessGate[] }) {
+  return (
+    <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-4">
+      {gates.slice(0, 12).map((gate) => (
+        <div key={gate.id} className={`rounded-2xl border p-3 ${statusRingClass(gate.tone)}`}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-[#f2ead8]">{gate.label}</p>
+              <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#7f8ba0]">{gate.source}</p>
+            </div>
+            <WorkstationPill tone={gate.tone}>{readinessLabel(gate.status)}</WorkstationPill>
+          </div>
+          <div className="mt-3 flex items-end justify-between gap-3">
+            <p className="sv-num text-xl font-semibold" style={{ color: toneColor(gate.tone) }}>{gate.value}</p>
+            <p className="sv-num text-[11px] normal-case text-[#8b9bab]">{gate.latestDate ?? 'date n/a'}</p>
+          </div>
+          <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
+          <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#9badbf]">{gate.detail}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
+  label: string
+  purpose: string
+  tone: WorkstationTone
+  expectedCount: number
+  examples: string[]
+}> = {
+  pipeline_chain: {
+    label: 'Daily readiness chain',
+    purpose: '收盤資料、指標、推薦、驗證與隔日 evidence 的主鏈。',
+    tone: 'info',
+    expectedCount: 19,
+    examples: ['Evening Chain', 'Pipeline', 'Verify', 'Daily Report'],
+  },
+  intraday: {
+    label: 'Intraday execution',
+    purpose: '盤中檢查、重評分與收盤前出場，和晚間 daily chain 分開看。',
+    tone: 'ok',
+    expectedCount: 3,
+    examples: ['Intraday Check', 'Intraday Re-score', 'EOD Exit'],
+  },
+  daily: {
+    label: 'Daily standalone',
+    purpose: '晨間、新聞、快照、記憶保留與 queue 類日常排程。',
+    tone: 'warn',
+    expectedCount: 7,
+    examples: ['US Leading', 'News Analyst', 'Morning Setup', 'Daily Snapshot'],
+  },
+  weekly: {
+    label: 'Weekly research',
+    purpose: '週度審計、回測、Optuna、adaptive replay 與品質檢查。',
+    tone: 'neutral',
+    expectedCount: 9,
+    examples: ['Weekly Audit', 'Weekly Backtest', 'Alpha Quality', 'Sector Leaders'],
+  },
+  monthly: {
+    label: 'Monthly gated',
+    purpose: '月度挖礦、Optuna 與 retrain，偏研究或 approval-gated。',
+    tone: 'error',
+    expectedCount: 3,
+    examples: ['Monthly Optuna', 'Strategy Mining', 'Universal Retrain'],
+  },
+}
+
+const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'intraday', 'daily', 'weekly', 'monthly']
+
+function summarizeSchedulerGroup(jobs: SchedulerJob[]) {
+  const failed = jobs.filter((job) => job.lastStatus === 'failed').length
+  const running = jobs.filter((job) => job.lastStatus === 'running').length
+  const waiting = jobs.filter((job) => job.lastStatus === 'waiting').length
+  const success = jobs.filter((job) => job.lastStatus === 'success').length
+  const inactive = jobs.filter((job) => job.lastStatus === 'sleep' || job.lastStatus === 'skip').length
+  const tone: WorkstationTone = failed ? 'error' : running ? 'info' : waiting ? 'warn' : success ? 'ok' : 'neutral'
+  const focus =
+    jobs.find((job) => job.lastStatus === 'failed') ??
+    jobs.find((job) => job.lastStatus === 'running') ??
+    jobs.find((job) => job.lastStatus === 'waiting') ??
+    jobs.find((job) => job.nextRun && job.nextRun !== 'N/A') ??
+    jobs[0]
+
+  return { failed, running, waiting, success, inactive, tone, focus }
+}
+
+function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
+  const hasRuntimeJobs = jobs.length > 0
+  const jobsByGroup = new Map<SchedulerJob['group'], SchedulerJob[]>()
+  for (const job of jobs) {
+    const groupJobs = jobsByGroup.get(job.group) ?? []
+    groupJobs.push(job)
+    jobsByGroup.set(job.group, groupJobs)
+  }
+
+  return (
+    <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Workflow className="h-4 w-4 text-[#ffd87f]" />
+          <p className="text-sm font-semibold text-[#f2ead8]">Scheduler Inventory / 全排程分層</p>
+        </div>
+        <WorkstationPill tone={hasRuntimeJobs ? 'neutral' : 'warn'}>
+          {hasRuntimeJobs ? `${jobs.length} runtime schedulers` : '41 expected / API offline'}
+        </WorkstationPill>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-5">
+        {SCHEDULER_GROUP_ORDER.map((group) => {
+          const groupJobs = jobsByGroup.get(group) ?? []
+          const meta = SCHEDULER_GROUP_META[group]
+          const summary = summarizeSchedulerGroup(groupJobs)
+          const cardTone = hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
+          return (
+            <div key={group} className={`rounded-2xl border p-3 ${statusRingClass(cardTone)}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
+                  <p className="mt-1 sv-num text-[11px] normal-case text-[#7f8ba0]">{group}</p>
+                </div>
+                <WorkstationPill tone={hasRuntimeJobs ? summary.tone : meta.tone}>
+                  {hasRuntimeJobs ? groupJobs.length : `${meta.expectedCount} expected`}
+                </WorkstationPill>
+              </div>
+              <p className="mt-3 min-h-10 text-xs leading-5 text-[#9badbf]">{meta.purpose}</p>
+              {hasRuntimeJobs ? (
+                <>
+                  <div className="mt-3 grid grid-cols-4 gap-1 sv-num text-[11px] normal-case">
+                    <span className="rounded-lg border border-emerald-400/15 bg-emerald-400/[0.06] px-2 py-1 text-emerald-200">ok {summary.success}</span>
+                    <span className="rounded-lg border border-sky-400/15 bg-sky-400/[0.06] px-2 py-1 text-sky-200">run {summary.running}</span>
+                    <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">wait {summary.waiting}</span>
+                    <span className="rounded-lg border border-slate-400/15 bg-slate-400/[0.05] px-2 py-1 text-slate-300">off {summary.inactive}</span>
+                  </div>
+                  <div className="mt-3 rounded-xl border border-[#263247] bg-[#070a10] p-2">
+                    <p className="sv-num text-[10px] normal-case text-[#70809b]">focus</p>
+                    <p className="mt-1 truncate text-sm font-semibold text-[#f2ead8]">{summary.focus?.name ?? 'no job'}</p>
+                    <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#8b9bab]">
+                      {summary.focus ? `${schedulerStatusLabel(summary.focus.lastStatus)} / next ${summary.focus.nextRun || '-'}` : '-'}
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-2 text-xs leading-5 text-amber-100">
+                  Runtime 狀態等待 `/api/scheduler/status`；此卡只提示預期 job universe，不當作執行結果。
+                </div>
+              )}
+              <div className="mt-2 flex flex-wrap gap-1">
+                {(hasRuntimeJobs ? groupJobs.slice(0, 4).map((job) => ({ id: job.id, label: job.name, tone: statusTone(job.lastStatus) })) : meta.examples.map((label) => ({ id: `${group}-${label}`, label, tone: meta.tone }))).map((item) => (
+                  <span key={item.id} className="max-w-full truncate rounded-full border border-[#2f3c4c] bg-[#171d27] px-2 py-1 text-[11px] font-semibold text-[#dbeafe]" style={{ borderColor: `${toneColor(item.tone)}55`, color: toneColor(item.tone) }}>
+                    {item.label}
+                  </span>
+                ))}
+                {hasRuntimeJobs && groupJobs.length > 4 && <WorkstationPill tone="neutral">+{groupJobs.length - 4}</WorkstationPill>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <p className="mt-3 text-xs leading-5 text-[#8b9bab]">
+        上方 readiness flow 是把主鏈濃縮成 operator 需要看的 6 個放行階段；這裡保留完整 scheduler 拓撲，非 daily-chain 的盤中、週度、月度任務不混進 daily readiness 判斷。Runtime 資料仍以 `/api/scheduler/status` 為唯一狀態來源。
+      </p>
+    </div>
+  )
+}
+
+function OperationalReadinessDeck({
+  jobs,
+  checks,
+  schedulerScore,
+  dataQualityScore,
+  deployScore,
+  reportDate,
+  deployDecision,
+  apiErrors,
+}: {
+  jobs: SchedulerJob[]
+  checks: DataQualityCheck[]
+  schedulerScore: number
+  dataQualityScore: number
+  deployScore: number
+  reportDate?: string
+  deployDecision?: string
+  apiErrors: Array<{ label: string; message: string }>
+}) {
+  const stages = READINESS_STAGES.map((stage) => stageFromDefinition(stage, jobs))
+  const gates = buildReadinessGates(checks)
+  const blockedStages = stages.filter((stage) => stage.status === 'blocked')
+  const waitingStages = stages.filter((stage) => stage.status === 'waiting' || stage.status === 'running')
+  const blockedGates = gates.filter((gate) => gate.status === 'blocked')
+  const waitingGates = gates.filter((gate) => gate.status === 'waiting' || gate.status === 'pending')
+  const score = Math.round((schedulerScore * 0.32) + (dataQualityScore * 0.48) + (deployScore * 0.20))
+  const hasApiError = apiErrors.length > 0
+  const decisionTone: WorkstationTone = hasApiError || blockedStages.length || blockedGates.length || deployDecision === 'BLOCK'
+    ? 'error'
+    : waitingStages.length || waitingGates.length || deployDecision === 'WARN'
+      ? 'warn'
+      : 'ok'
+  const currentStage = blockedStages[0] ?? waitingStages[0] ?? stages.find((stage) => stage.status !== 'ready')
+  const blockers = [
+    ...apiErrors.map((item) => `${item.label}: ${item.message}`),
+    ...blockedStages.map((stage) => `${stage.label}: ${stage.job?.lastError || schedulerRootCause(stage.job as SchedulerJob)}`),
+    ...blockedGates.map((gate) => `${gate.label}: ${gate.detail}`),
+    ...waitingStages.slice(0, 2).map((stage) => `${stage.label}: ${stage.nextAction}`),
+    ...waitingGates.slice(0, 2).map((gate) => `${gate.label}: ${gate.detail}`),
+  ].filter(Boolean)
+
+  return (
+    <div className="border-b border-[#263247] bg-[#080b11] p-3">
+      <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.55fr)]">
+        <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <WorkstationPill tone={decisionTone}>{hasApiError ? 'API OFFLINE' : deployDecision ?? readinessLabel(currentStage?.status ?? 'ready')}</WorkstationPill>
+                <WorkstationPill tone="info">report {reportDate ?? 'latest'}</WorkstationPill>
+              </div>
+              <h3 className="mt-3 font-['Space_Grotesk'] text-2xl font-semibold text-[#f8efe0]">Readiness-gated Chain Control</h3>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-[#a8b6c5]">
+                用資料 freshness 與 scheduler callback 決定是否放行，不靠固定晚上十點硬跑。OBS 只負責顯示事實：目前階段、阻塞原因、下一步動作與影響範圍。
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-3">
+              <ReadinessGauge score={score} tone={decisionTone} />
+              <div className="grid gap-2 sv-num text-[11px] normal-case text-[#9badbf]">
+                <span>Scheduler {Math.round(schedulerScore || 0)}%</span>
+                <span>Data Quality {dataQualityScore}%</span>
+                <span>Deploy Gate {deployScore}%</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-2 md:grid-cols-3">
+            <div className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.06] p-3">
+              <div className="flex items-center gap-2 text-sky-200">
+                <RadioTower className="h-4 w-4" />
+                <p className="text-sm font-semibold">目前階段</p>
+              </div>
+              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{currentStage?.label ?? '全段 ready'}</p>
+              <p className="mt-1 text-xs leading-5 text-[#9badbf]">{hasApiError ? '先修 API / auth / CORS 連線；UI 目前只顯示 local preview skeleton。' : currentStage?.nextAction ?? '等待下一個交易日流程。'}</p>
+            </div>
+            <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] p-3">
+              <div className="flex items-center gap-2 text-amber-200">
+                <TimerReset className="h-4 w-4" />
+                <p className="text-sm font-semibold">建議節奏</p>
+              </div>
+              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">18:10 refresh → readiness polling → pipeline</p>
+              <p className="mt-1 text-xs leading-5 text-[#9badbf]">資料晚到就等資料；超過 SLA 才 fallback 到原本 22:00 chain。</p>
+            </div>
+            <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.06] p-3">
+              <div className="flex items-center gap-2 text-emerald-200">
+                <CheckCircle2 className="h-4 w-4" />
+                <p className="text-sm font-semibold">資料閘門</p>
+              </div>
+              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{gates.filter((gate) => gate.status === 'ready').length}/{gates.length} ready</p>
+              <p className="mt-1 text-xs leading-5 text-[#9badbf]">只要 critical gate 未 ready，下游推薦不應直接更新。</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              {decisionTone === 'error' ? <ShieldAlert className="h-4 w-4 text-rose-300" /> : decisionTone === 'warn' ? <TriangleAlert className="h-4 w-4 text-amber-300" /> : <CheckCircle2 className="h-4 w-4 text-emerald-300" />}
+              <p className="text-sm font-semibold text-[#f2ead8]">阻塞與下一步</p>
+            </div>
+            <WorkstationPill tone={decisionTone}>{blockers.length ? `${blockers.length} items` : 'clear'}</WorkstationPill>
+          </div>
+          <div className="mt-3 space-y-2">
+            {(blockers.length ? blockers : ['目前沒有 blocking item；等下一個 scheduler callback 或交易日流程。']).slice(0, 6).map((item, index) => (
+              <div key={`${item}-${index}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
+                <p className="text-xs leading-5 text-[#a8b6c5]">{item}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+        <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Workflow className="h-4 w-4 text-sky-300" />
+              <p className="text-sm font-semibold text-[#f2ead8]">Readiness Flow / 放行路徑</p>
+            </div>
+            <WorkstationPill tone="neutral">scrollable</WorkstationPill>
+          </div>
+          <ReadinessFlowMap stages={stages} />
+        </div>
+        <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Database className="h-4 w-4 text-emerald-300" />
+              <p className="text-sm font-semibold text-[#f2ead8]">Source Gates / 資料就緒</p>
+            </div>
+            <a href="/data-quality" className="inline-flex items-center gap-1 sv-num text-[11px] normal-case text-emerald-200 hover:text-emerald-100">
+              Data Quality <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+          <ReadinessGateMatrix gates={gates} />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <SchedulerInventoryPanel jobs={jobs} />
+      </div>
     </div>
   )
 }
@@ -656,10 +1250,17 @@ export default function ObservabilityPage() {
   const dqChecks = dataQuality.data?.checks ?? []
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
-  const deployScore = deployGate.data?.decision === 'PASS' ? 100 : deployGate.data?.decision === 'WARN' ? 70 : 30
+  const deployScore = deployGate.data ? deployGate.data.decision === 'PASS' ? 100 : deployGate.data.decision === 'WARN' ? 70 : 30 : 0
   const failedJobs = jobs.filter((job) => job.lastStatus === 'failed').length
   const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
   const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
+  const apiErrors = [
+    { label: 'Scheduler API', message: errorMessage(scheduler.error) },
+    { label: 'Data Quality API', message: errorMessage(dataQuality.error) },
+    { label: 'Deploy Gate API', message: errorMessage(deployGate.error) },
+    { label: 'OBS Events API', message: errorMessage(observability.error) },
+    { label: 'System API', message: errorMessage(system.error) },
+  ].filter((item): item is { label: string; message: string } => Boolean(item.message))
 
   return (
     <AppShell>
@@ -688,16 +1289,17 @@ export default function ObservabilityPage() {
           }
         />
 
-        <section>
-          <AdaptiveMetaPanel
-            events={events}
-            onGaReview={(action, level) => gaReview.mutate({ action, level })}
-            gaReviewPending={gaReview.isPending}
-            gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
-          />
-        </section>
-
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
+          <OperationalReadinessDeck
+            jobs={jobs}
+            checks={dqChecks}
+            schedulerScore={schedulerScore}
+            dataQualityScore={dataQualityScore}
+            deployScore={deployScore}
+            reportDate={dataQuality.data?.date}
+            deployDecision={deployGate.data?.decision}
+            apiErrors={apiErrors}
+          />
           <div className="border-b border-[#263247] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs leading-5 text-slate-400">
@@ -740,6 +1342,15 @@ export default function ObservabilityPage() {
             </div>
           </div>
         </WorkstationPanel>
+
+        <section>
+          <AdaptiveMetaPanel
+            events={events}
+            onGaReview={(action, level) => gaReview.mutate({ action, level })}
+            gaReviewPending={gaReview.isPending}
+            gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
+          />
+        </section>
         </div>
       </div>
     </AppShell>

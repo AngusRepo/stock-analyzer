@@ -609,6 +609,7 @@ function OperationalReadinessDeck({
   const waitingGates = gates.filter((gate) => gate.status === 'waiting' || gate.status === 'pending')
   const score = Math.round((schedulerScore * 0.32) + (dataQualityScore * 0.48) + (deployScore * 0.20))
   const hasApiError = apiErrors.length > 0
+  const authBlocked = hasApiError && apiErrors.every((item) => item.message.toLowerCase().includes('unauthorized'))
   const decisionTone: WorkstationTone = hasApiError || blockedStages.length || blockedGates.length || deployDecision === 'BLOCK'
     ? 'error'
     : waitingStages.length || waitingGates.length || deployDecision === 'WARN'
@@ -630,7 +631,7 @@ function OperationalReadinessDeck({
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <WorkstationPill tone={decisionTone}>{hasApiError ? 'API OFFLINE' : deployDecision ?? readinessLabel(currentStage?.status ?? 'ready')}</WorkstationPill>
+                <WorkstationPill tone={decisionTone}>{authBlocked ? 'AUTH REQUIRED' : hasApiError ? 'API OFFLINE' : deployDecision ?? readinessLabel(currentStage?.status ?? 'ready')}</WorkstationPill>
                 <WorkstationPill tone="info">report {reportDate ?? 'latest'}</WorkstationPill>
               </div>
               <h3 className="mt-3 font-['Space_Grotesk'] text-2xl font-semibold text-[#f8efe0]">Readiness-gated Chain Control</h3>
@@ -655,7 +656,13 @@ function OperationalReadinessDeck({
                 <p className="text-sm font-semibold">目前階段</p>
               </div>
               <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{currentStage?.label ?? '全段 ready'}</p>
-              <p className="mt-1 text-xs leading-5 text-[#9badbf]">{hasApiError ? '先修 API / auth / CORS 連線；UI 目前只顯示 local preview skeleton。' : currentStage?.nextAction ?? '等待下一個交易日流程。'}</p>
+              <p className="mt-1 text-xs leading-5 text-[#9badbf]">
+                {authBlocked
+                  ? '請先登入；未取得 admin token 時 OBS 只能顯示靜態結構，不能判斷 runtime。'
+                  : hasApiError
+                    ? '先修 API / auth / CORS 連線；UI 目前只顯示 local preview skeleton。'
+                    : currentStage?.nextAction ?? '等待下一個交易日流程。'}
+              </p>
             </div>
             <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] p-3">
               <div className="flex items-center gap-2 text-amber-200">

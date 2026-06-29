@@ -98,7 +98,7 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
   already_filled_today: '今日已成交',
   s12_waiting_15m_completed_bars: 'S12 等待完成更多 15 分 K',
   s12_waiting_4h_completed_bar: 'S12 等待完成 4H 方向 K',
-  s12_waiting_4h_long_bias: 'S12 4H 尚未確認多方方向',
+  s12_waiting_4h_long_bias: 'S12 等待 4H 多方結構成立',
   s12_waiting_1h_completed_bar: 'S12 等待完成 1H 區域 K',
   s12_waiting_1h_demand_zone: 'S12 尚未形成 1H 需求區',
   s12_waiting_15m_zone_touch: 'S12 等待 15M 回踩 1H 需求區',
@@ -108,7 +108,7 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
   s12_waiting_retest: 'S12 等待回測 OB/FVG 進場區',
   s12_reaction_ready: 'S12 結構進場訊號成熟',
   s12_assist_entry_ready: 'S12 進場輔助已啟用',
-  s12_primary_structure_owner_waiting: 'S12 主控結構，等待成熟',
+  s12_primary_structure_owner_waiting: 'S12 主控結構，等待條件成熟',
   s12_primary_cleared_momentum_directional_gate: 'S12 已接手方向判斷',
   s12_structure_invalidated: 'S12 盤中結構失效',
   s12_entry_zone_not_overlapping_1h_demand: 'S12 進場區未與 1H 需求區重疊',
@@ -119,7 +119,7 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
 const S12_STATE_LABELS: Record<string, string> = {
   waiting_15m_completed_bars: '等待 15 分 K 累積',
   waiting_4h_completed_bar: '等待 4H 收線',
-  waiting_4h_long_bias: '等待 4H 轉多',
+  waiting_4h_long_bias: '等待 4H 多方結構成立',
   waiting_1h_completed_bar: '等待 1H 收線',
   waiting_1h_demand_zone: '等待 1H 需求區',
   waiting_15m_zone_touch: '等待 15M 回踩需求區',
@@ -203,12 +203,19 @@ function s12Tone(reason: string): PendingBuyExecutionTone {
 
 function formatS12Detail(detail: string | null): string {
   const parsed = parseDetailMap(detail)
+  const channelAlign = parsed.bias_channel_align === 'true'
+    ? '已對齊'
+    : parsed.bias_channel_align === 'false'
+      ? '未對齊'
+      : null
   const parts = [
     parsed.state ? `狀態：${S12_STATE_LABELS[parsed.state] ?? parsed.state}` : null,
     parsed.bars15m || parsed.bars1h || parsed.bars4h
       ? `完成K：15M ${parsed.bars15m ?? 0}、1H ${parsed.bars1h ?? 0}、4H ${parsed.bars4h ?? 0}`
       : null,
     parsed.bias4h ? `4H方向：${parsed.bias4h === 'long' ? '多方' : parsed.bias4h === 'short' ? '空方' : '中性'}` : null,
+    parsed.bias_confidence ? `4H確認度：${parsed.bias_confidence === 'confirmed' ? '已確認' : parsed.bias_confidence === 'provisional' ? '暫定' : '不足'}` : null,
+    channelAlign ? `4H通道：${channelAlign}` : null,
     parsed.zone_low && parsed.zone_high ? `1H需求區：${parsed.zone_low} - ${parsed.zone_high}` : null,
     parsed.entry ? `進場參考：${parsed.entry}` : null,
     parsed.chase_ceiling ? `不追價上限：${parsed.chase_ceiling}` : null,

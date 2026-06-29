@@ -95,6 +95,96 @@ def test_l5_market_data_uses_injected_account_without_order_methods() -> None:
     assert result["quotes"]["2330"]["l5_depth_levels"] == 5
 
 
+def test_l5_market_data_uses_finlab_bidask_snapshot_method() -> None:
+    class FakeBidAsk:
+        stock_id = "2330"
+        bid_prices = [99.9, 99.8, 99.7, 99.6, 99.5]
+        ask_prices = [100.1, 100.2, 100.3, 100.4, 100.5]
+        bid_volumes = [12, 10, 8, 6, 4]
+        ask_volumes = [8, 7, 6, 5, 4]
+        time = datetime(2026, 5, 28, 1, 0, 9, tzinfo=timezone.utc)
+
+    class FakeAccount:
+        def get_bidask_snapshot(self, symbols: list[str], emit: bool = True) -> dict:
+            assert symbols == ["2330"]
+            assert emit is True
+            return {"2330": FakeBidAsk()}
+
+        def logout(self) -> None:
+            pass
+
+    result = run_finlab_l5_market_data(
+        symbols=["2330"],
+        allow_broker_login=True,
+        env={
+            "SHIOAJI_API_KEY": "key",
+            "SHIOAJI_SECRET_KEY": "secret",
+            "SHIOAJI_CERT_PASSWORD": "pass",
+            "SHIOAJI_CERT_PATH": __file__,
+            "SHIOAJI_CERT_PERSON_ID": "A123456789",
+        },
+        account_factory=FakeAccount,
+        now=datetime(2026, 5, 28, 1, 0, 10, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "pass"
+    assert result["source"] == "finlab_sinopac_account"
+    assert result["quotes"]["2330"]["provider"] == "finlab_sinopac_get_bidask_snapshot"
+    assert result["quotes"]["2330"]["quote_age_ms"] == 1000
+    assert result["quotes"]["2330"]["l5_depth_levels"] == 5
+
+
+def test_l5_market_data_can_capture_finlab_stream_bidask_when_snapshot_unimplemented() -> None:
+    class FakeBidAsk:
+        stock_id = "2330"
+        bid_prices_top5 = [99.9, 99.8, 99.7, 99.6, 99.5]
+        ask_prices_top5 = [100.1, 100.2, 100.3, 100.4, 100.5]
+        bid_volumes_top5 = [12, 10, 8, 6, 4]
+        ask_volumes_top5 = [8, 7, 6, 5, 4]
+        time = datetime(2026, 5, 28, 1, 0, 9, tzinfo=timezone.utc)
+
+    class FakeAccount:
+        def __init__(self) -> None:
+            self.callback = None
+
+        def get_bidask_snapshot(self, symbols: list[str], emit: bool = True) -> dict:
+            raise NotImplementedError("snapshot unavailable")
+
+        def subscribe_bidask_with_snapshot(self, symbols: list[str], emit: bool = True) -> dict:
+            raise NotImplementedError("snapshot unavailable")
+
+        def on_bidask(self, callback) -> None:
+            self.callback = callback
+
+        def connect_realtime(self) -> None:
+            pass
+
+        def subscribe_bidask(self, symbols: list[str]) -> None:
+            assert symbols == ["2330"]
+            self.callback(FakeBidAsk())
+
+        def logout(self) -> None:
+            pass
+
+    result = run_finlab_l5_market_data(
+        symbols=["2330"],
+        allow_broker_login=True,
+        env={
+            "SHIOAJI_API_KEY": "key",
+            "SHIOAJI_SECRET_KEY": "secret",
+            "SHIOAJI_CERT_PASSWORD": "pass",
+            "SHIOAJI_CERT_PATH": __file__,
+            "SHIOAJI_CERT_PERSON_ID": "A123456789",
+        },
+        account_factory=FakeAccount,
+        now=datetime(2026, 5, 28, 1, 0, 10, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "pass"
+    assert result["quotes"]["2330"]["provider"] == "finlab_sinopac_stream_bidask"
+    assert result["quotes"]["2330"]["best_ask"] == 100.1
+
+
 def test_l5_market_data_falls_back_to_proxy_when_account_quote_method_unavailable() -> None:
     class FakeAccount:
         def logout(self) -> None:

@@ -344,6 +344,7 @@ function completeAssessment(params: {
       bars4h: params.completedBars.h4,
       bias4h: params.bias4h.direction,
       bias_confidence: params.bias4h.confidence,
+      bias_channel_align: params.bias4h.channelAlign ? 'true' : 'false',
       zone_low: price(params.demandZone1h?.low),
       zone_high: price(params.demandZone1h?.high),
       zone_type: params.demandZone1h?.type,
@@ -634,6 +635,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       sequence: {},
       extraDetail: {
         latest4h_close: price(bars4h[bars4h.length - 1]?.close),
+        required: '4h_long_channel_align',
       },
     })
   }

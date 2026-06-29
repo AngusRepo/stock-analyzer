@@ -50,6 +50,58 @@ def get_tw_now() -> datetime:
     return datetime.now(TW_TZ)
 
 
+def orderbook_max_age_ms() -> int:
+    try:
+        value = int(os.environ.get("SHIOAJI_ORDERBOOK_MAX_AGE_MS", "3000"))
+    except ValueError:
+        return 3000
+    return max(500, min(value, 60_000))
+
+
+def orderbook_refresh_wait_seconds() -> float:
+    try:
+        value = float(os.environ.get("SHIOAJI_ORDERBOOK_REFRESH_WAIT_SECONDS", "0.6"))
+    except ValueError:
+        return 0.6
+    return max(0.1, min(value, 3.0))
+
+
+def parse_quote_time(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=TW_TZ)
+    return dt.astimezone(TW_TZ)
+
+
+def orderbook_source_time(depth: dict | None) -> datetime | None:
+    if not depth:
+        return None
+    return parse_quote_time(depth.get("timestamp") or depth.get("source_time") or depth.get("updated_at"))
+
+
+def orderbook_age_ms(depth: dict | None) -> int | None:
+    source_time = orderbook_source_time(depth)
+    if source_time is None:
+        return None
+    return int(max(0, (get_tw_now() - source_time).total_seconds() * 1000))
+
+
+def orderbook_is_fresh(depth: dict | None) -> bool:
+    age = orderbook_age_ms(depth)
+    return age is not None and age <= orderbook_max_age_ms()
+
+
 def is_market_hours() -> bool:
     now = get_tw_now()
     if now.weekday() >= 5:  # 週六日
@@ -142,7 +194,7 @@ def shutdown_shioaji():
         connected = False
 
 
-def subscribe_symbol(symbol: str):
+def subscribe_symbol(symbol: str, *, force_bidask: bool = False):
     """訂閱個股即時 tick"""
     global api
     if not api or not connected:
@@ -158,10 +210,10 @@ def subscribe_symbol(symbol: str):
                 api.quote.subscribe(contract, quote_type=sj.constant.QuoteType.Tick, version=sj.constant.QuoteVersion.v1)
                 subscribed.add(symbol)
                 print(f"[Shioaji] Tick subscribed: {symbol}")
-            if symbol not in bidask_subscribed:
+            if force_bidask or symbol not in bidask_subscribed:
                 api.quote.subscribe(contract, quote_type=sj.constant.QuoteType.BidAsk, version=sj.constant.QuoteVersion.v1)
                 bidask_subscribed.add(symbol)
-                print(f"[Shioaji] BidAsk subscribed: {symbol}")
+                print(f"[Shioaji] BidAsk subscribed: {symbol}{' (refresh)' if force_bidask else ''}")
             return True
         else:
             print(f"[Shioaji] Contract not found: {symbol}")
@@ -530,26 +582,30 @@ def orderbook(symbol: str, authorization: str | None = Header(default=None)):
         if symbol not in last_bidasks:
             if not subscribe_symbol(symbol):
                 raise HTTPException(404, f"Contract not found: {symbol}")
-            time.sleep(0.2)
+            time.sleep(orderbook_refresh_wait_seconds())
+        elif not orderbook_is_fresh(last_bidasks.get(symbol)):
+            subscribe_symbol(symbol, force_bidask=True)
+            time.sleep(orderbook_refresh_wait_seconds())
 
         depth = last_bidasks.get(symbol)
         if not depth:
-            return {
-                "status": "no_depth",
-                "symbol": symbol,
-                "depth_available": False,
-                "price": None,
-                "bid_prices": [],
-                "bid_volumes": [],
-                "ask_prices": [],
-                "ask_volumes": [],
-                "features": {
-                    "bid_ask_imbalance": None,
-                    "spread_pct": None,
-                    "bid_concentration": None,
+            raise HTTPException(503, f"Orderbook depth unavailable for {symbol}")
+
+        source_time = orderbook_source_time(depth)
+        quote_age_ms = orderbook_age_ms(depth)
+        if not orderbook_is_fresh(depth):
+            raise HTTPException(
+                503,
+                {
+                    "status": "stale_depth",
+                    "symbol": symbol,
+                    "depth_available": False,
+                    "source_time": source_time.isoformat() if source_time else None,
+                    "received_at": depth.get("updated_at"),
+                    "quote_age_ms": quote_age_ms,
+                    "max_quote_age_ms": orderbook_max_age_ms(),
                 },
-                "updated_at": datetime.now(TW_TZ).isoformat(),
-            }
+            )
 
         bid_prices = depth["bid_prices"][:5]
         bid_volumes = depth["bid_volumes"][:5]
@@ -557,7 +613,7 @@ def orderbook(symbol: str, authorization: str | None = Header(default=None)):
         ask_volumes = depth["ask_volumes"][:5]
 
         if len(bid_prices) == 0 and len(ask_prices) == 0:
-            raise HTTPException(404, f"Contract not found: {symbol}")
+            raise HTTPException(503, f"Orderbook depth empty for {symbol}")
 
         total_bid_vol = sum(bid_volumes) if bid_volumes else 0
         total_ask_vol = sum(ask_volumes) if ask_volumes else 0
@@ -589,7 +645,11 @@ def orderbook(symbol: str, authorization: str | None = Header(default=None)):
                 "spread_pct": round(spread_pct, 4),
                 "bid_concentration": round(bid_concentration, 4),
             },
-            "updated_at": depth.get("updated_at") or datetime.now(TW_TZ).isoformat(),
+            "source_time": source_time.isoformat() if source_time else None,
+            "received_at": depth.get("updated_at"),
+            "quote_age_ms": quote_age_ms,
+            "max_quote_age_ms": orderbook_max_age_ms(),
+            "updated_at": depth.get("updated_at"),
         }
 
     except HTTPException:

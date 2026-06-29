@@ -424,17 +424,20 @@ function shioajiProxyFallbackEnabled(env: { SHIOAJI_PROXY_URL?: string; SHIOAJI_
   return Boolean(env.SHIOAJI_PROXY_URL?.trim()) && enabledUnlessExplicitlyFalse(env.SHIOAJI_L5_PROXY_FALLBACK_ENABLED)
 }
 
-function proxyOrderbookQuoteFromPayload(symbol: string, payload: Record<string, unknown> | null | undefined): FinLabL5Quote | null {
+export function proxyOrderbookQuoteFromPayload(symbol: string, payload: Record<string, unknown> | null | undefined): FinLabL5Quote | null {
   if (!payload) return null
+  const status = String(payload.status ?? 'orderbook').trim().toLowerCase()
+  if (status.startsWith('stale') || status === 'no_depth' || status === 'error') return null
   return normalizeFinLabL5Quote(symbol, {
     provider: 'shioaji_proxy_orderbook',
-    status: payload.status ?? 'orderbook',
+    status,
     price: payload.price,
     bid_prices: payload.bid_prices ?? payload.bidPrices,
     ask_prices: payload.ask_prices ?? payload.askPrices,
     bid_volumes: payload.bid_volumes ?? payload.bidVolumes,
     ask_volumes: payload.ask_volumes ?? payload.askVolumes,
-    source_time: payload.updated_at ?? payload.timestamp,
+    source_time: payload.source_time ?? payload.quote_time ?? payload.timestamp ?? payload.updated_at,
+    received_at: payload.received_at ?? payload.updated_at,
   })
 }
 

@@ -4,6 +4,7 @@ import {
   fetchFinLabL5MarketDataSnapshot,
   fetchFinLabL5MarketDataQuotes,
   normalizeFinLabL5Quote,
+  proxyOrderbookQuoteFromPayload,
   quoteQualityFromL5,
 } from './finlabL5MarketData'
 
@@ -284,3 +285,16 @@ function assert(condition: unknown, message: string): void {
     globalThis.fetch = originalFetch
   }
 })()
+
+{
+  const staleQuote = proxyOrderbookQuoteFromPayload('2885', {
+    status: 'stale_depth',
+    price: 80,
+    bid_prices: [79.9, 79.8, 79.7, 79.6, 79.5],
+    ask_prices: [80.1, 80.2, 80.3, 80.4, 80.5],
+    bid_volumes: [20, 18, 16, 14, 12],
+    ask_volumes: [8, 7, 6, 5, 4],
+    source_time: '2026-06-26T01:00:00Z',
+  })
+  assert(staleQuote === null, 'stale proxy orderbook must not become executable L5 quote')
+}

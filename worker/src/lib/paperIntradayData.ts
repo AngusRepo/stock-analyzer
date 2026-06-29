@@ -86,9 +86,11 @@ export function normalizeShioajiSnapshot(snapshot: any): IntradayOHLC | null {
       ? snapshot.time
       : typeof snapshot?.datetime === 'string'
         ? snapshot.datetime
-        : typeof snapshot?.updated_at === 'string'
-          ? snapshot.updated_at
-          : undefined
+        : typeof snapshot?.source_time === 'string'
+          ? snapshot.source_time
+          : typeof snapshot?.updated_at === 'string'
+            ? snapshot.updated_at
+            : undefined
   let last = firstFiniteTwTickPrice(
     snapshot?.last,
     snapshot?.price,
@@ -127,6 +129,8 @@ async function enrichMissingOrderbookQuotes(
     if (!res.ok) return
     const json = await res.json() as any
     const payload = json?.data ?? json
+    const status = String(payload?.status ?? 'ok').trim().toLowerCase()
+    if (status.startsWith('stale') || status === 'no_depth' || status === 'error') return
     const current = map.get(symbol)
     const normalized = normalizeShioajiSnapshot({
       ...payload,

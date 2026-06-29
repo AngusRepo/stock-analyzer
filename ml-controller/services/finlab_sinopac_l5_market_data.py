@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import traceback
 import urllib.error
 import urllib.parse
@@ -147,6 +148,42 @@ def _quote_time(payload: dict[str, Any]) -> Any:
         if payload.get(key):
             return payload[key]
     return None
+
+
+def _as_l5_payload(symbol: str, payload: Any, *, provider: str = "finlab_sinopac") -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        return {
+            "provider": payload.get("provider") or provider,
+            "price": payload.get("price") or payload.get("last") or payload.get("close"),
+            "best_bid": payload.get("best_bid") or payload.get("bestBid"),
+            "best_ask": payload.get("best_ask") or payload.get("bestAsk"),
+            "bid_prices": payload.get("bid_prices") or payload.get("bidPrices") or payload.get("bid_prices_top5") or payload.get("bids"),
+            "ask_prices": payload.get("ask_prices") or payload.get("askPrices") or payload.get("ask_prices_top5") or payload.get("asks"),
+            "bid_volumes": payload.get("bid_volumes") or payload.get("bidVolumes") or payload.get("bid_volumes_top5") or payload.get("bids"),
+            "ask_volumes": payload.get("ask_volumes") or payload.get("askVolumes") or payload.get("ask_volumes_top5") or payload.get("asks"),
+            "source_time": _quote_time(payload),
+        }
+
+    bid_prices = list(getattr(payload, "bid_prices_top5", None) or getattr(payload, "bid_prices", None) or [])[:5]
+    ask_prices = list(getattr(payload, "ask_prices_top5", None) or getattr(payload, "ask_prices", None) or [])[:5]
+    bid_volumes = list(getattr(payload, "bid_volumes_top5", None) or getattr(payload, "bid_volumes", None) or [])[:5]
+    ask_volumes = list(getattr(payload, "ask_volumes_top5", None) or getattr(payload, "ask_volumes", None) or [])[:5]
+    if not bid_prices and not ask_prices:
+        return None
+    return {
+        "provider": provider,
+        "symbol": getattr(payload, "stock_id", None) or symbol,
+        "best_bid": bid_prices[0] if bid_prices else None,
+        "best_ask": ask_prices[0] if ask_prices else None,
+        "price": ((float(bid_prices[0]) + float(ask_prices[0])) / 2) if bid_prices and ask_prices else None,
+        "bid_prices": bid_prices,
+        "ask_prices": ask_prices,
+        "bid_volumes": bid_volumes,
+        "ask_volumes": ask_volumes,
+        "source_time": getattr(payload, "time", None),
+    }
 
 
 def normalize_l5_quote(
@@ -302,7 +339,8 @@ def _read_quotes_from_proxy_orderbook(symbols: list[str], env: dict[str, str]) -
             "ask_prices": ask_prices,
             "bid_volumes": bid_volumes,
             "ask_volumes": ask_volumes,
-            "source_time": body.get("updated_at") or body.get("timestamp"),
+            "source_time": body.get("source_time") or body.get("quote_time") or body.get("timestamp") or body.get("updated_at"),
+            "received_at": body.get("received_at") or body.get("updated_at"),
             "depth_available": body.get("depth_available"),
             "features": body.get("features"),
         }
@@ -316,9 +354,53 @@ def _read_quotes_from_account(account: Any, symbols: list[str]) -> dict[str, Any
         result = get_l5_quotes(symbols)
         return result if isinstance(result, dict) else {}
 
+    for method_name in ("get_bidask_snapshot", "subscribe_bidask_with_snapshot"):
+        method = getattr(account, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            result = method(symbols, emit=True)
+        except NotImplementedError:
+            continue
+        if isinstance(result, dict):
+            mapped = {
+                symbol: payload
+                for symbol, raw in result.items()
+                if (payload := _as_l5_payload(str(symbol), raw, provider=f"finlab_sinopac_{method_name}")) is not None
+            }
+            if mapped:
+                return mapped
+
+    subscribe_bidask = getattr(account, "subscribe_bidask", None)
+    on_bidask = getattr(account, "on_bidask", None)
+    connect_realtime = getattr(account, "connect_realtime", None)
+    if callable(subscribe_bidask) and callable(on_bidask):
+        captured: dict[str, Any] = {}
+
+        def capture_bidask(bidask: Any) -> None:
+            symbol = str(getattr(bidask, "stock_id", "") or "")
+            if symbol in symbols:
+                payload = _as_l5_payload(symbol, bidask, provider="finlab_sinopac_stream_bidask")
+                if payload is not None:
+                    captured[symbol] = payload
+
+        on_bidask(capture_bidask)
+        if callable(connect_realtime):
+            connect_realtime()
+        subscribe_bidask(symbols)
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and any(symbol not in captured for symbol in symbols):
+            time.sleep(0.05)
+        if captured:
+            return captured
+
     get_orderbook = getattr(account, "get_orderbook", None)
     if callable(get_orderbook):
-        return {symbol: get_orderbook(symbol) for symbol in symbols}
+        return {
+            symbol: payload
+            for symbol in symbols
+            if (payload := _as_l5_payload(symbol, get_orderbook(symbol))) is not None
+        }
 
     raise RuntimeError("finlab_l5_quote_method_unavailable")
 

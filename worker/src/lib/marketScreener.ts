@@ -14,7 +14,10 @@ import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedPruneSql, buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
 import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice } from './screenerMarketData'
-import { annotateCandidatesWithStrategySpecs } from './screenerStrategyConsumer'
+import {
+  annotateCandidatesWithStrategySpecs,
+  reconcileCandidatesStrategyPoolAttribution,
+} from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateShape } from './breeze2Runtime'
@@ -2898,6 +2901,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let overlayEligibleSymbols = new Set<string>()
   let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
   let runtimeStrategySpecs: StrategySpec[] = []
+  let runtimeStrategyRegime: string | null = null
   try {
     const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, strategyCandidatePoolModule, strategyPortfolioMetricsModule] = await Promise.all([
       import('./strategyLearning'),
@@ -2908,6 +2912,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const { loadStrategyPortfolioMetricOverrides } = strategyPortfolioMetricsModule
     passesLayer1TopUpQualityGuard = strategyCandidatePoolModule.passesLayer1TopUpQualityGuard
     const currentRegime = (adaptiveParams as any)?.provenance?.regime ?? null
+    runtimeStrategyRegime = currentRegime == null ? null : String(currentRegime)
     const [{ specs, source, registryRowCount, activeCount }, policyState] = await Promise.all([
       listStrategySpecsForLearning(env.DB),
       getLatestStrategyPolicyState(env.DB).catch(() => null),
@@ -4041,7 +4046,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       })
       .slice(0, layer1TargetSize)
     const selectedSymbols = new Set(layer1Queue.map((candidate: any) => String(candidate.symbol || '').trim()))
-    const selectedCandidates = layer1Queue.map((entry: any) => {
+    const selectedCandidates = reconcileCandidatesStrategyPoolAttribution(layer1Queue.map((entry: any) => {
       const symbol = String(entry.symbol || '').trim()
       const updated = updatedBySymbol.get(symbol)
       return {
@@ -4061,7 +4066,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           ...((entry as any).strategy_watch_points ?? []),
         ])),
       }
-    })
+    }), runtimeStrategySpecs, { regime: runtimeStrategyRegime })
     const topUpCandidates = afterIndustryLimit
       .filter((candidate) => {
         const symbol = String(candidate.symbol || '').trim()

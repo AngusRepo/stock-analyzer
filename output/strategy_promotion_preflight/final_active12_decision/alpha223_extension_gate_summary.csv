@@ -1,0 +1,3 @@
+﻿factor_blocker_count,factor_blockers,factor_contract_ok,factor_count,latest_matches,local_prod_ready_no_partial,mapping_blocker_count,max_pair_all_period_jaccard,max_pair_latest_jaccard,max_pair_position_phi_corr,max_pair_return_corr,pairwise_crowding_ok,pairwise_rows,recent5_min_strict_match_count,replay_status,runtime_replay_5d_ok,select0_preflight_ok,strategy_id
+0,,True,5,611,True,0,0.17053329316059054,0.25,0.28582416918458176,0.8044521804889371,True,3,589,ok,True,True,alpha223_0283
+0,,True,5,404,True,0,0.12665844993837455,0.1111111111111111,0.21876479676691798,0.7858039811349535,True,3,404,ok,True,True,alpha223_0009

@@ -1,0 +1,67 @@
+{
+  "schema_version": "stockvision-alpha223-extension-gate-summary-v1",
+  "generated_at": "2026-06-30T01:28:01.657705+00:00",
+  "decision_effect": "local_gate_summary_only",
+  "candidate_ids": [
+    "alpha223_0283",
+    "alpha223_0009"
+  ],
+  "existing_pairwise_ids": [
+    "alpha223_0248",
+    "alpha223_0109",
+    "alpha223_0166"
+  ],
+  "thresholds": {
+    "max_pair_corr": 0.85,
+    "max_pair_all_jaccard": 0.2,
+    "max_pair_latest_jaccard": 0.35
+  },
+  "source_files": {
+    "contract_csv": "output/strategy_promotion_preflight/s04_s11_defensive_replacement_gates/active12_promotion_factor_contract_latest.csv",
+    "replay_csv": "output/strategy_promotion_preflight/s04_s11_defensive_replacement_gates/finlab_strategy_spec_active3_20230101_20260615.csv",
+    "pairwise_csv": "output/strategy_promotion_preflight/portfolio_scenarios_final_active12_decision/active12_portfolio_scenarios_sii_20230101_20260615_pairwise_focus.csv"
+  },
+  "all_local_prod_ready_no_partial": true,
+  "rows": [
+    {
+      "strategy_id": "alpha223_0283",
+      "factor_count": 5,
+      "factor_contract_ok": true,
+      "factor_blocker_count": 0,
+      "mapping_blocker_count": 0,
+      "factor_blockers": "",
+      "select0_preflight_ok": true,
+      "runtime_replay_5d_ok": true,
+      "latest_matches": 611,
+      "recent5_min_strict_match_count": 589,
+      "replay_status": "ok",
+      "pairwise_rows": 3,
+      "pairwise_crowding_ok": true,
+      "max_pair_return_corr": 0.8044521804889371,
+      "max_pair_all_period_jaccard": 0.17053329316059054,
+      "max_pair_latest_jaccard": 0.25,
+      "max_pair_position_phi_corr": 0.28582416918458176,
+      "local_prod_ready_no_partial": true
+    },
+    {
+      "strategy_id": "alpha223_0009",
+      "factor_count": 5,
+      "factor_contract_ok": true,
+      "factor_blocker_count": 0,
+      "mapping_blocker_count": 0,
+      "factor_blockers": "",
+      "select0_preflight_ok": true,
+      "runtime_replay_5d_ok": true,
+      "latest_matches": 404,
+      "recent5_min_strict_match_count": 404,
+      "replay_status": "ok",
+      "pairwise_rows": 3,
+      "pairwise_crowding_ok": true,
+      "max_pair_return_corr": 0.7858039811349535,
+      "max_pair_all_period_jaccard": 0.12665844993837455,
+      "max_pair_latest_jaccard": 0.1111111111111111,
+      "max_pair_position_phi_corr": 0.21876479676691798,
+      "local_prod_ready_no_partial": true
+    }
+  ]
+}

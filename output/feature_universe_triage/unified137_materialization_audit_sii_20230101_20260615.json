@@ -1,7 +1,8 @@
 {
   "schema_version": "stockvision-unified137-materialization-audit-v1",
-  "generated_at": "2026-06-18T00:32:31.968735+00:00",
-  "runtime_seconds": 618.785,
+  "mode": "rebuild",
+  "generated_at": "2026-06-29T14:53:03.195321+00:00",
+  "runtime_seconds": 704.827,
   "registry": "data/feature_registry/unified_feature_registry_v1.json",
   "date_range": {
     "start_date": "2023-01-01",
@@ -19,15 +20,15 @@
     "zero_coverage_count": 0,
     "very_low_coverage_count": 0,
     "trading_days": 830,
-    "symbols": 1204
+    "symbols": 1203
   },
   "role_counts": {
     "evidence_watch": 68,
     "core_prior": 69
   },
   "origin_counts": {
-    "strategy95": 94,
-    "ml106": 43
+    "strategy95": 89,
+    "ml106": 48
   },
   "missing_expected": [],
   "builder_missing": [],
@@ -35,22 +36,705 @@
   "extra_mapped": [],
   "zero_coverage": [],
   "very_low_coverage": [],
+  "factor_stats": {
+    "l1_bbBandwidthPct": {
+      "coverage": 0.828905647527767,
+      "unique_values": 792775,
+      "non_constant": true
+    },
+    "l1_bestFvgStrength": {
+      "coverage": 0.8469829442458112,
+      "unique_values": 18354,
+      "non_constant": true
+    },
+    "l1_bestOrderBlockStrength": {
+      "coverage": 0.8453424671253593,
+      "unique_values": 374703,
+      "non_constant": true
+    },
+    "l1_bosBullish": {
+      "coverage": 1.0,
+      "unique_values": 2,
+      "non_constant": true
+    },
+    "l1_brokerConcentration": {
+      "coverage": 0.8484651824254624,
+      "unique_values": 329496,
+      "non_constant": true
+    },
+    "l1_brokerNetAmount5d": {
+      "coverage": 0.8430389888731985,
+      "unique_values": 579828,
+      "non_constant": true
+    },
+    "l1_closeAboveMa60Pct": {
+      "coverage": 0.8053500786187142,
+      "unique_values": 657812,
+      "non_constant": true
+    },
+    "l1_dealerNet5d": {
+      "coverage": 1.0,
+      "unique_values": 299976,
+      "non_constant": true
+    },
+    "l1_diTrend": {
+      "coverage": 0.9444871756352091,
+      "unique_values": 873576,
+      "non_constant": true
+    },
+    "l1_displacementPct": {
+      "coverage": 0.8471992708990576,
+      "unique_values": 21138,
+      "non_constant": true
+    },
+    "l1_eps": {
+      "coverage": 0.9355486785045418,
+      "unique_values": 15932,
+      "non_constant": true
+    },
+    "l1_foreignTrustNet5d": {
+      "coverage": 1.0,
+      "unique_values": 430203,
+      "non_constant": true
+    },
+    "l1_macdHist": {
+      "coverage": 0.9476209075704314,
+      "unique_values": 849236,
+      "non_constant": true
+    },
+    "l1_monthlyRevenueMoM": {
+      "coverage": 0.960173862532424,
+      "unique_values": 11922,
+      "non_constant": true
+    },
+    "l1_monthlyRevenueYoY": {
+      "coverage": 0.9596490700958448,
+      "unique_values": 14768,
+      "non_constant": true
+    },
+    "l1_return20d": {
+      "coverage": 0.8443980410419734,
+      "unique_values": 134524,
+      "non_constant": true
+    },
+    "l1_revenueGrowthYoY": {
+      "coverage": 0.9200833258219913,
+      "unique_values": 15549,
+      "non_constant": true
+    },
+    "l1_roe": {
+      "coverage": 0.9355486785045418,
+      "unique_values": 15922,
+      "non_constant": true
+    },
+    "l1_sectorFlowCore": {
+      "coverage": 1.0,
+      "unique_values": 2,
+      "non_constant": true
+    },
+    "l1_sectorRsRatio": {
+      "coverage": 0.992379493034482,
+      "unique_values": 28280,
+      "non_constant": true
+    },
+    "l1_sectorTurnoverShareDelta": {
+      "coverage": 1.0,
+      "unique_values": 28586,
+      "non_constant": true
+    },
+    "l1_smcBullishScore": {
+      "coverage": 1.0,
+      "unique_values": 33576,
+      "non_constant": true
+    },
+    "l1_smcNetScore": {
+      "coverage": 1.0,
+      "unique_values": 46178,
+      "non_constant": true
+    },
+    "l1_squeezeMomentum": {
+      "coverage": 0.828905647527767,
+      "unique_values": 39656,
+      "non_constant": true
+    },
+    "l1_squeezeRelease": {
+      "coverage": 1.0,
+      "unique_values": 2,
+      "non_constant": true
+    },
+    "l1_volumeExpansion20": {
+      "coverage": 0.8471471922603131,
+      "unique_values": 827297,
+      "non_constant": true
+    },
+    "l1_volumeMomentumDivergence132710": {
+      "coverage": 0.8441606826307725,
+      "unique_values": 840878,
+      "non_constant": true
+    },
+    "liq_amihud_21d": {
+      "coverage": 0.8274364290078018,
+      "unique_values": 813501,
+      "non_constant": true
+    },
+    "mom_12m_1m": {
+      "coverage": 0.8207823813959079,
+      "unique_values": 271606,
+      "non_constant": true
+    },
+    "mom_9m": {
+      "coverage": 0.8264559484822082,
+      "unique_values": 260343,
+      "non_constant": true
+    },
+    "mom_close_to_52w_high": {
+      "coverage": 0.738981862612545,
+      "unique_values": 149201,
+      "non_constant": true
+    },
+    "mom_hl52": {
+      "coverage": 0.738981862612545,
+      "unique_values": 139365,
+      "non_constant": true
+    },
+    "mom_ma50_200_ratio": {
+      "coverage": 0.7528047351500766,
+      "unique_values": 693853,
+      "non_constant": true
+    },
+    "mom_macd_trend_10": {
+      "coverage": 0.9476209075704314,
+      "unique_values": 848108,
+      "non_constant": true
+    },
+    "mom_reversal_1m": {
+      "coverage": 0.8442678444451122,
+      "unique_values": 136415,
+      "non_constant": true
+    },
+    "mom_reversal_6m": {
+      "coverage": 0.8326472974191028,
+      "unique_values": 232880,
+      "non_constant": true
+    },
+    "mom_rsi_14": {
+      "coverage": 0.8329147011988102,
+      "unique_values": 46898,
+      "non_constant": true
+    },
+    "mom_vol_adj_12m": {
+      "coverage": 0.7387294815170908,
+      "unique_values": 724546,
+      "non_constant": true
+    },
+    "size_log_mktcap": {
+      "coverage": 0.8989814620076315,
+      "unique_values": 344236,
+      "non_constant": true
+    },
+    "tech_adx_14": {
+      "coverage": 0.9430359843363478,
+      "unique_values": 829414,
+      "non_constant": true
+    },
+    "tech_atr_14": {
+      "coverage": 0.9444871756352091,
+      "unique_values": 839279,
+      "non_constant": true
+    },
+    "tech_bbands_pctb_20": {
+      "coverage": 0.828905647527767,
+      "unique_values": 669213,
+      "non_constant": true
+    },
+    "tech_bbi": {
+      "coverage": 0.8260222936634318,
+      "unique_values": 592772,
+      "non_constant": true
+    },
+    "tech_bias_20": {
+      "coverage": 0.828905647527767,
+      "unique_values": 448721,
+      "non_constant": true
+    },
+    "tech_bullish_streak_5": {
+      "coverage": 1.0,
+      "unique_values": 6,
+      "non_constant": true
+    },
+    "tech_cmo_14": {
+      "coverage": 0.8329147011988102,
+      "unique_values": 46898,
+      "non_constant": true
+    },
+    "tech_disposal_active": {
+      "coverage": 1.0,
+      "unique_values": 2,
+      "non_constant": true
+    },
+    "tech_dma_10_50": {
+      "coverage": 0.8104768199981973,
+      "unique_values": 59131,
+      "non_constant": true
+    },
+    "tech_donchian_pos_20": {
+      "coverage": 0.828905647527767,
+      "unique_values": 33454,
+      "non_constant": true
+    },
+    "tech_ema_12_pos": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 843800,
+      "non_constant": true
+    },
+    "tech_emv_14": {
+      "coverage": 0.8329147011988102,
+      "unique_values": 826789,
+      "non_constant": true
+    },
+    "tech_gap_down": {
+      "coverage": 1.0,
+      "unique_values": 2,
+      "non_constant": true
+    },
+    "tech_gap_up": {
+      "coverage": 1.0,
+      "unique_values": 2,
+      "non_constant": true
+    },
+    "tech_granville_score": {
+      "coverage": 0.7528047351500766,
+      "unique_values": 658441,
+      "non_constant": true
+    },
+    "tech_kd9_k": {
+      "coverage": 0.9458842852707589,
+      "unique_values": 821465,
+      "non_constant": true
+    },
+    "tech_kdj_j_9": {
+      "coverage": 0.9458842852707589,
+      "unique_values": 838173,
+      "non_constant": true
+    },
+    "tech_keltner_pos_20": {
+      "coverage": 0.8467395767609089,
+      "unique_values": 841057,
+      "non_constant": true
+    },
+    "tech_limit_down_count_10": {
+      "coverage": 1.0,
+      "unique_values": 10,
+      "non_constant": true
+    },
+    "tech_limit_up_streak_10": {
+      "coverage": 1.0,
+      "unique_values": 11,
+      "non_constant": true
+    },
+    "tech_locked_open_down_10": {
+      "coverage": 1.0,
+      "unique_values": 10,
+      "non_constant": true
+    },
+    "tech_locked_open_up_10": {
+      "coverage": 1.0,
+      "unique_values": 11,
+      "non_constant": true
+    },
+    "tech_ma_convergence": {
+      "coverage": 0.8430389888731985,
+      "unique_values": 613591,
+      "non_constant": true
+    },
+    "tech_mfi_14": {
+      "coverage": 0.8508307544392032,
+      "unique_values": 824003,
+      "non_constant": true
+    },
+    "tech_mtm_10": {
+      "coverage": 0.8456369117367224,
+      "unique_values": 3229,
+      "non_constant": true
+    },
+    "tech_obv": {
+      "coverage": 0.847612895472163,
+      "unique_values": 833652,
+      "non_constant": true
+    },
+    "tech_psy_12": {
+      "coverage": 1.0,
+      "unique_values": 13,
+      "non_constant": true
+    },
+    "tech_roc_10": {
+      "coverage": 0.8456369117367224,
+      "unique_values": 106905,
+      "non_constant": true
+    },
+    "tech_sar": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 766386,
+      "non_constant": true
+    },
+    "tech_slow_kd_14": {
+      "coverage": 0.9444871756352091,
+      "unique_values": 817517,
+      "non_constant": true
+    },
+    "tech_sma_20_pos": {
+      "coverage": 0.828905647527767,
+      "unique_values": 448721,
+      "non_constant": true
+    },
+    "tech_tower_3": {
+      "coverage": 1.0,
+      "unique_values": 2,
+      "non_constant": true
+    },
+    "tech_trix_12": {
+      "coverage": 0.9475077366823904,
+      "unique_values": 848486,
+      "non_constant": true
+    },
+    "tech_volume_ratio_5": {
+      "coverage": 0.8497501226852547,
+      "unique_values": 834114,
+      "non_constant": true
+    },
+    "tech_vr_26": {
+      "coverage": 0.8460285030395898,
+      "unique_values": 829274,
+      "non_constant": true
+    },
+    "tech_williams_r_14": {
+      "coverage": 0.8337800078117958,
+      "unique_values": 26695,
+      "non_constant": true
+    },
+    "tech_wma_10_pos": {
+      "coverage": 0.8375376818996685,
+      "unique_values": 494095,
+      "non_constant": true
+    },
+    "val_bp": {
+      "coverage": 0.9249586876183037,
+      "unique_values": 3298,
+      "non_constant": true
+    },
+    "val_dp": {
+      "coverage": 0.9250848781660307,
+      "unique_values": 2452,
+      "non_constant": true
+    },
+    "val_ep": {
+      "coverage": 0.9079459984576711,
+      "unique_values": 22177,
+      "non_constant": true
+    },
+    "val_sp": {
+      "coverage": 0.897118649160232,
+      "unique_values": 772899,
+      "non_constant": true
+    },
+    "vol_chg_turnover_1y": {
+      "coverage": 0.7361545934360885,
+      "unique_values": 729125,
+      "non_constant": true
+    },
+    "vol_cv_volprice_20d": {
+      "coverage": 0.828905647527767,
+      "unique_values": 807626,
+      "non_constant": true
+    },
+    "vol_money_flow_5d": {
+      "coverage": 0.8430389888731985,
+      "unique_values": 837736,
+      "non_constant": true
+    },
+    "vol_share_turnover_21d": {
+      "coverage": 0.8249887329868101,
+      "unique_values": 818048,
+      "non_constant": true
+    },
+    "vol_signal_5d": {
+      "coverage": 0.8396398561828361,
+      "unique_values": 833284,
+      "non_constant": true
+    },
+    "vola_cv_90d": {
+      "coverage": 0.7913118809402198,
+      "unique_values": 773522,
+      "non_constant": true
+    },
+    "vola_min_130d": {
+      "coverage": 0.7749772155955493,
+      "unique_values": 8566,
+      "non_constant": true
+    },
+    "vola_realized_12m": {
+      "coverage": 0.7387294815170908,
+      "unique_values": 714960,
+      "non_constant": true
+    },
+    "vola_realized_1m": {
+      "coverage": 0.8274364290078018,
+      "unique_values": 804032,
+      "non_constant": true
+    },
+    "margin_balance": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 48188,
+      "non_constant": true
+    },
+    "VSTD_10": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 842040,
+      "non_constant": true
+    },
+    "linear_factor": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 411834,
+      "non_constant": true
+    },
+    "CNTP_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 20,
+      "non_constant": true
+    },
+    "RSQR_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 799295,
+      "non_constant": true
+    },
+    "VSTD_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 841040,
+      "non_constant": true
+    },
+    "margin_change_5d_ts": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 496320,
+      "non_constant": true
+    },
+    "CNTD_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 36,
+      "non_constant": true
+    },
+    "RESI_5": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 255529,
+      "non_constant": true
+    },
+    "foreign_5d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 726923,
+      "non_constant": true
+    },
+    "BETA_60": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 836874,
+      "non_constant": true
+    },
+    "KMID": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 42392,
+      "non_constant": true
+    },
+    "rsi5_dulling": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 11,
+      "non_constant": true
+    },
+    "dealer_ratio_5d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 620364,
+      "non_constant": true
+    },
+    "chip_5d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 726969,
+      "non_constant": true
+    },
+    "institutional_net": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 728224,
+      "non_constant": true
+    },
+    "RESI_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 807659,
+      "non_constant": true
+    },
+    "RESI_10": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 742217,
+      "non_constant": true
+    },
+    "RSQR_60": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 829118,
+      "non_constant": true
+    },
+    "vwap_bias": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 47472,
+      "non_constant": true
+    },
+    "IMXD_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 39,
+      "non_constant": true
+    },
+    "RESI_60": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 818005,
+      "non_constant": true
+    },
+    "KLEN": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 33313,
+      "non_constant": true
+    },
+    "IMIN_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 20,
+      "non_constant": true
+    },
+    "KSFT": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 47855,
+      "non_constant": true
+    },
+    "RSQR_10": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 532664,
+      "non_constant": true
+    },
+    "KLOW": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 14490,
+      "non_constant": true
+    },
+    "vol_ratio_20d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 829772,
+      "non_constant": true
+    },
+    "KUP": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 16277,
+      "non_constant": true
+    },
+    "KUP2": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 2824,
+      "non_constant": true
+    },
+    "CNTP_5": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 6,
+      "non_constant": true
+    },
+    "CORR_10": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 838651,
+      "non_constant": true
+    },
+    "ma10_bias": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 287469,
+      "non_constant": true
+    },
+    "CNTD_5": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 11,
+      "non_constant": true
+    },
+    "return_3d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 835249,
+      "non_constant": true
+    },
+    "volatility_5d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 833656,
+      "non_constant": true
+    },
+    "CNTN_20": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 19,
+      "non_constant": true
+    },
+    "CORD_10": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 839133,
+      "non_constant": true
+    },
+    "margin_ratio": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 782094,
+      "non_constant": true
+    },
+    "short_squeeze_proxy": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 38698,
+      "non_constant": true
+    },
+    "volatility_20d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 832079,
+      "non_constant": true
+    },
+    "CNTN_5": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 6,
+      "non_constant": true
+    },
+    "ma60_bias": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 834651,
+      "non_constant": true
+    },
+    "return_5d": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 835855,
+      "non_constant": true
+    },
+    "KLOW2": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 2752,
+      "non_constant": true
+    },
+    "us_sentiment_score": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 1,
+      "non_constant": false
+    },
+    "advance_ratio": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 1,
+      "non_constant": false
+    },
+    "KSFT2": {
+      "coverage": 0.8488878206091198,
+      "unique_values": 3276,
+      "non_constant": true
+    }
+  },
   "registry_l1_supplement": {
-    "requested_count": 15,
-    "supplemented_count": 15,
+    "requested_count": 11,
+    "supplemented_count": 11,
     "supplemented": [
       "l1_bestFvgStrength",
       "l1_bestOrderBlockStrength",
       "l1_bosBullish",
-      "l1_chochBullish",
       "l1_dealerNet5d",
       "l1_displacementPct",
-      "l1_liquiditySweepBullish",
       "l1_sectorFlowCore",
-      "l1_sectorRsMomentum",
       "l1_sectorRsRatio",
       "l1_sectorTurnoverShareDelta",
-      "l1_smcBiasBearish",
       "l1_smcBullishScore",
       "l1_smcNetScore",
       "l1_volumeMomentumDivergence132710"
@@ -63,7 +747,5 @@
   },
   "panel_mapping_pass": true,
   "coverage_pass": true,
-  "pass": true,
-  "metadata_refreshed_at": "2026-06-18T17:59:08.397816+00:00",
-  "metadata_refresh_reason": "registry_metadata_only_refresh; materialized factor counts and coverage were unchanged"
+  "pass": true
 }

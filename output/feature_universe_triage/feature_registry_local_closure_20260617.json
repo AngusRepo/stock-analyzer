@@ -32,7 +32,7 @@
     ],
     "materialization_mapped_factor_count": 137,
     "materialization_artifact_fresh": true,
-    "materialization_runtime_seconds": 618.785,
+    "materialization_runtime_seconds": 704.827,
     "materialization_zero_coverage_count": 0,
     "materialization_very_low_coverage_count": 0,
     "materialization_very_low_coverage": [],

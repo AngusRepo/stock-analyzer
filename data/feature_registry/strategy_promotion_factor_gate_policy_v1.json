@@ -1,0 +1,107 @@
+{
+  "schema_version": "stockvision-strategy-promotion-factor-gate-policy-v1",
+  "decision_effect": "promotion_preflight_only",
+  "policy": {
+    "purpose": "Per-factor promotion gates for new active strategies. A strategy cannot be promoted if required factors cannot be resolved to runtime-normalized fields or exact materialization stats.",
+    "active12_first": true,
+    "broker_reclaim_retirement_rule": "Keep BrokerReclaim in Candidate12 first. Retire BrokerReclaim only after Candidate11-noBroker is tested against Candidate12 with the same fixed backtest contract.",
+    "fixed_backtest_contract": {
+      "start_date": "2023-01-01",
+      "end_date": "2026-06-15",
+      "universe": "sii",
+      "resample": "M",
+      "top_k": 10,
+      "required_extra_slippage_bps": [0, 50, 100]
+    }
+  },
+  "defaults_by_factor_type": {
+    "price_technical": {
+      "coverage_min": 0.95,
+      "min_unique_values": 20,
+      "exact_stats_required": true,
+      "asof_lag_rule": "same_day_or_lookback_only"
+    },
+    "technical": {
+      "coverage_min": 0.95,
+      "min_unique_values": 20,
+      "exact_stats_required": true,
+      "asof_lag_rule": "same_day_or_lookback_only"
+    },
+    "volume": {
+      "coverage_min": 0.95,
+      "min_unique_values": 20,
+      "exact_stats_required": true,
+      "asof_lag_rule": "same_day_or_lookback_only"
+    },
+    "l1_signal": {
+      "coverage_min": 0.95,
+      "min_unique_values": 20,
+      "exact_stats_required": true,
+      "asof_lag_rule": "same_day_or_lookback_only"
+    },
+    "valuation": {
+      "coverage_min": 0.85,
+      "min_unique_values": 20,
+      "exact_stats_required": true,
+      "asof_lag_rule": "reported_asof_no_future_leakage"
+    },
+    "fundamental_factor_diversity": {
+      "coverage_min": 0.85,
+      "min_unique_values": 20,
+      "exact_stats_required": true,
+      "asof_lag_rule": "reported_asof_no_future_leakage"
+    },
+    "chip_margin_flow": {
+      "coverage_min": 0.75,
+      "min_unique_values": 10,
+      "exact_stats_required": true,
+      "asof_lag_rule": "same_day_or_reported_delay"
+    },
+    "market_regime": {
+      "coverage_min": 0.95,
+      "min_unique_values": 10,
+      "exact_stats_required": true,
+      "asof_lag_rule": "same_day_or_lookback_only"
+    },
+    "runtime_gate": {
+      "coverage_min": 1.0,
+      "min_unique_values": 0,
+      "exact_stats_required": false,
+      "asof_lag_rule": "runtime_gate_not_factor"
+    }
+  },
+  "by_factor": {
+    "KLOW2": { "factor_type": "price_technical", "coverage_min": 0.8 },
+    "VSTD_10": { "factor_type": "price_technical", "coverage_min": 0.8 },
+    "KSFT": { "factor_type": "price_technical", "coverage_min": 0.8 },
+    "tech_emv_14": { "factor_type": "technical", "coverage_min": 0.8 },
+    "tech_roc_10": { "factor_type": "technical", "coverage_min": 0.8 },
+    "tech_gap_down": { "factor_type": "technical", "coverage_min": 0.9, "min_unique_values": 2 },
+    "vola_cv_90d": { "factor_type": "technical", "coverage_min": 0.75 },
+    "tech_sma_20_pos": { "factor_type": "technical", "coverage_min": 0.8 },
+    "tech_adx_14": { "factor_type": "technical", "coverage_min": 0.8 },
+    "vol_share_turnover_21d": { "factor_type": "volume", "coverage_min": 0.8 },
+    "l1_bestOrderBlockStrength": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_brokerNetAmount5d": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_squeezeRelease": { "factor_type": "l1_signal", "coverage_min": 0.8, "min_unique_values": 2 },
+    "l1_bbBandwidthPct": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_closeAboveMa60Pct": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_volumeExpansion20": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_return20d": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_macdHist": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_diTrend": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_squeezeMomentum": { "factor_type": "l1_signal", "coverage_min": 0.8 },
+    "l1_monthlyRevenueYoY": { "factor_type": "l1_signal", "coverage_min": 0.9 },
+    "l1_monthlyRevenueMoM": { "factor_type": "l1_signal", "coverage_min": 0.9 },
+    "finlab701_financial_statement_財務成本": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_financial_statement_營業費用": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_financial_statement_營業活動之淨現金流入_流出": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_financial_statement_流動負債": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_financial_statement_不動產廠房及設備": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_fundamental_features_EBITDA": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_fundamental_features_每股現金流量": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_fundamental_features_每股稅前淨利": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_fundamental_features_營運資金": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 },
+    "finlab701_fundamental_features_自由現金流量": { "factor_type": "fundamental_factor_diversity", "coverage_min": 0.85 }
+  }
+}

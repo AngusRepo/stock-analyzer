@@ -1,0 +1,556 @@
+{
+  "schema_version": "stockvision-final-active12-preprod-closure-v1",
+  "generated_at": "2026-06-30T03:48:59.740888+00:00",
+  "allowed_use": "local_validation_only",
+  "decision_effect": "none",
+  "status": "pass",
+  "local_closure": "done",
+  "local_prod_ready": "done",
+  "no_partial": true,
+  "promotion_allowed": false,
+  "production_mutation_allowed": false,
+  "expected_active": [
+    "alpha_miner_pymoo_nsga3_novelty_0193",
+    "defensive_accumulation_seed_v1",
+    "stock_tech_s01_55d_trend_volume_breakout_v1",
+    "stock_tech_s02_52w_dual_momentum_v1",
+    "stock_tech_s04_ma_deduct_turn_breakout_v1",
+    "stock_tech_s06_nr7_inside_bar_breakout_v1",
+    "trend_quality_breakout_fused_v1",
+    "alpha223_0248",
+    "alpha223_0109",
+    "alpha223_0166",
+    "alpha223_0283",
+    "alpha223_0009"
+  ],
+  "retired": [
+    "alphabuilders_multifactor_revenue_quality_momentum_v1",
+    "breakout_vol_expansion_seed_v1",
+    "trend_following_seed_v1",
+    "finlab_ai_skill_broker_accumulation_reclaim_v1",
+    "stock_tech_s11_gap_breakout_continuation_v1"
+  ],
+  "checks": [
+    {
+      "id": "final_active12_draft_shape_pass",
+      "passed": true,
+      "detail": {
+        "strategy_count": 12,
+        "strategy_ids": [
+          "alpha_miner_pymoo_nsga3_novelty_0193",
+          "defensive_accumulation_seed_v1",
+          "stock_tech_s01_55d_trend_volume_breakout_v1",
+          "stock_tech_s02_52w_dual_momentum_v1",
+          "stock_tech_s04_ma_deduct_turn_breakout_v1",
+          "stock_tech_s06_nr7_inside_bar_breakout_v1",
+          "trend_quality_breakout_fused_v1",
+          "alpha223_0248",
+          "alpha223_0109",
+          "alpha223_0166",
+          "alpha223_0283",
+          "alpha223_0009"
+        ],
+        "retired_strategy_ids": [
+          "alphabuilders_multifactor_revenue_quality_momentum_v1",
+          "breakout_vol_expansion_seed_v1",
+          "trend_following_seed_v1",
+          "finlab_ai_skill_broker_accumulation_reclaim_v1",
+          "stock_tech_s11_gap_breakout_continuation_v1"
+        ],
+        "added_strategy_ids": [
+          "trend_quality_breakout_fused_v1",
+          "alpha223_0248",
+          "alpha223_0109",
+          "alpha223_0166",
+          "alpha223_0283",
+          "alpha223_0009"
+        ],
+        "broker_reclaim_retired": true,
+        "errors": []
+      }
+    },
+    {
+      "id": "registry_sql_dry_run_exact_active12_pass",
+      "passed": true,
+      "detail": {
+        "sql": "output/strategy_promotion_preflight/final_active12_decision/active12_candidate_strategy_registry_draft.sql",
+        "active_count": 12,
+        "active_ids": [
+          "alpha223_0009",
+          "alpha223_0109",
+          "alpha223_0166",
+          "alpha223_0248",
+          "alpha223_0283",
+          "alpha_miner_pymoo_nsga3_novelty_0193",
+          "defensive_accumulation_seed_v1",
+          "stock_tech_s01_55d_trend_volume_breakout_v1",
+          "stock_tech_s02_52w_dual_momentum_v1",
+          "stock_tech_s04_ma_deduct_turn_breakout_v1",
+          "stock_tech_s06_nr7_inside_bar_breakout_v1",
+          "trend_quality_breakout_fused_v1"
+        ],
+        "missing_expected_active": [],
+        "unexpected_active": [],
+        "retired_rows": {
+          "alphabuilders_multifactor_revenue_quality_momentum_v1": {
+            "status": "retired",
+            "promotion_status": "retired"
+          },
+          "breakout_vol_expansion_seed_v1": {
+            "status": "retired",
+            "promotion_status": "retired"
+          },
+          "finlab_ai_skill_broker_accumulation_reclaim_v1": {
+            "status": "retired",
+            "promotion_status": "retired"
+          },
+          "stock_tech_s11_gap_breakout_continuation_v1": {
+            "status": "retired",
+            "promotion_status": "retired"
+          },
+          "trend_following_seed_v1": {
+            "status": "retired",
+            "promotion_status": "retired"
+          }
+        },
+        "retired_still_active": []
+      }
+    },
+    {
+      "id": "new_strategy_spec_contract_pass",
+      "passed": true,
+      "detail": {
+        "rows": [
+          {
+            "id": "trend_quality_breakout_fused_v1",
+            "weighted_terms": 6,
+            "missing": []
+          },
+          {
+            "id": "alpha223_0248",
+            "weighted_terms": 8,
+            "missing": []
+          },
+          {
+            "id": "alpha223_0109",
+            "weighted_terms": 6,
+            "missing": []
+          },
+          {
+            "id": "alpha223_0166",
+            "weighted_terms": 4,
+            "missing": []
+          },
+          {
+            "id": "alpha223_0283",
+            "weighted_terms": 5,
+            "missing": []
+          },
+          {
+            "id": "alpha223_0009",
+            "weighted_terms": 5,
+            "missing": []
+          }
+        ],
+        "errors": []
+      }
+    },
+    {
+      "id": "runtime_source_mapping_mentions_pass",
+      "passed": true,
+      "detail": {
+        "missing": [],
+        "files": [
+          "worker/src/lib/formal137FeatureMaterialization.ts",
+          "worker/src/lib/marketScreener.ts",
+          "worker/src/lib/strategySpec.ts"
+        ]
+      }
+    },
+    {
+      "id": "select0_recent5_replay_pass",
+      "passed": true,
+      "detail": {
+        "summary": {
+          "json": "output/strategy_promotion_preflight/final_active12_decision/finlab_strategy_spec_active12_20230101_20260615.json",
+          "csv": "output/strategy_promotion_preflight/final_active12_decision/finlab_strategy_spec_active12_20230101_20260615.csv",
+          "strategy_count": 12,
+          "ok": 7,
+          "no_signal": 0,
+          "unsupported_feature": 5,
+          "errors": []
+        },
+        "unsupported": [
+          "alpha_miner_pymoo_nsga3_novelty_0193",
+          "stock_tech_s01_55d_trend_volume_breakout_v1",
+          "stock_tech_s02_52w_dual_momentum_v1",
+          "stock_tech_s04_ma_deduct_turn_breakout_v1",
+          "stock_tech_s06_nr7_inside_bar_breakout_v1"
+        ],
+        "new_strategy_rows": {
+          "alpha223_0009": {
+            "strategy_id": "alpha223_0009",
+            "name": "Alpha223 0009 cash-change gap broker-flow",
+            "family_id": "ALPHA223_CASH_GAP_BROKER_FLOW",
+            "alpha_bucket": "smart_money_accumulation",
+            "status": "ok",
+            "reason": "",
+            "missing_feature_keys": "",
+            "elapsed_s": "1.818",
+            "match_days": "830",
+            "avg_daily_matches": "419.1963855421687",
+            "max_daily_matches": "684",
+            "latest_matches": "404",
+            "recent5_match_counts": "[{'date': '2026-06-09', 'strict_match_count': 434}, {'date': '2026-06-10', 'strict_match_count': 430}, {'date': '2026-06-11', 'strict_match_count': 436}, {'date': '2026-06-12', 'strict_match_count': 414}, {'date': '2026-06-15', 'strict_match_count': 404}]",
+            "recent5_all_positive": "True",
+            "cagr": "0.16847595068818788",
+            "benchmark_alpha": "0.23787693417935918",
+            "benchmark_beta": "1.553385401547041",
+            "total_return": "0.6792739910837844",
+            "max_drawdown": "-0.15781671811701314",
+            "monthly_sharpe": "1.1442500641374056",
+            "monthly_sortino": "2.613971800276336",
+            "calmar": "1.067474206510962",
+            "win_ratio": "0.47061349693251536",
+            "avg_n_stock": "419.9761904761905",
+            "max_n_stock": "655.0",
+            "trade_count": "16976.0",
+            "avg_trade_return": "0.013173951648903469",
+            "median_trade_return": "-0.004467037936957519"
+          },
+          "alpha223_0109": {
+            "strategy_id": "alpha223_0109",
+            "name": "Alpha223 0109 quality order-block turnover",
+            "family_id": "ALPHA223_QUALITY_TURNOVER",
+            "alpha_bucket": "trend_following",
+            "status": "ok",
+            "reason": "",
+            "missing_feature_keys": "",
+            "elapsed_s": "2.165",
+            "match_days": "830",
+            "avg_daily_matches": "594.5566265060241",
+            "max_daily_matches": "687",
+            "latest_matches": "666",
+            "recent5_match_counts": "[{'date': '2026-06-09', 'strict_match_count': 687}, {'date': '2026-06-10', 'strict_match_count': 616}, {'date': '2026-06-11', 'strict_match_count': 612}, {'date': '2026-06-12', 'strict_match_count': 645}, {'date': '2026-06-15', 'strict_match_count': 666}]",
+            "recent5_all_positive": "True",
+            "cagr": "0.2582772015639223",
+            "benchmark_alpha": "0.3455790884541995",
+            "benchmark_beta": "1.9540569859520656",
+            "total_return": "1.1487109659700305",
+            "max_drawdown": "-0.16900648484291514",
+            "monthly_sharpe": "1.306093014241169",
+            "monthly_sortino": "3.6440987607504547",
+            "calmar": "1.5281184069350784",
+            "win_ratio": "0.4779926496324816",
+            "avg_n_stock": "590.547619047619",
+            "max_n_stock": "676.0",
+            "trade_count": "23710.0",
+            "avg_trade_return": "0.01989042291664223",
+            "median_trade_return": "-0.005117203195202702"
+          },
+          "alpha223_0166": {
+            "strategy_id": "alpha223_0166",
+            "name": "Alpha223 0166 expense profit volume thrust",
+            "family_id": "ALPHA223_EXPENSE_PROFIT_THRUST",
+            "alpha_bucket": "trend_following",
+            "status": "ok",
+            "reason": "",
+            "missing_feature_keys": "",
+            "elapsed_s": "2.015",
+            "match_days": "830",
+            "avg_daily_matches": "614.5481927710844",
+            "max_daily_matches": "684",
+            "latest_matches": "678",
+            "recent5_match_counts": "[{'date': '2026-06-09', 'strict_match_count': 655}, {'date': '2026-06-10', 'strict_match_count': 654}, {'date': '2026-06-11', 'strict_match_count': 643}, {'date': '2026-06-12', 'strict_match_count': 661}, {'date': '2026-06-15', 'strict_match_count': 678}]",
+            "recent5_all_positive": "True",
+            "cagr": "0.21317975154839197",
+            "benchmark_alpha": "0.2854423975779114",
+            "benchmark_beta": "1.617437300923796",
+            "total_return": "0.9028556700903789",
+            "max_drawdown": "-0.15143435037413588",
+            "monthly_sharpe": "1.328180668594486",
+            "monthly_sortino": "3.463341803000909",
+            "calmar": "1.407644134771233",
+            "win_ratio": "0.48968444052271104",
+            "avg_n_stock": "614.5714285714286",
+            "max_n_stock": "678.0",
+            "trade_count": "24664.0",
+            "avg_trade_return": "0.01703190016865468",
+            "median_trade_return": "-0.0012552806567306396"
+          },
+          "alpha223_0248": {
+            "strategy_id": "alpha223_0248",
+            "name": "Alpha223 0248 squeeze cash-flow breakout",
+            "family_id": "ALPHA223_BREAKOUT_CASH_FLOW",
+            "alpha_bucket": "breakout_vol_expansion",
+            "status": "ok",
+            "reason": "",
+            "missing_feature_keys": "",
+            "elapsed_s": "2.627",
+            "match_days": "830",
+            "avg_daily_matches": "320.3120481927711",
+            "max_daily_matches": "378",
+            "latest_matches": "324",
+            "recent5_match_counts": "[{'date': '2026-06-09', 'strict_match_count': 316}, {'date': '2026-06-10', 'strict_match_count': 319}, {'date': '2026-06-11', 'strict_match_count': 302}, {'date': '2026-06-12', 'strict_match_count': 318}, {'date': '2026-06-15', 'strict_match_count': 324}]",
+            "recent5_all_positive": "True",
+            "cagr": "0.31062554670928866",
+            "benchmark_alpha": "0.39604759151559543",
+            "benchmark_beta": "1.9119809359660556",
+            "total_return": "1.461007693978614",
+            "max_drawdown": "-0.1561887588157741",
+            "monthly_sharpe": "1.5438579048805252",
+            "monthly_sortino": "4.402328272661281",
+            "calmar": "1.988655665795978",
+            "win_ratio": "0.4954578342310475",
+            "avg_n_stock": "320.57142857142856",
+            "max_n_stock": "376.0",
+            "trade_count": "12841.0",
+            "avg_trade_return": "0.023765026538262377",
+            "median_trade_return": "-0.0013073329853862115"
+          },
+          "alpha223_0283": {
+            "strategy_id": "alpha223_0283",
+            "name": "Alpha223 0283 OCF noncurrent-assets order-block",
+            "family_id": "ALPHA223_CASHFLOW_ASSET_TURNOVER",
+            "alpha_bucket": "breakout_vol_expansion",
+            "status": "ok",
+            "reason": "",
+            "missing_feature_keys": "",
+            "elapsed_s": "2.044",
+            "match_days": "830",
+            "avg_daily_matches": "608.4397590361446",
+            "max_daily_matches": "655",
+            "latest_matches": "611",
+            "recent5_match_counts": "[{'date': '2026-06-09', 'strict_match_count': 597}, {'date': '2026-06-10', 'strict_match_count': 604}, {'date': '2026-06-11', 'strict_match_count': 589}, {'date': '2026-06-12', 'strict_match_count': 595}, {'date': '2026-06-15', 'strict_match_count': 611}]",
+            "recent5_all_positive": "True",
+            "cagr": "0.2117498667647526",
+            "benchmark_alpha": "0.2906173876050523",
+            "benchmark_beta": "1.7652726138256125",
+            "total_return": "0.8953992758673013",
+            "max_drawdown": "-0.15065009354302694",
+            "monthly_sharpe": "1.255902102406025",
+            "monthly_sortino": "3.1263194204206326",
+            "calmar": "1.4054807864849697",
+            "win_ratio": "0.4851176693470298",
+            "avg_n_stock": "609.1428571428571",
+            "max_n_stock": "655.0",
+            "trade_count": "24449.0",
+            "avg_trade_return": "0.01740996410434926",
+            "median_trade_return": "-0.0016694490818029983"
+          },
+          "trend_quality_breakout_fused_v1": {
+            "strategy_id": "trend_quality_breakout_fused_v1",
+            "name": "Trend quality breakout fused",
+            "family_id": "TREND_QUALITY_BREAKOUT_FUSED",
+            "alpha_bucket": "trend_following",
+            "status": "ok",
+            "reason": "",
+            "missing_feature_keys": "",
+            "elapsed_s": "2.514",
+            "match_days": "830",
+            "avg_daily_matches": "511.86626506024095",
+            "max_daily_matches": "705",
+            "latest_matches": "589",
+            "recent5_match_counts": "[{'date': '2026-06-09', 'strict_match_count': 580}, {'date': '2026-06-10', 'strict_match_count': 585}, {'date': '2026-06-11', 'strict_match_count': 592}, {'date': '2026-06-12', 'strict_match_count': 585}, {'date': '2026-06-15', 'strict_match_count': 589}]",
+            "recent5_all_positive": "True",
+            "cagr": "0.24391163304360952",
+            "benchmark_alpha": "0.316403551607438",
+            "benchmark_beta": "1.6225690525194487",
+            "total_return": "1.0681203997009168",
+            "max_drawdown": "-0.17231298142476592",
+            "monthly_sharpe": "1.3313084144062317",
+            "monthly_sortino": "3.882399953344121",
+            "calmar": "1.4154329911596748",
+            "win_ratio": "0.4501194287747116",
+            "avg_n_stock": "514.547619047619",
+            "max_n_stock": "609.0",
+            "trade_count": "20784.0",
+            "avg_trade_return": "0.01904168606685938",
+            "median_trade_return": "-0.011467092154226144"
+          }
+        }
+      }
+    },
+    {
+      "id": "alpha223_0283_0009_gate_pass",
+      "passed": true,
+      "detail": {
+        "schema_version": "stockvision-alpha223-extension-gate-summary-v1",
+        "generated_at": "2026-06-30T01:28:01.657705+00:00",
+        "decision_effect": "local_gate_summary_only",
+        "candidate_ids": [
+          "alpha223_0283",
+          "alpha223_0009"
+        ],
+        "existing_pairwise_ids": [
+          "alpha223_0248",
+          "alpha223_0109",
+          "alpha223_0166"
+        ],
+        "thresholds": {
+          "max_pair_corr": 0.85,
+          "max_pair_all_jaccard": 0.2,
+          "max_pair_latest_jaccard": 0.35
+        },
+        "source_files": {
+          "contract_csv": "output/strategy_promotion_preflight/s04_s11_defensive_replacement_gates/active12_promotion_factor_contract_latest.csv",
+          "replay_csv": "output/strategy_promotion_preflight/s04_s11_defensive_replacement_gates/finlab_strategy_spec_active3_20230101_20260615.csv",
+          "pairwise_csv": "output/strategy_promotion_preflight/portfolio_scenarios_final_active12_decision/active12_portfolio_scenarios_sii_20230101_20260615_pairwise_focus.csv"
+        },
+        "all_local_prod_ready_no_partial": true,
+        "rows": [
+          {
+            "strategy_id": "alpha223_0283",
+            "factor_count": 5,
+            "factor_contract_ok": true,
+            "factor_blocker_count": 0,
+            "mapping_blocker_count": 0,
+            "factor_blockers": "",
+            "select0_preflight_ok": true,
+            "runtime_replay_5d_ok": true,
+            "latest_matches": 611,
+            "recent5_min_strict_match_count": 589,
+            "replay_status": "ok",
+            "pairwise_rows": 3,
+            "pairwise_crowding_ok": true,
+            "max_pair_return_corr": 0.8044521804889371,
+            "max_pair_all_period_jaccard": 0.17053329316059054,
+            "max_pair_latest_jaccard": 0.25,
+            "max_pair_position_phi_corr": 0.28582416918458176,
+            "local_prod_ready_no_partial": true
+          },
+          {
+            "strategy_id": "alpha223_0009",
+            "factor_count": 5,
+            "factor_contract_ok": true,
+            "factor_blocker_count": 0,
+            "mapping_blocker_count": 0,
+            "factor_blockers": "",
+            "select0_preflight_ok": true,
+            "runtime_replay_5d_ok": true,
+            "latest_matches": 404,
+            "recent5_min_strict_match_count": 404,
+            "replay_status": "ok",
+            "pairwise_rows": 3,
+            "pairwise_crowding_ok": true,
+            "max_pair_return_corr": 0.7858039811349535,
+            "max_pair_all_period_jaccard": 0.12665844993837455,
+            "max_pair_latest_jaccard": 0.1111111111111111,
+            "max_pair_position_phi_corr": 0.21876479676691798,
+            "local_prod_ready_no_partial": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "portfolio_oos_cost_delta_pass",
+      "passed": true,
+      "detail": {
+        "baseline": "Candidate11_noBroker",
+        "final": "FinalActive12_retire_trio_Broker_S11_add_fused_0248_0109_0166_0283_0009",
+        "checks": [
+          {
+            "period": "full_2023_2026",
+            "bps": 0.0,
+            "final_cagr": 0.448402958136787,
+            "baseline_cagr": 0.391810851447318,
+            "delta_cagr": 0.05659210668946901,
+            "delta_sharpe": 0.21186595975548816,
+            "delta_max_drawdown": -0.012257155005164666,
+            "passed": true
+          },
+          {
+            "period": "full_2023_2026",
+            "bps": 50.0,
+            "final_cagr": 0.3575167075031356,
+            "baseline_cagr": 0.2799130759327366,
+            "delta_cagr": 0.07760363157039896,
+            "delta_sharpe": 0.3033866702366985,
+            "delta_max_drawdown": -0.013418906688704602,
+            "passed": true
+          },
+          {
+            "period": "full_2023_2026",
+            "bps": 100.0,
+            "final_cagr": 0.272284991023763,
+            "baseline_cagr": 0.1769576879213004,
+            "delta_cagr": 0.09532730310246262,
+            "delta_sharpe": 0.39524574529032797,
+            "delta_max_drawdown": -0.004265303390981079,
+            "passed": true
+          },
+          {
+            "period": "validation_2025",
+            "bps": 0.0,
+            "final_cagr": 0.14936593133957254,
+            "baseline_cagr": 0.07389355460319313,
+            "delta_cagr": 0.07547237673637941,
+            "delta_sharpe": 0.3387711646480638,
+            "delta_max_drawdown": -0.029396459628724947,
+            "passed": true
+          },
+          {
+            "period": "validation_2025",
+            "bps": 50.0,
+            "final_cagr": 0.08742418997127244,
+            "baseline_cagr": 0.008339265653915184,
+            "delta_cagr": 0.07908492431735725,
+            "delta_sharpe": 0.4186463921098853,
+            "delta_max_drawdown": -0.029005449865039168,
+            "passed": true
+          },
+          {
+            "period": "validation_2025",
+            "bps": 100.0,
+            "final_cagr": 0.02878634491869514,
+            "baseline_cagr": -0.05324477029706132,
+            "delta_cagr": 0.08203111521575646,
+            "delta_sharpe": 0.49798721719054595,
+            "delta_max_drawdown": -0.02864992133589017,
+            "passed": true
+          },
+          {
+            "period": "holdout_2026_ytd",
+            "bps": 0.0,
+            "final_cagr": 2.722024500546724,
+            "baseline_cagr": 2.3101850708650904,
+            "delta_cagr": 0.41183942968163345,
+            "delta_sharpe": 0.4032459096078167,
+            "delta_max_drawdown": -0.0025572952300475515,
+            "passed": true
+          },
+          {
+            "period": "holdout_2026_ytd",
+            "bps": 50.0,
+            "final_cagr": 2.4864892036710415,
+            "baseline_cagr": 2.0244300146115504,
+            "delta_cagr": 0.46205918905949117,
+            "delta_sharpe": 0.47596116078433104,
+            "delta_max_drawdown": -0.00028598287157322044,
+            "passed": true
+          },
+          {
+            "period": "holdout_2026_ytd",
+            "bps": 100.0,
+            "final_cagr": 2.2657513004821226,
+            "baseline_cagr": 1.76321481162086,
+            "delta_cagr": 0.5025364888612627,
+            "delta_sharpe": 0.5488368280689437,
+            "delta_max_drawdown": 0.0019758277366583865,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "feature_registry_local_closure_pass",
+      "passed": true,
+      "detail": {
+        "path": "output/feature_universe_triage/feature_registry_local_closure_20260617.json",
+        "status": "pass",
+        "errors": []
+      }
+    }
+  ],
+  "failed_checks": []
+}

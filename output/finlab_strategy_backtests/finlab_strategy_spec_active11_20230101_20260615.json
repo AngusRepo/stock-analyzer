@@ -1,6 +1,6 @@
 {
   "schema_version": "stockvision-finlab-strategy-spec-backtest-v1",
-  "generated_at": "2026-06-18T07:37:43.681768+00:00",
+  "generated_at": "2026-06-29T16:02:16.774676+00:00",
   "allowed_use": "research_only",
   "decision_effect": "none",
   "sdk": {
@@ -13,7 +13,15 @@
     "resample": "M",
     "position_limit": 0.1,
     "trade_at_price": "close",
+    "extra_slippage_bps": 0.0,
+    "fee_ratio": 0.001425,
+    "tax_ratio": 0.003,
     "universe": "FinLab security_categories market in sii/otc and 4-digit common stocks",
+    "status_scope": "active",
+    "selected_statuses": [
+      "active"
+    ],
+    "retired_included": false,
     "strategy_count": 11
   },
   "feature_mapping": {
@@ -23,41 +31,10 @@
     "chips": "finlab institutional_investors_trading_summary 5d rolling",
     "broker": "finlab etl:broker_transactions top15_buy/top15_sell/balance_index proxy; full broker_transactions was not used",
     "sector_flow": "reconstructed from FinLab security_categories + OHLCV relative strength proxy",
-    "smc": "reconstructed OHLCV price-action proxy; not a byte-identical production SMC replay"
+    "smc": "reconstructed OHLCV price-action proxy; not a byte-identical production SMC replay",
+    "alpha_miner": null
   },
   "results": [
-    {
-      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0081",
-      "name": "Pymoo NSGA-III novelty 0081 breadth trend impulse",
-      "family_id": "TREND_RECLAIM_CONTINUATION",
-      "alpha_bucket": "trend_following",
-      "status": "unsupported_feature",
-      "reason": "missing_feature_key",
-      "missing_feature_keys": [
-        "alphaMinerPymoo0081Score"
-      ],
-      "elapsed_s": 0.322,
-      "match_days": 0,
-      "avg_daily_matches": 0.0,
-      "max_daily_matches": 0,
-      "latest_matches": 0
-    },
-    {
-      "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0187",
-      "name": "Pymoo NSGA-III novelty 0187 revenue short trend",
-      "family_id": "REVENUE_QUALITY_MOMENTUM",
-      "alpha_bucket": "trend_following",
-      "status": "unsupported_feature",
-      "reason": "missing_feature_key",
-      "missing_feature_keys": [
-        "alphaMinerPymoo0187Score"
-      ],
-      "elapsed_s": 0.341,
-      "match_days": 0,
-      "avg_daily_matches": 0.0,
-      "max_daily_matches": 0,
-      "latest_matches": 0
-    },
     {
       "strategy_id": "alpha_miner_pymoo_nsga3_novelty_0193",
       "name": "Pymoo NSGA-III novelty 0193 sentiment margin flow",
@@ -66,13 +43,37 @@
       "status": "unsupported_feature",
       "reason": "missing_feature_key",
       "missing_feature_keys": [
-        "alphaMinerPymoo0193Score"
+        "factorSignals.margin_balance",
+        "factorSignals.us_sentiment_score"
       ],
-      "elapsed_s": 0.321,
+      "elapsed_s": 0.909,
       "match_days": 0,
       "avg_daily_matches": 0.0,
       "max_daily_matches": 0,
-      "latest_matches": 0
+      "latest_matches": 0,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 0
+        }
+      ],
+      "recent5_all_positive": false
     },
     {
       "strategy_id": "alphabuilders_multifactor_revenue_quality_momentum_v1",
@@ -80,25 +81,48 @@
       "family_id": "REVENUE_QUALITY_MOMENTUM",
       "alpha_bucket": "trend_following",
       "status": "ok",
-      "elapsed_s": 3.453,
-      "cagr": 0.19762633198114532,
-      "benchmark_alpha": 0.26423782348893743,
-      "benchmark_beta": 1.4909488782193179,
-      "total_return": 0.8228438713611024,
-      "max_drawdown": -0.17124251665994428,
-      "monthly_sharpe": 1.2051288970081915,
-      "monthly_sortino": 3.2238573028959756,
-      "calmar": 1.1540054174711571,
-      "win_ratio": 0.4523282640425632,
-      "avg_n_stock": 564.547619047619,
-      "max_n_stock": 1115.0,
-      "trade_count": 22726,
-      "avg_trade_return": 0.014806956905075584,
-      "median_trade_return": -0.007436930408639297,
+      "elapsed_s": 1.646,
+      "cagr": 0.19788953202529602,
+      "benchmark_alpha": 0.2642556380518255,
+      "benchmark_beta": 1.485456474435245,
+      "total_return": 0.824177910576841,
+      "max_drawdown": -0.17059643640416977,
+      "monthly_sharpe": 1.2080123917989267,
+      "monthly_sortino": 3.2375720041249516,
+      "calmar": 1.1599183254522243,
+      "win_ratio": 0.4523304585512984,
+      "avg_n_stock": 564.0714285714286,
+      "max_n_stock": 1114.0,
+      "trade_count": 22706,
+      "avg_trade_return": 0.014142190154595502,
+      "median_trade_return": -0.007969110527842271,
       "match_days": 830,
-      "avg_daily_matches": 599.7373493975904,
-      "max_daily_matches": 1177,
-      "latest_matches": 780
+      "avg_daily_matches": 599.2915662650603,
+      "max_daily_matches": 1176,
+      "latest_matches": 780,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 839
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 824
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 795
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 784
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 780
+        }
+      ],
+      "recent5_all_positive": true
     },
     {
       "strategy_id": "breakout_vol_expansion_seed_v1",
@@ -106,25 +130,48 @@
       "family_id": "VOLATILITY_CONTRACTION_BREAKOUT",
       "alpha_bucket": "breakout_vol_expansion",
       "status": "ok",
-      "elapsed_s": 1.606,
-      "cagr": 0.2473954596769541,
-      "benchmark_alpha": 0.31939617238323575,
-      "benchmark_beta": 1.6115745108013906,
-      "total_return": 1.0874668893553348,
-      "max_drawdown": -0.1940747568526935,
-      "monthly_sharpe": 1.159178502546488,
-      "monthly_sortino": 3.3778399436104225,
-      "calmar": 1.2746774331418638,
-      "win_ratio": 0.43942110655737704,
-      "avg_n_stock": 209.45238095238096,
-      "max_n_stock": 477.0,
-      "trade_count": 8373,
-      "avg_trade_return": 0.017708045688925093,
-      "median_trade_return": -0.01318074118394269,
+      "elapsed_s": 0.716,
+      "cagr": 0.2468867480313397,
+      "benchmark_alpha": 0.3188187067624956,
+      "benchmark_beta": 1.610035607231358,
+      "total_return": 1.0846340353954966,
+      "max_drawdown": -0.19404142903444,
+      "monthly_sharpe": 1.1571273247150922,
+      "monthly_sortino": 3.371723985240178,
+      "calmar": 1.2722748255954484,
+      "win_ratio": 0.43951819579702717,
+      "avg_n_stock": 209.35714285714286,
+      "max_n_stock": 476.0,
+      "trade_count": 8369,
+      "avg_trade_return": 0.017030912370967627,
+      "median_trade_return": -0.013742307804195386,
       "match_days": 830,
-      "avg_daily_matches": 225.08072289156627,
+      "avg_daily_matches": 224.96024096385543,
       "max_daily_matches": 738,
-      "latest_matches": 243
+      "latest_matches": 243,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 328
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 269
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 236
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 240
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 243
+        }
+      ],
+      "recent5_all_positive": true
     },
     {
       "strategy_id": "defensive_accumulation_seed_v1",
@@ -132,25 +179,48 @@
       "family_id": "SMART_MONEY_ACCUMULATION",
       "alpha_bucket": "defensive_accumulation",
       "status": "ok",
-      "elapsed_s": 1.554,
-      "cagr": 0.15820406140434295,
-      "benchmark_alpha": 0.22240236085544082,
-      "benchmark_beta": 1.436934984994376,
-      "total_return": 0.6306283699609587,
-      "max_drawdown": -0.16565324961501293,
-      "monthly_sharpe": 1.028504014587491,
-      "monthly_sortino": 2.5215558805937275,
-      "calmar": 0.954973790336695,
-      "win_ratio": 0.4476722921782747,
-      "avg_n_stock": 507.2857142857143,
+      "elapsed_s": 0.654,
+      "cagr": 0.1588245285155574,
+      "benchmark_alpha": 0.22305941946034735,
+      "benchmark_beta": 1.4377540035336307,
+      "total_return": 0.6335384367942105,
+      "max_drawdown": -0.16529214052174102,
+      "monthly_sharpe": 1.0331179938620711,
+      "monthly_sortino": 2.537267940483337,
+      "calmar": 0.9608135019562455,
+      "win_ratio": 0.44780722387747635,
+      "avg_n_stock": 507.0952380952381,
       "max_n_stock": 962.0,
-      "trade_count": 20247,
-      "avg_trade_return": 0.012920111039172835,
-      "median_trade_return": -0.007973032786885215,
+      "trade_count": 20239,
+      "avg_trade_return": 0.012444105030325054,
+      "median_trade_return": -0.008602150537634246,
       "match_days": 830,
-      "avg_daily_matches": 538.7,
+      "avg_daily_matches": 538.4831325301204,
       "max_daily_matches": 1050,
-      "latest_matches": 512
+      "latest_matches": 512,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 662
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 545
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 479
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 493
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 512
+        }
+      ],
+      "recent5_all_positive": true
     },
     {
       "strategy_id": "finlab_ai_skill_broker_accumulation_reclaim_v1",
@@ -158,103 +228,243 @@
       "family_id": "SMART_MONEY_ACCUMULATION",
       "alpha_bucket": "defensive_accumulation",
       "status": "ok",
-      "elapsed_s": 3.86,
-      "cagr": 0.15772480422549284,
-      "benchmark_alpha": 0.21942932434887685,
-      "benchmark_beta": 1.3811173264039374,
-      "total_return": 0.6283830792214535,
-      "max_drawdown": -0.15667394174213056,
-      "monthly_sharpe": 0.955884990282223,
-      "monthly_sortino": 2.523997414776083,
-      "calmar": 1.0066430705775535,
-      "win_ratio": 0.4468484242121061,
-      "avg_n_stock": 209.97619047619048,
+      "elapsed_s": 1.432,
+      "cagr": 0.15749120121132276,
+      "benchmark_alpha": 0.21916716009373274,
+      "benchmark_beta": 1.3804780470659956,
+      "total_return": 0.6272894478083941,
+      "max_drawdown": -0.15667394174213534,
+      "monthly_sharpe": 0.9542813616422026,
+      "monthly_sortino": 2.520071143927763,
+      "calmar": 1.005152151906645,
+      "win_ratio": 0.4467792370231395,
+      "avg_n_stock": 209.95238095238096,
       "max_n_stock": 455.0,
-      "trade_count": 8545,
-      "avg_trade_return": 0.013347071540415464,
-      "median_trade_return": -0.008754415522196246,
+      "trade_count": 8544,
+      "avg_trade_return": 0.012810082686851649,
+      "median_trade_return": -0.009350198412698463,
       "match_days": 830,
-      "avg_daily_matches": 222.3132530120482,
+      "avg_daily_matches": 222.21204819277108,
       "max_daily_matches": 470,
-      "latest_matches": 215
+      "latest_matches": 215,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 280
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 275
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 244
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 205
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 215
+        }
+      ],
+      "recent5_all_positive": true
     },
     {
-      "strategy_id": "finlab_ai_skill_quality_trend_v1",
-      "name": "FinLab AI quality trend",
-      "family_id": "REVENUE_QUALITY_MOMENTUM",
-      "alpha_bucket": "trend_following",
-      "status": "ok",
-      "elapsed_s": 1.242,
-      "cagr": 0.21287221433581438,
-      "benchmark_alpha": 0.27279862617397804,
-      "benchmark_beta": 1.341318359390987,
-      "total_return": 0.9012502322314624,
-      "max_drawdown": -0.096303367572395,
-      "monthly_sharpe": 1.1100091513376786,
-      "monthly_sortino": 2.950518231078374,
-      "calmar": 2.2102042499532235,
-      "win_ratio": 0.4637479085331846,
-      "avg_n_stock": 100.30952380952381,
-      "max_n_stock": 297.0,
-      "trade_count": 3843,
-      "avg_trade_return": 0.015035367362267137,
-      "median_trade_return": -0.00700373673862309,
-      "match_days": 830,
-      "avg_daily_matches": 110.92530120481928,
-      "max_daily_matches": 383,
-      "latest_matches": 137
-    },
-    {
-      "strategy_id": "finlab_ai_skill_revenue_revision_breakout_v1",
-      "name": "FinLab AI revenue revision breakout",
-      "family_id": "REVENUE_QUALITY_MOMENTUM",
+      "strategy_id": "stock_tech_s01_55d_trend_volume_breakout_v1",
+      "name": "S1 55d trend volume breakout",
+      "family_id": "TREND_RECLAIM_CONTINUATION",
       "alpha_bucket": "breakout_vol_expansion",
-      "status": "ok",
-      "elapsed_s": 1.541,
-      "cagr": 0.2692498871549931,
-      "benchmark_alpha": 0.32764930897507333,
-      "benchmark_beta": 1.307140111719608,
-      "total_return": 1.2117287669549581,
-      "max_drawdown": -0.10295279091259468,
-      "monthly_sharpe": 1.168879578733631,
-      "monthly_sortino": 4.95663186080173,
-      "calmar": 2.6150212593164834,
-      "win_ratio": 0.48424068767908307,
-      "avg_n_stock": 9.619047619047619,
-      "max_n_stock": 32.0,
-      "trade_count": 394,
-      "avg_trade_return": 0.03676535391693685,
-      "median_trade_return": -0.005843694374999986,
-      "match_days": 826,
-      "avg_daily_matches": 11.812048192771085,
-      "max_daily_matches": 49,
-      "latest_matches": 23
+      "status": "unsupported_feature",
+      "reason": "missing_feature_key",
+      "missing_feature_keys": [
+        "technicalIndicators.stockTechS01Admission"
+      ],
+      "elapsed_s": 0.139,
+      "match_days": 0,
+      "avg_daily_matches": 0.0,
+      "max_daily_matches": 0,
+      "latest_matches": 0,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 0
+        }
+      ],
+      "recent5_all_positive": false
     },
     {
-      "strategy_id": "finlab_ai_skill_reversion_value_v1",
-      "name": "FinLab AI reversion value",
-      "family_id": "REVENUE_QUALITY_MOMENTUM",
-      "alpha_bucket": "mean_reversion",
-      "status": "ok",
-      "elapsed_s": 1.658,
-      "cagr": 0.08836177969418113,
-      "benchmark_alpha": 0.13327048749481468,
-      "benchmark_beta": 1.0051807278598626,
-      "total_return": 0.32564301400130424,
-      "max_drawdown": -0.12460157070262978,
-      "monthly_sharpe": 0.7768459748685451,
-      "monthly_sortino": 1.557635287982672,
-      "calmar": 0.7090977121622652,
-      "win_ratio": 0.46920460302525874,
-      "avg_n_stock": 365.85714285714283,
-      "max_n_stock": 656.0,
-      "trade_count": 14477,
-      "avg_trade_return": 0.0072573973349009035,
-      "median_trade_return": -0.002663926799007399,
-      "match_days": 830,
-      "avg_daily_matches": 413.64939759036145,
-      "max_daily_matches": 822,
-      "latest_matches": 312
+      "strategy_id": "stock_tech_s02_52w_dual_momentum_v1",
+      "name": "S2 52w dual momentum",
+      "family_id": "TREND_RECLAIM_CONTINUATION",
+      "alpha_bucket": "trend_following",
+      "status": "unsupported_feature",
+      "reason": "missing_feature_key",
+      "missing_feature_keys": [
+        "technicalIndicators.stockTechS02Admission"
+      ],
+      "elapsed_s": 0.132,
+      "match_days": 0,
+      "avg_daily_matches": 0.0,
+      "max_daily_matches": 0,
+      "latest_matches": 0,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 0
+        }
+      ],
+      "recent5_all_positive": false
+    },
+    {
+      "strategy_id": "stock_tech_s04_ma_deduct_turn_breakout_v1",
+      "name": "S4 MA deduct turn breakout",
+      "family_id": "TREND_RECLAIM_CONTINUATION",
+      "alpha_bucket": "trend_following",
+      "status": "unsupported_feature",
+      "reason": "missing_feature_key",
+      "missing_feature_keys": [
+        "technicalIndicators.stockTechS04Admission"
+      ],
+      "elapsed_s": 0.139,
+      "match_days": 0,
+      "avg_daily_matches": 0.0,
+      "max_daily_matches": 0,
+      "latest_matches": 0,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 0
+        }
+      ],
+      "recent5_all_positive": false
+    },
+    {
+      "strategy_id": "stock_tech_s06_nr7_inside_bar_breakout_v1",
+      "name": "S6 NR7 inside bar breakout",
+      "family_id": "VOLATILITY_CONTRACTION_BREAKOUT",
+      "alpha_bucket": "breakout_vol_expansion",
+      "status": "unsupported_feature",
+      "reason": "missing_feature_key",
+      "missing_feature_keys": [
+        "technicalIndicators.stockTechS06Admission"
+      ],
+      "elapsed_s": 0.125,
+      "match_days": 0,
+      "avg_daily_matches": 0.0,
+      "max_daily_matches": 0,
+      "latest_matches": 0,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 0
+        }
+      ],
+      "recent5_all_positive": false
+    },
+    {
+      "strategy_id": "stock_tech_s11_gap_breakout_continuation_v1",
+      "name": "S11 gap breakout continuation",
+      "family_id": "VOLATILITY_CONTRACTION_BREAKOUT",
+      "alpha_bucket": "breakout_vol_expansion",
+      "status": "unsupported_feature",
+      "reason": "missing_feature_key",
+      "missing_feature_keys": [
+        "technicalIndicators.stockTechS11Admission"
+      ],
+      "elapsed_s": 0.153,
+      "match_days": 0,
+      "avg_daily_matches": 0.0,
+      "max_daily_matches": 0,
+      "latest_matches": 0,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 0
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 0
+        }
+      ],
+      "recent5_all_positive": false
     },
     {
       "strategy_id": "trend_following_seed_v1",
@@ -262,25 +472,48 @@
       "family_id": "TREND_RECLAIM_CONTINUATION",
       "alpha_bucket": "trend_following",
       "status": "ok",
-      "elapsed_s": 1.581,
-      "cagr": 0.23569687040186937,
-      "benchmark_alpha": 0.29970362140936524,
-      "benchmark_beta": 1.4326476025825836,
-      "total_return": 1.022999120988434,
-      "max_drawdown": -0.1604332884180658,
-      "monthly_sharpe": 1.243994592108121,
-      "monthly_sortino": 3.863328334346665,
-      "calmar": 1.4690354001453516,
-      "win_ratio": 0.45160134699433974,
-      "avg_n_stock": 377.64285714285717,
-      "max_n_stock": 836.0,
-      "trade_count": 14895,
-      "avg_trade_return": 0.017152738433793877,
-      "median_trade_return": -0.00917699531091748,
+      "elapsed_s": 0.823,
+      "cagr": 0.2354426262702496,
+      "benchmark_alpha": 0.2994087441699803,
+      "benchmark_beta": 1.431738121574582,
+      "total_return": 1.0216137248683017,
+      "max_drawdown": -0.16041234996946685,
+      "monthly_sharpe": 1.2428691967125816,
+      "monthly_sortino": 3.8598974788056815,
+      "calmar": 1.467642297442104,
+      "win_ratio": 0.45165914140328245,
+      "avg_n_stock": 377.54761904761904,
+      "max_n_stock": 835.0,
+      "trade_count": 14891,
+      "avg_trade_return": 0.016452213501419323,
+      "median_trade_return": -0.009666120447305082,
       "match_days": 830,
-      "avg_daily_matches": 395.9301204819277,
+      "avg_daily_matches": 395.74939759036147,
       "max_daily_matches": 1011,
-      "latest_matches": 483
+      "latest_matches": 483,
+      "recent5_match_counts": [
+        {
+          "date": "2026-06-09",
+          "strict_match_count": 567
+        },
+        {
+          "date": "2026-06-10",
+          "strict_match_count": 486
+        },
+        {
+          "date": "2026-06-11",
+          "strict_match_count": 453
+        },
+        {
+          "date": "2026-06-12",
+          "strict_match_count": 488
+        },
+        {
+          "date": "2026-06-15",
+          "strict_match_count": 483
+        }
+      ],
+      "recent5_all_positive": true
     }
   ]
 }

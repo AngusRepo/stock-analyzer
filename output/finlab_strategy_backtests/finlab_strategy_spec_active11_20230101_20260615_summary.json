@@ -2,8 +2,8 @@
   "json": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
   "csv": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.csv",
   "strategy_count": 11,
-  "ok": 8,
+  "ok": 5,
   "no_signal": 0,
-  "unsupported_feature": 3,
+  "unsupported_feature": 6,
   "errors": []
 }

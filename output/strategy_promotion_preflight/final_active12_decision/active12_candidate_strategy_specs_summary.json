@@ -1,0 +1,39 @@
+{
+  "schema_version": "stockvision-active12-promotion-spec-builder-v1",
+  "generated_at": "2026-06-30T01:03:53.370624+00:00",
+  "decision_effect": "local_draft_only",
+  "strategy_count": 12,
+  "strategy_ids": [
+    "alpha_miner_pymoo_nsga3_novelty_0193",
+    "defensive_accumulation_seed_v1",
+    "stock_tech_s01_55d_trend_volume_breakout_v1",
+    "stock_tech_s02_52w_dual_momentum_v1",
+    "stock_tech_s04_ma_deduct_turn_breakout_v1",
+    "stock_tech_s06_nr7_inside_bar_breakout_v1",
+    "trend_quality_breakout_fused_v1",
+    "alpha223_0248",
+    "alpha223_0109",
+    "alpha223_0166",
+    "alpha223_0283",
+    "alpha223_0009"
+  ],
+  "retired_strategy_ids": [
+    "alphabuilders_multifactor_revenue_quality_momentum_v1",
+    "breakout_vol_expansion_seed_v1",
+    "trend_following_seed_v1",
+    "finlab_ai_skill_broker_accumulation_reclaim_v1",
+    "stock_tech_s11_gap_breakout_continuation_v1"
+  ],
+  "added_strategy_ids": [
+    "trend_quality_breakout_fused_v1",
+    "alpha223_0248",
+    "alpha223_0109",
+    "alpha223_0166",
+    "alpha223_0283",
+    "alpha223_0009"
+  ],
+  "broker_reclaim_retired": true,
+  "errors": [],
+  "json": "output/strategy_promotion_preflight/final_active12_decision/active12_candidate_strategy_specs.json",
+  "sql": "output/strategy_promotion_preflight/final_active12_decision/active12_candidate_strategy_registry_draft.sql"
+}

@@ -11,6 +11,12 @@ export type StrategyFamilyId =
   | 'SMC_STRUCTURE_RECLAIM'
   | 'REVENUE_QUALITY_MOMENTUM'
   | 'SECTOR_ROTATION_CORE'
+  | 'TREND_QUALITY_BREAKOUT_FUSED'
+  | 'ALPHA223_BREAKOUT_CASH_FLOW'
+  | 'ALPHA223_QUALITY_TURNOVER'
+  | 'ALPHA223_EXPENSE_PROFIT_THRUST'
+  | 'ALPHA223_CASHFLOW_ASSET_TURNOVER'
+  | 'ALPHA223_CASH_GAP_BROKER_FLOW'
 export type StrategyOwnerType = 'strategy' | 'feature' | 'observe' | 'retired'
 export type StrategyPromotionStatus = 'production' | 'candidate' | 'research' | 'retired'
 
@@ -245,6 +251,12 @@ const STRATEGY_FAMILY_IDS = new Set<StrategyFamilyId>([
   'SMC_STRUCTURE_RECLAIM',
   'REVENUE_QUALITY_MOMENTUM',
   'SECTOR_ROTATION_CORE',
+  'TREND_QUALITY_BREAKOUT_FUSED',
+  'ALPHA223_BREAKOUT_CASH_FLOW',
+  'ALPHA223_QUALITY_TURNOVER',
+  'ALPHA223_EXPENSE_PROFIT_THRUST',
+  'ALPHA223_CASHFLOW_ASSET_TURNOVER',
+  'ALPHA223_CASH_GAP_BROKER_FLOW',
 ])
 
 const STRATEGY_OWNER_TYPES = new Set<StrategyOwnerType>(['strategy', 'feature', 'observe', 'retired'])

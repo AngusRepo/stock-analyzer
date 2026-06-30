@@ -455,12 +455,24 @@ export async function seedDefaultStrategySpecRegistry(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(strategy_id, version) DO UPDATE SET
         name=excluded.name,
-        status=excluded.status,
+        status=CASE
+          WHEN strategy_spec_registry.status IN ('research','shadow','candidate','active','retired')
+          THEN strategy_spec_registry.status
+          ELSE excluded.status
+        END,
         alpha_bucket=excluded.alpha_bucket,
         family_id=excluded.family_id,
         variant_id=excluded.variant_id,
-        owner_type=excluded.owner_type,
-        promotion_status=excluded.promotion_status,
+        owner_type=CASE
+          WHEN strategy_spec_registry.owner_type IN ('strategy','feature','observe','retired')
+          THEN strategy_spec_registry.owner_type
+          ELSE excluded.owner_type
+        END,
+        promotion_status=CASE
+          WHEN strategy_spec_registry.promotion_status IN ('production','candidate','research','retired')
+          THEN strategy_spec_registry.promotion_status
+          ELSE excluded.promotion_status
+        END,
         supported_regimes_json=excluded.supported_regimes_json,
         thesis=excluded.thesis,
         thresholds_json=excluded.thresholds_json,

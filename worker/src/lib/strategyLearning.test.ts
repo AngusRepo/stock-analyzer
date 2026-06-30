@@ -32,7 +32,14 @@ class FakeStrategyRegistryStatement {
     const sql = this.sql
     if (sql.includes('INSERT INTO strategy_spec_registry')) {
       const row = this.db.rowFromInsertArgs(this.args)
-      this.db.rows.set(`${row.strategy_id}:${row.version}`, row)
+      const key = `${row.strategy_id}:${row.version}`
+      const existing = this.db.rows.get(key)
+      if (existing) {
+        row.status = existing.status
+        row.owner_type = existing.owner_type
+        row.promotion_status = existing.promotion_status
+      }
+      this.db.rows.set(key, row)
       return { meta: { changes: 1 } }
     }
     if (sql.includes('WHERE strategy_id=?')) {
@@ -231,6 +238,22 @@ async function runStrategyRegistrySeedContractTest(): Promise<void> {
   assert(specs.filter((spec) => spec.status === 'candidate').length === expectedCandidateCount, 'runtime reader should preserve candidate bootstrap specs after clean seed')
   assert(specs.every((spec) => spec.candidatePolicy && Object.keys(spec.candidatePolicy).length > 0), 'every runtime strategy must carry candidate policy from D1')
   assert(!specs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'retired discovery lane must not be visible to runtime reader')
+
+  const preserveDb = new FakeStrategyRegistryD1()
+  const retiredSpec = DEFAULT_STRATEGY_SPECS.find((spec) => spec.id === 'trend_following_seed_v1')
+  assert(retiredSpec, 'test fixture must include trend_following_seed_v1')
+  const retiredRow = strategySpecToRegistryRow(retiredSpec, '2026-06-16T00:00:00.000Z')
+  retiredRow.status = 'retired'
+  retiredRow.owner_type = 'retired'
+  retiredRow.promotion_status = 'retired'
+  preserveDb.rows.set(`${retiredRow.strategy_id}:${retiredRow.version}`, retiredRow)
+  await seedDefaultStrategySpecRegistry(preserveDb as unknown as D1Database, {
+    nowIso: '2026-06-16T00:01:00.000Z',
+  })
+  const preserved = preserveDb.rows.get(`${retiredRow.strategy_id}:${retiredRow.version}`)
+  assert(preserved?.status === 'retired', 'registry seed must not resurrect D1-retired production strategies')
+  assert(preserved?.owner_type === 'retired', 'registry seed must preserve retired owner_type')
+  assert(preserved?.promotion_status === 'retired', 'registry seed must preserve retired promotion status')
 }
 
 runStrategyRegistrySeedContractTest().catch((error) => {

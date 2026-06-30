@@ -12,6 +12,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import date, datetime, timedelta, timezone
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +31,26 @@ def format_verify_summary(result: dict) -> str:
     )
 
 
-def classify_verify_callback_status(result: dict) -> tuple[str, str | None]:
+def _is_unmatured_replay_window(run_date: str, tw_now: datetime | None = None) -> bool:
+    try:
+        target = date.fromisoformat((run_date or "").strip())
+    except ValueError:
+        return False
+
+    now = tw_now or (datetime.now(timezone.utc) + timedelta(hours=8))
+    age_days = (now.date() - target).days
+    if age_days <= 0:
+        return True
+    if age_days == 1 and now.hour < 15:
+        return True
+    return False
+
+
+def classify_verify_callback_status(
+    result: dict,
+    run_date: str = "",
+    tw_now: datetime | None = None,
+) -> tuple[str, str | None]:
     if result.get("status") != "ok":
         errors = result.get("errors") or []
         return "error", "; ".join(str(e) for e in errors[:3]) or str(result)
@@ -42,6 +62,11 @@ def classify_verify_callback_status(result: dict) -> tuple[str, str | None]:
     if pending <= 0:
         return "skipped", "no pending predictions in verifiable window"
     if verified <= 0 or written <= 0:
+        if _is_unmatured_replay_window(run_date or str(result.get("run_date") or ""), tw_now):
+            return "skipped", (
+                "no matured outcome writes yet for replay window: "
+                f"pending={pending} verified={verified} verified_rows_written={written}"
+            )
         return "error", (
             f"verify produced no durable outcome writes: "
             f"pending={pending} verified={verified} verified_rows_written={written}"
@@ -82,7 +107,7 @@ async def _run() -> int:
             limit=limit,
             update_aggregates=update_aggregates,
         )
-        status, reason = classify_verify_callback_status(result)
+        status, reason = classify_verify_callback_status(result, run_date=run_date)
         summary = format_verify_summary(result) if status == "success" else (reason or "verify skipped")
         if status == "error":
             error = reason

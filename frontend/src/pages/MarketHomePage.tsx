@@ -230,13 +230,14 @@ function toIndexTile(raw: any, label: string, source: string): IndexTile {
   const changePct = asNumber(raw?.changePct ?? raw?.change_pct)
   const history = parseHistory(raw)
   const notMaterialized = raw?.status === 'finlab_not_materialized'
+  const hasDelta = change != null || changePct != null
 
   return {
     label,
     value: current == null ? (notMaterialized ? '待匯入' : '待接資料') : formatNumber(current, current >= 1000 ? 2 : 2),
-    change: current == null ? (notMaterialized ? 'FinLab未匯入' : '待接資料') : formatSigned(change, 2),
-    pct: current == null ? '--' : formatPct(changePct, 2),
-    tone: current == null ? (notMaterialized ? 'amber' : 'slate') : toneBySigned(change),
+    change: current == null ? (notMaterialized ? 'FinLab未匯入' : '待接資料') : change == null ? '漲跌待補' : formatSigned(change, 2),
+    pct: current == null ? '--' : changePct == null ? '--' : formatPct(changePct, 2),
+    tone: current == null ? (notMaterialized ? 'amber' : 'slate') : hasDelta ? toneBySigned(change ?? changePct) : 'blue',
     source: raw?.source ?? source,
     status: raw?.status ?? (current == null ? 'missing' : 'ok'),
     history,

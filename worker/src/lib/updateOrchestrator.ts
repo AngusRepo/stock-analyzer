@@ -1388,6 +1388,14 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     parts.push(`taifex_warn=${e instanceof Error ? e.message : String(e)}`)
   }
 
+  try {
+    const { refreshOpenPositionPostClosePriceCache } = await import('./paperIntradayPriceCache')
+    const result = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: twDate })
+    parts.push(result.summary)
+  } catch (e) {
+    parts.push(`post_close_price_warn=${e instanceof Error ? e.message : String(e)}`)
+  }
+
   const stats = await loadMarketDataReadinessStats(env.DB, twDate)
   const priceReady =
     stats.priceLatestDate === twDate &&

@@ -111,6 +111,25 @@ adminReadRoutes.get('/api/admin/datasets/retention-plan', async (c) => {
   })
 })
 
+adminReadRoutes.get('/api/admin/datasets/audit-json-retention-plan', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const { AUDIT_JSON_RETENTION_DEFAULT_DAYS, buildAuditJsonRetentionPlan } = await import('../lib/auditJsonArchive')
+  const hotWindowDays = Number.parseInt(
+    c.req.query('retention_days') ?? c.req.query('retentionDays') ?? `${AUDIT_JSON_RETENTION_DEFAULT_DAYS}`,
+    10,
+  )
+  return c.json({
+    success: true,
+    plan: await buildAuditJsonRetentionPlan(c.env, {
+      businessDate: c.req.query('date') || twToday(),
+      retentionDays: hotWindowDays,
+      targets: c.req.queries('target') ?? (c.req.query('targets') ? [c.req.query('targets')] : null),
+    }),
+  })
+})
+
 adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

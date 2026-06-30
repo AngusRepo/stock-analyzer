@@ -16,6 +16,8 @@ import { putIntradayPrice } from './paperIntradayPriceCache'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
+import { assessS12IntradayStructureFromBaseBars, type S12IntradayAssessment } from './s12IntradayStructure'
+import { loadS12IntradayBaseBars } from './s12RuntimeBars'
 import {
   getCurrentRegime as getCurrentSltpRegime,
   getTradingConfig,
@@ -24,6 +26,45 @@ import {
 } from './tradingConfig'
 
 const ACCOUNT_ID = 1
+const S12_HOLDING_DEFENSE_EVENT_MIN_INTERVAL_MS = 10 * 60_000
+
+type S12HoldingDefenseEventAction =
+  | 'observe'
+  | 'tighten_stop'
+  | 'take_profit_or_tighten_stop'
+  | 'trim_or_take_profit'
+
+function enabledFlag(value: unknown, fallback = false): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) return fallback
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  return fallback
+}
+
+function finiteNumber(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function positiveNumber(value: unknown): number | null {
+  const n = finiteNumber(value)
+  return n != null && n > 0 ? n : null
+}
+
+export function resolveS12HoldingDefenseEventAction(reason: string | null | undefined): S12HoldingDefenseEventAction {
+  const text = String(reason ?? '')
+  if (text.includes('TRIM_OR_TAKE_PROFIT')) return 'trim_or_take_profit'
+  if (text.includes('TAKE_PROFIT_OR_TIGHTEN_STOP')) return 'take_profit_or_tighten_stop'
+  if (text.includes('TIGHTEN_STOP')) return 'tighten_stop'
+  return 'observe'
+}
+
+function parseTimeMs(value: unknown): number | null {
+  if (!value) return null
+  const parsed = new Date(String(value).includes('T') ? String(value) : String(value).replace(' ', 'T')).getTime()
+  return Number.isFinite(parsed) ? parsed : null
+}
 
 function buildPaperSellOrderIntent(params: {
   tradeDate: string
@@ -130,6 +171,208 @@ function resolveExitSellFill(quote: IntradayOHLC): { fillable: boolean; price?: 
   }
 }
 
+export function resolveS12HoldingDefenseUpdate(params: {
+  pos: {
+    avg_cost: number
+    entry_price: number | null
+    initial_stop: number | null
+    trailing_stop: number | null
+    highest_since_entry: number | null
+    tp1_hit: number
+  }
+  currentPrice: number
+  atr14: number
+  assessment: S12IntradayAssessment | null
+}): ExitDecision | null {
+  const assessment = params.assessment
+  if (!assessment?.bearishDefense.ready && assessment?.state !== 'bearish_defense_ready') return null
+
+  const entryPrice = positiveNumber(params.pos.entry_price) ?? positiveNumber(params.pos.avg_cost)
+  if (entryPrice == null) return null
+
+  const currentTrailing =
+    positiveNumber(params.pos.trailing_stop) ??
+    positiveNumber(params.pos.initial_stop) ??
+    entryPrice * 0.92
+  const effectiveAtr = positiveNumber(params.atr14) ?? params.currentPrice * 0.015
+  const pnlPct = (params.currentPrice - entryPrice) / entryPrice
+  const highest = Math.max(
+    positiveNumber(params.pos.highest_since_entry) ?? entryPrice,
+    params.currentPrice,
+  )
+  const belowCurrentCap = params.currentPrice - effectiveAtr * 0.2
+  const profitFloor = params.currentPrice > entryPrice
+    ? entryPrice
+    : params.currentPrice - effectiveAtr * 0.6
+  const structuralTrail = params.currentPrice - effectiveAtr * (params.pos.tp1_hit ? 0.55 : 0.8)
+  const proposed = Math.min(
+    belowCurrentCap,
+    Math.max(currentTrailing, profitFloor, structuralTrail),
+  )
+  const newTrailingStop = Math.max(currentTrailing, proposed)
+  if (!(newTrailingStop > currentTrailing)) return null
+
+  const advisory =
+    !params.pos.tp1_hit && pnlPct >= 0.04
+      ? 'TRIM_OR_TAKE_PROFIT'
+      : params.pos.tp1_hit || pnlPct >= 0.02
+      ? 'TAKE_PROFIT_OR_TIGHTEN_STOP'
+      : 'TIGHTEN_STOP'
+  return {
+    action: 'hold',
+    reason: `S12 bearish defense ${advisory} @ ${newTrailingStop.toFixed(2)}`,
+    newTrailingStop,
+    newHighest: highest,
+  }
+}
+
+function mergeHoldExitUpdates(base: ExitDecision, overlay: ExitDecision | null): ExitDecision {
+  if (!overlay) return base
+  return {
+    ...base,
+    reason: base.reason === 'no trigger' ? overlay.reason : `${base.reason}; ${overlay.reason}`,
+    newTrailingStop: Math.max(
+      positiveNumber(base.newTrailingStop) ?? Number.NEGATIVE_INFINITY,
+      positiveNumber(overlay.newTrailingStop) ?? Number.NEGATIVE_INFINITY,
+      0,
+    ) || undefined,
+    newHighest: Math.max(
+      positiveNumber(base.newHighest) ?? Number.NEGATIVE_INFINITY,
+      positiveNumber(overlay.newHighest) ?? Number.NEGATIVE_INFINITY,
+      0,
+    ) || undefined,
+    newTp2Price: base.newTp2Price,
+  }
+}
+
+export function shouldRecordS12HoldingDefenseEvent(params: {
+  latest: { status?: unknown; reason?: unknown; detail_json?: unknown; created_at?: unknown } | null
+  nextStatus: string
+  nextReason: string
+  nextActive: boolean
+  nextTrailingAfter: number | null
+  nowMs: number
+  minIntervalMs?: number
+}): boolean {
+  const latest = params.latest
+  if (!latest) return true
+
+  const createdAtMs = parseTimeMs(latest.created_at)
+  if (createdAtMs == null) return true
+  if (params.nowMs - createdAtMs >= (params.minIntervalMs ?? S12_HOLDING_DEFENSE_EVENT_MIN_INTERVAL_MS)) return true
+
+  let latestDetail: any = null
+  try {
+    latestDetail = latest.detail_json ? JSON.parse(String(latest.detail_json)) : null
+  } catch {
+    latestDetail = null
+  }
+
+  const latestActive = Boolean(latestDetail?.holding_defense?.active)
+  const latestTrailingAfter = positiveNumber(latestDetail?.holding_defense?.trailing_stop_after)
+  if (String(latest.status ?? '') !== params.nextStatus) return true
+  if (String(latest.reason ?? '') !== params.nextReason) return true
+  if (latestActive !== params.nextActive) return true
+  if (
+    params.nextActive &&
+    params.nextTrailingAfter != null &&
+    (latestTrailingAfter == null || Math.abs(latestTrailingAfter - params.nextTrailingAfter) >= 0.01)
+  ) return true
+
+  return false
+}
+
+async function evaluateS12HoldingDefense(
+  env: Bindings,
+  tradeDate: string,
+  pos: any,
+  quote: IntradayOHLC,
+  atr14: number,
+): Promise<ExitDecision | null> {
+  if (!enabledFlag((env as any).S12_INTRADAY_HOLDING_DEFENSE_ENABLED, true)) return null
+  try {
+    const s12Base = await loadS12IntradayBaseBars(
+      env,
+      pos.symbol,
+      tradeDate,
+      quote.last,
+      Number(quote.totalVolume ?? 0),
+    )
+    const assessment = assessS12IntradayStructureFromBaseBars({
+      symbol: pos.symbol,
+      baseBars: s12Base.bars,
+      nowMs: Date.now(),
+    })
+    const update = resolveS12HoldingDefenseUpdate({
+      pos,
+      currentPrice: quote.last,
+      atr14,
+      assessment,
+    })
+    const eventReason = update?.reason ?? assessment.reason
+    const holdingDefenseAction = update
+      ? resolveS12HoldingDefenseEventAction(update.reason)
+      : 'observe'
+    const eventDetail = {
+      ...assessment,
+      holding_defense: {
+        active: update != null,
+        trailing_stop_before: pos.trailing_stop ?? null,
+        trailing_stop_after: update?.newTrailingStop ?? null,
+        action: holdingDefenseAction,
+        advisory_action: holdingDefenseAction,
+        advisory_only: true,
+        no_short_order: true,
+        execution_owner: 'paper_sltp_atr_trailing_v1',
+        bar_source: s12Base.source,
+      },
+    }
+    const latestEvent = await env.DB.prepare(`
+      SELECT status, reason, detail_json, created_at
+        FROM paper_execution_events
+       WHERE account_id = ?
+         AND trade_date = ?
+         AND symbol = ?
+         AND event_type = 's12_intraday_structure'
+         AND source = 's12_holding_defense'
+       ORDER BY id DESC
+       LIMIT 1
+    `).bind(ACCOUNT_ID, tradeDate, pos.symbol).first<any>()
+    if (shouldRecordS12HoldingDefenseEvent({
+      latest: latestEvent ?? null,
+      nextStatus: assessment.state,
+      nextReason: eventReason,
+      nextActive: update != null,
+      nextTrailingAfter: update?.newTrailingStop ?? null,
+      nowMs: Date.now(),
+    })) {
+      await recordPaperExecutionEvent(env, {
+        tradeDate,
+        symbol: pos.symbol,
+        side: null,
+        eventType: 's12_intraday_structure',
+        status: assessment.state,
+        reason: eventReason,
+        detail: eventDetail,
+        source: 's12_holding_defense',
+      })
+    }
+    return update
+  } catch (error) {
+    await recordPaperExecutionEvent(env, {
+      tradeDate,
+      symbol: pos.symbol,
+      side: null,
+      eventType: 's12_intraday_structure',
+      status: 'error',
+      reason: 's12_holding_defense_unavailable',
+      detail: { error: error instanceof Error ? error.message : String(error) },
+      source: 's12_holding_defense',
+    })
+    return null
+  }
+}
+
 async function runPostExitDiscipline(
   env: Bindings,
   cfg: TradingConfig,
@@ -194,7 +437,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       }
     }
 
-    const decision = checkExitConditions(
+    let decision = checkExitConditions(
       pos,
       price,
       atr,
@@ -342,7 +585,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
     const currentPrice = quote.last
 
     const atr14 = exitAtrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    const decision = checkExitConditions(
+    let decision = checkExitConditions(
       pos,
       currentPrice,
       atr14,
@@ -573,7 +816,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     const currentPrice = quote.last
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    const decision = checkExitConditions(
+    let decision = checkExitConditions(
       pos,
       currentPrice,
       atr14,
@@ -583,6 +826,16 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       intraRegime ?? undefined,
     )
+    const s12HoldingDefenseUpdate = await evaluateS12HoldingDefense(
+      env,
+      intradayToday,
+      pos,
+      quote,
+      atr14,
+    )
+    if (decision.action === 'hold') {
+      decision = mergeHoldExitUpdates(decision, s12HoldingDefenseUpdate)
+    }
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, env.DB)
 
     if (decision.action !== 'hold') {

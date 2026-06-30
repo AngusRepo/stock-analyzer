@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import { formatDailySummary, sendDiscordNotification } from './notify'
 import { batchGetLatestPrices, recordSellSettlement } from './paperMarketData'
 import { batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
+import { refreshOpenPositionPostClosePriceCache } from './paperIntradayPriceCache'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
@@ -33,18 +34,29 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   ).bind(ACCOUNT_ID).all<any>()
 
   const finalSymbols = (finalPos ?? []).map((p: any) => p.symbol)
-  const finalPriceMap = await batchGetIntradayPrices(finalSymbols, {
-    SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
-    PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
-  })
+  const postCloseRefresh = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: today })
+  const finalPriceMap = new Map<string, number>(
+    [...postCloseRefresh.prices.entries()].map(([symbol, snapshot]) => [symbol, snapshot.price]),
+  )
+  const missingPostCloseSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
+  if (missingPostCloseSymbols.length) {
+    const intradayPrices = await batchGetIntradayPrices(missingPostCloseSymbols, {
+      SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
+      PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+    })
+    for (const [symbol, price] of intradayPrices) finalPriceMap.set(symbol, price)
+  }
   const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
   if (missingFinalSymbols.length) {
     const eodPrices = await batchGetLatestPrices(env.DB, missingFinalSymbols)
     for (const [symbol, price] of eodPrices) finalPriceMap.set(symbol, price)
     console.log(
-      `[Snapshot] price coverage intraday=${finalPriceMap.size - eodPrices.size}/${finalSymbols.length} ` +
+      `[Snapshot] price coverage post_close=${postCloseRefresh.refreshed}/${finalSymbols.length} ` +
+      `intraday=${finalPriceMap.size - eodPrices.size - postCloseRefresh.refreshed}/${missingPostCloseSymbols.length} ` +
       `eod_fallback=${eodPrices.size}/${missingFinalSymbols.length}`,
     )
+  } else {
+    console.log(`[Snapshot] price coverage post_close=${postCloseRefresh.refreshed}/${finalSymbols.length} eod_fallback=0/0`)
   }
 
   let finalPosValue = 0

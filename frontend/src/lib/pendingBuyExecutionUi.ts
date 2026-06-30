@@ -11,6 +11,42 @@ export interface PendingBuyExecutionContext {
   watch_points?: unknown
 }
 
+export interface S12HoldingDefenseContext {
+  status?: unknown
+  reason?: unknown
+  active?: unknown
+  action?: unknown
+  trailing_stop_before?: unknown
+  trailing_stop_after?: unknown
+  created_at?: unknown
+  detail?: any
+}
+
+export interface CanonicalTradeLifecycleContext {
+  version?: unknown
+  tradeDate?: unknown
+  symbol?: unknown
+  owners?: {
+    context?: unknown
+    entry?: unknown
+    exit?: unknown
+  }
+  context?: Record<string, unknown>
+  entry?: {
+    entryPrice?: unknown
+    stopLoss?: unknown
+    chaseCeiling?: unknown
+    source?: unknown
+    s12?: any
+  }
+  exit?: {
+    initialStop?: unknown
+    trailingStop?: unknown
+    tp1?: unknown
+    tp2?: unknown
+  }
+}
+
 interface ParsedExecutionNote {
   status: string
   reason: string
@@ -19,117 +55,152 @@ interface ParsedExecutionNote {
 
 const STATUS_BADGES: Record<string, PendingBuyExecutionBadge> = {
   pending: {
-    label: '等待盤中檢查',
+    label: '待盤中檢查',
     tone: 'neutral',
-    description: '尚未進入下單檢查，仍需即時報價與風控確認。',
+    description: '尚未進入盤中檢查流程，或等待下一輪即時報價與技術條件。',
   },
   checked_waiting: {
-    label: '已檢查，等待條件',
+    label: '盤中已檢查，等待條件',
     tone: 'warn',
-    description: '盤中檢查已執行，但價格、量能或技術條件尚未達到進場門檻。',
+    description: '盤中檢查已執行，但價格、量能或技術條件尚未到達進場門檻。',
   },
   submitted: {
-    label: '已送出紙上委託',
+    label: '已送出委託',
     tone: 'info',
-    description: '已通過報價與風控檢查，等待成交或後續重估。',
+    description: '模擬委託已建立，等待成交或取消結果。',
   },
   requoted: {
-    label: '已重估限價',
+    label: '已重新報價',
     tone: 'warn',
-    description: '原限價與即時盤勢偏離，系統已下修或重掛更保守價格。',
+    description: '委託價格依即時報價或追價限制重新校正。',
   },
   partially_filled: {
     label: '部分成交',
     tone: 'warn',
-    description: '只成交部分股數，剩餘委託需持續追蹤、取消或到期。',
+    description: '委託已有部分成交，剩餘張數仍需後續追蹤。',
   },
   stale_quote: {
-    label: '報價過期',
+    label: '報價過舊',
     tone: 'warn',
-    description: '即時報價太舊，系統 fail-closed，不用過期價格假裝成交。',
+    description: '五檔或即時報價 freshness 未達標，系統採 fail-closed 不追單。',
   },
   quote_unavailable: {
-    label: '報價缺失',
+    label: '報價不可用',
     tone: 'error',
-    description: '缺少可交易 bid/ask 或五檔快照，禁止用昨日收盤價成交。',
+    description: '無法取得可用 bid/ask 或 broker quote，暫停委託。',
   },
   filled: {
     label: '已成交',
     tone: 'ok',
-    description: '紙上成交已寫入訂單與持倉。',
+    description: '委託已成交並進入持倉管理。',
   },
   skipped: {
-    label: '已跳過',
+    label: '已略過',
     tone: 'neutral',
-    description: '因流動性、追高、風控或資料缺失而不進場。',
+    description: '此輪因策略、風控或資料條件未滿足而略過。',
   },
   cancelled: {
     label: '已取消',
     tone: 'neutral',
-    description: '委託已取消，不再等待成交。',
+    description: '委託已取消，未產生新的成交。',
   },
   expired: {
-    label: '已到期',
+    label: '已逾時',
     tone: 'neutral',
-    description: '超過本交易時段或 SLA，委託失效。',
+    description: '委託超過 SLA 或盤中有效時間，停止追蹤。',
   },
   rejected: {
     label: '已拒絕',
     tone: 'error',
-    description: '辯論或硬 gate 拒絕，不允許進入交易。',
+    description: '風控、資金配置或交易條件拒絕此筆委託。',
   },
 }
 
 const EXECUTION_REASON_LABELS: Record<string, string> = {
-  volume_ratio_low: '成交量不足',
-  weak_no_reclaim: '技術轉弱，尚未收復',
+  volume_ratio_low: '量能不足',
+  weak_no_reclaim: '尚未轉強收復',
   between_buy_reference_and_confirmation: '價格位於買入區與確認價之間',
-  ohlcv_support_lost: '跌破 OHLCV 支撐',
-  allocator_no_plan: '配置器尚未產生可執行方案',
-  allocator_full_requires_replacement: '持倉額度已滿，需先替換',
-  allocator_replace_requires_sell_first: '替換交易需先完成賣出',
+  ohlcv_support_lost: 'OHLCV 支撐失守',
+  allocator_no_plan: '資金配置沒有可用方案',
+  allocator_full_requires_replacement: '持倉已滿，需要先替換',
+  allocator_replace_requires_sell_first: '替換買入需要先賣出',
   allocator_budget_below_min: '配置金額低於最低交易金額',
-  technical_distribution_cooldown: '盤中技術分布仍在冷卻',
-  range_position_low: '盤中價格位置偏低',
-  price_above_entry: '價格高於允許進場價',
-  broker_quote_required: '缺少券商即時報價',
-  rod_cancelled: 'ROD 盤後取消',
-  paper_order_created: '紙上委託已建立',
+  technical_distribution_cooldown: '技術分佈冷卻中',
+  range_position_low: '區間位置偏低，避免接刀',
+  price_above_entry: '價格高於可追價上限',
+  broker_quote_required: '需要券商即時報價',
+  rod_cancelled: 'ROD 委託已取消',
+  paper_order_created: '模擬委託已建立',
+  paper_order_partial_fill: '模擬委託部分成交',
   already_filled_today: '今日已成交',
-  s12_waiting_15m_completed_bars: 'S12 等待完成更多 15 分 K',
-  s12_waiting_4h_completed_bar: 'S12 等待完成 4H 方向 K',
+  duplicate_buy_intent: '重複買進意圖',
+  s12_waiting_15m_completed_bars: 'S12 等待足夠 15M 完成K',
+  s12_waiting_4h_completed_bar: 'S12 等待 4H 完成K',
   s12_waiting_4h_long_bias: 'S12 等待 4H 多方結構成立',
-  s12_waiting_1h_completed_bar: 'S12 等待完成 1H 區域 K',
-  s12_waiting_1h_demand_zone: 'S12 尚未形成 1H 需求區',
-  s12_waiting_15m_zone_touch: 'S12 等待 15M 回踩 1H 需求區',
-  s12_waiting_sweep: 'S12 等待 15M 掃低點',
-  s12_waiting_choch: 'S12 等待 15M 結構轉多',
-  s12_waiting_bos: 'S12 等待 15M 結構突破',
-  s12_waiting_retest: 'S12 等待回測 OB/FVG 進場區',
-  s12_reaction_ready: 'S12 結構進場訊號成熟',
-  s12_assist_entry_ready: 'S12 進場輔助已啟用',
+  s12_waiting_1h_completed_bar: 'S12 等待 1H 完成K',
+  s12_waiting_1h_demand_zone: 'S12 等待 1H 需求區',
+  s12_waiting_15m_zone_touch: 'S12 等待 15M 回踩需求區',
+  s12_waiting_sweep: 'S12 等待掃流動性',
+  s12_waiting_choch: 'S12 等待 CHoCH 轉強',
+  s12_waiting_bos: 'S12 等待 BOS 確認',
+  s12_waiting_retest: 'S12 等待 OB/FVG 回測反應',
+  s12_reaction_ready: 'S12 反應確認完成',
+  s12_assist_entry_ready: 'S12 輔助進場成立',
   s12_structure_advisory_waiting: 'S12 結構觀察，尚未接手',
-  s12_primary_structure_owner_waiting: 'S12 主控結構，等待條件成熟',
-  s12_primary_cleared_momentum_directional_gate: 'S12 已接手方向判斷',
-  s12_structure_invalidated: 'S12 盤中結構失效',
-  s12_entry_zone_not_overlapping_1h_demand: 'S12 進場區未與 1H 需求區重疊',
-  s12_invalid_risk_box: 'S12 風險框不合理',
-  s12_data_unavailable: 'S12 盤中結構資料不足',
+  s12_primary_structure_owner_waiting: 'S12 主控結構等待中',
+  s12_primary_cleared_momentum_directional_gate: 'S12 已通過方向門檻',
+  s12_structure_invalidated: 'S12 結構失效',
+  s12_entry_zone_not_overlapping_1h_demand: 'S12 進場區未重疊 1H 需求區',
+  s12_invalid_risk_box: 'S12 風險盒無效',
+  s12_data_unavailable: 'S12 結構資料不足',
+  s12_structure_stale: 'S12 結構等待過久',
+  s12_bearish_defense_ready: 'S12 空方防守成立',
+  s12_holding_defense_unavailable: 'S12 持倉防守資料不足',
 }
 
 const S12_STATE_LABELS: Record<string, string> = {
-  waiting_15m_completed_bars: '等待 15 分 K 累積',
-  waiting_4h_completed_bar: '等待 4H 收線',
-  waiting_4h_long_bias: '等待 4H 多方結構成立',
-  waiting_1h_completed_bar: '等待 1H 收線',
+  waiting_15m_completed_bars: '等待 15M K 完成',
+  waiting_4h_completed_bar: '等待 4H K 完成',
+  waiting_4h_long_bias: '等待 4H 多方結構',
+  waiting_1h_completed_bar: '等待 1H K 完成',
   waiting_1h_demand_zone: '等待 1H 需求區',
   waiting_15m_zone_touch: '等待 15M 回踩需求區',
-  waiting_sweep: '等待掃低點',
-  waiting_choch: '等待結構轉多',
-  waiting_bos: '等待結構突破',
+  waiting_sweep: '等待掃流動性',
+  waiting_choch: '等待 CHoCH',
+  waiting_bos: '等待 BOS',
   waiting_retest: '等待回測反應',
-  reaction_ready: '進場結構成熟',
+  reaction_ready: '多方反應結構成立',
+  bearish_defense_ready: '空方防守結構成立',
   invalidated: '結構失效',
+}
+
+const S12_DEFENSE_ACTION_LABELS: Record<string, string> = {
+  NO_BUY: '不買',
+  WAIT_RESET: '等待重置',
+  LOWER_CONFIDENCE: '降低信心',
+  TIGHTEN_STOP: '提高防守',
+  TRIM: '減碼',
+  TAKE_PROFIT: '停利',
+  EXIT_ON_REVERSE_BOS: '反向 BOS 出場',
+  tighten_defense: '提高 trailing stop',
+  tighten_stop: '提高防守停損',
+  take_profit_or_tighten_stop: '停利或提高防守',
+  trim_or_take_profit: '減碼或停利',
+  observe: '觀察',
+}
+
+const OWNER_LABELS: Record<string, string> = {
+  market_regime_alpha_context_v1: '市場 regime / alpha context',
+  s12_intraday_structure_v1: 'S12 結構進場',
+  ohlcv_pre_trade_plan_v1: 'OHLCV 進場計畫',
+  paper_sltp_atr_trailing_v1: 'ATR trailing 出場',
+}
+
+const S12_TAKEOVER_ROLE_LABELS: Record<string, string> = {
+  none: '尚未接手',
+  long_entry: '多方進場',
+  no_buy_defense: '不買/防守',
+  invalidate: '結構失效',
 }
 
 function parseNumberMap(detail: string): Record<string, number> {
@@ -177,7 +248,7 @@ function humanizeExecutionReason(reason: string): string {
 
 function formatExecutionDetail(detail: string | null): string {
   if (!detail) return ''
-  const clean = detail.replace(/_/g, ' ').replace(/;/g, '；').trim()
+  const clean = detail.replace(/_/g, ' ').replace(/;/g, '、').trim()
   return clean ? `（${clean}）` : ''
 }
 
@@ -192,36 +263,86 @@ function parseDetailMap(detail: string | null): Record<string, string> {
   }, {})
 }
 
+function parseLifecycle(raw: unknown): CanonicalTradeLifecycleContext | null {
+  if (!raw) return null
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as CanonicalTradeLifecycleContext
+  if (typeof raw !== 'string') return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as CanonicalTradeLifecycleContext
+      : null
+  } catch {
+    return null
+  }
+}
+
+function fmtPrice(value: unknown): string | null {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n.toLocaleString('zh-TW', { maximumFractionDigits: 2 })
+}
+
+function yn(value: string | undefined): string | null {
+  if (value === 'true') return '已對齊'
+  if (value === 'false') return '未對齊'
+  return null
+}
+
+function directionLabel(value: string | undefined): string | null {
+  if (value === 'long') return '多方'
+  if (value === 'short') return '空方'
+  if (value === 'neutral') return '中性'
+  return value || null
+}
+
+function confidenceLabel(value: string | undefined): string | null {
+  if (value === 'confirmed') return '已確認'
+  if (value === 'provisional') return '暫定'
+  if (value === 'none') return '未確認'
+  return value || null
+}
+
 function s12Tone(reason: string): PendingBuyExecutionTone {
   if (
     reason === 's12_reaction_ready' ||
     reason === 's12_assist_entry_ready' ||
     reason === 's12_primary_cleared_momentum_directional_gate'
   ) return 'ok'
-  if (reason === 's12_structure_invalidated' || reason === 's12_invalid_risk_box') return 'error'
+  if (
+    reason === 's12_structure_invalidated' ||
+    reason === 's12_invalid_risk_box' ||
+    reason === 's12_bearish_defense_ready'
+  ) return 'error'
+  if (reason === 's12_structure_stale' || reason === 's12_holding_defense_unavailable') return 'warn'
   return 'warn'
 }
 
 function formatS12Detail(detail: string | null): string {
   const parsed = parseDetailMap(detail)
-  const channelAlign = parsed.bias_channel_align === 'true'
-    ? '已對齊'
-    : parsed.bias_channel_align === 'false'
-      ? '未對齊'
-      : null
   const parts = [
     parsed.state ? `狀態：${S12_STATE_LABELS[parsed.state] ?? parsed.state}` : null,
     parsed.bars15m || parsed.bars1h || parsed.bars4h
       ? `完成K：15M ${parsed.bars15m ?? 0}、1H ${parsed.bars1h ?? 0}、4H ${parsed.bars4h ?? 0}`
       : null,
-    parsed.bias4h ? `4H方向：${parsed.bias4h === 'long' ? '多方' : parsed.bias4h === 'short' ? '空方' : '中性'}` : null,
-    parsed.bias_confidence ? `4H確認度：${parsed.bias_confidence === 'confirmed' ? '已確認' : parsed.bias_confidence === 'provisional' ? '暫定' : '不足'}` : null,
-    channelAlign ? `4H通道：${channelAlign}` : null,
+    parsed.bias4h ? `4H方向：${directionLabel(parsed.bias4h)}` : null,
+    parsed.bias_confidence ? `4H確認度：${confidenceLabel(parsed.bias_confidence)}` : null,
+    parsed.bias_channel_align ? `4H通道：${yn(parsed.bias_channel_align)}` : null,
+    parsed.bias1h ? `1H方向：${directionLabel(parsed.bias1h)}` : null,
     parsed.zone_low && parsed.zone_high ? `1H需求區：${parsed.zone_low} - ${parsed.zone_high}` : null,
+    parsed.supply_zone_low && parsed.supply_zone_high ? `1H供給區：${parsed.supply_zone_low} - ${parsed.supply_zone_high}` : null,
+    parsed.bearish_defense_state ? `空方防守：${S12_STATE_LABELS[parsed.bearish_defense_state] ?? parsed.bearish_defense_state}` : null,
+    parsed.bearish_defense_action ? `防守動作：${S12_DEFENSE_ACTION_LABELS[parsed.bearish_defense_action] ?? parsed.bearish_defense_action}` : null,
+    parsed.vwap_state ? `VWAP：${parsed.vwap_state}${parsed.price_vwap_pct ? ` (${parsed.price_vwap_pct})` : ''}` : null,
+    parsed.rvol_state ? `RVOL：${parsed.rvol_state}${parsed.rvol ? ` (${parsed.rvol})` : ''}` : null,
+    parsed.takeover_role ? `接手角色：${S12_TAKEOVER_ROLE_LABELS[parsed.takeover_role] ?? parsed.takeover_role}` : null,
+    parsed.maturity_stage ? `成熟階段：${parsed.maturity_stage}` : null,
     parsed.entry ? `進場參考：${parsed.entry}` : null,
-    parsed.chase_ceiling ? `不追價上限：${parsed.chase_ceiling}` : null,
-    parsed.stop ? `停損：${parsed.stop}` : null,
-    parsed.t1 ? `T1：${parsed.t1}` : null,
+    parsed.chase_ceiling ? `追價上限：${parsed.chase_ceiling}` : null,
+    parsed.stop ? `結構停損：${parsed.stop}` : null,
+    parsed.structural_tp1 ? `TP1：${parsed.structural_tp1}` : parsed.t1 ? `TP1：${parsed.t1}` : null,
+    parsed.structural_main_exit ? `主出場：${parsed.structural_main_exit}` : parsed.t2 ? `主出場：${parsed.t2}` : null,
+    parsed.stale === 'true' ? `等待過久：${parsed.stale_reason ?? '結構未成熟'}` : null,
   ].filter(Boolean)
   return parts.join('；')
 }
@@ -231,7 +352,7 @@ export function formatExecutionStatusBadge(status: unknown): PendingBuyExecution
   return STATUS_BADGES[key] ?? {
     label: key,
     tone: 'neutral',
-    description: '尚未納入前端狀態字典，請檢查 execution contract 是否新增狀態。',
+    description: '此狀態尚未加入 execution UI contract，請回補狀態說明。',
   }
 }
 
@@ -245,15 +366,15 @@ export function formatPendingBuyExecutionBadge(item: PendingBuyExecutionContext)
   const detail = formatExecutionDetail(event.detail)
   if (key === 'pending') {
     return {
-      label: '已檢查，等待條件',
+      label: '盤中已檢查，等待條件',
       tone: 'warn',
-      description: `盤中檢查已執行，暫不進場：${reason}${detail}。`,
+      description: `盤中檢查已執行，但條件尚未成立：${reason}${detail}。`,
     }
   }
   if (key === event.status || key === 'cancelled' || key === 'skipped' || key === 'expired' || key === 'rejected') {
     return {
       ...base,
-      description: `${base.description} 原因：${reason}${detail}。`,
+      description: `${base.description} 最新原因：${reason}${detail}。`,
     }
   }
   return base
@@ -267,7 +388,68 @@ export function formatS12IntradayStructureBadge(watchPoints: unknown): PendingBu
   return {
     label,
     tone: s12Tone(event.reason),
-    description: detail || 'S12 已檢查，但目前沒有足夠細節可顯示。',
+    description: detail || 'S12 結構尚在觀察，僅作為進場輔助。',
+  }
+}
+
+export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionBadge | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as S12HoldingDefenseContext
+  const reason = String(item.reason ?? '').trim()
+  const status = String(item.status ?? '').trim()
+  const active = Boolean(item.active)
+  const action = String(item.action ?? item.detail?.holding_defense?.action ?? '').trim()
+  const before = item.trailing_stop_before ?? item.detail?.holding_defense?.trailing_stop_before ?? null
+  const after = item.trailing_stop_after ?? item.detail?.holding_defense?.trailing_stop_after ?? null
+  const detail = item.detail?.detail ? formatS12Detail(String(item.detail.detail)) : ''
+  const label = active
+    ? 'S12 提高防守'
+    : reason === 's12_holding_defense_unavailable'
+      ? 'S12 防守資料不足'
+      : reason === 's12_bearish_defense_ready' || status === 'bearish_defense_ready'
+        ? 'S12 空方防守成立'
+        : 'S12 防守觀察'
+  const stopText = before != null || after != null
+    ? `防守停損：${before ?? '-'} -> ${after ?? '-'}`
+    : null
+  const actionText = action
+    ? `動作：${S12_DEFENSE_ACTION_LABELS[action] ?? action}`
+    : null
+  return {
+    label,
+    tone: active ? 'warn' : reason === 's12_holding_defense_unavailable' ? 'error' : s12Tone(reason || status),
+    description: [actionText, stopText, detail].filter(Boolean).join('；') || humanizeExecutionReason(reason || status || 's12_structure_advisory_waiting'),
+  }
+}
+
+export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExecutionBadge | null {
+  const lifecycle = parseLifecycle(raw)
+  if (!lifecycle?.owners) return null
+  const entryOwner = String(lifecycle.owners.entry ?? '').trim()
+  const exitOwner = String(lifecycle.owners.exit ?? '').trim()
+  const contextOwner = String(lifecycle.owners.context ?? '').trim()
+  const entrySource = String(lifecycle.entry?.source ?? '').trim()
+  const s12 = lifecycle.entry?.s12
+  const entryLabel = OWNER_LABELS[entryOwner] ?? entryOwner
+  const exitLabel = OWNER_LABELS[exitOwner] ?? exitOwner
+  const stop = fmtPrice(lifecycle.exit?.trailingStop ?? lifecycle.exit?.initialStop ?? lifecycle.entry?.stopLoss)
+  const tp1 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp1 ?? lifecycle.exit?.tp1)
+  const mainExit = fmtPrice(lifecycle.entry?.s12?.exitPlan?.mainExit ?? lifecycle.exit?.tp2)
+  const parts = [
+    contextOwner ? `情境：${OWNER_LABELS[contextOwner] ?? contextOwner}` : null,
+    entrySource ? `進場來源：${entrySource === 's12_assist_entry' ? 'S12 輔助進場' : '盤前交易計畫'}` : null,
+    exitLabel ? `出場：${exitLabel}` : null,
+    stop ? `防守停損 ${stop}` : null,
+    tp1 ? `TP1 ${tp1}` : null,
+    mainExit ? `主出場 ${mainExit}` : null,
+    s12?.quality?.vwapState ? `VWAP ${s12.quality.vwapState}` : null,
+    s12?.quality?.rvolState ? `RVOL ${s12.quality.rvolState}` : null,
+  ].filter(Boolean)
+
+  return {
+    label: entryLabel || '交易生命週期',
+    tone: entryOwner === 's12_intraday_structure_v1' ? 'info' : 'neutral',
+    description: parts.join('；') || '此持倉已寫入 canonical lifecycle owner。',
   }
 }
 
@@ -284,5 +466,5 @@ export function formatPartialFillRemaining(watchPoints: unknown): string | null 
   const filled = parsed.filled
   const remaining = parsed.remaining
   if (![requested, filled, remaining].every((value) => Number.isFinite(value))) return null
-  return `部分成交：已成交 ${filled} / 原訂 ${requested}，剩餘 ${remaining} 股`
+  return `部分成交：已成交 ${filled} / 委託 ${requested}，剩餘 ${remaining} 股`
 }

@@ -56,6 +56,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'model-ic-tracker': { kind: 'trading_week', holidayGated: true, description: 'weekly model IC tracker' },
 
   'debate-memory-retention': { kind: 'maintenance', holidayGated: false, description: 'daily debate memory retention' },
+  'audit-json-retention': { kind: 'maintenance', holidayGated: false, description: 'archive old D1 audit JSON blobs to R2 and scrub D1 pointers' },
   'weekly-cleanup': { kind: 'maintenance', holidayGated: false, description: 'weekly cleanup and lifecycle check; no retrain' },
   'weekly-backtest': { kind: 'research', holidayGated: false, description: 'weekly lightweight backtest, Monte Carlo, PBO validation' },
   'alpha-quality': { kind: 'research', holidayGated: false, description: 'weekly alpha quality research' },

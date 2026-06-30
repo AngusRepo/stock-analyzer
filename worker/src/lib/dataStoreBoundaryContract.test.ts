@@ -124,3 +124,40 @@ assert(
     datasetSnapshots.includes('delete_blocker'),
   'D1 retention must use the approved 504-day hot window and require GCS archive coverage before deletion is allowed',
 )
+
+assert(
+  fs.existsSync('src/lib/auditJsonArchive.ts'),
+  'large D1 audit JSON retention must be centralized in src/lib/auditJsonArchive.ts',
+)
+
+const auditJsonArchive = fs.readFileSync('src/lib/auditJsonArchive.ts', 'utf8')
+
+assert(
+  auditJsonArchive.includes("AUDIT_JSON_ARCHIVE_KIND = 'd1_audit_json_archive'") &&
+    auditJsonArchive.includes('ARCHIVE_D1_AUDIT_JSON_TO_R2') &&
+    auditJsonArchive.includes('strategy_decision_log') &&
+    auditJsonArchive.includes('screener_funnel_items') &&
+    auditJsonArchive.includes('paper_execution_events'),
+  'audit JSON archive must cover strategy decisions, screener funnel items, and paper execution events behind an explicit confirm phrase',
+)
+
+assert(
+  auditJsonArchive.includes("primary_store: 'r2'") &&
+    auditJsonArchive.includes("access_tier: 'archive'") &&
+    auditJsonArchive.includes('scrub_json_columns_to_r2_pointer') &&
+    auditJsonArchive.includes('archived_to_r2: true'),
+  'audit JSON archive must write full payloads to R2 archive manifests before replacing D1 JSON blobs with pointers',
+)
+
+assert(
+  datasetSnapshots.includes('isR2AuditJsonArchive') &&
+    datasetSnapshots.includes("startsWith('d1_audit_json_archive')") &&
+    datasetSnapshots.includes('allowR2AuditArchive'),
+  'dataset snapshot validation must allow only the audit JSON archive kind to use R2 as archive-tier primary store',
+)
+
+assert(
+  adminReadRoutes.includes('/api/admin/datasets/audit-json-retention-plan') &&
+    adminReadRoutes.includes('buildAuditJsonRetentionPlan'),
+  'admin read routes must expose a dry-run plan for D1 audit JSON retention',
+)

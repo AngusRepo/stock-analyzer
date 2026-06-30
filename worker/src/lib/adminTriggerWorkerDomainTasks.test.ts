@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import * as fs from 'node:fs'
 import { summarizeMlControllerWarmupTargets } from './adminTriggerWorkerDomainTasks'
 
 const healthy = summarizeMlControllerWarmupTargets({
@@ -37,3 +38,8 @@ assert.match(degraded.summary, /pam=blocked/)
 const malformed = summarizeMlControllerWarmupTargets({ targets: null })
 assert.equal(malformed.ok, false)
 assert.equal(malformed.summary, 'targets=unknown')
+
+const source = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+assert.match(source, /'strategy-learning': \(\) => enqueueStrategyLearningMaterialization/)
+assert.match(source, /type: 'strategy_learning_materialize'/)
+assert.match(source, /callback expected/)

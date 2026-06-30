@@ -212,6 +212,24 @@ async function enqueuePostScreenerPipelineContinuation(c: any, runDate?: string)
   ].join('; ')
 }
 
+async function enqueueStrategyLearningMaterialization(c: any, runDate?: string): Promise<string> {
+  const triggerTime = assertRunDate(runDate)
+  const runId = `manual-strategy-learning-${triggerTime}-${Date.now().toString(36)}`
+  await c.env.UPDATE_QUEUE.send({
+    type: 'strategy_learning_materialize',
+    cursor: 0,
+    triggerTime,
+    runId,
+    force: c.req.query('force_policy') === '1',
+  })
+
+  return [
+    `triggered strategy-learning materialization for ${triggerTime}`,
+    `run_id=${runId}`,
+    'callback expected',
+  ].join('; ')
+}
+
 export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
@@ -228,6 +246,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),
     recommendation: () => deps.runDailyRecommendation(requestedRunDate()),
     'post-screener-pipeline': () => enqueuePostScreenerPipelineContinuation(c, requestedRunDate()),
+    'strategy-learning': () => enqueueStrategyLearningMaterialization(c, requestedRunDate()),
     'paper-trade': () => deps.runPaperAutoTrade(),
     'morning-setup': async () => {
       const { settlePaperT2 } = await import('./cronOrchestrator')

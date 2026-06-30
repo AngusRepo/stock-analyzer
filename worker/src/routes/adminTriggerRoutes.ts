@@ -20,6 +20,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'weekly-optuna', 'adaptive-meta-policy-replay', 'linucb-multiplier-replay',
   'monthly-optuna', 'monthly-strategy-mining', 'weekly-drift-retrain',
   'finlab-v4-backfill',
+  'strategy-learning',
   'monthly-retrain',
 ])
 
@@ -107,6 +108,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'pbo',
       'alpha-quality',
       'finlab-v4-backfill',
+      'strategy-learning',
       'weekly-optuna',
       'weekly-drift-retrain',
       'monthly-optuna',

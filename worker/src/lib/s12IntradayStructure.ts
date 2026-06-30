@@ -19,14 +19,106 @@ export type S12IntradayState =
   | 'waiting_bos'
   | 'waiting_retest'
   | 'reaction_ready'
+  | 'bearish_defense_ready'
   | 'invalidated'
 
+export type S12IntradayZoneType =
+  | 'bullish_order_block'
+  | 'bearish_order_block'
+  | 'bullish_fvg'
+  | 'bearish_fvg'
+  | 'support'
+  | 'resistance'
+  | 'order_block'
+  | 'pivot_demand'
+  | 'pivot_supply'
+
+export type S12DefensiveAction =
+  | 'none'
+  | 'NO_BUY'
+  | 'WAIT_RESET'
+  | 'LOWER_CONFIDENCE'
+  | 'TIGHTEN_STOP'
+  | 'TRIM'
+  | 'TAKE_PROFIT'
+  | 'EXIT_ON_REVERSE_BOS'
+
 export interface S12IntradayZone {
-  type: 'order_block' | 'pivot_demand'
+  type: S12IntradayZoneType
   low: number
   high: number
   createdMs: number
   ageBars: number
+}
+
+export interface S12HtfBias {
+  direction: 'long' | 'neutral' | 'short'
+  confidence: 'none' | 'provisional' | 'confirmed'
+  channelAlign: boolean
+}
+
+export interface S12BearishDefense {
+  state:
+    | 'no_supply_zone'
+    | 'waiting_supply_zone_touch'
+    | 'waiting_bsl_sweep'
+    | 'waiting_choch_down'
+    | 'waiting_bos_down'
+    | 'waiting_bearish_retest'
+    | 'bearish_defense_ready'
+  ready: boolean
+  action: S12DefensiveAction
+  reason: string
+  detail: string
+  supplyZone1h: S12IntradayZone | null
+  sequence: {
+    zoneTouchMs?: number | null
+    sweepMs?: number | null
+    chochMs?: number | null
+    bosMs?: number | null
+    retestMs?: number | null
+    reactionMs?: number | null
+  }
+}
+
+export interface S12StructureQuality {
+  vwap: {
+    value: number | null
+    priceVsVwapPct: number | null
+    state: 'above' | 'below' | 'flat' | 'unavailable'
+  }
+  rvol: {
+    value: number | null
+    state: 'strong_participation' | 'participating' | 'thin' | 'unavailable'
+    lookbackBars: number
+  }
+  notes: string[]
+}
+
+export interface S12StructureExitPlan {
+  mode: 'structure_first_trailing_v1'
+  tp1: {
+    price: number | null
+    source: '15m_previous_high' | 'r_multiple_fallback' | 'unavailable'
+    action: 'partial_take_profit'
+  }
+  mainExit: {
+    price: number | null
+    zoneLow: number | null
+    zoneHigh: number | null
+    source: '1h_supply_zone' | 'r_multiple_fallback' | 'unavailable'
+    action: 'main_take_profit'
+  }
+  trailingStop: {
+    initial: number | null
+    method: 'structure_stop_then_15m_higher_low_atr_vwap'
+    activation: 'after_tp1_or_reverse_choch'
+  }
+  reverseWarning: {
+    state: S12BearishDefense['state'] | null
+    action: S12DefensiveAction
+    source: 'bearish_defense_sidecar'
+  }
 }
 
 export interface S12IntradayAssessment {
@@ -45,12 +137,14 @@ export interface S12IntradayAssessment {
     h4: number
   }
   coverage: 'none' | 'partial' | 'full'
-  bias4h: {
-    direction: 'long' | 'neutral' | 'short'
-    confidence: 'none' | 'provisional' | 'confirmed'
-    channelAlign: boolean
-  }
+  bias4h: S12HtfBias
+  bias1h: S12HtfBias
   demandZone1h: S12IntradayZone | null
+  supplyZone1h: S12IntradayZone | null
+  bearishDefense: S12BearishDefense
+  defensiveAction: S12DefensiveAction
+  quality: S12StructureQuality
+  exitPlan: S12StructureExitPlan
   sequence: {
     zoneTouchMs?: number | null
     sweepMs?: number | null
@@ -71,9 +165,14 @@ export interface S12IntradayAssessment {
   }
   maturity: {
     takeoverEligible: boolean
-    policy: 'advisory_until_reaction_ready_or_invalidated'
+    takeoverRole: 'none' | 'long_entry' | 'no_buy_defense' | 'invalidate'
+    policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated'
     blocker: S12IntradayState
-    stage: 'data' | 'higher_timeframe_bias' | 'setup' | 'trigger_sequence' | 'ready' | 'invalidated'
+    stage: 'data' | 'higher_timeframe_bias' | 'setup' | 'trigger_sequence' | 'ready' | 'defensive' | 'invalidated'
+    stale?: boolean
+    staleReason?: string | null
+    staleAfterBars?: number | null
+    elapsedBars?: number | null
   }
 }
 
@@ -92,15 +191,19 @@ interface S12FromBaseBarsInput {
   nowMs?: number
 }
 
-interface S12Bias4h {
-  direction: 'long' | 'neutral' | 'short'
-  confidence: 'none' | 'provisional' | 'confirmed'
-  channelAlign: boolean
+interface S12AggregationOptions {
+  alignToTwSession?: boolean
 }
+
+type S12Bias4h = S12HtfBias
 
 const M15_MS = 15 * 60_000
 const H1_MS = 60 * 60_000
 const H4_MS = 4 * 60 * 60_000
+const DAY_MS = 24 * 60 * 60_000
+const TW_OFFSET_MS = 8 * H1_MS
+const TW_SESSION_OPEN_MS = 9 * H1_MS
+const TW_SESSION_CLOSE_MS = (13 * 60 + 30) * 60_000
 
 function finitePositive(value: unknown): number | null {
   const n = Number(value)
@@ -141,11 +244,15 @@ export function aggregateCompletedS12Bars(
   bars: S12Bar[],
   timeframeMs: number,
   nowMs = Date.now(),
+  options: S12AggregationOptions = {},
 ): S12Bar[] {
   const tf = Math.max(60_000, Math.floor(timeframeMs))
   const buckets = new Map<number, S12Bar>()
   for (const bar of normalizeBars(bars)) {
-    const startMs = Math.floor(bar.startMs / tf) * tf
+    const startMs = options.alignToTwSession
+      ? twSessionBucketStartMs(bar.startMs, tf)
+      : Math.floor(bar.startMs / tf) * tf
+    if (startMs == null) continue
     if (startMs + tf > nowMs) continue
     const existing = buckets.get(startMs)
     if (!existing) {
@@ -158,6 +265,19 @@ export function aggregateCompletedS12Bars(
     existing.volume = Math.max(0, Number(existing.volume ?? 0)) + Math.max(0, Number(bar.volume ?? 0))
   }
   return [...buckets.values()].sort((a, b) => a.startMs - b.startMs)
+}
+
+function twLocalDayStartUtcMs(ms: number): number {
+  return Math.floor((ms + TW_OFFSET_MS) / DAY_MS) * DAY_MS - TW_OFFSET_MS
+}
+
+function twSessionBucketStartMs(ms: number, timeframeMs: number): number | null {
+  const dayStart = twLocalDayStartUtcMs(ms)
+  const sessionOpen = dayStart + TW_SESSION_OPEN_MS
+  const sessionClose = dayStart + TW_SESSION_CLOSE_MS
+  if (ms < sessionOpen || ms >= sessionClose) return null
+  const elapsed = ms - sessionOpen
+  return sessionOpen + Math.floor(elapsed / timeframeMs) * timeframeMs
 }
 
 function trueRange(bar: S12Bar, previousClose: number | null): number {
@@ -221,17 +341,50 @@ function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity
       return 'trigger_sequence'
     case 'reaction_ready':
       return 'ready'
+    case 'bearish_defense_ready':
+      return 'defensive'
     case 'invalidated':
       return 'invalidated'
   }
 }
 
-function maturitySnapshot(state: S12IntradayState): S12IntradayAssessment['maturity'] {
+function maturityTakeoverRole(state: S12IntradayState): S12IntradayAssessment['maturity']['takeoverRole'] {
+  switch (state) {
+    case 'reaction_ready':
+      return 'long_entry'
+    case 'bearish_defense_ready':
+      return 'no_buy_defense'
+    case 'invalidated':
+      return 'invalidate'
+    default:
+      return 'none'
+  }
+}
+
+function maturitySnapshot(
+  state: S12IntradayState,
+  stale?: {
+    stale: boolean
+    staleReason?: string | null
+    staleAfterBars?: number | null
+    elapsedBars?: number | null
+  },
+): S12IntradayAssessment['maturity'] {
+  const takeoverRole = maturityTakeoverRole(state)
   return {
-    takeoverEligible: state === 'reaction_ready' || state === 'invalidated',
-    policy: 'advisory_until_reaction_ready_or_invalidated',
+    takeoverEligible: takeoverRole !== 'none',
+    takeoverRole,
+    policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated',
     blocker: state,
     stage: maturityStage(state),
+    ...(stale?.stale
+      ? {
+        stale: true,
+        staleReason: stale.staleReason ?? null,
+        staleAfterBars: stale.staleAfterBars ?? null,
+        elapsedBars: stale.elapsedBars ?? null,
+      }
+      : {}),
   }
 }
 
@@ -241,6 +394,104 @@ function setupKey(symbol: string, ...parts: Array<number | null | undefined>): s
     .map((value) => Math.floor(Number(value) / 60_000).toString(36))
     .join('-')
   return `s12l-${symbol}-${suffix}`
+}
+
+function emptyQuality(): S12StructureQuality {
+  return {
+    vwap: { value: null, priceVsVwapPct: null, state: 'unavailable' },
+    rvol: { value: null, state: 'unavailable', lookbackBars: 0 },
+    notes: [],
+  }
+}
+
+function emptyExitPlan(defense: S12BearishDefense | null = null): S12StructureExitPlan {
+  return {
+    mode: 'structure_first_trailing_v1',
+    tp1: { price: null, source: 'unavailable', action: 'partial_take_profit' },
+    mainExit: { price: null, zoneLow: null, zoneHigh: null, source: 'unavailable', action: 'main_take_profit' },
+    trailingStop: {
+      initial: null,
+      method: 'structure_stop_then_15m_higher_low_atr_vwap',
+      activation: 'after_tp1_or_reverse_choch',
+    },
+    reverseWarning: {
+      state: defense?.state ?? null,
+      action: defense?.ready ? 'EXIT_ON_REVERSE_BOS' : defense?.action ?? 'none',
+      source: 'bearish_defense_sidecar',
+    },
+  }
+}
+
+function buildStructureQuality(bars15m: S12Bar[]): S12StructureQuality {
+  const bars = normalizeBars(bars15m)
+  if (!bars.length) return emptyQuality()
+  const latest = bars[bars.length - 1]
+  const totalVolume = bars.reduce((sum, bar) => sum + Math.max(0, Number(bar.volume ?? 0)), 0)
+  const weightedValue = bars.reduce((sum, bar) => sum + Math.max(0, Number(bar.volume ?? 0)) * bar.close, 0)
+  const vwap = totalVolume > 0
+    ? weightedValue / totalVolume
+    : bars.reduce((sum, bar) => sum + bar.close, 0) / bars.length
+  const priceVsVwapPct = vwap > 0 ? (latest.close - vwap) / vwap : null
+  const vwapState =
+    priceVsVwapPct == null
+      ? 'unavailable'
+      : priceVsVwapPct > 0.001
+        ? 'above'
+        : priceVsVwapPct < -0.001
+          ? 'below'
+          : 'flat'
+  const prior = bars.slice(Math.max(0, bars.length - 21), -1)
+  const priorVolumes = prior.map((bar) => Math.max(0, Number(bar.volume ?? 0))).filter((value) => value > 0)
+  const avgVolume = priorVolumes.length
+    ? priorVolumes.reduce((sum, value) => sum + value, 0) / priorVolumes.length
+    : null
+  const latestVolume = Math.max(0, Number(latest.volume ?? 0))
+  const rvol = avgVolume != null && avgVolume > 0 ? latestVolume / avgVolume : null
+  const rvolState =
+    rvol == null
+      ? 'unavailable'
+      : rvol >= 1.5
+        ? 'strong_participation'
+        : rvol >= 1.2
+          ? 'participating'
+          : 'thin'
+  const notes = [
+    vwapState === 'above' ? 'price_above_vwap' : null,
+    vwapState === 'below' ? 'price_below_vwap' : null,
+    rvolState === 'strong_participation' ? 'rvol_strong_ge_1_5' : null,
+    rvolState === 'participating' ? 'rvol_participating_ge_1_2' : null,
+    rvolState === 'thin' ? 'rvol_below_1_2' : null,
+  ].filter((note): note is string => note != null)
+  return {
+    vwap: {
+      value: price(vwap),
+      priceVsVwapPct: priceVsVwapPct == null ? null : round(priceVsVwapPct, 4),
+      state: vwapState,
+    },
+    rvol: {
+      value: rvol == null ? null : round(rvol, 4),
+      state: rvolState,
+      lookbackBars: priorVolumes.length,
+    },
+    notes,
+  }
+}
+
+function emptyBearishDefense(
+  state: S12BearishDefense['state'] = 'no_supply_zone',
+  reason = 's12_bearish_defense_not_ready',
+  detail: Record<string, unknown> = {},
+  supplyZone1h: S12IntradayZone | null = null,
+): S12BearishDefense {
+  return {
+    state,
+    ready: state === 'bearish_defense_ready',
+    action: state === 'bearish_defense_ready' ? 'NO_BUY' : 'none',
+    reason,
+    detail: detailText({ state, reason, ...detail }),
+    supplyZone1h,
+    sequence: {},
+  }
 }
 
 function emptyAssessment(
@@ -263,7 +514,13 @@ function emptyAssessment(
     completedBars,
     coverage: completedBars.h4 > 0 || completedBars.h1 > 0 || completedBars.m15 > 0 ? 'partial' : 'none',
     bias4h: { direction: 'neutral', confidence: 'none', channelAlign: false },
+    bias1h: { direction: 'neutral', confidence: 'none', channelAlign: false },
     demandZone1h: null,
+    supplyZone1h: null,
+    bearishDefense: emptyBearishDefense(),
+    defensiveAction: 'none',
+    quality: emptyQuality(),
+    exitPlan: emptyExitPlan(),
     sequence: {},
     execution: {},
     maturity: maturitySnapshot(state),
@@ -293,10 +550,50 @@ function resolve4hBias(bars4h: S12Bar[]): S12Bias4h {
   return { direction: 'neutral', confidence: previous == null ? 'provisional' : 'confirmed', channelAlign: closePosition >= 0.5 }
 }
 
+function resolve1hBias(bars1h: S12Bar[]): S12HtfBias {
+  return resolve4hBias(bars1h)
+}
+
+function latestBullishFvg1h(bars: S12Bar[], atr: number): S12IntradayZone | null {
+  for (let i = bars.length - 1; i >= 2; i -= 1) {
+    const left = bars[i - 2]
+    const current = bars[i]
+    const gap = current.low - left.high
+    if (gap < Math.max(0.01, atr * 0.1)) continue
+    return {
+      type: 'bullish_fvg',
+      low: round(left.high, 4),
+      high: round(current.low, 4),
+      createdMs: current.startMs + H1_MS,
+      ageBars: bars.length - 1 - i,
+    }
+  }
+  return null
+}
+
+function latestBearishFvg1h(bars: S12Bar[], atr: number): S12IntradayZone | null {
+  for (let i = bars.length - 1; i >= 2; i -= 1) {
+    const left = bars[i - 2]
+    const current = bars[i]
+    const gap = left.low - current.high
+    if (gap < Math.max(0.01, atr * 0.1)) continue
+    return {
+      type: 'bearish_fvg',
+      low: round(current.high, 4),
+      high: round(left.low, 4),
+      createdMs: current.startMs + H1_MS,
+      ageBars: bars.length - 1 - i,
+    }
+  }
+  return null
+}
+
 function findDemandZone1h(bars1h: S12Bar[]): S12IntradayZone | null {
   const bars = normalizeBars(bars1h)
   if (!bars.length) return null
   const atr = averageTrueRange(bars, 8) ?? Math.max(0.01, bars[bars.length - 1].high - bars[bars.length - 1].low)
+  const fvg = latestBullishFvg1h(bars, atr)
+  if (fvg) return fvg
   for (let i = bars.length - 1; i >= 1; i -= 1) {
     const previous = bars[i - 1]
     const current = bars[i]
@@ -306,7 +603,7 @@ function findDemandZone1h(bars1h: S12Bar[]): S12IntradayZone | null {
     const low = Math.min(previous.low, current.low)
     const high = Math.max(low + atr * 0.2, Math.min(previous.high, current.close))
     return {
-      type: 'order_block',
+      type: 'bullish_order_block',
       low: round(low, 4),
       high: round(Math.max(high, low + 0.01), 4),
       createdMs: current.startMs + H1_MS,
@@ -319,9 +616,47 @@ function findDemandZone1h(bars1h: S12Bar[]): S12IntradayZone | null {
     if (bar.close <= bar.open || closePosition < 0.5) continue
     const high = Math.min(bar.high, bar.low + atr * 0.55)
     return {
-      type: 'pivot_demand',
+      type: 'support',
       low: round(bar.low, 4),
       high: round(Math.max(high, bar.low + 0.01), 4),
+      createdMs: bar.startMs + H1_MS,
+      ageBars: bars.length - 1 - i,
+    }
+  }
+  return null
+}
+
+function findSupplyZone1h(bars1h: S12Bar[]): S12IntradayZone | null {
+  const bars = normalizeBars(bars1h)
+  if (!bars.length) return null
+  const atr = averageTrueRange(bars, 8) ?? Math.max(0.01, bars[bars.length - 1].high - bars[bars.length - 1].low)
+  const fvg = latestBearishFvg1h(bars, atr)
+  if (fvg) return fvg
+  for (let i = bars.length - 1; i >= 1; i -= 1) {
+    const previous = bars[i - 1]
+    const current = bars[i]
+    const body = Math.abs(current.close - current.open)
+    const bearishDisplacement = current.close < current.open && current.close < previous.low && body >= atr * 0.18
+    if (!bearishDisplacement) continue
+    const high = Math.max(previous.high, current.high)
+    const low = Math.min(high - atr * 0.2, Math.max(previous.low, current.close))
+    return {
+      type: 'bearish_order_block',
+      low: round(Math.min(low, high - 0.01), 4),
+      high: round(high, 4),
+      createdMs: current.startMs + H1_MS,
+      ageBars: bars.length - 1 - i,
+    }
+  }
+  for (let i = bars.length - 1; i >= 0; i -= 1) {
+    const bar = bars[i]
+    const closePosition = (bar.close - bar.low) / Math.max(0.0001, bar.high - bar.low)
+    if (bar.close >= bar.open || closePosition > 0.5) continue
+    const low = Math.max(bar.low, bar.high - atr * 0.55)
+    return {
+      type: 'resistance',
+      low: round(Math.min(low, bar.high - 0.01), 4),
+      high: round(bar.high, 4),
       createdMs: bar.startMs + H1_MS,
       ageBars: bars.length - 1 - i,
     }
@@ -343,6 +678,7 @@ function stateReason(state: S12IntradayState, extra?: string): string {
     case 'waiting_bos': return 's12_waiting_bos'
     case 'waiting_retest': return 's12_waiting_retest'
     case 'reaction_ready': return 's12_reaction_ready'
+    case 'bearish_defense_ready': return 's12_bearish_defense_ready'
     case 'invalidated': return 's12_structure_invalidated'
   }
 }
@@ -353,7 +689,12 @@ function completeAssessment(params: {
   reason?: string
   completedBars: S12IntradayAssessment['completedBars']
   bias4h: S12Bias4h
+  bias1h?: S12HtfBias
   demandZone1h: S12IntradayZone | null
+  supplyZone1h?: S12IntradayZone | null
+  bearishDefense?: S12BearishDefense
+  quality?: S12StructureQuality
+  exitPlan?: S12StructureExitPlan
   sequence: S12IntradayAssessment['sequence']
   execution?: S12IntradayAssessment['execution']
   setupId?: string | null
@@ -362,9 +703,27 @@ function completeAssessment(params: {
   const ready = params.state === 'reaction_ready'
   const invalidated = params.state === 'invalidated'
   const reason = stateReason(params.state, params.reason)
+  const stale = String(params.extraDetail?.stale ?? '').toLowerCase() === 'true'
+  const staleReason = params.extraDetail?.stale_reason == null ? null : String(params.extraDetail.stale_reason)
+  const staleAfterBars = params.extraDetail?.stale_after_15m_bars == null ? null : Number(params.extraDetail.stale_after_15m_bars)
+  const elapsedBars = params.extraDetail?.elapsed_15m_bars == null ? null : Number(params.extraDetail.elapsed_15m_bars)
   const coverage = params.completedBars.h4 >= 2 && params.completedBars.h1 >= 3 && params.completedBars.m15 >= 12
     ? 'full'
     : 'partial'
+  const bias1h = params.bias1h ?? { direction: 'neutral', confidence: 'none', channelAlign: false }
+  const supplyZone1h = params.supplyZone1h ?? null
+  const bearishDefense = params.bearishDefense ?? emptyBearishDefense(
+    supplyZone1h ? 'waiting_supply_zone_touch' : 'no_supply_zone',
+    supplyZone1h ? 's12_bearish_defense_waiting_supply_touch' : 's12_bearish_defense_no_supply_zone',
+    {},
+    supplyZone1h,
+  )
+  const defensiveAction: S12DefensiveAction =
+    params.state === 'bearish_defense_ready'
+      ? 'NO_BUY'
+      : bearishDefense.action
+  const quality = params.quality ?? emptyQuality()
+  const exitPlan = params.exitPlan ?? emptyExitPlan(bearishDefense)
   return {
     version: 's12_intraday_structure_v1',
     symbol: params.input.symbol,
@@ -384,9 +743,30 @@ function completeAssessment(params: {
       bias4h: params.bias4h.direction,
       bias_confidence: params.bias4h.confidence,
       bias_channel_align: params.bias4h.channelAlign ? 'true' : 'false',
+      bias1h: bias1h.direction,
+      bias1h_confidence: bias1h.confidence,
+      bias1h_channel_align: bias1h.channelAlign ? 'true' : 'false',
       zone_low: price(params.demandZone1h?.low),
       zone_high: price(params.demandZone1h?.high),
       zone_type: params.demandZone1h?.type,
+      supply_zone_low: price(supplyZone1h?.low),
+      supply_zone_high: price(supplyZone1h?.high),
+      supply_zone_type: supplyZone1h?.type,
+      bearish_defense_state: bearishDefense.state,
+      bearish_defense_action: defensiveAction === 'none' ? null : defensiveAction,
+      vwap: quality.vwap.value,
+      price_vwap_pct: quality.vwap.priceVsVwapPct,
+      vwap_state: quality.vwap.state,
+      rvol: quality.rvol.value,
+      rvol_state: quality.rvol.state,
+      rvol_lookback_bars: quality.rvol.lookbackBars,
+      quality_notes: quality.notes.length ? quality.notes.join('|') : null,
+      structural_tp1: exitPlan.tp1.price,
+      structural_tp1_source: exitPlan.tp1.source === 'unavailable' ? null : exitPlan.tp1.source,
+      structural_main_exit: exitPlan.mainExit.price,
+      structural_main_exit_source: exitPlan.mainExit.source === 'unavailable' ? null : exitPlan.mainExit.source,
+      trailing_method: exitPlan.trailingStop.method,
+      reverse_warning_action: exitPlan.reverseWarning.action === 'none' ? null : exitPlan.reverseWarning.action,
       entry: price(params.execution?.entryPrice),
       chase_ceiling: price(params.execution?.chaseCeiling),
       stop: price(params.execution?.stopLoss),
@@ -395,19 +775,35 @@ function completeAssessment(params: {
       t3: price(params.execution?.target3),
       atr15m: price(params.execution?.atr15m),
       r: params.execution?.rMultiple == null ? null : round(params.execution.rMultiple, 4),
-      takeover_eligible: ready || invalidated ? 'true' : 'false',
+      takeover_eligible: ready || invalidated || params.state === 'bearish_defense_ready' ? 'true' : 'false',
+      takeover_role: maturityTakeoverRole(params.state),
       maturity_stage: maturityStage(params.state),
-      maturity_policy: 'advisory_until_reaction_ready_or_invalidated',
+      maturity_policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated',
+      stale: stale ? 'true' : null,
+      stale_reason: staleReason,
+      stale_after_15m_bars: Number.isFinite(staleAfterBars) ? staleAfterBars : null,
+      elapsed_15m_bars: Number.isFinite(elapsedBars) ? elapsedBars : null,
       ...params.extraDetail,
     }),
     setupId: params.setupId ?? null,
     completedBars: params.completedBars,
     coverage,
     bias4h: params.bias4h,
+    bias1h,
     demandZone1h: params.demandZone1h,
+    supplyZone1h,
+    bearishDefense,
+    defensiveAction,
+    quality,
+    exitPlan,
     sequence: params.sequence,
     execution: params.execution ?? {},
-    maturity: maturitySnapshot(params.state),
+    maturity: maturitySnapshot(params.state, {
+      stale,
+      staleReason,
+      staleAfterBars: Number.isFinite(staleAfterBars) ? staleAfterBars : null,
+      elapsedBars: Number.isFinite(elapsedBars) ? elapsedBars : null,
+    }),
   }
 }
 
@@ -418,17 +814,282 @@ function lastBearishBar(bars: S12Bar[], start: number, endInclusive: number): S1
   return null
 }
 
+function lastBullishBar(bars: S12Bar[], start: number, endInclusive: number): S12Bar | null {
+  for (let i = Math.min(endInclusive, bars.length - 1); i >= Math.max(0, start); i -= 1) {
+    if (bars[i].close > bars[i].open) return bars[i]
+  }
+  return null
+}
+
+function defensiveDetail(
+  state: S12BearishDefense['state'],
+  reason: string,
+  supplyZone1h: S12IntradayZone | null,
+  sequence: S12BearishDefense['sequence'],
+  extra: Record<string, unknown> = {},
+): string {
+  return detailText({
+    state,
+    reason,
+    supply_zone_low: price(supplyZone1h?.low),
+    supply_zone_high: price(supplyZone1h?.high),
+    supply_zone_type: supplyZone1h?.type,
+    zone_touch_ms: sequence.zoneTouchMs ?? null,
+    sweep_ms: sequence.sweepMs ?? null,
+    choch_ms: sequence.chochMs ?? null,
+    bos_ms: sequence.bosMs ?? null,
+    retest_ms: sequence.retestMs ?? null,
+    reaction_ms: sequence.reactionMs ?? null,
+    ...extra,
+  })
+}
+
+function bearishDefenseAssessment(params: {
+  state: S12BearishDefense['state']
+  reason: string
+  supplyZone1h: S12IntradayZone | null
+  sequence?: S12BearishDefense['sequence']
+  action?: S12DefensiveAction
+  extra?: Record<string, unknown>
+}): S12BearishDefense {
+  const sequence = params.sequence ?? {}
+  const ready = params.state === 'bearish_defense_ready'
+  const action = params.action ?? (ready ? 'NO_BUY' : 'none')
+  return {
+    state: params.state,
+    ready,
+    action,
+    reason: params.reason,
+    detail: defensiveDetail(params.state, params.reason, params.supplyZone1h, sequence, params.extra),
+    supplyZone1h: params.supplyZone1h,
+    sequence,
+  }
+}
+
+function scanBearishDefenseSequence(params: {
+  input: S12IntradayInput
+  bars15m: S12Bar[]
+  supplyZone1h: S12IntradayZone | null
+}): S12BearishDefense {
+  const { bars15m, supplyZone1h } = params
+  if (!supplyZone1h) {
+    return bearishDefenseAssessment({
+      state: 'no_supply_zone',
+      reason: 's12_bearish_defense_no_supply_zone',
+      supplyZone1h: null,
+    })
+  }
+  const atr15m = averageTrueRange(bars15m, 14) ?? Math.max(0.01, bars15m[bars15m.length - 1].high - bars15m[bars15m.length - 1].low)
+  const eligibleBars = bars15m.filter((bar) => bar.startMs >= supplyZone1h.createdMs)
+  const offset = bars15m.length - eligibleBars.length
+  const touchRelative = eligibleBars.findIndex((bar) => overlapsZone(bar, supplyZone1h))
+  if (touchRelative < 0) {
+    return bearishDefenseAssessment({
+      state: 'waiting_supply_zone_touch',
+      reason: 's12_bearish_waiting_supply_zone_touch',
+      supplyZone1h,
+      extra: { elapsed_15m_bars: eligibleBars.length },
+    })
+  }
+  const touchIndex = offset + touchRelative
+  const touch = bars15m[touchIndex]
+
+  let sweepIndex = -1
+  const sweepEnd = Math.min(bars15m.length - 1, touchIndex + 16)
+  for (let i = touchIndex; i <= sweepEnd; i += 1) {
+    const priorHigh = highBetween(bars15m, Math.max(0, i - 6), i)
+    if (priorHigh == null) continue
+    const bar = bars15m[i]
+    const priorUp = bars15m.slice(Math.max(0, i - 3), i).some((candidate) => candidate.close > candidate.open)
+    const rejected = bar.close < Math.min(supplyZone1h.high, bar.high - atr15m * 0.12)
+    if (priorUp && bar.high > priorHigh && rejected && bar.high >= supplyZone1h.low) {
+      sweepIndex = i
+      break
+    }
+  }
+  if (sweepIndex < 0) {
+    return bearishDefenseAssessment({
+      state: 'waiting_bsl_sweep',
+      reason: 's12_bearish_waiting_bsl_sweep',
+      supplyZone1h,
+      sequence: { zoneTouchMs: touch.startMs },
+      action: 'LOWER_CONFIDENCE',
+      extra: { elapsed_15m_bars: Math.max(0, bars15m.length - 1 - touchIndex) },
+    })
+  }
+  const sweep = bars15m[sweepIndex]
+
+  let chochIndex = -1
+  const chochLevel = lowBetween(bars15m, Math.max(0, sweepIndex - 6), sweepIndex + 1)
+  const chochEnd = Math.min(bars15m.length - 1, sweepIndex + 12)
+  for (let i = sweepIndex + 1; i <= chochEnd; i += 1) {
+    const bar = bars15m[i]
+    const body = Math.abs(bar.close - bar.open)
+    if (chochLevel != null && bar.close < chochLevel && bar.close < bar.open && body >= atr15m * 0.08) {
+      chochIndex = i
+      break
+    }
+  }
+  if (chochIndex < 0) {
+    return bearishDefenseAssessment({
+      state: 'waiting_choch_down',
+      reason: 's12_bearish_waiting_choch_down',
+      supplyZone1h,
+      sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs },
+      action: 'LOWER_CONFIDENCE',
+      extra: { elapsed_15m_bars: Math.max(0, bars15m.length - 1 - sweepIndex) },
+    })
+  }
+  const choch = bars15m[chochIndex]
+
+  let bosIndex = -1
+  const bosLevel = lowBetween(bars15m, touchIndex, chochIndex + 1)
+  const bosEnd = Math.min(bars15m.length - 1, chochIndex + 24)
+  for (let i = chochIndex + 1; i <= bosEnd; i += 1) {
+    const bar = bars15m[i]
+    const lowerHigh = highBetween(bars15m, chochIndex + 1, i + 1)
+    if (bosLevel != null && bar.close < bosLevel && (lowerHigh == null || lowerHigh < sweep.high)) {
+      bosIndex = i
+      break
+    }
+  }
+  if (bosIndex < 0) {
+    return bearishDefenseAssessment({
+      state: 'waiting_bos_down',
+      reason: 's12_bearish_waiting_bos_down',
+      supplyZone1h,
+      sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs },
+      action: 'LOWER_CONFIDENCE',
+      extra: { elapsed_15m_bars: Math.max(0, bars15m.length - 1 - chochIndex) },
+    })
+  }
+  const bos = bars15m[bosIndex]
+  const ob = lastBullishBar(bars15m, chochIndex, bosIndex) ?? sweep
+  const entryZone = {
+    low: Math.min(ob.open, ob.close),
+    high: Math.max(ob.high, ob.close),
+  }
+
+  let reactionIndex = -1
+  const retestEnd = Math.min(bars15m.length - 1, bosIndex + 16)
+  for (let i = bosIndex + 1; i <= retestEnd; i += 1) {
+    const bar = bars15m[i]
+    const retest = bar.low <= entryZone.high && bar.high >= entryZone.low
+    const reaction = retest && bar.close < bar.open && bar.close <= Math.max(entryZone.low, bar.open - atr15m * 0.08)
+    if (reaction) {
+      reactionIndex = i
+      break
+    }
+  }
+  if (reactionIndex < 0) {
+    return bearishDefenseAssessment({
+      state: 'waiting_bearish_retest',
+      reason: 's12_bearish_waiting_retest_reaction',
+      supplyZone1h,
+      sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs, bosMs: bos.startMs },
+      action: 'LOWER_CONFIDENCE',
+      extra: {
+        entry_zone_low: price(entryZone.low),
+        entry_zone_high: price(entryZone.high),
+        elapsed_15m_bars: Math.max(0, bars15m.length - 1 - bosIndex),
+      },
+    })
+  }
+  const reaction = bars15m[reactionIndex]
+  return bearishDefenseAssessment({
+    state: 'bearish_defense_ready',
+    reason: 's12_bearish_defense_ready',
+    supplyZone1h,
+    sequence: {
+      zoneTouchMs: touch.startMs,
+      sweepMs: sweep.startMs,
+      chochMs: choch.startMs,
+      bosMs: bos.startMs,
+      retestMs: reaction.startMs,
+      reactionMs: reaction.startMs,
+    },
+    action: 'NO_BUY',
+    extra: {
+      entry_zone_low: price(entryZone.low),
+      entry_zone_high: price(entryZone.high),
+      reaction_close: price(reaction.close),
+    },
+  })
+}
+
+function nearestPriorHighAbove(bars: S12Bar[], start: number, endInclusive: number, entryPrice: number): number | null {
+  const highs = bars
+    .slice(Math.max(0, start), Math.min(bars.length, endInclusive + 1))
+    .map((bar) => bar.high)
+    .filter((value) => Number.isFinite(value) && value > entryPrice)
+    .sort((a, b) => a - b)
+  return highs.length ? price(highs[0]) : null
+}
+
+function buildLongExitPlan(params: {
+  bars15m: S12Bar[]
+  touchIndex: number
+  reactionIndex: number
+  entryPrice: number
+  stopLoss: number
+  risk: number
+  supplyZone1h: S12IntradayZone | null
+  bearishDefense: S12BearishDefense
+}): S12StructureExitPlan {
+  const priorHigh = nearestPriorHighAbove(params.bars15m, params.touchIndex, params.reactionIndex, params.entryPrice)
+  const fallbackTp1 = price(params.entryPrice + params.risk)
+  const supplyLow = params.supplyZone1h?.low ?? null
+  const supplyHigh = params.supplyZone1h?.high ?? null
+  const supplyExit = supplyLow != null && supplyLow > params.entryPrice
+    ? supplyLow
+    : supplyHigh != null && supplyHigh > params.entryPrice
+      ? supplyHigh
+      : null
+  const fallbackMainExit = price(params.entryPrice + params.risk * 2)
+  return {
+    mode: 'structure_first_trailing_v1',
+    tp1: {
+      price: priorHigh ?? fallbackTp1,
+      source: priorHigh != null ? '15m_previous_high' : fallbackTp1 != null ? 'r_multiple_fallback' : 'unavailable',
+      action: 'partial_take_profit',
+    },
+    mainExit: {
+      price: supplyExit != null ? price(supplyExit) : fallbackMainExit,
+      zoneLow: price(supplyLow),
+      zoneHigh: price(supplyHigh),
+      source: supplyExit != null ? '1h_supply_zone' : fallbackMainExit != null ? 'r_multiple_fallback' : 'unavailable',
+      action: 'main_take_profit',
+    },
+    trailingStop: {
+      initial: price(params.stopLoss),
+      method: 'structure_stop_then_15m_higher_low_atr_vwap',
+      activation: 'after_tp1_or_reverse_choch',
+    },
+    reverseWarning: {
+      state: params.bearishDefense.state,
+      action: params.bearishDefense.ready ? 'EXIT_ON_REVERSE_BOS' : params.bearishDefense.action,
+      source: 'bearish_defense_sidecar',
+    },
+  }
+}
+
 function scanLongSequence(params: {
   input: S12IntradayInput
   bars15m: S12Bar[]
   completedBars: S12IntradayAssessment['completedBars']
   bias4h: S12Bias4h
+  bias1h: S12HtfBias
   demandZone1h: S12IntradayZone
+  supplyZone1h: S12IntradayZone | null
+  bearishDefense: S12BearishDefense
+  quality: S12StructureQuality
 }): S12IntradayAssessment {
-  const { input, bars15m, completedBars, bias4h, demandZone1h } = params
+  const { input, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality } = params
+  const context = { bias1h, supplyZone1h, bearishDefense, quality }
   const atr15m = averageTrueRange(bars15m, 14) ?? Math.max(0.01, bars15m[bars15m.length - 1].high - bars15m[bars15m.length - 1].low)
   const eligibleBars = bars15m.filter((bar) => bar.startMs >= demandZone1h.createdMs)
   const offset = bars15m.length - eligibleBars.length
+  const zoneTouchStaleBars = 16
   const touchRelative = eligibleBars.findIndex((bar) => overlapsZone(bar, demandZone1h))
   if (touchRelative < 0) {
     return completeAssessment({
@@ -436,9 +1097,18 @@ function scanLongSequence(params: {
       state: 'waiting_15m_zone_touch',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: {},
       execution: { atr15m },
+      extraDetail: eligibleBars.length > zoneTouchStaleBars
+        ? {
+          stale: 'true',
+          stale_reason: '15m_zone_touch_timeout',
+          stale_after_15m_bars: zoneTouchStaleBars,
+          elapsed_15m_bars: eligibleBars.length,
+        }
+        : { elapsed_15m_bars: eligibleBars.length },
     })
   }
   const touchIndex = offset + touchRelative
@@ -452,6 +1122,7 @@ function scanLongSequence(params: {
       reason: 's12_structure_invalidated',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs },
       execution: { atr15m },
@@ -474,15 +1145,26 @@ function scanLongSequence(params: {
     }
   }
   if (sweepIndex < 0) {
+    const elapsedBars = Math.max(0, bars15m.length - 1 - touchIndex)
+    const stale = bars15m.length - 1 > sweepEnd
     return completeAssessment({
       input,
       state: 'waiting_sweep',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs },
       execution: { atr15m },
       setupId: setupKey(input.symbol, touch.startMs),
+      extraDetail: stale
+        ? {
+          stale: 'true',
+          stale_reason: 'sweep_timeout',
+          stale_after_15m_bars: 16,
+          elapsed_15m_bars: elapsedBars,
+        }
+        : { elapsed_15m_bars: elapsedBars },
     })
   }
   const sweep = bars15m[sweepIndex]
@@ -499,15 +1181,26 @@ function scanLongSequence(params: {
     }
   }
   if (chochIndex < 0) {
+    const elapsedBars = Math.max(0, bars15m.length - 1 - sweepIndex)
+    const stale = bars15m.length - 1 > chochEnd
     return completeAssessment({
       input,
       state: 'waiting_choch',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs },
       execution: { atr15m },
       setupId: setupKey(input.symbol, touch.startMs, sweep.startMs),
+      extraDetail: stale
+        ? {
+          stale: 'true',
+          stale_reason: 'choch_timeout',
+          stale_after_15m_bars: 12,
+          elapsed_15m_bars: elapsedBars,
+        }
+        : { elapsed_15m_bars: elapsedBars },
     })
   }
   const choch = bars15m[chochIndex]
@@ -524,15 +1217,26 @@ function scanLongSequence(params: {
     }
   }
   if (bosIndex < 0) {
+    const elapsedBars = Math.max(0, bars15m.length - 1 - chochIndex)
+    const stale = bars15m.length - 1 > bosEnd
     return completeAssessment({
       input,
       state: 'waiting_bos',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs },
       execution: { atr15m },
       setupId: setupKey(input.symbol, touch.startMs, sweep.startMs, choch.startMs),
+      extraDetail: stale
+        ? {
+          stale: 'true',
+          stale_reason: 'bos_timeout',
+          stale_after_15m_bars: 24,
+          elapsed_15m_bars: elapsedBars,
+        }
+        : { elapsed_15m_bars: elapsedBars },
     })
   }
   const bos = bars15m[bosIndex]
@@ -550,6 +1254,7 @@ function scanLongSequence(params: {
       reason: 's12_entry_zone_not_overlapping_1h_demand',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs, bosMs: bos.startMs },
       execution: { atr15m },
@@ -573,11 +1278,14 @@ function scanLongSequence(params: {
     }
   }
   if (reactionIndex < 0) {
+    const elapsedBars = Math.max(0, bars15m.length - 1 - bosIndex)
+    const stale = bars15m.length - 1 > retestEnd
     return completeAssessment({
       input,
       state: 'waiting_retest',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs, bosMs: bos.startMs },
       execution: { atr15m },
@@ -585,6 +1293,10 @@ function scanLongSequence(params: {
       extraDetail: {
         entry_zone_low: price(entryZone.low),
         entry_zone_high: price(entryZone.high),
+        stale: stale ? 'true' : null,
+        stale_reason: stale ? 'retest_reaction_timeout' : null,
+        stale_after_15m_bars: 16,
+        elapsed_15m_bars: elapsedBars,
       },
     })
   }
@@ -593,6 +1305,16 @@ function scanLongSequence(params: {
   const entryPrice = reaction.close
   const stopLoss = Math.min(sweep.low, entryZone.low) - atr15m * 0.1
   const risk = entryPrice - stopLoss
+  const exitPlan = buildLongExitPlan({
+    bars15m,
+    touchIndex,
+    reactionIndex,
+    entryPrice,
+    stopLoss,
+    risk,
+    supplyZone1h,
+    bearishDefense,
+  })
   if (risk <= 0 || risk > atr15m * 3) {
     return completeAssessment({
       input,
@@ -600,6 +1322,7 @@ function scanLongSequence(params: {
       reason: 's12_invalid_risk_box',
       completedBars,
       bias4h,
+      ...context,
       demandZone1h,
       sequence: {
         zoneTouchMs: touch.startMs,
@@ -625,7 +1348,9 @@ function scanLongSequence(params: {
     state: 'reaction_ready',
     completedBars,
     bias4h,
+    ...context,
     demandZone1h,
+    exitPlan,
     sequence: {
       zoneTouchMs: touch.startMs,
       sweepMs: sweep.startMs,
@@ -638,9 +1363,9 @@ function scanLongSequence(params: {
       entryPrice,
       chaseCeiling: entryPrice + atr15m * 0.25,
       stopLoss,
-      target1: entryPrice + risk,
-      target2: entryPrice + risk * 2,
-      target3: entryPrice + risk * 3,
+      target1: exitPlan.tp1.price,
+      target2: exitPlan.mainExit.price,
+      target3: null,
       atr15m,
       rMultiple: risk / atr15m,
     },
@@ -668,13 +1393,45 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     return emptyAssessment(input, 'waiting_4h_completed_bar', 's12_waiting_4h_completed_bar', completedBars, completedBars)
   }
   const bias4h = resolve4hBias(bars4h)
+  const neutral1hBias: S12HtfBias = { direction: 'neutral', confidence: 'none', channelAlign: false }
+  const bias1h = bars1h.length > 0 ? resolve1hBias(bars1h) : neutral1hBias
+  const supplyZone1h = bars1h.length > 0 ? findSupplyZone1h(bars1h) : null
+  const bearishDefense = scanBearishDefenseSequence({ input, bars15m, supplyZone1h })
+  const demandZone1h = bars1h.length > 0 ? findDemandZone1h(bars1h) : null
+  const quality = buildStructureQuality(bars15m)
+
+  if (bearishDefense.ready) {
+    return completeAssessment({
+      input,
+      state: 'bearish_defense_ready',
+      reason: bearishDefense.reason,
+      completedBars,
+      bias4h,
+      bias1h,
+      demandZone1h,
+      supplyZone1h,
+      bearishDefense,
+      quality,
+      sequence: {},
+      setupId: setupKey(input.symbol, bearishDefense.sequence.zoneTouchMs, bearishDefense.sequence.sweepMs, bearishDefense.sequence.chochMs, bearishDefense.sequence.bosMs, bearishDefense.sequence.reactionMs),
+      extraDetail: {
+        defensive_action: 'NO_BUY',
+        defensive_use: 'pending_buy_no_buy_only_no_short_order',
+      },
+    })
+  }
+
   if (bias4h.direction !== 'long' || !bias4h.channelAlign) {
     return completeAssessment({
       input,
       state: 'waiting_4h_long_bias',
       completedBars,
       bias4h,
+      bias1h,
       demandZone1h: null,
+      supplyZone1h,
+      bearishDefense,
+      quality,
       sequence: {},
       extraDetail: {
         latest4h_close: price(bars4h[bars4h.length - 1]?.close),
@@ -688,22 +1445,29 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       state: 'waiting_1h_completed_bar',
       completedBars,
       bias4h,
+      bias1h,
       demandZone1h: null,
+      supplyZone1h,
+      bearishDefense,
+      quality,
       sequence: {},
     })
   }
-  const demandZone1h = findDemandZone1h(bars1h)
   if (!demandZone1h) {
     return completeAssessment({
       input,
       state: 'waiting_1h_demand_zone',
       completedBars,
       bias4h,
+      bias1h,
       demandZone1h: null,
+      supplyZone1h,
+      bearishDefense,
+      quality,
       sequence: {},
     })
   }
-  return scanLongSequence({ input, bars15m, completedBars, bias4h, demandZone1h })
+  return scanLongSequence({ input, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality })
 }
 
 export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInput): S12IntradayAssessment {
@@ -711,9 +1475,9 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
   return assessS12IntradayStructure({
     symbol: input.symbol,
     nowMs,
-    bars15m: aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs),
-    bars1h: aggregateCompletedS12Bars(input.baseBars, H1_MS, nowMs),
-    bars4h: aggregateCompletedS12Bars(input.baseBars, H4_MS, nowMs),
+    bars15m: aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true }),
+    bars1h: aggregateCompletedS12Bars(input.baseBars, H1_MS, nowMs, { alignToTwSession: true }),
+    bars4h: aggregateCompletedS12Bars(input.baseBars, H4_MS, nowMs, { alignToTwSession: true }),
   })
 }
 
@@ -724,6 +1488,9 @@ export function s12PreTradeTechnicalDecision(
   mode: S12IntradayGateMode = 'observe',
 ): { action: 'pass' | 'defer' | 'skip'; reason: string; detail: string } | null {
   if (mode === 'observe') return null
+  if (assessment.defensiveAction === 'NO_BUY' || assessment.state === 'bearish_defense_ready') {
+    return { action: 'skip', reason: 's12_bearish_defense_ready', detail: assessment.detail }
+  }
   if (assessment.invalidated) {
     return { action: 'skip', reason: assessment.reason, detail: assessment.detail }
   }

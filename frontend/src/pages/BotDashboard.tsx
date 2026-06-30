@@ -23,7 +23,7 @@ import AppShell from '@/components/AppShell'
 import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
-import { formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatS12IntradayStructureBadge } from '@/lib/pendingBuyExecutionUi'
+import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge } from '@/lib/pendingBuyExecutionUi'
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
@@ -928,6 +928,8 @@ function PositionsTable() {
               const pnlAmt = (current - entry) * shares
               const marketValue = current * shares
               const costBasis = entry * shares
+              const s12HoldingDefense = formatS12HoldingDefenseBadge(p.s12_holding_defense)
+              const lifecycleBadge = formatCanonicalTradeLifecycleBadge(p.canonical_trade_lifecycle)
               totalUnrealized += pnlAmt
               totalCostBasis += costBasis
 
@@ -944,6 +946,22 @@ function PositionsTable() {
                       {p.name}
                       {daysHeld != null && <span className="ml-1 text-muted-foreground/60">({daysHeld}天)</span>}
                     </div>
+                    {s12HoldingDefense && (
+                      <div className={[
+                        'mt-1 inline-flex max-w-[220px] rounded-full border px-2 py-0.5 text-[11px] leading-4',
+                        executionToneClass(s12HoldingDefense.tone),
+                      ].join(' ')} title={s12HoldingDefense.description}>
+                        {s12HoldingDefense.label}
+                      </div>
+                    )}
+                    {lifecycleBadge && (
+                      <div className={[
+                        'mt-1 inline-flex max-w-[240px] rounded-full border px-2 py-0.5 text-[11px] leading-4',
+                        executionToneClass(lifecycleBadge.tone),
+                      ].join(' ')} title={lifecycleBadge.description}>
+                        {lifecycleBadge.label}
+                      </div>
+                    )}
                   </td>
                   <td className="p-2 text-right sv-num text-foreground/80">{lots}</td>
                   <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 1)}</td>

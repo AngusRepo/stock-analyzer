@@ -122,19 +122,19 @@ function buildCanonicalQuery(db: D1Database, symbol: string, asOfDate: string | 
              dividend_yield, debt_ratio, current_ratio, operating_cash_flow,
              roa, free_cash_flow, capital_amount, common_stock_capital,
              preferred_stock_capital, total_assets, total_liabilities,
-             equity_parent, source, as_of_date
+             equity_parent, source, available_date, as_of_date
         FROM canonical_fundamental_features
        WHERE stock_id = ?
   `
   if (asOfDate) {
     return db.prepare(`${base}
-         AND (as_of_date IS NULL OR as_of_date <= ?)
-       ORDER BY period DESC, as_of_date DESC
+         AND (available_date IS NULL OR available_date <= ?)
+       ORDER BY available_date DESC, period DESC, as_of_date DESC
        LIMIT 180
     `).bind(symbol, asOfDate)
   }
   return db.prepare(`${base}
-       ORDER BY period DESC, as_of_date DESC
+       ORDER BY available_date DESC, period DESC, as_of_date DESC
        LIMIT 180
     `).bind(symbol)
 }

@@ -54,3 +54,11 @@ assert(
   /row\.eps \?\? canonicalEps/.test(fundamentalData),
   'financials EPS should win over canonical EPS when both are present for the card headline',
 )
+assert(
+  /available_date IS NULL OR available_date <= \?/.test(fundamentalData),
+  'canonical fundamental asOf filter must use available_date, not materialization as_of_date',
+)
+assert(
+  !/as_of_date IS NULL OR as_of_date <= \?/.test(fundamentalData),
+  'canonical fundamental asOf filter must not exclude next-day materialized snapshots',
+)

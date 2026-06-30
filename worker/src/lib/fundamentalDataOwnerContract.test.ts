@@ -62,3 +62,7 @@ assert(
   !/as_of_date IS NULL OR as_of_date <= \?/.test(fundamentalData),
   'canonical fundamental asOf filter must not exclude next-day materialized snapshots',
 )
+assert(
+  /eps == null \|\| eps === 0/.test(fundamentalData),
+  'EPS trend should ignore zero placeholders from unmatured legacy financial periods',
+)

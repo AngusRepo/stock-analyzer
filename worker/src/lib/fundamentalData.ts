@@ -68,7 +68,7 @@ function buildEpsTrend(
   const add = (row: Record<string, any>, source: string) => {
     const period = normalizeQuarterPeriod(row.period)
     const eps = finiteNumber(row.eps)
-    if (!period || eps == null) return
+    if (!period || eps == null || eps === 0) return
     if (!byPeriod.has(period)) byPeriod.set(period, { period, eps, source })
   }
   for (const row of financialRows) add(row, 'financials')

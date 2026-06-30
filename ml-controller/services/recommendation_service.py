@@ -1757,14 +1757,37 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     if row.get("eligible_for_pending_buy") is False or lane != "tradable":
         row["promotion_blocked_reason"] = "research_only_or_not_tradable"
         return False
-    forecast_pct = row.get("ml_forecast_pct", row.get("forecast_pct", 0.0))
-    try:
-        forecast = float(forecast_pct or 0.0)
-    except (TypeError, ValueError):
-        forecast = 0.0
+    expected_return, expected_return_source = _row_expected_return_with_source(row)
+    row["promotion_expected_return"] = expected_return
+    row["promotion_expected_return_source"] = expected_return_source
+    forecast_pct = row.get("ml_forecast_pct", row.get("forecast_pct"))
+    forecast_pct_source = str(
+        row.get("ml_forecast_pct_source")
+        or row.get("forecast_pct_source")
+        or ""
+    ).strip()
+    missing_expected_return = expected_return_source in {
+        "missing_no_expected_return",
+        "uncalibrated_rank_score_no_expected_return",
+        "missing_calibrated_forecast_pct_no_expected_return",
+        "no_positive_lifecycle_weight_no_expected_return",
+        "missing_expected_return_no_allocation_edge",
+    }
+    if missing_expected_return:
+        row["promotion_blocked_reason"] = "forecast_pct_missing_no_expected_return_input"
+        row["promotion_blocked_forecast_pct"] = forecast_pct
+        row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or expected_return_source
+        row["promotion_blocked_expected_return_source"] = expected_return_source
+        row["promotion_blocked_expected_return_policy"] = "requires_calibrated_positive_expected_return"
+        return False
     min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
-    if forecast < min_forecast:
+    if expected_return < min_forecast:
         row["promotion_blocked_reason"] = "negative_or_below_min_forecast"
+        row["promotion_blocked_forecast_pct"] = forecast_pct
+        row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or None
+        row["promotion_blocked_expected_return"] = expected_return
+        row["promotion_blocked_expected_return_source"] = expected_return_source
+        row["promotion_blocked_min_expected_return"] = min_forecast
         return False
     try:
         ml_edge = float(_score_v2_components_from_row(row).get("mlEdge") or 0.0)
@@ -1778,6 +1801,8 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
         row["promotion_blocked_reason"] = "missing_formal_ml_edge"
         row["promotion_blocked_ml_edge"] = ml_edge
         row["promotion_blocked_min_ml_edge"] = min_ml_edge
+        row["promotion_blocked_expected_return"] = expected_return
+        row["promotion_blocked_expected_return_source"] = expected_return_source
         return False
     return True
 
@@ -2615,7 +2640,12 @@ def _apply_sparse_tangent_buy_selection(
         symbol = str(row.get("symbol") or "").strip()
         evidence = candidate_evidence_by_symbol.get(symbol)
         rank = allocation_rank_by_symbol.get(symbol)
-        expected_return = float((evidence or {}).get("expected_return") or 0.0)
+        expected_return_raw = (
+            (evidence or {}).get("expected_return")
+            if evidence
+            else row.get("promotion_expected_return")
+        )
+        expected_return = _float_or_none(expected_return_raw) or 0.0
         risk_estimate = float((evidence or {}).get("risk_estimate") or 0.0)
         market_heat_score = _float_from_row(row, ("market_heat_score",))
         market_heat_expected_return = _float_from_row(row, ("market_heat_expected_return",))
@@ -2653,7 +2683,8 @@ def _apply_sparse_tangent_buy_selection(
             "allocation_rank_policy": "diagnostic_only_not_capacity_gate",
             "sparse_weight_state": sparse_weight_state,
             "expected_return": round(expected_return, 10),
-            "expected_return_source": (evidence or {}).get("expected_return_source"),
+            "expected_return_source": (evidence or {}).get("expected_return_source")
+            or row.get("promotion_expected_return_source"),
             "market_heat_score": None if market_heat_score is None else round(market_heat_score, 6),
             "market_heat_expected_return": (
                 None if market_heat_expected_return is None else round(market_heat_expected_return, 10)
@@ -2667,6 +2698,14 @@ def _apply_sparse_tangent_buy_selection(
             "live_backtest_divergence": None if live_backtest_divergence is None else round(live_backtest_divergence, 6),
             "turnover_pressure": None if turnover_pressure is None else round(turnover_pressure, 6),
             "selection_reason": selection_reason,
+            "sparse_input_blocked_reason": row.get("promotion_blocked_reason"),
+            "promotion_blocked_forecast_pct": row.get("promotion_blocked_forecast_pct"),
+            "promotion_blocked_forecast_pct_source": row.get("promotion_blocked_forecast_pct_source"),
+            "promotion_blocked_expected_return": row.get("promotion_blocked_expected_return"),
+            "promotion_blocked_expected_return_source": row.get("promotion_blocked_expected_return_source"),
+            "promotion_blocked_min_expected_return": row.get("promotion_blocked_min_expected_return"),
+            "promotion_blocked_ml_edge": row.get("promotion_blocked_ml_edge"),
+            "promotion_blocked_min_ml_edge": row.get("promotion_blocked_min_ml_edge"),
             "optimizer_objective": utility_diagnostics.get(
                 "optimizer_objective",
                 allocation_result.get("allocation_objective", allocation_objective),
@@ -2728,7 +2767,7 @@ def _apply_sparse_tangent_buy_selection(
         if row.get("symbol") in selected_symbols:
             continue
         alpha_allocation = row.get("alpha_allocation")
-        if isinstance(alpha_allocation, dict) or id(row) in eligible_row_ids:
+        if isinstance(alpha_allocation, dict) or id(row) in eligible_row_ids or row.get("promotion_blocked_reason"):
             symbol = str(row.get("symbol") or "").strip()
             allocation_evidence = _sparse_allocation_evidence(
                 row,
@@ -3646,7 +3685,26 @@ def delete_filtered_recommendations(filtered_symbols: list[str], run_date: str) 
                        '$.stale_selection_cleared_reason',
                        'ml_filter_preserved_non_buy'
                      )
-                     ELSE alpha_allocation
+                     ELSE json_object(
+                       'engine',
+                       'sparse_tangent_inverse_risk',
+                       'allocation_method',
+                       'sparse_tangent_inverse_risk_final_allocation',
+                       'input_scope',
+                       'post_l3_5_evidence_fusion_candidates',
+                       'selection_policy',
+                       'positive_expected_edge_sparse_weights_no_forced_fill',
+                       'selected',
+                       0,
+                       'eligible_for_sparse',
+                       0,
+                       'selection_reason',
+                       'preserved_screener_seed_non_buy',
+                       'sparse_input_blocked_reason',
+                       'ml_filter_preserved_non_buy',
+                       'no_l3_allocation_reason',
+                       'ml_filtered_sell_or_no_signal_preserved_seed'
+                     )
                    END
              WHERE date = ? AND symbol = ?
             """.strip(),

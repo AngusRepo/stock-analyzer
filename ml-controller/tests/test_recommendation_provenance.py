@@ -651,6 +651,39 @@ def test_sparse_tangent_allocation_blocks_negative_forecast():
     assert promoted[0]["promotion_blocked_reason"] == "negative_or_below_min_forecast"
 
 
+def test_sparse_tangent_allocation_explains_missing_expected_return_input():
+    rows = [{
+        "symbol": "6446",
+        "chip_score": 36.0,
+        "tech_score": 30.0,
+        "confidence": 0.70,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "ml_forecast_pct": None,
+        "ml_forecast_pct_source": "uncalibrated_rank_score",
+        "score": 80.0,
+        "score_components": _score_components(final_score=80.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "HOLD"
+    assert promoted[0].get("sparse_tangent_selected") is not True
+    assert promoted[0]["promotion_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
+    assert allocation["selected"] is False
+    assert allocation["eligible_for_sparse"] is False
+    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
+    assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
+    assert allocation["expected_return"] == 0.0
+    assert allocation["expected_return_source"] == "uncalibrated_rank_score_no_expected_return"
+
+
 def test_sparse_tangent_allocation_reowns_existing_buy_labels():
     rows = [{
         "symbol": "2330",
@@ -875,7 +908,8 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
     assert allocation["expected_return"] == 0.0
     assert allocation["expected_return_source"] == "missing_expected_return_no_allocation_edge"
     assert allocation["positive_expected_edge"] is False
-    assert allocation["selection_reason"] == "no_positive_expected_edge"
+    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
+    assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
 
 
 def test_sparse_tangent_allocation_accepts_market_heat_factor_edge():

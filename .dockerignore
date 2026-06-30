@@ -82,7 +82,6 @@ worker/*
 !worker/tsconfig.tests.json
 !worker/src/
 !worker/src/**
-worker/src/lib/canonicalTradeLifecycle.ts
 !worker/migration_strategy_mining_ledger_2026_06_18.sql
 
 # Scripts/tools root (not needed in ml-controller except the FinLab backfill helper copied by Dockerfile)

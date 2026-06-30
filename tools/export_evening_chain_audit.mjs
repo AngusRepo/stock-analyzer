@@ -211,7 +211,14 @@ const dailyRows = dailyRowsRaw.map((row) => {
     recommendation_lane: row.recommendation_lane,
     eligible_for_ml: row.eligible_for_ml,
     eligible_for_pending_buy: row.eligible_for_pending_buy,
+    alpha_engine: allocation.engine ?? '',
     alpha_selected: allocation.selected === true ? 1 : 0,
+    eligible_for_sparse: allocation.eligible_for_sparse === true ? 1 : 0,
+    alpha_selection_reason: allocation.selection_reason ?? '',
+    sparse_input_blocked_reason: allocation.sparse_input_blocked_reason ?? '',
+    expected_return: allocation.expected_return ?? '',
+    expected_return_source: allocation.expected_return_source ?? '',
+    allocation_candidate_pool_size: allocation.allocation_candidate_pool_size ?? '',
     alpha_bucket: allocation.bucket ?? '',
     allocation_quota: allocation.quota ?? '',
     strategy_count: final?.strategyIds.length ?? 0,
@@ -220,6 +227,14 @@ const dailyRows = dailyRowsRaw.map((row) => {
 })
 
 const tradableDailyRows = dailyRows.filter((row) => row.recommendation_lane === 'tradable')
+const sparseAllocationRows = tradableDailyRows.filter((row) => row.alpha_engine === 'sparse_tangent_inverse_risk')
+const sparseInputRows = sparseAllocationRows.filter((row) => Number(row.eligible_for_sparse) === 1)
+const sparseCandidatePoolSize = Math.max(
+  0,
+  ...sparseAllocationRows
+    .map((row) => Number(row.allocation_candidate_pool_size))
+    .filter((value) => Number.isFinite(value)),
+)
 const buyRows = tradableDailyRows.filter((row) => Number(row.has_buy_signal) === 1 || row.signal === 'BUY' || Number(row.alpha_selected) === 1)
 const emergingRows = dailyRows.filter((row) => row.recommendation_lane === 'emerging_watchlist')
 
@@ -370,7 +385,9 @@ const stageRows = [
   { layer: 'L2', stage: 'layer2_timesfm_enrichment', decision: 'observe', rows: stageByKey.get('layer2_timesfm_enrichment:observe')?.rows ?? 0, symbols: stageByKey.get('layer2_timesfm_enrichment:observe')?.symbols ?? 0, note: 'TimesFM sidecar enrichment' },
   { layer: 'L3', stage: 'layer3_formal_ml_gate', decision: 'pass', rows: stageByKey.get('layer3_formal_ml_gate:pass')?.rows ?? 0, symbols: stageByKey.get('layer3_formal_ml_gate:pass')?.symbols ?? 0, note: 'formal ML gate pass' },
   { layer: 'L3', stage: 'layer3_formal_ml_gate', decision: 'drop', rows: stageByKey.get('layer3_formal_ml_gate:drop')?.rows ?? 0, symbols: stageByKey.get('layer3_formal_ml_gate:drop')?.symbols ?? 0, note: 'formal ML gate drop' },
-  { layer: 'L4', stage: 'daily_recommendations', decision: 'tradable', rows: tradableDailyRows.length, symbols: new Set(tradableDailyRows.map((row) => row.symbol)).size, note: 'tradable recommendation rows' },
+  { layer: 'L4', stage: 'sparse_allocator_input', decision: 'eligible', rows: sparseInputRows.length, symbols: new Set(sparseInputRows.map((row) => row.symbol)).size, note: `actual sparse allocator input pool; allocation_candidate_pool_size=${sparseCandidatePoolSize || ''}; not the L3 pass count` },
+  { layer: 'L4', stage: 'sparse_allocator_evidence', decision: 'allocated_or_blocked', rows: sparseAllocationRows.length, symbols: new Set(sparseAllocationRows.map((row) => row.symbol)).size, note: 'rows carrying alpha_allocation evidence from L4 owner' },
+  { layer: 'L4', stage: 'daily_recommendations', decision: 'tradable_snapshot', rows: tradableDailyRows.length, symbols: new Set(tradableDailyRows.map((row) => row.symbol)).size, note: 'final tradable daily table snapshot; not sparse allocator input' },
   { layer: 'L4', stage: 'daily_recommendations', decision: 'buy', rows: buyRows.length, symbols: new Set(buyRows.map((row) => row.symbol)).size, note: 'sparse allocation BUY rows' },
   { layer: 'L4', stage: 'daily_recommendations', decision: 'emerging_watchlist', rows: emergingRows.length, symbols: new Set(emergingRows.map((row) => row.symbol)).size, note: 'context watchlist, not pending-buy eligible' },
 ]
@@ -400,6 +417,9 @@ const summary = {
   daily_tradable_recommendations: tradableDailyRows.length,
   daily_emerging_watchlist: emergingRows.length,
   daily_buy_signals: buyRows.length,
+  l4_sparse_input_candidates: sparseInputRows.length,
+  l4_sparse_allocation_rows: sparseAllocationRows.length,
+  l4_sparse_candidate_pool_size: sparseCandidatePoolSize || null,
   daily_vs_funnel_intersection: tradableDailyRows.filter((row) => finalBySymbol.has(row.symbol)).length,
   active_strategy_count: activeStrategiesRaw.length,
   active_strategy_with_final_attribution: activeStrategyCounts.filter((row) => row.final160_attribution_count > 0).length,

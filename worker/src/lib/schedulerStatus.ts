@@ -55,6 +55,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'morning-briefing', name: 'Morning Briefing', schedule: 'Mon-Fri 07:50', cron: '50 23 * * SUN-THU', group: 'daily' },
   { id: 'daily-snapshot', name: 'Daily Snapshot', schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5', group: 'daily' },
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
+  { id: 'audit-json-retention', name: 'Audit JSON Retention', schedule: 'Sunday 03:30', cron: '30 19 * * 6', group: 'weekly' },
 
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
   { id: 'intraday-rescore', name: 'Intraday Re-score (10/11/12/12:30)', schedule: '10:00 / 11:00 / 12:00 / 12:30', cron: '0 2,3,4 * * 1-5 + 30 4 * * 1-5', group: 'intraday' },

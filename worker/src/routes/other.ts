@@ -278,11 +278,17 @@ function buildIndexSnapshot(
   points: MarketSeriesPoint[],
   source: string,
 ) {
-  const series = points
+  const byDate = new Map<string, number>()
+  for (const point of points) {
+    if (Number.isFinite(point.close)) byDate.set(point.date, point.close)
+  }
+  const series = [...byDate.entries()]
+    .map(([date, close]) => ({ date, close }))
     .filter((point) => Number.isFinite(point.close))
     .sort((a, b) => a.date.localeCompare(b.date))
     .slice(-30)
   const current = series.at(-1)?.close ?? null
+  const date = series.at(-1)?.date ?? null
   const prev = series.length >= 2 ? series.at(-2)?.close ?? null : null
   const change = current != null && prev != null ? current - prev : null
   const changePct = current != null && prev ? (change! / prev) * 100 : null
@@ -293,6 +299,7 @@ function buildIndexSnapshot(
     current: current == null ? null : Math.round(current * 100) / 100,
     change: change == null ? null : Math.round(change * 100) / 100,
     changePct: changePct == null ? null : Math.round(changePct * 100) / 100,
+    date,
     source,
     status: current == null ? 'missing_finlab_source' : 'ok',
     history: series.map((point) => ({ date: point.date, close: Math.round(point.close * 100) / 100 })),
@@ -305,6 +312,7 @@ async function loadFinlabSeries(
   name: string,
   candidates: MarketSeriesCandidate[],
 ) {
+  let fallbackSnapshot: ReturnType<typeof buildIndexSnapshot> | null = null
   for (const candidate of candidates) {
     try {
       const query = db.prepare(candidate.sql)
@@ -320,14 +328,16 @@ async function loadFinlabSeries(
         .filter((point): point is MarketSeriesPoint => Boolean(point))
 
       if (points.length > 0) {
-        return buildIndexSnapshot(symbol, name, points, candidate.source)
+        const snapshot = buildIndexSnapshot(symbol, name, points, candidate.source)
+        if (!fallbackSnapshot) fallbackSnapshot = snapshot
+        if (snapshot.history.length >= 2 && snapshot.change != null) return snapshot
       }
     } catch (e) {
       console.warn(`[market/indices] FinLab candidate skipped for ${symbol}: ${candidate.source}`, e)
     }
   }
 
-  return buildIndexSnapshot(symbol, name, [], `FinLab source missing: ${candidates.map((item) => item.source).join(' / ')}`)
+  return fallbackSnapshot ?? buildIndexSnapshot(symbol, name, [], `FinLab source missing: ${candidates.map((item) => item.source).join(' / ')}`)
 }
 
 async function fetchTwseTaiexOfficialSeries() {
@@ -356,6 +366,27 @@ async function fetchTwseTaiexOfficialSeries() {
 
 function hasMarketSeriesData(snapshot: any): boolean {
   return numberOrNull(snapshot?.current) != null
+}
+
+function hasMarketSeriesDelta(snapshot: any): boolean {
+  return hasMarketSeriesData(snapshot) &&
+    numberOrNull(snapshot?.change) != null &&
+    numberOrNull(snapshot?.changePct ?? snapshot?.change_pct) != null
+}
+
+function normalizeMarketSeriesDate(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`
+  return raw.slice(0, 10)
+}
+
+function chooseBestMarketSeries(primary: any, fallbacks: any[]): any {
+  const candidates = [primary, ...fallbacks].filter((snapshot) => hasMarketSeriesData(snapshot))
+  if (!candidates.length) return primary
+  const withDelta = candidates.filter((snapshot) => hasMarketSeriesDelta(snapshot))
+  const pool = withDelta.length ? withDelta : candidates
+  return pool.sort((a, b) => normalizeMarketSeriesDate(b?.date).localeCompare(normalizeMarketSeriesDate(a?.date)))[0] ?? primary
 }
 
 function percentChange(current: number | null, previous: number | null): number | null {
@@ -1586,7 +1617,7 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v8-official-index-guard', async () => {
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v9-delta-fill', async () => {
     const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii, twseOfficialTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
@@ -1595,12 +1626,12 @@ market.get('/indices', async (c) => {
           source: 'FinLab canonical_market_index_daily',
         },
         {
-          sql: 'SELECT date, close FROM market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          sql: 'SELECT date, close FROM market_index_daily WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
           binds: ['TWII', 'TAIEX'],
           source: 'FinLab market_index_daily',
         },
         {
-          sql: 'SELECT date, close FROM finlab_tw_stock_market_ind WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          sql: 'SELECT date, close FROM finlab_tw_stock_market_ind WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
           binds: ['TWII', 'TAIEX'],
           source: 'FinLab etl:finlab_tw_stock_market_ind',
         },
@@ -1632,7 +1663,7 @@ market.get('/indices', async (c) => {
       ]),
       loadFinlabSeries(c.env.DB, 'TXF', '台指期貨', [
         {
-          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' AND close > 1000 AND open_interest IS NOT NULL ORDER BY date DESC, contract_month ASC LIMIT 30",
+          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
           binds: ['TXF', 'TX'],
           source: 'FinLab canonical_futures_daily',
         },
@@ -1657,28 +1688,28 @@ market.get('/indices', async (c) => {
       loadMarketRiskTwiiSeries(c.env.DB),
       fetchTwseTaiexOfficialSeries(),
     ])
-    const twii = hasMarketSeriesData(finlabTwii)
-      ? finlabTwii
-      : hasMarketSeriesData(twseOfficialTwii)
-        ? twseOfficialTwii
-        : marketRiskTwii
+    const taifexDaySnapshot = taifexDay ? {
+      symbol: 'TXF',
+      name: '台指期貨',
+      current: Math.round(taifexDay.lastPrice * 100) / 100,
+      change: Math.round(taifexDay.changePoints * 100) / 100,
+      changePct: Math.round(taifexDay.changePct * 100) / 100,
+      date: taifexDay.date,
+      time: taifexDay.time,
+      source: 'TAIFEX MIS day session',
+      status: 'ok',
+      history: [],
+    } : null
+    const twii = hasMarketSeriesData(finlabTwii) || hasMarketSeriesData(twseOfficialTwii)
+      ? chooseBestMarketSeries(finlabTwii, [twseOfficialTwii])
+      : marketRiskTwii
     const twoii = hasMarketSeriesData(finlabTwoii)
       ? finlabTwoii
       : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab canonical_market_index_daily not materialized by GCP backfill')
-    const txfDay = hasMarketSeriesData(finlabTxfDay)
-      ? finlabTxfDay
-      : taifexDay ? {
-        symbol: 'TXF',
-        name: '台指期貨',
-        current: Math.round(taifexDay.lastPrice * 100) / 100,
-        change: Math.round(taifexDay.changePoints * 100) / 100,
-        changePct: Math.round(taifexDay.changePct * 100) / 100,
-        date: taifexDay.date,
-        time: taifexDay.time,
-        source: 'TAIFEX MIS day session',
-        status: 'ok',
-        history: [],
-      } : missingMaterializationSnapshot('TXF', '台指期貨', 'FinLab futures_price not materialized')
+    const bestTxfDay = chooseBestMarketSeries(finlabTxfDay, taifexDaySnapshot ? [taifexDaySnapshot] : [])
+    const txfDay = hasMarketSeriesData(bestTxfDay)
+      ? bestTxfDay
+      : missingMaterializationSnapshot('TXF', '台指期貨', 'FinLab futures_price not materialized')
     const txfNight = taifexNight ? {
       symbol: 'TXF',
       name: '台指期貨夜盤',

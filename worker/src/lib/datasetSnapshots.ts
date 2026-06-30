@@ -69,6 +69,12 @@ const STORE_ROLE_BY_ACCESS_TIER: Record<SnapshotAccessTier, SnapshotStoreRole> =
   },
 }
 
+function isR2AuditJsonArchive(row: Partial<DatasetSnapshotManifest>): boolean {
+  return row.access_tier === 'archive' &&
+    row.primary_store === 'r2' &&
+    String(row.kind ?? '').startsWith('d1_audit_json_archive')
+}
+
 export function resolveSnapshotStoreRole(accessTier: SnapshotAccessTier): SnapshotStoreRole {
   return STORE_ROLE_BY_ACCESS_TIER[accessTier] ?? STORE_ROLE_BY_ACCESS_TIER.preview
 }
@@ -86,11 +92,13 @@ export function validateDatasetSnapshotManifest(row: Partial<DatasetSnapshotMani
   if (!row.access_tier) errors.push('access_tier_missing')
   if (!row.primary_store) errors.push('primary_store_missing')
   if (row.row_count == null || Number(row.row_count) < 0) errors.push('row_count_invalid')
-  if (role && row.primary_store !== role.primary_store) {
+  const allowR2AuditArchive = isR2AuditJsonArchive(row)
+  if (role && row.primary_store !== role.primary_store && !allowR2AuditArchive) {
     errors.push(`primary_store_mismatch:${row.primary_store}->${role.primary_store}`)
   }
-  if (role?.requires_gcs && !row.gcs_uri) errors.push('gcs_uri_required')
+  if (role?.requires_gcs && !row.gcs_uri && !allowR2AuditArchive) errors.push('gcs_uri_required')
   if (role?.requires_r2 && !row.r2_key) errors.push('r2_key_required')
+  if (allowR2AuditArchive && !row.r2_key) errors.push('r2_key_required')
   return errors
 }
 
@@ -210,7 +218,7 @@ function d1ServingChecksum(kind: string, businessDate: string, rowCount: number,
   return `d1:${kind}:${businessDate}:${maxDate ?? 'none'}:${rowCount}`
 }
 
-async function sha256Text(value: string): Promise<string> {
+export async function sha256Text(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value)
   const digest = await crypto.subtle.digest('SHA-256', bytes)
   const hex = [...new Uint8Array(digest)]
@@ -219,7 +227,7 @@ async function sha256Text(value: string): Promise<string> {
   return `sha256:${hex}`
 }
 
-async function upsertDatasetSnapshotManifest(
+export async function upsertDatasetSnapshotManifest(
   env: Pick<Bindings, 'DB'>,
   manifest: DatasetSnapshotManifest,
 ): Promise<void> {

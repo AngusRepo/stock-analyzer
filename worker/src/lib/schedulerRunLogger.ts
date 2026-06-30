@@ -58,6 +58,7 @@ const TASK_NAMES: Record<string, string> = {
   'regime-compute': 'HMM Regime',
   'verify-v2': 'Verify (V2 LangGraph)',
   'debate-memory-retention': 'Debate Memory Retention',
+  'audit-json-retention': 'Audit JSON Retention',
   'intraday-check': 'Limit Buy + SL/TP',
   'intraday-rescore': 'Intraday Re-score',
   'eod-exit': 'EOD Exit',

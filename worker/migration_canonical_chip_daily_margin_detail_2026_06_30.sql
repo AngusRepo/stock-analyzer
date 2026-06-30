@@ -1,0 +1,13 @@
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_cash_repayment REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_prev_balance REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_limit REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN short_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN short_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN short_stock_repayment REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN short_prev_balance REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN short_limit REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_short_offset REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_usage_ratio REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN short_usage_ratio REAL;

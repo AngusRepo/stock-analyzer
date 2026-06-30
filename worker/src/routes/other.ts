@@ -239,6 +239,39 @@ function numberOrNull(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+function taipeiIsoDate(): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const year = parts.find((part) => part.type === 'year')?.value ?? '1970'
+  const month = parts.find((part) => part.type === 'month')?.value ?? '01'
+  const day = parts.find((part) => part.type === 'day')?.value ?? '01'
+  return `${year}-${month}-${day}`
+}
+
+function parseOfficialNumber(value: unknown): number | null {
+  const text = String(value ?? '').replace(/,/g, '').trim()
+  if (!text || text === '-') return null
+  const n = Number(text)
+  return Number.isFinite(n) ? n : null
+}
+
+function parseOfficialDate(value: unknown): string | null {
+  const text = String(value ?? '').trim()
+  const slash = text.match(/^(\d{2,4})\/(\d{1,2})\/(\d{1,2})$/)
+  if (slash) {
+    let year = Number(slash[1])
+    if (year < 1911) year += 1911
+    return `${year.toString().padStart(4, '0')}-${slash[2].padStart(2, '0')}-${slash[3].padStart(2, '0')}`
+  }
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`
+  return null
+}
+
 function buildIndexSnapshot(
   symbol: string,
   name: string,
@@ -295,6 +328,30 @@ async function loadFinlabSeries(
   }
 
   return buildIndexSnapshot(symbol, name, [], `FinLab source missing: ${candidates.map((item) => item.source).join(' / ')}`)
+}
+
+async function fetchTwseTaiexOfficialSeries() {
+  try {
+    const queryDate = taipeiIsoDate().replace(/-/g, '')
+    const res = await fetch(`https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date=${queryDate}&response=json`, {
+      headers: { Accept: 'application/json', 'User-Agent': 'StockVisionBot/1.0' },
+    })
+    if (!res.ok) return missingMaterializationSnapshot('TWII', '加權指數', `TWSE MI_5MINS_HIST http_${res.status}`)
+    const body = await res.json() as any
+    const rows = Array.isArray(body?.data) ? body.data : []
+    const points = rows
+      .map((row: any) => {
+        if (!Array.isArray(row) || row.length < 5) return null
+        const date = parseOfficialDate(row[0])
+        const close = parseOfficialNumber(row[4])
+        return date && close != null ? { date, close } : null
+      })
+      .filter((point: MarketSeriesPoint | null): point is MarketSeriesPoint => Boolean(point))
+    return buildIndexSnapshot('TWII', '加權指數', points, 'TWSE MI_5MINS_HIST official')
+  } catch (e) {
+    console.warn('[market/indices] TWSE MI_5MINS_HIST fallback failed', e)
+    return missingMaterializationSnapshot('TWII', '加權指數', 'TWSE MI_5MINS_HIST official')
+  }
 }
 
 function hasMarketSeriesData(snapshot: any): boolean {
@@ -584,9 +641,9 @@ async function loadLegacyMarginDataCreditTrading(db: D1Database) {
       shortBalanceChangePct: percentChange(shortBalanceUnits, previousShortBalanceUnits),
       maintenanceRate: null,
       coverageCount: numberOrNull(latest.coverage_count),
-      source: 'margin_data.twse_tpex_official',
+      source: 'margin_data.legacy_serving_table',
       scope: TRACKED_UNIVERSE_SCOPE,
-      valueMethod: 'official_units_tracked_universe',
+      valueMethod: 'tracked_universe_units',
     }
   } catch (e) {
     console.warn('[market/risk] margin_data credit trading failed', e)
@@ -1342,12 +1399,198 @@ async function loadCanonicalRegimeContext(db: D1Database) {
   }
 }
 
+async function loadMarketRiskDetailBreakdown(db: D1Database) {
+  const [liquidity, chipPressure, regime] = await Promise.all([
+    loadCanonicalLiquidityDetail(db),
+    loadCanonicalChipPressureDetail(db),
+    loadCanonicalRegimeRiskDetail(db),
+  ])
+
+  if (!liquidity && !chipPressure && !regime) return null
+  return {
+    schemaVersion: 'market_risk_detail_breakdown_v1',
+    liquidity,
+    chipPressure,
+    regime,
+  }
+}
+
+async function loadCanonicalLiquidityDetail(db: D1Database) {
+  try {
+    const row = await db.prepare(
+      `WITH latest_date AS (
+         SELECT MAX(date) AS date
+         FROM canonical_market_daily
+         WHERE market_segment = 'LISTED_OTC'
+       )
+       SELECT
+         (SELECT date FROM latest_date) AS date,
+         SUM(COALESCE(value, 0)) AS turnover_amount,
+         SUM(COALESCE(market_value, 0)) AS market_value,
+         SUM(COALESCE(trade_count, 0)) AS trade_count,
+         AVG(CASE
+           WHEN close > 0 AND last_ask_price IS NOT NULL AND last_bid_price IS NOT NULL AND last_ask_price >= last_bid_price
+           THEN ((last_ask_price - last_bid_price) / close) * 10000.0
+           ELSE NULL
+         END) AS bid_ask_spread_bps,
+         100.0 * SUM(CASE WHEN adj_close IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) AS adjusted_ohlc_coverage_pct,
+         COUNT(*) AS coverage_count,
+         SUM(CASE WHEN last_ask_price IS NOT NULL AND last_bid_price IS NOT NULL THEN 1 ELSE 0 END) AS quote_coverage_count
+       FROM canonical_market_daily
+       WHERE date = (SELECT date FROM latest_date)
+         AND market_segment = 'LISTED_OTC'`
+    ).first<any>()
+    if (!row?.date) return null
+    return {
+      date: row.date,
+      turnoverAmount: numberOrNull(row.turnover_amount),
+      marketValue: numberOrNull(row.market_value),
+      tradeCount: numberOrNull(row.trade_count),
+      bidAskSpreadBps: numberOrNull(row.bid_ask_spread_bps),
+      adjustedOhlcCoveragePct: numberOrNull(row.adjusted_ohlc_coverage_pct),
+      coverageCount: numberOrNull(row.coverage_count),
+      quoteCoverageCount: numberOrNull(row.quote_coverage_count),
+      source: 'canonical_market_daily.finlab.price',
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical liquidity detail failed', e)
+    return null
+  }
+}
+
+async function loadCanonicalChipPressureDetail(db: D1Database) {
+  try {
+    const row = await db.prepare(
+      `WITH latest_date AS (
+         SELECT MAX(date) AS date
+         FROM canonical_chip_daily
+         WHERE market_segment = 'LISTED_OTC'
+       )
+       SELECT
+         (SELECT date FROM latest_date) AS date,
+         AVG(margin_usage_ratio) AS margin_usage_ratio,
+         AVG(short_usage_ratio) AS short_usage_ratio,
+         SUM(COALESCE(security_lending_sell_balance, 0)) AS security_lending_sell_balance,
+         AVG(broker_balance_index) AS broker_balance_index,
+         AVG(broker_buy_sell_ratio) AS broker_buy_sell_ratio,
+         SUM(COALESCE(foreign_buy, 0)) AS foreign_buy,
+         SUM(COALESCE(foreign_sell, 0)) AS foreign_sell,
+         SUM(COALESCE(trust_buy, 0)) AS trust_buy,
+         SUM(COALESCE(trust_sell, 0)) AS trust_sell,
+         SUM(COALESCE(dealer_buy, 0)) AS dealer_buy,
+         SUM(COALESCE(dealer_sell, 0)) AS dealer_sell,
+         COUNT(*) AS coverage_count
+       FROM canonical_chip_daily
+       WHERE date = (SELECT date FROM latest_date)
+         AND market_segment = 'LISTED_OTC'`
+    ).first<any>()
+    if (!row?.date) return null
+    return {
+      date: row.date,
+      marginUsageRatio: numberOrNull(row.margin_usage_ratio),
+      shortUsageRatio: numberOrNull(row.short_usage_ratio),
+      securityLendingSellBalance: numberOrNull(row.security_lending_sell_balance),
+      brokerBalanceIndex: numberOrNull(row.broker_balance_index),
+      brokerBuySellRatio: numberOrNull(row.broker_buy_sell_ratio),
+      foreignBuy: numberOrNull(row.foreign_buy),
+      foreignSell: numberOrNull(row.foreign_sell),
+      trustBuy: numberOrNull(row.trust_buy),
+      trustSell: numberOrNull(row.trust_sell),
+      dealerBuy: numberOrNull(row.dealer_buy),
+      dealerSell: numberOrNull(row.dealer_sell),
+      coverageCount: numberOrNull(row.coverage_count),
+      source: 'canonical_chip_daily.finlab.chip_diversity',
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical chip pressure detail failed', e)
+    return null
+  }
+}
+
+async function loadCanonicalRegimeRiskDetail(db: D1Database) {
+  try {
+    const [futuresRow, worldRow] = await Promise.all([
+      db.prepare(
+        `WITH latest_date AS (
+           SELECT MAX(date) AS date
+           FROM canonical_regime_context_daily
+           WHERE dataset = 'futures_institutional_investors_trading_summary'
+         )
+         SELECT
+           (SELECT date FROM latest_date) AS date,
+           SUM(CASE WHEN field = 'futures_inst_net_trade_lots' THEN value ELSE 0 END) AS futures_inst_net_trade_lots,
+           SUM(CASE WHEN field = 'futures_inst_net_oi_lots' THEN value ELSE 0 END) AS futures_inst_net_oi_lots,
+           SUM(CASE WHEN field = 'futures_inst_net_trade_amount_k' THEN value ELSE 0 END) AS futures_inst_net_trade_amount_k,
+           SUM(CASE WHEN field = 'futures_inst_net_oi_amount_k' THEN value ELSE 0 END) AS futures_inst_net_oi_amount_k,
+           COUNT(*) AS coverage_count
+         FROM canonical_regime_context_daily
+         WHERE date = (SELECT date FROM latest_date)
+           AND dataset = 'futures_institutional_investors_trading_summary'
+           AND field IN (
+             'futures_inst_net_trade_lots',
+             'futures_inst_net_oi_lots',
+             'futures_inst_net_trade_amount_k',
+             'futures_inst_net_oi_amount_k'
+           )`
+      ).first<any>(),
+      db.prepare(
+        `WITH ordered_dates AS (
+           SELECT DISTINCT date
+           FROM canonical_regime_context_daily
+           WHERE dataset = 'world_index'
+             AND field = 'world_adj_close'
+           ORDER BY date DESC
+           LIMIT 2
+         ),
+         latest_date AS (
+           SELECT MAX(date) AS date FROM ordered_dates
+         ),
+         previous_date AS (
+           SELECT MIN(date) AS date FROM ordered_dates
+         )
+         SELECT
+           (SELECT date FROM latest_date) AS date,
+           AVG(CASE
+             WHEN prev.value IS NOT NULL AND prev.value != 0
+             THEN ((cur.value - prev.value) / prev.value) * 100.0
+             ELSE NULL
+           END) AS world_adj_close_change_pct,
+           COUNT(*) AS world_index_count
+         FROM canonical_regime_context_daily cur
+         LEFT JOIN canonical_regime_context_daily prev
+           ON prev.dataset = cur.dataset
+          AND prev.field = cur.field
+          AND prev.category = cur.category
+          AND prev.date = (SELECT date FROM previous_date)
+         WHERE cur.date = (SELECT date FROM latest_date)
+           AND cur.dataset = 'world_index'
+           AND cur.field = 'world_adj_close'`
+      ).first<any>(),
+    ])
+    if (!futuresRow?.date && !worldRow?.date) return null
+    return {
+      date: futuresRow?.date ?? worldRow?.date ?? null,
+      futuresInstNetTradeLots: numberOrNull(futuresRow?.futures_inst_net_trade_lots),
+      futuresInstNetOiLots: numberOrNull(futuresRow?.futures_inst_net_oi_lots),
+      futuresInstNetTradeAmountK: numberOrNull(futuresRow?.futures_inst_net_trade_amount_k),
+      futuresInstNetOiAmountK: numberOrNull(futuresRow?.futures_inst_net_oi_amount_k),
+      worldAdjCloseChangePct: numberOrNull(worldRow?.world_adj_close_change_pct),
+      coverageCount: numberOrNull(futuresRow?.coverage_count),
+      worldIndexCount: numberOrNull(worldRow?.world_index_count),
+      source: 'canonical_regime_context_daily.finlab',
+    }
+  } catch (e) {
+    console.warn('[market/risk] canonical regime risk detail failed', e)
+    return null
+  }
+}
+
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v7-gcp-canonical-only', async () => {
-    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii] = await Promise.all([
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v8-official-index-guard', async () => {
+    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii, twseOfficialTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
-          sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) ORDER BY date DESC LIMIT 30',
+          sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
           binds: ['TWII', 'TAIEX'],
           source: 'FinLab canonical_market_index_daily',
         },
@@ -1372,7 +1615,7 @@ market.get('/indices', async (c) => {
       ]),
       loadFinlabSeries(c.env.DB, 'TWOII', '櫃買指數', [
         {
-          sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?, ?) ORDER BY date DESC LIMIT 30',
+          sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?, ?) AND close > 10 AND close < 10000 ORDER BY date DESC LIMIT 30',
           binds: ['TWOII', 'OTC', 'TPEX'],
           source: 'FinLab canonical_market_index_daily',
         },
@@ -1389,7 +1632,7 @@ market.get('/indices', async (c) => {
       ]),
       loadFinlabSeries(c.env.DB, 'TXF', '台指期貨', [
         {
-          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' ORDER BY date DESC, contract_month ASC LIMIT 30",
+          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' AND close > 1000 AND open_interest IS NOT NULL ORDER BY date DESC, contract_month ASC LIMIT 30",
           binds: ['TXF', 'TX'],
           source: 'FinLab canonical_futures_daily',
         },
@@ -1412,8 +1655,13 @@ market.get('/indices', async (c) => {
       fetchTaifexDayClose().catch(() => null),
       fetchTaifexNightClose().catch(() => null),
       loadMarketRiskTwiiSeries(c.env.DB),
+      fetchTwseTaiexOfficialSeries(),
     ])
-    const twii = hasMarketSeriesData(finlabTwii) ? finlabTwii : marketRiskTwii
+    const twii = hasMarketSeriesData(finlabTwii)
+      ? finlabTwii
+      : hasMarketSeriesData(twseOfficialTwii)
+        ? twseOfficialTwii
+        : marketRiskTwii
     const twoii = hasMarketSeriesData(finlabTwoii)
       ? finlabTwoii
       : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab canonical_market_index_daily not materialized by GCP backfill')
@@ -2113,13 +2361,14 @@ market.get('/risk', async (c) => {
   } else {
     factorPacket = await loadMarketRegimeFactorPacket(c.env.DB, row.date).catch(() => null)
   }
-  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal, globalEventContext] = await Promise.all([
+  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal, globalEventContext, marketRiskDetail] = await Promise.all([
     loadCanonicalMarketOverview(c.env.DB),
     loadCanonicalCreditTrading(c.env.DB),
     loadCanonicalInstitutionalFlows(c.env.DB),
     loadCanonicalRegimeContext(c.env.DB),
     loadLatestUsMarketSignal(c.env.DB),
     loadGdeltGlobalEventContext(c.env.DB),
+    loadMarketRiskDetailBreakdown(c.env.DB),
   ])
   const creditTrading = creditTradingBase
   const businessCycle = regimeContext?.businessCycle ?? businessCycleFromFactorPacket(factorPacket, row.date)
@@ -2196,6 +2445,7 @@ market.get('/risk', async (c) => {
     regimeContext,
     usMarketSignal,
     globalEventContext,
+    marketRiskDetail,
     fearGreedIndex,
     hedgeSentiment,
     hedgeSentimentFactors,

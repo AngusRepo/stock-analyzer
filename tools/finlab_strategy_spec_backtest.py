@@ -136,6 +136,47 @@ def _rank_pct(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.replace([np.inf, -np.inf], np.nan).rank(axis=1, pct=True)
 
 
+RUNTIME_RANK_FEATURES = {
+    "KLOW2": ("finlabCsKlow2LowRank", -1.0),
+    "VSTD_10": ("finlabCsVstd10Rank", 1.0),
+    "tech_emv_14": ("finlabCsTechEmv14Rank", 1.0),
+    "bestOrderBlockStrength": ("finlabCsBestOrderBlockStrengthRank", 1.0),
+    "bbBandwidthPct": ("finlabCsBbBandwidthPctRank", 1.0),
+    "closeAboveMa60Pct": ("finlabCsCloseAboveMa60PctRank", 1.0),
+    "volumeExpansion20": ("finlabCsVolumeExpansion20Rank", 1.0),
+    "return20d": ("finlabCsReturn20dRank", 1.0),
+    "monthlyRevenueYoY": ("finlabCsMonthlyRevenueYoYRank", 1.0),
+    "monthlyRevenueMoM": ("finlabCsMonthlyRevenueMoMRank", 1.0),
+    "ebitda": ("finlabCsEbitdaRank", 1.0),
+    "freeCashFlow": ("finlabCsFreeCashFlowRank", 1.0),
+    "financialCost": ("finlabCsFinancialCostRank", 1.0),
+    "operatingExpenses": ("finlabCsOperatingExpensesRank", 1.0),
+    "cashFlowPerShare": ("finlabCsCashFlowPerShareRank", 1.0),
+    "pretaxIncomePerShare": ("finlabCsPretaxIncomePerShareRank", 1.0),
+    "propertyPlantEquipment": ("finlabCsPropertyPlantEquipmentRank", 1.0),
+    "workingCapital": ("finlabCsWorkingCapitalRank", 1.0),
+    "currentLiabilities": ("finlabCsCurrentLiabilitiesRank", 1.0),
+    "operatingCashFlowStatement": ("finlabCsOperatingCashFlowStatementRank", 1.0),
+    "volShareTurnover21d": ("finlabCsVolShareTurnover21dRank", 1.0),
+    "KSFT": ("finlabCsKsftLowRank", -1.0),
+    "tech_roc_10": ("finlabCsTechRoc10Rank", 1.0),
+    "tech_gap_down": ("finlabCsTechGapDownRank", 1.0),
+    "vola_cv_90d": ("finlabCsVolaCv90dLowRank", -1.0),
+    "brokerNetAmount5d": ("finlabCsBrokerNetAmount5dRank", 1.0),
+    "nonCurrentAssets": ("finlabCsNonCurrentAssetsRank", 1.0),
+    "cashAndCashEquivalentsIncreaseDecrease": ("finlabCsCashAndCashEquivalentsIncreaseDecreaseRank", 1.0),
+    "otherPayables": ("finlabCsOtherPayablesRank", 1.0),
+}
+
+
+def _add_runtime_rank_features(features: dict[str, pd.DataFrame], close: pd.DataFrame) -> None:
+    for source_key, (rank_key, direction) in RUNTIME_RANK_FEATURES.items():
+        frame = features.get(source_key)
+        if frame is None:
+            continue
+        features[rank_key] = _rank_pct(frame * float(direction)).reindex(index=close.index, columns=close.columns)
+
+
 def _normalize_weights(weights: list[float]) -> list[float]:
     arr = np.asarray([max(0.0, float(weight)) for weight in weights], dtype=float)
     total = float(arr.sum())
@@ -438,6 +479,7 @@ def _technical_features(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFra
     close_above_ma20 = close / ma20 - 1
     close_above_ma60 = close / ma60 - 1
     volume_expansion20 = volume.rolling(5).mean() / volume.rolling(20).mean().replace(0, np.nan)
+    vstd10 = volume.rolling(10).std(ddof=0)
     return20d = close / close.shift(20) - 1
     return60d = close / close.shift(60) - 1
 
@@ -455,6 +497,9 @@ def _technical_features(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFra
     ], axis=0).groupby(level=0).max()
     atr14 = true_range.rolling(14).mean()
     plus_di, minus_di, adx14 = _dmi_adx(high, low, close, 14)
+    midpoint = (high + low) / 2
+    emv = (midpoint - midpoint.shift(1)) / (volume / (high - low).replace(0, np.nan)).replace(0, np.nan)
+    emv14 = emv.rolling(14).mean()
 
     kc_mid = ma20
     kc_range = true_range.rolling(20).mean()
@@ -468,6 +513,11 @@ def _technical_features(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFra
 
     volume_diff = volume.rolling(13).mean() - volume.rolling(27).mean()
     volume_momentum_divergence = volume_diff - volume_diff.rolling(10).mean()
+    high_low = high - low
+    open_ = open_proxy(close)
+    candle_body_low = open_.where(open_ <= close, close)
+    up = (close > close.shift(1)).astype(float)
+    down = (close < close.shift(1)).astype(float)
 
     prev_high20 = high.rolling(20).max().shift(1)
     prev_low20 = low.rolling(20).min().shift(1)
@@ -492,6 +542,16 @@ def _technical_features(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFra
         "closeAboveMa20Pct": close_above_ma20,
         "closeAboveMa60Pct": close_above_ma60,
         "volumeExpansion20": volume_expansion20,
+        "KLOW2": _safe_div(candle_body_low - low, high_low).clip(0.0, 1.0),
+        "KSFT": _safe_div(2.0 * close - high - low, open_).clip(-0.2, 0.2),
+        "KSFT2": _safe_div(2.0 * close - high - low, high_low).clip(-1.0, 1.0),
+        "CNTD_20": up.rolling(20).sum().fillna(0.0) / 20.0 - down.rolling(20).sum().fillna(0.0) / 20.0,
+        "CNTN_20": down.rolling(20).sum().fillna(0.0) / 20.0,
+        "VSTD_10": vstd10,
+        "tech_emv_14": emv14,
+        "tech_roc_10": close / close.shift(10).replace(0, np.nan) - 1.0,
+        "tech_gap_down": (high < low.shift()).astype(float),
+        "vola_cv_90d": close.rolling(90).std() / close.rolling(90).mean().replace(0, np.nan),
         "return20d": return20d,
         "return60d": return60d,
         "rsi14": _rsi(close),
@@ -612,10 +672,28 @@ def _financial_features(close: pd.DataFrame, columns: list[str]) -> dict[str, pd
         "operatingMargin": get_daily("fundamental_features:營業利益率", deadline=True),
         "roe": get_daily("fundamental_features:ROE稅後", deadline=True),
         "eps": get_daily("fundamental_features:每股稅後淨利", deadline=True),
+        "operatingCashFlow": get_daily("fundamental_features:營運現金流", deadline=True),
+        "roa": get_daily("fundamental_features:ROA稅後息前", deadline=True),
+        "ebitda": get_daily("fundamental_features:EBITDA", deadline=True),
+        "freeCashFlow": get_daily("fundamental_features:自由現金流量", deadline=True),
+        "financialCost": get_daily("financial_statement:財務成本", deadline=True),
+        "operatingExpenses": get_daily("financial_statement:營業費用", deadline=True),
+        "cashFlowPerShare": get_daily("fundamental_features:每股現金流量", deadline=True),
+        "pretaxIncomePerShare": get_daily("fundamental_features:每股稅前淨利", deadline=True),
+        "propertyPlantEquipment": get_daily("financial_statement:不動產廠房及設備", deadline=True),
+        "workingCapital": get_daily("fundamental_features:營運資金", deadline=True),
+        "currentLiabilities": get_daily("financial_statement:流動負債", deadline=True),
+        "operatingCashFlowStatement": get_daily("financial_statement:營業活動之淨現金流入_流出", deadline=True),
+        "capitalAmount": get_daily("financial_statement:股本", deadline=True),
         "pe": get_daily("price_earning_ratio:本益比"),
         "pb": get_daily("price_earning_ratio:股價淨值比"),
         "dividendYield": get_daily("price_earning_ratio:殖利率(%)"),
     }
+    features.update({
+        "nonCurrentAssets": get_daily("financial_statement:非流動資產", deadline=True),
+        "cashAndCashEquivalentsIncreaseDecrease": get_daily("financial_statement:本期現金及約當現金增加_減少_數", deadline=True),
+        "otherPayables": get_daily("financial_statement:其他應付款", deadline=True),
+    })
     return {k: v for k, v in features.items() if v is not None}
 
 
@@ -783,12 +861,58 @@ def _missing_feature_keys(spec: dict[str, Any], features: dict[str, pd.DataFrame
     for group_key in ("all", "any", "not"):
         for condition in dsl.get(group_key) or []:
             keys.append(str(condition.get("signal") or ""))
+    feature_refs = thresholds.get("featureRefs") if isinstance(thresholds.get("featureRefs"), dict) else {}
+    for group_key in ("all", "any", "not"):
+        for condition in feature_refs.get(group_key) or []:
+            if isinstance(condition, dict):
+                keys.append(_feature_ref_signal(condition))
+    weighted = feature_refs.get("weightedScore") if isinstance(feature_refs.get("weightedScore"), dict) else None
+    if weighted:
+        for term in weighted.get("terms") or []:
+            if isinstance(term, dict):
+                keys.append(_feature_ref_signal(term))
     return sorted({key for key in keys if _normalize_feature_key(key) not in features})
 
 
 def _apply_threshold(mask: pd.DataFrame, features: dict[str, pd.DataFrame], key: str, op: str, value: Any, close: pd.DataFrame) -> pd.DataFrame:
     frame = _feature(features, key, close)
     return mask & _as_bool_frame(_compare(frame, op, value))
+
+
+def _feature_ref_signal(term: dict[str, Any]) -> str:
+    return str(term.get("signal") or term.get("featureRef") or "")
+
+
+def _effective_weighted_min(weighted: dict[str, Any]) -> float:
+    calibration = weighted.get("calibration") if isinstance(weighted.get("calibration"), dict) else {}
+    if (
+        calibration.get("schemaVersion") == "strategy-feature-ref-weighted-score-calibration-v1"
+        and calibration.get("status") == "active"
+    ):
+        value = _safe_float(calibration.get("calibratedMin"))
+        if value is not None and 0 <= value <= 1:
+            return value
+    value = _safe_float(weighted.get("min"))
+    return 1.0 if value is None else float(value)
+
+
+def _weighted_feature_ref_score(weighted: dict[str, Any], features: dict[str, pd.DataFrame], close: pd.DataFrame) -> pd.DataFrame:
+    terms = weighted.get("terms") if isinstance(weighted.get("terms"), list) else []
+    score = pd.DataFrame(0.0, index=close.index, columns=close.columns)
+    weight_sum = pd.DataFrame(0.0, index=close.index, columns=close.columns)
+    for term in terms:
+        if not isinstance(term, dict):
+            continue
+        weight = _safe_float(term.get("weight"))
+        if weight is None:
+            weight = 1.0
+        if weight <= 0:
+            continue
+        frame = _feature(features, _feature_ref_signal(term), close).replace([np.inf, -np.inf], np.nan)
+        present = frame.notna()
+        score = score + frame.fillna(0.0) * float(weight)
+        weight_sum = weight_sum + present.astype(float) * float(weight)
+    return score / weight_sum.replace(0, np.nan)
 
 
 def _position_for_spec(spec: dict[str, Any], features: dict[str, pd.DataFrame], close: pd.DataFrame, universe_mask: pd.DataFrame) -> pd.DataFrame:
@@ -825,6 +949,29 @@ def _position_for_spec(spec: dict[str, Any], features: dict[str, pd.DataFrame], 
         frame = _feature(features, str(condition.get("signal") or ""), close)
         mask = mask & (~_as_bool_frame(_compare(frame, str(condition.get("op") or ""), condition.get("value"))))
 
+    feature_refs = thresholds.get("featureRefs") if isinstance(thresholds.get("featureRefs"), dict) else {}
+    for condition in feature_refs.get("all") or []:
+        if isinstance(condition, dict):
+            mask = _apply_threshold(mask, features, _feature_ref_signal(condition), str(condition.get("op") or ""), condition.get("value"), close)
+
+    any_feature_refs = [condition for condition in feature_refs.get("any") or [] if isinstance(condition, dict)]
+    if any_feature_refs:
+        any_mask = _blank_like(close, False)
+        for condition in any_feature_refs:
+            frame = _feature(features, _feature_ref_signal(condition), close)
+            any_mask = any_mask | _as_bool_frame(_compare(frame, str(condition.get("op") or ""), condition.get("value")))
+        mask = mask & any_mask
+
+    for condition in feature_refs.get("not") or []:
+        if isinstance(condition, dict):
+            frame = _feature(features, _feature_ref_signal(condition), close)
+            mask = mask & (~_as_bool_frame(_compare(frame, str(condition.get("op") or ""), condition.get("value"))))
+
+    weighted = feature_refs.get("weightedScore") if isinstance(feature_refs.get("weightedScore"), dict) else None
+    if weighted:
+        score = _weighted_feature_ref_score(weighted, features, close)
+        mask = mask & _as_bool_frame(score >= _effective_weighted_min(weighted))
+
     return _as_bool_frame(mask)
 
 
@@ -842,6 +989,7 @@ def _extract_result(strategy_id: str, spec: dict[str, Any], pos: pd.DataFrame, r
     metrics = report.get_metrics()
     trades = report.get_trades()
     match_counts = pos.sum(axis=1)
+    recent5 = match_counts.tail(5)
     return {
         "strategy_id": strategy_id,
         "name": spec.get("name"),
@@ -867,6 +1015,14 @@ def _extract_result(strategy_id: str, spec: dict[str, Any], pos: pd.DataFrame, r
         "avg_daily_matches": _safe_float(match_counts.mean()),
         "max_daily_matches": int(match_counts.max()) if len(match_counts) else 0,
         "latest_matches": int(match_counts.iloc[-1]) if len(match_counts) else 0,
+        "recent5_match_counts": [
+            {
+                "date": pd.Timestamp(idx).date().isoformat(),
+                "strict_match_count": int(value),
+            }
+            for idx, value in recent5.items()
+        ],
+        "recent5_all_positive": bool(len(recent5) == 5 and (recent5 > 0).all()),
     }
 
 
@@ -899,8 +1055,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     features = _technical_features(close, high, low, volume)
     features["open"] = open_
     features.update(_financial_features(close, columns))
+    capital = features.get("capitalAmount")
+    if capital is not None:
+        shares = (capital / 10).replace(0, np.nan)
+        turnover = volume.rolling(20).mean() / shares
+        features["volShareTurnover21d"] = turnover.reindex(index=close.index, columns=columns)
+        features["vol_share_turnover_21d"] = features["volShareTurnover21d"]
     features.update(_chip_features(close, columns))
     features.update(_sector_features(close, volume, columns))
+    _add_runtime_rank_features(features, close)
     alpha_miner_feature_mapping: dict[str, Any] | None = None
     alpha_miner_features, alpha_miner_feature_mapping = _alpha_miner_scores(
         selected,
@@ -939,6 +1102,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "avg_daily_matches": _safe_float(match_counts.mean()),
             "max_daily_matches": int(match_counts.max()) if len(match_counts) else 0,
             "latest_matches": int(match_counts.iloc[-1]) if len(match_counts) else 0,
+            "recent5_match_counts": [
+                {
+                    "date": pd.Timestamp(idx).date().isoformat(),
+                    "strict_match_count": int(value),
+                }
+                for idx, value in match_counts.tail(5).items()
+            ],
+            "recent5_all_positive": bool(len(match_counts.tail(5)) == 5 and (match_counts.tail(5) > 0).all()),
         }
         if int(match_counts.sum()) == 0:
             missing_features = _missing_feature_keys(spec, features)
@@ -961,7 +1132,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 resample=args.resample,
                 trade_at_price=args.trade_at_price,
                 position_limit=float(args.position_limit),
-                fee_ratio=0.001425,
+                fee_ratio=0.001425 + (float(getattr(args, "extra_slippage_bps", 0.0)) / 10_000.0),
                 tax_ratio=0.003,
                 name=f"stockvision_{strategy_id}",
                 upload=False,
@@ -996,6 +1167,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "resample": args.resample,
             "position_limit": float(args.position_limit),
             "trade_at_price": args.trade_at_price,
+            "extra_slippage_bps": float(getattr(args, "extra_slippage_bps", 0.0)),
+            "fee_ratio": 0.001425 + (float(getattr(args, "extra_slippage_bps", 0.0)) / 10_000.0),
+            "tax_ratio": 0.003,
             "universe": "FinLab security_categories market in sii/otc and 4-digit common stocks",
             "status_scope": status_scope,
             "selected_statuses": sorted(selected_statuses),
@@ -1025,6 +1199,7 @@ def main() -> int:
     parser.add_argument("--resample", default="M")
     parser.add_argument("--position-limit", type=float, default=0.10)
     parser.add_argument("--trade-at-price", default="close")
+    parser.add_argument("--extra-slippage-bps", type=float, default=0.0)
     parser.add_argument("--output-dir", default=str(ROOT / "output" / "finlab_strategy_backtests"))
     parser.add_argument("--exclude-alphabuilders", action="store_true")
     parser.add_argument("--status-scope", choices=sorted(STATUS_SCOPES), default="active")
@@ -1037,6 +1212,9 @@ def main() -> int:
     status_scope = str(report["config"].get("status_scope") or "active")
     strategy_scope = f"{status_scope}{int(report['config']['strategy_count'])}"
     stem = f"finlab_strategy_spec_{strategy_scope}_{args.start_date}_{args.end_date}".replace("-", "")
+    if float(args.extra_slippage_bps) != 0:
+        slip_label = str(args.extra_slippage_bps).replace(".", "p").rstrip("0").rstrip("p")
+        stem = f"{stem}_slip{slip_label}bps"
     json_path = output_dir / f"{stem}.json"
     csv_path = output_dir / f"{stem}.csv"
     summary_path = output_dir / f"{stem}_summary.json"

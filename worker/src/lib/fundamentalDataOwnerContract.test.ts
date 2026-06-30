@@ -46,3 +46,11 @@ assert(
   /FROM\s+canonical_revenue_monthly\b/i.test(fundamentalData),
   'fundamentalData loader should read canonical_revenue_monthly for revenue snapshots',
 )
+assert(
+  /function normalizeQuarterPeriod/.test(fundamentalData),
+  'fundamentalData loader should normalize date-like canonical periods into quarter labels',
+)
+assert(
+  /row\.eps \?\? canonicalEps/.test(fundamentalData),
+  'financials EPS should win over canonical EPS when both are present for the card headline',
+)

@@ -4,7 +4,17 @@ interface Formal137RawSignals {
   return5d?: NullableNumber
   return20d?: NullableNumber
   volumeExpansion20?: NullableNumber
+  volShareTurnover21d?: NullableNumber
   ma10Bias?: NullableNumber
+  closeAboveMa60Pct?: NullableNumber
+  brokerNetAmount5d?: NullableNumber
+  KSFT?: NullableNumber
+  KSFT2?: NullableNumber
+  CNTD_20?: NullableNumber
+  CNTN_20?: NullableNumber
+  techRoc10?: NullableNumber
+  techGapDown?: NullableNumber
+  volaCv90d?: NullableNumber
   advanceRatio?: NullableNumber
   advance_ratio?: NullableNumber
   marginBalance?: NullableNumber
@@ -94,8 +104,10 @@ const FORMAL137_ALIAS_SOURCES: Record<string, Array<(raw: Formal137RawSignals) =
     (raw) => raw.technicalIndicators?.KLOW2,
   ],
   KSFT: [
+    (raw) => raw.factorSignals?.finlabCsKsftLowRank,
     (raw) => raw.factorSignals?.KSFT,
     (raw) => raw.technicalIndicators?.KSFT,
+    (raw) => raw.KSFT,
   ],
   KSFT2: [
     (raw) => raw.factorSignals?.KSFT2,
@@ -108,6 +120,61 @@ const FORMAL137_ALIAS_SOURCES: Record<string, Array<(raw: Formal137RawSignals) =
   CNTN_20: [
     (raw) => raw.factorSignals?.CNTN_20,
     (raw) => raw.technicalIndicators?.CNTN_20,
+  ],
+  l1_closeAboveMa60Pct: [
+    (raw) => raw.factorSignals?.l1_closeAboveMa60Pct,
+    (raw) => raw.factorSignals?.closeAboveMa60Pct,
+    (raw) => raw.technicalIndicators?.closeAboveMa60Pct,
+    (raw) => raw.closeAboveMa60Pct,
+  ],
+  l1_squeezeRelease: [
+    (raw) => raw.factorSignals?.l1_squeezeRelease,
+    (raw) => raw.technicalIndicators?.squeezeRelease,
+  ],
+  l1_bbBandwidthPct: [
+    (raw) => raw.factorSignals?.l1_bbBandwidthPct,
+    (raw) => raw.technicalIndicators?.bbBandwidthPct,
+  ],
+  l1_bestOrderBlockStrength: [
+    (raw) => raw.factorSignals?.l1_bestOrderBlockStrength,
+    (raw) => raw.technicalIndicators?.bestOrderBlockStrength,
+  ],
+  VSTD_10: [
+    (raw) => raw.factorSignals?.VSTD_10,
+    (raw) => raw.technicalIndicators?.VSTD_10,
+  ],
+  tech_emv_14: [
+    (raw) => raw.factorSignals?.tech_emv_14,
+    (raw) => raw.technicalIndicators?.tech_emv_14,
+  ],
+  vol_share_turnover_21d: [
+    (raw) => raw.factorSignals?.vol_share_turnover_21d,
+    (raw) => raw.factorSignals?.volShareTurnover21d,
+    (raw) => raw.volShareTurnover21d,
+  ],
+  l1_brokerNetAmount5d: [
+    (raw) => raw.factorSignals?.finlabCsBrokerNetAmount5dRank,
+    (raw) => raw.factorSignals?.l1_brokerNetAmount5d,
+    (raw) => raw.factorSignals?.brokerNetAmount5d,
+    (raw) => raw.brokerNetAmount5d,
+  ],
+  tech_roc_10: [
+    (raw) => raw.factorSignals?.finlabCsTechRoc10Rank,
+    (raw) => raw.factorSignals?.tech_roc_10,
+    (raw) => raw.technicalIndicators?.tech_roc_10,
+    (raw) => raw.techRoc10,
+  ],
+  tech_gap_down: [
+    (raw) => raw.factorSignals?.finlabCsTechGapDownRank,
+    (raw) => raw.factorSignals?.tech_gap_down,
+    (raw) => raw.technicalIndicators?.tech_gap_down,
+    (raw) => raw.techGapDown,
+  ],
+  vola_cv_90d: [
+    (raw) => raw.factorSignals?.finlabCsVolaCv90dLowRank,
+    (raw) => raw.factorSignals?.vola_cv_90d,
+    (raw) => raw.technicalIndicators?.vola_cv_90d,
+    (raw) => raw.volaCv90d,
   ],
   advance_ratio: [
     (raw) => raw.factorSignals?.advance_ratio,

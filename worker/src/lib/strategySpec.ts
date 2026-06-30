@@ -157,6 +157,9 @@ export interface StrategyRawSignals {
   pe?: number | null
   pb?: number | null
   dividendYield?: number | null
+  nonCurrentAssets?: number | null
+  cashAndCashEquivalentsIncreaseDecrease?: number | null
+  otherPayables?: number | null
   technicalIndicators?: Record<string, number | null>
   factorSignals?: Record<string, number | null>
   source?: string | null
@@ -590,31 +593,51 @@ function featureRefValue(raw: StrategyRawSignals, term: StrategyFeatureRefTerm):
   if (finiteNumber(technicalDirect) != null) return technicalDirect
 
   const aliases: Record<string, string[]> = {
-    l1_closeAboveMa60Pct: ['closeAboveMa60Pct', 'technicalIndicators.closeAboveMa60Pct', 'factorSignals.closeAboveMa60Pct'],
-    l1_volumeExpansion20: ['volumeExpansion20', 'technicalIndicators.volumeExpansion20', 'factorSignals.volumeExpansion20'],
-    l1_return20d: ['return20d', 'technicalIndicators.return20d', 'factorSignals.return20d'],
+    l1_closeAboveMa60Pct: ['factorSignals.finlabCsCloseAboveMa60PctRank', 'closeAboveMa60Pct', 'technicalIndicators.closeAboveMa60Pct', 'factorSignals.closeAboveMa60Pct'],
+    l1_volumeExpansion20: ['factorSignals.finlabCsVolumeExpansion20Rank', 'volumeExpansion20', 'technicalIndicators.volumeExpansion20', 'factorSignals.volumeExpansion20'],
+    l1_return20d: ['factorSignals.finlabCsReturn20dRank', 'return20d', 'technicalIndicators.return20d', 'factorSignals.return20d'],
     l1_return5d: ['return5d', 'technicalIndicators.return5d', 'factorSignals.return5d', 'factorSignals.return_5d'],
-    l1_monthlyRevenueMoM: ['monthlyRevenueMoM', 'factorSignals.monthlyRevenueMoM'],
-    l1_monthlyRevenueYoY: ['monthlyRevenueYoY', 'factorSignals.monthlyRevenueYoY'],
+    l1_monthlyRevenueMoM: ['factorSignals.finlabCsMonthlyRevenueMoMRank', 'monthlyRevenueMoM', 'factorSignals.monthlyRevenueMoM'],
+    l1_monthlyRevenueYoY: ['factorSignals.finlabCsMonthlyRevenueYoYRank', 'monthlyRevenueYoY', 'factorSignals.monthlyRevenueYoY'],
     l1_revenueGrowthYoY: ['revenueGrowthYoY', 'factorSignals.revenueGrowthYoY'],
     l1_roe: ['roe', 'factorSignals.roe'],
     l1_eps: ['eps', 'factorSignals.eps'],
-    l1_brokerNetAmount5d: ['brokerNetAmount5d', 'factorSignals.brokerNetAmount5d'],
+    l1_brokerNetAmount5d: ['factorSignals.finlabCsBrokerNetAmount5dRank', 'factorSignals.l1_brokerNetAmount5d', 'brokerNetAmount5d', 'factorSignals.brokerNetAmount5d'],
     l1_brokerCount: ['brokerCount', 'factorSignals.brokerCount'],
     l1_brokerConcentration: ['brokerConcentration', 'factorSignals.brokerConcentration'],
     tech_sma_20_pos: ['closeAboveMa20Pct', 'technicalIndicators.closeAboveMa20Pct', 'factorSignals.closeAboveMa20Pct'],
     tech_adx_14: ['technicalIndicators.adx14'],
+    tech_emv_14: ['factorSignals.finlabCsTechEmv14Rank', 'technicalIndicators.tech_emv_14', 'factorSignals.tech_emv_14'],
+    tech_roc_10: ['factorSignals.finlabCsTechRoc10Rank', 'technicalIndicators.tech_roc_10', 'factorSignals.tech_roc_10'],
+    tech_gap_down: ['factorSignals.finlabCsTechGapDownRank', 'technicalIndicators.tech_gap_down', 'factorSignals.tech_gap_down'],
+    vola_cv_90d: ['factorSignals.finlabCsVolaCv90dLowRank', 'technicalIndicators.vola_cv_90d', 'factorSignals.vola_cv_90d'],
     mom_rsi_14: ['technicalIndicators.rsi14', 'factorSignals.rsi14'],
+    VSTD_10: ['factorSignals.finlabCsVstd10Rank', 'technicalIndicators.VSTD_10', 'factorSignals.VSTD_10'],
     l1_macdHist: ['technicalIndicators.macdHist'],
     l1_diTrend: ['technicalIndicators.diTrend'],
     l1_squeezeRelease: ['technicalIndicators.squeezeRelease'],
     l1_squeezeMomentum: ['technicalIndicators.squeezeMomentum'],
-    l1_bbBandwidthPct: ['technicalIndicators.bbBandwidthPct'],
+    l1_bbBandwidthPct: ['factorSignals.finlabCsBbBandwidthPctRank', 'technicalIndicators.bbBandwidthPct'],
+    l1_bestOrderBlockStrength: ['factorSignals.finlabCsBestOrderBlockStrengthRank', 'technicalIndicators.bestOrderBlockStrength'],
+    vol_share_turnover_21d: ['factorSignals.finlabCsVolShareTurnover21dRank', 'factorSignals.vol_share_turnover_21d', 'factorSignals.volShareTurnover21d'],
     val_ep: ['pe', 'factorSignals.pe'],
     val_bp: ['pb', 'factorSignals.pb'],
     val_dp: ['dividendYield', 'factorSignals.dividendYield'],
-    KLOW2: ['factorSignals.KLOW2', 'technicalIndicators.KLOW2'],
-    KSFT: ['factorSignals.KSFT', 'technicalIndicators.KSFT'],
+    finlab701_fundamental_features_EBITDA: ['factorSignals.finlabCsEbitdaRank', 'factorSignals.ebitda'],
+    finlab701_financial_statement_流動負債: ['factorSignals.finlabCsCurrentLiabilitiesRank', 'factorSignals.currentLiabilities'],
+    finlab701_fundamental_features_每股現金流量: ['factorSignals.finlabCsCashFlowPerShareRank', 'factorSignals.cashFlowPerShare'],
+    finlab701_financial_statement_不動產廠房及設備: ['factorSignals.finlabCsPropertyPlantEquipmentRank', 'factorSignals.propertyPlantEquipment'],
+    finlab701_financial_statement_營業費用: ['factorSignals.finlabCsOperatingExpensesRank', 'factorSignals.operatingExpenses'],
+    finlab701_fundamental_features_每股稅前淨利: ['factorSignals.finlabCsPretaxIncomePerShareRank', 'factorSignals.pretaxIncomePerShare'],
+    finlab701_financial_statement_營業活動之淨現金流入_流出: ['factorSignals.finlabCsOperatingCashFlowStatementRank', 'factorSignals.operatingCashFlowStatement'],
+    finlab701_fundamental_features_營運資金: ['factorSignals.finlabCsWorkingCapitalRank', 'factorSignals.workingCapital'],
+    finlab701_fundamental_features_自由現金流量: ['factorSignals.finlabCsFreeCashFlowRank', 'factorSignals.freeCashFlow'],
+    finlab701_financial_statement_財務成本: ['factorSignals.finlabCsFinancialCostRank', 'factorSignals.financialCost'],
+    finlab701_financial_statement_非流動資產: ['factorSignals.finlabCsNonCurrentAssetsRank', 'factorSignals.nonCurrentAssets'],
+    finlab701_financial_statement_本期現金及約當現金增加_減少_數: ['factorSignals.finlabCsCashAndCashEquivalentsIncreaseDecreaseRank', 'factorSignals.cashAndCashEquivalentsIncreaseDecrease'],
+    finlab701_financial_statement_其他應付款: ['factorSignals.finlabCsOtherPayablesRank', 'factorSignals.otherPayables'],
+    KLOW2: ['factorSignals.finlabCsKlow2LowRank', 'factorSignals.KLOW2', 'technicalIndicators.KLOW2'],
+    KSFT: ['factorSignals.finlabCsKsftLowRank', 'factorSignals.KSFT', 'technicalIndicators.KSFT'],
     KSFT2: ['factorSignals.KSFT2', 'technicalIndicators.KSFT2'],
     CNTD_20: ['factorSignals.CNTD_20', 'technicalIndicators.CNTD_20'],
     CNTN_20: ['factorSignals.CNTN_20', 'technicalIndicators.CNTN_20'],

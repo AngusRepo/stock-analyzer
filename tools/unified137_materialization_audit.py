@@ -236,9 +236,20 @@ def main() -> int:
     missing_expected = expected - mapped
     extra_mapped = mapped - expected
     coverage_by_factor: dict[str, float] = {}
+    factor_stats: dict[str, dict[str, Any]] = {}
     for fid, frame in values.items():
-        arr = frame.replace([np.inf, -np.inf], np.nan).to_numpy(dtype=float, copy=False)
-        coverage_by_factor[fid] = float(np.isfinite(arr).mean()) if arr.size else 0.0
+        clean = frame.replace([np.inf, -np.inf], np.nan)
+        arr = clean.to_numpy(dtype=float, copy=False)
+        finite = np.isfinite(arr)
+        coverage = float(finite.mean()) if arr.size else 0.0
+        coverage_by_factor[fid] = coverage
+        finite_values = arr[finite]
+        unique_values = int(len(np.unique(finite_values))) if finite_values.size else 0
+        factor_stats[fid] = {
+            "coverage": coverage,
+            "unique_values": unique_values,
+            "non_constant": unique_values > 1,
+        }
     zero_coverage = sorted(fid for fid, coverage in coverage_by_factor.items() if coverage <= 0.0)
     very_low_coverage = sorted(fid for fid, coverage in coverage_by_factor.items() if 0.0 < coverage < 0.05)
     panel_mapping_pass = not missing_expected and not unavailable
@@ -284,6 +295,7 @@ def main() -> int:
         "extra_mapped": sorted(extra_mapped),
         "zero_coverage": zero_coverage,
         "very_low_coverage": very_low_coverage,
+        "factor_stats": factor_stats,
         "registry_l1_supplement": info.get("registry_l1_supplement"),
         "selected_selector_role_counts": info.get("selected_selector_role_counts"),
         "panel_mapping_pass": panel_mapping_pass,

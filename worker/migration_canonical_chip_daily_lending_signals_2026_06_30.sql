@@ -1,0 +1,13 @@
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_balance_total_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_balance_total_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_balance_total_repayment REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN margin_balance_total_balance REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_prev_balance REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_borrow REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_return REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_delta REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_balance REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_sell_return REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_sell_balance REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN security_lending_sell_limit REAL;

@@ -334,6 +334,382 @@ type PriceMetadata = {
   latestDate: string | null
 }
 
+type OfficialSupplementalFetchMode = 'fallback' | 'always' | 'disabled'
+
+export type FinLabLegacyMarketDataSyncSummary = {
+  priceRows: number
+  chipRows: number
+  marginRows: number
+  sourceRole: 'finlab_primary_canonical_mirror'
+  summary: string
+}
+
+export type FinLabLegacyWave2SyncSummary = {
+  breadthRows: number
+  breadthSampleSize: number
+  revenueRows: number
+  financialRows: number
+  valuationRows: number
+  sourceRole: 'finlab_primary_canonical_wave2_mirror'
+}
+
+function officialSupplementalFetchMode(env: Bindings): OfficialSupplementalFetchMode {
+  const raw = String(env.OFFICIAL_SUPPLEMENTAL_FETCH_MODE ?? 'fallback').trim().toLowerCase()
+  if (raw === 'always' || raw === 'disabled') return raw
+  return 'fallback'
+}
+
+function d1ChangeCount(result: unknown): number {
+  const meta = (result as { meta?: { changes?: unknown; rows_written?: unknown } } | null)?.meta
+  const value = meta?.changes ?? meta?.rows_written ?? 0
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 0
+}
+
+export async function syncLegacyMarketDataFromFinLabCanonical(
+  db: D1Database,
+  targetDate: string,
+): Promise<FinLabLegacyMarketDataSyncSummary> {
+  const priceResult = await db.prepare(`
+    INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
+    SELECT
+      s.id,
+      c.date,
+      c.open,
+      c.high,
+      c.low,
+      c.close,
+      COALESCE(c.adj_close, c.close),
+      CAST(ROUND(COALESCE(c.volume, 0)) AS INTEGER),
+      c.avg_price
+    FROM canonical_market_daily c
+    JOIN stocks s ON s.symbol = c.stock_id
+    WHERE c.date = ?
+      AND c.source IN ('finlab.price', 'finlab.rotc_price')
+      AND c.close IS NOT NULL
+      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
+    ON CONFLICT(stock_id, date) DO UPDATE SET
+      open=excluded.open,
+      high=excluded.high,
+      low=excluded.low,
+      close=excluded.close,
+      adj_close=excluded.adj_close,
+      volume=excluded.volume,
+      avg_price=COALESCE(stock_prices.avg_price, excluded.avg_price)
+  `).bind(targetDate).run()
+
+  const chipResult = await db.prepare(`
+    INSERT INTO chip_data (
+      symbol, date,
+      foreign_buy, foreign_sell, foreign_net,
+      trust_buy, trust_sell, trust_net,
+      dealer_buy, dealer_sell, dealer_net,
+      margin_balance, short_balance
+    )
+    SELECT
+      c.stock_id,
+      c.date,
+      CAST(ROUND(MAX(c.foreign_buy)) AS INTEGER),
+      CAST(ROUND(MAX(c.foreign_sell)) AS INTEGER),
+      CAST(ROUND(MAX(c.foreign_net)) AS INTEGER),
+      CAST(ROUND(MAX(c.trust_buy)) AS INTEGER),
+      CAST(ROUND(MAX(c.trust_sell)) AS INTEGER),
+      CAST(ROUND(MAX(c.trust_net)) AS INTEGER),
+      CAST(ROUND(MAX(c.dealer_buy)) AS INTEGER),
+      CAST(ROUND(MAX(c.dealer_sell)) AS INTEGER),
+      CAST(ROUND(MAX(c.dealer_net)) AS INTEGER),
+      CAST(ROUND(MAX(c.margin_balance)) AS INTEGER),
+      CAST(ROUND(MAX(c.short_balance)) AS INTEGER)
+    FROM canonical_chip_daily c
+    JOIN stocks s ON s.symbol = c.stock_id
+    WHERE c.date = ?
+      AND c.source LIKE 'finlab.%'
+      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
+    GROUP BY c.stock_id, c.date
+    ON CONFLICT(symbol, date) DO UPDATE SET
+      foreign_buy=COALESCE(excluded.foreign_buy, chip_data.foreign_buy),
+      foreign_sell=COALESCE(excluded.foreign_sell, chip_data.foreign_sell),
+      foreign_net=COALESCE(excluded.foreign_net, chip_data.foreign_net),
+      trust_buy=COALESCE(excluded.trust_buy, chip_data.trust_buy),
+      trust_sell=COALESCE(excluded.trust_sell, chip_data.trust_sell),
+      trust_net=COALESCE(excluded.trust_net, chip_data.trust_net),
+      dealer_buy=COALESCE(excluded.dealer_buy, chip_data.dealer_buy),
+      dealer_sell=COALESCE(excluded.dealer_sell, chip_data.dealer_sell),
+      dealer_net=COALESCE(excluded.dealer_net, chip_data.dealer_net),
+      margin_balance=COALESCE(excluded.margin_balance, chip_data.margin_balance),
+      short_balance=COALESCE(excluded.short_balance, chip_data.short_balance)
+  `).bind(targetDate).run()
+
+  const marginResult = await db.prepare(`
+    INSERT INTO margin_data (
+      stock_id, date,
+      margin_buy, margin_sell, margin_balance,
+      short_buy, short_sell, short_balance,
+      margin_usage_pct, short_ratio
+    )
+    SELECT
+      s.id,
+      c.date,
+      NULL,
+      NULL,
+      CAST(ROUND(MAX(c.margin_balance)) AS INTEGER),
+      NULL,
+      NULL,
+      CAST(ROUND(MAX(c.short_balance)) AS INTEGER),
+      NULL,
+      CASE
+        WHEN MAX(c.margin_balance) IS NULL OR ABS(MAX(c.margin_balance)) < 1 THEN NULL
+        ELSE MAX(c.short_balance) / MAX(c.margin_balance)
+      END
+    FROM canonical_chip_daily c
+    JOIN stocks s ON s.symbol = c.stock_id
+    WHERE c.date = ?
+      AND c.source LIKE 'finlab.%'
+      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
+      AND (c.margin_balance IS NOT NULL OR c.short_balance IS NOT NULL)
+    GROUP BY s.id, c.date
+    ON CONFLICT(stock_id, date) DO UPDATE SET
+      margin_balance=COALESCE(excluded.margin_balance, margin_data.margin_balance),
+      short_balance=COALESCE(excluded.short_balance, margin_data.short_balance),
+      short_ratio=COALESCE(excluded.short_ratio, margin_data.short_ratio)
+  `).bind(targetDate).run()
+
+  const priceRows = d1ChangeCount(priceResult)
+  const chipRows = d1ChangeCount(chipResult)
+  const marginRows = d1ChangeCount(marginResult)
+  return {
+    priceRows,
+    chipRows,
+    marginRows,
+    sourceRole: 'finlab_primary_canonical_mirror',
+    summary: `FinLab canonical mirrored to legacy serving tables for ${targetDate}: stock_prices=${priceRows} chip_data=${chipRows} margin_data=${marginRows}`,
+  }
+}
+
+export async function syncMarketBreadthFromFinLabCanonical(
+  db: D1Database,
+  targetDate: string,
+): Promise<{ rows: number; sampleSize: number; advanceCount: number; declineCount: number; unchangedCount: number }> {
+  const breadth = await db.prepare(`
+    WITH current_prices AS (
+      SELECT c.stock_id, c.date, c.close
+      FROM canonical_market_daily c
+      JOIN stocks s ON s.symbol = c.stock_id
+      WHERE c.date = ?
+        AND c.source IN ('finlab.price', 'finlab.rotc_price')
+        AND c.close IS NOT NULL
+        AND c.close > 0
+        AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
+    ),
+    prev_dates AS (
+      SELECT cur.stock_id, MAX(prev.date) AS prev_date
+      FROM current_prices cur
+      JOIN canonical_market_daily prev
+        ON prev.stock_id = cur.stock_id
+       AND prev.date < cur.date
+       AND prev.source IN ('finlab.price', 'finlab.rotc_price')
+       AND prev.close IS NOT NULL
+       AND prev.close > 0
+      GROUP BY cur.stock_id
+    ),
+    paired AS (
+      SELECT cur.close AS close, prev.close AS prev_close
+      FROM current_prices cur
+      JOIN prev_dates pd ON pd.stock_id = cur.stock_id
+      JOIN canonical_market_daily prev
+        ON prev.stock_id = pd.stock_id
+       AND prev.date = pd.prev_date
+       AND prev.source IN ('finlab.price', 'finlab.rotc_price')
+    )
+    SELECT
+      COUNT(*) AS sample_size,
+      SUM(CASE WHEN close > prev_close THEN 1 ELSE 0 END) AS advance_count,
+      SUM(CASE WHEN close < prev_close THEN 1 ELSE 0 END) AS decline_count,
+      SUM(CASE WHEN close = prev_close THEN 1 ELSE 0 END) AS unchanged_count
+    FROM paired
+  `).bind(targetDate).first<{
+    sample_size: number | null
+    advance_count: number | null
+    decline_count: number | null
+    unchanged_count: number | null
+  }>()
+
+  const sampleSize = Number(breadth?.sample_size ?? 0)
+  const advanceCount = Number(breadth?.advance_count ?? 0)
+  const declineCount = Number(breadth?.decline_count ?? 0)
+  const unchangedCount = Number(breadth?.unchanged_count ?? 0)
+  if (sampleSize < 1000) {
+    return { rows: 0, sampleSize, advanceCount, declineCount, unchangedCount }
+  }
+  const ratio = sampleSize > 0 ? advanceCount / sampleSize : null
+  const result = await db.prepare(`
+    INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET
+      advance_count=excluded.advance_count,
+      decline_count=excluded.decline_count,
+      unchanged_count=excluded.unchanged_count,
+      advance_ratio=excluded.advance_ratio
+  `).bind(targetDate, advanceCount, declineCount, unchangedCount, ratio).run()
+  return {
+    rows: d1ChangeCount(result),
+    sampleSize,
+    advanceCount,
+    declineCount,
+    unchangedCount,
+  }
+}
+
+export async function syncLegacyRevenueFromFinLabCanonical(
+  db: D1Database,
+  targetDate: string,
+): Promise<number> {
+  const result = await db.prepare(`
+    INSERT INTO monthly_revenue (stock_id, date, revenue, revenue_yoy, revenue_mom)
+    SELECT
+      s.id,
+      r.revenue_month,
+      r.revenue,
+      r.yoy,
+      r.mom
+    FROM canonical_revenue_monthly r
+    JOIN stocks s ON s.symbol = r.stock_id
+    WHERE r.source LIKE 'finlab.%'
+      AND r.revenue_month >= strftime('%Y-%m', date(?, '-18 months'))
+      AND r.revenue_month <= strftime('%Y-%m', ?)
+      AND r.revenue IS NOT NULL
+      AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
+    ON CONFLICT(stock_id, date) DO UPDATE SET
+      revenue=excluded.revenue,
+      revenue_yoy=excluded.revenue_yoy,
+      revenue_mom=excluded.revenue_mom
+  `).bind(targetDate, targetDate).run()
+  return d1ChangeCount(result)
+}
+
+function quarterFromIsoDate(date: string): string {
+  const year = Number(date.slice(0, 4))
+  const month = Number(date.slice(5, 7))
+  const quarter = Math.max(1, Math.min(4, Math.ceil(month / 3)))
+  return `${year}Q${quarter}`
+}
+
+export async function syncLegacyFinancialsFromFinLabCanonical(
+  db: D1Database,
+  targetDate: string,
+): Promise<{ financialRows: number; valuationRows: number }> {
+  const factResult = await db.prepare(`
+    WITH normalized AS (
+      SELECT
+        s.id AS legacy_stock_id,
+        CASE
+          WHEN instr(f.period, 'Q') > 0 THEN f.period
+          WHEN length(f.period) >= 7 THEN substr(f.period, 1, 4) || 'Q' || CAST(((CAST(substr(f.period, 6, 2) AS INTEGER) + 2) / 3) AS INTEGER)
+          ELSE f.period
+        END AS legacy_period,
+        COALESCE(f.available_date, f.report_date, f.period) AS source_date,
+        f.revenue,
+        f.eps,
+        f.roe,
+        f.operating_income,
+        f.net_income,
+        f.total_assets,
+        f.total_liabilities
+      FROM canonical_fundamental_features f
+      JOIN stocks s ON s.symbol = f.stock_id
+      WHERE f.source LIKE 'finlab.%'
+        AND COALESCE(f.available_date, f.report_date, f.period) <= ?
+        AND COALESCE(f.available_date, f.report_date, f.period) >= date(?, '-3 years')
+        AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
+        AND (
+          f.revenue IS NOT NULL OR f.eps IS NOT NULL OR f.roe IS NOT NULL
+          OR f.operating_income IS NOT NULL OR f.net_income IS NOT NULL
+          OR f.total_assets IS NOT NULL OR f.total_liabilities IS NOT NULL
+        )
+    ),
+    ranked AS (
+      SELECT *,
+        ROW_NUMBER() OVER (
+          PARTITION BY legacy_stock_id, legacy_period
+          ORDER BY source_date DESC
+        ) AS rn
+      FROM normalized
+      WHERE legacy_period IS NOT NULL AND legacy_period != ''
+    )
+    INSERT INTO financials (
+      stock_id, period, period_type,
+      revenue, eps, roe, operating_income, net_income, total_assets, total_liabilities
+    )
+    SELECT
+      legacy_stock_id,
+      legacy_period,
+      'quarterly',
+      revenue,
+      eps,
+      roe,
+      operating_income,
+      net_income,
+      total_assets,
+      total_liabilities
+    FROM ranked
+    WHERE rn = 1
+    ON CONFLICT(stock_id, period) DO UPDATE SET
+      revenue=COALESCE(excluded.revenue, financials.revenue),
+      eps=COALESCE(excluded.eps, financials.eps),
+      roe=COALESCE(excluded.roe, financials.roe),
+      operating_income=COALESCE(excluded.operating_income, financials.operating_income),
+      net_income=COALESCE(excluded.net_income, financials.net_income),
+      total_assets=COALESCE(excluded.total_assets, financials.total_assets),
+      total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
+  `).bind(targetDate, targetDate).run()
+
+  const currentQuarter = quarterFromIsoDate(targetDate)
+  const valuationResult = await db.prepare(`
+    WITH latest_valuation AS (
+      SELECT
+        s.id AS legacy_stock_id,
+        f.pe,
+        f.pb,
+        f.dividend_yield,
+        COALESCE(f.available_date, f.report_date, f.period) AS source_date,
+        ROW_NUMBER() OVER (
+          PARTITION BY s.id
+          ORDER BY COALESCE(f.available_date, f.report_date, f.period) DESC
+        ) AS rn
+      FROM canonical_fundamental_features f
+      JOIN stocks s ON s.symbol = f.stock_id
+      WHERE f.source LIKE 'finlab.%'
+        AND COALESCE(f.available_date, f.report_date, f.period) <= ?
+        AND (f.pe IS NOT NULL OR f.pb IS NOT NULL OR f.dividend_yield IS NOT NULL)
+        AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
+    )
+    INSERT INTO financials (stock_id, period, period_type, pe, pb, dividend_yield)
+    SELECT
+      legacy_stock_id,
+      COALESCE((
+        SELECT MAX(existing.period)
+        FROM financials existing
+        WHERE existing.stock_id = latest_valuation.legacy_stock_id
+          AND existing.period LIKE '%Q%'
+      ), ?),
+      'quarterly',
+      pe,
+      pb,
+      dividend_yield
+    FROM latest_valuation
+    WHERE rn = 1
+    ON CONFLICT(stock_id, period) DO UPDATE SET
+      pe=COALESCE(excluded.pe, financials.pe),
+      pb=COALESCE(excluded.pb, financials.pb),
+      dividend_yield=COALESCE(excluded.dividend_yield, financials.dividend_yield)
+  `).bind(targetDate, currentQuarter).run()
+
+  return {
+    financialRows: d1ChangeCount(factResult),
+    valuationRows: d1ChangeCount(valuationResult),
+  }
+}
+
 async function runBounded<T>(
   items: T[],
   concurrency: number,
@@ -381,11 +757,29 @@ async function loadPriceMetadataForBatch(
 export async function runBulkFetch(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   const lockKey = `cron:bulk-fetch:${twDate}`
+  const supplementalMode = officialSupplementalFetchMode(env)
+  let finlabMirrorSummary: string | null = null
+
+  try {
+    const mirror = await syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)
+    finlabMirrorSummary = mirror.summary
+    if (supplementalMode !== 'always') {
+      const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
+      await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+      return `${ready.summary}; ${mirror.summary}; TWSE/TPEX supplemental bulk fetch skipped; source_role=${mirror.sourceRole}; supplemental_mode=${supplementalMode}`
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    if (supplementalMode === 'disabled') throw e
+    console.warn('[Cron] FinLab canonical mirror not ready; falling back to TWSE/TPEX supplemental fetch:', message)
+    finlabMirrorSummary = finlabMirrorSummary ?? `FinLab canonical mirror not ready: ${message}`
+  }
+
   if (isHistoricalReplayDate(twDate)) {
     try {
       const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
       await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
-      return `TWSE/TPEX supplemental fetch skipped for historical replay; historical replay supplemental already ready; ${ready.summary}; source_role=supplemental_after_finlab_canonical`
+      return `TWSE/TPEX supplemental fetch skipped for historical replay; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
     } catch {
       // Historical replay only falls through to source fetch when target-date
       // supplemental rows are genuinely missing or below the production floor.
@@ -394,7 +788,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
   if (!force && await env.KV.get(lockKey)) {
     console.log(`[Cron] TWSE/TPEX supplemental fetch already done today (${twDate}), skipping.`)
     const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
-    return `TWSE/TPEX supplemental fetch skipped; ${ready.summary}; source_role=supplemental_after_finlab_canonical`
+    return `TWSE/TPEX supplemental fetch skipped; ${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; source_role=legacy_ready_after_finlab_primary_attempt`
   }
 
   try {
@@ -408,7 +802,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
     const ready = await assertMarketDataReady(env.DB, twDate, { requireIndicators: false })
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
     await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] failed:', e))
-    return `${ready.summary}; TWSE/TPEX supplemental fetched price=${priceCount} chip=${chipCount} margin=${marginCount}; source_role=supplemental_after_finlab_canonical`
+    return `${ready.summary}; ${finlabMirrorSummary ?? 'FinLab canonical mirror not applied'}; TWSE/TPEX supplemental fetched price=${priceCount} chip=${chipCount} margin=${marginCount}; source_role=official_fallback_after_finlab_primary_attempt`
   } catch (e) {
     console.warn('[Cron] TWSE/TPEX supplemental fetch failed:', e)
     const message = e instanceof Error ? e.message : String(e)
@@ -931,15 +1325,38 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
   const started = Date.now()
   const parts: string[] = []
   let sourceWaiting = false
+  let shouldFetchOfficialPrices = officialSupplementalFetchMode(env) === 'always'
 
-  try {
-    const { bulkFetchAndStorePrices } = await import('./twseApi')
-    const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
-    const priceCount = await bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET)
-    parts.push(`official_prices=${priceCount}`)
-  } catch (e) {
-    sourceWaiting = true
-    parts.push(`official_prices_waiting=${e instanceof Error ? e.message : String(e)}`)
+  if (!shouldFetchOfficialPrices) {
+    try {
+      const mirror = await syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)
+      const stats = await loadMarketDataReadinessStats(env.DB, twDate)
+      const finlabPriceReady =
+        stats.priceLatestDate === twDate &&
+        stats.priceRowsOnLatest >= 1000 &&
+        Number(stats.priceTwseRowsOnLatest ?? 0) >= 900 &&
+        Number(stats.priceOtcRowsOnLatest ?? 0) >= 700
+      parts.push(`finlab_mirror=${mirror.priceRows}/${mirror.chipRows}/${mirror.marginRows}`)
+      shouldFetchOfficialPrices = !finlabPriceReady
+    } catch (e) {
+      parts.push(`finlab_mirror_waiting=${e instanceof Error ? e.message : String(e)}`)
+      shouldFetchOfficialPrices = officialSupplementalFetchMode(env) !== 'disabled'
+      sourceWaiting = officialSupplementalFetchMode(env) === 'disabled'
+    }
+  }
+
+  if (shouldFetchOfficialPrices) {
+    try {
+      const { bulkFetchAndStorePrices } = await import('./twseApi')
+      const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
+      const priceCount = await bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET)
+      parts.push(`official_prices=${priceCount}`)
+    } catch (e) {
+      sourceWaiting = true
+      parts.push(`official_prices_waiting=${e instanceof Error ? e.message : String(e)}`)
+    }
+  } else {
+    parts.push('official_prices=skipped_finlab_primary')
   }
 
   try {
@@ -999,6 +1416,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 export async function runSourceReadinessProbe(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   const started = Date.now()
+  const supplementalMode = officialSupplementalFetchMode(env)
   if (!force && await hasEveningChainSucceeded(env, twDate)) {
     const summary = `SKIP: full evening chain already succeeded for ${twDate}; readiness probe will not rerun`
     await logSchedulerResult(env.KV, 'source-readiness-probe', {
@@ -1056,6 +1474,31 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
       readiness = await checkEveningChainSourceReadiness(env, twDate)
     } else {
       const summary = `running: ${readiness.summary}; finlab_refresh already ${finlabLog?.status ?? 'in-flight'}`
+      await logSchedulerResult(env.KV, 'source-readiness-probe', {
+        status: 'running',
+        summary,
+        duration_ms: Date.now() - started,
+        run_date: twDate,
+      })
+      return summary
+    }
+  }
+
+  if (!readiness.ok && readiness.missingKeys.includes('official_supplemental_market_data')) {
+    let finlabSupplementalSummary: string | null = null
+    if (supplementalMode !== 'always') {
+      try {
+        const mirror = await syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)
+        await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] readiness probe FinLab refresh failed:', e))
+        readiness = await checkEveningChainSourceReadiness(env, twDate)
+        finlabSupplementalSummary = `finlab_probe_mirror=${mirror.priceRows}/${mirror.chipRows}/${mirror.marginRows}`
+        readiness.summary = `${readiness.summary}; ${finlabSupplementalSummary}`
+      } catch (e) {
+        finlabSupplementalSummary = `finlab_probe_mirror_waiting=${e instanceof Error ? e.message : String(e)}`
+      }
+    }
+    if (!readiness.ok && readiness.missingKeys.includes('official_supplemental_market_data') && supplementalMode === 'disabled') {
+      const summary = `running: ${readiness.summary}; ${finlabSupplementalSummary ?? 'finlab_probe_mirror=not_attempted'}; official_supplemental_fetch=disabled`
       await logSchedulerResult(env.KV, 'source-readiness-probe', {
         status: 'running',
         summary,
@@ -1191,6 +1634,9 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
 }
 
 export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
+  const supplementalMode = officialSupplementalFetchMode(env)
+  const forceOfficial = supplementalMode === 'always'
+  const officialFallbackAllowed = supplementalMode !== 'disabled'
   const {
     fetchTwseValuation,
     fetchTpexValuation,
@@ -1201,33 +1647,74 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
     fetchTpexFinancials,
   } = await import('./twseApi')
 
+  let finlabFinancialRows = 0
+  let finlabValuationRows = 0
+
   try {
-    const breadth = await fetchMarketBreadth()
-    if (breadth) {
-      await env.DB.prepare(`
-        INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(date) DO UPDATE SET
-          advance_count=excluded.advance_count,
-          decline_count=excluded.decline_count,
-          unchanged_count=excluded.unchanged_count,
-          advance_ratio=excluded.advance_ratio
-      `).bind(
-        breadth.date,
-        breadth.advance_count,
-        breadth.decline_count,
-        breadth.unchanged_count,
-        breadth.advance_ratio,
-      ).run()
+    const finlabBreadth = await syncMarketBreadthFromFinLabCanonical(env.DB, today)
+    if (finlabBreadth.sampleSize >= 1000) {
       console.log(
-        `[Wave2] Market breadth: ${breadth.advance_count}/${breadth.decline_count}/${breadth.unchanged_count} (${(breadth.advance_ratio * 100).toFixed(0)}%)`,
+        `[Wave2] FinLab market breadth: ${finlabBreadth.advanceCount}/${finlabBreadth.declineCount}/${finlabBreadth.unchangedCount} sample=${finlabBreadth.sampleSize}`,
       )
     }
+    if ((forceOfficial || finlabBreadth.sampleSize < 1000) && officialFallbackAllowed) {
+      const breadth = await fetchMarketBreadth()
+      if (breadth) {
+        await env.DB.prepare(`
+          INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(date) DO UPDATE SET
+            advance_count=excluded.advance_count,
+            decline_count=excluded.decline_count,
+            unchanged_count=excluded.unchanged_count,
+            advance_ratio=excluded.advance_ratio
+        `).bind(
+          breadth.date,
+          breadth.advance_count,
+          breadth.decline_count,
+          breadth.unchanged_count,
+          breadth.advance_ratio,
+        ).run()
+        console.log(
+          `[Wave2] Official fallback market breadth: ${breadth.advance_count}/${breadth.decline_count}/${breadth.unchanged_count} (${(breadth.advance_ratio * 100).toFixed(0)}%)`,
+        )
+      }
+    }
   } catch (e) {
-    console.warn('[Wave2] Market breadth failed:', e)
+    console.warn('[Wave2] FinLab market breadth failed:', e)
+    if (officialFallbackAllowed) {
+      try {
+        const breadth = await fetchMarketBreadth()
+        if (breadth) {
+          await env.DB.prepare(`
+            INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(date) DO UPDATE SET
+              advance_count=excluded.advance_count,
+              decline_count=excluded.decline_count,
+              unchanged_count=excluded.unchanged_count,
+              advance_ratio=excluded.advance_ratio
+          `).bind(breadth.date, breadth.advance_count, breadth.decline_count, breadth.unchanged_count, breadth.advance_ratio).run()
+        }
+      } catch (fallbackError) {
+        console.warn('[Wave2] Official fallback market breadth failed:', fallbackError)
+      }
+    }
   }
 
   try {
+    const finlabFinancials = await syncLegacyFinancialsFromFinLabCanonical(env.DB, today)
+    finlabFinancialRows = finlabFinancials.financialRows
+    finlabValuationRows = finlabFinancials.valuationRows
+    console.log(
+      `[Wave2] FinLab financials mirror: facts=${finlabFinancialRows} valuation=${finlabValuationRows}`,
+    )
+  } catch (e) {
+    console.warn('[Wave2] FinLab financials mirror failed:', e)
+  }
+
+  if (forceOfficial || (officialFallbackAllowed && finlabValuationRows === 0)) {
+    try {
     const [twseVal, tpexVal] = await Promise.allSettled([fetchTwseValuation(today), fetchTpexValuation()])
     const valRows = [
       ...(twseVal.status === 'fulfilled' ? twseVal.value : []),
@@ -1273,9 +1760,20 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
   } catch (e) {
     console.warn('[Wave2] PER/PBR failed:', e)
   }
+  }
 
   const day = parseInt(today.slice(8, 10), 10)
+  let finlabRevenueRows = 0
   if (day <= 12) {
+    try {
+      finlabRevenueRows = await syncLegacyRevenueFromFinLabCanonical(env.DB, today)
+      console.log(`[Wave2] FinLab monthly revenue mirror: rows=${finlabRevenueRows}`)
+    } catch (e) {
+      console.warn('[Wave2] FinLab monthly revenue mirror failed:', e)
+    }
+  }
+
+  if (day <= 12 && (forceOfficial || (officialFallbackAllowed && finlabRevenueRows === 0))) {
     try {
       const [twseRev, tpexRev] = await Promise.allSettled([fetchTwseMonthlyRevenue(), fetchTpexMonthlyRevenue()])
       const revData = [
@@ -1309,7 +1807,8 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
     }
   }
 
-  try {
+  if (forceOfficial || (officialFallbackAllowed && finlabFinancialRows === 0)) {
+    try {
     const [twseFin, tpexFin] = await Promise.allSettled([fetchTwseFinancials(), fetchTpexFinancials()])
     const finRows = [
       ...(twseFin.status === 'fulfilled' ? twseFin.value : []),
@@ -1354,6 +1853,7 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
     }
   } catch (e) {
     console.warn('[Wave2] Financials failed:', e)
+  }
   }
 
   if (env.ML_CONTROLLER_URL) {

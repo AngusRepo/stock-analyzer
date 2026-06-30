@@ -96,6 +96,34 @@ const strategy0193 = {
 }
 
 {
+  const candidates: any[] = [{
+    symbol: '3034',
+    current_price: 85,
+    raw_signals: {
+      closeAboveMa60Pct: 0.05,
+      volShareTurnover21d: 0.034,
+      technicalIndicators: {
+        squeezeRelease: 1,
+        bbBandwidthPct: 0.08,
+        bestOrderBlockStrength: 0.72,
+        VSTD_10: 12345,
+        tech_emv_14: 0.0012,
+      },
+      factorSignals: {},
+    },
+  }]
+  const telemetry = materializeFormal137FeatureAliases(candidates)
+  assert.equal(telemetry.materializedCount, 1)
+  assert.equal(candidates[0].raw_signals.factorSignals.l1_closeAboveMa60Pct, 0.05)
+  assert.equal(candidates[0].raw_signals.factorSignals.l1_squeezeRelease, 1)
+  assert.equal(candidates[0].raw_signals.factorSignals.l1_bbBandwidthPct, 0.08)
+  assert.equal(candidates[0].raw_signals.factorSignals.l1_bestOrderBlockStrength, 0.72)
+  assert.equal(candidates[0].raw_signals.factorSignals.VSTD_10, 12345)
+  assert.equal(candidates[0].raw_signals.factorSignals.tech_emv_14, 0.0012)
+  assert.equal(candidates[0].raw_signals.factorSignals.vol_share_turnover_21d, 0.034)
+}
+
+{
   const candidates: any[] = [
     {
       symbol: '1111',

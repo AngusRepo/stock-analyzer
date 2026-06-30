@@ -684,6 +684,22 @@ interface StrategyRawFundamentalSignals {
   pe?: number | null
   pb?: number | null
   dividendYield?: number | null
+  operatingCashFlow?: number | null
+  roa?: number | null
+  ebitda?: number | null
+  freeCashFlow?: number | null
+  financialCost?: number | null
+  operatingExpenses?: number | null
+  cashFlowPerShare?: number | null
+  pretaxIncomePerShare?: number | null
+  propertyPlantEquipment?: number | null
+  workingCapital?: number | null
+  currentLiabilities?: number | null
+  operatingCashFlowStatement?: number | null
+  nonCurrentAssets?: number | null
+  cashAndCashEquivalentsIncreaseDecrease?: number | null
+  otherPayables?: number | null
+  capitalAmount?: number | null
   source?: string | null
 }
 
@@ -699,10 +715,23 @@ interface StrategyRawSignals extends StrategyRawFundamentalSignals {
   ma10Bias?: number | null
   closeAboveMa20Pct?: number | null
   closeAboveMa60Pct?: number | null
+  KLOW2?: number | null
+  KSFT?: number | null
+  KSFT2?: number | null
+  CNTD_20?: number | null
+  CNTN_20?: number | null
+  VSTD_10?: number | null
+  techEmv14?: number | null
+  techRoc10?: number | null
+  techGapDown?: number | null
+  volaCv90d?: number | null
+  bestOrderBlockStrength?: number | null
+  bbBandwidthPct?: number | null
   return5d?: number | null
   volumeExpansion20?: number | null
   return20d?: number | null
   return60d?: number | null
+  volShareTurnover21d?: number | null
   foreignNet5d?: number | null
   trustNet5d?: number | null
   dealerNet5d?: number | null
@@ -726,6 +755,22 @@ const RAW_FUNDAMENTAL_FIELDS = [
   ['pe', 'pe'],
   ['pb', 'pb'],
   ['dividendYield', 'dividend_yield'],
+  ['operatingCashFlow', 'operating_cash_flow'],
+  ['roa', 'roa'],
+  ['ebitda', 'ebitda'],
+  ['freeCashFlow', 'free_cash_flow'],
+  ['financialCost', 'financial_cost'],
+  ['operatingExpenses', 'operating_expenses'],
+  ['cashFlowPerShare', 'cash_flow_per_share'],
+  ['pretaxIncomePerShare', 'pretax_income_per_share'],
+  ['propertyPlantEquipment', 'property_plant_equipment'],
+  ['workingCapital', 'working_capital'],
+  ['currentLiabilities', 'current_liabilities'],
+  ['operatingCashFlowStatement', 'operating_cash_flow_statement'],
+  ['nonCurrentAssets', 'non_current_assets'],
+  ['cashAndCashEquivalentsIncreaseDecrease', 'cash_and_cash_equivalents_increase_decrease'],
+  ['otherPayables', 'other_payables'],
+  ['capitalAmount', 'capital_amount'],
 ] as const
 
 type RawFundamentalSignalField = typeof RAW_FUNDAMENTAL_FIELDS[number][0]
@@ -822,6 +867,14 @@ function finiteOrNull(value: unknown): number | null {
 function avg(values: number[]): number | null {
   const clean = values.filter(Number.isFinite)
   return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : null
+}
+
+function stddev(values: number[]): number | null {
+  const clean = values.filter(Number.isFinite)
+  if (clean.length < 2) return null
+  const mean = clean.reduce((sum, value) => sum + value, 0) / clean.length
+  const variance = clean.reduce((sum, value) => sum + (value - mean) ** 2, 0) / clean.length
+  return Math.sqrt(Math.max(0, variance))
 }
 
 function errorText(error: unknown): string {
@@ -957,6 +1010,22 @@ async function loadStrategyRawFundamentalSignals(
         pe: number | null
         pb: number | null
         dividend_yield: number | null
+        operating_cash_flow: number | null
+        roa: number | null
+        ebitda: number | null
+        free_cash_flow: number | null
+        financial_cost: number | null
+        operating_expenses: number | null
+        cash_flow_per_share: number | null
+        pretax_income_per_share: number | null
+        property_plant_equipment: number | null
+        working_capital: number | null
+        current_liabilities: number | null
+        operating_cash_flow_statement: number | null
+        non_current_assets: number | null
+        cash_and_cash_equivalents_increase_decrease: number | null
+        other_payables: number | null
+        capital_amount: number | null
       }>()
       telemetry.canonicalRowsScanned += (results ?? []).length
       for (const row of results ?? []) {
@@ -1138,15 +1207,28 @@ function deriveStrategyRawSignals(
   const ma10 = avg(closes.slice(-10))
   const avgVol5 = avg(volumes.slice(-5))
   const avgVol20 = avg(volumes.slice(-20))
+  const vstd10 = stddev(volumes.slice(-10))
+  const sharesOutstanding = fundamentals?.capitalAmount != null && fundamentals.capitalAmount > 0
+    ? fundamentals.capitalAmount / 10
+    : null
+  const volShareTurnover21d = avgVol20 != null && sharesOutstanding != null && sharesOutstanding > 0
+    ? avgVol20 / sharesOutstanding
+    : null
   const latestIndex = closes.length - 1
   const ma10Bias = pctChange(close, ma10)
   const closeAboveMa20Pct = pctChange(close, ma20)
   const closeAboveMa60Pct = pctChange(close, ma60)
   const volumeExpansion20 = avgVol5 != null && avgVol20 != null && avgVol20 > 0 ? avgVol5 / avgVol20 : null
   const return5d = latestIndex >= 5 ? pctChange(closes[latestIndex], closes[latestIndex - 5]) : null
+  const techRoc10 = latestIndex >= 10 ? pctChange(closes[latestIndex], closes[latestIndex - 10]) : null
   const return20d = latestIndex >= 20 ? pctChange(closes[latestIndex], closes[latestIndex - 20]) : null
   const return60d = latestIndex >= 60 ? pctChange(closes[latestIndex], closes[latestIndex - 60]) : null
   const latestOhlcv = indicatorRows[latestIndex]
+  const previousOhlcv = latestIndex >= 1 ? indicatorRows[latestIndex - 1] : null
+  const techGapDown = latestOhlcv && previousOhlcv ? (latestOhlcv.high < previousOhlcv.low ? 1 : 0) : null
+  const last90Closes = closes.slice(-90)
+  const volaCv90dMean = last90Closes.length >= 90 ? avg(last90Closes) : null
+  const volaCv90d = volaCv90dMean != null && volaCv90dMean > 0 ? (stddev(last90Closes) ?? 0) / volaCv90dMean : null
   const latestRange = latestOhlcv ? Math.max(1e-8, latestOhlcv.high - latestOhlcv.low) : null
   const latestOpen = latestOhlcv?.open ?? null
   const kLow2 = latestOhlcv && latestRange != null
@@ -1177,6 +1259,17 @@ function deriveStrategyRawSignals(
   const diTrend = technicals.plusDi14 != null && technicals.minusDi14 != null
     ? technicals.plusDi14 - technicals.minusDi14
     : null
+  const emvValues: number[] = []
+  for (let i = Math.max(1, indicatorRows.length - 14); i < indicatorRows.length; i++) {
+    const current = indicatorRows[i]
+    const previous = indicatorRows[i - 1]
+    const range = current.high - current.low
+    if (range <= 0 || current.volume <= 0) continue
+    const midpointMove = ((current.high + current.low) / 2) - ((previous.high + previous.low) / 2)
+    const boxRatio = current.volume / range
+    if (boxRatio > 0) emvValues.push(midpointMove / boxRatio)
+  }
+  const emv14 = avg(emvValues)
   const ohlcvRows = indicatorRows.map((row) => ({
     date: row.date,
     open: row.open,
@@ -1232,10 +1325,23 @@ function deriveStrategyRawSignals(
     ma60,
     closeAboveMa20Pct,
     closeAboveMa60Pct,
+    KLOW2: kLow2,
+    KSFT: kSft,
+    KSFT2: kSft2,
+    CNTD_20: cntd20,
+    CNTN_20: cntn20,
+    VSTD_10: vstd10,
+    techEmv14: emv14,
+    techRoc10,
+    techGapDown,
+    volaCv90d,
+    bestOrderBlockStrength: bestOrderBlock?.strength ?? null,
+    bbBandwidthPct,
     volumeExpansion20,
     return5d,
     return20d,
     return60d,
+    volShareTurnover21d,
     foreignNet5d,
     trustNet5d,
     dealerNet5d,
@@ -1269,6 +1375,11 @@ function deriveStrategyRawSignals(
       closeAboveMa20Pct,
       closeAboveMa60Pct,
       volumeExpansion20,
+      VSTD_10: vstd10,
+      tech_emv_14: emv14,
+      tech_roc_10: techRoc10,
+      tech_gap_down: techGapDown,
+      vola_cv_90d: volaCv90d,
       ...stockTechnicalDailyFeatures,
       ma10Bias,
       return5d,
@@ -1325,15 +1436,21 @@ function deriveStrategyRawSignals(
       KSFT2: kSft2,
       CNTN_20: cntn20,
       CNTD_20: cntd20,
+      tech_roc_10: techRoc10,
+      tech_gap_down: techGapDown,
+      vola_cv_90d: volaCv90d,
       ma10_bias: ma10Bias,
       ma10Bias,
       return_5d: return5d,
       return5d,
       return20d,
+      vol_share_turnover_21d: volShareTurnover21d,
+      volShareTurnover21d,
       rsi14: latestRsi14,
       foreignTrustNet5d: base.foreignTrustNet5d ?? null,
       brokerNetShares5d,
       brokerNetAmount5d,
+      l1_brokerNetAmount5d: brokerNetAmount5d,
       margin_balance: base.marginBalance ?? null,
       marginBalance: base.marginBalance ?? null,
       short_balance: base.shortBalance ?? null,
@@ -1350,6 +1467,22 @@ function deriveStrategyRawSignals(
       pe: base.pe ?? null,
       pb: base.pb ?? null,
       dividendYield: base.dividendYield ?? null,
+      operatingCashFlow: base.operatingCashFlow ?? null,
+      roa: base.roa ?? null,
+      ebitda: base.ebitda ?? null,
+      freeCashFlow: base.freeCashFlow ?? null,
+      financialCost: base.financialCost ?? null,
+      operatingExpenses: base.operatingExpenses ?? null,
+      cashFlowPerShare: base.cashFlowPerShare ?? null,
+      pretaxIncomePerShare: base.pretaxIncomePerShare ?? null,
+      propertyPlantEquipment: base.propertyPlantEquipment ?? null,
+      workingCapital: base.workingCapital ?? null,
+      currentLiabilities: base.currentLiabilities ?? null,
+      operatingCashFlowStatement: base.operatingCashFlowStatement ?? null,
+      nonCurrentAssets: base.nonCurrentAssets ?? null,
+      cashAndCashEquivalentsIncreaseDecrease: base.cashAndCashEquivalentsIncreaseDecrease ?? null,
+      otherPayables: base.otherPayables ?? null,
+      capitalAmount: base.capitalAmount ?? null,
       ...(extraFactors?.factorSignals ?? {}),
     },
   }
@@ -1373,11 +1506,38 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'return5d', signalKey: 'Return5d', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'return20d', signalKey: 'Return20d', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'ma10Bias', signalKey: 'Ma10Bias', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'closeAboveMa60Pct', signalKey: 'CloseAboveMa60Pct', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'volumeExpansion20', signalKey: 'VolumeExpansion20', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'KLOW2', signalKey: 'Klow2Low', direction: 'lower_is_better', sectorRank: false },
+  { rawField: 'KSFT', signalKey: 'KsftLow', direction: 'lower_is_better', sectorRank: false },
+  { rawField: 'VSTD_10', signalKey: 'Vstd10', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'techEmv14', signalKey: 'TechEmv14', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'techRoc10', signalKey: 'TechRoc10', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'techGapDown', signalKey: 'TechGapDown', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'volaCv90d', signalKey: 'VolaCv90dLow', direction: 'lower_is_better', sectorRank: false },
+  { rawField: 'brokerNetAmount5d', signalKey: 'BrokerNetAmount5d', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'bestOrderBlockStrength', signalKey: 'BestOrderBlockStrength', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'bbBandwidthPct', signalKey: 'BbBandwidthPct', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'marginBalance', signalKey: 'MarginBalance', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'dividendYield', signalKey: 'DividendYield', direction: 'higher_is_better', sectorRank: true },
   { rawField: 'pe', signalKey: 'PeCheap', direction: 'lower_is_better', sectorRank: true },
   { rawField: 'pb', signalKey: 'PbCheap', direction: 'lower_is_better', sectorRank: true },
+  { rawField: 'operatingCashFlow', signalKey: 'OperatingCashFlow', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'roa', signalKey: 'Roa', direction: 'higher_is_better', sectorRank: true },
+  { rawField: 'ebitda', signalKey: 'Ebitda', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'freeCashFlow', signalKey: 'FreeCashFlow', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'financialCost', signalKey: 'FinancialCost', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'operatingExpenses', signalKey: 'OperatingExpenses', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'cashFlowPerShare', signalKey: 'CashFlowPerShare', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'pretaxIncomePerShare', signalKey: 'PretaxIncomePerShare', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'propertyPlantEquipment', signalKey: 'PropertyPlantEquipment', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'workingCapital', signalKey: 'WorkingCapital', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'currentLiabilities', signalKey: 'CurrentLiabilities', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'operatingCashFlowStatement', signalKey: 'OperatingCashFlowStatement', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'nonCurrentAssets', signalKey: 'NonCurrentAssets', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'cashAndCashEquivalentsIncreaseDecrease', signalKey: 'CashAndCashEquivalentsIncreaseDecrease', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'otherPayables', signalKey: 'OtherPayables', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'volShareTurnover21d', signalKey: 'VolShareTurnover21d', direction: 'higher_is_better', sectorRank: false },
 ]
 
 function percentileRank(value: number, sortedAsc: number[]): number | null {

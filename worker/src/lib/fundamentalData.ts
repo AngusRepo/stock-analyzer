@@ -48,6 +48,17 @@ function netProfitMarginFromFinancial(row: Record<string, any> | null | undefine
   return (netIncome / revenue) * 100
 }
 
+function normalizeQuarterPeriod(period: unknown): string {
+  const raw = String(period ?? '').trim()
+  const quarterMatch = raw.match(/^(\d{4})Q([1-4])$/i)
+  if (quarterMatch) return `${quarterMatch[1]}Q${quarterMatch[2]}`
+  const dateMatch = raw.match(/^(\d{4})-(\d{2})-\d{2}$/)
+  if (!dateMatch) return raw
+  const month = Number(dateMatch[2])
+  if (!Number.isFinite(month) || month < 1 || month > 12) return raw
+  return `${dateMatch[1]}Q${Math.floor((month - 1) / 3) + 1}`
+}
+
 function buildEpsTrend(
   financialRows: Record<string, any>[],
   canonicalRows: Record<string, any>[],
@@ -55,7 +66,7 @@ function buildEpsTrend(
 ): Array<{ period: string; eps: number; source: string }> {
   const byPeriod = new Map<string, { period: string; eps: number; source: string }>()
   const add = (row: Record<string, any>, source: string) => {
-    const period = String(row.period ?? '').trim()
+    const period = normalizeQuarterPeriod(row.period)
     const eps = finiteNumber(row.eps)
     if (!period || eps == null) return
     if (!byPeriod.has(period)) byPeriod.set(period, { period, eps, source })
@@ -215,10 +226,8 @@ export async function loadStockFinancialRows(
   const capitalSource = canonicalCapitalAmount != null
     ? 'finlab.fundamental_factor_diversity.capital_amount'
     : null
-  const canonicalSource = canonicalRows.find((row: any) => (
-    row.pe != null || row.pb != null || row.dividend_yield != null ||
-    row.gross_margin != null || row.operating_margin != null ||
-    row.capital_amount != null
+  const canonicalValuationSource = canonicalRows.find((row: any) => (
+    row.pe != null || row.pb != null || row.dividend_yield != null
   ))?.source ?? null
   const epsTrend = buildEpsTrend(epsTrendResult.results ?? [], canonicalRows, 4)
 
@@ -243,8 +252,8 @@ export async function loadStockFinancialRows(
     const netProfitMargin = netProfitMarginFromFinancial(row)
     return {
       ...row,
-      eps: index === 0 ? (canonicalEps ?? row.eps ?? null) : row.eps,
-      roe: index === 0 ? normalizePercentUnit(canonicalRoe ?? row.roe) : normalizePercentUnit(row.roe),
+      eps: index === 0 ? (row.eps ?? canonicalEps ?? null) : row.eps,
+      roe: index === 0 ? normalizePercentUnit(row.roe ?? canonicalRoe) : normalizePercentUnit(row.roe),
       pe: index === 0 ? (canonicalPe ?? row.pe ?? null) : row.pe,
       pb: index === 0 ? (canonicalPb ?? row.pb ?? null) : row.pb,
       dividend_yield: index === 0
@@ -262,7 +271,7 @@ export async function loadStockFinancialRows(
       capital_source: capitalSource,
       fundamental_source: {
         quarterly: 'financials',
-        valuation: canonicalSource ?? 'financials',
+        valuation: canonicalValuationSource ?? 'financials',
         net_profit_margin: netProfitMargin == null ? null : 'financials.net_income/revenue',
         monthly_revenue: revenueRow ? 'canonical_revenue_monthly' : null,
         profile: profileMargins.source,

@@ -16,6 +16,7 @@ import {
   Waves,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
 import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
@@ -957,6 +958,9 @@ function MarketOverviewBlock() {
           </div>
           <div className="bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />
+          </div>
+          <div className="bg-[#101116] px-4 pb-4">
+            <MarketRiskDetailBreakdown risk={risk} />
           </div>
           <div className="grid items-stretch gap-4 bg-[#101116] p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
             <div className="grid gap-4 self-stretch">

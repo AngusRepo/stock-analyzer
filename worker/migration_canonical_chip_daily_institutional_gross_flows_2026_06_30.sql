@@ -1,0 +1,13 @@
+ALTER TABLE canonical_chip_daily ADD COLUMN foreign_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN foreign_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN foreign_dealer_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN foreign_dealer_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN foreign_dealer_net REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN trust_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN trust_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN dealer_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN dealer_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN dealer_self_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN dealer_self_sell REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN dealer_hedge_buy REAL;
+ALTER TABLE canonical_chip_daily ADD COLUMN dealer_hedge_sell REAL;

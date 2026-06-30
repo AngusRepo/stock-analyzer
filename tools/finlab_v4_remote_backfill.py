@@ -37,20 +37,71 @@ CORE_SPECS = [
             "high": "price:最高價",
             "low": "price:最低價",
             "close": "price:收盤價",
+            "adj_open": "etl:adj_open",
+            "adj_high": "etl:adj_high",
+            "adj_low": "etl:adj_low",
+            "adj_close": "etl:adj_close",
             "volume": "price:成交股數",
+            "trade_count": "price:成交筆數",
             "value": "price:成交金額",
+            "last_bid_price": "price:最後揭示買價",
+            "last_ask_price": "price:最後揭示賣價",
+            "last_bid_volume": "price:最後揭示買量",
+            "last_ask_volume": "price:最後揭示賣量",
+            "market_value": "etl:market_value",
         },
     ),
     DatasetSpec(
         lane="chip_diversity",
         kind="wide_fields",
         keys={
+            "foreign_buy": "institutional_investors_trading_summary:外陸資買進股數(不含外資自營商)",
+            "foreign_sell": "institutional_investors_trading_summary:外陸資賣出股數(不含外資自營商)",
             "foreign_net": "institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)",
+            "foreign_dealer_buy": "institutional_investors_trading_summary:外資自營商買進股數",
+            "foreign_dealer_sell": "institutional_investors_trading_summary:外資自營商賣出股數",
+            "foreign_dealer_net": "institutional_investors_trading_summary:外資自營商買賣超股數",
+            "trust_buy": "institutional_investors_trading_summary:投信買進股數",
+            "trust_sell": "institutional_investors_trading_summary:投信賣出股數",
             "trust_net": "institutional_investors_trading_summary:投信買賣超股數",
+            "dealer_self_buy": "institutional_investors_trading_summary:自營商買進股數(自行買賣)",
+            "dealer_self_sell": "institutional_investors_trading_summary:自營商賣出股數(自行買賣)",
             "dealer_self_net": "institutional_investors_trading_summary:自營商買賣超股數(自行買賣)",
+            "dealer_hedge_buy": "institutional_investors_trading_summary:自營商買進股數(避險)",
+            "dealer_hedge_sell": "institutional_investors_trading_summary:自營商賣出股數(避險)",
             "dealer_hedge_net": "institutional_investors_trading_summary:自營商買賣超股數(避險)",
+            "margin_buy": "margin_transactions:融資買進",
+            "margin_sell": "margin_transactions:融資賣出",
+            "margin_cash_repayment": "margin_transactions:融資現金償還",
+            "margin_prev_balance": "margin_transactions:融資前日餘額",
             "margin_balance": "margin_transactions:融資今日餘額",
+            "margin_limit": "margin_transactions:融資限額",
+            "short_buy": "margin_transactions:融券買進",
+            "short_sell": "margin_transactions:融券賣出",
+            "short_stock_repayment": "margin_transactions:融券現券償還",
+            "short_prev_balance": "margin_transactions:融券前日餘額",
             "short_balance": "margin_transactions:融券今日餘額",
+            "short_limit": "margin_transactions:融券限額",
+            "margin_short_offset": "margin_transactions:資券互抵",
+            "margin_usage_ratio": "margin_transactions:融資使用率",
+            "short_usage_ratio": "margin_transactions:融券使用率",
+            "margin_balance_total_buy": "margin_balance:融資券總買進",
+            "margin_balance_total_sell": "margin_balance:融資券總賣出",
+            "margin_balance_total_repayment": "margin_balance:現金(券)總償還",
+            "margin_balance_total_balance": "margin_balance:融資券總餘額",
+            "security_lending_prev_balance": "security_lending:前日借券餘額",
+            "security_lending_borrow": "security_lending:借券",
+            "security_lending_return": "security_lending:借券還券",
+            "security_lending_delta": "security_lending:借券增減",
+            "security_lending_balance": "security_lending:借券餘額",
+            "security_lending_sell": "security_lending_sell:借券賣出",
+            "security_lending_sell_return": "security_lending_sell:借券賣出還券",
+            "security_lending_sell_balance": "security_lending_sell:借券賣出餘額",
+            "security_lending_sell_limit": "security_lending_sell:借券賣出限額",
+            "broker_top15_buy": "etl:broker_transactions:top15_buy",
+            "broker_top15_sell": "etl:broker_transactions:top15_sell",
+            "broker_buy_sell_ratio": "etl:broker_transactions:buy_sell_ratio",
+            "broker_balance_index": "etl:broker_transactions:balance_index",
         },
     ),
     DatasetSpec(
@@ -77,8 +128,13 @@ CORE_SPECS = [
         kind="wide_fields",
         keys={
             "revenue": "monthly_revenue:當月營收",
+            "previous_month_revenue": "monthly_revenue:上月營收",
+            "last_year_month_revenue": "monthly_revenue:去年當月營收",
             "mom": "monthly_revenue:上月比較增減(%)",
             "yoy": "monthly_revenue:去年同月增減(%)",
+            "cumulative_revenue": "monthly_revenue:當月累計營收",
+            "last_year_cumulative_revenue": "monthly_revenue:去年累計營收",
+            "previous_comparison_pct": "monthly_revenue:前期比較增減(%)",
         },
     ),
     DatasetSpec(
@@ -89,8 +145,12 @@ CORE_SPECS = [
             "high": "rotc_price:最高價",
             "low": "rotc_price:最低價",
             "close": "rotc_price:收盤價",
+            "avg_price": "rotc_price:日均價",
             "volume": "rotc_price:成交股數",
+            "trade_count": "rotc_price:成交筆數",
             "value": "rotc_price:成交金額",
+            "last_bid_price": "rotc_price:最後揭示買價",
+            "last_ask_price": "rotc_price:最後揭示賣價",
         },
     ),
     DatasetSpec(
@@ -102,11 +162,58 @@ CORE_SPECS = [
             "operating_margin": "fundamental_features:營業利益率",
             "roe": "fundamental_features:ROE稅後",
             "eps": "fundamental_features:每股稅後淨利",
+            "pe": "price_earning_ratio:本益比",
+            "pb": "price_earning_ratio:股價淨值比",
+            "dividend_yield": "price_earning_ratio:殖利率(%)",
             "debt_ratio": "fundamental_features:負債比率",
             "current_ratio": "fundamental_features:流動比率",
             "operating_cash_flow": "fundamental_features:營運現金流",
             "roa": "fundamental_features:ROA稅後息前",
+            "roa_comprehensive": "fundamental_features:ROA綜合損益",
+            "roe_comprehensive": "fundamental_features:ROE綜合損益",
+            "ebitda": "fundamental_features:EBITDA",
             "free_cash_flow": "fundamental_features:自由現金流量",
+            "ebitda_margin": "fundamental_features:稅前息前折舊前淨利率",
+            "pretax_margin": "fundamental_features:稅前淨利率",
+            "net_margin": "fundamental_features:稅後淨利率",
+            "non_operating_income_revenue_ratio": "fundamental_features:業外收支營收率",
+            "berry_ratio": "fundamental_features:貝里比率",
+            "operating_expense_ratio": "fundamental_features:營業費用率",
+            "sales_expense_ratio": "fundamental_features:推銷費用率",
+            "admin_expense_ratio": "fundamental_features:管理費用率",
+            "rd_expense_ratio": "fundamental_features:研究發展費用率",
+            "cash_flow_ratio": "fundamental_features:現金流量比率",
+            "tax_rate": "fundamental_features:稅率",
+            "sales_per_share": "fundamental_features:每股營業額",
+            "operating_income_per_share": "fundamental_features:每股營業利益",
+            "comprehensive_income_per_share": "fundamental_features:每股綜合損益",
+            "liabilities_to_equity": "fundamental_features:總負債除總淨值",
+            "equity_to_assets": "fundamental_features:淨值除資產",
+            "gross_margin_growth": "fundamental_features:營業毛利成長率",
+            "operating_income_growth": "fundamental_features:營業利益成長率",
+            "pretax_income_growth": "fundamental_features:稅前淨利成長率",
+            "net_income_growth": "fundamental_features:稅後淨利成長率",
+            "recurring_income_growth": "fundamental_features:經常利益成長率",
+            "total_assets_growth": "fundamental_features:資產總額成長率",
+            "equity_growth": "fundamental_features:淨值成長率",
+            "quick_ratio": "fundamental_features:速動比率",
+            "interest_expense_ratio": "fundamental_features:利息支出率",
+            "total_asset_turnover": "fundamental_features:總資產週轉次數",
+            "receivables_turnover": "fundamental_features:應收帳款週轉率",
+            "inventory_turnover": "fundamental_features:存貨週轉率",
+            "fixed_asset_turnover": "fundamental_features:固定資產週轉次數",
+            "equity_turnover": "fundamental_features:淨值週轉率次數",
+            "revenue": "financial_statement:營業收入淨額",
+            "operating_income": "financial_statement:營業利益",
+            "net_income": "financial_statement:歸屬母公司淨利_損",
+            "financial_cost": "financial_statement:財務成本",
+            "operating_expenses": "financial_statement:營業費用",
+            "cash_flow_per_share": "fundamental_features:每股現金流量",
+            "pretax_income_per_share": "fundamental_features:每股稅前淨利",
+            "property_plant_equipment": "financial_statement:不動產廠房及設備",
+            "working_capital": "fundamental_features:營運資金",
+            "current_liabilities": "financial_statement:流動負債",
+            "operating_cash_flow_statement": "financial_statement:營業活動之淨現金流入_流出",
             "capital_amount": "financial_statement:股本",
             "common_stock_capital": "financial_statement:普通股股本",
             "preferred_stock_capital": "financial_statement:特別股股本",
@@ -120,8 +227,13 @@ CORE_SPECS = [
         kind="wide_fields",
         keys={
             "revenue": "rotc_monthly_revenue:當月營收",
+            "previous_month_revenue": "rotc_monthly_revenue:上月營收",
+            "last_year_month_revenue": "rotc_monthly_revenue:去年當月營收",
             "mom": "rotc_monthly_revenue:上月比較增減(%)",
             "yoy": "rotc_monthly_revenue:去年同月增減(%)",
+            "cumulative_revenue": "rotc_monthly_revenue:當月累計營收",
+            "last_year_cumulative_revenue": "rotc_monthly_revenue:去年累計營收",
+            "previous_comparison_pct": "rotc_monthly_revenue:前期比較增減(%)",
         },
     ),
     DatasetSpec(
@@ -132,6 +244,7 @@ CORE_SPECS = [
             "world_high": "world_index:high",
             "world_low": "world_index:low",
             "world_close": "world_index:close",
+            "world_adj_close": "world_index:adj_close",
             "world_volume": "world_index:volume",
         },
     ),
@@ -154,6 +267,18 @@ CORE_SPECS = [
             "tw_option_put_call_ratio": "tw_option_put_call_ratio",
             "tw_taifex_futures_large_trader": "tw_taifex_futures_large_trader",
             "tw_taifex_option_large_trader": "tw_taifex_option_large_trader",
+            "futures_inst_long_trade_lots": "futures_institutional_investors_trading_summary:多方交易口數",
+            "futures_inst_short_trade_lots": "futures_institutional_investors_trading_summary:空方交易口數",
+            "futures_inst_net_trade_lots": "futures_institutional_investors_trading_summary:多空交易口數淨額",
+            "futures_inst_long_oi_lots": "futures_institutional_investors_trading_summary:多方未平倉口數",
+            "futures_inst_short_oi_lots": "futures_institutional_investors_trading_summary:空方未平倉口數",
+            "futures_inst_net_oi_lots": "futures_institutional_investors_trading_summary:多空未平倉口數淨額",
+            "futures_inst_long_trade_amount_k": "futures_institutional_investors_trading_summary:多方交易契約金額(千元)",
+            "futures_inst_short_trade_amount_k": "futures_institutional_investors_trading_summary:空方交易契約金額(千元)",
+            "futures_inst_net_trade_amount_k": "futures_institutional_investors_trading_summary:多空交易契約金額淨額(千元)",
+            "futures_inst_long_oi_amount_k": "futures_institutional_investors_trading_summary:多方未平倉契約金額(千元)",
+            "futures_inst_short_oi_amount_k": "futures_institutional_investors_trading_summary:空方未平倉契約金額(千元)",
+            "futures_inst_net_oi_amount_k": "futures_institutional_investors_trading_summary:多空未平倉契約金額淨額(千元)",
         },
     ),
     DatasetSpec(
@@ -177,6 +302,14 @@ CORE_SPECS = [
         keys={"rotc_broker_transactions": "rotc_broker_transactions"},
     ),
 ]
+
+for spec in CORE_SPECS:
+    if spec.lane == "fundamental_factor_diversity":
+        spec.keys.update({
+            "non_current_assets": "financial_statement:非流動資產",
+            "cash_and_cash_equivalents_increase_decrease": "financial_statement:本期現金及約當現金增加_減少_數",
+            "other_payables": "financial_statement:其他應付款",
+        })
 
 TRADING_RESTRICTION_RETENTION_DAYS = int(os.environ.get("FINLAB_TRADING_RESTRICTION_RETENTION_DAYS", "31"))
 TRADING_RESTRICTION_CLEANUP_ENABLED = str(
@@ -534,6 +667,46 @@ def taipei_today() -> str:
 def recent_calendar_dates(days: int) -> list[str]:
     today = datetime.fromisoformat(taipei_today()).date()
     return [(today - timedelta(days=offset)).isoformat() for offset in range(max(1, days))]
+
+
+def fetch_official_twse_index_frame() -> pd.DataFrame:
+    query_day = taipei_today().replace("-", "")
+    body = official_json_get(
+        f"https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date={query_day}&response=json",
+        label="twse_mi_5mins_hist",
+    )
+    rows = body.get("data") if isinstance(body, dict) else []
+    output: list[dict[str, Any]] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        date = parse_official_date(row[0], taipei_today())
+        close = parse_official_number(row[4])
+        if close is None:
+            continue
+        open_value = parse_official_number(row[1])
+        high = parse_official_number(row[2])
+        low = parse_official_number(row[3])
+        output.append({
+            "date": date,
+            "symbol": "TWII",
+            "name": "發行量加權股價指數",
+            "open": open_value,
+            "high": high,
+            "low": low,
+            "close": close,
+            "change": None,
+            "change_pct": None,
+            "volume": None,
+            "value": None,
+        })
+    if not output:
+        return pd.DataFrame(columns=["date", "symbol", "name", "open", "high", "low", "close", "change", "change_pct", "volume", "value"])
+    frame = pd.DataFrame(output).drop_duplicates(["date", "symbol"], keep="last")
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame[frame["date"].notna()].sort_values("date")
+    frame["date"] = frame["date"].dt.strftime("%Y-%m-%d")
+    return frame
 
 
 def fetch_official_tpex_index_frame() -> pd.DataFrame:
@@ -993,6 +1166,21 @@ def materialize_specs(
                 write_parquet(path, frame)
                 artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": non_null_cells(frame)})
             if spec.lane == "regime_context":
+                frame = fetch_official_twse_index_frame()
+                if not frame.empty:
+                    field = "official_twse_index"
+                    path = lane_dir / f"{field}.parquet"
+                    write_parquet(path, frame)
+                    finlab_rows = max(finlab_rows, int(len(frame)))
+                    latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
+                    schema_fields.append(field)
+                    artifacts.append({
+                        "field": field,
+                        "api_key": "twse.mi_5mins_hist.official",
+                        "path": str(path),
+                        "shape": list(frame.shape),
+                        "non_null_cells": non_null_cells(frame),
+                    })
                 frame = fetch_official_tpex_index_frame()
                 if not frame.empty:
                     field = "official_tpex_index"

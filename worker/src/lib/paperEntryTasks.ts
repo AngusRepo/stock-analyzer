@@ -37,9 +37,7 @@ import { buildPaperBrokerReconciliation } from './paperBrokerReconciliation'
 import { buildTwOrderLegs, getTwTickSize, normalizeTwFilledSharesForRequestedOrder, normalizeTwLimitPrice } from './twMarketRules'
 import {
   buildIntradayTechnicalSnapshot,
-  floorRollingBarIntervalMs,
   resolveIntradayTechnicalDecision,
-  type IntradayRollingBar,
 } from './intradayTechnicalSnapshot'
 import {
   assessS12IntradayStructureFromBaseBars,
@@ -47,6 +45,8 @@ import {
   type S12IntradayAssessment,
   type S12IntradayGateMode,
 } from './s12IntradayStructure'
+import { buildCanonicalTradeLifecycle, serializeCanonicalTradeLifecycle } from './canonicalTradeLifecycle'
+import { loadIntradayTechnicalRollingBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows } from './s12RuntimeBars'
 import { getTwClockParts, isTwIntradayTradingMinute } from './twMarketSession'
 import {
   appendPendingBuyExecutionNote,
@@ -76,7 +76,6 @@ import {
   batchLoadOhlcvTradePlanLevelsBySymbol,
   formatOhlcvTradePlanWatchPoint,
   resolveOhlcvEntryPlan,
-  type OhlcvRow,
 } from './ohlcvTradePlanLevels'
 import { buildEntryPriceModelV2FromOhlcvPlan, buildVolumeProfileV2 } from './entryPriceModelV2'
 import { buildPriceActionStructure } from './priceActionStructure'
@@ -128,9 +127,66 @@ interface S12AssistEntryOverlay {
   detail: string
 }
 
+interface S12RuntimeSidecar {
+  assessment: S12IntradayAssessment
+  technicalDecision: { action: 'pass' | 'defer' | 'skip'; reason: string; detail: string } | null
+  assistEntryOverlay: S12AssistEntryOverlay | null
+  barSource: 'shioaji_kbars_plus_events' | 'event_history'
+}
+
 function positiveNumber(value: unknown): number | null {
   const n = finiteNumber(value)
   return n != null && n > 0 ? n : null
+}
+
+export function resolveS12AssistedExitInputs(params: {
+  fillPrice: number
+  s12Assessment: S12IntradayAssessment | null
+  s12AssistApplied: boolean
+  atrInitialStop: number
+  atrTp1: number
+  atrTp2: number
+}): {
+  initialStop: number
+  tp1: number
+  tp2: number
+  source: 's12_structure_exit_plan' | 'sltp_atr_default'
+} {
+  if (!params.s12AssistApplied || !params.s12Assessment) {
+    return {
+      initialStop: params.atrInitialStop,
+      tp1: params.atrTp1,
+      tp2: params.atrTp2,
+      source: 'sltp_atr_default',
+    }
+  }
+
+  const structuralStop =
+    positiveNumber(params.s12Assessment.exitPlan.trailingStop.initial) ??
+    positiveNumber(params.s12Assessment.execution.stopLoss)
+  const structuralTp1 = positiveNumber(params.s12Assessment.exitPlan.tp1.price)
+  const structuralMainExit = positiveNumber(params.s12Assessment.exitPlan.mainExit.price)
+
+  const initialStop =
+    structuralStop != null && structuralStop < params.fillPrice
+      ? structuralStop
+      : params.atrInitialStop
+  const tp1 =
+    structuralTp1 != null && structuralTp1 > params.fillPrice
+      ? structuralTp1
+      : params.atrTp1
+  const tp2Candidate =
+    structuralMainExit != null && structuralMainExit > params.fillPrice
+      ? structuralMainExit
+      : params.atrTp2
+  const tp2 = Math.max(tp2Candidate, tp1)
+
+  return {
+    initialStop,
+    tp1,
+    tp2,
+    source: 's12_structure_exit_plan',
+  }
 }
 
 function roundPct(value: number): number {
@@ -198,13 +254,6 @@ function s12PrimaryMomentumContext(base: PreTradeMomentumContext): PreTradeMomen
   }
 }
 
-function parseEventTimeMs(value: unknown): number | null {
-  if (!value) return null
-  const text = String(value)
-  const parsed = new Date(text.includes('T') ? text : text.replace(' ', 'T')).getTime()
-  return Number.isFinite(parsed) ? parsed : null
-}
-
 async function loadExecutionBlockedSymbols(env: Bindings, tradeDate: string): Promise<Set<string>> {
   const policy = await loadTradingRestrictionBuckets(env, tradeDate, {
     refreshOfficialIfStale: true,
@@ -246,12 +295,6 @@ async function batchGetIntradayTechnicalBaselines(
     })
   }
   return out
-}
-
-interface IntradaySnapshotSample {
-  startMs: number
-  close: number
-  totalVolume: number
 }
 
 function parseFinLabL5EventQuote(symbol: string, row: { created_at?: string | null; detail_json?: string | null }): FinLabL5Quote | null {
@@ -308,238 +351,6 @@ async function loadRecentFinLabL5QuoteHistory(
   } catch {
     return currentQuote ? [currentQuote] : []
   }
-}
-
-function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
-  const startMs = parseEventTimeMs(row.created_at)
-  if (startMs == null) return null
-  try {
-    const detail = row.detail_json ? JSON.parse(row.detail_json) : null
-    const close = finiteNumber(detail?.latestClose)
-    if (close == null || close <= 0) return null
-    return {
-      startMs,
-      close,
-      totalVolume: Math.max(0, finiteNumber(detail?.totalVolume) ?? 0),
-    }
-  } catch {
-    return null
-  }
-}
-
-function samplesToRollingBars(samples: IntradaySnapshotSample[], intervalMs: number): IntradayRollingBar[] {
-  const ordered = [...samples].sort((a, b) => a.startMs - b.startMs)
-  const buckets = new Map<number, { open: number; high: number; low: number; close: number; lastTotalVolume: number }>()
-  for (const sample of ordered) {
-    const bucketMs = Math.floor(sample.startMs / intervalMs) * intervalMs
-    const bucket = buckets.get(bucketMs)
-    if (!bucket) {
-      buckets.set(bucketMs, {
-        open: sample.close,
-        high: sample.close,
-        low: sample.close,
-        close: sample.close,
-        lastTotalVolume: sample.totalVolume,
-      })
-    } else {
-      bucket.high = Math.max(bucket.high, sample.close)
-      bucket.low = Math.min(bucket.low, sample.close)
-      bucket.close = sample.close
-      bucket.lastTotalVolume = Math.max(bucket.lastTotalVolume, sample.totalVolume)
-    }
-  }
-
-  const bars: IntradayRollingBar[] = []
-  let previousTotalVolume: number | null = null
-  for (const [startMs, bucket] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
-    const volume = previousTotalVolume == null
-      ? Math.max(0, bucket.lastTotalVolume)
-      : Math.max(0, bucket.lastTotalVolume - previousTotalVolume)
-    bars.push({
-      startMs,
-      open: bucket.open,
-      high: bucket.high,
-      low: bucket.low,
-      close: bucket.close,
-      volume,
-    })
-    previousTotalVolume = Math.max(previousTotalVolume ?? 0, bucket.lastTotalVolume)
-  }
-  return bars
-}
-
-function formatIntradayBarTime(startMs: number): string {
-  const d = new Date(startMs + 8 * 3600_000)
-  return `${String(d.getUTCHours()).padStart(2, '0')}${String(d.getUTCMinutes()).padStart(2, '0')}${String(d.getUTCSeconds()).padStart(2, '0')}`
-}
-
-function rollingBarsToOhlcvRows(tradeDate: string, bars: IntradayRollingBar[]): OhlcvRow[] {
-  return bars
-    .filter((bar) => (
-      Number.isFinite(bar.open) &&
-      Number.isFinite(bar.high) &&
-      Number.isFinite(bar.low) &&
-      Number.isFinite(bar.close) &&
-      bar.high >= bar.low
-    ))
-    .map((bar) => ({
-      date: tradeDate,
-      time: formatIntradayBarTime(bar.startMs),
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-      volume: Math.max(0, Number(bar.volume ?? 0)),
-    }))
-}
-
-interface S12KbarRow {
-  ts?: string | null
-  time?: string | null
-  datetime?: string | null
-  open?: number | string | null
-  high?: number | string | null
-  low?: number | string | null
-  close?: number | string | null
-  volume?: number | string | null
-}
-
-function s12KbarStartDate(tradeDate: string): string {
-  return new Date(new Date(`${tradeDate}T00:00:00Z`).getTime() - 7 * 86400_000).toISOString().slice(0, 10)
-}
-
-function parseTwKbarTimeMs(value: unknown): number | null {
-  if (!value) return null
-  const text = String(value).trim()
-  if (/^\d{10,19}$/.test(text)) {
-    const raw = Number(text)
-    if (!Number.isFinite(raw)) return null
-    if (text.length >= 18) return Math.floor(raw / 1_000_000)
-    if (text.length >= 15) return Math.floor(raw / 1_000)
-    if (text.length >= 13) return Math.floor(raw)
-    return Math.floor(raw * 1000)
-  }
-  const direct = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text) ? Date.parse(text) : Number.NaN
-  if (Number.isFinite(direct)) return direct
-  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/)
-  if (!match) {
-    const parsed = Date.parse(text)
-    return Number.isFinite(parsed) ? parsed : null
-  }
-  const [, y, mo, d, h, mi, s] = match
-  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h) - 8, Number(mi), Number(s ?? 0))
-}
-
-function s12KbarRowToBar(row: S12KbarRow): IntradayRollingBar | null {
-  const startMs = parseTwKbarTimeMs(row.ts ?? row.time ?? row.datetime)
-  const open = finiteNumber(row.open)
-  const high = finiteNumber(row.high)
-  const low = finiteNumber(row.low)
-  const close = finiteNumber(row.close)
-  if (startMs == null || open == null || high == null || low == null || close == null) return null
-  return {
-    startMs,
-    open,
-    high: Math.max(high, open, close),
-    low: Math.min(low, open, close),
-    close,
-    volume: Math.max(0, finiteNumber(row.volume) ?? 0),
-  }
-}
-
-async function fetchS12ShioajiKbars(
-  env: Bindings,
-  symbol: string,
-  tradeDate: string,
-): Promise<IntradayRollingBar[]> {
-  if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) return []
-  const proxyUrl = String((env as any).SHIOAJI_PROXY_URL ?? '').replace(/\/+$/, '')
-  if (!proxyUrl) return []
-  const start = s12KbarStartDate(tradeDate)
-  const limit = Math.max(200, Math.min(5000, Math.floor(optionalPositiveNumber((env as any).S12_INTRADAY_KBARS_LIMIT, 3000))))
-  const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`
-  const res = await fetch(url, {
-    headers: (env as any).PROXY_SERVICE_TOKEN ? { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN}` } : {},
-    signal: AbortSignal.timeout(5000),
-  })
-  if (!res.ok) throw new Error(`s12_kbars_http_${res.status}`)
-  const json = await res.json() as { data?: S12KbarRow[] }
-  return (Array.isArray(json.data) ? json.data : [])
-    .map(s12KbarRowToBar)
-    .filter((bar): bar is IntradayRollingBar => bar != null)
-}
-
-async function loadIntradayTechnicalRollingBars(
-  env: Bindings,
-  symbol: string,
-  tradeDate: string,
-  currentPrice: number,
-  currentTotalVolume: number,
-  options: { intervalMs?: number; lookback?: number } = {},
-): Promise<IntradayRollingBar[]> {
-  const intervalMs = floorRollingBarIntervalMs(Number(options.intervalMs ?? (env as any).INTRADAY_TECHNICAL_BAR_INTERVAL_MS ?? 30_000))
-  const defaultLookback = options.lookback ?? Number((env as any).INTRADAY_TECHNICAL_BAR_LOOKBACK ?? 40)
-  const lookback = Math.max(6, Math.min(720, Math.floor(Number(defaultLookback))))
-  const { results } = await env.DB.prepare(`
-    SELECT created_at, detail_json
-      FROM paper_execution_events
-     WHERE trade_date = ?
-       AND symbol = ?
-       AND event_type = 'intraday_technical_decision'
-     ORDER BY id DESC
-     LIMIT ?
-  `).bind(tradeDate, symbol, lookback).all<{ created_at: string | null; detail_json: string | null }>()
-  const samples = (results ?? [])
-    .map(parseIntradaySnapshotSample)
-    .filter((sample): sample is IntradaySnapshotSample => sample != null)
-  samples.push({
-    startMs: Date.now(),
-    close: currentPrice,
-    totalVolume: Math.max(0, currentTotalVolume),
-  })
-  const bars = samplesToRollingBars(samples, intervalMs)
-  return bars.length > 0
-    ? bars.slice(-lookback)
-    : [{
-      startMs: Date.now(),
-      open: currentPrice,
-      high: currentPrice,
-      low: currentPrice,
-      close: currentPrice,
-      volume: Math.max(0, currentTotalVolume),
-    }]
-}
-
-async function loadS12IntradayBaseBars(
-  env: Bindings,
-  symbol: string,
-  tradeDate: string,
-  currentPrice: number,
-  currentTotalVolume: number,
-): Promise<{ bars: IntradayRollingBar[]; source: 'shioaji_kbars_plus_events' | 'event_history' }> {
-  const eventBars = await loadIntradayTechnicalRollingBars(
-    env,
-    symbol,
-    tradeDate,
-    currentPrice,
-    currentTotalVolume,
-    {
-      intervalMs: optionalPositiveNumber((env as any).S12_INTRADAY_BASE_BAR_INTERVAL_MS, 60_000),
-      lookback: optionalPositiveNumber((env as any).S12_INTRADAY_BAR_LOOKBACK, 720),
-    },
-  )
-  try {
-    const kbarBars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
-    if (kbarBars.length > 0) {
-      return {
-        bars: [...kbarBars, ...eventBars].sort((a, b) => a.startMs - b.startMs),
-        source: 'shioaji_kbars_plus_events',
-      }
-    }
-  } catch (error) {
-    console.warn(`[S12] kbars unavailable for ${symbol}: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  return { bars: eventBars, source: 'event_history' }
 }
 
 async function loadPreTradeMomentum(
@@ -1165,32 +976,64 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     `).bind(ACCOUNT_ID).all<any>()
     return (results ?? []).map(toCapitalHolding)
   }
-  const buildExecutionAllocatorDecision = async (pending: PendingBuy): Promise<FiveSlotDecision | null> => {
+  const buildExecutionAllocatorEvaluation = async (pending: PendingBuy): Promise<{
+    decision: FiveSlotDecision | null
+    context: Record<string, unknown>
+  }> => {
     const candidate: FiveSlotCandidate = {
       symbol: pending.symbol,
       confidence: pending.confidence,
       score_v2: pending.score_v2 ?? null,
       riskPct: pending.risk_pct,
     }
-    return buildFiveSlotExecutionDecision({
-      account: {
-        cash: Number((acc as any).cash ?? 0),
-        totalPortfolio,
-        dailyRemaining: Math.max(0, DAILY_BUY_LIMIT - dailyBuyTotal),
-      },
+    const holdings = await loadCurrentCapitalHoldings()
+    const account = {
+      cash: Number((acc as any).cash ?? 0),
+      totalPortfolio,
+      dailyRemaining: Math.max(0, DAILY_BUY_LIMIT - dailyBuyTotal),
+    }
+    const config = {
+      maxPositions: maxPos,
+      maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
+      maxPctOfCash: cfg.position.maxPctOfCash,
+      dailyBuyLimit: DAILY_BUY_LIMIT,
+      minPositionValue: cfg.position.minPositionValue ?? 30_000,
+      swapThreshold: cfg.position.swapThreshold,
+    }
+    const decision = buildFiveSlotExecutionDecision({
+      account,
       marketRiskLevel: marketRisk.risk_level,
       marketContext: allocatorMarketContext,
-      config: {
-        maxPositions: maxPos,
-        maxPctOfPortfolio: cfg.position.maxPctOfPortfolio,
-        maxPctOfCash: cfg.position.maxPctOfCash,
-        dailyBuyLimit: DAILY_BUY_LIMIT,
-        minPositionValue: cfg.position.minPositionValue ?? 30_000,
-        swapThreshold: cfg.position.swapThreshold,
-      },
-      holdings: await loadCurrentCapitalHoldings(),
+      config,
+      holdings,
       candidate,
     })
+    return {
+      decision,
+      context: {
+        settled_cash: Math.round(settledCash),
+        available_cash: Math.round(account.cash),
+        total_portfolio: Math.round(totalPortfolio),
+        positions: holdings.length,
+        max_positions: maxPos,
+        daily_buy_limit: DAILY_BUY_LIMIT,
+        daily_buy_total: Math.round(dailyBuyTotal),
+        daily_remaining: Math.round(account.dailyRemaining),
+        min_position_value: config.minPositionValue,
+        max_pct_cash: config.maxPctOfCash,
+        cash_cap: Math.round(account.cash * config.maxPctOfCash),
+        max_pct_portfolio: config.maxPctOfPortfolio,
+        portfolio_cap: Math.round(totalPortfolio * config.maxPctOfPortfolio),
+        market_risk_level: marketRisk.risk_level,
+        market_risk_score: allocatorMarketContext.riskScore ?? null,
+      },
+    }
+  }
+  const buildExecutionAllocatorPlan = async (pending: PendingBuy): Promise<{
+    decision: FiveSlotDecision | null
+    context: Record<string, unknown>
+  }> => {
+    return buildExecutionAllocatorEvaluation(pending)
   }
   const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map(toCapitalHolding)
   const capitalPlanPreview = buildFiveSlotCapitalPlan({
@@ -1244,13 +1087,146 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     pendingBuys = transition.allItems as PendingBuy[]
     if (transition.changed) stateChanged = true
   }
-  const recordAllocatorDecision = (symbol: string, decision: FiveSlotDecision) => {
+  const recordAllocatorDecision = (
+    symbol: string,
+    decision: FiveSlotDecision,
+    context?: Record<string, unknown>,
+  ) => {
+    const contextDetail = context
+      ? Object.entries(context)
+        .filter(([, value]) => value != null && value !== '')
+        .map(([key, value]) => `${key}=${String(value).replace(/[;:=\s]+/g, '_')}`)
+        .join(';')
+      : ''
     recordExecutionNote(
       symbol,
       `allocator_${decision.action}`,
       decision.reason,
-      `${formatFiveSlotDecisionWatchPoint(decision)};target=${Math.round(decision.targetPositionValue)};current=${Math.round(decision.currentPositionValue)};budget=${Math.round(decision.budgetCap)};replace=${decision.replaceSymbol ?? 'none'}`,
+      [
+        formatFiveSlotDecisionWatchPoint(decision),
+        `target=${Math.round(decision.targetPositionValue)}`,
+        `current=${Math.round(decision.currentPositionValue)}`,
+        `budget=${Math.round(decision.budgetCap)}`,
+        `replace=${decision.replaceSymbol ?? 'none'}`,
+        contextDetail,
+      ].filter(Boolean).join(';'),
     )
+  }
+  const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
+  const s12Enabled = enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, true)
+  const s12Sidecars = new Map<string, S12RuntimeSidecar>()
+  const runS12Sidecar = async (
+    pending: PendingBuy,
+    price: number,
+    currentOhlc: { totalVolume?: number | null } | null | undefined,
+  ): Promise<S12RuntimeSidecar | null> => {
+    if (!s12Enabled) return null
+    const existing = s12Sidecars.get(pending.symbol)
+    if (existing) return existing
+    try {
+      const s12Base = await loadS12IntradayBaseBars(
+        env,
+        pending.symbol,
+        today,
+        price,
+        Number(currentOhlc?.totalVolume ?? 0),
+      )
+      const assessment = assessS12IntradayStructureFromBaseBars({
+        symbol: pending.symbol,
+        baseBars: s12Base.bars,
+        nowMs: Date.now(),
+      })
+      const assistEntryOverlay = buildS12AssistEntryOverlay(
+        assessment,
+        s12Mode,
+        optionalPositiveNumber((env as any).S12_INTRADAY_MAX_CHASE_PCT_CAP, 0.012),
+      )
+      const technicalDecision = s12PreTradeTechnicalDecision(assessment, s12Mode)
+      const sidecar: S12RuntimeSidecar = {
+        assessment,
+        technicalDecision,
+        assistEntryOverlay,
+        barSource: s12Base.source,
+      }
+      s12Sidecars.set(pending.symbol, sidecar)
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: pending.symbol,
+        side: 'buy',
+        eventType: 's12_intraday_structure',
+        status: assessment.state,
+        reason: assessment.reason,
+        detail: {
+          ...assessment,
+          gate_mode: s12Mode,
+          assist_only: s12Mode === 'observe',
+          assist_entry_applied: assistEntryOverlay != null,
+          assist_entry_overlay: assistEntryOverlay,
+          bar_source: s12Base.source,
+          sidecar_stage: 'pre_allocator',
+          always_run: true,
+        },
+        pendingRunId,
+        source: 's12_intraday_structure',
+      })
+      recordExecutionNote(
+        pending.symbol,
+        'checked_waiting',
+        assessment.reason,
+        `${assessment.detail};bar_source=${s12Base.source};sidecar=pre_allocator`,
+      )
+      const s12PrimaryOwnerEnabled =
+        s12Mode === 'assist_entry' &&
+        enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
+      if (assessment.maturity?.stale) {
+        recordExecutionNote(
+          pending.symbol,
+          'checked_waiting',
+          's12_structure_stale',
+          `${assessment.detail};advisory_only=true`,
+        )
+      } else if (s12PrimaryOwnerEnabled && !assessment.ready && !assessment.invalidated) {
+        recordExecutionNote(
+          pending.symbol,
+          'checked_waiting',
+          's12_structure_advisory_waiting',
+          `${assessment.detail};advisory_only=true;kept=entry_model_v2,intraday_technical_veto`,
+        )
+      }
+      if (technicalDecision) {
+        recordExecutionNote(
+          pending.symbol,
+          technicalDecision.action === 'skip' ? 'pending' : 'checked_waiting',
+          technicalDecision.reason,
+          technicalDecision.detail,
+        )
+      }
+      if (assistEntryOverlay) {
+        recordExecutionNote(
+          pending.symbol,
+          'checked_waiting',
+          's12_assist_entry_ready',
+          assistEntryOverlay.detail,
+        )
+      }
+      return sidecar
+    } catch (error) {
+      const reason = 's12_data_unavailable'
+      const detail = error instanceof Error ? error.message : String(error)
+      recordExecutionNote(pending.symbol, 'checked_waiting', reason, detail)
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: pending.symbol,
+        side: 'buy',
+        eventType: 's12_intraday_structure',
+        status: 'error',
+        reason,
+        detail: { error: detail, sidecar_stage: 'pre_allocator', always_run: true },
+        pendingRunId,
+        source: 's12_intraday_structure',
+      })
+      return null
+    }
   }
   for (const pending of [...pendingBuys]) {
     if ((pending.debate_verdict ?? 'PENDING') === 'PENDING') continue
@@ -1293,8 +1269,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue
     }
 
-    const allocatorDecision = await buildExecutionAllocatorDecision(pending)
-    if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision)
+    const currentOhlc = ohlcMap.get(pending.symbol)
+    const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)
+    const allocatorPlan = await buildExecutionAllocatorPlan(pending)
+    const allocatorDecision = allocatorPlan.decision
+    if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision, allocatorPlan.context)
     if (!allocatorDecision || allocatorDecision.action === 'skip' || allocatorDecision.action === 'hold') {
       const reason = allocatorDecision?.reason ?? 'allocator_no_plan'
       recordActiveExecutionStatus(
@@ -1302,14 +1281,17 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         'checked_waiting',
         reason,
         allocatorDecision
-          ? `target=${Math.round(allocatorDecision.targetPositionValue)};current=${Math.round(allocatorDecision.currentPositionValue)}`
+          ? [
+            `target=${Math.round(allocatorDecision.targetPositionValue)}`,
+            `current=${Math.round(allocatorDecision.currentPositionValue)}`,
+            ...Object.entries(allocatorPlan.context).map(([key, value]) => `${key}=${String(value).replace(/[;:=\s]+/g, '_')}`),
+          ].join(';')
           : null,
       )
       console.log(`[Allocator] ${pending.symbol}: ${reason}`)
       continue
     }
 
-    const currentOhlc = ohlcMap.get(pending.symbol)
     if (currentOhlc?.source !== 'shioaji') {
       const reason = `broker_quote_required:${currentOhlc?.source ?? 'missing'}`
       recordActiveExecutionStatus(pending.symbol, 'quote_unavailable', reason)
@@ -1536,119 +1518,29 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         intradayTechnicalDecision.detail,
       )
     }
-    let s12Assessment: S12IntradayAssessment | null = null
-    let s12TechnicalDecision: { action: 'pass' | 'defer' | 'skip'; reason: string; detail: string } | null = null
-    let s12AssistEntryOverlay: S12AssistEntryOverlay | null = null
-    const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
-    let s12PrimaryStructureOwnerActive = false
-    if (enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, true)) {
-      try {
-        const s12Base = await loadS12IntradayBaseBars(
-          env,
-          pending.symbol,
-          today,
-          price,
-          Number(currentOhlc?.totalVolume ?? 0),
-        )
-        s12Assessment = assessS12IntradayStructureFromBaseBars({
-          symbol: pending.symbol,
-          baseBars: s12Base.bars,
-          nowMs: Date.now(),
-        })
-        s12AssistEntryOverlay = buildS12AssistEntryOverlay(
-          s12Assessment,
-          s12Mode,
-          optionalPositiveNumber((env as any).S12_INTRADAY_MAX_CHASE_PCT_CAP, 0.012),
-        )
-        if (s12AssistEntryOverlay) {
-          executionEntryPrice = s12AssistEntryOverlay.entryPrice
-          executionStopLoss = s12AssistEntryOverlay.stopLoss ?? executionStopLoss
-          effectivePreTradePlan = buildS12AssistTradePlan(s12AssistEntryOverlay, effectiveOhlcvTradePlan)
-          entryModelV2 = null
-        }
-        await recordPaperExecutionEvent(env, {
-          tradeDate: today,
-          symbol: pending.symbol,
-          side: 'buy',
-          eventType: 's12_intraday_structure',
-          status: s12Assessment.state,
-          reason: s12Assessment.reason,
-          detail: {
-            ...s12Assessment,
-            gate_mode: s12Mode,
-            assist_only: s12Mode === 'observe',
-            assist_entry_applied: s12AssistEntryOverlay != null,
-            assist_entry_overlay: s12AssistEntryOverlay,
-            bar_source: s12Base.source,
-          },
-          pendingRunId,
-          source: 's12_intraday_structure',
-        })
-        recordExecutionNote(
-          pending.symbol,
-          'checked_waiting',
-          s12Assessment.reason,
-          `${s12Assessment.detail};bar_source=${s12Base.source}`,
-        )
-        s12TechnicalDecision = s12PreTradeTechnicalDecision(
-          s12Assessment,
-          s12Mode,
-        )
-        const s12PrimaryOwnerEnabled =
-          s12Mode === 'assist_entry' &&
-          enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
-        s12PrimaryStructureOwnerActive =
-          s12PrimaryOwnerEnabled &&
-          s12Assessment != null &&
-          (s12Assessment.ready || s12Assessment.invalidated)
-        if (s12PrimaryStructureOwnerActive && !s12Assessment.invalidated && !s12AssistEntryOverlay) {
-          entryModelV2 = null
-          recordExecutionNote(
-            pending.symbol,
-            'checked_waiting',
-            's12_primary_structure_owner_waiting',
-            `${s12Assessment.detail};replaced=entry_model_v2,intraday_technical_veto`,
-          )
-        } else if (s12PrimaryOwnerEnabled && s12Assessment && !s12Assessment.ready && !s12Assessment.invalidated) {
-          recordExecutionNote(
-            pending.symbol,
-            'checked_waiting',
-            's12_structure_advisory_waiting',
-            `${s12Assessment.detail};advisory_only=true;kept=entry_model_v2,intraday_technical_veto`,
-          )
-        }
-        if (s12TechnicalDecision) {
-          recordExecutionNote(
-            pending.symbol,
-            s12TechnicalDecision.action === 'skip' ? 'pending' : 'checked_waiting',
-            s12TechnicalDecision.reason,
-            s12TechnicalDecision.detail,
-          )
-        }
-        if (s12AssistEntryOverlay) {
-          recordExecutionNote(
-            pending.symbol,
-            'checked_waiting',
-            's12_assist_entry_ready',
-            s12AssistEntryOverlay.detail,
-          )
-        }
-      } catch (error) {
-        const reason = 's12_data_unavailable'
-        const detail = error instanceof Error ? error.message : String(error)
-        recordExecutionNote(pending.symbol, 'checked_waiting', reason, detail)
-        await recordPaperExecutionEvent(env, {
-          tradeDate: today,
-          symbol: pending.symbol,
-          side: 'buy',
-          eventType: 's12_intraday_structure',
-          status: 'error',
-          reason,
-          detail: { error: detail },
-          pendingRunId,
-          source: 's12_intraday_structure',
-        })
-      }
+    const s12Assessment: S12IntradayAssessment | null = s12Sidecar?.assessment ?? null
+    const s12TechnicalDecision = s12Sidecar?.technicalDecision ?? null
+    const s12AssistEntryOverlay = s12Sidecar?.assistEntryOverlay ?? null
+    const s12PrimaryOwnerEnabled =
+      s12Mode === 'assist_entry' &&
+      enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
+    const s12PrimaryStructureOwnerActive =
+      s12PrimaryOwnerEnabled &&
+      s12Assessment != null &&
+      (s12Assessment.ready || s12Assessment.invalidated)
+    if (s12AssistEntryOverlay) {
+      executionEntryPrice = s12AssistEntryOverlay.entryPrice
+      executionStopLoss = s12AssistEntryOverlay.stopLoss ?? executionStopLoss
+      effectivePreTradePlan = buildS12AssistTradePlan(s12AssistEntryOverlay, effectiveOhlcvTradePlan)
+      entryModelV2 = null
+    } else if (s12PrimaryStructureOwnerActive && s12Assessment && !s12Assessment.invalidated) {
+      entryModelV2 = null
+      recordExecutionNote(
+        pending.symbol,
+        'checked_waiting',
+        's12_primary_structure_owner_waiting',
+        `${s12Assessment.detail};replaced=entry_model_v2,intraday_technical_veto`,
+      )
     }
     const effectiveTechnicalDecision = s12PrimaryStructureOwnerActive
       ? s12TechnicalDecision
@@ -2044,6 +1936,49 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const initialStop = fillPrice - atr14 * slMult
     const tp1Price = fillPrice + atr14 * tpMult
     const tp2Price = fillPrice + atr14 * tpMult * tp2Mult
+    const effectiveExitInputs = resolveS12AssistedExitInputs({
+      fillPrice,
+      s12Assessment,
+      s12AssistApplied: s12AssistEntryOverlay != null,
+      atrInitialStop: initialStop,
+      atrTp1: tp1Price,
+      atrTp2: tp2Price,
+    })
+    const effectiveInitialStop = effectiveExitInputs.initialStop
+    const effectiveTp1Price = effectiveExitInputs.tp1
+    const effectiveTp2Price = effectiveExitInputs.tp2
+    const canonicalTradeLifecycle = buildCanonicalTradeLifecycle({
+      tradeDate: today,
+      symbol: pending.symbol,
+      marketRiskLevel: marketRisk.risk_level,
+      marketRiskScore: finiteNumber(marketRisk.risk_score ?? marketRisk.riskScore),
+      regime: regimeLabel,
+      sizingMode,
+      targetExposure: allocatorDecision.targetExposure,
+      allocationAction: allocatorDecision.action,
+      allocationReason: allocatorDecision.reason,
+      entryPrice: fillPrice,
+      stopLoss: executionStopLoss ?? effectiveInitialStop,
+      chaseCeiling: s12AssistEntryOverlay?.chaseCeiling ?? null,
+      s12Assessment,
+      s12AssistApplied: s12AssistEntryOverlay != null,
+      initialStop: effectiveInitialStop,
+      trailingStop: effectiveInitialStop,
+      tp1: effectiveTp1Price,
+      tp2: effectiveTp2Price,
+      atr14,
+      stopMultiplier: slMult,
+      tpMultiplier: tpMult,
+      tp2Multiplier: tp2Mult,
+      protectiveFloorPolicy: {
+        breakEvenActivationPct: 0,
+        breakEvenBufferPct: 0,
+        tp1TouchProfitLockPct: 0,
+        mfeProfitLock3Pct: sltp?.trailSwitch3pct ?? 0.03,
+        mfeProfitLock6Pct: sltp?.trailSwitch8pct ?? 0.08,
+      },
+    })
+    const canonicalTradeLifecycleJson = serializeCanonicalTradeLifecycle(canonicalTradeLifecycle)
 
     const existing = await env.DB.prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
@@ -2079,12 +2014,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           updatedAvgCost,
           fillPrice,
           today,
-          initialStop,
-          initialStop,
+          effectiveInitialStop,
+          effectiveInitialStop,
           fillPrice,
           slMult,
-          tp1Price,
-          tp2Price,
+          effectiveTp1Price,
+          effectiveTp2Price,
           shares,
         ),
         env.DB.prepare(`
@@ -2125,6 +2060,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             allocation_candidate_rank: allocatorDecision.candidateRank ?? null,
             stop_pct: stopPct,
             atr14,
+            atr_initial_stop: initialStop,
+            atr_tp1: tp1Price,
+            atr_tp2: tp2Price,
+            effective_initial_stop: effectiveInitialStop,
+            effective_tp1: effectiveTp1Price,
+            effective_tp2: effectiveTp2Price,
+            exit_input_source: effectiveExitInputs.source,
+            exit_owner: 'paper_sltp_atr_trailing_v1',
+            s12_exit_plan: s12Assessment?.exitPlan ?? null,
+            s12_quality: s12Assessment?.quality ?? null,
+            canonical_trade_lifecycle: canonicalTradeLifecycle,
+            canonical_trade_lifecycle_json: canonicalTradeLifecycleJson,
             budget: Math.round(budget),
             fill_type: 'limit_intraday',
             raw_limit_price: rawLimitPrice,
@@ -2196,6 +2143,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         price_tick: getTwTickSize(limitPrice),
         fill_price: fillPrice,
         total_cost: totalCost,
+        effective_initial_stop: effectiveInitialStop,
+        effective_tp1: effectiveTp1Price,
+        effective_tp2: effectiveTp2Price,
+        exit_input_source: effectiveExitInputs.source,
+        exit_owner: 'paper_sltp_atr_trailing_v1',
         sizing_mode: sizingMode,
         l4_sparse_allocation_weight: sparseSizing?.weight ?? null,
         l4_sparse_allocation_rank: sparseSizing?.allocationRank ?? null,
@@ -2257,7 +2209,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     console.log(`[Intraday] filled ${pending.symbol} ${shares}${lotTag} @ ${fillPrice} (mkt ${price})`)
     void sendDiscordNotification(
       (env as any).DISCORD_WEBHOOK_URL,
-      `Auto buy filled: ${pending.symbol} ${pending.name}\n${shares}${lotTag} @ $${fillPrice} (mkt ${price})\nSL $${initialStop.toFixed(1)} | TP1 $${tp1Price.toFixed(1)} | TP2 $${tp2Price.toFixed(1)}`,
+      `Auto buy filled: ${pending.symbol} ${pending.name}\n${shares}${lotTag} @ $${fillPrice} (mkt ${price})\nSL $${effectiveInitialStop.toFixed(1)} | TP1 $${effectiveTp1Price.toFixed(1)} | TP2 $${effectiveTp2Price.toFixed(1)}`,
     )
 
     if (isPartialFill) {

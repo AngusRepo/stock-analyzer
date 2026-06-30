@@ -24,6 +24,7 @@ import {
   calcTax,
 } from '../lib/paperTradeMath'
 import { batchGetIntradayOHLC } from '../lib/paperIntradayData'
+import { getPostClosePriceMap } from '../lib/paperIntradayPriceCache'
 import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
 import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
@@ -59,6 +60,34 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 function finiteNumber(value: unknown): number | null {
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function parseJsonRecord(value: unknown): Record<string, any> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function extractCanonicalTradeLifecycleFromOrderNote(note: unknown): Record<string, any> | null {
+  const parsed = parseJsonRecord(note)
+  if (!parsed) return null
+  const direct = parseJsonRecord(parsed.canonical_trade_lifecycle) ?? (
+    parsed.canonical_trade_lifecycle && typeof parsed.canonical_trade_lifecycle === 'object'
+      ? parsed.canonical_trade_lifecycle as Record<string, any>
+      : null
+  )
+  const encoded = parseJsonRecord(parsed.canonical_trade_lifecycle_json)
+  const lifecycle = direct ?? encoded
+  if (!lifecycle || lifecycle.version !== 'canonical_trade_lifecycle_v1') return null
+  return lifecycle
 }
 
 type InstitutionalRawCardRow = {
@@ -620,6 +649,7 @@ paper.get('/positions', async (c) => {
   const { results: positions } = await c.env.DB.prepare(
     'SELECT * FROM paper_positions WHERE account_id=? AND shares>0 ORDER BY symbol'
   ).bind(ACCOUNT_ID).all<any>()
+  const positionSymbols = [...new Set((positions ?? []).map((p: any) => String(p.symbol ?? '').trim()).filter(Boolean))]
 
 // Intraday pricing ladder during TW market hours (09:00-13:30).
   const isMarketOpen = isTwIntradayTradingMinute()
@@ -636,10 +666,80 @@ paper.get('/positions', async (c) => {
     }
   }
 
+// Tier 1b: post-close quote snapshots refreshed after 13:30 for readability.
+  const postCloseMap = !isMarketOpen && positionSymbols.length
+    ? await getPostClosePriceMap(c.env.KV, positionSymbols)
+    : new Map()
+
 // Tier 2: DB end-of-day OHLCV fallback by symbol.
   let totalPositionValue = 0
+  const s12HoldingDefenseMap = new Map<string, any>()
+  const canonicalLifecycleMap = new Map<string, any>()
+  if (positions?.length) {
+    const symbols = positionSymbols
+    if (symbols.length > 0) {
+      const placeholders = symbols.map(() => '?').join(',')
+      const { results: s12Events } = await c.env.DB.prepare(`
+        SELECT symbol, status, reason, detail_json, created_at
+          FROM paper_execution_events
+         WHERE account_id = ?
+           AND symbol IN (${placeholders})
+           AND event_type = 's12_intraday_structure'
+           AND source = 's12_holding_defense'
+         ORDER BY id DESC
+         LIMIT 80
+      `).bind(ACCOUNT_ID, ...symbols).all<any>()
+      for (const event of s12Events ?? []) {
+        const symbol = String(event.symbol ?? '').trim()
+        if (!symbol || s12HoldingDefenseMap.has(symbol)) continue
+        let detail: any = null
+        try {
+          detail = event.detail_json ? JSON.parse(event.detail_json) : null
+        } catch {
+          detail = null
+        }
+        s12HoldingDefenseMap.set(symbol, {
+          status: event.status ?? null,
+          reason: event.reason ?? null,
+          detail,
+          created_at: event.created_at ?? null,
+          active: Boolean(detail?.holding_defense?.active),
+          action: detail?.holding_defense?.action ?? null,
+          trailing_stop_before: detail?.holding_defense?.trailing_stop_before ?? null,
+          trailing_stop_after: detail?.holding_defense?.trailing_stop_after ?? null,
+        })
+      }
+
+      const orderLimit = Math.min(200, Math.max(80, symbols.length * 8))
+      const { results: buyOrders } = await c.env.DB.prepare(`
+        SELECT symbol, note, created_at
+          FROM paper_orders
+         WHERE account_id = ?
+           AND symbol IN (${placeholders})
+           AND side = 'buy'
+         ORDER BY id DESC
+         LIMIT ${orderLimit}
+      `).bind(ACCOUNT_ID, ...symbols).all<any>()
+      for (const order of buyOrders ?? []) {
+        const symbol = String(order.symbol ?? '').trim()
+        if (!symbol || canonicalLifecycleMap.has(symbol)) continue
+        const lifecycle = extractCanonicalTradeLifecycleFromOrderNote(order.note)
+        if (!lifecycle) continue
+        canonicalLifecycleMap.set(symbol, {
+          ...lifecycle,
+          created_at: order.created_at ?? lifecycle.created_at ?? null,
+          entry_owner: lifecycle.owners?.entry ?? null,
+          exit_owner: lifecycle.owners?.exit ?? null,
+          context_owner: lifecycle.owners?.context ?? null,
+          entry_source: lifecycle.entry?.source ?? null,
+          exit_input_source: lifecycle.exit_input_source ?? lifecycle.entry?.source ?? null,
+        })
+      }
+    }
+  }
   const enriched = await Promise.all((positions ?? []).map(async (pos: any) => {
-    const currentPrice = intradayMap.get(pos.symbol) ?? await getLatestPrice(c.env.DB, pos.symbol)
+    const postClosePrice = postCloseMap.get(pos.symbol)
+    const currentPrice = intradayMap.get(pos.symbol) ?? postClosePrice?.price ?? await getLatestPrice(c.env.DB, pos.symbol)
     const marketValue  = currentPrice ? currentPrice * pos.shares : 0
     const costBasis    = pos.avg_cost * pos.shares
     const unrealizedPnl    = marketValue - costBasis
@@ -657,13 +757,15 @@ paper.get('/positions', async (c) => {
       market_value:     Math.round(marketValue),
       unrealized_pnl:   Math.round(unrealizedPnl),
       unrealized_pnl_pct: Math.round(unrealizedPnlPct * 100) / 100,
-      price_source:     intradayMap.has(pos.symbol) ? 'intraday' as const : 'eod' as const,
+      price_source:     intradayMap.has(pos.symbol) ? 'intraday' as const : postClosePrice ? postClosePrice.source : 'eod' as const,
 // Refresh stop-loss / take-profit state when a fresher price arrives.
       initial_stop:     pos.initial_stop ? Math.round(pos.initial_stop * 10) / 10 : null,
       trailing_stop:    pos.trailing_stop ? Math.round(pos.trailing_stop * 10) / 10 : null,
       tp1_price:        pos.tp1_price ? Math.round(pos.tp1_price * 10) / 10 : null,
       tp2_price:        pos.tp2_price ? Math.round(pos.tp2_price * 10) / 10 : null,
       tp1_hit:          !!pos.tp1_hit,
+      s12_holding_defense: s12HoldingDefenseMap.get(pos.symbol) ?? null,
+      canonical_trade_lifecycle: canonicalLifecycleMap.get(pos.symbol) ?? null,
     }
   }))
 

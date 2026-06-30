@@ -2,11 +2,8 @@ import {
   Activity,
   BarChart3,
   CircleDollarSign,
-  Gauge,
   Landmark,
   Layers3,
-  TrendingDown,
-  TrendingUp,
 } from 'lucide-react'
 
 type Tone = 'cyan' | 'emerald' | 'amber' | 'rose' | 'violet' | 'slate'
@@ -35,8 +32,17 @@ type BreakdownCard = {
   Icon: typeof Activity
   metrics: Metric[]
   segments: Segment[]
-  sparkline: number[]
   preview: boolean
+}
+
+type FuturesInstitutionalRow = {
+  id?: string
+  label?: string
+  category?: string
+  netTradeLots?: number | null
+  netOiLots?: number | null
+  netTradeAmountK?: number | null
+  netOiAmountK?: number | null
 }
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -95,6 +101,51 @@ function pct(value: number | null, digits = 1) {
   return `${value.toFixed(digits)}%`
 }
 
+function futuresBreakdownRows(regime: any, fallback: {
+  netTradeLots: number
+  netOiLots: number
+  netOiAmountK: number
+}): FuturesInstitutionalRow[] {
+  const rows = Array.isArray(regime?.futuresInstitutionalBreakdown)
+    ? regime.futuresInstitutionalBreakdown
+    : []
+  const normalized = rows
+    .map((row: any) => ({
+      id: String(row?.id ?? '').trim(),
+      label: String(row?.label ?? row?.category ?? '').trim(),
+      category: String(row?.category ?? '').trim(),
+      netTradeLots: asNumber(row?.netTradeLots),
+      netOiLots: asNumber(row?.netOiLots),
+      netTradeAmountK: asNumber(row?.netTradeAmountK),
+      netOiAmountK: asNumber(row?.netOiAmountK),
+    }))
+    .filter((row) => row.label)
+  if (normalized.length) return normalized
+  return [{
+    id: 'total',
+    label: '合計',
+    category: 'legacy aggregate',
+    netTradeLots: fallback.netTradeLots,
+    netOiLots: fallback.netOiLots,
+    netOiAmountK: fallback.netOiAmountK,
+  }]
+}
+
+function participantTone(value: number | null | undefined): Tone {
+  const n = asNumber(value)
+  if (n == null) return 'slate'
+  return n >= 0 ? 'emerald' : 'rose'
+}
+
+function participantLabel(row: FuturesInstitutionalRow) {
+  const label = String(row.label ?? row.id ?? '').trim()
+  if (label.includes('外資')) return '外資'
+  if (label.includes('投信')) return '投信'
+  if (label.includes('自營')) return '自營商'
+  if (label.includes('合計') || row.id === 'total') return '合計'
+  return label || '法人'
+}
+
 function realOrPreview<T>(value: T | null | undefined, preview: T): { value: T; preview: boolean } {
   return value == null ? { value: preview, preview: true } : { value, preview: false }
 }
@@ -104,36 +155,6 @@ function DetailPill({ children, tone = 'slate' }: { children: string; tone?: Ton
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${TONE_BORDER[tone]} ${TONE_TEXT[tone]}`}>
       {children}
     </span>
-  )
-}
-
-function MiniSparkline({ values, tone }: { values: number[]; tone: Tone }) {
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const span = max - min || 1
-  let lastY = 20
-  const points = values.map((value, index) => {
-    const x = (index / Math.max(1, values.length - 1)) * 116
-    const y = 36 - ((value - min) / span) * 28
-    if (index === values.length - 1) lastY = y
-    return `${x.toFixed(1)},${y.toFixed(1)}`
-  }).join(' ')
-  const stroke = tone === 'rose'
-    ? '#fb7185'
-    : tone === 'amber'
-      ? '#fbbf24'
-      : tone === 'emerald'
-        ? '#34d399'
-        : tone === 'violet'
-          ? '#a78bfa'
-          : '#22d3ee'
-
-  return (
-    <svg viewBox="0 0 116 42" className="h-11 w-32 overflow-visible" aria-label="risk detail trend">
-      <path d="M0 36H116" stroke="rgba(148,163,184,.18)" strokeWidth="1" strokeDasharray="3 5" />
-      <polyline points={points} fill="none" stroke={stroke} strokeOpacity="0.95" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="116" cy={lastY} r="3" fill={stroke} />
-    </svg>
   )
 }
 
@@ -175,12 +196,6 @@ function MetricRow({ metric }: { metric: Metric }) {
             <div
               className={`h-full rounded-full ${TONE_BAR[metric.tone]}`}
               style={{ width: `${clamp(metric.intensity)}%` }}
-            />
-          </div>
-          <div className="mt-1 h-1 overflow-hidden rounded-full bg-black/20">
-            <div
-              className={`h-full rounded-full ${TONE_BAR[metric.tone]} opacity-55`}
-              style={{ width: `${clamp(metric.intensity * 0.68 + 16)}%` }}
             />
           </div>
         </div>
@@ -238,11 +253,8 @@ function BreakdownCardView({ card }: { card: BreakdownCard }) {
           <ScoreDial score={card.score} tone={card.tone} status={card.status} />
         </div>
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_132px]">
+        <div className="mt-4">
           <SegmentBar segments={card.segments} />
-          <div className="rounded-[14px] border border-white/[0.06] bg-black/20 px-2 py-2">
-            <MiniSparkline values={card.sparkline} tone={card.tone} />
-          </div>
         </div>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -276,6 +288,8 @@ function buildCards(risk: any): BreakdownCard[] {
 
   const marginUsage = realOrPreview(asNumber(chip.marginUsageRatio ?? credit.marginUsageRatio), 37.2)
   const shortUsage = realOrPreview(asNumber(chip.shortUsageRatio ?? credit.shortUsageRatio), 9.8)
+  const marginBalance = realOrPreview(asNumber(chip.marginBalance), 2_950_000)
+  const shortBalance = realOrPreview(asNumber(chip.shortBalance), 410_000)
   const lendingSellBalance = realOrPreview(asNumber(chip.securityLendingSellBalance), 2_880_000)
   const brokerBalanceIndex = realOrPreview(asNumber(chip.brokerBalanceIndex), 0.64)
   const brokerBuySellRatio = realOrPreview(asNumber(chip.brokerBuySellRatio), 1.18)
@@ -284,15 +298,49 @@ function buildCards(risk: any): BreakdownCard[] {
   const futuresNetTrade = realOrPreview(asNumber(regime.futuresInstNetTradeLots), 1_860)
   const futuresNetAmount = realOrPreview(asNumber(regime.futuresInstNetOiAmountK), -12_800_000)
   const worldAdjMove = realOrPreview(asNumber(regime.worldAdjCloseChangePct), 0.42)
+  const futuresRows = futuresBreakdownRows(regime, {
+    netTradeLots: futuresNetTrade.value,
+    netOiLots: futuresNetOi.value,
+    netOiAmountK: futuresNetAmount.value,
+  })
+  const futuresMetrics: Metric[] = futuresRows.flatMap((row) => {
+    const label = participantLabel(row)
+    const netOi = asNumber(row.netOiLots)
+    const netTrade = asNumber(row.netTradeLots)
+    const netAmountK = asNumber(row.netOiAmountK)
+    return [
+      {
+        label: `${label}未平倉`,
+        value: signed(netOi, ' 口', 0),
+        note: '台指期貨淨未平倉口數。',
+        tone: participantTone(netOi),
+        intensity: clamp(Math.abs(netOi ?? 0) / 800),
+      },
+      {
+        label: `${label}交易淨口`,
+        value: signed(netTrade, ' 口', 0),
+        note: '當日台指期貨交易淨口數。',
+        tone: participantTone(netTrade),
+        intensity: clamp(Math.abs(netTrade ?? 0) / 220),
+      },
+      {
+        label: `${label}未平倉淨額`,
+        value: compact((netAmountK ?? 0) * 1000),
+        note: '台指期貨未平倉淨額。',
+        tone: participantTone(netAmountK),
+        intensity: clamp(Math.abs(netAmountK ?? 0) / 120_000),
+      },
+    ]
+  })
 
   const liquidityPreview = amount.preview || marketValue.preview || tradeCount.preview || bidAskSpreadBps.preview || adjustedCoverage.preview
-  const chipPreview = marginUsage.preview || shortUsage.preview || lendingSellBalance.preview || brokerBalanceIndex.preview || brokerBuySellRatio.preview
+  const chipPreview = marginUsage.preview || shortUsage.preview || marginBalance.preview || shortBalance.preview || lendingSellBalance.preview || brokerBalanceIndex.preview || brokerBuySellRatio.preview
   const regimePreview = futuresNetOi.preview || futuresNetTrade.preview || futuresNetAmount.preview || worldAdjMove.preview
 
   return [
     {
       title: '市場流動性',
-      subtitle: '成交值、市值、筆數與買賣價差放在同一張流動性卡。',
+      subtitle: '成交值、交易密度與價差摩擦；覆蓋率只看資料品質。',
       source: liquidity.source ?? 'canonical_market_daily',
       status: bidAskSpreadBps.value > 25 ? '偏緊' : '正常',
       score: clamp(72 - bidAskSpreadBps.value + adjustedCoverage.value * 0.18),
@@ -304,18 +352,17 @@ function buildCards(risk: any): BreakdownCard[] {
         { label: '市值', value: 38, tone: 'violet' },
         { label: '筆數', value: 20, tone: 'emerald' },
       ],
-      sparkline: [48, 51, 47, 56, 59, 63, 61, 66, 72, 69],
       metrics: [
         { label: '總成交值', value: compact(amount.value), note: '和市場成交量並列，判斷資金活躍度。', tone: 'cyan', intensity: 68 },
         { label: '總市值', value: compact(marketValue.value), note: 'market_value 補市場承載度。', tone: 'violet', intensity: 72 },
         { label: '成交筆數', value: compact(tradeCount.value, 0), note: 'trade_count 補交易密度。', tone: 'emerald', intensity: 64 },
-        { label: '買賣價差', value: `${bidAskSpreadBps.value.toFixed(1)} bps`, note: '用 bid/ask 看 liquidity friction。', tone: bidAskSpreadBps.value > 25 ? 'amber' : 'cyan', intensity: clamp(100 - bidAskSpreadBps.value * 2) },
-        { label: '還原價覆蓋', value: pct(adjustedCoverage.value, 0), note: 'adj OHLC 可讓圖表切還原價。', tone: 'emerald', intensity: adjustedCoverage.value },
+        { label: '價差摩擦', value: `${bidAskSpreadBps.value.toFixed(1)} bps`, note: '越高代表成交摩擦較大，不是方向訊號。', tone: bidAskSpreadBps.value > 25 ? 'amber' : 'cyan', intensity: clamp(100 - bidAskSpreadBps.value * 2) },
+        { label: '還原價覆蓋率', value: pct(adjustedCoverage.value, 0), note: '資料完整度，用來判斷還原價可用性。', tone: 'slate', intensity: adjustedCoverage.value },
       ],
     },
     {
       title: '信用與券商壓力',
-      subtitle: '融資融券、借券與券商集中度合併成籌碼壓力線。',
+      subtitle: '信用餘額、額度使用率、借券與券商集中度。',
       source: chip.source ?? 'canonical_chip_daily',
       status: brokerBalanceIndex.value >= 0 ? '偏多' : '壓力',
       score: clamp(52 + marginUsage.value * 0.35 + shortUsage.value * 0.4 - brokerBalanceIndex.value * 12),
@@ -327,18 +374,19 @@ function buildCards(risk: any): BreakdownCard[] {
         { label: '融券', value: shortUsage.value, tone: shortUsage.value > 20 ? 'rose' : 'cyan' },
         { label: '券商', value: Math.max(12, Math.abs(brokerBalanceIndex.value) * 50), tone: brokerBalanceIndex.value >= 0 ? 'emerald' : 'rose' },
       ],
-      sparkline: [39, 41, 44, 43, 49, 54, 51, 58, 56, 62],
       metrics: [
-        { label: '融資使用率', value: pct(marginUsage.value), note: 'margin_usage_ratio 看槓桿熱度。', tone: marginUsage.value > 45 ? 'amber' : 'emerald', intensity: marginUsage.value },
-        { label: '融券使用率', value: pct(shortUsage.value), note: 'short_usage_ratio 看空方壓力。', tone: shortUsage.value > 20 ? 'rose' : 'cyan', intensity: shortUsage.value * 2.4 },
-        { label: '借券賣出餘額', value: compact(lendingSellBalance.value, 0), note: 'security_lending_sell_balance 補避險賣壓。', tone: 'amber', intensity: 58 },
+        { label: '融資餘額', value: compact(marginBalance.value, 0), note: '全市場融資餘額，與使用率分開讀。', tone: 'emerald', intensity: clamp(marginUsage.value) },
+        { label: '融資額度使用率', value: pct(marginUsage.value), note: '餘額 / 全市場授信額度，低值不等於行情冷。', tone: marginUsage.value > 45 ? 'amber' : 'emerald', intensity: marginUsage.value },
+        { label: '融券餘額', value: compact(shortBalance.value, 0), note: '全市場融券餘額，補空方部位規模。', tone: shortUsage.value > 20 ? 'rose' : 'cyan', intensity: shortUsage.value * 2.4 },
+        { label: '融券額度使用率', value: pct(shortUsage.value), note: '餘額 / 全市場融券額度，主要看壓力累積。', tone: shortUsage.value > 20 ? 'rose' : 'cyan', intensity: shortUsage.value * 2.4 },
+        { label: '借券賣出餘額', value: compact(lendingSellBalance.value, 0), note: '單位已轉為張，補避險賣壓。', tone: 'amber', intensity: 58 },
         { label: '券商集中度', value: brokerBalanceIndex.value.toFixed(2), note: 'broker_balance_index 可進推薦卡籌碼信心。', tone: brokerBalanceIndex.value >= 0 ? 'emerald' : 'rose', intensity: clamp(Math.abs(brokerBalanceIndex.value) * 80) },
         { label: '券商買賣比', value: brokerBuySellRatio.value.toFixed(2), note: 'broker_buy_sell_ratio 看主力承接。', tone: brokerBuySellRatio.value >= 1 ? 'emerald' : 'rose', intensity: clamp(brokerBuySellRatio.value * 52) },
       ],
     },
     {
       title: '期貨與全球風險',
-      subtitle: '法人期貨淨部位與海外還原指數補上 regime 方向。',
+      subtitle: '台指期貨法人部位拆成自營商、投信、外資與合計。',
       source: regime.source ?? 'canonical_regime_context_daily',
       status: futuresNetOi.value >= 0 ? '偏多' : '避險',
       score: clamp(50 - Math.min(22, Math.abs(futuresNetOi.value) / 420) + (worldAdjMove.value + 1) * 8),
@@ -350,12 +398,9 @@ function buildCards(risk: any): BreakdownCard[] {
         { label: '交易淨口', value: Math.max(12, Math.abs(futuresNetTrade.value) / 110), tone: futuresNetTrade.value >= 0 ? 'emerald' : 'rose' },
         { label: '海外', value: Math.max(18, Math.abs(worldAdjMove.value) * 46), tone: worldAdjMove.value >= 0 ? 'cyan' : 'amber' },
       ],
-      sparkline: [55, 52, 49, 46, 44, 47, 45, 43, 46, 48],
       metrics: [
-        { label: '法人未平倉淨口數', value: signed(futuresNetOi.value, ' 口', 0), note: 'futures_inst_net_oi_lots。', tone: futuresNetOi.value >= 0 ? 'emerald' : 'rose', intensity: clamp(Math.abs(futuresNetOi.value) / 80) },
-        { label: '法人交易淨口數', value: signed(futuresNetTrade.value, ' 口', 0), note: 'futures_inst_net_trade_lots。', tone: futuresNetTrade.value >= 0 ? 'emerald' : 'rose', intensity: clamp(Math.abs(futuresNetTrade.value) / 52) },
-        { label: '未平倉淨額', value: compact(futuresNetAmount.value * 1000), note: 'futures_inst_net_oi_amount_k。', tone: futuresNetAmount.value >= 0 ? 'emerald' : 'rose', intensity: 56 },
-        { label: '全球還原變動', value: signed(worldAdjMove.value, '%'), note: 'world_adj_close 讓海外市場可比較。', tone: worldAdjMove.value >= 0 ? 'cyan' : 'amber', intensity: clamp(Math.abs(worldAdjMove.value) * 55) },
+        ...futuresMetrics,
+        { label: '海外均值變動', value: signed(worldAdjMove.value, '%'), note: '海外指數輔助情境，不是台股主訊號。', tone: worldAdjMove.value >= 0 ? 'cyan' : 'amber', intensity: clamp(Math.abs(worldAdjMove.value) * 55) },
       ],
     },
   ]
@@ -386,21 +431,6 @@ export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
         {cards.map((card) => (
           <BreakdownCardView key={card.title} card={card} />
         ))}
-      </div>
-
-      <div className="mt-4 grid gap-3 rounded-[16px] border border-white/[0.06] bg-black/15 p-3 text-xs text-slate-500 md:grid-cols-3">
-        <div className="flex items-center gap-2">
-          <Gauge className="h-4 w-4 text-cyan-200" />
-          <span>分數呈現壓力或品質，不直接等同買賣訊號。</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <TrendingUp className="h-4 w-4 text-emerald-300" />
-          <span>綠色偏支撐，黃/紅色偏壓力或流動性變差。</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <TrendingDown className="h-4 w-4 text-rose-300" />
-          <span>資料接上後由 canonical tables 自動替換預覽值。</span>
-        </div>
       </div>
     </section>
   )

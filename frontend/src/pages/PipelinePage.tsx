@@ -609,7 +609,6 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
 function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: ReturnType<typeof buildScreenerSectorSummary> }) {
   const strategies = Array.isArray(summary?.strategies) ? summary.strategies : []
   const pairwise = Array.isArray(summary?.pairwise) ? summary.pairwise : []
-  const visibleStrategies = strategies.slice(0, 12)
   const strongestPairs = [...pairwise]
     .sort((a: any, b: any) => Number(b.jaccard ?? -1) - Number(a.jaccard ?? -1))
     .slice(0, 4)
@@ -639,12 +638,13 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
           <div className="mb-2 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-[#f5f7fb]">活躍策略</p>
             <Badge variant="outline" className="border-white/[0.12] bg-white/[0.04] text-[10px] text-[#9aa4b7]">
-              {visibleStrategies.length}/{strategies.length || 0}
+              {strategies.length || 0}
             </Badge>
           </div>
           <div className="grid gap-2 md:grid-cols-2">
-            {visibleStrategies.length ? visibleStrategies.map((row: any, index: number) => {
+            {strategies.length ? strategies.map((row: any, index: number) => {
               const accent = SECTOR_ACCENTS[index % SECTOR_ACCENTS.length]
+              const selectedCount = Number(row.selected_count ?? 0)
               return (
                 <div key={row.strategy_id ?? index} className={`rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-sm`}>
                   <div className="flex items-center justify-between gap-2">
@@ -654,7 +654,7 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
                     </Badge>
                   </div>
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/30">
-                    <div className={`h-full rounded-full ${accent.bar}`} style={{ width: `${Math.min(100, Math.max(8, Number(row.selected_count ?? 0) * 12))}%` }} />
+                    <div className={`h-full rounded-full ${accent.bar}`} style={{ width: selectedCount > 0 ? `${Math.min(100, Math.max(8, selectedCount * 12))}%` : '0%' }} />
                   </div>
                 </div>
               )

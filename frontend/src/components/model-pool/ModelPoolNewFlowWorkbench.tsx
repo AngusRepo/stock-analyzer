@@ -329,6 +329,19 @@ function asRecord(value: unknown): Record<string, unknown> {
   }
 }
 
+function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item ?? '').trim()).filter(Boolean)
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item ?? '').trim()).filter(Boolean)
+    } catch {
+      return [value.trim()]
+    }
+  }
+  return []
+}
+
 function firstFiniteNumber(...values: unknown[]): number | null {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -419,6 +432,7 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   const icSummary = asRecord(offline.ic_summary)
   const cpcvPolicy = asRecord(modelCpcv.policy ?? gateCpcvPolicy)
   const pboPolicy = asRecord(pbo.policy ?? gatePboPolicy)
+  const rowFailedGates = asStringList(artifact?.offline_gate_failed_gates)
   return {
     offline,
     live,
@@ -436,6 +450,7 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
     gatePboPolicy,
     cpcvPolicy,
     pboPolicy,
+    rowFailedGates,
   }
 }
 
@@ -486,7 +501,12 @@ function liveGateCell(candidateId: string, liveStatus: string | null | undefined
 }
 
 function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedArtifactEvidence>) {
-  const pboValue = firstFiniteNumber(evidence.metrics.pbo, evidence.pbo.pbo)
+  const pboValue = firstFiniteNumber(
+    evidence.metrics.pbo,
+    evidence.pbo.pbo,
+    evidence.modelCpcv.pbo,
+    evidence.modelCpcv.probability_of_backtest_overfitting,
+  )
   const pboMax = firstFiniteNumber(evidence.pboPolicy.max_pbo)
   const pboRequiredRaw = evidence.pboPolicy.required
   const pboRequired = typeof pboRequiredRaw === 'boolean'
@@ -507,6 +527,12 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
     evidence.pbo.decision,
     evidence.pbo.status,
   ) ?? (typeof evidence.modelCpcv.passed === 'boolean' ? (evidence.modelCpcv.passed ? 'PASS' : 'FAIL') : null)
+  const failedGates = uniqueTokens([
+    ...evidence.rowFailedGates,
+    ...asStringList(evidence.gate.failed_gates),
+    ...asStringList(evidence.modelCpcv.failed_gates),
+    ...asStringList(evidence.foundationForecastValidation.failed_gates),
+  ])
   const pboNotApplicableDetail = candidateId === 'TimesFM'
     ? 'PBO 不適用：TimesFM 單一官方 config；改看 OOS/LIVE/coverage'
     : 'PBO 不適用：單一官方 config；改看 OOS/LIVE/coverage'
@@ -518,16 +544,28 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
     : pboPolicyMissing
       ? 'PBO policy missing'
       : pboValue == null
-        ? `PBO missing <${formatMetric(pboMax, 2)}`
-        : `PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)}`
+        ? `PBO value missing / max ${formatMetric(pboMax, 2)}`
+        : pboMax == null
+          ? `PBO ${formatMetric(pboValue, 2)} / max missing`
+          : pboValue <= pboMax
+            ? `PBO ok ${formatMetric(pboValue, 2)} <= max ${formatMetric(pboMax, 2)}`
+            : `PBO high ${formatMetric(pboValue, 2)} > max ${formatMetric(pboMax, 2)}`
+  const cpcvDetail = decision
+    ? `CPCV ${gateToken(decision)}${cpcvMinIc != null ? ` / min IC ${formatMetric(cpcvMinIc, 3)}` : ''}`
+    : cpcvMinIc == null
+      ? 'CPCV policy pending'
+      : `CPCV min IC ${formatMetric(cpcvMinIc, 3)}`
   const detailParts = [
+    failedGates.length ? `fail gates: ${failedGates.map((item) => humanizeToken(item)).join(', ')}` : null,
     pboDetail,
+    cpcvDetail,
   ].filter(Boolean)
   const titleParts = [
     `${candidateId}: PBO/CPCV ${decision ?? 'unavailable'}`,
+    failedGates.length ? `failed_gates=${failedGates.join(',')}` : null,
     !pboRequired
       ? pboNotApplicableTitle
-      : `PBO=${formatMetric(pboValue, 3)} < ${formatMetric(pboMax, 2)}`,
+      : `PBO=${formatMetric(pboValue, 3)} <= max ${formatMetric(pboMax, 2)}`,
     `PBO OOS return=${formatMetric(oosMeanReturn, 4)} >= ${formatMetric(minOosMeanReturn, 4)}`,
   ].filter(Boolean)
   const tone = decision
@@ -596,11 +634,18 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
   const candidateEvidenceArtifact = record.selectedArtifact ?? (
     candidate && record.releaseArtifact?.version === candidate ? record.releaseArtifact : null
   )
-  const candidateOosIc = artifactOosIc(candidateEvidenceArtifact, record.candidate.id)
-  const championOosIc = artifactOosIc(record.servingArtifact, record.candidate.id)
-  const metricDetail = compareMetricDetail(candidateOosIc, championOosIc)
-  const finalComparedTo = firstText(promotion?.final_compared_to, record.selectedArtifact?.final_compared_to)
+  const compare = promotion?.artifact_compare
+  const candidateOosIc = firstFiniteNumber(compare?.candidate_oos_ic, artifactOosIc(candidateEvidenceArtifact, record.candidate.id))
+  const championOosIc = firstFiniteNumber(compare?.champion_oos_ic, artifactOosIc(record.servingArtifact, record.candidate.id))
+  const metricStatus = firstText(compare?.metric_status)
   const hasCandidate = Boolean(candidate)
+  const metricDetail = !hasCandidate
+    ? 'serving only / no selected candidate'
+    : [
+      metricStatus ? humanizeToken(metricStatus) : null,
+      compareMetricDetail(candidateOosIc, championOosIc),
+    ].filter(Boolean).join('\n')
+  const finalComparedTo = firstText(promotion?.final_compared_to, record.selectedArtifact?.final_compared_to)
   const hasReleaseArtifact = Boolean(artifactDisplay)
   const hasChampionBaseline = Boolean(champion)
   const compareReady = hasCandidate && Boolean(finalComparedTo)
@@ -624,6 +669,7 @@ function artifactCompareSummary(record: GrafanaModelRecord) {
       `artifact=${artifactDisplay ?? 'missing'}`,
       `candidate_gate=${candidate ?? 'none'}`,
       `current_champion=${champion ?? 'missing'}`,
+      `metric_status=${metricStatus ?? 'n/a'}`,
       metricDetail,
       `final_compared_to=${finalComparedTo ?? 'pending'}`,
     ].join(' | '),
@@ -744,7 +790,10 @@ function buildEvidenceCells({
     candidateId,
     finalComparedTo,
     hasCandidate,
-    compareMetricDetail(artifactOosIc(selectedCandidate ?? artifact, candidateId), artifactOosIc(servingArtifact, candidateId)),
+    compareMetricDetail(
+      firstFiniteNumber(promotionRows[0]?.artifact_compare?.candidate_oos_ic, artifactOosIc(selectedCandidate ?? artifact, candidateId)),
+      firstFiniteNumber(promotionRows[0]?.artifact_compare?.champion_oos_ic, artifactOosIc(servingArtifact, candidateId)),
+    ),
   )
 
   return [
@@ -979,6 +1028,91 @@ function GrafanaDashboardHeader({
         />
       </div>
     </div>
+  )
+}
+
+function candidateHousekeepingSummary(
+  selection?: ModelArtifactSelectionResponse,
+  promotionQueue?: ModelArtifactPromotionQueueResponse,
+) {
+  const archiveIds = [...new Set(
+    Object.values(selection?.models ?? {})
+      .flatMap((row) => Array.isArray(row.archive_candidates) ? row.archive_candidates : [])
+      .map((id) => String(id ?? '').trim())
+      .filter(Boolean),
+  )]
+  const suppressedById = new Map<string, NonNullable<ModelArtifactSelectionResponse['suppressed']>[number]>()
+  for (const row of [...(selection?.suppressed ?? []), ...(promotionQueue?.suppressed ?? [])]) {
+    const key = String(row.artifact_id ?? `${row.model_name}:${row.candidate_version ?? row.candidate_type}`).trim()
+    if (key) suppressedById.set(key, row)
+  }
+  const suppressed = [...suppressedById.values()]
+  const notBetter = suppressed.filter((row) => row.artifact_compare?.metric_status === 'candidate_not_better')
+  const superseded = suppressed.filter((row) => String(row.reason ?? '').toLowerCase().includes('superseded'))
+  const selectedSlots = Object.values(selection?.models ?? {}).reduce((sum, row) => (
+    sum + (row.monthly_release_candidate ? 1 : 0) + (row.weekly_drift_candidate ? 1 : 0)
+  ), 0)
+  return {
+    archiveIds,
+    suppressed,
+    notBetter,
+    superseded,
+    selectedSlots,
+  }
+}
+
+function CandidateHousekeepingPanel({
+  selection,
+  promotionQueue,
+}: {
+  selection?: ModelArtifactSelectionResponse
+  promotionQueue?: ModelArtifactPromotionQueueResponse
+}) {
+  const summary = candidateHousekeepingSummary(selection, promotionQueue)
+  const notBetterPreview = summary.notBetter.slice(0, 6)
+  const archivePreview = summary.archiveIds.slice(0, 12)
+  return (
+    <GrafanaPanel
+      title="Candidate housekeeping"
+      kicker="serving champion / selected review slots / archive-ready candidates"
+    >
+      <div className="grid gap-3 bg-[#0b1118] p-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <GrafanaStat label="Review slots" value={summary.selectedSlots} detail="monthly + weekly selected by policy" tone={summary.selectedSlots ? 'info' : 'neutral'} />
+          <GrafanaStat label="Archive-ready" value={summary.archiveIds.length} detail="not selected, not serving" tone={summary.archiveIds.length ? 'warn' : 'ok'} />
+          <GrafanaStat label="Not better" value={summary.notBetter.length} detail="candidate OOS IC <= champion" tone={summary.notBetter.length ? 'warn' : 'ok'} />
+          <GrafanaStat label="Superseded" value={summary.superseded.length} detail="newer release train owns review slot" tone={summary.superseded.length ? 'info' : 'ok'} />
+        </div>
+        <div className="min-w-0 rounded-xl border border-[#263247] bg-[#090f16] p-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-[#f2ead8]">Archive queue</p>
+            <span className="sv-num text-[11px] normal-case text-[#90a0b8]">{archivePreview.length}/{summary.archiveIds.length}</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {archivePreview.length ? archivePreview.map((id) => (
+              <span key={id} className="max-w-full truncate rounded-full border border-amber-300/20 bg-amber-300/[0.07] px-2.5 py-1 sv-num text-[11px] normal-case text-amber-100" title={id}>
+                {compactText(id, 28)}
+              </span>
+            )) : (
+              <span className="rounded-full border border-emerald-300/20 bg-emerald-300/[0.07] px-2.5 py-1 text-[11px] font-semibold text-emerald-200">clean</span>
+            )}
+          </div>
+          <div className="mt-3 grid gap-1.5">
+            {notBetterPreview.map((row) => {
+              const compare = row.artifact_compare
+              const delta = compare?.oos_ic_delta
+              return (
+                <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="grid min-w-0 gap-2 rounded-lg border border-[#263247] bg-[#0e1620] px-2 py-1.5 text-xs text-[#a7b5c8] sm:grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_80px]">
+                  <span className="min-w-0 truncate font-semibold text-[#f2ead8]">{row.model_name}</span>
+                  <span className="min-w-0 truncate sv-num normal-case">{row.candidate_version ?? row.artifact_id ?? row.candidate_type}</span>
+                  <span className="sv-num text-amber-200">{typeof delta === 'number' ? delta.toFixed(4) : 'delta n/a'}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </GrafanaPanel>
   )
 }
 
@@ -1422,6 +1556,8 @@ export default function ModelPoolNewFlowWorkbench({
       />
 
       <div className="grid gap-4 bg-[#0b1118] p-4">
+        <CandidateHousekeepingPanel selection={selection} promotionQueue={promotionQueue} />
+
         <FleetStatusStrip
           records={grafanaRecords}
           selectedModelId={selectedModelId}

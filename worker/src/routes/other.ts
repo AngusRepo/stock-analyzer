@@ -1,6 +1,7 @@
 ﻿import { Hono } from 'hono'
 
 import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/fundamentalData'
+import { DEFAULT_STRATEGY_SPECS } from '../lib/strategySpec'
 
 // ── 安全的 ID 解析（parseInt NaN 防護）─────────────────────────────────────
 function parseId(s: string | undefined | null): number | null {
@@ -1459,11 +1460,22 @@ async function loadCanonicalLiquidityDetail(db: D1Database) {
          SUM(COALESCE(value, 0)) AS turnover_amount,
          SUM(COALESCE(market_value, 0)) AS market_value,
          SUM(COALESCE(trade_count, 0)) AS trade_count,
-         AVG(CASE
-           WHEN close > 0 AND last_ask_price IS NOT NULL AND last_bid_price IS NOT NULL AND last_ask_price >= last_bid_price
-           THEN ((last_ask_price - last_bid_price) / close) * 10000.0
-           ELSE NULL
-         END) AS bid_ask_spread_bps,
+         COALESCE(
+           SUM(CASE
+             WHEN close > 0 AND last_ask_price IS NOT NULL AND last_bid_price IS NOT NULL AND last_ask_price >= last_bid_price
+             THEN ((last_ask_price - last_bid_price) / close) * 10000.0 * COALESCE(value, 0)
+             ELSE 0
+           END) / NULLIF(SUM(CASE
+             WHEN close > 0 AND last_ask_price IS NOT NULL AND last_bid_price IS NOT NULL AND last_ask_price >= last_bid_price
+             THEN COALESCE(value, 0)
+             ELSE 0
+           END), 0),
+           AVG(CASE
+             WHEN close > 0 AND last_ask_price IS NOT NULL AND last_bid_price IS NOT NULL AND last_ask_price >= last_bid_price
+             THEN ((last_ask_price - last_bid_price) / close) * 10000.0
+             ELSE NULL
+           END)
+         ) AS bid_ask_spread_bps,
          100.0 * SUM(CASE WHEN adj_close IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) AS adjusted_ohlc_coverage_pct,
          COUNT(*) AS coverage_count,
          SUM(CASE WHEN last_ask_price IS NOT NULL AND last_bid_price IS NOT NULL THEN 1 ELSE 0 END) AS quote_coverage_count
@@ -1499,9 +1511,19 @@ async function loadCanonicalChipPressureDetail(db: D1Database) {
        )
        SELECT
          (SELECT date FROM latest_date) AS date,
-         AVG(margin_usage_ratio) AS margin_usage_ratio,
-         AVG(short_usage_ratio) AS short_usage_ratio,
-         SUM(COALESCE(security_lending_sell_balance, 0)) AS security_lending_sell_balance,
+         COALESCE(
+           100.0 * SUM(COALESCE(margin_balance, 0)) / NULLIF(SUM(COALESCE(margin_limit, 0)), 0),
+           AVG(margin_usage_ratio)
+         ) AS margin_usage_ratio,
+         COALESCE(
+           100.0 * SUM(COALESCE(short_balance, 0)) / NULLIF(SUM(COALESCE(short_limit, 0)), 0),
+           AVG(short_usage_ratio)
+         ) AS short_usage_ratio,
+         SUM(COALESCE(margin_balance, 0)) AS margin_balance,
+         SUM(COALESCE(margin_limit, 0)) AS margin_limit,
+         SUM(COALESCE(short_balance, 0)) AS short_balance,
+         SUM(COALESCE(short_limit, 0)) AS short_limit,
+         SUM(COALESCE(security_lending_sell_balance, 0)) / 1000.0 AS security_lending_sell_balance,
          AVG(broker_balance_index) AS broker_balance_index,
          AVG(broker_buy_sell_ratio) AS broker_buy_sell_ratio,
          SUM(COALESCE(foreign_buy, 0)) AS foreign_buy,
@@ -1513,13 +1535,19 @@ async function loadCanonicalChipPressureDetail(db: D1Database) {
          COUNT(*) AS coverage_count
        FROM canonical_chip_daily
        WHERE date = (SELECT date FROM latest_date)
-         AND market_segment = 'LISTED_OTC'`
+         AND market_segment = 'LISTED_OTC'
+         AND LOWER(COALESCE(stock_id, '')) NOT IN ('', 'nan', 'none', 'null')
+         AND stock_id NOT LIKE '%.%'`
     ).first<any>()
     if (!row?.date) return null
     return {
       date: row.date,
       marginUsageRatio: numberOrNull(row.margin_usage_ratio),
       shortUsageRatio: numberOrNull(row.short_usage_ratio),
+      marginBalance: numberOrNull(row.margin_balance),
+      marginLimit: numberOrNull(row.margin_limit),
+      shortBalance: numberOrNull(row.short_balance),
+      shortLimit: numberOrNull(row.short_limit),
       securityLendingSellBalance: numberOrNull(row.security_lending_sell_balance),
       brokerBalanceIndex: numberOrNull(row.broker_balance_index),
       brokerBuySellRatio: numberOrNull(row.broker_buy_sell_ratio),
@@ -1540,44 +1568,55 @@ async function loadCanonicalChipPressureDetail(db: D1Database) {
 
 async function loadCanonicalRegimeRiskDetail(db: D1Database) {
   try {
-    const [futuresRow, worldRow] = await Promise.all([
+    const [futuresRows, worldRow] = await Promise.all([
       db.prepare(
         `WITH latest_date AS (
            SELECT MAX(date) AS date
            FROM canonical_regime_context_daily
            WHERE dataset = 'futures_institutional_investors_trading_summary'
+         ),
+         tx_categories AS (
+           SELECT 'dealer' AS participant_id, '自營商' AS label, '臺股期貨_自營商' AS category
+           UNION ALL SELECT 'trust', '投信', '臺股期貨_投信'
+           UNION ALL SELECT 'foreign', '外資', '臺股期貨_外資及陸資'
          )
          SELECT
            (SELECT date FROM latest_date) AS date,
-           SUM(CASE WHEN field = 'futures_inst_net_trade_lots' THEN value ELSE 0 END) AS futures_inst_net_trade_lots,
-           SUM(CASE WHEN field = 'futures_inst_net_oi_lots' THEN value ELSE 0 END) AS futures_inst_net_oi_lots,
-           SUM(CASE WHEN field = 'futures_inst_net_trade_amount_k' THEN value ELSE 0 END) AS futures_inst_net_trade_amount_k,
-           SUM(CASE WHEN field = 'futures_inst_net_oi_amount_k' THEN value ELSE 0 END) AS futures_inst_net_oi_amount_k,
-           COUNT(*) AS coverage_count
-         FROM canonical_regime_context_daily
-         WHERE date = (SELECT date FROM latest_date)
-           AND dataset = 'futures_institutional_investors_trading_summary'
-           AND field IN (
+           tx.participant_id,
+           tx.label,
+           tx.category,
+           SUM(CASE WHEN c.field = 'futures_inst_net_trade_lots' THEN c.value ELSE 0 END) AS futures_inst_net_trade_lots,
+           SUM(CASE WHEN c.field = 'futures_inst_net_oi_lots' THEN c.value ELSE 0 END) AS futures_inst_net_oi_lots,
+           SUM(CASE WHEN c.field = 'futures_inst_net_trade_amount_k' THEN c.value ELSE 0 END) AS futures_inst_net_trade_amount_k,
+           SUM(CASE WHEN c.field = 'futures_inst_net_oi_amount_k' THEN c.value ELSE 0 END) AS futures_inst_net_oi_amount_k,
+           COUNT(c.field) AS coverage_count
+         FROM tx_categories tx
+         LEFT JOIN canonical_regime_context_daily c
+           ON c.date = (SELECT date FROM latest_date)
+          AND c.dataset = 'futures_institutional_investors_trading_summary'
+          AND c.category = tx.category
+          AND c.field IN (
              'futures_inst_net_trade_lots',
              'futures_inst_net_oi_lots',
              'futures_inst_net_trade_amount_k',
              'futures_inst_net_oi_amount_k'
-           )`
-      ).first<any>(),
+           )
+         GROUP BY tx.participant_id, tx.label, tx.category
+         ORDER BY CASE tx.participant_id WHEN 'dealer' THEN 1 WHEN 'trust' THEN 2 WHEN 'foreign' THEN 3 ELSE 4 END`
+      ).all<any>(),
       db.prepare(
-        `WITH ordered_dates AS (
-           SELECT DISTINCT date
+        `WITH latest_date AS (
+           SELECT MAX(date) AS date
            FROM canonical_regime_context_daily
            WHERE dataset = 'world_index'
              AND field = 'world_adj_close'
-           ORDER BY date DESC
-           LIMIT 2
-         ),
-         latest_date AS (
-           SELECT MAX(date) AS date FROM ordered_dates
          ),
          previous_date AS (
-           SELECT MIN(date) AS date FROM ordered_dates
+           SELECT MAX(date) AS date
+           FROM canonical_regime_context_daily
+           WHERE dataset = 'world_index'
+             AND field = 'world_adj_close'
+             AND date < (SELECT date FROM latest_date)
          )
          SELECT
            (SELECT date FROM latest_date) AS date,
@@ -1598,15 +1637,46 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
            AND cur.field = 'world_adj_close'`
       ).first<any>(),
     ])
-    if (!futuresRow?.date && !worldRow?.date) return null
+    const participantRows = (futuresRows?.results ?? []).map((row: any) => ({
+      id: String(row.participant_id ?? ''),
+      label: String(row.label ?? ''),
+      category: String(row.category ?? ''),
+      netTradeLots: numberOrNull(row.futures_inst_net_trade_lots) ?? 0,
+      netOiLots: numberOrNull(row.futures_inst_net_oi_lots) ?? 0,
+      netTradeAmountK: numberOrNull(row.futures_inst_net_trade_amount_k) ?? 0,
+      netOiAmountK: numberOrNull(row.futures_inst_net_oi_amount_k) ?? 0,
+      coverageCount: numberOrNull(row.coverage_count) ?? 0,
+      date: row.date ?? null,
+    })).filter((row) => row.id && row.label)
+    const totalRow = participantRows.reduce((acc, row) => ({
+      ...acc,
+      netTradeLots: acc.netTradeLots + row.netTradeLots,
+      netOiLots: acc.netOiLots + row.netOiLots,
+      netTradeAmountK: acc.netTradeAmountK + row.netTradeAmountK,
+      netOiAmountK: acc.netOiAmountK + row.netOiAmountK,
+      coverageCount: acc.coverageCount + row.coverageCount,
+    }), {
+      id: 'total',
+      label: '合計',
+      category: '臺股期貨_三大法人合計',
+      netTradeLots: 0,
+      netOiLots: 0,
+      netTradeAmountK: 0,
+      netOiAmountK: 0,
+      coverageCount: 0,
+      date: participantRows.find((row) => row.date)?.date ?? null,
+    })
+    const futuresBreakdown = [...participantRows, totalRow]
+    if (!totalRow.date && !worldRow?.date) return null
     return {
-      date: futuresRow?.date ?? worldRow?.date ?? null,
-      futuresInstNetTradeLots: numberOrNull(futuresRow?.futures_inst_net_trade_lots),
-      futuresInstNetOiLots: numberOrNull(futuresRow?.futures_inst_net_oi_lots),
-      futuresInstNetTradeAmountK: numberOrNull(futuresRow?.futures_inst_net_trade_amount_k),
-      futuresInstNetOiAmountK: numberOrNull(futuresRow?.futures_inst_net_oi_amount_k),
+      date: totalRow.date ?? worldRow?.date ?? null,
+      futuresInstNetTradeLots: totalRow.netTradeLots,
+      futuresInstNetOiLots: totalRow.netOiLots,
+      futuresInstNetTradeAmountK: totalRow.netTradeAmountK,
+      futuresInstNetOiAmountK: totalRow.netOiAmountK,
+      futuresInstitutionalBreakdown: futuresBreakdown,
       worldAdjCloseChangePct: numberOrNull(worldRow?.world_adj_close_change_pct),
-      coverageCount: numberOrNull(futuresRow?.coverage_count),
+      coverageCount: totalRow.coverageCount,
       worldIndexCount: numberOrNull(worldRow?.world_index_count),
       source: 'canonical_regime_context_daily.finlab',
     }
@@ -3164,13 +3234,34 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
       strategySymbols.set(strategyId, set)
     }
   }
+  const registryActiveRows = await db.prepare(`
+    SELECT strategy_id
+      FROM strategy_spec_registry
+     WHERE status = 'active'
+     ORDER BY strategy_id
+  `).all<any>().catch(() => ({ results: [] as any[] }))
+  const registryActiveIds = new Set(
+    (registryActiveRows.results ?? [])
+      .map((row: any) => String(row.strategy_id ?? '').trim())
+      .filter(Boolean),
+  )
+  const defaultActiveIds = DEFAULT_STRATEGY_SPECS
+    .filter((spec) => spec.status === 'active')
+    .map((spec) => spec.id)
+  const activeStrategyIds = registryActiveIds.size ? registryActiveIds : new Set(defaultActiveIds)
+  const strategyDisplayIds = [...new Set([...activeStrategyIds, ...strategySymbols.keys()])]
   const strategyUniverseSize = Math.max(candidateSymbols.size, finiteNumber(latestRun.final_count) ?? 0)
-  const strategyCounts = [...strategySymbols.entries()]
-    .map(([strategy_id, symbols]) => ({
+  const strategyCounts = strategyDisplayIds
+    .map((strategy_id) => {
+      const symbols = strategySymbols.get(strategy_id) ?? new Set<string>()
+      return {
       strategy_id,
       selected_count: symbols.size,
       symbols: [...symbols].sort(),
-    }))
+      status: activeStrategyIds.has(strategy_id) ? 'active' : 'observed',
+      source: registryActiveIds.has(strategy_id) ? 'strategy_spec_registry' : activeStrategyIds.has(strategy_id) ? 'default_strategy_specs' : 'screener_evidence',
+    }
+    })
     .sort((a, b) => b.selected_count - a.selected_count || a.strategy_id.localeCompare(b.strategy_id))
   const pairwise: Array<Record<string, any>> = []
   const entries = [...strategySymbols.entries()].sort(([a], [b]) => a.localeCompare(b))
@@ -3213,10 +3304,11 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     },
     strategy_summary: {
       schema_version: 'daily_active_strategy_summary_v1',
-      source_of_truth: 'screener_funnel_items.l1_candidate_seed_after_overlay.evidence.strategy_pool_ids',
+      source_of_truth: 'strategy_spec_registry active rows + screener_funnel_items.l1_candidate_seed_after_overlay.evidence.strategy_pool_ids',
       run_id: latestRun.run_id,
       candidate_count: candidateSymbols.size,
-      active_strategy_count: strategyCounts.length,
+      active_strategy_count: activeStrategyIds.size,
+      observed_strategy_count: strategySymbols.size,
       strategies: strategyCounts,
       pairwise,
       avg_jaccard: avg(pairwise.map((row) => row.jaccard)),

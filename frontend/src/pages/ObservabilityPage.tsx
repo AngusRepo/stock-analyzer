@@ -103,23 +103,6 @@ function MiniBar({ value, tone }: { value: number; tone: WorkstationTone }) {
   )
 }
 
-function Sparkline({ values, tone = 'info' }: { values: number[]; tone?: WorkstationTone }) {
-  const safe = values.length ? values : [0, 0, 0, 0, 0, 0, 0]
-  const max = Math.max(...safe, 1)
-  const points = safe
-    .map((value, index) => {
-      const x = (index / Math.max(1, safe.length - 1)) * 100
-      const y = 28 - (Math.max(0, value) / max) * 24
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
-  return (
-    <svg viewBox="0 0 100 32" className="h-8 w-full" role="img" aria-label="sparkline">
-      <polyline fill="none" stroke={toneColor(tone)} strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" points={points} />
-    </svg>
-  )
-}
-
 type ReadinessStatus = 'ready' | 'running' | 'waiting' | 'blocked' | 'pending'
 
 type ReadinessStage = {
@@ -388,10 +371,11 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
   )
 }
 
-function ReadinessGateMatrix({ gates }: { gates: ReadinessGate[] }) {
+function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; limit?: number }) {
+  const visibleGates = limit > 0 ? gates.slice(0, limit) : gates
   return (
     <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-4">
-      {gates.slice(0, 12).map((gate) => (
+      {visibleGates.map((gate) => (
         <div key={gate.id} className={`rounded-2xl border p-3 ${statusRingClass(gate.tone)}`}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -500,15 +484,15 @@ function schedulerJobPriority(job: SchedulerJob) {
 }
 
 function schedulerGroupSpanClass(group: SchedulerJob['group']) {
-  if (group === 'pipeline_chain') return 'xl:col-span-2 2xl:col-span-3'
-  if (group === 'weekly') return '2xl:col-span-2'
+  if (group === 'pipeline_chain') return 'xl:col-span-2 2xl:col-span-4'
+  if (group === 'daily' || group === 'weekly') return 'xl:col-span-2 2xl:col-span-2'
   return ''
 }
 
 function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?: boolean }) {
   const tone = schedulerJobTone(job)
   return (
-    <div className={`group rounded-xl border bg-[#070a10]/88 transition duration-200 hover:-translate-y-0.5 hover:bg-[#0b1118] ${compact ? 'p-2.5' : 'p-3'}`} style={{ borderColor: `${toneColor(tone)}40` }}>
+    <div className={`group min-w-0 overflow-hidden rounded-xl border bg-[#070a10]/88 transition duration-200 hover:-translate-y-0.5 hover:bg-[#0b1118] ${compact ? 'p-2.5' : 'p-3'}`} style={{ borderColor: `${toneColor(tone)}40` }}>
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -519,13 +503,13 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
         </div>
         <WorkstationPill tone={tone}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
       </div>
-      <div className="mt-2 grid grid-cols-3 gap-1 sv-num text-[11px] normal-case text-[#9badbf]">
-        <span className="truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">last {job.lastRun || '-'}</span>
-        <span className="truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">next {job.nextRun || '-'}</span>
-        <span className="truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">7d {job.rate7d || '-'}</span>
+      <div className="mt-2 grid min-w-0 grid-cols-1 gap-1 sv-num text-[11px] normal-case text-[#9badbf] sm:grid-cols-3">
+        <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">last {job.lastRun || '-'}</span>
+        <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">next {job.nextRun || '-'}</span>
+        <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">7d {job.rate7d || '-'}</span>
       </div>
       {(job.summary || job.lastError || job.durationConcernReason) && (
-        <p className={`mt-2 line-clamp-2 text-xs leading-5 ${tone === 'error' ? 'text-rose-200' : tone === 'warn' ? 'text-amber-100' : 'text-[#9badbf]'}`}>
+        <p className={`mt-2 line-clamp-3 min-w-0 break-words text-xs leading-5 [overflow-wrap:anywhere] ${tone === 'error' ? 'text-rose-200' : tone === 'warn' ? 'text-amber-100' : 'text-[#9badbf]'}`}>
           {job.lastError || job.summary || job.durationConcernReason}
         </p>
       )}
@@ -543,7 +527,7 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
   }
 
   return (
-    <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+    <div className="min-w-0 overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Workflow className="h-4 w-4 text-[#ffd87f]" />
@@ -553,7 +537,7 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
           {hasRuntimeJobs ? `${jobs.length} runtime schedulers` : `${EXPECTED_SCHEDULER_COUNT} expected / API offline`}
         </WorkstationPill>
       </div>
-      <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-6">
+      <div className="grid min-w-0 gap-3 xl:grid-cols-2 2xl:grid-cols-4">
         {SCHEDULER_GROUP_ORDER.map((group) => {
           const groupJobs = [...(jobsByGroup.get(group) ?? [])].sort((a, b) =>
             schedulerJobPriority(a) - schedulerJobPriority(b) ||
@@ -564,7 +548,7 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
           const summary = summarizeSchedulerGroup(groupJobs)
           const cardTone = hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
           return (
-            <div key={group} className={`rounded-2xl border p-3 ${statusRingClass(cardTone)} ${schedulerGroupSpanClass(group)}`}>
+            <div key={group} className={`min-w-0 overflow-hidden rounded-2xl border p-3 ${statusRingClass(cardTone)} ${schedulerGroupSpanClass(group)}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
@@ -583,7 +567,7 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
                     <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">wait {summary.waiting}</span>
                     <span className="rounded-lg border border-rose-400/15 bg-rose-400/[0.06] px-2 py-1 text-rose-200">fail {summary.failed}</span>
                   </div>
-                  <div className={`mt-3 grid gap-2 ${group === 'pipeline_chain' ? 'lg:grid-cols-2' : ''}`}>
+                  <div className={`mt-3 grid min-w-0 gap-2 ${group === 'pipeline_chain' || group === 'daily' || group === 'weekly' ? 'lg:grid-cols-2' : ''}`}>
                     {groupJobs.map((job) => <SchedulerJobRow key={job.id} job={job} compact={group !== 'pipeline_chain'} />)}
                   </div>
                 </>
@@ -710,7 +694,7 @@ function OperationalReadinessDeck({
               </div>
               <h3 className="mt-3 font-['Space_Grotesk'] text-2xl font-semibold text-[#f8efe0]">Readiness-gated Chain Control</h3>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[#a8b6c5]">
-                用資料 freshness 與 scheduler callback 決定是否放行，不靠固定晚上十點硬跑。錯誤細節集中在下方 Critical Scheduler Errors 與分組 scheduler rows，不再重複維護另一份阻塞清單。
+                用資料 freshness 與 scheduler callback 決定是否放行，不靠固定晚上十點硬跑。錯誤細節集中在下方分組 scheduler rows，不再重複維護另一份阻塞清單。
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-3">
@@ -758,8 +742,6 @@ function OperationalReadinessDeck({
         </div>
       </div>
 
-      <CriticalSchedulerErrors jobs={jobs} />
-
       <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
         <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -792,54 +774,28 @@ function OperationalReadinessDeck({
   )
 }
 
-function checkScore(status: string) {
-  if (status === 'ok') return 100
-  if (status === 'warn') return 55
-  return 0
-}
-
-function DataQualityScoreBar({ score, tone }: { score: number; tone: WorkstationTone }) {
-  const clamped = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
-  return (
-    <div className="min-w-[120px]">
-      <div className="flex items-center justify-between sv-num text-[10px] text-slate-500">
-        <span>score</span>
-        <span className={tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : 'text-rose-300'}>{clamped}%</span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full" style={{ width: `${clamped}%`, backgroundColor: toneColor(tone) }} />
-      </div>
-    </div>
-  )
-}
-
 function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
   if (!checks.length) return <div className="p-4 text-sm text-slate-500">目前沒有 data quality checks。</div>
   const sortedChecks = [...checks].sort((a, b) => {
     const rank = (status: string) => status === 'fail' ? 0 : status === 'warn' ? 1 : 2
     return rank(a.status) - rank(b.status) || a.id.localeCompare(b.id)
   })
+  const gates: ReadinessGate[] = sortedChecks.map((check) => {
+    const status = gateStatusFromQuality(check.status)
+    return {
+      id: check.id,
+      label: check.label,
+      status,
+      tone: readinessTone(status),
+      value: check.status.toUpperCase(),
+      source: 'data-quality report',
+      detail: check.summary,
+      latestDate: null,
+    }
+  })
   return (
-    <div className="overflow-hidden rounded-xl border border-[#263247] bg-[#05070c]">
-      {sortedChecks.map((check) => {
-        const tone = statusTone(check.status)
-        return (
-          <div key={check.id} className={`grid gap-3 border-b p-2 text-xs last:border-0 xl:grid-cols-[0.75fr_minmax(0,1fr)_120px_90px] ${check.status === 'fail' ? 'border-rose-500/25 bg-rose-950/15' : check.status === 'warn' ? 'border-amber-500/25 bg-amber-950/10' : 'border-[#263247]'}`}>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <WorkstationPill tone={tone}>{check.status}</WorkstationPill>
-                <p className="min-w-0 break-words text-sm font-semibold text-slate-100">{check.label}</p>
-              </div>
-              <p className="mt-1 break-all sv-num text-[10px] normal-case text-[#70809b]">{check.id}</p>
-            </div>
-            <p className="min-w-0 whitespace-normal break-words leading-5 text-slate-400 [overflow-wrap:anywhere]">{check.summary}</p>
-            <DataQualityScoreBar score={checkScore(check.status)} tone={tone} />
-            <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 sv-num text-[10px] normal-case text-emerald-200 hover:text-emerald-100">
-              Inspect <ExternalLink className="h-3 w-3" />
-            </a>
-          </div>
-        )
-      })}
+    <div className="min-w-0 overflow-hidden rounded-xl border border-[#263247] bg-[#05070c] p-3">
+      <ReadinessGateMatrix gates={gates} limit={0} />
     </div>
   )
 }
@@ -1268,9 +1224,6 @@ export default function ObservabilityPage() {
                 <p className="shrink-0 whitespace-nowrap sv-num text-[10px] normal-case text-slate-400">Data Quality / 資料品質</p>
                 <div className="hidden items-center gap-3 sm:flex">
                   <span className={`sv-num text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
-                  <div className="w-32 shrink-0">
-                    <Sparkline values={(dqChecks.length ? dqChecks : []).slice(0, 12).map((check) => check.status === 'ok' ? 100 : check.status === 'warn' ? 55 : 5)} tone={failedChecks ? 'error' : 'ok'} />
-                  </div>
                 </div>
               </div>
               <DataQualityPanel checks={dqChecks} />

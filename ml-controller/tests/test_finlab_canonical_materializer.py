@@ -855,6 +855,39 @@ def test_materialize_outputs_include_finlab_fundamental_capital_fields() -> None
     assert "inventory_turnover" in fundamental_sql
 
 
+def test_fundamental_materialization_drops_valuation_only_daily_rows() -> None:
+    root = _root("fundamental_valuation_only_daily")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    _write(
+        lane / "pe.parquet",
+        pl.DataFrame({"date": ["2026-06-27", "2026-06-29"], "2330": [18.2, 18.5]}),
+    )
+    _write(
+        lane / "pb.parquet",
+        pl.DataFrame({"date": ["2026-06-27", "2026-06-29"], "2330": [4.1, 4.2]}),
+    )
+    _write(
+        lane / "dividend_yield.parquet",
+        pl.DataFrame({"date": ["2026-06-27", "2026-06-29"], "2330": [2.0, 2.1]}),
+    )
+    _write(
+        lane / "ebitda.parquet",
+        pl.DataFrame({"date": ["2026-04-01"], "2330": [2_500_000.0]}),
+    )
+
+    rows = build_fundamental_rows(
+        root,
+        run_id="finlab-v4-test",
+        generated_at="2026-06-30T00:00:00+00:00",
+        start_date="2026-04-01",
+        end_date="2026-06-29",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["available_date"] == "2026-04-01"
+    assert rows[0]["ebitda"] == 2_500_000.0
+
+
 def test_fundamental_materialization_drops_all_null_sparse_dates() -> None:
     root = _root("fundamental_sparse_null_dates")
     lane = root / "raw" / "fundamental_factor_diversity"

@@ -1564,6 +1564,8 @@ def build_fundamental_rows(
         "total_liabilities",
         "equity_parent",
     ]
+    valuation_only_fields = {"pe", "pb", "dividend_yield"}
+    canonical_presence_fields = [field for field in fields if field not in valuation_only_fields]
     single_day_snapshot = bool(start_date and end_date and start_date == end_date)
     df = (
         _join_wide_fields_asof_snapshot(
@@ -1586,7 +1588,7 @@ def build_fundamental_rows(
         df = df.with_columns([pl.lit(None, dtype=pl.Float64).alias(field) for field in missing_fields])
     df = df.filter(pl.any_horizontal([
         pl.col(field).is_not_null() & ~pl.col(field).is_nan()
-        for field in fields
+        for field in canonical_presence_fields
     ]))
     if df.is_empty():
         return []

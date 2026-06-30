@@ -14,6 +14,7 @@ from services.finlab_canonical_materializer import (
     build_d1_upsert_statements,
     build_broker_rank_rows,
     build_emerging_broker_rows,
+    build_fundamental_rows,
     build_listed_broker_flow_rows,
     build_market_summary_rows,
     build_taxonomy_rows,
@@ -221,6 +222,47 @@ def test_taxonomy_rows_build_four_layer_finlab_tags() -> None:
     assert ("subindustry", "Foundry") in tags
     assert ("industry_theme", "AI") in tags
     assert ("industry_theme", "CoWoS") in tags
+
+
+def test_fundamental_rows_single_day_snapshot_carries_latest_quarterly_fields() -> None:
+    root = _root("fundamental_single_day_snapshot")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    for field, (date, value) in {
+        "pe": ("2026-06-29", 17.8),
+        "pb": ("2026-06-29", 4.2),
+        "eps": ("2026-01-01", 16.2),
+        "roe": ("2026-01-01", 18.4),
+        "ebitda": ("2026-01-01", 123456.0),
+        "financial_cost": ("2026-01-01", 88.0),
+        "operating_expenses": ("2026-01-01", 777.0),
+        "revenue": ("2026-01-01", 9999.0),
+        "operating_income": ("2026-01-01", 1200.0),
+        "net_income": ("2026-01-01", 1000.0),
+    }.items():
+        _write(lane / f"{field}.parquet", pl.DataFrame({"date": [date], "2330": [value]}))
+
+    rows = build_fundamental_rows(
+        root,
+        run_id="finlab-v4-test",
+        generated_at="2026-06-30T00:00:00+00:00",
+        start_date="2026-06-29",
+        end_date="2026-06-29",
+    )
+
+    row = next(item for item in rows if item["stock_id"] == "2330")
+    assert row["available_date"] == "2026-06-29"
+    assert row["period"] == "2026-01-01"
+    assert row["report_date"] == "2026-01-01"
+    assert row["pe"] == 17.8
+    assert row["pb"] == 4.2
+    assert row["eps"] == 16.2
+    assert row["roe"] == 18.4
+    assert row["ebitda"] == 123456.0
+    assert row["financial_cost"] == 88000.0
+    assert row["operating_expenses"] == 777000.0
+    assert row["revenue"] == 9999000.0
+    assert row["operating_income"] == 1200000.0
+    assert row["net_income"] == 1000000.0
 
 
 def test_materialize_outputs_report_nonzero_canonical_rows() -> None:

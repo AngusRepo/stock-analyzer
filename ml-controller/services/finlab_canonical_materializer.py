@@ -125,6 +125,30 @@ def _join_wide_fields(
     return joined if joined is not None else pl.DataFrame()
 
 
+def _join_wide_fields_asof_snapshot(
+    lane_dir: Path,
+    fields: Iterable[str],
+    *,
+    end_date: str,
+) -> pl.DataFrame:
+    joined: pl.DataFrame | None = None
+    for field in fields:
+        frame = _wide_field_to_long(lane_dir / f"{field}.parquet", field, start_date=None, end_date=end_date)
+        if frame.is_empty():
+            continue
+        latest = (
+            frame
+            .sort(["stock_id", "date"])
+            .group_by("stock_id", maintain_order=True)
+            .agg([
+                pl.col(field).last().alias(field),
+                pl.col("date").last().alias(f"{field}__date"),
+            ])
+        )
+        joined = latest if joined is None else joined.join(latest, on="stock_id", how="full", coalesce=True)
+    return joined if joined is not None else pl.DataFrame()
+
+
 def _wide_market_field_to_long(path: Path, field: str, *, start_date: str | None, end_date: str | None) -> pl.DataFrame:
     df = _read_parquet(path)
     if df.is_empty() or "date" not in df.columns:
@@ -1540,11 +1564,20 @@ def build_fundamental_rows(
         "total_liabilities",
         "equity_parent",
     ]
-    df = _join_wide_fields(
-        artifact_root / "raw" / "fundamental_factor_diversity",
-        fields,
-        start_date=start_date,
-        end_date=end_date,
+    single_day_snapshot = bool(start_date and end_date and start_date == end_date)
+    df = (
+        _join_wide_fields_asof_snapshot(
+            artifact_root / "raw" / "fundamental_factor_diversity",
+            fields,
+            end_date=end_date or start_date or generated_at[:10],
+        )
+        if single_day_snapshot
+        else _join_wide_fields(
+            artifact_root / "raw" / "fundamental_factor_diversity",
+            fields,
+            start_date=start_date,
+            end_date=end_date,
+        )
     )
     if df.is_empty():
         return []
@@ -1584,10 +1617,38 @@ def build_fundamental_rows(
     ])
 
     lineage = _lineage(run_id, "fundamental_factor_diversity", fields, artifact_root)
+    period_preference_fields = [
+        "eps",
+        "roe",
+        "gross_margin",
+        "operating_margin",
+        "revenue_growth_yoy",
+        "revenue",
+        "operating_income",
+        "net_income",
+        "total_assets",
+        "capital_amount",
+        "pe",
+    ]
+    if single_day_snapshot:
+        date_exprs = [
+            pl.col(f"{field}__date")
+            for field in period_preference_fields
+            if f"{field}__date" in df.columns
+        ]
+        period_expr = pl.coalesce(date_exprs) if date_exprs else pl.lit(end_date or generated_at[:10])
+        df = df.with_columns(
+            period_expr.alias("period"),
+            period_expr.alias("report_date"),
+            pl.lit(end_date or generated_at[:10]).alias("available_date"),
+        )
+    else:
+        df = df.with_columns(
+            pl.col("date").alias("period"),
+            pl.col("date").alias("report_date"),
+            pl.col("date").alias("available_date"),
+        )
     df = df.with_columns(
-        pl.col("date").alias("period"),
-        pl.col("date").alias("report_date"),
-        pl.col("date").alias("available_date"),
         pl.lit("LISTED_OTC").alias("market_segment"),
         pl.lit("finlab.fundamental_factor_diversity").alias("source"),
         pl.lit(lineage).alias("lineage_json"),

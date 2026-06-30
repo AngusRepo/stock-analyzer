@@ -2674,7 +2674,7 @@ def _apply_sparse_tangent_buy_selection(
         sparse_weight_state = (
             "selected_positive_sparse_weight"
             if selected and single_name_weight > 0
-            else "zero_sparse_weight_after_alpha_utility"
+            else "zero_sparse_weight_after_inverse_risk"
         )
         cluster_evidence = cluster_evidence_by_symbol.get(symbol) or {}
         return {

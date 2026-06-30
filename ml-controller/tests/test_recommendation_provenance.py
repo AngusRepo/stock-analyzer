@@ -818,7 +818,7 @@ def test_sparse_tangent_allocation_does_not_pre_cut_by_buy_signal_rank():
         "positive_edge_but_zero_weight_due_to_better_alternative",
         "positive_edge_but_zero_weight_due_to_correlation",
     }
-    assert allocations["1111"]["sparse_weight_state"] == "zero_sparse_weight_after_alpha_utility"
+    assert allocations["1111"]["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk"
     assert allocations["1111"]["allocation_rank"] == 1
     assert allocations["1111"]["allocation_rank_policy"] == "diagnostic_only_not_capacity_gate"
     assert allocations["2222"]["allocation_rank"] == 2
@@ -869,7 +869,7 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
     assert all(allocation["hard_minimum_fill"] is False for allocation in allocations)
     assert all(allocation["selection_policy"] == "positive_expected_edge_sparse_weights_no_forced_fill" for allocation in allocations)
     assert all(allocation["selection_reason"] == "no_positive_expected_edge" for allocation in allocations)
-    assert all(allocation["sparse_weight_state"] == "zero_sparse_weight_after_alpha_utility" for allocation in allocations)
+    assert all(allocation["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk" for allocation in allocations)
     assert all(allocation["expected_return"] == 0.0 for allocation in allocations)
     assert all(allocation["positive_expected_edge"] is False for allocation in allocations)
     assert all("single_name_weight" in allocation for allocation in allocations)

@@ -25,6 +25,12 @@ assert(
   'TWII market index candidates must not use the total-return benchmark as price index close',
 )
 assert(
+  source.includes('const twii = hasMarketSeriesData(finlabTwii)') &&
+    source.includes('? finlabTwii') &&
+    source.includes(': hasMarketSeriesData(twseOfficialTwii)'),
+  'TWII market index serving must prefer FinLab canonical rows before official fallback even when official is newer',
+)
+assert(
   source.includes("session = 'day'") && source.includes("SELECT date, close FROM canonical_futures_daily"),
   'TXF day canonical query should use the explicit day session instead of requiring open_interest history',
 )

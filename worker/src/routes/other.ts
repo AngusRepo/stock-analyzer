@@ -1779,9 +1779,11 @@ market.get('/indices', async (c) => {
       status: 'ok',
       history: [],
     } : null
-    const twii = hasMarketSeriesData(finlabTwii) || hasMarketSeriesData(twseOfficialTwii)
-      ? chooseBestMarketSeries(finlabTwii, [twseOfficialTwii])
-      : marketRiskTwii
+    const twii = hasMarketSeriesData(finlabTwii)
+      ? finlabTwii
+      : hasMarketSeriesData(twseOfficialTwii)
+        ? twseOfficialTwii
+        : marketRiskTwii
     const twoii = hasMarketSeriesData(finlabTwoii)
       ? finlabTwoii
       : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab canonical_market_index_daily not materialized by GCP backfill')

@@ -121,6 +121,10 @@ export interface S12StructureExitPlan {
   }
 }
 
+export type S12H4Source = 'current_session' | 'previous_trading_day_fallback' | 'unavailable'
+
+export type S12RuntimeBarDiagnostics = Record<string, unknown>
+
 export interface S12IntradayAssessment {
   version: 's12_intraday_structure_v1'
   symbol: string
@@ -136,6 +140,10 @@ export interface S12IntradayAssessment {
     h1: number
     h4: number
   }
+  h4Source: S12H4Source
+  h4ReferenceDate: string | null
+  h4ReferenceClose: number | null
+  barDiagnostics: S12RuntimeBarDiagnostics
   coverage: 'none' | 'partial' | 'full'
   bias4h: S12HtfBias
   bias1h: S12HtfBias
@@ -183,12 +191,20 @@ interface S12IntradayInput {
   bars4h: S12Bar[]
   nowMs?: number
   min15mBars?: number
+  h4Source?: S12H4Source
+  h4ReferenceDate?: string | null
+  h4ReferenceClose?: number | null
+  barDiagnostics?: S12RuntimeBarDiagnostics | null
 }
 
 interface S12FromBaseBarsInput {
   symbol: string
   baseBars: S12Bar[]
+  fallback4hBars?: S12Bar[]
   nowMs?: number
+  barDiagnostics?: S12RuntimeBarDiagnostics | null
+  h4ReferenceDate?: string | null
+  h4ReferenceClose?: number | null
 }
 
 interface S12AggregationOptions {
@@ -278,6 +294,20 @@ function twSessionBucketStartMs(ms: number, timeframeMs: number): number | null 
   if (ms < sessionOpen || ms >= sessionClose) return null
   const elapsed = ms - sessionOpen
   return sessionOpen + Math.floor(elapsed / timeframeMs) * timeframeMs
+}
+
+function sessionAggregationDiagnostics(baseBars: S12Bar[], nowMs: number): S12RuntimeBarDiagnostics {
+  const normalized = normalizeBars(baseBars)
+  const inSession = normalized.filter((bar) => twSessionBucketStartMs(bar.startMs, M15_MS) != null)
+  const future = normalized.filter((bar) => bar.startMs > nowMs)
+  return {
+    normalized_base_bars_count: normalized.length,
+    in_session_base_bars_count: inSession.length,
+    dropped_outside_session_count: Math.max(0, normalized.length - inSession.length),
+    future_base_bars_count: future.length,
+    first_base_bar_tw: normalized.length ? new Date(normalized[0].startMs + TW_OFFSET_MS).toISOString().replace('T', ' ').slice(0, 19) : null,
+    last_base_bar_tw: normalized.length ? new Date(normalized[normalized.length - 1].startMs + TW_OFFSET_MS).toISOString().replace('T', ' ').slice(0, 19) : null,
+  }
 }
 
 function trueRange(bar: S12Bar, previousClose: number | null): number {
@@ -495,12 +525,14 @@ function emptyBearishDefense(
 }
 
 function emptyAssessment(
-  input: Pick<S12IntradayInput, 'symbol'>,
+  input: Pick<S12IntradayInput, 'symbol' | 'h4Source' | 'h4ReferenceDate' | 'h4ReferenceClose' | 'barDiagnostics'>,
   state: S12IntradayState,
   reason: string,
   detail: Record<string, unknown>,
   completedBars: S12IntradayAssessment['completedBars'],
 ): S12IntradayAssessment {
+  const h4Source = input.h4Source ?? (completedBars.h4 > 0 ? 'current_session' : 'unavailable')
+  const barDiagnostics = input.barDiagnostics ?? {}
   return {
     version: 's12_intraday_structure_v1',
     symbol: input.symbol,
@@ -509,9 +541,21 @@ function emptyAssessment(
     ready: false,
     invalidated: state === 'invalidated',
     reason,
-    detail: detailText({ state, reason, ...detail }),
+    detail: detailText({
+      state,
+      reason,
+      h4_source: h4Source,
+      h4_reference_date: input.h4ReferenceDate ?? null,
+      h4_reference_close: price(input.h4ReferenceClose),
+      ...barDiagnostics,
+      ...detail,
+    }),
     setupId: null,
     completedBars,
+    h4Source,
+    h4ReferenceDate: input.h4ReferenceDate ?? null,
+    h4ReferenceClose: price(input.h4ReferenceClose),
+    barDiagnostics,
     coverage: completedBars.h4 > 0 || completedBars.h1 > 0 || completedBars.m15 > 0 ? 'partial' : 'none',
     bias4h: { direction: 'neutral', confidence: 'none', channelAlign: false },
     bias1h: { direction: 'neutral', confidence: 'none', channelAlign: false },
@@ -724,6 +768,8 @@ function completeAssessment(params: {
       : bearishDefense.action
   const quality = params.quality ?? emptyQuality()
   const exitPlan = params.exitPlan ?? emptyExitPlan(bearishDefense)
+  const h4Source = params.input.h4Source ?? (params.completedBars.h4 > 0 ? 'current_session' : 'unavailable')
+  const barDiagnostics = params.input.barDiagnostics ?? {}
   return {
     version: 's12_intraday_structure_v1',
     symbol: params.input.symbol,
@@ -740,6 +786,9 @@ function completeAssessment(params: {
       bars15m: params.completedBars.m15,
       bars1h: params.completedBars.h1,
       bars4h: params.completedBars.h4,
+      h4_source: h4Source,
+      h4_reference_date: params.input.h4ReferenceDate ?? null,
+      h4_reference_close: price(params.input.h4ReferenceClose),
       bias4h: params.bias4h.direction,
       bias_confidence: params.bias4h.confidence,
       bias_channel_align: params.bias4h.channelAlign ? 'true' : 'false',
@@ -783,10 +832,15 @@ function completeAssessment(params: {
       stale_reason: staleReason,
       stale_after_15m_bars: Number.isFinite(staleAfterBars) ? staleAfterBars : null,
       elapsed_15m_bars: Number.isFinite(elapsedBars) ? elapsedBars : null,
+      ...barDiagnostics,
       ...params.extraDetail,
     }),
     setupId: params.setupId ?? null,
     completedBars: params.completedBars,
+    h4Source,
+    h4ReferenceDate: params.input.h4ReferenceDate ?? null,
+    h4ReferenceClose: price(params.input.h4ReferenceClose),
+    barDiagnostics,
     coverage,
     bias4h: params.bias4h,
     bias1h,
@@ -1472,12 +1526,35 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
 
 export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInput): S12IntradayAssessment {
   const nowMs = input.nowMs ?? Date.now()
+  const bars15m = aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true })
+  const bars1h = aggregateCompletedS12Bars(input.baseBars, H1_MS, nowMs, { alignToTwSession: true })
+  const currentSession4h = aggregateCompletedS12Bars(input.baseBars, H4_MS, nowMs, { alignToTwSession: true })
+  const fallback4h = currentSession4h.length > 0
+    ? []
+    : aggregateCompletedS12Bars(input.fallback4hBars ?? [], H4_MS, nowMs, { alignToTwSession: true })
+  const h4Source: S12H4Source = currentSession4h.length > 0
+    ? 'current_session'
+    : fallback4h.length > 0
+      ? 'previous_trading_day_fallback'
+      : 'unavailable'
+  const bars4h = currentSession4h.length > 0 ? currentSession4h : fallback4h
   return assessS12IntradayStructure({
     symbol: input.symbol,
     nowMs,
-    bars15m: aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true }),
-    bars1h: aggregateCompletedS12Bars(input.baseBars, H1_MS, nowMs, { alignToTwSession: true }),
-    bars4h: aggregateCompletedS12Bars(input.baseBars, H4_MS, nowMs, { alignToTwSession: true }),
+    bars15m,
+    bars1h,
+    bars4h,
+    h4Source,
+    h4ReferenceDate: h4Source === 'previous_trading_day_fallback' ? input.h4ReferenceDate ?? null : null,
+    h4ReferenceClose: h4Source === 'previous_trading_day_fallback' ? input.h4ReferenceClose ?? null : null,
+    barDiagnostics: {
+      ...(input.barDiagnostics ?? {}),
+      ...sessionAggregationDiagnostics(input.baseBars, nowMs),
+      completed_15m_bars: bars15m.length,
+      completed_1h_bars: bars1h.length,
+      completed_4h_current_session_bars: currentSession4h.length,
+      completed_4h_fallback_bars: fallback4h.length,
+    },
   })
 }
 

@@ -47,7 +47,10 @@ assert(
   'frontend must expose readable S12 defensive and stale trace labels',
 )
 assert(
-  uiHelper.includes('formatS12HoldingDefenseBadge') && uiHelper.includes('S12 提高防守'),
+  uiHelper.includes('formatS12HoldingDefenseBadge') &&
+    uiHelper.includes('S12 防守啟動') &&
+    uiHelper.includes('S12 結構監控') &&
+    uiHelper.includes('S12 防守資料不足'),
   'frontend must expose readable S12 active-holding defense labels',
 )
 assert(

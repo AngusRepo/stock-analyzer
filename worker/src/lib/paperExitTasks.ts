@@ -301,7 +301,11 @@ async function evaluateS12HoldingDefense(
     const assessment = assessS12IntradayStructureFromBaseBars({
       symbol: pos.symbol,
       baseBars: s12Base.bars,
+      fallback4hBars: s12Base.fallback4hBars,
       nowMs: Date.now(),
+      barDiagnostics: s12Base.diagnostics,
+      h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
+      h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
     })
     const update = resolveS12HoldingDefenseUpdate({
       pos,
@@ -325,6 +329,7 @@ async function evaluateS12HoldingDefense(
         no_short_order: true,
         execution_owner: 'paper_sltp_atr_trailing_v1',
         bar_source: s12Base.source,
+        bar_diagnostics: s12Base.diagnostics,
       },
     }
     const latestEvent = await env.DB.prepare(`

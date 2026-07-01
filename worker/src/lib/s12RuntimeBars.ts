@@ -19,6 +19,29 @@ interface S12KbarRow {
   volume?: number | string | null
 }
 
+export type S12BaseBarSource =
+  | 'shioaji_kbars_usable'
+  | 'shioaji_kbars_unusable_fallback_event_history'
+  | 'event_history_only'
+
+export interface S12BaseBarDiagnostics {
+  [key: string]: string | number | boolean | null | undefined
+  raw_kbars_count: number
+  parsed_kbars_count: number
+  invalid_kbars_count: number
+  event_bars_count: number
+  base_bars_count: number
+  kbars_first_tw: string | null
+  kbars_last_tw: string | null
+  kbars_min_interval_ms: number | null
+  kbars_granularity: 'intraday' | 'daily_like' | 'single_bar' | 'empty'
+  kbars_unusable_reason: string | null
+  previous_4h_fallback_loaded: boolean
+  previous_4h_reference_date: string | null
+  previous_4h_reference_close: number | null
+  kbars_error: string | null
+}
+
 function finiteNumber(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
@@ -64,6 +87,11 @@ function parseTwKbarTimeMs(value: unknown): number | null {
   }
   const [, y, mo, d, h, mi, s] = match
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h) - 8, Number(mi), Number(s ?? 0))
+}
+
+function twTimeText(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms)) return null
+  return new Date(ms + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 19)
 }
 
 function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
@@ -145,14 +173,68 @@ function s12KbarRowToBar(row: S12KbarRow): IntradayRollingBar | null {
   }
 }
 
+function kbarGranularity(bars: IntradayRollingBar[]): {
+  minIntervalMs: number | null
+  granularity: S12BaseBarDiagnostics['kbars_granularity']
+  unusableReason: string | null
+} {
+  if (bars.length === 0) return { minIntervalMs: null, granularity: 'empty', unusableReason: 'empty_kbars' }
+  if (bars.length === 1) return { minIntervalMs: null, granularity: 'single_bar', unusableReason: null }
+  const ordered = [...bars].sort((a, b) => a.startMs - b.startMs)
+  const intervals: number[] = []
+  for (let i = 1; i < ordered.length; i += 1) {
+    const diff = ordered[i].startMs - ordered[i - 1].startMs
+    if (Number.isFinite(diff) && diff > 0) intervals.push(diff)
+  }
+  const minIntervalMs = intervals.length ? Math.min(...intervals) : null
+  if (minIntervalMs != null && minIntervalMs >= 6 * 3600_000) {
+    return { minIntervalMs, granularity: 'daily_like', unusableReason: 'daily_like_kbars' }
+  }
+  return { minIntervalMs, granularity: 'intraday', unusableReason: null }
+}
+
 async function fetchS12ShioajiKbars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<IntradayRollingBar[]> {
-  if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) return []
+): Promise<{
+  bars: IntradayRollingBar[]
+  diagnostics: Pick<S12BaseBarDiagnostics,
+    'raw_kbars_count' | 'parsed_kbars_count' | 'invalid_kbars_count' | 'kbars_first_tw' |
+    'kbars_last_tw' | 'kbars_min_interval_ms' | 'kbars_granularity' | 'kbars_unusable_reason'
+  >
+}> {
+  if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) {
+    return {
+      bars: [],
+      diagnostics: {
+        raw_kbars_count: 0,
+        parsed_kbars_count: 0,
+        invalid_kbars_count: 0,
+        kbars_first_tw: null,
+        kbars_last_tw: null,
+        kbars_min_interval_ms: null,
+        kbars_granularity: 'empty',
+        kbars_unusable_reason: 'kbars_disabled',
+      },
+    }
+  }
   const proxyUrl = String((env as any).SHIOAJI_PROXY_URL ?? '').replace(/\/+$/, '')
-  if (!proxyUrl) return []
+  if (!proxyUrl) {
+    return {
+      bars: [],
+      diagnostics: {
+        raw_kbars_count: 0,
+        parsed_kbars_count: 0,
+        invalid_kbars_count: 0,
+        kbars_first_tw: null,
+        kbars_last_tw: null,
+        kbars_min_interval_ms: null,
+        kbars_granularity: 'empty',
+        kbars_unusable_reason: 'missing_proxy_url',
+      },
+    }
+  }
   const start = s12KbarStartDate(tradeDate)
   const limit = Math.max(200, Math.min(5000, Math.floor(optionalPositiveNumber((env as any).S12_INTRADAY_KBARS_LIMIT, 3000))))
   const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`
@@ -162,9 +244,71 @@ async function fetchS12ShioajiKbars(
   })
   if (!res.ok) throw new Error(`s12_kbars_http_${res.status}`)
   const json = await res.json() as { data?: S12KbarRow[] }
-  return (Array.isArray(json.data) ? json.data : [])
+  const rows = Array.isArray(json.data) ? json.data : []
+  const bars = rows
     .map(s12KbarRowToBar)
     .filter((bar): bar is IntradayRollingBar => bar != null)
+    .sort((a, b) => a.startMs - b.startMs)
+  const granularity = kbarGranularity(bars)
+  return {
+    bars,
+    diagnostics: {
+      raw_kbars_count: rows.length,
+      parsed_kbars_count: bars.length,
+      invalid_kbars_count: Math.max(0, rows.length - bars.length),
+      kbars_first_tw: twTimeText(bars[0]?.startMs),
+      kbars_last_tw: twTimeText(bars[bars.length - 1]?.startMs),
+      kbars_min_interval_ms: granularity.minIntervalMs,
+      kbars_granularity: granularity.granularity,
+      kbars_unusable_reason: granularity.unusableReason,
+    },
+  }
+}
+
+async function loadPreviousTradingDay4hFallback(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+): Promise<{ bar: IntradayRollingBar | null; referenceDate: string | null; referenceClose: number | null }> {
+  const row = await env.DB.prepare(`
+    SELECT sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
+      FROM stock_prices sp
+      JOIN stocks s ON s.id = sp.stock_id
+     WHERE s.symbol = ?
+       AND sp.date < ?
+       AND sp.open IS NOT NULL
+       AND sp.high IS NOT NULL
+       AND sp.low IS NOT NULL
+       AND sp.close IS NOT NULL
+     ORDER BY sp.date DESC
+     LIMIT 1
+  `).bind(symbol, tradeDate).first<{
+    date: string
+    open: number | string | null
+    high: number | string | null
+    low: number | string | null
+    close: number | string | null
+    volume: number | string | null
+  }>()
+  const open = finiteNumber(row?.open)
+  const high = finiteNumber(row?.high)
+  const low = finiteNumber(row?.low)
+  const close = finiteNumber(row?.close)
+  if (!row?.date || open == null || high == null || low == null || close == null) {
+    return { bar: null, referenceDate: null, referenceClose: null }
+  }
+  return {
+    bar: {
+      startMs: Date.parse(`${row.date}T01:00:00.000Z`),
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
+      close,
+      volume: Math.max(0, finiteNumber(row.volume) ?? 0),
+    },
+    referenceDate: row.date,
+    referenceClose: close,
+  }
 }
 
 export function rollingBarsToOhlcvRows(tradeDate: string, bars: IntradayRollingBar[]): OhlcvRow[] {
@@ -237,7 +381,12 @@ export async function loadS12IntradayBaseBars(
   tradeDate: string,
   currentPrice: number,
   currentTotalVolume: number,
-): Promise<{ bars: IntradayRollingBar[]; source: 'shioaji_kbars_plus_events' | 'event_history' }> {
+): Promise<{
+  bars: IntradayRollingBar[]
+  fallback4hBars: IntradayRollingBar[]
+  source: S12BaseBarSource
+  diagnostics: S12BaseBarDiagnostics
+}> {
   const eventBars = await loadIntradayTechnicalRollingBars(
     env,
     symbol,
@@ -249,16 +398,58 @@ export async function loadS12IntradayBaseBars(
       lookback: optionalPositiveNumber((env as any).S12_INTRADAY_BAR_LOOKBACK, 720),
     },
   )
+  const previous4h = await loadPreviousTradingDay4hFallback(env, symbol, tradeDate)
+  let diagnostics: S12BaseBarDiagnostics = {
+    raw_kbars_count: 0,
+    parsed_kbars_count: 0,
+    invalid_kbars_count: 0,
+    event_bars_count: eventBars.length,
+    base_bars_count: eventBars.length,
+    kbars_first_tw: null,
+    kbars_last_tw: null,
+    kbars_min_interval_ms: null,
+    kbars_granularity: 'empty',
+    kbars_unusable_reason: 'not_loaded',
+    previous_4h_fallback_loaded: previous4h.bar != null,
+    previous_4h_reference_date: previous4h.referenceDate,
+    previous_4h_reference_close: previous4h.referenceClose,
+    kbars_error: null,
+  }
   try {
-    const kbarBars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
-    if (kbarBars.length > 0) {
+    const kbars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
+    diagnostics = {
+      ...diagnostics,
+      ...kbars.diagnostics,
+    }
+    if (kbars.bars.length > 0 && diagnostics.kbars_unusable_reason == null) {
+      const bars = [...kbars.bars, ...eventBars].sort((a, b) => a.startMs - b.startMs)
       return {
-        bars: [...kbarBars, ...eventBars].sort((a, b) => a.startMs - b.startMs),
-        source: 'shioaji_kbars_plus_events',
+        bars,
+        fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+        source: 'shioaji_kbars_usable',
+        diagnostics: {
+          ...diagnostics,
+          base_bars_count: bars.length,
+        },
       }
     }
   } catch (error) {
+    diagnostics = {
+      ...diagnostics,
+      kbars_error: error instanceof Error ? error.message : String(error),
+      kbars_unusable_reason: 'kbars_fetch_error',
+    }
     console.warn(`[S12] kbars unavailable for ${symbol}: ${error instanceof Error ? error.message : String(error)}`)
   }
-  return { bars: eventBars, source: 'event_history' }
+  return {
+    bars: eventBars,
+    fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+    source: diagnostics.raw_kbars_count > 0
+      ? 'shioaji_kbars_unusable_fallback_event_history'
+      : 'event_history_only',
+    diagnostics: {
+      ...diagnostics,
+      base_bars_count: eventBars.length,
+    },
+  }
 }

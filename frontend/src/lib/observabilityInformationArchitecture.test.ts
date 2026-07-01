@@ -20,14 +20,21 @@ assert(page.includes('ready for approval'), 'GA panel should distinguish L3-read
 assert(page.includes('Request {nextLevel} review'), 'GA panel should expose a clickable L3/L4 review request action')
 assert(page.includes('Approve {pendingApprovalLevel}'), 'GA panel should expose a clickable pending GA approval action')
 assert(page.includes('Loading OBS evidence'), 'OBS should show a loading transition before rendering empty evidence frames')
-assert(page.includes('function SchedulerInventoryPanel'), 'OBS should keep scheduler group cards in the Scheduler Inventory section')
-assert(page.includes('<SchedulerInventoryPanel jobs={jobs} />'), 'OBS should render Scheduler Inventory below the readiness/source-gate row')
-assert(!page.includes('SchedulerReadinessGroupBoard'), 'OBS Source Gates should not embed the full daily/intraday/weekly/monthly scheduler group board')
+assert(page.includes('function SchedulerSourceGateBoard'), 'OBS should render scheduler group cards as the Source Gates scheduler board')
+assert(page.includes('<DataQualityCompactMatrix gates={gates} />\n          <SchedulerSourceGateBoard jobs={jobs} />'), 'OBS should place scheduler group cards directly under Source Gates / data readiness')
+assert(!page.includes('SchedulerInventoryPanel'), 'OBS should not render scheduler group cards as a separate bottom inventory block')
+assert(!page.includes('SchedulerReadinessGroupBoard'), 'OBS should use one Source Gates scheduler board implementation')
 assert(
-  page.includes("const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'weekly', 'monthly']"),
-  'Daily standalone should sit immediately to the right of Daily readiness chain in Scheduler Inventory',
+  page.includes("const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'monthly', 'weekly']"),
+  'Daily standalone should sit immediately to the right of Daily readiness chain in the Source Gates scheduler row',
 )
 assert(
-  page.includes("if (group === 'pipeline_chain' || group === 'daily') return '2xl:col-span-2'"),
-  'Daily readiness chain and Daily standalone should share the first Scheduler Inventory row on wide screens',
+  page.includes("if (group === 'pipeline_chain') return '2xl:row-span-3'") &&
+    page.includes("if (group === 'weekly') return '2xl:col-span-2'"),
+  'Source Gates scheduler board should stack Intraday and Monthly under Daily standalone, while Weekly spans a full row',
+)
+assert(
+  page.includes('xl:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)]') &&
+    page.includes('xl:grid-rows-[auto_minmax(0,1fr)]'),
+  'Adaptive / Meta Evidence should stack Threshold Policy over LinUCB Guard on the left and align with GA Promotion on the right',
 )

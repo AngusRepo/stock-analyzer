@@ -495,11 +495,7 @@ const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
   },
 }
 
-const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'weekly', 'monthly']
-const EXPECTED_SCHEDULER_COUNT = SCHEDULER_GROUP_ORDER.reduce(
-  (sum, group) => sum + SCHEDULER_GROUP_META[group].expectedCount,
-  0,
-)
+const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'monthly', 'weekly']
 const SCHEDULER_GROUP_ANCHOR_PREFIX = 'scheduler-group-'
 
 function schedulerGroupAnchor(group: SchedulerJob['group']) {
@@ -643,9 +639,9 @@ function schedulerJobPriority(job: SchedulerJob) {
   return 6
 }
 
-function schedulerGroupSpanClass(group: SchedulerJob['group']) {
-  if (group === 'pipeline_chain' || group === 'daily') return '2xl:col-span-2'
-  if (group === 'weekly') return 'xl:col-span-2 2xl:col-span-2'
+function schedulerSourceGateGroupClass(group: SchedulerJob['group']) {
+  if (group === 'pipeline_chain') return '2xl:row-span-3'
+  if (group === 'weekly') return '2xl:col-span-2'
   return ''
 }
 
@@ -784,36 +780,22 @@ function SchedulerGroupCard({
   )
 }
 
-function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
+function SchedulerSourceGateBoard({ jobs }: { jobs: SchedulerJob[] }) {
   const hasRuntimeJobs = jobs.length > 0
   const jobsByGroup = groupSchedulerJobs(jobs)
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Workflow className="h-4 w-4 text-[#ffd87f]" />
-          <p className="text-sm font-semibold text-[#f2ead8]">Scheduler Inventory / 全排程分層</p>
-        </div>
-        <WorkstationPill tone={hasRuntimeJobs ? 'neutral' : 'warn'}>
-          {hasRuntimeJobs ? `${jobs.length} runtime schedulers` : `${EXPECTED_SCHEDULER_COUNT} expected / API offline`}
-        </WorkstationPill>
-      </div>
-      <div className="grid min-w-0 auto-rows-fr gap-3 xl:grid-cols-2 2xl:grid-cols-4">
-        {SCHEDULER_GROUP_ORDER.map((group) => (
-          <SchedulerGroupCard
-            key={group}
-            group={group}
-            jobsByGroup={jobsByGroup}
-            hasRuntimeJobs={hasRuntimeJobs}
-            className={schedulerGroupSpanClass(group)}
-            jobGridClass={group === 'pipeline_chain' ? 'lg:grid-cols-2' : ''}
-          />
-        ))}
-      </div>
-      <p className="mt-3 text-xs leading-5 text-[#8b9bab]">
-        上方 readiness flow 是把主鏈濃縮成 operator 需要看的放行階段；這裡保留完整 scheduler 拓撲，Daily standalone 只與主鏈並排，不混進 source gate 判斷。
-      </p>
+    <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-2">
+      {SCHEDULER_GROUP_ORDER.map((group) => (
+        <SchedulerGroupCard
+          key={group}
+          group={group}
+          jobsByGroup={jobsByGroup}
+          hasRuntimeJobs={hasRuntimeJobs}
+          className={schedulerSourceGateGroupClass(group)}
+          jobGridClass={group === 'pipeline_chain' ? 'lg:grid-cols-2 2xl:grid-cols-1' : ''}
+        />
+      ))}
     </div>
   )
 }
@@ -976,7 +958,7 @@ function OperationalReadinessDeck({
           <ReadinessFlowMap stages={stages} />
           <SchedulerShortcutDeck jobs={jobs} />
         </div>
-        <div className="h-full rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+        <div className="flex h-full flex-col rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Database className="h-4 w-4 text-emerald-300" />
@@ -987,11 +969,8 @@ function OperationalReadinessDeck({
             </a>
           </div>
           <DataQualityCompactMatrix gates={gates} />
+          <SchedulerSourceGateBoard jobs={jobs} />
         </div>
-      </div>
-
-      <div className="mt-3">
-        <SchedulerInventoryPanel jobs={jobs} />
       </div>
     </div>
   )
@@ -1111,65 +1090,67 @@ function AdaptiveMetaPanel({
 
   return (
     <WorkstationPanel title="Adaptive / Meta Evidence" kicker="threshold, bandit, GA">
-      <div className="grid gap-3 p-3 xl:grid-cols-3">
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <div className="flex items-center justify-between gap-2">
-            <p className="sv-num text-[10px] normal-case text-[#70809b]">Threshold Policy</p>
-            <WorkstationPill tone={tone}>{adaptive?.status ?? 'missing'}</WorkstationPill>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <div>
-              <p className="text-slate-500">effective delta</p>
-              <p className="sv-num text-lg text-sky-200">{fmtNumber(threshold.effective_delta ?? evidence.confidence_delta)}</p>
+      <div className="grid items-stretch gap-3 p-3 xl:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)]">
+        <div className="grid h-full gap-3 xl:grid-rows-[auto_minmax(0,1fr)]">
+          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="sv-num text-[10px] normal-case text-[#70809b]">Threshold Policy</p>
+              <WorkstationPill tone={tone}>{adaptive?.status ?? 'missing'}</WorkstationPill>
             </div>
-            <div>
-              <p className="text-slate-500">regime</p>
-              <p className="sv-num text-lg text-slate-100">{String(thresholdInputs.regime ?? asRecord(evidence.provenance).regime ?? '-')}</p>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <p className="text-slate-500">effective delta</p>
+                <p className="sv-num text-lg text-sky-200">{fmtNumber(threshold.effective_delta ?? evidence.confidence_delta)}</p>
+              </div>
+              <div>
+                <p className="text-slate-500">regime</p>
+                <p className="sv-num text-lg text-slate-100">{String(thresholdInputs.regime ?? asRecord(evidence.provenance).regime ?? '-')}</p>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+              <span>risk {fmtNumber(threshold.risk_penalty)}</span>
+              <span>model {fmtNumber(threshold.model_quality_penalty)}</span>
+              <span>vol {fmtNumber(threshold.volatility_penalty)}</span>
+              <span>credit {fmtNumber(Number(threshold.regime_opportunity_credit ?? 0) + Number(threshold.trend_quality_credit ?? 0))}</span>
             </div>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-            <span>risk {fmtNumber(threshold.risk_penalty)}</span>
-            <span>model {fmtNumber(threshold.model_quality_penalty)}</span>
-            <span>vol {fmtNumber(threshold.volatility_penalty)}</span>
-            <span>credit {fmtNumber(Number(threshold.regime_opportunity_credit ?? 0) + Number(threshold.trend_quality_credit ?? 0))}</span>
+
+          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="sv-num text-[10px] normal-case text-[#70809b]">LinUCB Guard</p>
+              <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <div>
+                <p className="text-slate-500">max mult</p>
+                <p className="sv-num text-lg text-emerald-300">{fmtNumber(evidence.bandit_max_mult, 2)}</p>
+              </div>
+              <div>
+                <p className="text-slate-500">loss rate</p>
+                <p className="sv-num text-lg text-amber-200">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
+              </div>
+              <div>
+                <p className="text-slate-500">samples</p>
+                <p className="sv-num text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
+              </div>
+            </div>
+            <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+              <div className="flex flex-wrap items-center gap-2">
+                <WorkstationPill tone={linucbLedger.reward_ledger_status === 'updated' ? 'ok' : 'warn'}>
+                  ledger {String(linucbLedger.reward_ledger_status ?? 'missing')}
+                </WorkstationPill>
+                <span>arms {String(linucbLedger.arm_count ?? '-')}</span>
+                <span>samples {String(linucbLedger.total_samples ?? linucbLedger.source_rows ?? '-')}</span>
+                <span>ctx {String(expandedContext.version ?? linucbLedger.context_version ?? '-')}</span>
+              </div>
+              <p className="mt-2 text-[#70809b]">
+                LinUCB reward ledger 由 post-verify chain 自動刷新；手動刷新只用於補跑或修復。NeuralUCB / NeuralTS 只使用這些 evidence 做 shadow 訓練，不直接改 production。
+              </p>
+            </div>
           </div>
         </div>
 
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <div className="flex items-center justify-between gap-2">
-            <p className="sv-num text-[10px] normal-case text-[#70809b]">LinUCB Guard</p>
-            <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-            <div>
-              <p className="text-slate-500">max mult</p>
-              <p className="sv-num text-lg text-emerald-300">{fmtNumber(evidence.bandit_max_mult, 2)}</p>
-            </div>
-            <div>
-              <p className="text-slate-500">loss rate</p>
-              <p className="sv-num text-lg text-amber-200">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
-            </div>
-            <div>
-              <p className="text-slate-500">samples</p>
-              <p className="sv-num text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
-            </div>
-          </div>
-          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
-            <div className="flex flex-wrap items-center gap-2">
-              <WorkstationPill tone={linucbLedger.reward_ledger_status === 'updated' ? 'ok' : 'warn'}>
-                ledger {String(linucbLedger.reward_ledger_status ?? 'missing')}
-              </WorkstationPill>
-              <span>arms {String(linucbLedger.arm_count ?? '-')}</span>
-              <span>samples {String(linucbLedger.total_samples ?? linucbLedger.source_rows ?? '-')}</span>
-              <span>ctx {String(expandedContext.version ?? linucbLedger.context_version ?? '-')}</span>
-            </div>
-            <p className="mt-2 text-[#70809b]">
-              LinUCB reward ledger 由 post-verify chain 自動刷新；手動刷新只用於補跑或修復。NeuralUCB / NeuralTS 只使用這些 evidence 做 shadow 訓練，不直接改 production。
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+        <div className="h-full rounded-xl border border-[#263247] bg-[#05070c] p-3">
           <div className="flex items-center justify-between gap-2">
             <p className="sv-num text-[10px] normal-case text-[#70809b]">GA Promotion</p>
             <WorkstationPill tone={severityTone(ga?.severity)}>{String(promotion.level ?? 'L0')}</WorkstationPill>

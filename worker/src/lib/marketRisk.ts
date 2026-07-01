@@ -55,13 +55,48 @@ async function fetchVIX(): Promise<number | null> {
 }
 
 // ── 2. 抓 TWII 近 60 天收盤（計算波動率、均線、乖離率）────────────────────────
-async function fetchTWIIHistory(): Promise<number[]> {
+interface TwiiHistoryRow {
+  date: string
+  close: number
+  source: string
+}
+
+function twiiSourceRank(source: string): number {
+  if (source === 'finlab.taiex_total_index') return 0
+  if (source === 'twse.mi_5mins_hist.official') return 1
+  return 2
+}
+
+async function fetchTWIIHistory(db: D1Database, runDate: string): Promise<number[]> {
   try {
-    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=3mo'
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-    const json = await res.json() as any
-    const closes = json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? []
-    return closes.filter((v: any) => v != null)
+    const { results } = await db.prepare(`
+      SELECT date, close, source
+      FROM canonical_market_index_daily
+      WHERE symbol IN ('TWII', 'TAIEX')
+        AND date <= ?
+        AND close > 1000
+        AND close < 100000
+        AND source != 'finlab.benchmark_return'
+      ORDER BY date DESC
+      LIMIT 120
+    `).bind(runDate).all<TwiiHistoryRow>()
+
+    const byDate = new Map<string, TwiiHistoryRow>()
+    for (const row of results ?? []) {
+      const date = String(row.date ?? '').slice(0, 10)
+      const close = Number(row.close)
+      const source = String(row.source ?? '')
+      if (!date || !Number.isFinite(close)) continue
+
+      const previous = byDate.get(date)
+      if (!previous || twiiSourceRank(source) < twiiSourceRank(previous.source)) {
+        byDate.set(date, { date, close, source })
+      }
+    }
+
+    return [...byDate.values()]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((row) => row.close)
   } catch { return [] }
 }
 
@@ -316,7 +351,7 @@ export async function calcMarketRisk(
   // 平行抓所有資料（Phase 2: 加入 ADL + 多空排列）
   const [vix, twiiHistory, foreignChip, marginRatio, adlData, bullAlignment] = await Promise.all([
     fetchVIX(),
-    fetchTWIIHistory(),
+    fetchTWIIHistory(db, today),
     fetchMarketForeignChip(db),
     fetchMarginRatio(controllerUrl, controllerSecret),
     fetchADL(db),

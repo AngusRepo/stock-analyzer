@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
+import { isPrimaryAdminUser } from '@/lib/adminAccess'
 import { useAuth } from '@/_core/hooks/useAuth'
 
 type NavItem = {
@@ -25,7 +26,7 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { label: '首頁', icon: LayoutDashboard, href: '/' },
-  { label: '模擬交易室', icon: Bot, href: '/bot' },
+  { label: '模擬交易室', icon: Bot, href: '/bot', adminOnly: true },
   { label: '策略實驗室', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
   { label: 'OBS', icon: Activity, href: '/obs', adminOnly: true },
   { label: '流程追蹤', icon: GitBranch, href: '/pipeline', adminOnly: true },
@@ -38,8 +39,7 @@ function isActivePath(itemHref: string, currentPath: string) {
 }
 
 function visibleNavItems(isAdmin: boolean) {
-  const isLocalPreview = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)
-  return NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin || isLocalPreview)
+  return NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin)
 }
 
 function BrandButton({ onClick }: { onClick: () => void }) {
@@ -64,7 +64,7 @@ function MobileNav({
   onNavigate: (href: string) => void
 }) {
   const { user } = useAuth()
-  const items = visibleNavItems(user?.role === 'admin')
+  const items = visibleNavItems(isPrimaryAdminUser(user))
 
   return (
     <nav className="flex h-full flex-col bg-[#0d0e13] text-slate-100">
@@ -131,7 +131,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const [location, setLocation] = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
   const { user } = useAuth()
-  const items = visibleNavItems(user?.role === 'admin')
+  const items = visibleNavItems(isPrimaryAdminUser(user))
 
   const navigate = (href: string) => {
     setLocation(href)

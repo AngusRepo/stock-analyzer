@@ -1,9 +1,11 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Route, Switch } from 'wouter'
 import ErrorBoundary from './components/ErrorBoundary'
 import Dashboard from './pages/Dashboard'
 import MarketHomePage from './pages/MarketHomePage'
 import Unauthorized from './pages/Unauthorized'
+import { useAuth } from './_core/hooks/useAuth'
+import { isPrimaryAdminUser } from './lib/adminAccess'
 
 const BotDashboard = lazy(() => import('./pages/BotDashboard'))
 const StockReportPage = lazy(() => import('./pages/StockReportPage'))
@@ -20,6 +22,13 @@ function PageLoader({ label }: { label: string }) {
       Loading {label}...
     </div>
   )
+}
+
+function AdminOnly({ children, label }: { children: ReactNode; label: string }) {
+  const { user, loading } = useAuth()
+  if (loading) return <PageLoader label={label} />
+  if (!isPrimaryAdminUser(user)) return <Unauthorized />
+  return <>{children}</>
 }
 
 export default function App() {
@@ -39,45 +48,59 @@ export default function App() {
         </Route>
 
         <Route path="/bot">
-          <Suspense fallback={<PageLoader label="Bot Dashboard" />}>
-            <BotDashboard />
-          </Suspense>
+          <AdminOnly label="Bot Dashboard">
+            <Suspense fallback={<PageLoader label="Bot Dashboard" />}>
+              <BotDashboard />
+            </Suspense>
+          </AdminOnly>
         </Route>
 
         <Route path="/pipeline">
-          <Suspense fallback={<PageLoader label="Pipeline" />}>
-            <PipelinePage />
-          </Suspense>
+          <AdminOnly label="Pipeline">
+            <Suspense fallback={<PageLoader label="Pipeline" />}>
+              <PipelinePage />
+            </Suspense>
+          </AdminOnly>
         </Route>
 
         <Route path="/scheduler">
-          <Suspense fallback={<PageLoader label="Scheduler" />}>
-            <SchedulerPage />
-          </Suspense>
+          <AdminOnly label="Scheduler">
+            <Suspense fallback={<PageLoader label="Scheduler" />}>
+              <SchedulerPage />
+            </Suspense>
+          </AdminOnly>
         </Route>
 
         <Route path="/model-pool">
-          <Suspense fallback={<PageLoader label="Model Pool" />}>
-            <ModelPoolPage />
-          </Suspense>
+          <AdminOnly label="Model Pool">
+            <Suspense fallback={<PageLoader label="Model Pool" />}>
+              <ModelPoolPage />
+            </Suspense>
+          </AdminOnly>
         </Route>
 
         <Route path="/data-quality">
-          <Suspense fallback={<PageLoader label="Data Quality" />}>
-            <DataQualityPage />
-          </Suspense>
+          <AdminOnly label="Data Quality">
+            <Suspense fallback={<PageLoader label="Data Quality" />}>
+              <DataQualityPage />
+            </Suspense>
+          </AdminOnly>
         </Route>
 
         <Route path="/strategy-lab">
-          <Suspense fallback={<PageLoader label="Strategy Lab" />}>
-            <StrategyLabPage />
-          </Suspense>
+          <AdminOnly label="Strategy Lab">
+            <Suspense fallback={<PageLoader label="Strategy Lab" />}>
+              <StrategyLabPage />
+            </Suspense>
+          </AdminOnly>
         </Route>
 
         <Route path="/obs">
-          <Suspense fallback={<PageLoader label="OBS" />}>
-            <ObservabilityPage />
-          </Suspense>
+          <AdminOnly label="OBS">
+            <Suspense fallback={<PageLoader label="OBS" />}>
+              <ObservabilityPage />
+            </Suspense>
+          </AdminOnly>
         </Route>
 
         <Route component={MarketHomePage} />

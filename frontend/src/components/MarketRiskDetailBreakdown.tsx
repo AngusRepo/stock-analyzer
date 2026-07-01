@@ -294,11 +294,6 @@ export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
               </p>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:justify-end">
-            <DetailPill tone={view.tone}>{view.status}</DetailPill>
-            <DetailPill tone={participantTone(view.totalNetOi)}>{signed(view.totalNetOi, ' 口', 0)}</DetailPill>
-            <DetailPill tone={participantTone(view.totalNetTrade)}>{signed(view.totalNetTrade, ' 口', 0)}</DetailPill>
-          </div>
         </div>
 
         <div className="mt-4">
@@ -320,7 +315,6 @@ export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-3">
           <span className="min-w-0 break-words text-[11px] text-slate-500">{view.source}</span>
-          <span className={`text-[11px] font-semibold ${TONE_TEXT[view.tone]}`}>canonical signal</span>
         </div>
       </div>
     </section>

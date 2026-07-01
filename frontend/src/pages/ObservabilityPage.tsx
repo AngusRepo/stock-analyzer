@@ -34,8 +34,8 @@ import {
 function statusTone(status?: string | null): WorkstationTone {
   const value = String(status ?? '').toLowerCase()
   if (['ok', 'pass', 'success', 'resolved'].includes(value)) return 'ok'
-  if (['warn', 'warning', 'watch', 'running'].includes(value)) return 'warn'
-  if (value === 'waiting') return 'info'
+  if (value === 'running') return 'info'
+  if (['warn', 'warning', 'watch', 'waiting'].includes(value)) return 'warn'
   if (['sleep', 'skip', 'skipped'].includes(value)) return 'neutral'
   if (['fail', 'failed', 'error', 'block', 'blocked'].includes(value)) return 'error'
   return 'info'
@@ -596,7 +596,8 @@ function SchedulerShortcutDeck({ jobs }: { jobs: SchedulerJob[] }) {
 function schedulerJobTone(job: SchedulerJob): WorkstationTone {
   const status = String(job.lastStatus ?? '').toLowerCase()
   if (status === 'failed' || status === 'error') return 'error'
-  if (status === 'running' || status === 'waiting') return 'warn'
+  if (status === 'running') return 'info'
+  if (status === 'waiting') return 'warn'
   if (status === 'success') return 'ok'
   if (status === 'sleep' || status === 'skip' || status === 'skipped') return 'neutral'
   return 'info'

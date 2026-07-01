@@ -53,6 +53,7 @@ type RiskFactor = {
 
 const HOME_RECOMMENDATION_LIMIT = 80
 const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
+const EMBEDDED_NEWS_LIMIT = 6
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
@@ -690,9 +691,9 @@ function FearGreedCard({ risk }: { risk: any }) {
 
 function HedgeFactor({ label, value, note, tone = 'slate' }: { label: string; value: string; note?: string; tone?: Tone }) {
   return (
-    <div>
+    <div className="min-w-0">
       <p className="text-xs text-slate-500">{label}</p>
-      <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(tone))}>{value}</p>
+      <p className={cx('mt-1 whitespace-nowrap text-base font-bold tabular-nums 2xl:text-lg', toneText(tone))}>{value}</p>
       {note && <p className="mt-1 text-[11px] text-slate-500">{note}</p>}
     </div>
   )
@@ -1000,7 +1001,7 @@ function MarketOverviewBlock() {
           </div>
           <div className="grid items-start gap-4 bg-[#101116] px-4 pb-4 xl:grid-cols-[minmax(360px,0.92fr)_minmax(420px,1.02fr)] 2xl:grid-cols-[minmax(460px,1.06fr)_minmax(420px,0.78fr)_minmax(340px,0.78fr)]">
             <div className="grid gap-4 xl:self-stretch">
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-[minmax(290px,1.18fr)_minmax(220px,0.82fr)]">
                 <FearGreedCard risk={risk} />
                 <BusinessSignalCard risk={risk} />
               </div>
@@ -1050,6 +1051,15 @@ function pickBalancedNews(items: any[], limit: number) {
   return picked
 }
 
+function newsSourceTone(source: unknown) {
+  const normalized = String(source ?? '').trim().toLowerCase()
+  if (/經濟日報|money\.udn|udn/.test(normalized)) return 'border-emerald-300/25 bg-emerald-400/[0.10] text-emerald-200'
+  if (/鉅亨|anue/.test(normalized)) return 'border-amber-300/25 bg-amber-400/[0.10] text-amber-200'
+  if (/自由財經|ltn/.test(normalized)) return 'border-sky-300/25 bg-sky-400/[0.10] text-sky-200'
+  if (/moneydj/.test(normalized)) return 'border-violet-300/25 bg-violet-400/[0.10] text-violet-200'
+  return 'border-white/[0.08] bg-white/[0.05] text-slate-400'
+}
+
 function NewsBlock({ embedded = false }: { embedded?: boolean }) {
   const { data, isLoading } = useQuery({
     queryKey: ['market', 'news', 'home'],
@@ -1058,21 +1068,21 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
     retry: 1,
   })
   const newsItems = asArray<any>(data)
-  const rows = embedded ? pickBalancedNews(newsItems, 3) : newsItems.slice(0, 12)
+  const rows = embedded ? pickBalancedNews(newsItems, EMBEDDED_NEWS_LIMIT) : newsItems.slice(0, 12)
   const sectionClass = embedded
-    ? 'h-full overflow-hidden rounded-[20px] border border-white/[0.07] bg-white/[0.032]'
+    ? 'flex h-full min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/[0.07] bg-white/[0.032]'
     : panelClass('overflow-hidden')
   const gridClass = embedded
-    ? 'grid gap-px bg-white/[0.06]'
+    ? 'grid min-h-0 flex-1 auto-rows-fr gap-px bg-white/[0.06]'
     : 'grid gap-px bg-white/[0.06] md:grid-cols-2 xl:grid-cols-3'
 
   return (
     <section className={sectionClass}>
-      <SectionHeader icon={Newspaper} title="最新消息" action={<SourceBadge>{embedded ? '來源平衡 3 則' : '每來源 3 則股票新聞'}</SourceBadge>} />
+      <SectionHeader icon={Newspaper} title="最新消息" action={<SourceBadge>{embedded ? `最多 ${EMBEDDED_NEWS_LIMIT} 則` : '每來源 3 則股票新聞'}</SourceBadge>} />
       {isLoading ? (
         <div className={gridClass}>
-          {Array.from({ length: embedded ? 3 : 6 }).map((_, index) => (
-            <div key={index} className={cx(embedded ? 'min-h-[92px]' : 'min-h-[126px]', 'animate-pulse bg-[#111216] p-4')}>
+          {Array.from({ length: embedded ? EMBEDDED_NEWS_LIMIT : 6 }).map((_, index) => (
+            <div key={index} className={cx(embedded ? 'min-h-0 p-3' : 'min-h-[126px] p-4', 'animate-pulse bg-[#111216]')}>
               <div className="h-5 w-24 rounded-full bg-white/[0.06]" />
               <div className="mt-4 h-4 w-4/5 rounded bg-white/[0.06]" />
               <div className="mt-2 h-4 w-2/3 rounded bg-white/[0.05]" />
@@ -1087,14 +1097,14 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
               href={item.url ?? '#'}
               target={item.url ? '_blank' : undefined}
               rel="noreferrer"
-              className={cx(embedded ? 'min-h-[96px]' : 'min-h-[126px]', 'bg-[#111216] p-4 transition-colors hover:bg-[#151823]')}
+              className={cx(embedded ? 'min-h-0 p-3' : 'min-h-[126px] p-4', 'bg-[#111216] transition-colors hover:bg-[#151823]')}
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="rounded-full border border-white/[0.08] bg-white/[0.05] px-2 py-1 text-[11px] font-semibold text-slate-400">{item.source ?? 'news'}</span>
+                <span className={cx('rounded-full border px-2 py-1 text-[11px] font-semibold', newsSourceTone(item.source))}>{item.source ?? 'news'}</span>
                 <span className="text-[11px] text-slate-600">{String(item.published_at ?? item.publishedAt ?? '').slice(0, 10)}</span>
               </div>
-              <p className="mt-3 line-clamp-2 text-sm font-semibold leading-6 text-slate-100">{item.title}</p>
-              {item.stock_symbol && <p className="mt-2 text-[11px] text-blue-300">{item.stock_symbol} {item.stock_name ?? ''}</p>}
+              <p className={cx('mt-3 line-clamp-2 font-semibold text-slate-100', embedded ? 'text-[13px] leading-5' : 'text-sm leading-6')}>{item.title}</p>
+              {item.stock_symbol && <p className={cx(embedded ? 'mt-1' : 'mt-2', 'text-[11px] text-blue-300')}>{item.stock_symbol} {item.stock_name ?? ''}</p>}
             </a>
           ))}
         </div>

@@ -55,3 +55,12 @@ for (const required of [
 for (const forbidden of ['businessCycle', 'business_cycle_heat', 'global_event']) {
   assert(!hedgeSentiment.includes(forbidden), `Hedge sentiment must not include macro-cycle or subjective news factor: ${forbidden}`)
 }
+
+for (const required of [
+  'LARGE_TRADER_MIN_INDEX_OI',
+  'selectLargeTraderScope',
+  '所有契約',
+  '全市場未沖銷部位數',
+]) {
+  assert(route.includes(required), `Large-trader signal must avoid weekly-contract row collapse: ${required}`)
+}

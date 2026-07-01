@@ -963,6 +963,9 @@ def _context_rows_from_frame(
     rows: list[dict[str, Any]] = []
     date_columns = {"date", "trading_date", "data_date", "__index_level_0__"}
     category_columns = {"symbol", "stock_id", "contract", "category", "name", "商品", "契約"}
+    category_column_order = ["symbol", "stock_id", "contract", "category", "name"]
+    expiry_columns = {"到期月份(週別)", "expiry", "contract_month", "month", "settlement_month"}
+    large_trader_datasets = {"tw_taifex_futures_large_trader", "tw_taifex_option_large_trader"}
     table_like = len([col for col in frame.columns if col not in date_columns]) > 2 and _table_has_any(frame, category_columns | {"value", "ratio", "close"})
 
     for raw in _rows(frame):
@@ -970,10 +973,17 @@ def _context_rows_from_frame(
         if not date:
             continue
         if table_like:
-            category = _clean_text(_first_row_value(raw, category_columns)) or "market"
+            category = _clean_text(_first_row_value(raw, category_column_order)) or "market"
+            metadata_columns = {name.lower() for name in category_columns} | {name.lower() for name in date_columns}
+            if dataset in large_trader_datasets:
+                expiry = _clean_text(_first_row_value(raw, expiry_columns))
+                if expiry:
+                    category = f"{category} / {expiry}"
+                metadata_columns.update(name.lower() for name in expiry_columns)
+                metadata_columns.add("key_date")
             for column, value in raw.items():
                 col = str(column).strip()
-                if col in date_columns or col.lower() in {name.lower() for name in category_columns}:
+                if col.lower() in metadata_columns:
                     continue
                 num = _coerce_number(value)
                 text_value = None if num is not None else _clean_text(value)

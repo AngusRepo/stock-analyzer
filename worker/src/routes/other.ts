@@ -1288,12 +1288,13 @@ function derivedContextRow(
   base: CanonicalRegimeContextRow,
   field: string,
   value: number,
+  textValue: string | null = null,
 ): CanonicalRegimeContextRow {
   return {
     ...base,
     field,
     value,
-    textValue: null,
+    textValue,
   }
 }
 
@@ -1312,19 +1313,89 @@ function derivePutCallVolumeRatio(rows: CanonicalRegimeContextRow[]): CanonicalR
   return null
 }
 
-function deriveLargeTraderNet(rows: CanonicalRegimeContextRow[]): CanonicalRegimeContextRow | null {
-  const latestRows = latestContextRows(rows)
-  const indexRows = latestRows.filter((row) => /臺股期貨|台股期貨|TX\+MTX|台指|臺指/i.test(row.category))
-  const scopedRows = indexRows.length ? indexRows : latestRows
-  const buyTop5 = scopedRows.find((row) => /買方前五大交易人部位數/.test(row.field) && row.value != null)
-  const sellTop5 = scopedRows.find((row) => /賣方前五大交易人部位數/.test(row.field) && row.value != null)
-  if (buyTop5?.value != null && sellTop5?.value != null) {
-    return derivedContextRow(buyTop5, '前五大交易人淨部位', Math.round(buyTop5.value - sellTop5.value))
+const LARGE_TRADER_MIN_INDEX_OI = 50_000
+
+function largeTraderCategoryPriority(category: string) {
+  if (/所有契約|all contracts|total/i.test(category)) return 0
+  if (/週契約|weekly|week/i.test(category)) return 2
+  return 1
+}
+
+function largeTraderExpiryLabel(category: string) {
+  const parts = category.split('/').map((part) => part.trim()).filter(Boolean)
+  return parts.length > 1 ? parts.at(-1)! : category
+}
+
+function selectLargeTraderScope(rows: CanonicalRegimeContextRow[], topN: 5 | 10) {
+  const dates = Array.from(new Set(rows.map((row) => row.date).filter(Boolean))).sort().reverse()
+  let fallback: {
+    date: string
+    category: string
+    buy: CanonicalRegimeContextRow
+    sell: CanonicalRegimeContextRow
+    marketOi: number | null
+  } | null = null
+  const buyPattern = topN === 5 ? /買方前五大交易人部位數/ : /買方前十大交易人部位數/
+  const sellPattern = topN === 5 ? /賣方前五大交易人部位數/ : /賣方前十大交易人部位數/
+
+  for (const date of dates) {
+    const dateRows = rows.filter((row) => row.date === date)
+    const indexRows = dateRows.filter((row) => /臺股期貨|台股期貨|TX\+MTX|台指|臺指/i.test(row.category))
+    const scopedRows = indexRows.length ? indexRows : dateRows
+    const groups = new Map<string, CanonicalRegimeContextRow[]>()
+    for (const row of scopedRows) {
+      const key = row.category || 'market'
+      groups.set(key, [...(groups.get(key) ?? []), row])
+    }
+
+    const candidates = Array.from(groups.entries())
+      .map(([category, groupRows]) => {
+        const buy = groupRows.find((row) => buyPattern.test(row.field) && row.value != null)
+        const sell = groupRows.find((row) => sellPattern.test(row.field) && row.value != null)
+        const marketOi = groupRows.find((row) => /全市場未沖銷部位數|market.*open.*interest/i.test(row.field) && row.value != null)?.value ?? null
+        return buy?.value != null && sell?.value != null
+          ? { date, category, buy, sell, marketOi }
+          : null
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null)
+      .sort((a, b) => {
+        const priorityDelta = largeTraderCategoryPriority(a.category) - largeTraderCategoryPriority(b.category)
+        if (priorityDelta !== 0) return priorityDelta
+        return (b.marketOi ?? Number.NEGATIVE_INFINITY) - (a.marketOi ?? Number.NEGATIVE_INFINITY)
+      })
+
+    fallback ??= candidates[0] ?? null
+    const valid = candidates.find((candidate) => (candidate.marketOi ?? 0) >= LARGE_TRADER_MIN_INDEX_OI)
+    if (valid) return valid
   }
-  const buyTop10 = scopedRows.find((row) => /買方前十大交易人部位數/.test(row.field) && row.value != null)
-  const sellTop10 = scopedRows.find((row) => /賣方前十大交易人部位數/.test(row.field) && row.value != null)
-  if (buyTop10?.value != null && sellTop10?.value != null) {
-    return derivedContextRow(buyTop10, '前十大交易人淨部位', Math.round(buyTop10.value - sellTop10.value))
+
+  return fallback
+}
+
+function deriveLargeTraderNet(rows: CanonicalRegimeContextRow[]): CanonicalRegimeContextRow | null {
+  const top5 = selectLargeTraderScope(rows, 5)
+  if (top5) {
+    const buyTop5 = top5.buy
+    const sellTop5 = top5.sell
+    const oiDetail = top5.marketOi == null ? '' : ` / 全市場未沖銷 ${Math.round(top5.marketOi).toLocaleString('zh-TW')} 口`
+    return derivedContextRow(
+      buyTop5,
+      '前五大交易人淨部位',
+      Math.round(buyTop5.value - sellTop5.value),
+      `${largeTraderExpiryLabel(top5.category)}；買方前五 ${Math.round(buyTop5.value).toLocaleString('zh-TW')} 口 / 賣方前五 ${Math.round(sellTop5.value).toLocaleString('zh-TW')} 口${oiDetail}`,
+    )
+  }
+  const top10 = selectLargeTraderScope(rows, 10)
+  if (top10) {
+    const buyTop10 = top10.buy
+    const sellTop10 = top10.sell
+    const oiDetail = top10.marketOi == null ? '' : ` / 全市場未沖銷 ${Math.round(top10.marketOi).toLocaleString('zh-TW')} 口`
+    return derivedContextRow(
+      buyTop10,
+      '前十大交易人淨部位',
+      Math.round(buyTop10.value - sellTop10.value),
+      `${largeTraderExpiryLabel(top10.category)}；買方前十 ${Math.round(buyTop10.value).toLocaleString('zh-TW')} 口 / 賣方前十 ${Math.round(sellTop10.value).toLocaleString('zh-TW')} 口${oiDetail}`,
+    )
   }
   return null
 }
@@ -1343,7 +1414,7 @@ function contextFactor(
     status: row ? status : 'missing',
     source: row?.source ?? 'canonical_regime_context_daily',
     source_date: row?.date ?? null,
-    detail: row ? `${row.dataset}.${row.field}.${row.category}` : 'not_materialized',
+    detail: row ? (row.textValue ?? `${row.dataset}.${row.field}.${row.category}`) : 'not_materialized',
   }
 }
 

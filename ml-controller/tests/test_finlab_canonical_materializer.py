@@ -533,6 +533,55 @@ def test_materialize_outputs_include_regime_context_market_index_and_futures() -
     assert any("INSERT INTO canonical_regime_context_daily" in sql for sql, _ in statements)
 
 
+def test_large_trader_regime_context_preserves_contract_expiry_scope() -> None:
+    root = _root("large_trader_expiry_scope")
+    _write(
+        root / "raw" / "regime_context" / "tw_taifex_futures_large_trader.parquet",
+        pl.DataFrame(
+            {
+                "date": ["2026-06-30", "2026-06-30", "2026-06-30"],
+                "symbol": [
+                    "臺股期貨(TX+MTX/4+TMF/20)",
+                    "臺股期貨(TX+MTX/4+TMF/20)",
+                    "臺股期貨(TX+MTX/4+TMF/20)",
+                ],
+                "到期月份(週別)": ["所有契約", "202607", "週契約"],
+                "買方前五大交易人部位數": [68607.0, 68561.0, 16.0],
+                "賣方前五大交易人部位數": [60602.0, 59479.0, 19.0],
+                "全市場未沖銷部位數": [117672.0, 111735.0, 22.0],
+            }
+        ),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-07-01T00:00:00+00:00",
+        start_date="2026-06-30",
+        end_date="2026-06-30",
+        datasets=["canonical_regime_context_daily"],
+    )
+
+    rows = [
+        row for row in outputs.canonical_regime_context_daily
+        if row["dataset"] == "tw_taifex_futures_large_trader"
+    ]
+    categories = {row["category"] for row in rows}
+    assert "臺股期貨(TX+MTX/4+TMF/20) / 所有契約" in categories
+    assert "臺股期貨(TX+MTX/4+TMF/20) / 202607" in categories
+    assert "臺股期貨(TX+MTX/4+TMF/20) / 週契約" in categories
+    assert all(row["field"] != "到期月份(週別)" for row in rows)
+    all_contract_buy = next(
+        row for row in rows
+        if row["category"].endswith("所有契約") and row["field"] == "買方前五大交易人部位數"
+    )
+    weekly_oi = next(
+        row for row in rows
+        if row["category"].endswith("週契約") and row["field"] == "全市場未沖銷部位數"
+    )
+    assert all_contract_buy["value"] == 68607.0
+    assert weekly_oi["value"] == 22.0
+
+
 def test_futures_rows_keep_regular_and_after_hours_sessions_separate() -> None:
     root = _root("regime_context_futures_sessions")
     _write(

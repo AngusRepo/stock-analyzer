@@ -360,15 +360,22 @@ function optionalString(value: unknown): string | undefined {
   return text || undefined
 }
 
+type FinLabBackfillRunOptions = {
+  continueEveningChain?: boolean
+  dailySourceRefresh?: boolean
+  callbackMode?: 'readiness_probe' | 'evening_chain'
+}
+
 function buildFinLabBackfillRequestBody(
   env: Bindings,
   runDate?: string,
   force = false,
-  options: { continueEveningChain?: boolean } = {},
+  options: FinLabBackfillRunOptions = {},
 ): Record<string, unknown> {
   const years = finLabBackfillYears(env)
   const runId = buildFinLabBackfillRunId(years, runDate)
-  const dailyPriceMode = Boolean(options.continueEveningChain)
+  const dailySourceMode = Boolean(options.dailySourceRefresh || options.continueEveningChain)
+  const callbackMode = options.callbackMode ?? (options.continueEveningChain ? 'evening_chain' : undefined)
   return {
     years,
     run_id: runId,
@@ -378,7 +385,7 @@ function buildFinLabBackfillRequestBody(
     canonical_window_days: finLabCanonicalWindowDays(env),
     canonical_start_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_START_DATE),
     canonical_end_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_END_DATE),
-    canonical_datasets: dailyPriceMode
+    canonical_datasets: dailySourceMode
       ? (optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_DATASETS) ?? FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT)
       : optionalString((env as any).FINLAB_BACKFILL_CANONICAL_DATASETS),
     canonical_limit_per_dataset: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_LIMIT_PER_DATASET),
@@ -388,13 +395,15 @@ function buildFinLabBackfillRequestBody(
     callback_task: 'finlab-v4-backfill',
     trigger_source: 'worker_scheduler',
     trigger_id: runId,
-    mode: dailyPriceMode ? 'daily_price_primary' : 'archive_backfill',
+    mode: dailySourceMode ? 'daily_price_primary' : 'archive_backfill',
     force,
     continue_evening_chain: Boolean(options.continueEveningChain),
-    lanes: dailyPriceMode
+    daily_source_refresh: dailySourceMode,
+    callback_mode: callbackMode,
+    lanes: dailySourceMode
       ? (optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
       : optionalString((env as any).FINLAB_BACKFILL_LANES),
-    skip_diff_counts: dailyPriceMode
+    skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)
       : truthyFlag((env as any).FINLAB_BACKFILL_SKIP_DIFF_COUNTS),
     dry_run: false,
@@ -405,7 +414,7 @@ export async function runFinLabV4Backfill(
   env: Bindings,
   runDate?: string,
   force = false,
-  options: { continueEveningChain?: boolean } = {},
+  options: FinLabBackfillRunOptions = {},
 ) {
   if (!finLabBackfillModalTriggerEnabled(env)) {
     throw new Error('FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED not enabled; FinLab primary canonical refresh is blocked')

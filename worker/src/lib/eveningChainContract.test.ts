@@ -43,6 +43,9 @@ assert(
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
+const runBulkFetchStart = updateOrchestrator.indexOf('export async function runBulkFetch')
+const runBulkFetchEnd = updateOrchestrator.indexOf('export async function runQueueUpdate', runBulkFetchStart)
+const runBulkFetchBody = updateOrchestrator.slice(runBulkFetchStart, runBulkFetchEnd)
 assert(updateOrchestrator.includes('indicator-queue'), 'indicator queue must have scheduler-visible run state')
 assert(updateOrchestrator.includes('UPDATE_SHARD_COUNT'), 'indicator queue must fan out into shards instead of one serial cursor')
 assert(updateOrchestrator.includes('sendBatch'), 'indicator queue root trigger must enqueue shard messages as a real batch')
@@ -71,10 +74,13 @@ assert(
   'readiness-gated evening chain must implement 18:10 refresh, polling probe, and 22:00 fallback suppression in backend/runtime',
 )
 assert(
-  updateOrchestrator.includes('runFinLabV4Backfill(env, twDate, force, { continueEveningChain: true })') &&
+  updateOrchestrator.includes('runFinLabV4Backfill(env, twDate, force, {') &&
+    updateOrchestrator.includes('continueEveningChain: true') &&
+    updateOrchestrator.includes('dailySourceRefresh: true') &&
+    updateOrchestrator.includes("callbackMode: 'evening_chain'") &&
     updateOrchestrator.includes("'finlab_backfill_complete'") &&
-    updateOrchestrator.includes('assertFinLabCanonicalDailyReady'),
-  'evening-chain must refresh FinLab canonical data first, then continue through queue callback only after canonical readiness is verified',
+    updateOrchestrator.includes('assertFinLabCanonicalReadinessReady'),
+  'evening-chain must refresh all FinLab daily source lanes first, then continue through queue callback only after full canonical readiness is verified',
 )
 assert(
   updateOrchestrator.includes('rowsOnTarget') &&
@@ -89,8 +95,8 @@ assert(
   'historical evening-chain replay must skip duplicate FinLab backfill when target-date canonical data is already ready',
 )
 assert(
-  updateOrchestrator.includes('historical replay supplemental already ready') &&
-    updateOrchestrator.indexOf('historical replay supplemental already ready') < updateOrchestrator.indexOf('bulkFetchAndStorePrices'),
+  runBulkFetchBody.includes('TWSE/TPEX supplemental fetch skipped for historical replay') &&
+    runBulkFetchBody.indexOf('TWSE/TPEX supplemental fetch skipped for historical replay') < runBulkFetchBody.indexOf('bulkFetchAndStorePrices'),
   'historical evening-chain replay must not refetch TWSE/TPEX supplemental data when target-date supplemental rows are already ready',
 )
 assert(

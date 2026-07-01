@@ -351,21 +351,50 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
   return (
     <div className="pb-1">
       <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {stages.map((stage, index) => (
-          <div key={stage.id} className="min-w-0">
-            <div className={`min-h-[148px] rounded-2xl border p-3 ${statusRingClass(stage.tone)}`}>
-              <div className="flex items-start justify-between gap-3">
-                <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-black/20 sv-num text-[12px] text-[#ffd87f]">{index + 1}</span>
-                <WorkstationPill tone={stage.tone}>{readinessLabel(stage.status)}</WorkstationPill>
+        {stages.map((stage, index) => {
+          const detailItems = Array.isArray(stage.job?.details)
+            ? [
+                ...stage.job.details.filter((detail) => detail.toLowerCase().startsWith('waiting')),
+                ...stage.job.details.filter((detail) => detail.toLowerCase().startsWith('ok')),
+              ].slice(0, 3)
+            : []
+          return (
+            <div key={stage.id} className="min-w-0">
+              <div className={`min-h-[148px] rounded-2xl border p-3 ${statusRingClass(stage.tone)}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-black/20 sv-num text-[12px] text-[#ffd87f]">{index + 1}</span>
+                  <WorkstationPill tone={stage.tone}>{readinessLabel(stage.status)}</WorkstationPill>
+                </div>
+                <p className="mt-3 text-base font-semibold text-[#f8efe0]">{stage.label}</p>
+                <p className="mt-1 sv-num text-[11px] normal-case text-[#9badbf]">{stage.owner}</p>
+                <p className="mt-3 line-clamp-2 text-xs leading-5 text-[#a8b6c5]">{stage.detail}</p>
+                {detailItems.length > 0 && (
+                  <div className="mt-2 flex min-w-0 flex-wrap gap-1">
+                    {detailItems.map((detail) => {
+                      const waiting = detail.toLowerCase().startsWith('waiting')
+                      const chipTone = waiting ? 'warn' : 'ok'
+                      return (
+                        <span
+                          key={`${stage.id}-${detail}`}
+                          className="max-w-full rounded-lg border px-2 py-1 sv-num text-[10px] leading-4 normal-case [overflow-wrap:anywhere]"
+                          style={{
+                            borderColor: `${toneColor(chipTone)}45`,
+                            backgroundColor: `${toneColor(chipTone)}10`,
+                            color: toneColor(chipTone),
+                          }}
+                        >
+                          {detail.replace(/^ok\s+/i, '').replace(/^waiting\s+/i, '')}
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+                <p className="mt-2 truncate sv-num text-[11px] normal-case text-[#70809b]">{stage.job?.lastRun || stage.job?.nextRun || 'no runtime evidence yet'}</p>
               </div>
-              <p className="mt-3 text-base font-semibold text-[#f8efe0]">{stage.label}</p>
-              <p className="mt-1 sv-num text-[11px] normal-case text-[#9badbf]">{stage.owner}</p>
-              <p className="mt-3 line-clamp-2 text-xs leading-5 text-[#a8b6c5]">{stage.detail}</p>
-              <p className="mt-2 truncate sv-num text-[11px] normal-case text-[#70809b]">{stage.job?.lastRun || stage.job?.nextRun || 'no runtime evidence yet'}</p>
+              {index < stages.length - 1 && <ArrowRight className="hidden h-3.5 w-3.5 text-[#4d5b70]" />}
             </div>
-            {index < stages.length - 1 && <ArrowRight className="hidden h-3.5 w-3.5 text-[#4d5b70]" />}
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -620,8 +649,27 @@ function schedulerGroupSpanClass(group: SchedulerJob['group']) {
   return ''
 }
 
+function schedulerDetailTone(detail: string): WorkstationTone {
+  const text = detail.toLowerCase()
+  if (text.startsWith('waiting') || text.includes('rows=0/') || text.includes('not ready')) return 'warn'
+  if (text.startsWith('ok')) return 'ok'
+  return 'neutral'
+}
+
+function schedulerReadinessDetails(job: SchedulerJob): string[] {
+  const details = Array.isArray(job.details) ? job.details.filter(Boolean) : []
+  if (!details.length) return []
+  const readinessJob = job.id === 'source-readiness-probe' || job.id === 'finlab-v4-backfill' || job.id === 'evening-chain' || job.id === 'update'
+  const hasCanonicalDetail = details.some((detail) => /canonical_|official_supplemental|finlab_/i.test(detail))
+  if (!readinessJob && !hasCanonicalDetail) return []
+  const waiting = details.filter((detail) => detail.toLowerCase().startsWith('waiting'))
+  const ok = details.filter((detail) => detail.toLowerCase().startsWith('ok'))
+  return [...waiting, ...ok].slice(0, 8)
+}
+
 function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?: boolean }) {
   const tone = schedulerJobTone(job)
+  const readinessDetails = schedulerReadinessDetails(job)
   return (
     <div className={`group min-w-0 overflow-hidden rounded-xl border bg-[#070a10]/88 transition duration-200 hover:-translate-y-0.5 hover:bg-[#0b1118] ${compact ? 'p-2.5' : 'p-3'}`} style={{ borderColor: `${toneColor(tone)}40` }}>
       <div className="flex min-w-0 items-start justify-between gap-2">
@@ -643,6 +691,31 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
         <p className={`mt-2 line-clamp-3 min-w-0 break-words text-xs leading-5 [overflow-wrap:anywhere] ${tone === 'error' ? 'text-rose-200' : tone === 'warn' ? 'text-amber-100' : 'text-[#9badbf]'}`}>
           {job.lastError || job.summary || job.durationConcernReason}
         </p>
+      )}
+      {readinessDetails.length > 0 && (
+        <div className="mt-2 flex min-w-0 flex-wrap gap-1">
+          {readinessDetails.map((detail) => {
+            const detailTone = schedulerDetailTone(detail)
+            return (
+              <span
+                key={`${job.id}-${detail}`}
+                className="max-w-full rounded-lg border px-2 py-1 sv-num text-[10px] leading-4 normal-case [overflow-wrap:anywhere]"
+                style={{
+                  borderColor: `${toneColor(detailTone)}45`,
+                  backgroundColor: `${toneColor(detailTone)}10`,
+                  color: toneColor(detailTone),
+                }}
+              >
+                {detail.replace(/^ok\s+/i, '').replace(/^waiting\s+/i, '')}
+              </span>
+            )
+          })}
+          {Array.isArray(job.details) && job.details.length > readinessDetails.length && (
+            <span className="rounded-lg border border-[#2f3c4c] bg-[#111824] px-2 py-1 sv-num text-[10px] leading-4 text-[#9badbf]">
+              +{job.details.length - readinessDetails.length}
+            </span>
+          )}
+        </div>
       )}
     </div>
   )

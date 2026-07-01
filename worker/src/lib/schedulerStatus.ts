@@ -423,6 +423,7 @@ export async function getSchedulerStatus(env: Bindings) {
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
       summary: lastLog?.summary || '',
+      details: lastLog?.details ?? [],
       consolidation: getSchedulerDependencySpec(def.id) ?? null,
     }
   }))

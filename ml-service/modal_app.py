@@ -2395,12 +2395,20 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
         "run_date": payload.get("run_date"),
         "force": bool(payload.get("force")),
         "continue_evening_chain": bool(payload.get("continue_evening_chain")),
+        "daily_source_refresh": bool(payload.get("daily_source_refresh")),
+        "callback_mode": payload.get("callback_mode"),
         "result": {
             "run_id": result.get("run_id"),
             "summary": result.get("summary"),
             "canonical_d1_apply": result.get("canonical_d1_apply"),
             "force": bool(payload.get("force")),
             "continue_evening_chain": bool(payload.get("continue_evening_chain")),
+            "daily_source_refresh": bool(payload.get("daily_source_refresh")),
+            "callback_mode": payload.get("callback_mode"),
+        },
+        "metadata": {
+            "daily_source_refresh": bool(payload.get("daily_source_refresh")),
+            "callback_mode": payload.get("callback_mode"),
         },
     }
     if error:

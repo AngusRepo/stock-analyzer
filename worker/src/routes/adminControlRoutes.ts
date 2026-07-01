@@ -297,6 +297,13 @@ async function handleSchedulerCallback(c: any) {
   }
 
   if (body.task === 'finlab-v4-backfill' && ['success', 'error', 'skipped'].includes(String(body.status))) {
+    const callbackMode = String(
+      body.callback_mode ??
+      body.result?.callback_mode ??
+      body.metadata?.callback_mode ??
+      '',
+    ).trim()
+    const readinessProbeCallback = callbackMode === 'readiness_probe'
     const continueEveningChain = Boolean(
       body.continue_evening_chain ||
       body.result?.continue_evening_chain ||
@@ -307,7 +314,32 @@ async function handleSchedulerCallback(c: any) {
       body.result?.force ||
       body.metadata?.force,
     )
-    if (body.status === 'success' && continueEveningChain && callbackRunDate) {
+    if (body.status === 'success' && readinessProbeCallback && callbackRunDate) {
+      await logSchedulerResult(c.env.KV, 'source-readiness-probe', {
+        status: 'running',
+        summary: `FinLab daily source refresh completed for ${callbackRunDate}; queueing full source-readiness recheck`,
+        duration_ms: 0,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      })
+      await c.env.UPDATE_QUEUE.send({
+        type: 'source_readiness_recheck',
+        cursor: 0,
+        triggerTime: callbackRunDate,
+        runId: callbackRunId,
+        force: forceContinuation,
+        attempt: 1,
+      })
+    } else if (body.status !== 'success' && readinessProbeCallback && callbackRunDate) {
+      await logSchedulerResult(c.env.KV, 'source-readiness-probe', {
+        status: body.status === 'skipped' ? 'skipped' : 'error',
+        summary: `FinLab daily source refresh blocked source-readiness recheck: ${String(body.summary ?? body.status)}`,
+        duration_ms: 0,
+        error: body.error != null ? String(body.error) : undefined,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, body.status === 'error' ? c.env as any : undefined)
+    } else if (body.status === 'success' && continueEveningChain && callbackRunDate) {
       await logSchedulerResult(c.env.KV, 'evening-chain', {
         status: 'running',
         summary: `FinLab canonical backfill completed for ${callbackRunDate}; queueing market data continuation`,

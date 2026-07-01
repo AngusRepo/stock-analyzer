@@ -230,6 +230,7 @@ export type SchedulerJob = {
   history7d: Array<'success' | 'failed' | 'skip'>
   rate7d: string
   summary: string
+  details?: string[]
   consolidation?: {
     task: string
     owner: 'gcp_scheduler' | 'worker_chain' | 'controller_chain' | 'manual_only'

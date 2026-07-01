@@ -19,6 +19,7 @@ const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
 const FINALIZE_ORPHAN_REPAIR_DELAY_MS = 2 * 60_000
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
+const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const FINLAB_CANONICAL_DAILY_CHECKS = [
   { table: 'canonical_market_daily', minRows: 1000 },
@@ -48,7 +49,7 @@ function isBulkPriceSourceNotReady(error: unknown): boolean {
 
 function isFinLabCanonicalReadinessError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
-  return /FinLab canonical daily not ready/i.test(message)
+  return /FinLab canonical daily not ready|source readiness not ready after refresh/i.test(message)
 }
 
 function currentTaipeiDate(): string {
@@ -101,6 +102,13 @@ type ReadinessCheck = {
   key: string
   ok: boolean
   summary: string
+}
+
+type SourceReadinessSnapshot = {
+  ok: boolean
+  checks: ReadinessCheck[]
+  summary: string
+  missingKeys: string[]
 }
 
 type SchedulerRunSnapshot = {
@@ -158,7 +166,7 @@ async function countReadinessRows(
 async function checkEveningChainSourceReadiness(
   env: Bindings,
   targetDate: string,
-): Promise<{ ok: boolean; checks: ReadinessCheck[]; summary: string; missingKeys: string[] }> {
+): Promise<SourceReadinessSnapshot> {
   const checks: ReadinessCheck[] = []
 
   try {
@@ -207,10 +215,10 @@ async function checkEveningChainSourceReadiness(
     ),
     countReadinessRows(
       env.DB,
-      'canonical_market_summary_daily',
-      'SELECT COUNT(*) AS count FROM canonical_market_summary_daily WHERE date = ?',
+      'canonical_market_summary_daily:listed_otc',
+      "SELECT COUNT(DISTINCT market_segment) AS count FROM canonical_market_summary_daily WHERE date = ? AND market_segment IN ('LISTED', 'OTC')",
       [targetDate],
-      1,
+      2,
     ),
     countReadinessRows(
       env.DB,
@@ -228,15 +236,15 @@ async function checkEveningChainSourceReadiness(
     ),
     countReadinessRows(
       env.DB,
-      'canonical_broker_flow_daily',
-      'SELECT COUNT(*) AS count FROM canonical_broker_flow_daily WHERE date = ?',
+      'canonical_broker_flow_daily:listed_otc',
+      "SELECT COUNT(*) AS count FROM canonical_broker_flow_daily WHERE date = ? AND source = 'finlab.broker_transactions' AND market_segment = 'LISTED_OTC'",
       [targetDate],
       1000,
     ),
     countReadinessRows(
       env.DB,
-      'canonical_broker_rank_daily',
-      'SELECT COUNT(*) AS count FROM canonical_broker_rank_daily WHERE date = ?',
+      'canonical_broker_rank_daily:listed_otc',
+      "SELECT COUNT(*) AS count FROM canonical_broker_rank_daily WHERE date = ? AND source = 'finlab.broker_transactions' AND market_segment = 'LISTED_OTC'",
       [targetDate],
       1000,
     ),
@@ -252,6 +260,38 @@ async function checkEveningChainSourceReadiness(
       ? `source readiness waiting for ${targetDate}: ${missing.map((check) => check.summary).join('; ')}`
       : `source readiness ready for ${targetDate}: ${checks.map((check) => check.summary).join('; ')}`,
   }
+}
+
+function readinessDetails(readiness: SourceReadinessSnapshot): string[] {
+  return readiness.checks.map((check) => `${check.ok ? 'ok' : 'waiting'} ${check.summary}`)
+}
+
+function hasFinLabRefreshableMissing(readiness: SourceReadinessSnapshot): boolean {
+  return readiness.missingKeys.some((key) => key !== 'official_supplemental_market_data')
+}
+
+async function readFinLabRefreshLock(env: Bindings, runDate: string): Promise<string | null> {
+  return await env.KV.get(`source-readiness:finlab-refresh:${runDate}`)
+}
+
+async function writeFinLabRefreshLock(env: Bindings, runDate: string, summary: string): Promise<void> {
+  await env.KV.put(
+    `source-readiness:finlab-refresh:${runDate}`,
+    summary.slice(0, 500),
+    { expirationTtl: SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS },
+  )
+}
+
+async function assertFinLabCanonicalReadinessReady(env: Bindings, targetDate: string): Promise<string> {
+  const readiness = await checkEveningChainSourceReadiness(env, targetDate)
+  const missing = readiness.checks.filter((check) => !check.ok && check.key !== 'official_supplemental_market_data')
+  if (missing.length) {
+    throw new Error(`FinLab canonical daily not ready: ${missing.map((check) => check.summary).join('; ')}`)
+  }
+  return `FinLab canonical ready for ${targetDate}: ${readiness.checks
+    .filter((check) => check.key !== 'official_supplemental_market_data')
+    .map((check) => check.summary)
+    .join('; ')}`
 }
 
 async function scheduleSourceReadinessRetry(
@@ -303,6 +343,55 @@ async function scheduleSourceReadinessRetry(
     type: 'source_readiness_retry',
     cursor: 0,
     triggerTime: runDate,
+    attempt: safeAttempt + 1,
+  }, { delaySeconds: SOURCE_READINESS_RETRY_DELAY_SECONDS } as any)
+}
+
+async function scheduleSourceReadinessRecheck(
+  env: Bindings,
+  runDate: string,
+  attempt: number,
+  reason: string,
+  runId?: string,
+): Promise<void> {
+  const safeAttempt = Math.max(1, Math.floor(attempt))
+  const summary = [
+    `source-readiness recheck for ${runDate}`,
+    `attempt=${safeAttempt}/${SOURCE_READINESS_RETRY_MAX_ATTEMPTS}`,
+    `retry_in=${SOURCE_READINESS_RETRY_DELAY_SECONDS}s`,
+    reason,
+  ].join('; ')
+
+  await logSchedulerResult(env.KV, 'source-readiness-probe', {
+    status: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? 'error' : 'running',
+    summary: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS
+      ? `source readiness recheck timeout for ${runDate}; ${reason}`
+      : summary,
+    duration_ms: 0,
+    error: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? reason : undefined,
+    run_id: runId,
+    run_date: runDate,
+  })
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? 'error' : 'running',
+    summary: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS
+      ? `root chain waiting timed out at source-readiness gate for ${runDate}`
+      : `root chain waiting at source-readiness gate; ${summary}`,
+    duration_ms: 0,
+    error: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? reason : undefined,
+    run_id: runId,
+    run_date: runDate,
+  }, safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? env as any : undefined)
+
+  if (safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS) {
+    throw new Error(`source readiness recheck timeout for ${runDate}: ${reason}`)
+  }
+
+  await env.UPDATE_QUEUE.send({
+    type: 'source_readiness_recheck',
+    cursor: 0,
+    triggerTime: runDate,
+    runId,
     attempt: safeAttempt + 1,
   }, { delaySeconds: SOURCE_READINESS_RETRY_DELAY_SECONDS } as any)
 }
@@ -1293,7 +1382,7 @@ async function continueAfterFinLabBackfill(
   force = false,
   runId?: string,
 ): Promise<string> {
-  const canonicalSummary = await assertFinLabCanonicalDailyReady(env.DB, twDate)
+  const canonicalSummary = await assertFinLabCanonicalReadinessReady(env, twDate)
   let bulkSummary: string
   try {
     bulkSummary = await runBulkFetch(env, force, twDate)
@@ -1303,10 +1392,15 @@ async function continueAfterFinLabBackfill(
     await scheduleSourceReadinessRetry(env, twDate, 1, message)
     return `source waiting; queued same-day market data retry for ${twDate}; ${message}`
   }
+  const readiness = await checkEveningChainSourceReadiness(env, twDate)
+  if (!readiness.ok) {
+    throw new Error(`source readiness not ready after refresh: ${readiness.summary}`)
+  }
   await logSchedulerResult(env.KV, 'update', {
     status: 'success',
     summary: `market data update ready for ${twDate}; FinLab primary canonical ready; TWSE/TPEX supplemental refresh complete; ${canonicalSummary}; ${bulkSummary}`,
     duration_ms: 0,
+    details: readinessDetails(readiness),
     run_id: runId,
     run_date: twDate,
   })
@@ -1421,7 +1515,12 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
   return summary
 }
 
-export async function runSourceReadinessProbe(env: Bindings, force = false, runDate?: string): Promise<string> {
+export async function runSourceReadinessProbe(
+  env: Bindings,
+  force = false,
+  runDate?: string,
+  options: { ignoreEveningChainInFlight?: boolean } = {},
+): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   const started = Date.now()
   const supplementalMode = officialSupplementalFetchMode(env)
@@ -1435,7 +1534,7 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
     })
     return summary
   }
-  if (!force && await hasEveningChainInFlight(env, twDate)) {
+  if (!force && !options.ignoreEveningChainInFlight && await hasEveningChainInFlight(env, twDate)) {
     const summary = `running: full evening chain already in flight for ${twDate}; readiness probe will not duplicate trigger`
     await logSchedulerResult(env.KV, 'source-readiness-probe', {
       status: 'running',
@@ -1447,16 +1546,22 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
   }
 
   let readiness = await checkEveningChainSourceReadiness(env, twDate)
-  if (!readiness.ok && readiness.missingKeys.includes('finlab_primary_canonical')) {
+  if (!readiness.ok && hasFinLabRefreshableMissing(readiness)) {
     const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
     const finlabInFlight = finlabLog?.status === 'running' || finlabLog?.status === 'triggered'
-    if (!finlabInFlight || force) {
-      const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, { continueEveningChain: false }))
+    const refreshLock = await readFinLabRefreshLock(env, twDate)
+    if ((!finlabInFlight && !refreshLock) || force) {
+      const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
+        continueEveningChain: false,
+        dailySourceRefresh: true,
+        callbackMode: 'readiness_probe',
+      }))
       const finlabStatus = classifySchedulerSummary(finlabSummary)
       await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
         status: finlabStatus,
-        summary: `readiness probe triggered canonical refresh without continuation; ${finlabSummary}`,
+        summary: `readiness probe triggered daily source refresh without direct continuation; ${finlabSummary}`,
         duration_ms: 0,
+        details: readinessDetails(readiness),
         run_date: twDate,
       })
       if (finlabStatus === 'error') {
@@ -1465,27 +1570,32 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
           summary: `FinLab canonical refresh failed before readiness gate: ${finlabSummary}`,
           duration_ms: Date.now() - started,
           error: finlabSummary,
+          details: readinessDetails(readiness),
           run_date: twDate,
         }, env as any)
         throw new Error(`FinLab canonical refresh failed before readiness gate: ${finlabSummary}`)
       }
+      await writeFinLabRefreshLock(env, twDate, finlabSummary)
       if (finlabStatus !== 'success') {
         const summary = `running: ${readiness.summary}; finlab_refresh=${finlabSummary}`
         await logSchedulerResult(env.KV, 'source-readiness-probe', {
           status: 'running',
           summary,
           duration_ms: Date.now() - started,
+          details: readinessDetails(readiness),
           run_date: twDate,
         })
         return summary
       }
       readiness = await checkEveningChainSourceReadiness(env, twDate)
     } else {
-      const summary = `running: ${readiness.summary}; finlab_refresh already ${finlabLog?.status ?? 'in-flight'}`
+      const refreshState = finlabInFlight ? (finlabLog?.status ?? 'in-flight') : `cooldown ${refreshLock}`
+      const summary = `running: ${readiness.summary}; finlab_refresh already ${refreshState}`
       await logSchedulerResult(env.KV, 'source-readiness-probe', {
         status: 'running',
         summary,
         duration_ms: Date.now() - started,
+        details: readinessDetails(readiness),
         run_date: twDate,
       })
       return summary
@@ -1511,6 +1621,7 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
         status: 'running',
         summary,
         duration_ms: Date.now() - started,
+        details: readinessDetails(readiness),
         run_date: twDate,
       })
       return summary
@@ -1535,6 +1646,7 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
         status: 'running',
         summary,
         duration_ms: Date.now() - started,
+        details: readinessDetails(readiness),
         run_date: twDate,
       })
       return summary
@@ -1547,6 +1659,7 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
       status: 'running',
       summary,
       duration_ms: Date.now() - started,
+      details: readinessDetails(readiness),
       run_date: twDate,
     })
     return summary
@@ -1558,6 +1671,7 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
     status: 'triggered',
     summary: `readiness probe accepted for ${twDate}; full evening chain starting; ${readiness.summary}`,
     duration_ms: 0,
+    details: readinessDetails(readiness),
     run_id: runId,
     run_date: twDate,
   })
@@ -1567,6 +1681,7 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
     status: 'triggered',
     summary,
     duration_ms: Date.now() - started,
+    details: readinessDetails(readiness),
     run_id: runId,
     run_date: twDate,
   })
@@ -1574,6 +1689,7 @@ export async function runSourceReadinessProbe(env: Bindings, force = false, runD
     status: 'running',
     summary: `readiness-gated evening chain started; ${summary}`,
     duration_ms: 0,
+    details: readinessDetails(readiness),
     run_id: runId,
     run_date: twDate,
   })
@@ -1597,7 +1713,7 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   }
   if (force && runDate && isHistoricalReplayDate(twDate)) {
     try {
-      const canonicalSummary = await assertFinLabCanonicalDailyReady(env.DB, twDate)
+      const canonicalSummary = await assertFinLabCanonicalReadinessReady(env, twDate)
       await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
         status: 'skipped',
         summary: `historical replay canonical already ready; skipped duplicate FinLab backfill; ${canonicalSummary}`,
@@ -1610,7 +1726,11 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
       if (!isFinLabCanonicalReadinessError(e)) throw e
     }
   }
-  const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, { continueEveningChain: true }))
+  const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
+    continueEveningChain: true,
+    dailySourceRefresh: true,
+    callbackMode: 'evening_chain',
+  }))
   const finlabStatus = classifySchedulerSummary(finlabSummary)
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
     status: finlabStatus,
@@ -1944,24 +2064,33 @@ export async function processUpdateBatch(
       if (isFinLabCanonicalReadinessError(e)) {
         const message = e instanceof Error ? e.message : String(e)
         await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
-          status: 'error',
-          summary: message,
+          status: 'running',
+          summary: `FinLab callback completed but target-date canonical lanes are still waiting; ${message}`,
           duration_ms: 0,
-          error: message,
           run_id: msg.runId,
           run_date: triggerTime,
         })
-        await logSchedulerResult(env.KV, 'evening-chain', {
-          status: 'error',
-          summary: `event-driven chain stopped: ${message}`,
-          duration_ms: 0,
-          error: message,
-          run_id: msg.runId,
-          run_date: triggerTime,
-        }, env as any)
+        await scheduleSourceReadinessRecheck(env, triggerTime, attempt, message, msg.runId)
         return
       }
       throw e
+    }
+    return
+  }
+
+  if (msg.type === 'source_readiness_recheck') {
+    const triggerTime = msg.triggerTime
+    const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid source readiness recheck date ${triggerTime}, skipping.`)
+      return
+    }
+
+    const summary = await runSourceReadinessProbe(env, Boolean(msg.force), triggerTime, {
+      ignoreEveningChainInFlight: true,
+    })
+    if (summary.trim().toLowerCase().startsWith('running:')) {
+      await scheduleSourceReadinessRecheck(env, triggerTime, attempt, summary, msg.runId)
     }
     return
   }

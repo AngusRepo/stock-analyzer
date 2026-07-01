@@ -42,6 +42,8 @@ class FinLabBackfillRunRequest(BaseModel):
     trigger_id: str | None = None
     force: bool = False
     continue_evening_chain: bool = False
+    daily_source_refresh: bool = False
+    callback_mode: str | None = None
     lanes: str | None = None
     skip_diff_counts: bool = False
     dry_run: bool = False
@@ -71,7 +73,10 @@ class FinLabBackfillCallbackRequest(BaseModel):
     run_date: str | None = None
     error: str | None = None
     continue_evening_chain: bool = False
+    daily_source_refresh: bool = False
+    callback_mode: str | None = None
     result: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class FinLabExecutionSmokeRequest(BaseModel):

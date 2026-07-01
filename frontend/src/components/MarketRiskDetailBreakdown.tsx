@@ -1,7 +1,5 @@
 import {
   Activity,
-  BarChart3,
-  CircleDollarSign,
   Landmark,
   Layers3,
 } from 'lucide-react'
@@ -33,6 +31,7 @@ type BreakdownCard = {
   metrics: Metric[]
   segments: Segment[]
   preview: boolean
+  layout?: 'standard' | 'wide'
 }
 
 type FuturesInstitutionalRow = {
@@ -96,11 +95,6 @@ function signed(value: number | null, suffix = '', digits = 1) {
   return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}${suffix}`
 }
 
-function pct(value: number | null, digits = 1) {
-  if (value == null) return '待接資料'
-  return `${value.toFixed(digits)}%`
-}
-
 function futuresBreakdownRows(regime: any, fallback: {
   netTradeLots: number
   netOiLots: number
@@ -144,6 +138,14 @@ function participantLabel(row: FuturesInstitutionalRow) {
   if (label.includes('自營')) return '自營商'
   if (label.includes('合計') || row.id === 'total') return '合計'
   return label || '法人'
+}
+
+function majorInstitutionRows(rows: FuturesInstitutionalRow[]) {
+  const order = ['自營商', '投信', '外資']
+  const selected = order
+    .map((label) => rows.find((row) => participantLabel(row) === label))
+    .filter((row): row is FuturesInstitutionalRow => Boolean(row))
+  return selected.length ? selected : rows
 }
 
 function realOrPreview<T>(value: T | null | undefined, preview: T): { value: T; preview: boolean } {
@@ -233,8 +235,9 @@ function ScoreDial({ score, tone, status }: { score: number; tone: Tone; status:
 
 function BreakdownCardView({ card }: { card: BreakdownCard }) {
   const Icon = card.Icon
+  const wide = card.layout === 'wide'
   return (
-    <article className="overflow-hidden rounded-[18px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(20,22,30,0.96),rgba(13,15,22,0.98))]">
+    <article className={`overflow-hidden rounded-[18px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(20,22,30,0.96),rgba(13,15,22,0.98))] ${wide ? 'xl:col-span-3' : ''}`}>
       <div className={`h-1.5 ${TONE_BAR[card.tone]}`} />
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
@@ -253,15 +256,33 @@ function BreakdownCardView({ card }: { card: BreakdownCard }) {
           <ScoreDial score={card.score} tone={card.tone} status={card.status} />
         </div>
 
-        <div className="mt-4">
-          <SegmentBar segments={card.segments} />
-        </div>
+        {wide ? (
+          <div className="mt-4 grid gap-4 xl:grid-cols-[240px_minmax(0,1fr)]">
+            <div className="rounded-[14px] border border-white/[0.07] bg-black/20 p-3">
+              <SegmentBar segments={card.segments} />
+              <p className="mt-3 text-xs leading-5 text-slate-500">
+                三大法人分開看；交易淨口偏短線，未平倉偏隔日風險。
+              </p>
+            </div>
+            <div className="grid gap-3 lg:grid-cols-3">
+              {card.metrics.map((metric) => (
+                <MetricRow key={metric.label} metric={metric} />
+              ))}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mt-4">
+              <SegmentBar segments={card.segments} />
+            </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {card.metrics.map((metric) => (
-            <MetricRow key={metric.label} metric={metric} />
-          ))}
-        </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {card.metrics.map((metric) => (
+                <MetricRow key={metric.label} metric={metric} />
+              ))}
+            </div>
+          </>
+        )}
 
         <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/[0.06] pt-3">
           <span className="truncate text-[11px] text-slate-500">{card.source}</span>
@@ -273,26 +294,8 @@ function BreakdownCardView({ card }: { card: BreakdownCard }) {
 }
 
 function buildCards(risk: any): BreakdownCard[] {
-  const marketStats = risk?.marketStats ?? {}
-  const credit = risk?.creditTrading ?? {}
   const dataDepth = risk?.marketRiskDetail ?? risk?.finlabDataDepth ?? {}
-  const liquidity = dataDepth.liquidity ?? {}
-  const chip = dataDepth.chipPressure ?? {}
   const regime = dataDepth.regime ?? {}
-
-  const amount = realOrPreview(asNumber(risk?.marketTurnoverAmount ?? marketStats.amount), 468_000_000_000)
-  const marketValue = realOrPreview(asNumber(liquidity.marketValue), 72_400_000_000_000)
-  const tradeCount = realOrPreview(asNumber(liquidity.tradeCount), 1_284_000)
-  const bidAskSpreadBps = realOrPreview(asNumber(liquidity.bidAskSpreadBps), 8.6)
-  const adjustedCoverage = realOrPreview(asNumber(liquidity.adjustedOhlcCoveragePct), 94)
-
-  const marginUsage = realOrPreview(asNumber(chip.marginUsageRatio ?? credit.marginUsageRatio), 37.2)
-  const shortUsage = realOrPreview(asNumber(chip.shortUsageRatio ?? credit.shortUsageRatio), 9.8)
-  const marginBalance = realOrPreview(asNumber(chip.marginBalance), 2_950_000)
-  const shortBalance = realOrPreview(asNumber(chip.shortBalance), 410_000)
-  const lendingSellBalance = realOrPreview(asNumber(chip.securityLendingSellBalance), 2_880_000)
-  const brokerBalanceIndex = realOrPreview(asNumber(chip.brokerBalanceIndex), 0.64)
-  const brokerBuySellRatio = realOrPreview(asNumber(chip.brokerBuySellRatio), 1.18)
 
   const futuresNetOi = realOrPreview(asNumber(regime.futuresInstNetOiLots), -4_520)
   const futuresNetTrade = realOrPreview(asNumber(regime.futuresInstNetTradeLots), 1_860)
@@ -303,7 +306,16 @@ function buildCards(risk: any): BreakdownCard[] {
     netOiLots: futuresNetOi.value,
     netOiAmountK: futuresNetAmount.value,
   })
-  const futuresMetrics: Metric[] = futuresRows.flatMap((row) => {
+  const displayedFuturesRows = majorInstitutionRows(futuresRows)
+  const futuresSegments = displayedFuturesRows.slice(0, 3).map((row) => {
+    const netOi = asNumber(row.netOiLots) ?? 0
+    return {
+      label: participantLabel(row),
+      value: Math.max(12, Math.abs(netOi) / 150),
+      tone: participantTone(netOi),
+    }
+  })
+  const futuresMetrics: Metric[] = displayedFuturesRows.flatMap((row) => {
     const label = participantLabel(row)
     const netOi = asNumber(row.netOiLots)
     const netTrade = asNumber(row.netTradeLots)
@@ -333,74 +345,33 @@ function buildCards(risk: any): BreakdownCard[] {
     ]
   })
 
-  const liquidityPreview = amount.preview || marketValue.preview || tradeCount.preview || bidAskSpreadBps.preview || adjustedCoverage.preview
-  const chipPreview = marginUsage.preview || shortUsage.preview || marginBalance.preview || shortBalance.preview || lendingSellBalance.preview || brokerBalanceIndex.preview || brokerBuySellRatio.preview
   const regimePreview = futuresNetOi.preview || futuresNetTrade.preview || futuresNetAmount.preview || worldAdjMove.preview
 
   return [
     {
-      title: '市場流動性',
-      subtitle: '成交值、交易密度與價差摩擦；覆蓋率只看資料品質。',
-      source: liquidity.source ?? 'canonical_market_daily',
-      status: bidAskSpreadBps.value > 25 ? '偏緊' : '正常',
-      score: clamp(72 - bidAskSpreadBps.value + adjustedCoverage.value * 0.18),
-      tone: bidAskSpreadBps.value > 25 ? 'amber' : 'cyan',
-      Icon: BarChart3,
-      preview: liquidityPreview,
-      segments: [
-        { label: '成交值', value: 42, tone: 'cyan' },
-        { label: '市值', value: 38, tone: 'violet' },
-        { label: '筆數', value: 20, tone: 'emerald' },
-      ],
-      metrics: [
-        { label: '總成交值', value: compact(amount.value), note: '和市場成交量並列，判斷資金活躍度。', tone: 'cyan', intensity: 68 },
-        { label: '總市值', value: compact(marketValue.value), note: 'market_value 補市場承載度。', tone: 'violet', intensity: 72 },
-        { label: '成交筆數', value: compact(tradeCount.value, 0), note: 'trade_count 補交易密度。', tone: 'emerald', intensity: 64 },
-        { label: '價差摩擦', value: `${bidAskSpreadBps.value.toFixed(1)} bps`, note: '越高代表成交摩擦較大，不是方向訊號。', tone: bidAskSpreadBps.value > 25 ? 'amber' : 'cyan', intensity: clamp(100 - bidAskSpreadBps.value * 2) },
-        { label: '還原價覆蓋率', value: pct(adjustedCoverage.value, 0), note: '資料完整度，用來判斷還原價可用性。', tone: 'slate', intensity: adjustedCoverage.value },
-      ],
-    },
-    {
-      title: '信用與券商壓力',
-      subtitle: '信用餘額、額度使用率、借券與券商集中度。',
-      source: chip.source ?? 'canonical_chip_daily',
-      status: brokerBalanceIndex.value >= 0 ? '偏多' : '壓力',
-      score: clamp(52 + marginUsage.value * 0.35 + shortUsage.value * 0.4 - brokerBalanceIndex.value * 12),
-      tone: shortUsage.value > 20 || brokerBalanceIndex.value < -0.2 ? 'rose' : marginUsage.value > 45 ? 'amber' : 'emerald',
-      Icon: CircleDollarSign,
-      preview: chipPreview,
-      segments: [
-        { label: '融資', value: marginUsage.value, tone: marginUsage.value > 45 ? 'amber' : 'emerald' },
-        { label: '融券', value: shortUsage.value, tone: shortUsage.value > 20 ? 'rose' : 'cyan' },
-        { label: '券商', value: Math.max(12, Math.abs(brokerBalanceIndex.value) * 50), tone: brokerBalanceIndex.value >= 0 ? 'emerald' : 'rose' },
-      ],
-      metrics: [
-        { label: '融資餘額', value: compact(marginBalance.value, 0), note: '全市場融資餘額，與使用率分開讀。', tone: 'emerald', intensity: clamp(marginUsage.value) },
-        { label: '融資額度使用率', value: pct(marginUsage.value), note: '餘額 / 全市場授信額度，低值不等於行情冷。', tone: marginUsage.value > 45 ? 'amber' : 'emerald', intensity: marginUsage.value },
-        { label: '融券餘額', value: compact(shortBalance.value, 0), note: '全市場融券餘額，補空方部位規模。', tone: shortUsage.value > 20 ? 'rose' : 'cyan', intensity: shortUsage.value * 2.4 },
-        { label: '融券額度使用率', value: pct(shortUsage.value), note: '餘額 / 全市場融券額度，主要看壓力累積。', tone: shortUsage.value > 20 ? 'rose' : 'cyan', intensity: shortUsage.value * 2.4 },
-        { label: '借券賣出餘額', value: compact(lendingSellBalance.value, 0), note: '單位已轉為張，補避險賣壓。', tone: 'amber', intensity: 58 },
-        { label: '券商集中度', value: brokerBalanceIndex.value.toFixed(2), note: 'broker_balance_index 可進推薦卡籌碼信心。', tone: brokerBalanceIndex.value >= 0 ? 'emerald' : 'rose', intensity: clamp(Math.abs(brokerBalanceIndex.value) * 80) },
-        { label: '券商買賣比', value: brokerBuySellRatio.value.toFixed(2), note: 'broker_buy_sell_ratio 看主力承接。', tone: brokerBuySellRatio.value >= 1 ? 'emerald' : 'rose', intensity: clamp(brokerBuySellRatio.value * 52) },
-      ],
-    },
-    {
       title: '期貨與全球風險',
-      subtitle: '台指期貨法人部位拆成自營商、投信、外資與合計。',
+      subtitle: '保留三大法人拆解；未平倉看隔日風險，交易淨口看當日方向。',
       source: regime.source ?? 'canonical_regime_context_daily',
       status: futuresNetOi.value >= 0 ? '偏多' : '避險',
       score: clamp(50 - Math.min(22, Math.abs(futuresNetOi.value) / 420) + (worldAdjMove.value + 1) * 8),
       tone: futuresNetOi.value < 0 ? 'rose' : worldAdjMove.value >= 0 ? 'violet' : 'amber',
       Icon: Landmark,
       preview: regimePreview,
-      segments: [
-        { label: '未平倉', value: Math.max(18, Math.abs(futuresNetOi.value) / 150), tone: futuresNetOi.value >= 0 ? 'emerald' : 'rose' },
-        { label: '交易淨口', value: Math.max(12, Math.abs(futuresNetTrade.value) / 110), tone: futuresNetTrade.value >= 0 ? 'emerald' : 'rose' },
-        { label: '海外', value: Math.max(18, Math.abs(worldAdjMove.value) * 46), tone: worldAdjMove.value >= 0 ? 'cyan' : 'amber' },
+      layout: 'wide',
+      segments: futuresSegments.length ? futuresSegments : [
+        { label: '自營商', value: 12, tone: 'slate' },
+        { label: '投信', value: 12, tone: 'slate' },
+        { label: '外資', value: 12, tone: 'slate' },
       ],
       metrics: [
         ...futuresMetrics,
-        { label: '海外均值變動', value: signed(worldAdjMove.value, '%'), note: '海外指數輔助情境，不是台股主訊號。', tone: worldAdjMove.value >= 0 ? 'cyan' : 'amber', intensity: clamp(Math.abs(worldAdjMove.value) * 55) },
+        {
+          label: '海外均值變動',
+          value: signed(worldAdjMove.value, '%'),
+          note: '海外指數輔助情境，不是台股主訊號。',
+          tone: worldAdjMove.value >= 0 ? 'cyan' : 'amber',
+          intensity: clamp(Math.abs(worldAdjMove.value) * 55),
+        },
       ],
     },
   ]
@@ -421,9 +392,9 @@ export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
           {hasPreview && <DetailPill tone="amber">local preview</DetailPill>}
         </div>
         <div className="flex flex-wrap gap-2">
-          <DetailPill tone="cyan">流動性</DetailPill>
-          <DetailPill tone="emerald">信用籌碼</DetailPill>
-          <DetailPill tone="violet">期貨避險</DetailPill>
+          <DetailPill tone="violet">期貨總覽</DetailPill>
+          <DetailPill tone="emerald">法人拆解</DetailPill>
+          <DetailPill tone="cyan">海外情境</DetailPill>
         </div>
       </div>
 

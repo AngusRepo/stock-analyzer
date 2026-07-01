@@ -633,6 +633,95 @@ def _market_index_rows_from_frame(
     return rows
 
 
+def _taiex_total_index_field(
+    regime_dir: Path,
+    filename: str,
+    field: str,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+) -> pl.DataFrame:
+    frame = _read_parquet(regime_dir / f"{filename}.parquet")
+    if frame.is_empty():
+        return pl.DataFrame({"date": [], field: []})
+    if "date" not in frame.columns:
+        if "__index_level_0__" in frame.columns:
+            frame = frame.rename({"__index_level_0__": "date"})
+        else:
+            return pl.DataFrame({"date": [], field: []})
+    frame = _filter_dates(frame, start_date=start_date, end_date=end_date)
+    value_columns = [col for col in frame.columns if col not in {"date", "__index_level_0__"}]
+    if not value_columns:
+        return pl.DataFrame({"date": [], field: []})
+    value_column = "TAIEX" if "TAIEX" in value_columns else value_columns[0]
+    return (
+        frame
+        .select([
+            _date_expr("date").alias("date"),
+            pl.col(value_column).cast(pl.Float64, strict=False).alias(field),
+        ])
+        .filter(pl.col(field).is_not_null())
+    )
+
+
+def _taiex_total_index_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    start_date: str | None,
+    end_date: str | None,
+) -> list[dict[str, Any]]:
+    regime_dir = artifact_root / "raw" / "regime_context"
+    field_files = {
+        "open": "taiex_open",
+        "high": "taiex_high",
+        "low": "taiex_low",
+        "close": "taiex_close",
+    }
+    joined: pl.DataFrame | None = None
+    lineage_fields: list[str] = []
+    for field, filename in field_files.items():
+        frame = _taiex_total_index_field(
+            regime_dir,
+            filename,
+            field,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if frame.is_empty():
+            continue
+        lineage_fields.append(filename)
+        joined = frame if joined is None else joined.join(frame, on="date", how="full", coalesce=True)
+    if joined is None or joined.is_empty() or "close" not in joined.columns:
+        return []
+
+    lineage = _lineage(run_id, "regime_context", lineage_fields, artifact_root)
+    rows: list[dict[str, Any]] = []
+    for row in _rows(joined.sort("date")):
+        close = _coerce_number(row.get("close"))
+        if close is None:
+            continue
+        rows.append({
+            "symbol": "TWII",
+            "date": row["date"],
+            "name": "發行量加權股價指數",
+            "market_segment": "LISTED",
+            "open": _coerce_number(row.get("open")),
+            "high": _coerce_number(row.get("high")),
+            "low": _coerce_number(row.get("low")),
+            "close": close,
+            "change": None,
+            "change_pct": None,
+            "volume": None,
+            "value": None,
+            "source": "finlab.taiex_total_index",
+            "lineage_json": lineage,
+            "as_of_date": generated_at[:10],
+        })
+    return rows
+
+
 def build_market_index_rows(
     artifact_root: Path,
     *,
@@ -644,6 +733,14 @@ def build_market_index_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     regime_dir = artifact_root / "raw" / "regime_context"
+    rows.extend(_taiex_total_index_rows(
+        artifact_root,
+        run_id=run_id,
+        generated_at=generated_at,
+        start_date=start_date,
+        end_date=end_date,
+    ))
+
     official_twse = _read_parquet(regime_dir / "official_twse_index.parquet")
     if not official_twse.is_empty():
         rows.extend(_market_index_rows_from_frame(
@@ -707,9 +804,20 @@ def build_market_index_rows(
                 row["symbol"] = "TWII_RETURN"
             rows.append(row)
 
-    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    def source_priority(row: dict[str, Any]) -> int:
+        source = str(row.get("source") or "")
+        if source == "finlab.taiex_total_index":
+            return 0
+        if source.startswith("finlab."):
+            return 1
+        return 2
+
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        deduped[(row["symbol"], row["date"], row["source"])] = row
+        key = (row["symbol"], row["date"])
+        existing = deduped.get(key)
+        if existing is None or source_priority(row) < source_priority(existing):
+            deduped[key] = row
     output = list(deduped.values())
     return output[:limit] if limit and limit > 0 else output
 

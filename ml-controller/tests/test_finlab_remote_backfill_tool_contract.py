@@ -37,6 +37,60 @@ def test_cleanup_finlab_trading_restrictions_reads_d1_changes(monkeypatch):
     assert tool.cleanup_finlab_trading_restrictions(retention_days=31) == 7
 
 
+def test_finlab_esb_attention_disposal_writes_canonical_restrictions(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    raw_dir = tmp_path / "raw" / "trading_restrictions"
+    raw_dir.mkdir(parents=True)
+
+    pd.DataFrame(
+        {"2330": [True], "2317": [False]},
+        index=pd.to_datetime(["2026-06-30"]),
+    ).to_parquet(raw_dir / "esb_attention_flag.parquet")
+    pd.DataFrame(
+        {"2330": ["注意交易資訊"]},
+        index=pd.to_datetime(["2026-06-30"]),
+    ).to_parquet(raw_dir / "esb_attention_info.parquet")
+    pd.DataFrame(
+        {"6586": [True]},
+        index=pd.to_datetime(["2026-06-25"]),
+    ).to_parquet(raw_dir / "esb_disposition_flag.parquet")
+    pd.DataFrame(
+        {"6586": ["處置原因"]},
+        index=pd.to_datetime(["2026-06-25"]),
+    ).to_parquet(raw_dir / "esb_disposition_reason.parquet")
+    pd.DataFrame(
+        {"6586": ["2026-06-26"]},
+        index=pd.to_datetime(["2026-06-25"]),
+    ).to_parquet(raw_dir / "esb_disposition_start.parquet")
+    pd.DataFrame(
+        {"6586": ["2026-07-02"]},
+        index=pd.to_datetime(["2026-06-25"]),
+    ).to_parquet(raw_dir / "esb_disposition_end.parquet")
+
+    manifest = {
+        "run_id": "finlab-esb-test",
+        "generated_at": "2026-07-01T00:00:00+00:00",
+        "datasets": [
+            {
+                "lane": "trading_restrictions",
+                "artifacts": [{"path": str(path)} for path in sorted(raw_dir.glob("*.parquet"))],
+            }
+        ],
+    }
+    captured = {}
+
+    def fake_batch_execute(statements, **_kwargs):
+        captured["statements"] = statements
+        return {"success_count": len(statements)}
+
+    monkeypatch.setattr(tool, "d1_batch_execute", fake_batch_execute)
+
+    assert tool.insert_finlab_trading_restrictions(manifest, lookback_days=31, max_rows=20) == 2
+    params = [item[1] for item in captured["statements"]]
+    assert ["2330", "attention", "2026-06-30", "2026-07-31", "2026-06-30"] == params[0][:5]
+    assert ["6586", "disposition", "2026-06-26", "2026-07-02", "2026-06-25"] == params[1][:5]
+
+
 def test_remote_backfill_tool_bootstraps_cloud_run_app_root():
     source = TOOL_PATH.read_text(encoding="utf-8")
 
@@ -63,6 +117,10 @@ def test_core_specs_include_finlab_wave2_official_replacement_keys():
     chip = next(spec for spec in tool.CORE_SPECS if spec.lane == "chip_diversity")
     global_context = next(spec for spec in tool.CORE_SPECS if spec.lane == "global_context")
     regime_context = next(spec for spec in tool.CORE_SPECS if spec.lane == "regime_context")
+    trading_restrictions = next(
+        spec for spec in tool.CORE_SPECS
+        if spec.lane == "trading_restrictions" and "esb_attention_flag" in spec.keys
+    )
 
     assert daily_price.keys["close"] == "price:收盤價"
     assert daily_price.keys["adj_open"] == "etl:adj_open"
@@ -96,6 +154,9 @@ def test_core_specs_include_finlab_wave2_official_replacement_keys():
     assert global_context.keys["world_adj_close"] == "world_index:adj_close"
     assert regime_context.keys["futures_inst_long_trade_lots"] == "futures_institutional_investors_trading_summary:多方交易口數"
     assert regime_context.keys["futures_inst_net_oi_amount_k"] == "futures_institutional_investors_trading_summary:多空未平倉契約金額淨額(千元)"
+    assert trading_restrictions.keys["esb_attention_flag"] == "esb_attention_disposal:注意有價證券"
+    assert trading_restrictions.keys["esb_disposition_flag"] == "esb_attention_disposal:處置有價證券"
+    assert trading_restrictions.keys["esb_disposition_end"] == "esb_attention_disposal:處置結束時間"
     assert revenue.keys["revenue"] == "monthly_revenue:當月營收"
     assert revenue.keys["previous_month_revenue"] == "monthly_revenue:上月營收"
     assert revenue.keys["last_year_cumulative_revenue"] == "monthly_revenue:去年累計營收"

@@ -227,7 +227,8 @@ export async function loadTradingRestrictionSet(
   const refreshTtlMs = options.refreshTtlMs ?? 12 * 60 * 60_000
   const checkedAtMs = checkedAtRaw ? Date.parse(checkedAtRaw) : 0
   const stale = !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs > refreshTtlMs
-  if (options.refreshOfficialIfStale && stale) {
+  const canonicalFresh = Boolean(canonical.latestSourceDate && canonical.latestSourceDate >= tradeDate)
+  if (options.refreshOfficialIfStale && stale && !canonicalFresh) {
     const officialCounts = await refreshOfficialTradingRestrictions(env, tradeDate).catch(() => ({}))
     for (const [source, count] of Object.entries(officialCounts)) addSourceCount(sourceCounts, source, count)
     for (const symbol of await readSymbolList(env.KV, 'market:punished_stocks')) target.add(symbol)

@@ -15,3 +15,8 @@ assert(
   source.includes("source != 'finlab.trading_attention' OR source_date >= ?"),
   'runtime restriction loader must ignore stale FinLab trading_attention rows even before D1 cleanup',
 )
+assert(
+  source.includes('const canonicalFresh = Boolean(canonical.latestSourceDate && canonical.latestSourceDate >= tradeDate)') &&
+    source.includes('options.refreshOfficialIfStale && stale && !canonicalFresh'),
+  'official trading restriction refresh should be fallback-only when FinLab canonical restrictions are fresh',
+)

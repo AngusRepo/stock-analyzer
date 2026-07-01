@@ -760,9 +760,9 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
           tone={toneBySigned(asNumber(foreign5d?.raw_value))}
         />
         <HedgeFactor
-          label="期貨大戶淨部位"
+          label="大戶前五淨部位"
           value={factorDisplay(largeTrader, '待接資料')}
-          note={largeTrader?.detail ?? '前五大交易人買方減賣方部位。'}
+          note={largeTrader?.detail ?? 'TX+MTX/4+TMF/20；買方前五減賣方前五。'}
           tone={toneBySigned(asNumber(largeTrader?.raw_value))}
         />
         <HedgeFactor
@@ -998,7 +998,7 @@ function MarketOverviewBlock() {
           <div className="bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />
           </div>
-          <div className="grid items-start gap-4 bg-[#101116] px-4 pb-4 xl:grid-cols-[minmax(300px,0.58fr)_minmax(0,1.42fr)] 2xl:grid-cols-[minmax(280px,0.62fr)_minmax(520px,1.18fr)_minmax(340px,0.8fr)]">
+          <div className="grid items-start gap-4 bg-[#101116] px-4 pb-4 xl:grid-cols-[minmax(360px,0.92fr)_minmax(420px,1.02fr)] 2xl:grid-cols-[minmax(460px,1.06fr)_minmax(420px,0.78fr)_minmax(340px,0.78fr)]">
             <div className="grid gap-4 xl:self-stretch">
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
                 <FearGreedCard risk={risk} />
@@ -1019,6 +1019,35 @@ function MarketOverviewBlock() {
   )
 }
 
+function newsTime(item: any) {
+  const ts = Date.parse(String(item?.published_at ?? item?.publishedAt ?? ''))
+  return Number.isFinite(ts) ? ts : 0
+}
+
+function pickBalancedNews(items: any[], limit: number) {
+  const sorted = [...items].sort((a, b) => newsTime(b) - newsTime(a))
+  const picked: any[] = []
+  const seen = new Set<string>()
+  const usedSources = new Set<string>()
+  const add = (item: any) => {
+    const key = String(item?.url ?? item?.title ?? `${item?.source}:${picked.length}`)
+    if (seen.has(key)) return false
+    picked.push(item)
+    seen.add(key)
+    usedSources.add(String(item?.source ?? 'news'))
+    return picked.length >= limit
+  }
+
+  for (const item of sorted) {
+    const source = String(item?.source ?? 'news')
+    if (!usedSources.has(source) && add(item)) return picked
+  }
+  for (const item of sorted) {
+    if (add(item)) return picked
+  }
+  return picked
+}
+
 function NewsBlock({ embedded = false }: { embedded?: boolean }) {
   const { data, isLoading } = useQuery({
     queryKey: ['market', 'news', 'home'],
@@ -1026,7 +1055,8 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
     staleTime: 10 * 60 * 1000,
     retry: 1,
   })
-  const rows = asArray<any>(data).slice(0, embedded ? 3 : 12)
+  const newsItems = asArray<any>(data)
+  const rows = embedded ? pickBalancedNews(newsItems, 3) : newsItems.slice(0, 12)
   const sectionClass = embedded
     ? 'h-full overflow-hidden rounded-[20px] border border-white/[0.07] bg-white/[0.032]'
     : panelClass('overflow-hidden')
@@ -1036,7 +1066,7 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <section className={sectionClass}>
-      <SectionHeader icon={Newspaper} title="最新消息" action={<SourceBadge>{embedded ? '最新 3 則' : '每來源 3 則股票新聞'}</SourceBadge>} />
+      <SectionHeader icon={Newspaper} title="最新消息" action={<SourceBadge>{embedded ? '來源平衡 3 則' : '每來源 3 則股票新聞'}</SourceBadge>} />
       {isLoading ? (
         <div className={gridClass}>
           {Array.from({ length: embedded ? 3 : 6 }).map((_, index) => (

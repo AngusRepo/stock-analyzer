@@ -577,6 +577,61 @@ def test_market_index_single_score_column_is_not_treated_as_twii() -> None:
     assert outputs.canonical_market_index_daily == []
 
 
+def test_materialize_outputs_include_finlab_taiex_total_index() -> None:
+    root = _root("finlab_taiex_total_index")
+    regime_dir = root / "raw" / "regime_context"
+    _write(regime_dir / "taiex_open.parquet", pl.DataFrame({"date": ["2026-06-30"], "TAIEX": [45165.80]}))
+    _write(regime_dir / "taiex_high.parquet", pl.DataFrame({"date": ["2026-06-30"], "TAIEX": [46637.86]}))
+    _write(regime_dir / "taiex_low.parquet", pl.DataFrame({"date": ["2026-06-30"], "TAIEX": [45165.80]}))
+    _write(regime_dir / "taiex_close.parquet", pl.DataFrame({"date": ["2026-06-30"], "TAIEX": [46125.91]}))
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-07-01T00:00:00+00:00",
+        start_date="2026-06-30",
+        end_date="2026-06-30",
+        datasets=["canonical_market_index_daily"],
+    )
+
+    assert outputs.manifest["row_counts"]["canonical_market_index_daily"] == 1
+    row = outputs.canonical_market_index_daily[0]
+    assert row["symbol"] == "TWII"
+    assert row["source"] == "finlab.taiex_total_index"
+    assert row["close"] == 46125.91
+    assert row["open"] == 45165.80
+
+
+def test_market_index_prefers_finlab_taiex_over_official_same_date() -> None:
+    root = _root("finlab_taiex_preferred_over_official")
+    regime_dir = root / "raw" / "regime_context"
+    _write(regime_dir / "taiex_close.parquet", pl.DataFrame({"date": ["2026-06-30"], "TAIEX": [46125.91]}))
+    _write(
+        regime_dir / "official_twse_index.parquet",
+        pl.DataFrame(
+            {
+                "date": ["2026-06-30"],
+                "symbol": ["TWII"],
+                "name": ["發行量加權股價指數"],
+                "close": [46000.00],
+            }
+        ),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-07-01T00:00:00+00:00",
+        start_date="2026-06-30",
+        end_date="2026-06-30",
+        datasets=["canonical_market_index_daily"],
+    )
+
+    assert outputs.manifest["row_counts"]["canonical_market_index_daily"] == 1
+    row = outputs.canonical_market_index_daily[0]
+    assert row["symbol"] == "TWII"
+    assert row["source"] == "finlab.taiex_total_index"
+    assert row["close"] == 46125.91
+
+
 def test_materialize_outputs_include_official_twse_index_artifact() -> None:
     root = _root("official_twse_index")
     _write(

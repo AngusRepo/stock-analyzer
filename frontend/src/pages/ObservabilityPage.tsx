@@ -349,11 +349,11 @@ function ReadinessGauge({ score, tone }: { score: number; tone: WorkstationTone 
 
 function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
   return (
-    <div className="overflow-visible pb-1 md:overflow-x-auto">
-      <div className="grid gap-2 md:flex md:min-w-[920px] md:items-stretch">
+    <div className="pb-1">
+      <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {stages.map((stage, index) => (
-          <div key={stage.id} className="grid min-w-0 gap-2 md:flex md:flex-1 md:items-center">
-            <div className={`min-h-[148px] flex-1 rounded-2xl border p-3 ${statusRingClass(stage.tone)}`}>
+          <div key={stage.id} className="min-w-0">
+            <div className={`min-h-[148px] rounded-2xl border p-3 ${statusRingClass(stage.tone)}`}>
               <div className="flex items-start justify-between gap-3">
                 <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-black/20 sv-num text-[12px] text-[#ffd87f]">{index + 1}</span>
                 <WorkstationPill tone={stage.tone}>{readinessLabel(stage.status)}</WorkstationPill>
@@ -363,7 +363,7 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
               <p className="mt-3 line-clamp-2 text-xs leading-5 text-[#a8b6c5]">{stage.detail}</p>
               <p className="mt-2 truncate sv-num text-[11px] normal-case text-[#70809b]">{stage.job?.lastRun || stage.job?.nextRun || 'no runtime evidence yet'}</p>
             </div>
-            {index < stages.length - 1 && <ArrowRight className="hidden h-4 w-4 shrink-0 text-[#4d5b70] md:block" />}
+            {index < stages.length - 1 && <ArrowRight className="hidden h-3.5 w-3.5 text-[#4d5b70]" />}
           </div>
         ))}
       </div>
@@ -583,7 +583,7 @@ function SchedulerShortcutDeck({ jobs }: { jobs: SchedulerJob[] }) {
   const groupJobs = (group: SchedulerJob['group']) => jobsByGroup.get(group) ?? []
 
   return (
-    <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.18fr)_repeat(4,minmax(0,1fr))]">
+    <div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.14fr)_repeat(4,minmax(0,0.96fr))]">
       <SchedulerShortcutCard group="pipeline_chain" jobs={groupJobs('pipeline_chain')} hasRuntimeJobs={hasRuntimeJobs} />
       <SchedulerShortcutCard group="daily" jobs={groupJobs('daily')} hasRuntimeJobs={hasRuntimeJobs} />
       <SchedulerShortcutCard group="intraday" jobs={groupJobs('intraday')} hasRuntimeJobs={hasRuntimeJobs} />
@@ -867,14 +867,14 @@ function OperationalReadinessDeck({
         </div>
       </div>
 
-      <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,1fr)_minmax(560px,0.95fr)]">
+      <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]">
         <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Workflow className="h-4 w-4 text-sky-300" />
               <p className="text-sm font-semibold text-[#f2ead8]">Readiness Flow / 放行路徑</p>
             </div>
-            <WorkstationPill tone="neutral">scrollable</WorkstationPill>
+            <WorkstationPill tone="neutral">{stages.length} stages</WorkstationPill>
           </div>
           <ReadinessFlowMap stages={stages} />
           <SchedulerShortcutDeck jobs={jobs} />
@@ -889,7 +889,7 @@ function OperationalReadinessDeck({
               Data Quality <ExternalLink className="h-3 w-3" />
             </a>
           </div>
-          <ReadinessGateMatrix gates={gates} />
+          <DataQualityCompactMatrix gates={gates} />
         </div>
       </div>
 

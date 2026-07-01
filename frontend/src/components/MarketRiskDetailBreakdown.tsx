@@ -39,6 +39,13 @@ const TONE_BORDER: Record<Tone, string> = {
   slate: 'border-white/[0.07] bg-white/[0.035]',
 }
 
+const PARTICIPANT_TONE: Record<string, Tone> = {
+  自營商: 'amber',
+  投信: 'cyan',
+  外資: 'violet',
+  合計: 'slate',
+}
+
 function asNumber(value: unknown): number | null {
   if (value == null || value === '') return null
   const parsed = typeof value === 'number' ? value : Number(value)
@@ -80,6 +87,10 @@ function participantLabel(row: FuturesInstitutionalRow) {
   if (label.includes('自營')) return '自營商'
   if (label.includes('合計') || row.id === 'total') return '合計'
   return label || '法人'
+}
+
+function participantIdentityTone(row: FuturesInstitutionalRow): Tone {
+  return PARTICIPANT_TONE[participantLabel(row)] ?? 'slate'
 }
 
 function futuresBreakdownRows(regime: any, fallback: {
@@ -132,7 +143,7 @@ function FuturesOpenInterestBar({ rows }: { rows: FuturesInstitutionalRow[] }) {
     return {
       label: participantLabel(row),
       value,
-      tone: participantTone(row.netOiLots),
+      tone: participantIdentityTone(row),
     }
   })
   const total = segments.reduce((sum, segment) => sum + segment.value, 0)
@@ -190,6 +201,7 @@ function FuturesMetricCell({
 
 function FuturesInstitutionRow({ row }: { row: FuturesInstitutionalRow }) {
   const label = participantLabel(row)
+  const identityTone = participantIdentityTone(row)
   const netOi = asNumber(row.netOiLots)
   const netTrade = asNumber(row.netTradeLots)
   const netAmountK = asNumber(row.netOiAmountK)
@@ -198,7 +210,7 @@ function FuturesInstitutionRow({ row }: { row: FuturesInstitutionalRow }) {
   return (
     <div className={`grid min-w-0 gap-2 rounded-[16px] border p-3 ${TONE_BORDER[tone]} sm:grid-cols-[minmax(72px,0.72fr)_repeat(3,minmax(0,1fr))]`}>
       <div className="flex min-w-0 items-center gap-2 sm:block">
-        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_BAR[tone]}`} />
+        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_BAR[identityTone]}`} />
         <div className="min-w-0">
           <div className="truncate text-sm font-bold text-slate-100">{label}</div>
           <div className="mt-0.5 text-[10px] font-semibold text-slate-500">台指期貨</div>

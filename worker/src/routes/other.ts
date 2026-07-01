@@ -240,7 +240,7 @@ function numberOrNull(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function taipeiIsoDate(): string {
+function formatTaipeiIsoDate(date: Date): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Taipei',
     year: 'numeric',
@@ -251,6 +251,15 @@ function taipeiIsoDate(): string {
   const month = parts.find((part) => part.type === 'month')?.value ?? '01'
   const day = parts.find((part) => part.type === 'day')?.value ?? '01'
   return `${year}-${month}-${day}`
+}
+
+function taipeiIsoDate(): string {
+  return formatTaipeiIsoDate(new Date())
+}
+
+function taipeiIsoDateMinusDays(daysBack: number): string {
+  const todayStartTw = new Date(`${taipeiIsoDate()}T00:00:00+08:00`)
+  return formatTaipeiIsoDate(new Date(todayStartTw.getTime() - daysBack * 86400_000))
 }
 
 function parseOfficialNumber(value: unknown): number | null {
@@ -341,23 +350,29 @@ async function loadFinlabSeries(
   return fallbackSnapshot ?? buildIndexSnapshot(symbol, name, [], `FinLab source missing: ${candidates.map((item) => item.source).join(' / ')}`)
 }
 
+async function fetchTwseTaiexOfficialPoints(queryIsoDate: string): Promise<MarketSeriesPoint[]> {
+  const queryDate = queryIsoDate.replace(/-/g, '')
+  const res = await fetch(`https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date=${queryDate}&response=json`, {
+    headers: { Accept: 'application/json', 'User-Agent': 'StockVisionBot/1.0' },
+  })
+  if (!res.ok) return []
+  const body = await res.json() as any
+  const rows = Array.isArray(body?.data) ? body.data : []
+  return rows
+    .map((row: any) => {
+      if (!Array.isArray(row) || row.length < 5) return null
+      const date = parseOfficialDate(row[0])
+      const close = parseOfficialNumber(row[4])
+      return date && close != null ? { date, close } : null
+    })
+    .filter((point: MarketSeriesPoint | null): point is MarketSeriesPoint => Boolean(point))
+}
+
 async function fetchTwseTaiexOfficialSeries() {
   try {
-    const queryDate = taipeiIsoDate().replace(/-/g, '')
-    const res = await fetch(`https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date=${queryDate}&response=json`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'StockVisionBot/1.0' },
-    })
-    if (!res.ok) return missingMaterializationSnapshot('TWII', '加權指數', `TWSE MI_5MINS_HIST http_${res.status}`)
-    const body = await res.json() as any
-    const rows = Array.isArray(body?.data) ? body.data : []
-    const points = rows
-      .map((row: any) => {
-        if (!Array.isArray(row) || row.length < 5) return null
-        const date = parseOfficialDate(row[0])
-        const close = parseOfficialNumber(row[4])
-        return date && close != null ? { date, close } : null
-      })
-      .filter((point: MarketSeriesPoint | null): point is MarketSeriesPoint => Boolean(point))
+    const dates = Array.from({ length: 11 }, (_, daysBack) => taipeiIsoDateMinusDays(daysBack))
+    const groups = await Promise.all(dates.map((date) => fetchTwseTaiexOfficialPoints(date).catch(() => [])))
+    const points = groups.flat()
     return buildIndexSnapshot('TWII', '加權指數', points, 'TWSE MI_5MINS_HIST official')
   } catch (e) {
     console.warn('[market/indices] TWSE MI_5MINS_HIST fallback failed', e)
@@ -443,7 +458,7 @@ async function loadMarketRiskTwiiSeries(db: D1Database) {
     return buildIndexSnapshot('TWII', '加權指數', points, 'FinLab canonical market_risk.twii_close')
   } catch (e) {
     console.warn('[market/indices] market_risk.twii_close fallback failed', e)
-    return missingMaterializationSnapshot('TWII', '加權指數', 'FinLab benchmark_return / market_risk.twii_close')
+    return missingMaterializationSnapshot('TWII', '加權指數', 'FinLab canonical market_risk.twii_close')
   }
 }
 
@@ -1095,11 +1110,11 @@ function buildHedgeSentimentFactors(args: {
     },
     {
       id: 'large_trader_net',
-      label: '期貨大戶淨部位',
+      label: '大戶前五淨部位',
       value: signedContractsText(largeTraderNet),
       raw_value: largeTraderNet,
       source: 'canonical_regime_context_daily.tw_taifex_futures_large_trader',
-      detail: '前五大交易人買方部位減賣方部位；正值偏多，負值偏避險。',
+      detail: '臺股期貨 TX+MTX/4+TMF/20 口徑；前五大交易人買方部位減賣方部位。',
     },
     {
       id: 'put_call_ratio',
@@ -1369,7 +1384,7 @@ async function loadCanonicalRegimeContext(db: D1Database) {
       .filter((row) => row.date && row.dataset)
 
     const pcrRows = rows.filter((row) => row.dataset === 'tw_option_put_call_ratio' && row.value != null)
-    const largeRows = rows.filter((row) => /large_trader/.test(row.dataset) && row.value != null)
+    const largeRows = rows.filter((row) => row.dataset === 'tw_taifex_futures_large_trader' && row.value != null)
     const businessRows = rows
       .filter((row) => row.dataset === 'tw_business_indicators' && row.value != null)
       .filter((row) => row.field === 'business_signal_score' || /景氣|signal/i.test(`${row.field} ${row.category}`))
@@ -1395,7 +1410,7 @@ async function loadCanonicalRegimeContext(db: D1Database) {
 
     const factors = [
       contextFactor('put_call_ratio', '賣買權量比', pcr, 'info'),
-      contextFactor('large_trader_net', '大戶淨部位', largeTrader, (largeTrader?.value ?? 0) < 0 ? 'warn' : 'info'),
+      contextFactor('large_trader_net', '大戶前五淨部位', largeTrader, (largeTrader?.value ?? 0) < 0 ? 'warn' : 'info'),
       contextFactor('usd_twd', '美元兌台幣', usdTwd, 'info'),
     ]
 
@@ -1687,8 +1702,8 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v9-delta-fill', async () => {
-    const [finlabTwii, finlabTwoii, finlabTxfDay, taifexDay, taifexNight, marketRiskTwii, twseOfficialTwii] = await Promise.all([
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v11-taiex-total-index', async () => {
+    const [finlabTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, marketRiskTwii, twseOfficialTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
           sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
@@ -1699,19 +1714,6 @@ market.get('/indices', async (c) => {
           sql: 'SELECT date, close FROM market_index_daily WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
           binds: ['TWII', 'TAIEX'],
           source: 'FinLab market_index_daily',
-        },
-        {
-          sql: 'SELECT date, close FROM finlab_tw_stock_market_ind WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
-          binds: ['TWII', 'TAIEX'],
-          source: 'FinLab etl:finlab_tw_stock_market_ind',
-        },
-        {
-          sql: 'SELECT date, "發行量加權股價報酬指數" AS close FROM benchmark_return WHERE "發行量加權股價報酬指數" IS NOT NULL ORDER BY date DESC LIMIT 30',
-          source: 'FinLab benchmark_return:發行量加權股價報酬指數',
-        },
-        {
-          sql: 'SELECT date, "發行量加權股價報酬指數" AS close FROM finlab_benchmark_return WHERE "發行量加權股價報酬指數" IS NOT NULL ORDER BY date DESC LIMIT 30',
-          source: 'FinLab finlab_benchmark_return',
         },
       ]),
       loadFinlabSeries(c.env.DB, 'TWOII', '櫃買指數', [
@@ -1753,6 +1755,13 @@ market.get('/indices', async (c) => {
           source: 'FinLab futures_price',
         },
       ]),
+      loadFinlabSeries(c.env.DB, 'TXF', '台指期貨夜盤', [
+        {
+          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'night' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
+          binds: ['TXF', 'TX'],
+          source: 'FinLab canonical_futures_daily night',
+        },
+      ]),
       fetchTaifexDayClose().catch(() => null),
       fetchTaifexNightClose().catch(() => null),
       loadMarketRiskTwiiSeries(c.env.DB),
@@ -1780,7 +1789,7 @@ market.get('/indices', async (c) => {
     const txfDay = hasMarketSeriesData(bestTxfDay)
       ? bestTxfDay
       : missingMaterializationSnapshot('TXF', '台指期貨', 'FinLab futures_price not materialized')
-    const txfNight = taifexNight ? {
+    const taifexNightSnapshot = taifexNight ? {
       symbol: 'TXF',
       name: '台指期貨夜盤',
       current: Math.round(taifexNight.lastPrice * 100) / 100,
@@ -1792,15 +1801,20 @@ market.get('/indices', async (c) => {
       status: 'ok',
       history: [],
     } : null
+    const bestTxfNight = chooseBestMarketSeries(finlabTxfNight, taifexNightSnapshot ? [taifexNightSnapshot] : [])
+    const txfNight = hasMarketSeriesData(bestTxfNight)
+      ? bestTxfNight
+      : missingMaterializationSnapshot('TXF', '台指期貨夜盤', 'FinLab canonical_futures_daily night / TAIFEX MIS')
     return {
       twii,
       twoii,
       txfDay,
       txfNight,
       futuresSources: {
-        finlabDaily: ['futures_price', 'futures_institutional_investors_trading_summary', 'tw_taifex_futures_large_trader'],
+        finlabDaily: ['futures_price', 'canonical_futures_daily.day', 'canonical_futures_daily.night', 'futures_institutional_investors_trading_summary', 'tw_taifex_futures_large_trader'],
         liveDayFallback: taifexDay ? 'TAIFEX MIS fetchTaifexDayClose' : null,
-        liveNight: txfNight ? 'TAIFEX MIS fetchTaifexNightClose' : null,
+        liveNight: taifexNightSnapshot ? 'TAIFEX MIS fetchTaifexNightClose' : null,
+        canonicalNightFallback: hasMarketSeriesData(finlabTxfNight) ? 'FinLab canonical_futures_daily night' : null,
         dahuApiConfigured: false,
       },
       updatedAt: new Date().toISOString(),

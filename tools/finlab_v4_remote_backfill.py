@@ -252,6 +252,10 @@ CORE_SPECS = [
         lane="regime_context",
         kind="raw_frames",
         keys={
+            "taiex_open": "taiex_total_index:開盤指數",
+            "taiex_high": "taiex_total_index:最高指數",
+            "taiex_low": "taiex_total_index:最低指數",
+            "taiex_close": "taiex_total_index:收盤指數",
             "tw_stock_market_ind": "etl:finlab_tw_stock_market_ind",
             "benchmark_twii_return_index": "benchmark_return:發行量加權股價報酬指數",
             "futures_contract_month": "futures_price:到期月份(週別)",
@@ -295,6 +299,18 @@ CORE_SPECS = [
         lane="trading_restrictions",
         kind="table",
         keys={"trading_attention": "trading_attention"},
+    ),
+    DatasetSpec(
+        lane="trading_restrictions",
+        kind="wide_fields",
+        keys={
+            "esb_attention_flag": "esb_attention_disposal:注意有價證券",
+            "esb_attention_info": "esb_attention_disposal:注意交易資訊",
+            "esb_disposition_flag": "esb_attention_disposal:處置有價證券",
+            "esb_disposition_reason": "esb_attention_disposal:處置原因",
+            "esb_disposition_start": "esb_attention_disposal:處置開始時間",
+            "esb_disposition_end": "esb_attention_disposal:處置結束時間",
+        },
     ),
     DatasetSpec(
         lane="emerging_chip_diversity",
@@ -1466,25 +1482,224 @@ def _artifact_path(manifest: dict[str, Any], lane: str) -> Path | None:
     return None
 
 
+def _artifact_paths(manifest: dict[str, Any], lane: str) -> list[Path]:
+    paths: list[Path] = []
+    for dataset in manifest.get("datasets") or []:
+        if dataset.get("lane") != lane:
+            continue
+        for artifact in dataset.get("artifacts") or []:
+            path = artifact.get("path")
+            if path:
+                paths.append(Path(path))
+    return paths
+
+
+def _is_missing_value(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        missing = pd.isna(value)
+        if isinstance(missing, bool):
+            return missing
+    except Exception:
+        return False
+    return False
+
+
+def _truthy_finlab_flag(value: Any) -> bool:
+    if _is_missing_value(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text or text in {"0", "false", "f", "no", "n", "nan", "none", "null", "-"}:
+        return False
+    if text in {"1", "true", "t", "yes", "y"}:
+        return True
+    return False
+
+
+def _read_wide_artifact(path: Path) -> pd.DataFrame:
+    frame = pd.read_parquet(path)
+    if "date" in frame.columns:
+        frame = frame.copy()
+        frame.index = pd.to_datetime(frame.pop("date"), errors="coerce")
+    elif "__index_level_0__" in frame.columns:
+        frame = frame.copy()
+        frame.index = pd.to_datetime(frame.pop("__index_level_0__"), errors="coerce")
+    else:
+        frame = frame.copy()
+        frame.index = pd.to_datetime(frame.index, errors="coerce")
+    frame = frame[~frame.index.isna()].sort_index()
+    frame.columns = [str(column).strip() for column in frame.columns]
+    return frame
+
+
+def _wide_lookup(frame: pd.DataFrame | None, generated_date: str) -> dict[tuple[str, str], Any]:
+    if frame is None or frame.empty:
+        return {}
+    values: dict[tuple[str, str], Any] = {}
+    for idx, row in frame.iterrows():
+        source_date = _clean_date(idx, generated_date)
+        for raw_symbol, value in row.items():
+            if _is_missing_value(value):
+                continue
+            symbol = _clean_symbol(raw_symbol)
+            if symbol:
+                values[(source_date, symbol)] = value
+    return values
+
+
+def _restriction_row(
+    *,
+    symbol: str,
+    restriction_type: str,
+    source_date: str,
+    start_date: str,
+    end_date: str,
+    title: str,
+    source_url: str,
+    run_id: str,
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "restriction_type": restriction_type,
+        "source_date": source_date,
+        "start_date": start_date,
+        "end_date": end_date,
+        "title": title[:240],
+        "source_url": source_url,
+        "lineage_json": json.dumps(
+            {"schema_version": "finlab-trading-attention-v2", "run_id": run_id, "raw": raw},
+            ensure_ascii=False,
+            default=str,
+        ),
+    }
+
+
+def _esb_attention_disposal_rows(
+    paths: list[Path],
+    *,
+    generated_date: str,
+    cutoff: str,
+    lookback_days: int,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    frames: dict[str, pd.DataFrame] = {}
+    for path in paths:
+        if path.stem.startswith("esb_") and path.exists():
+            frames[path.stem] = _read_wide_artifact(path)
+    if not frames:
+        return []
+
+    info = _wide_lookup(frames.get("esb_attention_info"), generated_date)
+    reason = _wide_lookup(frames.get("esb_disposition_reason"), generated_date)
+    starts = _wide_lookup(frames.get("esb_disposition_start"), generated_date)
+    ends = _wide_lookup(frames.get("esb_disposition_end"), generated_date)
+    rows: list[dict[str, Any]] = []
+
+    for raw_type, frame_name, restriction_type in [
+        ("attention", "esb_attention_flag", "attention"),
+        ("disposition", "esb_disposition_flag", "disposition"),
+    ]:
+        frame = frames.get(frame_name)
+        if frame is None or frame.empty:
+            continue
+        for idx, row in frame.iterrows():
+            source_date = _clean_date(idx, generated_date)
+            if source_date < cutoff:
+                continue
+            for raw_symbol, value in row.items():
+                if not _truthy_finlab_flag(value):
+                    continue
+                symbol = _clean_symbol(raw_symbol)
+                if not symbol:
+                    continue
+                key = (source_date, symbol)
+                start_date = source_date
+                end_date = _add_days(source_date, lookback_days)
+                detail = info.get(key) if restriction_type == "attention" else reason.get(key)
+                if restriction_type == "disposition":
+                    start_date = _clean_date(starts.get(key), source_date)
+                    end_date = _clean_date(ends.get(key), _add_days(start_date, lookback_days))
+                title = f"{restriction_type}:{symbol}"
+                if detail and not _is_missing_value(detail):
+                    title = f"{title}:{str(detail)[:180]}"
+                rows.append(_restriction_row(
+                    symbol=symbol,
+                    restriction_type=restriction_type,
+                    source_date=source_date,
+                    start_date=start_date,
+                    end_date=end_date,
+                    title=title,
+                    source_url="https://www.finlab.tw/",
+                    run_id=run_id,
+                    raw={
+                        "dataset": "esb_attention_disposal",
+                        "type": raw_type,
+                        "date": source_date,
+                        "symbol": symbol,
+                        "flag": value,
+                        "detail": detail,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                    },
+                ))
+    return rows
+
+
 def insert_finlab_trading_restrictions(
     manifest: dict[str, Any],
     *,
     lookback_days: int = TRADING_RESTRICTION_RETENTION_DAYS,
     max_rows: int = 1200,
 ) -> int:
-    path = _artifact_path(manifest, "trading_restrictions")
-    if not path or not path.exists():
+    paths = [path for path in _artifact_paths(manifest, "trading_restrictions") if path.exists()]
+    if not paths:
         return 0
     generated_date = str(manifest.get("generated_at") or utc_now())[:10]
     cutoff = (datetime.fromisoformat(generated_date) - timedelta(days=lookback_days)).date().isoformat()
-    rows = pd.read_parquet(path).to_dict(orient="records")
-    prepared: list[tuple[str, dict[str, Any]]] = []
-    for row in rows:
-        source_date = _clean_date(_row_value(row, ["date", "日期", "公布日期", "created_at", "updated_at"]), generated_date)
-        if source_date < cutoff:
+    prepared: list[dict[str, Any]] = []
+    for path in paths:
+        if path.name != "table.parquet":
             continue
-        prepared.append((source_date, row))
-    prepared.sort(key=lambda item: item[0], reverse=True)
+        rows = pd.read_parquet(path).to_dict(orient="records")
+        for row in rows:
+            source_date = _clean_date(_row_value(row, ["date", "日期", "公布日期", "created_at", "updated_at"]), generated_date)
+            if source_date < cutoff:
+                continue
+            symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "code"]), row)
+            if not symbol:
+                continue
+            raw_type = str(_row_value(row, ["type", "restriction_type"]) or "attention")
+            restriction_type = "disposition" if any(word in raw_type.lower() for word in ["punish", "disposition"]) else "attention"
+            title = str(_row_value(row, ["title", "name", "reason", "注意交易資訊"]) or f"{restriction_type}:{symbol}")[:240]
+            prepared.append(_restriction_row(
+                symbol=symbol,
+                restriction_type=restriction_type,
+                source_date=source_date,
+                start_date=source_date,
+                end_date=_add_days(source_date, lookback_days),
+                title=title,
+                source_url=_source_url(_row_value(row, ["url", "source_url", "link"]), "https://www.finlab.tw/"),
+                run_id=manifest["run_id"],
+                raw=row,
+            ))
+    prepared.extend(_esb_attention_disposal_rows(
+        paths,
+        generated_date=generated_date,
+        cutoff=cutoff,
+        lookback_days=lookback_days,
+        run_id=manifest["run_id"],
+    ))
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in prepared:
+        key = (row["symbol"], row["restriction_type"], row["source_date"])
+        current = deduped.get(key)
+        if current is None or row["restriction_type"] == "disposition":
+            deduped[key] = row
+    prepared = sorted(deduped.values(), key=lambda row: row["source_date"], reverse=True)
 
     batch_sql = """
         INSERT INTO canonical_trading_restrictions (
@@ -1501,67 +1716,20 @@ def insert_finlab_trading_restrictions(
           updated_at=CURRENT_TIMESTAMP
     """.strip()
     batch_statements: list[tuple[str, list[Any]]] = []
-    for source_date, row in prepared[:max_rows]:
-        symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "code"]), row)
-        if not symbol:
-            continue
-        raw_type = str(_row_value(row, ["type", "restriction_type"]) or "attention")
-        restriction_type = "disposition" if any(word in raw_type.lower() for word in ["punish", "disposition"]) else "attention"
-        title = str(_row_value(row, ["title", "name", "reason"]) or f"{restriction_type}:{symbol}")[:240]
-        url = _source_url(_row_value(row, ["url", "source_url", "link"]), "https://www.finlab.tw/")
-        end_date = _add_days(source_date, lookback_days)
+    for row in prepared[:max_rows]:
         batch_statements.append((batch_sql, [
-            symbol,
-            restriction_type,
-            source_date,
-            end_date,
-            source_date,
-            title,
-            url,
-            json.dumps({"schema_version": "finlab-trading-attention-v1", "run_id": manifest["run_id"], "raw": row}, ensure_ascii=False, default=str),
+            row["symbol"],
+            row["restriction_type"],
+            row["start_date"],
+            row["end_date"],
+            row["source_date"],
+            row["title"],
+            row["source_url"],
+            row["lineage_json"],
         ]))
     if batch_statements:
         d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
     return len(batch_statements)
-
-    inserted = 0
-    for source_date, row in prepared[:max_rows]:
-        symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "證券代號", "股票代號", "code"]), row)
-        if not symbol:
-            continue
-        raw_type = str(_row_value(row, ["type", "restriction_type", "類別", "處置類別", "注意處置"]) or "attention")
-        restriction_type = "disposition" if any(word in raw_type for word in ["處置", "punish", "disposition"]) else "attention"
-        title = str(_row_value(row, ["title", "name", "股票名稱", "證券名稱", "說明", "reason"]) or f"{restriction_type}:{symbol}")[:240]
-        url = _source_url(_row_value(row, ["url", "source_url", "link"]), "https://www.finlab.tw/")
-        end_date = _add_days(source_date, lookback_days)
-        d1_exec(
-            """
-            INSERT INTO canonical_trading_restrictions (
-              symbol, restriction_type, market_segment, start_date, end_date, source,
-              source_date, title, source_url, lineage_json, active, updated_at
-            )
-            VALUES (?, ?, NULL, ?, ?, 'finlab.trading_attention', ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-            ON CONFLICT(symbol, restriction_type, source, source_date) DO UPDATE SET
-              title=excluded.title,
-              end_date=excluded.end_date,
-              source_url=excluded.source_url,
-              lineage_json=excluded.lineage_json,
-              active=excluded.active,
-              updated_at=CURRENT_TIMESTAMP
-            """,
-            [
-                symbol,
-                restriction_type,
-                source_date,
-                end_date,
-                source_date,
-                title,
-                url,
-                json.dumps({"schema_version": "finlab-trading-attention-v1", "run_id": manifest["run_id"], "raw": row}, ensure_ascii=False, default=str),
-            ],
-        )
-        inserted += 1
-    return inserted
 
 
 def cleanup_finlab_trading_restrictions(*, retention_days: int = TRADING_RESTRICTION_RETENTION_DAYS) -> int:

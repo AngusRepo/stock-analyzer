@@ -721,11 +721,13 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
 function ExecutionFlowColumn({
   pendingBuys,
   pbDate,
+  sourceRecoDate,
   qfList,
   candidateCount,
 }: {
   pendingBuys: any[]
   pbDate: string
+  sourceRecoDate?: string
   qfList: any[]
   candidateCount: number
 }) {
@@ -735,8 +737,11 @@ function ExecutionFlowColumn({
     { label: '報價', value: String(qfList.length), detail: 'RRG / quote sanity' },
     { label: '掛單', value: String(pendingBuys.filter((buy: any) => String(buy.execution_status ?? '').toLowerCase().includes('filled')).length), detail: 'paper fills' },
   ]
+  const subtitleDate = sourceRecoDate
+    ? `${pbDate || 'latest'} · src ${sourceRecoDate}`
+    : (pbDate || 'latest')
   return (
-    <PipelineColumn title="辯論與模擬掛單" subtitle={`BUY signal only → debate → quote sanity → execution audit（${pbDate || 'latest'}）`}>
+    <PipelineColumn title="辯論與模擬掛單" subtitle={`BUY signal only → debate → quote sanity → execution audit（${subtitleDate}）`}>
       <div className="grid gap-2">
         {steps.map((step, index) => (
           <div key={step.label} className={`grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-xl border p-2 text-sm ${FLOW_STEP_ACCENTS[index % FLOW_STEP_ACCENTS.length]}`}>
@@ -815,6 +820,11 @@ export default function PipelinePage() {
   const recDate = recData?.date ?? today
   const pendingBuys = pbData?.pendingBuys ?? []
   const pbDate = pbData?.date ?? ''
+  const pendingSourceRecoDate = typeof pbData?.execution_policy?.source_reco_date === 'string'
+    ? pbData.execution_policy.source_reco_date
+    : typeof pbData?.meta?.source_reco_date === 'string'
+      ? pbData.meta.source_reco_date
+      : undefined
   const qfList = Array.isArray(qfData?.filters) ? qfData.filters : Array.isArray(qfData) ? qfData : []
 
   // Stage breakdown
@@ -876,7 +886,13 @@ export default function PipelinePage() {
           <div className="grid gap-4 xl:grid-cols-4">
             <FunnelSummaryColumn summary={recData?.funnel_summary} fallbackCount={recommendationRows.length} />
             <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
-            <ExecutionFlowColumn pendingBuys={pendingBuys} pbDate={pbDate} qfList={qfList} candidateCount={l4BuyCount} />
+            <ExecutionFlowColumn
+              pendingBuys={pendingBuys}
+              pbDate={pbDate}
+              sourceRecoDate={pendingSourceRecoDate}
+              qfList={qfList}
+              candidateCount={l4BuyCount}
+            />
           </div>
         )}
       </div>

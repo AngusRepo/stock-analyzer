@@ -37,6 +37,8 @@ import { buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
+
 function isTWMarketOpen(): boolean {
   const h = (new Date().getUTCHours() + 8) % 24
   const m = new Date().getUTCMinutes()
@@ -111,16 +113,51 @@ function parseRecommendationRecord(value: unknown): Record<string, any> | null {
   }
 }
 
+function finiteNumber(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function potentialBuyExpectedReturn(rec: any): number | null {
+  const l4Allocation = parseRecommendationRecord(rec?.l4_sparse_allocation)
+  const alphaAllocation = parseRecommendationRecord(rec?.alpha_allocation)
+  const forecastData = parseRecommendationRecord(rec?.forecast_data)
+  const forecastAllocation = parseRecommendationRecord(forecastData?.alpha_allocation)
+  const values = [
+    l4Allocation?.expected_return,
+    alphaAllocation?.expected_return,
+    forecastAllocation?.expected_return,
+    rec?.expected_return,
+    rec?.ml_forecast_pct,
+    rec?.forecast_pct,
+    rec?.predicted_return,
+  ]
+  for (const value of values) {
+    const parsed = finiteNumber(value)
+    if (parsed != null) return parsed
+  }
+  return null
+}
+
 function isPotentialBuyRecommendation(rec: any): boolean {
-  if (recommendationSignalText(rec) === 'POTENTIAL_BUY') return true
   const allocation = parseRecommendationRecord(rec?.alpha_allocation)
-  if (allocation?.potential_buy === true || allocation?.potential_buy === 1) return true
+  const l4Allocation = parseRecommendationRecord(rec?.l4_sparse_allocation)
+  const hasPotentialBuyEvidence =
+    recommendationSignalText(rec) === 'POTENTIAL_BUY'
+    || allocation?.potential_buy === true
+    || allocation?.potential_buy === 1
+    || l4Allocation?.potential_buy === true
+    || l4Allocation?.potential_buy === 1
   const points = Array.isArray(rec?.watch_points)
     ? rec.watch_points
     : typeof rec?.watch_points === 'string'
       ? [rec.watch_points]
       : []
-  return points.some((point: any) => String(point).includes('allocation:potential_buy'))
+  const hasWatchPoint = points.some((point: any) => String(point).includes('allocation:potential_buy'))
+  if (!hasPotentialBuyEvidence && !hasWatchPoint) return false
+  const expectedReturn = potentialBuyExpectedReturn(rec)
+  return expectedReturn != null && expectedReturn >= POTENTIAL_BUY_MIN_EXPECTED_RETURN
 }
 
 // ─── Conviction Gauge（半圓 SVG）──────────────────────────────────────────────

@@ -44,10 +44,37 @@ bidask_subscribed: set[str] = set()
 _price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
 TW_TZ = timezone(timedelta(hours=8))
+TW_SESSION_OPEN_MINUTE = 9 * 60
+TW_SESSION_CLOSE_MINUTE = 13 * 60 + 30
 
 
 def get_tw_now() -> datetime:
     return datetime.now(TW_TZ)
+
+
+def _regular_session_wall_clock(value: datetime) -> bool:
+    minute = value.hour * 60 + value.minute
+    return TW_SESSION_OPEN_MINUTE <= minute < TW_SESSION_CLOSE_MINUTE
+
+
+def _normalize_kbar_datetime(value) -> datetime | None:
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if not isinstance(value, datetime):
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    dt = value
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TW_TZ)
+    tw_dt = dt.astimezone(TW_TZ)
+    if _regular_session_wall_clock(dt) and not _regular_session_wall_clock(tw_dt):
+        return dt.replace(tzinfo=None).replace(tzinfo=TW_TZ)
+    return tw_dt
 
 
 def orderbook_max_age_ms() -> int:
@@ -264,13 +291,9 @@ def _series_value(container, *names):
 
 
 def _iso_kbar_ts(value) -> str:
-    if hasattr(value, "to_pydatetime"):
-        value = value.to_pydatetime()
-    if isinstance(value, datetime):
-        dt = value
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=TW_TZ)
-        return dt.astimezone(TW_TZ).isoformat()
+    dt = _normalize_kbar_datetime(value)
+    if dt is not None:
+        return dt.isoformat()
     return str(value)
 
 

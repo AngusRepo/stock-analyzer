@@ -36,11 +36,24 @@ export interface S12BaseBarDiagnostics {
   kbars_min_interval_ms: number | null
   kbars_granularity: 'intraday' | 'daily_like' | 'single_bar' | 'empty'
   kbars_unusable_reason: string | null
+  kbars_time_adjustment: string | null
+  kbars_raw_first_tw: string | null
+  kbars_raw_last_tw: string | null
+  kbars_raw_session_count: number
+  kbars_shifted_session_count: number
+  kbars_normalized_session_count: number
+  kbars_filtered_count: number
+  kbars_filtered_outside_trade_date_count: number
   previous_4h_fallback_loaded: boolean
   previous_4h_reference_date: string | null
   previous_4h_reference_close: number | null
   kbars_error: string | null
 }
+
+const H1_MS = 60 * 60_000
+const TW_OFFSET_MS = 8 * H1_MS
+const TW_SESSION_OPEN_MINUTE = 9 * 60
+const TW_SESSION_CLOSE_MINUTE = 13 * 60 + 30
 
 function finiteNumber(value: unknown): number | null {
   const n = Number(value)
@@ -92,6 +105,65 @@ function parseTwKbarTimeMs(value: unknown): number | null {
 function twTimeText(ms: number | null | undefined): string | null {
   if (ms == null || !Number.isFinite(ms)) return null
   return new Date(ms + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 19)
+}
+
+function isTwSessionTime(ms: number): boolean {
+  if (!Number.isFinite(ms)) return false
+  const tw = new Date(ms + TW_OFFSET_MS)
+  const minute = tw.getUTCHours() * 60 + tw.getUTCMinutes()
+  return minute >= TW_SESSION_OPEN_MINUTE && minute < TW_SESSION_CLOSE_MINUTE
+}
+
+function countTwSessionBars(bars: IntradayRollingBar[]): number {
+  return bars.reduce((count, bar) => count + (isTwSessionTime(bar.startMs) ? 1 : 0), 0)
+}
+
+export function normalizeS12KbarSessionTimeSkew(bars: IntradayRollingBar[]): {
+  bars: IntradayRollingBar[]
+  adjustment: string | null
+  rawSessionCount: number
+  shiftedSessionCount: number
+  normalizedSessionCount: number
+} {
+  const rawSessionCount = countTwSessionBars(bars)
+  const shifted = bars.map((bar) => ({ ...bar, startMs: bar.startMs - TW_OFFSET_MS }))
+  const shiftedSessionCount = countTwSessionBars(shifted)
+  if (
+    bars.length >= 3 &&
+    shiftedSessionCount >= 3 &&
+    shiftedSessionCount > rawSessionCount &&
+    shiftedSessionCount >= Math.max(3, rawSessionCount * 4)
+  ) {
+    return {
+      bars: shifted,
+      adjustment: 'proxy_utc_label_to_tw_local_minus_8h',
+      rawSessionCount,
+      shiftedSessionCount,
+      normalizedSessionCount: shiftedSessionCount,
+    }
+  }
+  return {
+    bars,
+    adjustment: null,
+    rawSessionCount,
+    shiftedSessionCount,
+    normalizedSessionCount: rawSessionCount,
+  }
+}
+
+function twDateText(ms: number): string {
+  return new Date(ms + TW_OFFSET_MS).toISOString().slice(0, 10)
+}
+
+export function filterS12KbarsToTradeDate(bars: IntradayRollingBar[], tradeDate: string): {
+  bars: IntradayRollingBar[]
+  outsideTradeDateCount: number
+} {
+  const filtered = bars.filter((bar) => twDateText(bar.startMs) === tradeDate)
+  return {
+    bars: filtered,
+    outsideTradeDateCount: Math.max(0, bars.length - filtered.length),
+  }
 }
 
 function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
@@ -201,7 +273,10 @@ async function fetchS12ShioajiKbars(
   bars: IntradayRollingBar[]
   diagnostics: Pick<S12BaseBarDiagnostics,
     'raw_kbars_count' | 'parsed_kbars_count' | 'invalid_kbars_count' | 'kbars_first_tw' |
-    'kbars_last_tw' | 'kbars_min_interval_ms' | 'kbars_granularity' | 'kbars_unusable_reason'
+    'kbars_last_tw' | 'kbars_min_interval_ms' | 'kbars_granularity' | 'kbars_unusable_reason' |
+    'kbars_time_adjustment' | 'kbars_raw_first_tw' | 'kbars_raw_last_tw' |
+    'kbars_raw_session_count' | 'kbars_shifted_session_count' | 'kbars_normalized_session_count' |
+    'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count'
   >
 }> {
   if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) {
@@ -216,6 +291,14 @@ async function fetchS12ShioajiKbars(
         kbars_min_interval_ms: null,
         kbars_granularity: 'empty',
         kbars_unusable_reason: 'kbars_disabled',
+        kbars_time_adjustment: null,
+        kbars_raw_first_tw: null,
+        kbars_raw_last_tw: null,
+        kbars_raw_session_count: 0,
+        kbars_shifted_session_count: 0,
+        kbars_normalized_session_count: 0,
+        kbars_filtered_count: 0,
+        kbars_filtered_outside_trade_date_count: 0,
       },
     }
   }
@@ -232,6 +315,14 @@ async function fetchS12ShioajiKbars(
         kbars_min_interval_ms: null,
         kbars_granularity: 'empty',
         kbars_unusable_reason: 'missing_proxy_url',
+        kbars_time_adjustment: null,
+        kbars_raw_first_tw: null,
+        kbars_raw_last_tw: null,
+        kbars_raw_session_count: 0,
+        kbars_shifted_session_count: 0,
+        kbars_normalized_session_count: 0,
+        kbars_filtered_count: 0,
+        kbars_filtered_outside_trade_date_count: 0,
       },
     }
   }
@@ -245,22 +336,33 @@ async function fetchS12ShioajiKbars(
   if (!res.ok) throw new Error(`s12_kbars_http_${res.status}`)
   const json = await res.json() as { data?: S12KbarRow[] }
   const rows = Array.isArray(json.data) ? json.data : []
-  const bars = rows
+  const rawBars = rows
     .map(s12KbarRowToBar)
     .filter((bar): bar is IntradayRollingBar => bar != null)
     .sort((a, b) => a.startMs - b.startMs)
+  const normalized = normalizeS12KbarSessionTimeSkew(rawBars)
+  const filtered = filterS12KbarsToTradeDate(normalized.bars, tradeDate)
+  const bars = filtered.bars.sort((a, b) => a.startMs - b.startMs)
   const granularity = kbarGranularity(bars)
   return {
     bars,
     diagnostics: {
       raw_kbars_count: rows.length,
-      parsed_kbars_count: bars.length,
-      invalid_kbars_count: Math.max(0, rows.length - bars.length),
+      parsed_kbars_count: rawBars.length,
+      invalid_kbars_count: Math.max(0, rows.length - rawBars.length),
+      kbars_raw_first_tw: twTimeText(rawBars[0]?.startMs),
+      kbars_raw_last_tw: twTimeText(rawBars[rawBars.length - 1]?.startMs),
       kbars_first_tw: twTimeText(bars[0]?.startMs),
       kbars_last_tw: twTimeText(bars[bars.length - 1]?.startMs),
       kbars_min_interval_ms: granularity.minIntervalMs,
       kbars_granularity: granularity.granularity,
       kbars_unusable_reason: granularity.unusableReason,
+      kbars_time_adjustment: normalized.adjustment,
+      kbars_raw_session_count: normalized.rawSessionCount,
+      kbars_shifted_session_count: normalized.shiftedSessionCount,
+      kbars_normalized_session_count: normalized.normalizedSessionCount,
+      kbars_filtered_count: bars.length,
+      kbars_filtered_outside_trade_date_count: filtered.outsideTradeDateCount,
     },
   }
 }
@@ -410,6 +512,14 @@ export async function loadS12IntradayBaseBars(
     kbars_min_interval_ms: null,
     kbars_granularity: 'empty',
     kbars_unusable_reason: 'not_loaded',
+    kbars_time_adjustment: null,
+    kbars_raw_first_tw: null,
+    kbars_raw_last_tw: null,
+    kbars_raw_session_count: 0,
+    kbars_shifted_session_count: 0,
+    kbars_normalized_session_count: 0,
+    kbars_filtered_count: 0,
+    kbars_filtered_outside_trade_date_count: 0,
     previous_4h_fallback_loaded: previous4h.bar != null,
     previous_4h_reference_date: previous4h.referenceDate,
     previous_4h_reference_close: previous4h.referenceClose,

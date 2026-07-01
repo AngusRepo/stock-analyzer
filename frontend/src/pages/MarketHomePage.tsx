@@ -52,6 +52,7 @@ type RiskFactor = {
 }
 
 const HOME_RECOMMENDATION_LIMIT = 80
+const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
@@ -1328,16 +1329,45 @@ function isBuySignalRecommendation(rec: any): boolean {
   return ['BUY', 'STRONG_BUY'].includes(recommendationSignalText(rec))
 }
 
+function potentialBuyExpectedReturn(rec: any): number | null {
+  const l4Allocation = parseRecord(rec?.l4_sparse_allocation)
+  const alphaAllocation = parseRecord(rec?.alpha_allocation)
+  const forecastData = parseRecord(rec?.forecast_data)
+  const forecastAllocation = parseRecord(forecastData?.alpha_allocation)
+  const values = [
+    l4Allocation?.expected_return,
+    alphaAllocation?.expected_return,
+    forecastAllocation?.expected_return,
+    rec?.expected_return,
+    rec?.ml_forecast_pct,
+    rec?.forecast_pct,
+    rec?.predicted_return,
+  ]
+  for (const value of values) {
+    const parsed = asNumber(value)
+    if (parsed != null) return parsed
+  }
+  return null
+}
+
 function isPotentialBuyRecommendation(rec: any): boolean {
-  if (recommendationSignalText(rec) === 'POTENTIAL_BUY') return true
   const allocation = parseRecord(rec?.alpha_allocation)
-  if (allocation?.potential_buy === true || allocation?.potential_buy === 1) return true
+  const l4Allocation = parseRecord(rec?.l4_sparse_allocation)
+  const hasPotentialBuyEvidence =
+    recommendationSignalText(rec) === 'POTENTIAL_BUY'
+    || allocation?.potential_buy === true
+    || allocation?.potential_buy === 1
+    || l4Allocation?.potential_buy === true
+    || l4Allocation?.potential_buy === 1
   const points = Array.isArray(rec?.watch_points)
     ? rec.watch_points
     : typeof rec?.watch_points === 'string'
       ? [rec.watch_points]
       : []
-  return points.some((point: any) => String(point).includes('allocation:potential_buy'))
+  const hasWatchPoint = points.some((point: any) => String(point).includes('allocation:potential_buy'))
+  if (!hasPotentialBuyEvidence && !hasWatchPoint) return false
+  const expectedReturn = potentialBuyExpectedReturn(rec)
+  return expectedReturn != null && expectedReturn >= POTENTIAL_BUY_MIN_EXPECTED_RETURN
 }
 
 function recommendationScoreValue(rec: any): number {
@@ -1365,14 +1395,21 @@ function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_L
 
   const buyRows = rows.filter(isBuySignalRecommendation)
   const potentialRows = rows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row))
-  const priorityRows = [...buyRows, ...potentialRows].filter(takeUnique)
+  const priorityRows = [...buyRows, ...potentialRows].filter(takeUnique).slice(0, limit)
   const remainingCapacity = Math.max(0, limit - priorityRows.length)
   const fillerRows = rows
     .filter((row, index) => takeUnique(row, index))
     .sort((a, b) => recommendationScoreValue(b) - recommendationScoreValue(a))
     .slice(0, remainingCapacity)
 
-  return [...priorityRows, ...fillerRows]
+  return [...priorityRows, ...fillerRows].map((row) => {
+    if (recommendationSignalText(row) !== 'POTENTIAL_BUY' || isPotentialBuyRecommendation(row)) return row
+    return {
+      ...row,
+      signal: 'HOLD',
+      signal_raw: row?.signal_raw ?? row?.signal,
+    }
+  })
 }
 
 function RecommendationPanel() {

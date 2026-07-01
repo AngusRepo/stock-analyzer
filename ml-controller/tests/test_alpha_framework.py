@@ -551,7 +551,7 @@ def _sparse_recommendation_row(
 
 def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatch):
     def _fake_sparse_allocator(candidates, return_history, **kwargs):
-        assert [row["symbol"] for row in candidates] == ["AAA", "BBB", "CCC"]
+        assert [row["symbol"] for row in candidates] == ["AAA", "BBB", "DDD", "CCC"]
         return {
             "weights": {"AAA": 1.0},
             "candidate_diagnostics": {},
@@ -568,6 +568,7 @@ def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatc
     rows = [
         _sparse_recommendation_row("AAA", forecast_pct=0.04, final_score=82.0),
         _sparse_recommendation_row("BBB", forecast_pct=0.025, final_score=78.0),
+        _sparse_recommendation_row("DDD", forecast_pct=0.003, final_score=76.0),
         _sparse_recommendation_row("CCC", forecast_pct=0.0, final_score=74.0, signal="POTENTIAL_BUY"),
     ]
     allocated = recommendation_service._apply_sparse_tangent_buy_selection(
@@ -604,7 +605,18 @@ def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatc
     assert bbb["alpha_allocation"]["potential_buy_policy"] == (
         "positive_expected_edge_zero_sparse_weight_not_final_buy"
     )
+    assert bbb["alpha_allocation"]["potential_buy_min_expected_return"] == pytest.approx(0.005)
     assert "allocation:potential_buy:positive_edge_zero_weight" in bbb["watch_points"]
+
+    ddd = by_symbol["DDD"]
+    assert ddd["signal"] == "HOLD"
+    assert ddd["has_buy_signal"] == 0
+    assert ddd["alpha_allocation"]["selected"] is False
+    assert ddd["alpha_allocation"]["positive_expected_edge"] is True
+    assert ddd["alpha_allocation"]["potential_buy"] is False
+    assert ddd["alpha_allocation"]["selection_reason"] == (
+        "positive_edge_but_zero_weight_due_to_better_alternative"
+    )
 
     ccc = by_symbol["CCC"]
     assert ccc["signal"] == "HOLD"

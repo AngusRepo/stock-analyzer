@@ -57,6 +57,7 @@ D1_IN_CLAUSE_CHUNK_SIZE = 80
 POTENTIAL_BUY_SIGNAL = "POTENTIAL_BUY"
 POTENTIAL_BUY_SELECTION_REASON = "positive_edge_but_zero_weight_due_to_better_alternative"
 POTENTIAL_BUY_POLICY = "positive_expected_edge_zero_sparse_weight_not_final_buy"
+POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
 FORMAL_BUY_SIGNALS = {"BUY", "STRONG_BUY"}
 
 
@@ -2221,8 +2222,11 @@ def _is_sparse_potential_buy_evidence(evidence: dict[str, Any]) -> bool:
     if evidence.get("positive_expected_edge") is not True:
         return False
     try:
+        expected_return = float(evidence.get("expected_return") or 0.0)
         single_name_weight = float(evidence.get("single_name_weight") or 0.0)
     except (TypeError, ValueError):
+        return False
+    if not math.isfinite(expected_return) or expected_return < POTENTIAL_BUY_MIN_EXPECTED_RETURN:
         return False
     return math.isfinite(single_name_weight) and single_name_weight <= 0.0
 
@@ -2644,7 +2648,7 @@ def _apply_sparse_tangent_buy_selection(
         sparse_weight_state = (
             "selected_positive_sparse_weight"
             if selected and single_name_weight > 0
-            else "zero_sparse_weight_after_alpha_utility"
+            else "zero_sparse_weight_after_inverse_risk"
         )
         cluster_evidence = cluster_evidence_by_symbol.get(symbol) or {}
         return {
@@ -2753,6 +2757,7 @@ def _apply_sparse_tangent_buy_selection(
                 row["sparse_tangent_selected"] = False
                 row["alpha_allocation"]["potential_buy_policy"] = POTENTIAL_BUY_POLICY
                 row["alpha_allocation"]["potential_buy_reason"] = POTENTIAL_BUY_SELECTION_REASON
+                row["alpha_allocation"]["potential_buy_min_expected_return"] = POTENTIAL_BUY_MIN_EXPECTED_RETURN
                 watch_points = row.get("watch_points")
                 if not isinstance(watch_points, list):
                     watch_points = []

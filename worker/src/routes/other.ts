@@ -1823,10 +1823,12 @@ market.get('/indices', async (c) => {
 
 market.get('/news', async (c) => {
   const limitPerSource = Math.min(parsePosInt(c.req.query('perSource'), 3), 6)
-  const data = await withCache(c.env.KV, `market:news:v5:cnyes-stock-filter:${limitPerSource}`, async () => {
+  const data = await withCache(c.env.KV, `market:news:v6:rss-expanded:${limitPerSource}`, async () => {
     const feeds = [
       { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5591' },
       { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5588' },
+      { source: '自由財經', url: 'https://news.ltn.com.tw/rss/business.xml' },
+      { source: 'MoneyDJ', url: 'https://www.moneydj.com/KMDJ/RssCenter.aspx' },
     ]
     const [rssGroups, cnyesRows] = await Promise.all([
       Promise.all(feeds.map(async (feed) => {

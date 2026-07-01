@@ -15,7 +15,11 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "ml-controller"))
+for candidate in (ROOT / "ml-controller", ROOT, Path("/app"), Path("/root")):
+    if candidate.exists():
+        candidate_text = str(candidate)
+        if candidate_text not in sys.path:
+            sys.path.insert(0, candidate_text)
 
 from services.external_evidence_runtime import (  # noqa: E402
     build_external_evidence_runtime_packet,

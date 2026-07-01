@@ -17,6 +17,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'pbo',
   'model-artifact-candidate-validation',
   'model-artifact-validation',
+  'external-evidence',
   'finlab-v4-backfill',
   'retrain',
   'monthly-retrain',
@@ -33,6 +34,7 @@ export {
 
 export {
   finLabBackfillModalTriggerEnabled,
+  runExternalEvidenceMaterialize,
   runOptunaQueueProcessor,
   runFinLabV4Backfill,
   runWeeklyAudit,

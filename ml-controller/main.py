@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
 
-from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, strategy_similarity, strategy_mining, screener
+from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, external_evidence, strategy_similarity, strategy_mining, screener
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -111,6 +111,7 @@ app.include_router(meta_learning.router, dependencies=[Depends(verify_token)])
 app.include_router(paper_challenger.router, dependencies=[Depends(verify_token)])
 app.include_router(breeze2.router, dependencies=[Depends(verify_token)])
 app.include_router(finlab.router, dependencies=[Depends(verify_token)])
+app.include_router(external_evidence.router, dependencies=[Depends(verify_token)])
 app.include_router(strategy_similarity.router, dependencies=[Depends(verify_token)])
 app.include_router(strategy_mining.router, dependencies=[Depends(verify_token)])
 app.include_router(screener.router, dependencies=[Depends(verify_token)])

@@ -23,6 +23,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'intraday-check': { kind: 'trading_day', holidayGated: true, description: 'market-hours intraday execution guard' },
   'intraday-rescore': { kind: 'trading_day', holidayGated: true, description: 'market-hours intraday ML re-score' },
   'eod-exit': { kind: 'trading_day', holidayGated: true, description: 'market close exit workflow' },
+  'post-close-price-refresh': { kind: 'trading_day', holidayGated: true, description: 'post-close open-position price cache refresh' },
   'daily-snapshot': { kind: 'trading_day', holidayGated: true, description: 'post-market account snapshot' },
   'market-close-refresh': { kind: 'trading_day', holidayGated: true, description: '18:10 market-close data refresh before readiness probe' },
   'source-readiness-probe': { kind: 'trading_day', holidayGated: true, description: 'readiness-gated probe that starts full evening chain once FinLab/official sources are current' },
@@ -50,6 +51,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'morning-setup': { kind: 'trading_day', holidayGated: true, description: 'morning setup and debate' },
   'morning-briefing': { kind: 'trading_day', holidayGated: true, description: 'morning briefing delivery' },
   'pre-market-warmup': { kind: 'trading_day', holidayGated: true, description: 'pre-market control-plane warmup' },
+  'external-evidence': { kind: 'trading_day', holidayGated: true, description: 'daily formal-shadow GDELT and official evidence materialization' },
   'paper-trade': { kind: 'trading_day', holidayGated: true, description: 'paper trading execution' },
 
   'weekly-audit': { kind: 'trading_week', holidayGated: true, description: 'weekly trading audit' },

@@ -868,6 +868,8 @@ export function buildMarketDashboardMaterializationCheck(input: {
     } else if (lagDays > source.warnLagDays) {
       status = 'warn'
       rootCause = rootCause ?? 'freshness_lag'
+    } else if (!required && rootCause && !['ok', 'ready', 'fresh'].includes(String(rootCause).toLowerCase())) {
+      status = 'warn'
     }
 
     return {

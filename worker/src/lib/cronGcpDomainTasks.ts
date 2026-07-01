@@ -11,6 +11,7 @@ import {
   runWeeklyPBO,
   runWeeklyOptunaResearch,
   runOptunaQueueProcessor,
+  runExternalEvidenceMaterialize,
   summarizeWeeklyValidationChain,
 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
@@ -73,6 +74,11 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
 
   if (cron === '0 */6 * * *') {
     runWithLog('optuna-queue', async () => runOptunaQueueProcessor(env))
+    return true
+  }
+
+  if (cron === '15 15 * * 1-5') {
+    runWithLog('external-evidence', async () => runExternalEvidenceMaterialize(env, twToday()))
     return true
   }
 

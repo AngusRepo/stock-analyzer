@@ -35,6 +35,7 @@ const tradingDayTasks = [
   'intraday-check',
   'intraday-rescore',
   'eod-exit',
+  'post-close-price-refresh',
   'daily-snapshot',
   'market-close-refresh',
   'source-readiness-probe',
@@ -47,6 +48,7 @@ const tradingDayTasks = [
   'morning-setup',
   'morning-briefing',
   'pre-market-warmup',
+  'external-evidence',
 ]
 
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
@@ -110,6 +112,7 @@ for (const critical of [
   'monthly-strategy-mining',
   'monthly-retrain',
   'optuna-queue',
+  'external-evidence',
 ]) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(String(job?.query ?? '').split('&').includes('sync=1'), `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)

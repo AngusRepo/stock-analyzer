@@ -1006,10 +1006,12 @@ function MarketOverviewBlock() {
               </div>
               <HedgeSentimentCard risk={risk} />
             </div>
-            <MarketRiskDetailBreakdown risk={risk} />
+            <div className="grid gap-4 xl:self-stretch">
+              <MarketRiskDetailBreakdown risk={risk} />
+              <GlobalEventContextCard risk={risk} />
+            </div>
             <div className="grid gap-4 self-stretch xl:col-span-2 2xl:col-span-1">
               <NewsBlock embedded />
-              <GlobalEventContextCard risk={risk} />
             </div>
           </div>
         </div>

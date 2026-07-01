@@ -55,6 +55,8 @@ COPY worker/migration_strategy_mining_ledger_2026_06_18.sql /app/worker/migratio
 RUN mkdir -p /app/tools
 COPY tools/finlab_v4_remote_backfill.py /app/tools/finlab_v4_remote_backfill.py
 COPY tools/finlab_macro_context_snapshot.py /app/tools/finlab_macro_context_snapshot.py
+COPY tools/materialize_external_evidence_once.py /app/tools/materialize_external_evidence_once.py
+COPY tools/external_evidence_v4_local_packet.py /app/tools/external_evidence_v4_local_packet.py
 COPY tools/finlab_alpha_miner_bakeoff.py /app/tools/finlab_alpha_miner_bakeoff.py
 COPY tools/finlab_alphabuilders_factor_backtest.py /app/tools/finlab_alphabuilders_factor_backtest.py
 COPY tools/finlab_strategy_spec_backtest.py /app/tools/finlab_strategy_spec_backtest.py

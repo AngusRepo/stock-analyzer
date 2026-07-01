@@ -438,17 +438,17 @@ const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
   },
   intraday: {
     label: 'Intraday execution',
-    purpose: '盤中檢查、重評分與收盤前出場，和晚間 daily chain 分開看。',
+    purpose: '盤中檢查、重評分、收盤前出場與收盤後持倉價格快取。',
     tone: 'ok',
-    expectedCount: 3,
-    examples: ['Intraday Check', 'Intraday Re-score', 'EOD Exit'],
+    expectedCount: 4,
+    examples: ['Intraday Check', 'Intraday Re-score', 'EOD Exit', 'Post-close Refresh'],
   },
   daily: {
     label: 'Daily standalone',
-    purpose: '晨間、新聞、快照、記憶保留與 queue 類日常排程。',
+    purpose: '晨間、新聞、快照、外部 evidence、記憶保留與 queue 類日常排程。',
     tone: 'warn',
-    expectedCount: 7,
-    examples: ['US Leading', 'News Analyst', 'Morning Setup', 'Daily Snapshot'],
+    expectedCount: 8,
+    examples: ['US Leading', 'News Analyst', 'Morning Setup', 'External Evidence'],
   },
   weekly: {
     label: 'Weekly research',

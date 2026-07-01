@@ -51,6 +51,8 @@ def test_modal_deploy_packages_finlab_tool_and_controller_services() -> None:
     assert "finlab==2.0.13" in requirements
     assert "finlab==2.0.7" not in requirements
     assert "COPY tools/finlab_macro_context_snapshot.py" in dockerfile
+    assert "COPY tools/materialize_external_evidence_once.py" in dockerfile
+    assert "COPY tools/external_evidence_v4_local_packet.py" in dockerfile
 
 
 def test_finlab_backfill_uses_controller_d1_proxy_before_cloudflare_rest() -> None:

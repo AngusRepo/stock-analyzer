@@ -429,6 +429,34 @@ export async function runFinLabV4Backfill(
   return `triggered finlab-v4-backfill run_id=${runId} function_call_id=${functionCallId} callback expected`
 }
 
+export async function runExternalEvidenceMaterialize(env: Bindings, runDate?: string) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/external-evidence/materialize', {
+    method: 'POST',
+    jsonBody: {
+      target_date: runDate,
+      as_of_date: runDate,
+      trigger_source: 'worker_scheduler',
+      dry_run: false,
+    },
+    timeoutMs: 180_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`external evidence materialize HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const result = text ? JSON.parse(text) as Record<string, any> : {}
+  if (result.status === 'failed' || result.status === 'error') {
+    throw new Error(`external evidence materialize failed: ${result.error ?? result.status}`)
+  }
+  const targetDate = String(result.target_date ?? runDate ?? 'latest')
+  const gdeltStatus = String(result.gdelt_status ?? 'unknown')
+  const gdeltItems = Number(result.gdelt_items_built ?? 0)
+  const features = Number(result.stock_theme_features_upserted ?? 0)
+  return `external evidence target=${targetDate} gdelt=${gdeltStatus} items=${gdeltItems} stock_theme_features=${features}`
+}
+
 export async function runOptunaQueueProcessor(env: Bindings) {
   requireController(env)
 

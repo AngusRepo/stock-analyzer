@@ -19,6 +19,7 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'monthly-optuna',
   'monthly-strategy-mining',
   'monthly-retrain',
+  'external-evidence',
 ])
 
 function requireServiceToken(c: any) {

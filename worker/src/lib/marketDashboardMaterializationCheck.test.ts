@@ -51,6 +51,29 @@ function assert(condition: unknown, message: string): void {
 
 {
   const check = buildMarketDashboardMaterializationCheck({
+    targetDate: '2026-06-30',
+    sources: [
+      {
+        key: 'gdelt_global_news',
+        label: 'GDELT ?函??啗??窗',
+        source: 'external_evidence_items source_id=gdelt_events',
+        rows: 1,
+        latestDate: '2026-06-30',
+        warnLagDays: 7,
+        failLagDays: 14,
+        required: false,
+        rootCause: 'formal_shadow_fetch_failed',
+      },
+    ],
+  })
+
+  const item = (check.metrics?.materialization_checks as Array<Record<string, unknown>>)[0]
+  assert(check.status === 'warn', 'optional GDELT status row with non-ok root cause should stay warn')
+  assert(item?.status === 'warn', 'non-ok GDELT root cause should not render green when a status row exists')
+}
+
+{
+  const check = buildMarketDashboardMaterializationCheck({
     targetDate: '2026-06-26',
     sources: [
       {

@@ -12,7 +12,7 @@ assert(
   'TAIEX fallback should use TWSE official MI_5MINS_HIST',
 )
 assert(
-  source.includes('market:indices:finlab-clean:v12-twii-finlab-first'),
+  source.includes('market:indices:finlab-clean:v13-twii-finlab-pool-first'),
   'market indices cache key should be bumped for FinLab taiex_total_index guard',
 )
 assert(
@@ -25,12 +25,9 @@ assert(
   'TWII market index candidates must not use the total-return benchmark as price index close',
 )
 assert(
-  source.includes('const twii = hasMarketSeriesData(finlabTwii)') &&
-    source.includes('? finlabTwii') &&
-    source.includes(': hasMarketSeriesData(marketRiskTwii)') &&
-    source.includes('? marketRiskTwii') &&
-    source.includes(': twseOfficialTwii'),
-  'TWII market index serving must prefer FinLab canonical and market_risk rows before official fallback even when official is newer',
+  source.includes('const bestFinlabTwii = chooseBestMarketSeries(finlabTwii, [marketRiskTwii])') &&
+    source.includes('const twii = hasMarketSeriesData(bestFinlabTwii) ? bestFinlabTwii : twseOfficialTwii'),
+  'TWII market index serving must choose the freshest FinLab canonical/market_risk row before official fallback',
 )
 assert(
   source.includes("session = 'day'") && source.includes("SELECT date, close FROM canonical_futures_daily"),

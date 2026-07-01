@@ -20,3 +20,14 @@ assert(page.includes('ready for approval'), 'GA panel should distinguish L3-read
 assert(page.includes('Request {nextLevel} review'), 'GA panel should expose a clickable L3/L4 review request action')
 assert(page.includes('Approve {pendingApprovalLevel}'), 'GA panel should expose a clickable pending GA approval action')
 assert(page.includes('Loading OBS evidence'), 'OBS should show a loading transition before rendering empty evidence frames')
+assert(page.includes('function SchedulerInventoryPanel'), 'OBS should keep scheduler group cards in the Scheduler Inventory section')
+assert(page.includes('<SchedulerInventoryPanel jobs={jobs} />'), 'OBS should render Scheduler Inventory below the readiness/source-gate row')
+assert(!page.includes('SchedulerReadinessGroupBoard'), 'OBS Source Gates should not embed the full daily/intraday/weekly/monthly scheduler group board')
+assert(
+  page.includes("const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'weekly', 'monthly']"),
+  'Daily standalone should sit immediately to the right of Daily readiness chain in Scheduler Inventory',
+)
+assert(
+  page.includes("if (group === 'pipeline_chain' || group === 'daily') return '2xl:col-span-2'"),
+  'Daily readiness chain and Daily standalone should share the first Scheduler Inventory row on wide screens',
+)

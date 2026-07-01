@@ -496,6 +496,10 @@ const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
 }
 
 const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'weekly', 'monthly']
+const EXPECTED_SCHEDULER_COUNT = SCHEDULER_GROUP_ORDER.reduce(
+  (sum, group) => sum + SCHEDULER_GROUP_META[group].expectedCount,
+  0,
+)
 const SCHEDULER_GROUP_ANCHOR_PREFIX = 'scheduler-group-'
 
 function schedulerGroupAnchor(group: SchedulerJob['group']) {
@@ -639,8 +643,9 @@ function schedulerJobPriority(job: SchedulerJob) {
   return 6
 }
 
-function schedulerReadinessGroupClass(group: SchedulerJob['group']) {
-  if (group === 'pipeline_chain') return 'xl:col-span-2'
+function schedulerGroupSpanClass(group: SchedulerJob['group']) {
+  if (group === 'pipeline_chain' || group === 'daily') return '2xl:col-span-2'
+  if (group === 'weekly') return 'xl:col-span-2 2xl:col-span-2'
   return ''
 }
 
@@ -779,22 +784,36 @@ function SchedulerGroupCard({
   )
 }
 
-function SchedulerReadinessGroupBoard({ jobs }: { jobs: SchedulerJob[] }) {
+function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
   const hasRuntimeJobs = jobs.length > 0
   const jobsByGroup = groupSchedulerJobs(jobs)
 
   return (
-    <div className="mt-3 grid min-w-0 auto-rows-fr gap-3 xl:grid-cols-3">
-      {SCHEDULER_GROUP_ORDER.map((group) => (
-        <SchedulerGroupCard
-          key={group}
-          group={group}
-          jobsByGroup={jobsByGroup}
-          hasRuntimeJobs={hasRuntimeJobs}
-          className={schedulerReadinessGroupClass(group)}
-          jobGridClass={group === 'pipeline_chain' ? 'lg:grid-cols-2' : ''}
-        />
-      ))}
+    <div className="min-w-0 overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Workflow className="h-4 w-4 text-[#ffd87f]" />
+          <p className="text-sm font-semibold text-[#f2ead8]">Scheduler Inventory / 全排程分層</p>
+        </div>
+        <WorkstationPill tone={hasRuntimeJobs ? 'neutral' : 'warn'}>
+          {hasRuntimeJobs ? `${jobs.length} runtime schedulers` : `${EXPECTED_SCHEDULER_COUNT} expected / API offline`}
+        </WorkstationPill>
+      </div>
+      <div className="grid min-w-0 auto-rows-fr gap-3 xl:grid-cols-2 2xl:grid-cols-4">
+        {SCHEDULER_GROUP_ORDER.map((group) => (
+          <SchedulerGroupCard
+            key={group}
+            group={group}
+            jobsByGroup={jobsByGroup}
+            hasRuntimeJobs={hasRuntimeJobs}
+            className={schedulerGroupSpanClass(group)}
+            jobGridClass={group === 'pipeline_chain' ? 'lg:grid-cols-2' : ''}
+          />
+        ))}
+      </div>
+      <p className="mt-3 text-xs leading-5 text-[#8b9bab]">
+        上方 readiness flow 是把主鏈濃縮成 operator 需要看的放行階段；這裡保留完整 scheduler 拓撲，Daily standalone 只與主鏈並排，不混進 source gate 判斷。
+      </p>
     </div>
   )
 }
@@ -968,8 +987,11 @@ function OperationalReadinessDeck({
             </a>
           </div>
           <DataQualityCompactMatrix gates={gates} />
-          <SchedulerReadinessGroupBoard jobs={jobs} />
         </div>
+      </div>
+
+      <div className="mt-3">
+        <SchedulerInventoryPanel jobs={jobs} />
       </div>
     </div>
   )

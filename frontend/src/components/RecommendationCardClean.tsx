@@ -100,9 +100,12 @@ type MlVoteSummary = {
 type CoreFamilyVoteSummary = {
   schema_version?: string
   family_score?: number
+  familyScore?: number
   active_family_count?: number
+  activeFamilyCount?: number
   active_families?: string[]
   inactive_formal_models?: string[]
+  families?: Record<string, unknown>
 }
 
 type MlDiagnosticsSummary = {
@@ -558,12 +561,23 @@ function displayForecastPct(summary: MlVoteSummary | null): number | null {
 function coreFamilyVoteBadgeText(summary: MlVoteSummary | null): string | null {
   const vote = parseObject(summary?.coreFamilyVote)
   if (!vote) return null
-  const active = Number(vote.active_family_count ?? vote.activeFamilyCount ?? 0)
   const score = Number(vote.family_score ?? vote.familyScore ?? NaN)
-  if (!Number.isFinite(active) || active <= 0) return null
-  const familyTotal = Math.max(5, Object.keys(parseObject(vote.families) ?? {}).length)
-  const scoreText = Number.isFinite(score) ? ` ${Math.round(score * 100)}` : ''
-  return `Family ${active}/${familyTotal}${scoreText}`
+  const total = Math.max(DIRECT_ALPHA_VOTE_MODEL_NAMES.length, Number(summary?.total ?? 0))
+  const reported = Number(summary?.reported ?? 0)
+  const zeroWeightCount = Array.isArray(summary?.zeroWeightModels) ? summary.zeroWeightModels.length : null
+  const activeWeight = Number(summary?.activeWeightCount ?? (zeroWeightCount != null ? total - zeroWeightCount : NaN))
+  if (!Number.isFinite(total) || total <= 0) return null
+  const reportedText = Number.isFinite(reported) && reported > 0
+    ? `投票 ${Math.min(total, Math.max(0, reported))}/${total}回報`
+    : `投票 ${total}組模型`
+  const weightText = Number.isFinite(activeWeight)
+    ? `｜採信 ${Math.min(total, Math.max(0, activeWeight))}/${total}`
+    : ''
+  const scorePct = Number.isFinite(score)
+    ? Math.round((Math.abs(score) <= 1 ? score * 100 : score))
+    : null
+  const scoreText = scorePct != null ? `｜一致度 ${scorePct}分` : ''
+  return `${reportedText}${weightText}${scoreText}`
 }
 
 function normalizeForecastPctForUi(raw: unknown): number | null {
@@ -2133,6 +2147,14 @@ function numericPrice(value: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
+const KLINE_CHART_RIGHT_GUTTER = 56
+
+function klineRenderableWidth(containerWidth: number): number {
+  const width = Math.max(0, Math.floor(containerWidth))
+  const gutter = width >= 520 ? KLINE_CHART_RIGHT_GUTTER : width >= 420 ? 44 : 24
+  return Math.max(280, width - gutter)
+}
+
 function klineChartOptions(width: number): DeepPartial<ChartOptions> {
   return {
     width,
@@ -2148,7 +2170,10 @@ function klineChartOptions(width: number): DeepPartial<ChartOptions> {
     },
     rightPriceScale: {
       borderColor: 'rgba(255, 255, 255, 0.035)',
-      scaleMargins: { top: 0.12, bottom: 0.24 },
+      alignLabels: true,
+      entireTextOnly: true,
+      minimumWidth: 86,
+      scaleMargins: { top: 0.16, bottom: 0.26 },
     },
     timeScale: {
       borderColor: 'rgba(255, 255, 255, 0.035)',
@@ -2326,8 +2351,16 @@ function KLinePlanSketch({
     const container = containerRef.current
     if (!container || candles.length === 0) return
 
-    const chart = createChart(container, klineChartOptions(container.clientWidth || 420))
+    const chart = createChart(container, klineChartOptions(klineRenderableWidth(container.clientWidth || 420)))
     chartRef.current = chart
+    const visibleAxisLabelPrices: number[] = []
+    const shouldShowAxisLabel = (price: number) => {
+      const normalized = Math.round(price * 100) / 100
+      const tolerance = Math.max(0.02, Math.abs(normalized) * 0.0015)
+      if (visibleAxisLabelPrices.some((seen) => Math.abs(seen - normalized) <= tolerance)) return false
+      visibleAxisLabelPrices.push(normalized)
+      return true
+    }
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#ff3b45',
@@ -2406,8 +2439,8 @@ function KLinePlanSketch({
         color: '#f87171',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: '前高壓力',
+        axisLabelVisible: shouldShowAxisLabel(resistance),
+        title: '壓力',
       })
     }
     if (confirmation) {
@@ -2416,8 +2449,8 @@ function KLinePlanSketch({
         color: '#38bdf8',
         lineWidth: 1,
         lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
-        title: '轉強確認',
+        axisLabelVisible: shouldShowAxisLabel(confirmation),
+        title: '確認',
       })
     }
     if (support) {
@@ -2426,8 +2459,8 @@ function KLinePlanSketch({
         color: '#22c55e',
         lineWidth: 1,
         lineStyle: LineStyle.Solid,
-        axisLabelVisible: true,
-        title: '關鍵支撐',
+        axisLabelVisible: shouldShowAxisLabel(support),
+        title: '支撐',
       })
     }
 
@@ -2437,7 +2470,7 @@ function KLinePlanSketch({
         color: '#a78bfa',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
-        axisLabelVisible: true,
+        axisLabelVisible: false,
         title: '量能節點',
       })
     }
@@ -2448,8 +2481,8 @@ function KLinePlanSketch({
         color: '#f43f5e',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: 'ATR 防守',
+        axisLabelVisible: shouldShowAxisLabel(atrDefense),
+        title: '防守',
       })
     }
 
@@ -2459,7 +2492,7 @@ function KLinePlanSketch({
         color: '#34d399',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
-        axisLabelVisible: true,
+        axisLabelVisible: false,
         title: '買區下緣',
       })
     }
@@ -2470,7 +2503,7 @@ function KLinePlanSketch({
         color: '#22c55e',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
-        axisLabelVisible: true,
+        axisLabelVisible: false,
         title: '買區上緣',
       })
     }
@@ -2481,7 +2514,7 @@ function KLinePlanSketch({
         color: '#fb7185',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
+        axisLabelVisible: false,
         title: '樂觀目標',
       })
     }
@@ -2519,7 +2552,7 @@ function KLinePlanSketch({
     if (candles.length > 32) {
       chart.timeScale().setVisibleLogicalRange({
         from: Math.max(0, candles.length - 32),
-        to: candles.length + 5,
+        to: candles.length + 8,
       })
     }
 
@@ -2528,7 +2561,7 @@ function KLinePlanSketch({
       resizeObserver = new ResizeObserver((entries) => {
         const entry = entries[0]
         if (!entry) return
-        chart.applyOptions({ width: Math.max(280, Math.floor(entry.contentRect.width)), height: 260 })
+        chart.applyOptions({ width: klineRenderableWidth(entry.contentRect.width), height: 260 })
       })
       resizeObserver.observe(container)
     }
@@ -3102,7 +3135,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
         : 'border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,24,33,0.96),rgba(12,14,20,0.99))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] hover:border-sky-300/20 hover:bg-[#151923]',
     )}>
       <div
-        className="flex cursor-pointer select-none items-center gap-3 p-3 sm:p-4"
+        className="grid cursor-pointer select-none grid-cols-[2rem_minmax(0,1fr)_3.35rem_1rem] items-center gap-3 p-3 sm:grid-cols-[2rem_minmax(0,1fr)_3.6rem_1rem] sm:p-4"
         onClick={() => setExpanded((value) => !value)}
       >
         <div className={cn(
@@ -3133,7 +3166,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
               {chipBadge.label} {chipBadge.text}
             </span>
             {rec.rsi14 != null && (
-              <span className="flex items-center gap-1 text-xs font-medium text-slate-400">
+              <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-slate-400">
                 <BarChart3 className="h-3 w-3" />
                 RSI {fmtNumber(rec.rsi14, 1)}
               </span>
@@ -3152,15 +3185,15 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
           </div>
         </div>
 
-        <div className="shrink-0 text-right">
-          <div className="sv-num text-xl font-bold text-amber-200">{Math.round(scoreViewModel.finalScore)}</div>
-          <div className="text-[10px] font-medium text-slate-500">最終分</div>
+        <div className="justify-self-end text-center">
+          <div className="sv-num text-xl font-bold leading-none text-amber-200">{Math.round(scoreViewModel.finalScore)}</div>
+          <div className="mt-1 whitespace-nowrap text-[10px] font-medium leading-none text-slate-500">最終分</div>
         </div>
 
         {expanded ? (
-          <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" />
+          <ChevronUp className="h-4 w-4 shrink-0 justify-self-end text-slate-400" />
         ) : (
-          <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+          <ChevronDown className="h-4 w-4 shrink-0 justify-self-end text-slate-400" />
         )}
       </div>
 

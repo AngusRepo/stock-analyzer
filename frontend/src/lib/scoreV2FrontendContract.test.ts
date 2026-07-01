@@ -182,3 +182,15 @@ assert(
     && pipelineTemplate.includes("selectattr('signal', 'defined')"),
   'pipeline template should render Score V2 canonical scores and count ML stage by signal availability',
 )
+
+assert(
+  recommendationCard.includes('投票') && recommendationCard.includes('/${total}回報') && recommendationCard.includes('採信') && recommendationCard.includes('一致度'),
+  'ML family vote badge must use readable user-facing Chinese copy, not compressed internal shorthand',
+)
+assert(
+  !recommendationCard.includes('Family ${active}/${familyTotal}'),
+  'ML family vote badge must not render unreadable "Family 3/5 73" shorthand',
+)
+for (const text of ['KLINE_CHART_RIGHT_GUTTER', 'klineRenderableWidth', 'minimumWidth: 86', 'entireTextOnly: true', 'shouldShowAxisLabel']) {
+  assert(scoreBreakdown.includes(text), `K-line Lightweight chart should reserve right-side label space and prevent price-line label collisions: ${text}`)
+}

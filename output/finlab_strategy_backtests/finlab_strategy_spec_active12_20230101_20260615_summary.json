@@ -1,0 +1,9 @@
+{
+  "json": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615.json",
+  "csv": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615.csv",
+  "strategy_count": 12,
+  "ok": 7,
+  "no_signal": 0,
+  "unsupported_feature": 5,
+  "errors": []
+}

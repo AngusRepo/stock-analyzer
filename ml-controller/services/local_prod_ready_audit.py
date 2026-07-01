@@ -1156,7 +1156,8 @@ def _finlab_market_data_owner_checks(root: Path) -> list[dict[str, Any]]:
             (
                 "FinLab primary canonical ready",
                 "TWSE/TPEX supplemental refresh complete",
-                "source_role=supplemental_after_finlab_canonical",
+                "sourceRole: 'finlab_primary_canonical_mirror'",
+                "source_role=${mirror.sourceRole}",
                 "TWSE/TPEX supplemental fetch",
             ),
             "roadmap:p3:finlab_primary_twse_supplemental_owner",

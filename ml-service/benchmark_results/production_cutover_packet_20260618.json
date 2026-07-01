@@ -1,6 +1,6 @@
 {
   "schema_version": "stockvision-production-cutover-packet-v1",
-  "cutover_ready_for_review": false,
+  "cutover_ready_for_review": true,
   "production_mutation_allowed": false,
   "actions_allowed_without_wei_approval": [],
   "local_gate": {
@@ -123,28 +123,28 @@
     },
     {
       "id": "active_strategy_spec_export_summary",
-      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
+      "path": "output/finlab_strategy_backtests/current_active_12_strategy_specs_summary.json",
       "required": true,
       "dynamic": true,
       "exists": true
     },
     {
       "id": "active_strategy_spec_json",
-      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
+      "path": "output/finlab_strategy_backtests/current_active_12_strategy_specs.json",
       "required": true,
       "dynamic": true,
       "exists": true
     },
     {
       "id": "active_strategy_finlab_backtest_summary",
-      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
+      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615_summary.json",
       "required": true,
       "dynamic": true,
       "exists": true
     },
     {
       "id": "active_strategy_finlab_backtest_json",
-      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
+      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615.json",
       "required": true,
       "dynamic": true,
       "exists": true
@@ -153,7 +153,7 @@
   "evidence_health": [
     {
       "id": "feature_registry_local_closure_pass",
-      "passed": false,
+      "passed": true,
       "detail": {
         "status": "pass",
         "feature_views": {
@@ -164,10 +164,8 @@
           "alpha_mining_view": 137
         },
         "strategy_count": 11,
-        "artifact_fresh": false,
-        "stale_against": [
-          "output/feature_universe_triage/unified137_materialization_audit_sii_20230101_20260615.json"
-        ],
+        "artifact_fresh": true,
+        "stale_against": [],
         "derived_artifact_freshness": {
           "similarity": {
             "fresh": true,
@@ -227,22 +225,13 @@
     },
     {
       "id": "alpha_mining_promotion_contract_governance_only",
-      "passed": false,
+      "passed": true,
       "detail": {
         "decision_effect": "governance_contract_only",
         "monthly_cadence": "monthly",
         "requires_finlab_backtest": true,
-        "source_contracts_fresh": false,
-        "stale_against": [
-          "feature_registry",
-          "monthly_mining_config",
-          "similarity_contract",
-          "similarity_pairs",
-          "strategy_feature_ref_contract",
-          "ml_feature_selection_contract",
-          "current_alpha_miner_seed_migration",
-          "strategy_mining_ledger_migration"
-        ]
+        "source_contracts_fresh": true,
+        "stale_against": []
       }
     },
     {
@@ -256,48 +245,38 @@
     },
     {
       "id": "active_strategy_baseline_export_and_backtest",
-      "passed": false,
+      "passed": true,
       "detail": {
-        "strategy_count": 11,
+        "strategy_count": 12,
         "exporter_path": "tools/export_active_strategy_specs_from_d1.py",
         "backtest_tool_path": "tools/finlab_strategy_spec_backtest.py",
-        "export_summary_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
-        "spec_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
-        "backtest_summary_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
-        "backtest_json_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
-        "backtest_ok": 5,
+        "export_summary_path": "output/finlab_strategy_backtests/current_active_12_strategy_specs_summary.json",
+        "spec_path": "output/finlab_strategy_backtests/current_active_12_strategy_specs.json",
+        "backtest_summary_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615_summary.json",
+        "backtest_json_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615.json",
+        "backtest_ok": 7,
         "backtest_no_signal": 0,
-        "backtest_unsupported_feature": 6,
+        "backtest_unsupported_feature": 5,
         "backtest_errors": [],
         "freshness": {
           "export_summary": {
-            "fresh": false,
-            "stale_against": [
-              "tools/export_active_strategy_specs_from_d1.py"
-            ]
+            "fresh": true,
+            "stale_against": []
           },
           "spec_json": {
-            "fresh": false,
-            "stale_against": [
-              "tools/export_active_strategy_specs_from_d1.py"
-            ]
+            "fresh": true,
+            "stale_against": []
           },
           "backtest_summary": {
-            "fresh": false,
-            "stale_against": [
-              "tools/finlab_strategy_spec_backtest.py"
-            ]
+            "fresh": true,
+            "stale_against": []
           },
           "backtest_json": {
-            "fresh": false,
-            "stale_against": [
-              "tools/finlab_strategy_spec_backtest.py"
-            ]
+            "fresh": true,
+            "stale_against": []
           }
         },
-        "errors": [
-          "active_strategy_baseline_stale:export_summary,spec_json,backtest_summary,backtest_json"
-        ]
+        "errors": []
       }
     },
     {
@@ -460,11 +439,5 @@
       "expected": "shadow/challenger rows are removed only after approved champion cutover evidence is captured"
     }
   ],
-  "blocked_reason": {
-    "audit_exists": true,
-    "local_gate_passed": true,
-    "evidence_ready": true,
-    "evidence_health_ready": false,
-    "audit_is_non_mutating": true
-  }
+  "blocked_reason": null
 }

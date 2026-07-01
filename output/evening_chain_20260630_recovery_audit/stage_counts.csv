@@ -1,0 +1,15 @@
+stage,decision,rows,symbols,min_rank,max_rank
+buzz_evidence,observe,64,64,,
+diversity_cooldown,observe,91,91,,
+final_selection,observe,160,160,1,160
+l15_ml_slate_queue,observe,320,160,1,160
+l1_candidate_seed_after_overlay,selected,160,160,1,160
+layer1_strategy_breadth_gate,pass,160,160,1,160
+layer2_timesfm_enrichment,observe,160,160,1,160
+layer3_formal_ml_gate,drop,21,21,9,148
+layer3_formal_ml_gate,pass,127,127,1,147
+rrg_overlay,observe,160,160,,
+scoring,pass,802,802,,
+strategy_pool_ml_queue,observe,55,55,1,55
+universe,drop,1493,1493,,
+universe,pass,802,802,,

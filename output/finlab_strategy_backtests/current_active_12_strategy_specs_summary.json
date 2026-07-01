@@ -1,0 +1,31 @@
+{
+  "schema_version": "stockvision-active-strategy-spec-export-v1",
+  "decision_effect": "read_only_d1_export",
+  "production_mutation_allowed": false,
+  "source": "remote_d1.strategy_spec_registry",
+  "status_scope": "active",
+  "included_statuses": [
+    "active"
+  ],
+  "strategy_count": 12,
+  "errors": [],
+  "strategy_ids": [
+    "alpha223_0009",
+    "alpha223_0109",
+    "alpha223_0166",
+    "alpha223_0248",
+    "alpha223_0283",
+    "alpha_miner_pymoo_nsga3_novelty_0193",
+    "defensive_accumulation_seed_v1",
+    "stock_tech_s01_55d_trend_volume_breakout_v1",
+    "stock_tech_s02_52w_dual_momentum_v1",
+    "stock_tech_s04_ma_deduct_turn_breakout_v1",
+    "stock_tech_s06_nr7_inside_bar_breakout_v1",
+    "trend_quality_breakout_fused_v1"
+  ],
+  "wrangler": {
+    "returncode": 0,
+    "stderr": ""
+  },
+  "json": "output/finlab_strategy_backtests/current_active_12_strategy_specs.json"
+}

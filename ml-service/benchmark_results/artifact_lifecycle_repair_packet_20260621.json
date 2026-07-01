@@ -96,7 +96,7 @@
     }
   ],
   "decision_effect": "local_repair_plan_only",
-  "generated_at": "2026-06-22T14:45:50.366365+00:00",
+  "generated_at": "2026-06-30T16:47:35.034698+00:00",
   "no_action": [
     {
       "model_name": "GNN",

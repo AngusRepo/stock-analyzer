@@ -314,4 +314,9 @@ const forecastData = {
       recommendationsRoute.includes('WHERE date <= ?'),
     'recommendation card broker aggregate data must fall back to latest broker flow date <= recommendation date',
   )
+  assert(
+    recommendationsRoute.includes('const computedMlVoteSummary = buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal)') &&
+      recommendationsRoute.includes('ml_vote_summary: active8PersistedMlVoteSummary ?? computedMlVoteSummary'),
+    'recommendation card API must preserve persisted ml_vote_summary before computed forecast fallback',
+  )
 }

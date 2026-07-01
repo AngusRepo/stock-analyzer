@@ -3801,6 +3801,7 @@ recommendations.get('/daily', async (c) => {
         ? { layer4_sparse_allocation: l4SparseAllocation }
         : null
     const perModelRows = perModelByStock.get(Number(r.stock_id)) ?? []
+    const computedMlVoteSummary = buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal)
     const parsedWatchPoints = (() => { try { return JSON.parse(r.watch_points ?? '[]') } catch { return [] } })()
     const emergingBrokerEvidence = buildEmergingBrokerEvidence(r)
     const watchPoints = mergeEmergingBrokerWatchPoints(parsedWatchPoints, emergingBrokerEvidence)
@@ -3846,7 +3847,7 @@ recommendations.get('/daily', async (c) => {
       alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
       alpha_allocation: alphaAllocation,
       l4_sparse_allocation: l4SparseAllocation,
-      ml_vote_summary: buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal) ?? active8PersistedMlVoteSummary,
+      ml_vote_summary: active8PersistedMlVoteSummary ?? computedMlVoteSummary,
       ml_diagnostics: buildMlDiagnostics(forecastData),
       score_components: scoreComponents,
       chip_evidence: emergingBrokerEvidence,

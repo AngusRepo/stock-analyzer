@@ -17,16 +17,16 @@ const pipelinePage = readFileSync('../frontend/src/pages/PipelinePage.tsx', 'utf
     'LLM recommendation prompt may expose Score V2 total only as base component context',
   )
   assert(
-    llm.includes('必須使用 Score V2 finalScore 與五構面語意'),
-    'LLM recommendation prompt should require Score V2 five-dimension reasoning',
+    llm.includes('必須使用 Score V2 finalScore 與四構面語意'),
+    'LLM recommendation prompt should require Score V2 four-dimension reasoning',
   )
   assert(
     llm.includes('ML Edge=${scoreV2.components.mlEdge}/25'),
     'LLM recommendation prompt should expose Score V2 ML Edge label',
   )
   assert(
-    llm.includes('News/Theme=${scoreV2.components.newsTheme}/5'),
-    'LLM recommendation prompt should expose Score V2 News/Theme label',
+    llm.includes('News/Theme=${scoreV2.components.newsTheme}/0'),
+    'LLM recommendation prompt should expose Score V2 News/Theme as non-additive context',
   )
   assert(
     !llm.includes('需整合籌碼、技術、ML 三面向'),

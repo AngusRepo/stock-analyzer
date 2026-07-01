@@ -30,7 +30,7 @@ tags: [trade, {{ order.side }}, auto-generated]
 - **Side**: {{ order.side | upper }} @ ${{ ((order.price or 0) | round(2)) }} x {{ order.shares }} shares
 - **Signal**: {{ order.signal | default('N/A') }} (conf {{ (((order.confidence or 0) * 100) | round(0) | int) }}%)
 - **Score V2**: {{ score_v2_final_score(decision) | round(0) | int }}/100 (base {{ score_v2_total(decision) | round(1) }}, alpha {{ score_v2_alpha_adjustment(decision) | round(1) }}, source {{ score_v2_source(decision) }})
-- **Breakdown**: ML Edge {{ score_v2_component(decision, 'mlEdge') | round(1) }}/25 + Chip Flow {{ score_v2_component(decision, 'chipFlow') | round(1) }}/25 + Technical {{ score_v2_component(decision, 'technicalStructure') | round(1) }}/25 + Fundamental {{ score_v2_component(decision, 'fundamentalQuality') | round(1) }}/20 + News/Theme {{ score_v2_component(decision, 'newsTheme') | round(1) }}/5
+- **Breakdown**: ML Edge {{ score_v2_component(decision, 'mlEdge') | round(1) }}/25 + Chip Flow {{ score_v2_component(decision, 'chipFlow') | round(1) }}/25 + Technical {{ score_v2_component(decision, 'technicalStructure') | round(1) }}/25 + Fundamental {{ score_v2_component(decision, 'fundamentalQuality') | round(1) }}/25 + News/Theme {{ score_v2_component(decision, 'newsTheme') | round(1) }}/0
 - **Source**: {{ order.source | default('auto_ml') }}
 
 ## Factor Attribution

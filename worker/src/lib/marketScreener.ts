@@ -410,15 +410,12 @@ function applyScoreV2NewsThemeAdjustment(
 ): number {
   const snapshot = readScoreV2Snapshot({ score_components: candidate.score_components } as ScoreV2StorageRow)
   if (!snapshot) return 0
-  const positiveDelta = Math.max(0, requestedDelta)
-  const appliedNewsDelta = positiveDelta > 0
-    ? round1(Math.min(positiveDelta, Math.max(0, 5 - snapshot.components.newsTheme)))
-    : 0
   const riskAdjustment = requestedDelta < 0 ? requestedDelta : 0
+  if (riskAdjustment === 0) return 0
   const alphaAdjustment = round1((snapshot.alphaAdjustment ?? 0) + riskAdjustment)
   const payload = buildScoreV2Components({
     ...snapshot.components,
-    newsTheme: round1(snapshot.components.newsTheme + appliedNewsDelta),
+    newsTheme: snapshot.components.newsTheme,
     technicalBreakdown: snapshot.technicalBreakdown,
     riskFlags: [...snapshot.riskFlags, ...riskFlags],
     reasons: [...snapshot.reasons, reason],
@@ -429,7 +426,7 @@ function applyScoreV2NewsThemeAdjustment(
     alphaAdjustment,
     finalScore,
   })
-  const appliedRankingDelta = round1(appliedNewsDelta + riskAdjustment)
+  const appliedRankingDelta = round1(riskAdjustment)
   candidate.score = round1(candidate.score + appliedRankingDelta)
   return appliedRankingDelta
 }
@@ -4865,10 +4862,6 @@ export async function calcFactorIC(env: Bindings): Promise<{
     {
       name: 'fundamentalQuality',
       value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.components.fundamentalQuality ?? null,
-    },
-    {
-      name: 'newsTheme',
-      value: (row: ScoreV2StorageRow) => readScoreV2Snapshot(row)?.components.newsTheme ?? null,
     },
     {
       name: 'finalScore',

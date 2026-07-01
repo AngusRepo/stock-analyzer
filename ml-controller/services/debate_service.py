@@ -381,7 +381,7 @@ async def run_buy_debate(
 
             # ── Zealot turn ────────────────────────────────────────────────
             if is_initial:
-                zealot_system = _ZEALOT_SYS_BASE + "\n\n你的任務：根據 Score V2 finalScore、五構面、ML ensemble 與公司資訊，寫出 3-5 個強力看多理由。最多 300 字。"
+                zealot_system = _ZEALOT_SYS_BASE + "\n\n你的任務：根據 Score V2 finalScore、四構面、ML ensemble 與公司資訊，寫出 3-5 個強力看多理由。最多 300 字。"
                 zealot_prompt = f"Write the bull case:\n\n{ml_context}"
             else:
                 zealot_system = _ZEALOT_SYS_BASE + f"\n\n你的任務：讀對方（Reaper）剛才的空方論點，針對其每個挑戰回擊反駁。最多 180 字。"

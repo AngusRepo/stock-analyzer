@@ -15,13 +15,13 @@ from typing import Any
 from services.training_calendar import monthly_revenue_available_date
 
 
-FUNDAMENTAL_QUALITY_MAX = 20.0
+FUNDAMENTAL_QUALITY_MAX = 25.0
 FUNDAMENTAL_QUALITY_BREAKDOWN_MAX = {
-    "revenueMomentum": 6.0,
-    "profitability": 5.0,
-    "valuation": 4.0,
-    "financialSafety": 3.0,
-    "industryRelative": 2.0,
+    "revenueMomentum": 7.0,
+    "profitability": 6.0,
+    "valuation": 5.0,
+    "financialSafety": 4.0,
+    "industryRelative": 3.0,
 }
 
 
@@ -136,7 +136,7 @@ def _score_revenue(rows: list[dict[str, Any]]) -> tuple[float, dict[str, Any]]:
         if n is not None
     ]
     avg_yoy = sum(yoy_values) / len(yoy_values) if yoy_values else None
-    score = _linear(yoy, 0.0, 30.0, 3.0) + _linear(avg_yoy, 0.0, 25.0, 2.0)
+    score = _linear(yoy, 0.0, 30.0, 3.5) + _linear(avg_yoy, 0.0, 25.0, 2.5)
     if mom is not None and mom > 0:
         score += 1.0
     return _clamp(score, FUNDAMENTAL_QUALITY_BREAKDOWN_MAX["revenueMomentum"]), {
@@ -155,11 +155,11 @@ def _score_profitability(row: dict[str, Any] | None) -> tuple[float, dict[str, A
     eps = _number(row.get("eps"))
     gross_margin = _number(row.get("gross_margin") or row.get("gross_margin_pct"))
     operating_margin = _number(row.get("operating_margin") or row.get("operating_margin_pct"))
-    score = _linear(roe, 0.0, 20.0, 2.4)
+    score = _linear(roe, 0.0, 20.0, 2.8)
     if eps is not None and eps > 0:
-        score += 1.0
-    score += _linear(gross_margin, 0.0, 40.0, 1.0)
-    score += _linear(operating_margin, 0.0, 20.0, 0.6)
+        score += 1.2
+    score += _linear(gross_margin, 0.0, 40.0, 1.2)
+    score += _linear(operating_margin, 0.0, 20.0, 0.8)
     return _clamp(score, FUNDAMENTAL_QUALITY_BREAKDOWN_MAX["profitability"]), {
         "roe": roe,
         "eps": eps,
@@ -177,10 +177,10 @@ def _score_valuation(row: dict[str, Any] | None) -> tuple[float, dict[str, Any]]
     dividend_yield = _number(row.get("dividend_yield"))
     score = 0.0
     if pe is not None and pe > 0:
-        score += _clamp((30.0 - min(pe, 30.0)) / 30.0 * 1.5, 1.5)
+        score += _clamp((30.0 - min(pe, 30.0)) / 30.0 * 1.8, 1.8)
     if pb is not None and pb > 0:
-        score += _clamp((4.0 - min(pb, 4.0)) / 4.0 * 1.0, 1.0)
-    score += _linear(dividend_yield, 0.0, 5.0, 1.5)
+        score += _clamp((4.0 - min(pb, 4.0)) / 4.0 * 1.2, 1.2)
+    score += _linear(dividend_yield, 0.0, 5.0, 2.0)
     return _clamp(score, FUNDAMENTAL_QUALITY_BREAKDOWN_MAX["valuation"]), {
         "pe": pe,
         "pb": pb,
@@ -196,10 +196,10 @@ def _score_safety(row: dict[str, Any] | None) -> tuple[float, dict[str, Any]]:
     operating_cash_flow = _number(row.get("operating_cash_flow") or row.get("cash_flow_from_operations"))
     score = 0.0
     if debt_ratio is not None:
-        score += _clamp((80.0 - min(max(debt_ratio, 0.0), 80.0)) / 80.0 * 1.2, 1.2)
-    score += _linear(current_ratio, 100.0, 200.0, 1.0)
+        score += _clamp((80.0 - min(max(debt_ratio, 0.0), 80.0)) / 80.0 * 1.6, 1.6)
+    score += _linear(current_ratio, 100.0, 200.0, 1.4)
     if operating_cash_flow is not None and operating_cash_flow > 0:
-        score += 0.8
+        score += 1.0
     return _clamp(score, FUNDAMENTAL_QUALITY_BREAKDOWN_MAX["financialSafety"]), {
         "debtRatio": debt_ratio,
         "currentRatio": current_ratio,

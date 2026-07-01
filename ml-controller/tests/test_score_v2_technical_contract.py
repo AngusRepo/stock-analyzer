@@ -17,6 +17,13 @@ def test_score_v2_technical_signals_are_canonical_payload_fields():
             "tech_score": 18.0,
             "momentum_score": 12.0,
             "ml_score": 21.0,
+            "score_seed_inputs": {
+                "chipFlowSeed40": 18.0,
+                "technicalSeed30": 18.0,
+                "screenerMomentumSeed20": 12.0,
+                "mlEdgeSeed30": 21.0,
+                "personaAlphaSeed": 0.0,
+            },
             "current_price": 100.0,
             "ma20": 96.0,
             "macd_hist": 0.4,
@@ -38,8 +45,8 @@ def test_score_v2_technical_signals_are_canonical_payload_fields():
         "mlEdge": 25,
         "chipFlow": 25,
         "technicalStructure": 25,
-        "fundamentalQuality": 20,
-        "newsTheme": 5,
+        "fundamentalQuality": 25,
+        "newsTheme": 0,
     }
     assert payload["technicalSignals"]["adx14"] == pytest.approx(29.0)
     assert payload["technicalSignals"]["parabolicSar"] == pytest.approx(95.0)

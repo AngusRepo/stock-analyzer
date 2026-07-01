@@ -143,6 +143,7 @@ import {
   buildMlVoteSummary,
   buildMlVoteWatchPoint,
   parsePredictionForecastData,
+  type MlVoteSummary,
 } from '../lib/recommendationContext'
 import { computeAndStoreIndicators } from '../lib/technicalIndicators'
 import { loadLatestStockFinancialSnapshot, loadStockFinancialRows, loadStockMonthlyRevenueRows } from '../lib/fundamentalData'
@@ -568,7 +569,12 @@ stocks.get('/:id/ai-summary', async (c) => {
       `).bind(id, recRow.date).all<any>().then((r) => r.results ?? []).catch(() => []),
     ])
     const forecastData = parsePredictionForecastData(ensembleRow?.forecast_data) ?? {}
-    const mlVoteSummary = buildMlVoteSummary(forecastData, perModelRows)
+    const persistedMlVoteSummary = parsePredictionForecastData(recRow.ml_vote_summary)
+    const active8PersistedMlVoteSummary = persistedMlVoteSummary
+      && Number(persistedMlVoteSummary.total ?? 0) <= 8
+      ? persistedMlVoteSummary as MlVoteSummary
+      : null
+    const mlVoteSummary = active8PersistedMlVoteSummary ?? buildMlVoteSummary(forecastData, perModelRows)
     const watchPoints = (() => {
       try {
         return JSON.parse(recRow.watch_points ?? '[]')

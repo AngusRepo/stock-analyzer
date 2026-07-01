@@ -22,8 +22,8 @@ SCORE_V2_WEIGHTS = {
     "mlEdge": 25.0,
     "chipFlow": 25.0,
     "technicalStructure": 25.0,
-    "fundamentalQuality": 20.0,
-    "newsTheme": 5.0,
+    "fundamentalQuality": 25.0,
+    "newsTheme": 0.0,
 }
 
 
@@ -96,8 +96,8 @@ def _candidate_prompt_line(candidate: ScoreV2RecommendationCandidate, payload: d
         f"ML Edge {_component(payload, 'mlEdge'):.1f}/25, "
         f"Chip Flow {_component(payload, 'chipFlow'):.1f}/25, "
         f"Technical {_component(payload, 'technicalStructure'):.1f}/25, "
-        f"Fundamental {_component(payload, 'fundamentalQuality'):.1f}/20, "
-        f"News/Theme {_component(payload, 'newsTheme'):.1f}/5"
+        f"Fundamental {_component(payload, 'fundamentalQuality'):.1f}/25, "
+        f"News/Theme {_component(payload, 'newsTheme'):.1f}/0"
     )
     trend = ", ".join(
         [
@@ -137,7 +137,7 @@ def generate_reasons(
     )
 
     prompt = (
-        "你是台股投資研究助理。請根據 Score V2 的 finalScore 與五構面，"
+        "你是台股投資研究助理。請根據 Score V2 的 finalScore 與四構面，"
         "為每檔股票產生精簡、可驗證、不可誇大勝率的推薦理由。\n\n"
         f"Sector context:\n{top_sectors}\n\n"
         f"Candidates:\n{stock_list}\n\n"
@@ -171,7 +171,7 @@ def generate_reasons(
 
     return [
         {
-            "reason": "Score V2 資料已建立，但 LLM 摘要暫時不可用；請以 finalScore、五構面與風險旗標人工覆核。",
+            "reason": "Score V2 資料已建立，但 LLM 摘要暫時不可用；請以 finalScore、四構面與風險旗標人工覆核。",
             "watch_points": ["確認成交量與籌碼延續性", "等待收盤後資料驗證"],
         }
     ] * len(candidates)

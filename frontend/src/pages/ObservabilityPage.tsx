@@ -495,11 +495,7 @@ const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
   },
 }
 
-const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'intraday', 'daily', 'weekly', 'monthly']
-const EXPECTED_SCHEDULER_COUNT = SCHEDULER_GROUP_ORDER.reduce(
-  (sum, group) => sum + SCHEDULER_GROUP_META[group].expectedCount,
-  0,
-)
+const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'weekly', 'monthly']
 const SCHEDULER_GROUP_ANCHOR_PREFIX = 'scheduler-group-'
 
 function schedulerGroupAnchor(group: SchedulerJob['group']) {
@@ -643,9 +639,8 @@ function schedulerJobPriority(job: SchedulerJob) {
   return 6
 }
 
-function schedulerGroupSpanClass(group: SchedulerJob['group']) {
-  if (group === 'pipeline_chain') return 'xl:col-span-2 2xl:col-span-4'
-  if (group === 'daily' || group === 'weekly') return 'xl:col-span-2 2xl:col-span-2'
+function schedulerReadinessGroupClass(group: SchedulerJob['group']) {
+  if (group === 'pipeline_chain') return 'xl:col-span-2'
   return ''
 }
 
@@ -721,76 +716,85 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
   )
 }
 
-function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
+function SchedulerGroupCard({
+  group,
+  jobsByGroup,
+  hasRuntimeJobs,
+  className = '',
+  jobGridClass = '',
+}: {
+  group: SchedulerJob['group']
+  jobsByGroup: Map<SchedulerJob['group'], SchedulerJob[]>
+  hasRuntimeJobs: boolean
+  className?: string
+  jobGridClass?: string
+}) {
+  const groupJobs = [...(jobsByGroup.get(group) ?? [])].sort((a, b) =>
+    schedulerJobPriority(a) - schedulerJobPriority(b) ||
+    Number(a.chainIndex ?? 999) - Number(b.chainIndex ?? 999) ||
+    a.name.localeCompare(b.name),
+  )
+  const meta = SCHEDULER_GROUP_META[group]
+  const summary = summarizeSchedulerGroup(groupJobs)
+  const cardTone = hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
+  return (
+    <div id={schedulerGroupAnchor(group)} className={`min-w-0 scroll-mt-24 overflow-hidden rounded-2xl border p-3 ${statusRingClass(cardTone)} ${className}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
+          <p className="mt-1 sv-num text-[11px] normal-case text-[#7f8ba0]">{group}</p>
+        </div>
+        <WorkstationPill tone={hasRuntimeJobs ? summary.tone : meta.tone}>
+          {hasRuntimeJobs ? groupJobs.length : `${meta.expectedCount} expected`}
+        </WorkstationPill>
+      </div>
+      <p className="mt-3 min-h-10 text-xs leading-5 text-[#9badbf]">{meta.purpose}</p>
+      {hasRuntimeJobs ? (
+        <>
+          <div className="mt-3 grid grid-cols-4 gap-1 sv-num text-[11px] normal-case">
+            <span className="rounded-lg border border-emerald-400/15 bg-emerald-400/[0.06] px-2 py-1 text-emerald-200">ok {summary.success}</span>
+            <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">run {summary.running}</span>
+            <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">wait {summary.waiting}</span>
+            <span className="rounded-lg border border-rose-400/15 bg-rose-400/[0.06] px-2 py-1 text-rose-200">fail {summary.failed}</span>
+          </div>
+          <div className={`mt-3 grid min-w-0 gap-2 ${jobGridClass || (group === 'pipeline_chain' || group === 'daily' || group === 'weekly' ? 'lg:grid-cols-2' : '')}`}>
+            {groupJobs.map((job) => <SchedulerJobRow key={job.id} job={job} compact={group !== 'pipeline_chain'} />)}
+          </div>
+        </>
+      ) : (
+        <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-2 text-xs leading-5 text-amber-100">
+          Runtime 狀態等待 `/api/scheduler/status`；此卡只提示預期 job universe，不當作執行結果。
+        </div>
+      )}
+      {!hasRuntimeJobs && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {meta.examples.map((label) => (
+            <span key={`${group}-${label}`} className="max-w-full truncate rounded-full border border-[#2f3c4c] bg-[#171d27] px-2 py-1 text-[11px] font-semibold text-[#dbeafe]" style={{ borderColor: `${toneColor(meta.tone)}55`, color: toneColor(meta.tone) }}>
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SchedulerReadinessGroupBoard({ jobs }: { jobs: SchedulerJob[] }) {
   const hasRuntimeJobs = jobs.length > 0
   const jobsByGroup = groupSchedulerJobs(jobs)
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Workflow className="h-4 w-4 text-[#ffd87f]" />
-          <p className="text-sm font-semibold text-[#f2ead8]">Scheduler Inventory / 全排程分層</p>
-        </div>
-        <WorkstationPill tone={hasRuntimeJobs ? 'neutral' : 'warn'}>
-          {hasRuntimeJobs ? `${jobs.length} runtime schedulers` : `${EXPECTED_SCHEDULER_COUNT} expected / API offline`}
-        </WorkstationPill>
-      </div>
-      <div className="grid min-w-0 gap-3 xl:grid-cols-2 2xl:grid-cols-4">
-        {SCHEDULER_GROUP_ORDER.map((group) => {
-          const groupJobs = [...(jobsByGroup.get(group) ?? [])].sort((a, b) =>
-            schedulerJobPriority(a) - schedulerJobPriority(b) ||
-            Number(a.chainIndex ?? 999) - Number(b.chainIndex ?? 999) ||
-            a.name.localeCompare(b.name),
-          )
-          const meta = SCHEDULER_GROUP_META[group]
-          const summary = summarizeSchedulerGroup(groupJobs)
-          const cardTone = hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
-          return (
-            <div id={schedulerGroupAnchor(group)} key={group} className={`min-w-0 scroll-mt-24 overflow-hidden rounded-2xl border p-3 ${statusRingClass(cardTone)} ${schedulerGroupSpanClass(group)}`}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
-                  <p className="mt-1 sv-num text-[11px] normal-case text-[#7f8ba0]">{group}</p>
-                </div>
-                <WorkstationPill tone={hasRuntimeJobs ? summary.tone : meta.tone}>
-                  {hasRuntimeJobs ? groupJobs.length : `${meta.expectedCount} expected`}
-                </WorkstationPill>
-              </div>
-              <p className="mt-3 min-h-10 text-xs leading-5 text-[#9badbf]">{meta.purpose}</p>
-              {hasRuntimeJobs ? (
-                <>
-                  <div className="mt-3 grid grid-cols-4 gap-1 sv-num text-[11px] normal-case">
-                    <span className="rounded-lg border border-emerald-400/15 bg-emerald-400/[0.06] px-2 py-1 text-emerald-200">ok {summary.success}</span>
-                    <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">run {summary.running}</span>
-                    <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">wait {summary.waiting}</span>
-                    <span className="rounded-lg border border-rose-400/15 bg-rose-400/[0.06] px-2 py-1 text-rose-200">fail {summary.failed}</span>
-                  </div>
-                  <div className={`mt-3 grid min-w-0 gap-2 ${group === 'pipeline_chain' || group === 'daily' || group === 'weekly' ? 'lg:grid-cols-2' : ''}`}>
-                    {groupJobs.map((job) => <SchedulerJobRow key={job.id} job={job} compact={group !== 'pipeline_chain'} />)}
-                  </div>
-                </>
-              ) : (
-                <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-2 text-xs leading-5 text-amber-100">
-                  Runtime 狀態等待 `/api/scheduler/status`；此卡只提示預期 job universe，不當作執行結果。
-                </div>
-              )}
-              {!hasRuntimeJobs && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {meta.examples.map((label) => (
-                    <span key={`${group}-${label}`} className="max-w-full truncate rounded-full border border-[#2f3c4c] bg-[#171d27] px-2 py-1 text-[11px] font-semibold text-[#dbeafe]" style={{ borderColor: `${toneColor(meta.tone)}55`, color: toneColor(meta.tone) }}>
-                      {label}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-      <p className="mt-3 text-xs leading-5 text-[#8b9bab]">
-        上方 readiness flow 是把主鏈濃縮成 operator 需要看的 6 個放行階段；這裡保留完整 scheduler 拓撲，非 daily-chain 的盤中、週度、月度任務不混進 daily readiness 判斷。Runtime 資料仍以 `/api/scheduler/status` 為唯一狀態來源。
-      </p>
+    <div className="mt-3 grid min-w-0 auto-rows-fr gap-3 xl:grid-cols-3">
+      {SCHEDULER_GROUP_ORDER.map((group) => (
+        <SchedulerGroupCard
+          key={group}
+          group={group}
+          jobsByGroup={jobsByGroup}
+          hasRuntimeJobs={hasRuntimeJobs}
+          className={schedulerReadinessGroupClass(group)}
+          jobGridClass={group === 'pipeline_chain' ? 'lg:grid-cols-2' : ''}
+        />
+      ))}
     </div>
   )
 }
@@ -941,8 +945,8 @@ function OperationalReadinessDeck({
         </div>
       </div>
 
-      <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]">
-        <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+      <div className="mt-3 grid items-stretch gap-3 2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]">
+        <div className="h-full rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Workflow className="h-4 w-4 text-sky-300" />
@@ -953,7 +957,7 @@ function OperationalReadinessDeck({
           <ReadinessFlowMap stages={stages} />
           <SchedulerShortcutDeck jobs={jobs} />
         </div>
-        <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
+        <div className="h-full rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Database className="h-4 w-4 text-emerald-300" />
@@ -964,11 +968,8 @@ function OperationalReadinessDeck({
             </a>
           </div>
           <DataQualityCompactMatrix gates={gates} />
+          <SchedulerReadinessGroupBoard jobs={jobs} />
         </div>
-      </div>
-
-      <div className="mt-3">
-        <SchedulerInventoryPanel jobs={jobs} />
       </div>
     </div>
   )

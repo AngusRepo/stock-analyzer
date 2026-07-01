@@ -25,24 +25,22 @@ const SCORE_V2_COMPONENTS = [
   ['mlEdge', 'ML Edge', 25, 'bg-emerald-500'],
   ['chipFlow', '籌碼流', 25, 'bg-blue-500'],
   ['technicalStructure', '技術結構', 25, 'bg-violet-500'],
-  ['fundamentalQuality', '基本面', 20, 'bg-amber-500'],
-  ['newsTheme', '新聞題材', 5, 'bg-cyan-500'],
+  ['fundamentalQuality', '基本面', 25, 'bg-amber-500'],
 ] as const
 
 const SCORE_V2_WEIGHTS = {
   mlEdge: 25,
   chipFlow: 25,
   technicalStructure: 25,
-  fundamentalQuality: 20,
-  newsTheme: 5,
+  fundamentalQuality: 25,
+  newsTheme: 0,
 } as const
 
 const SCORE_V2_COMPONENT_ROWS = [
   ['mlEdge', 'ML Edge', 25, 'bg-emerald-500'],
   ['chipFlow', '籌碼流', 25, 'bg-blue-500'],
   ['technicalStructure', '技術結構', 25, 'bg-violet-500'],
-  ['fundamentalQuality', '基本面品質', 20, 'bg-amber-500'],
-  ['newsTheme', '新聞題材', 5, 'bg-cyan-500'],
+  ['fundamentalQuality', '基本面品質', 25, 'bg-amber-500'],
 ] as const
 
 const SCORE_V2_TECHNICAL_ROWS = [
@@ -190,7 +188,6 @@ function storageRows(rec: Record<string, any>, payload: Record<string, any> | nu
     chipFlow: rescale(source.chip ?? rec.chip_score, 40, 25),
     technicalStructure: rescale(tech + momentum, 50, 25),
     fundamentalQuality: 0,
-    newsTheme: 0,
   }
   return SCORE_V2_COMPONENT_ROWS.map(([key, label, max, color]) => row(key, label, values[key], max, color))
 }

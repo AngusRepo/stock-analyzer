@@ -662,8 +662,8 @@ SCORE_V2_WEIGHTS = {
     "mlEdge": 25,
     "chipFlow": 25,
     "technicalStructure": 25,
-    "fundamentalQuality": 20,
-    "newsTheme": 5,
+    "fundamentalQuality": 25,
+    "newsTheme": 0,
 }
 
 

@@ -270,8 +270,8 @@ def test_filter_and_score_recommendations_embeds_alpha_context(monkeypatch):
                 "mlEdge": 25,
                 "chipFlow": 25,
                 "technicalStructure": 25,
-                "fundamentalQuality": 20,
-                "newsTheme": 5,
+                "fundamentalQuality": 25,
+                "newsTheme": 0,
             },
             "components": {
                 "mlEdge": 0.0,

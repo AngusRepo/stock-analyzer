@@ -22,15 +22,15 @@ SCORE_V2_WEIGHTS = {
     "mlEdge": 25.0,
     "chipFlow": 25.0,
     "technicalStructure": 25.0,
-    "fundamentalQuality": 20.0,
-    "newsTheme": 5.0,
+    "fundamentalQuality": 25.0,
+    "newsTheme": 0.0,
 }
 
 SYSTEM_PROMPT = """你是台股投資研究助理，負責為每日推薦清單撰寫可驗證的推薦理由與交易計畫。
 
 規則：
-- 每支股票 reason 限 140 字內，必須使用 canonical candidate payload 裡的 Score V2 finalScore 與五構面語意。
-- 五構面為 ML Edge、Chip Flow、Technical Structure、Fundamental Quality、News/Theme。
+- 每支股票 reason 限 140 字內，必須使用 canonical candidate payload 裡的 Score V2 finalScore 與四構面語意。
+- 四構面為 ML Edge、Chip Flow、Technical Structure、Fundamental Quality；News/Theme 只作非加分脈絡與風險提示。
 - 不可宣稱保證獲利、絕對勝率或水晶球式預測；請用條件式、風險可控的語氣。
 - tradePlan 必須是研究用交易計畫，不得要求真實下單；需包含 bias、entry、risk、target。
 - watchPoints 最多 3 點，必須是具體風險、觀察價量或資料品質提醒。
@@ -224,8 +224,8 @@ def _score_context(c: dict[str, Any]) -> str:
         f"ML Edge={_component(payload, 'mlEdge'):.1f}/25, "
         f"Chip Flow={_component(payload, 'chipFlow'):.1f}/25, "
         f"Technical Structure={_component(payload, 'technicalStructure'):.1f}/25, "
-        f"Fundamental Quality={_component(payload, 'fundamentalQuality'):.1f}/20, "
-        f"News/Theme={_component(payload, 'newsTheme'):.1f}/5"
+        f"Fundamental Quality={_component(payload, 'fundamentalQuality'):.1f}/25, "
+        f"News/Theme={_component(payload, 'newsTheme'):.1f}/0"
     )
 
 

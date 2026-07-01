@@ -40,6 +40,7 @@ import {
   buildMlVoteSummary,
   buildMlVoteWatchPoint,
   parsePredictionForecastData,
+  type MlVoteSummary,
 } from '../lib/recommendationContext'
 import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow } from '../lib/scoreV2Taxonomy'
 import type { Bindings, Variables } from '../types'
@@ -412,6 +413,7 @@ async function enrichPendingBuyContext(
       SELECT dr.symbol,
              dr.date AS recommendation_date,
              dr.score_components,
+             dr.ml_vote_summary,
              dr.market_segment,
              dr.recommendation_lane,
              s.id AS stock_id,
@@ -491,7 +493,12 @@ async function enrichPendingBuyContext(
       })
       continue
     }
-    const mlVoteSummary = buildMlVoteSummary(forecastData, perModelByStock.get(Number(row.stock_id)) ?? [])
+    const persistedMlVoteSummary = parsePredictionForecastData(row.ml_vote_summary)
+    const active8PersistedMlVoteSummary = persistedMlVoteSummary
+      && Number(persistedMlVoteSummary.total ?? 0) <= 8
+      ? persistedMlVoteSummary as MlVoteSummary
+      : null
+    const mlVoteSummary = active8PersistedMlVoteSummary ?? buildMlVoteSummary(forecastData, perModelByStock.get(Number(row.stock_id)) ?? [])
     contextBySymbol.set(row.symbol, {
       score_v2: scoreV2,
       stock_id: row.stock_id,

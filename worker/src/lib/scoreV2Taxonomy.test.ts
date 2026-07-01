@@ -17,8 +17,8 @@ function assert(condition: unknown, message: string): asserts condition {
   assert(SCORE_V2_WEIGHTS.mlEdge === 25, 'ML edge should be 25 points')
   assert(SCORE_V2_WEIGHTS.chipFlow === 25, 'chip flow should be 25 points')
   assert(SCORE_V2_WEIGHTS.technicalStructure === 25, 'technical structure should be 25 points')
-  assert(SCORE_V2_WEIGHTS.fundamentalQuality === 20, 'fundamental quality should be 20 points')
-  assert(SCORE_V2_WEIGHTS.newsTheme === 5, 'news/theme should be 5 points')
+  assert(SCORE_V2_WEIGHTS.fundamentalQuality === 25, 'fundamental quality should be 25 points')
+  assert(SCORE_V2_WEIGHTS.newsTheme === 0, 'news/theme should not add Score V2 points')
   const total = Object.values(SCORE_V2_WEIGHTS).reduce((sum, value) => sum + value, 0)
   assert(total === 100, 'Score V2 weights should sum to 100')
 }
@@ -42,8 +42,8 @@ function assert(condition: unknown, message: string): asserts condition {
 
   assert(score.version === SCORE_V2_VERSION, 'score component payload should expose version')
   assert(score.components.mlEdge === 25, 'ML edge should clamp to 25')
-  assert(score.components.newsTheme === 5, 'news/theme should clamp to 5')
-  assert(score.total === 94.6, 'total should sum clamped V2 components')
+  assert(score.components.newsTheme === 0, 'news/theme should clamp to 0')
+  assert(score.total === 89.6, 'total should sum clamped V2 components')
   assert(score.technicalBreakdown?.volumeConfirmation === 6, 'technical breakdown should preserve volume confirmation')
   assert(score.technicalBreakdown?.volatilityStructure === 5, 'volatility structure should clamp to 5-point bucket')
   assert(score.technicalBreakdown?.executionRisk === 2, 'execution risk should clamp to 2-point bucket')
@@ -81,13 +81,13 @@ function assert(condition: unknown, message: string): asserts condition {
   assert(snapshot.components.mlEdge === 20, 'Score V2 mlEdge should come from canonical payload')
   assert(snapshot.components.chipFlow === 16, 'Score V2 chipFlow should come from canonical payload')
   assert(snapshot.components.technicalStructure === 12, 'Score V2 technicalStructure should come from canonical payload')
-  assert(snapshot.total === 59, 'Score V2 total should come from canonical components')
-  assert(snapshot.finalScore === 59, 'Score V2 finalScore should default to canonical total when no alpha adjustment exists')
+  assert(snapshot.total === 56, 'Score V2 total should come from canonical components')
+  assert(snapshot.finalScore === 56, 'Score V2 finalScore should default to canonical total when no alpha adjustment exists')
 
   const pct = scoreV2ComponentPercentages(snapshot)
-  assert(pct.mlPct === 0.34, 'ML percent should be derived from Score V2 total')
-  assert(pct.chipPct === 0.27, 'chip percent should be derived from Score V2 total')
-  assert(pct.technicalPct === 0.2, 'technical percent should be derived from Score V2 total')
+  assert(pct.mlPct === 0.36, 'ML percent should be derived from Score V2 total')
+  assert(pct.chipPct === 0.29, 'chip percent should be derived from Score V2 total')
+  assert(pct.technicalPct === 0.21, 'technical percent should be derived from Score V2 total')
 }
 
 {
@@ -116,7 +116,7 @@ function assert(condition: unknown, message: string): asserts condition {
     score_components: JSON.stringify(canonical),
   })
   assert(snapshot.source === 'score_v2', 'final score reader should prefer canonical Score V2 payload')
-  assert(snapshot.total === 59, 'base total should remain the additive component sum')
+  assert(snapshot.total === 56, 'base total should remain the additive component sum')
   assert(snapshot.finalScore === 61.5, 'final score should preserve canonical alpha-adjusted score')
   assert(snapshot.alphaAdjustment === 2.5, 'alpha adjustment should be exposed to downstream readers')
   assert(snapshot.payload.technicalSignals?.adx14 === 28.4, 'technical signals should survive Score V2 serialization')

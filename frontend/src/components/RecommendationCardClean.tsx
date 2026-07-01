@@ -3188,7 +3188,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
           <ScoreFormulaSummary viewModel={scoreViewModel} />
 
           <div className="space-y-1.5">
-            <p className="mb-2 text-xs font-semibold text-slate-200">五構面基礎分數</p>
+            <p className="mb-2 text-xs font-semibold text-slate-200">四構面基礎分數</p>
             {scoreViewModel.rows.map((item) => (
               <div key={item.key} className="space-y-1">
                 <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />

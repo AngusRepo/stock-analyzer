@@ -22,8 +22,8 @@ def _score_v2_payload(final_score: float = 88.0) -> str:
                 "mlEdge": 25,
                 "chipFlow": 25,
                 "technicalStructure": 25,
-                "fundamentalQuality": 20,
-                "newsTheme": 5,
+                "fundamentalQuality": 25,
+                "newsTheme": 0,
             },
             "components": {
                 "mlEdge": 22,

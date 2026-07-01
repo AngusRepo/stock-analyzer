@@ -28,9 +28,10 @@ assert(
   'Score V2 technical detail should only attach explanatory copy to positive evidence rows',
 )
 
-for (const label of ['ML Edge', '籌碼流', '技術結構', '基本面', '新聞題材']) {
+for (const label of ['ML Edge', '籌碼流', '技術結構', '基本面品質']) {
   assert(viewModel.includes(label), `Score V2 view model should expose readable label: ${label}`)
 }
+assert(!viewModel.includes("['newsTheme', '新聞題材'"), 'News/theme should not render as an additive Score V2 row')
 
 for (const label of ['趨勢結構', '波動結構', '轉折極端', '量能確認', '執行風險']) {
   assert(viewModel.includes(label), `Score V2 technical detail should expose readable label: ${label}`)
@@ -149,8 +150,8 @@ for (const text of [
   'institutionalRawFromRec(rec)',
   'todayInstitutionalNetShares != null',
   '賣超',
-  '買超前五大',
-  '賣超前五大',
+  '買超前三大',
+  '賣超前三大',
 ]) {
   assert(recommendationCard.includes(text), `Recommendation card should prioritize same-day institutional raw chip flow: ${text}`)
 }

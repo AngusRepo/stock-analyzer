@@ -39,8 +39,8 @@ function scoreV2(finalScore: number): string {
       mlEdge: Math.min(25, finalScore * 0.25),
       chipFlow: Math.min(25, finalScore * 0.25),
       technicalStructure: Math.min(25, finalScore * 0.25),
-      fundamentalQuality: Math.min(20, finalScore * 0.20),
-      newsTheme: Math.min(5, finalScore * 0.05),
+      fundamentalQuality: Math.min(25, finalScore * 0.25),
+      newsTheme: 0,
     },
   })
 }

@@ -48,7 +48,7 @@ for (let index = 0; index < 5; index++) {
   assert(scoreComponents.version === 'score_v2', 'score_components should expose Score V2 payload')
   assert(scoreComponents.components.chipFlow <= 25, 'Score V2 chipFlow should use 25-point scale')
   assert(scoreComponents.components.technicalStructure <= 25, 'Score V2 technicalStructure should use 25-point scale')
-  assert(scoreComponents.total <= 50, 'partial screener Score V2 should not invent ML/fundamental/news points')
+  assert(scoreComponents.total <= 50, 'partial screener Score V2 should not invent ML/fundamental points')
 }
 
 {
@@ -72,8 +72,8 @@ for (let index = 0; index < 5; index++) {
     'marketScreener must not restore legacy chip+tech+momentum score owner',
   )
   assert(
-    marketScreenerSource.includes('applyScoreV2NewsThemeAdjustment(c, buzzBonus'),
-    'news/theme buzz must update canonical Score V2 newsTheme instead of only mutating candidate.score',
+    marketScreenerSource.includes('if (riskAdjustment === 0) return 0'),
+    'positive news/theme buzz must not add Score V2 points',
   )
   assert(
     !marketScreenerSource.includes('c.score += buzzBonus'),

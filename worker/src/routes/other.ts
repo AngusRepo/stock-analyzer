@@ -1706,7 +1706,7 @@ market.get('/indices', async (c) => {
     const [finlabTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, marketRiskTwii, twseOfficialTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
-          sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
+          sql: "SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) AND source = 'finlab.taiex_total_index' AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30",
           binds: ['TWII', 'TAIEX'],
           source: 'FinLab canonical_market_index_daily',
         },

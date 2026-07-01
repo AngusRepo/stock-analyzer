@@ -20,6 +20,10 @@ assert(
   'TWII canonical query should reject score-like bad index values',
 )
 assert(
+  source.includes("source = 'finlab.taiex_total_index'"),
+  'TWII canonical query must only treat FinLab taiex_total_index rows as the FinLab primary source',
+)
+assert(
   !source.includes('benchmark_return:發行量加權股價報酬指數') &&
     !source.includes('FinLab finlab_benchmark_return'),
   'TWII market index candidates must not use the total-return benchmark as price index close',

@@ -89,6 +89,8 @@ deploy_ml_controller.sh
 tools/*
 !tools/finlab_v4_remote_backfill.py
 !tools/finlab_macro_context_snapshot.py
+!tools/materialize_external_evidence_once.py
+!tools/external_evidence_v4_local_packet.py
 !tools/finlab_alpha_miner_bakeoff.py
 !tools/finlab_alphabuilders_factor_backtest.py
 !tools/finlab_strategy_spec_backtest.py

@@ -47,7 +47,7 @@ async function run(): Promise<void> {
     plan.changes.some((change) =>
       change.path === 'position.dailyBuyLimit' &&
       change.current === 200_000 &&
-      change.target === 500_000
+      change.target === 800_000
     ),
     'repair plan must surface production dailyBuyLimit drift',
   )
@@ -55,7 +55,7 @@ async function run(): Promise<void> {
     plan.changes.some((change) =>
       change.path === 'position.manualDailyLimit' &&
       change.current === 200_000 &&
-      change.target === 500_000
+      change.target === 800_000
     ),
     'repair plan must surface production manualDailyLimit drift',
   )
@@ -65,8 +65,8 @@ async function run(): Promise<void> {
   const repaired = await repairTradingConfigOperationalDefaults(kv as unknown as KVNamespace)
   assert.equal(repaired.written, true)
   const written = JSON.parse(kv.store.get('trading:config') ?? '{}')
-  assert.equal(written.position.dailyBuyLimit, 500_000)
-  assert.equal(written.position.manualDailyLimit, 500_000)
+  assert.equal(written.position.dailyBuyLimit, 800_000)
+  assert.equal(written.position.manualDailyLimit, 800_000)
   assert.equal(written.alphaFramework.allocation.buySignalCount, 5)
   assert.equal(written.alphaFramework.allocation.topK, undefined)
   assert.equal(written.alphaFramework.allocation.method, undefined)

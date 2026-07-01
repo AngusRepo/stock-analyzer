@@ -14,14 +14,14 @@ const baseConfig = {
   maxPositions: 5,
   maxPctOfPortfolio: 0.25,
   maxPctOfCash: 0.30,
-  dailyBuyLimit: 500_000,
+  dailyBuyLimit: 800_000,
   minPositionValue: 30_000,
   swapThreshold: 1.15,
 }
 
 {
   const plan = buildFiveSlotCapitalPlan({
-    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
     marketRiskLevel: 'low',
     config: baseConfig,
     holdings: [
@@ -40,7 +40,7 @@ const baseConfig = {
 
 {
   const plan = buildFiveSlotCapitalPlan({
-    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
     marketRiskLevel: 'low',
     config: baseConfig,
     holdings: [
@@ -59,7 +59,7 @@ const baseConfig = {
 
 {
   const plan = buildFiveSlotCapitalPlan({
-    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
     marketRiskLevel: 'low',
     config: baseConfig,
     holdings: [{ symbol: '2330', shares: 2000, avgCost: 100, lastPrice: 100 }],
@@ -71,7 +71,7 @@ const baseConfig = {
 
 {
   const plan = buildFiveSlotCapitalPlan({
-    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
     marketRiskLevel: 'low',
     config: baseConfig,
     holdings: [
@@ -93,7 +93,7 @@ const baseConfig = {
 
 {
   const plan = buildFiveSlotCapitalPlan({
-    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
     marketRiskLevel: 'low',
     config: baseConfig,
     holdings: [

@@ -481,8 +481,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     dynamicExitPriorityEnabled: false,  // #16 Step 9c prep — 4/27 Wei KV 翻
   },
   position: {
-    dailyBuyLimit: 500_000,
-    manualDailyLimit: 500_000,
+    dailyBuyLimit: 800_000,
+    manualDailyLimit: 800_000,
     maxPctOfPortfolio: 0.25,
     maxPctOfCash: 0.30,
     minCashToTrade: 10_000,
@@ -1063,13 +1063,13 @@ const TRADING_CONFIG_OPERATIONAL_DEFAULTS: Array<{
     path: 'position.dailyBuyLimit',
     target: DEFAULT_TRADING_CONFIG.position.dailyBuyLimit,
     severity: 'critical',
-    reason: 'Repo champion default is NT$500k; old production KV drifted at NT$200k.',
+    reason: 'Repo champion default is NT$800k; old production KV drifted below the approved daily capital limit.',
   },
   {
     path: 'position.manualDailyLimit',
     target: DEFAULT_TRADING_CONFIG.position.manualDailyLimit,
     severity: 'critical',
-    reason: 'Manual buy daily cap should match the approved NT$500k daily capital limit.',
+    reason: 'Manual buy daily cap should match the approved NT$800k daily capital limit.',
   },
   {
     path: 'alphaFramework.allocation.buySignalCount',

@@ -19,6 +19,7 @@ Endpoints：
 import os
 import time
 import threading
+import math
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -57,6 +58,28 @@ def _regular_session_wall_clock(value: datetime) -> bool:
     return TW_SESSION_OPEN_MINUTE <= minute < TW_SESSION_CLOSE_MINUTE
 
 
+def _epoch_kbar_datetime(value) -> datetime | None:
+    try:
+        raw = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(raw) or raw <= 0:
+        return None
+    magnitude = abs(raw)
+    if magnitude >= 1e17:
+        seconds = raw / 1_000_000_000
+    elif magnitude >= 1e14:
+        seconds = raw / 1_000_000
+    elif magnitude >= 1e11:
+        seconds = raw / 1_000
+    else:
+        seconds = raw
+    try:
+        return datetime.fromtimestamp(seconds, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _normalize_kbar_datetime(value) -> datetime | None:
     if hasattr(value, "to_pydatetime"):
         value = value.to_pydatetime()
@@ -64,10 +87,14 @@ def _normalize_kbar_datetime(value) -> datetime | None:
         text = str(value).strip()
         if not text:
             return None
-        try:
-            value = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        epoch_dt = _epoch_kbar_datetime(text)
+        if epoch_dt is not None:
+            value = epoch_dt
+        else:
+            try:
+                value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
     dt = value
     if dt.tzinfo is None:
         return dt.replace(tzinfo=TW_TZ)

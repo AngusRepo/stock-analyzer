@@ -9,6 +9,7 @@ def test_orderbook_stale_recovery_contract() -> None:
     assert "def reconnect_shioaji_quote_stream" in source
     assert "_quote_reconnect_lock" in source
     assert "orderbook_reconnect_age_ms" in source
+    assert 'SHIOAJI_ORDERBOOK_MAX_AGE_MS", "15000"' in source
     assert "stale_bidasks" in source
     assert "fresh_bidasks" in source
     assert "max_bidask_age_ms" in source

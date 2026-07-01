@@ -54,9 +54,9 @@ def get_tw_now() -> datetime:
 
 def orderbook_max_age_ms() -> int:
     try:
-        value = int(os.environ.get("SHIOAJI_ORDERBOOK_MAX_AGE_MS", "3000"))
+        value = int(os.environ.get("SHIOAJI_ORDERBOOK_MAX_AGE_MS", "15000"))
     except ValueError:
-        return 3000
+        return 15000
     return max(500, min(value, 60_000))
 
 

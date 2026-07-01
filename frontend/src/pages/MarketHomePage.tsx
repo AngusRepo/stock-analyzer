@@ -100,6 +100,14 @@ function formatCompactAmount(value: number | null) {
   return value.toLocaleString('zh-TW', { maximumFractionDigits: 1 })
 }
 
+function formatCompactCount(value: number | null) {
+  if (value == null) return '待接資料'
+  const abs = Math.abs(value)
+  if (abs >= 100_000_000) return `${(value / 100_000_000).toFixed(1)}億`
+  if (abs >= 10_000) return `${(value / 10_000).toFixed(1)}萬`
+  return Math.round(value).toLocaleString('zh-TW')
+}
+
 function formatLots(value: number | null) {
   if (value == null) return '待匯入'
   const abs = Math.abs(value)
@@ -447,6 +455,9 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
   const breadth = risk?.breadthSnapshot ?? risk?.breadth ?? {}
   const marketStats = risk?.marketStats ?? {}
   const credit = risk?.creditTrading ?? {}
+  const dataDepth = risk?.marketRiskDetail ?? risk?.finlabDataDepth ?? {}
+  const liquidity = dataDepth.liquidity ?? {}
+  const chip = dataDepth.chipPressure ?? {}
   const advance = asNumber(breadth.advance_count ?? breadth.advanceCount ?? breadth.up ?? breadth.rising)
   const unchanged = asNumber(breadth.unchanged_count ?? breadth.unchangedCount ?? breadth.flat ?? breadth.unchanged)
   const decline = asNumber(breadth.decline_count ?? breadth.declineCount ?? breadth.down ?? breadth.falling)
@@ -455,12 +466,19 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
   const volumeShares = asNumber(risk?.marketVolume ?? risk?.turnoverVolume ?? marketStats.volume)
   const volumeLots = volumeShares == null ? null : volumeShares / 1000
   const amount = asNumber(risk?.marketTurnoverAmount ?? risk?.turnoverAmount ?? marketStats.amount)
+  const tradeCount = asNumber(risk?.marketTradeCount ?? risk?.tradeCount ?? liquidity.tradeCount)
   const marketScope = marketStats.scope ?? breadth.scope ?? risk?.marketDataScope
 
   const marginBalanceValue = asNumber(risk?.marginBalanceValue ?? credit.marginBalanceValue)
-  const marginBalanceUnits = asNumber(breadth.margin_balance ?? risk?.marginBalanceUnits ?? credit.marginBalanceUnits ?? risk?.marginBalance ?? credit.marginBalance)
+  const marginBalanceUnits = asNumber(
+    credit.marginBalanceUnits ??
+    risk?.marginBalanceUnits ??
+    (credit.marginBalanceUnit === 'lots' ? credit.marginBalance : null) ??
+    (risk?.marginBalanceUnit === 'lots' ? risk?.marginBalance : null) ??
+    breadth.margin_balance,
+  )
   const shortBalanceValue = asNumber(risk?.shortBalanceValue ?? credit.shortBalanceValue)
-  const shortBalanceUnits = asNumber(breadth.short_balance ?? risk?.shortBalanceUnits ?? credit.shortBalanceUnits ?? risk?.shortBalance ?? credit.shortBalance)
+  const shortBalanceUnits = asNumber(credit.shortBalanceUnits ?? risk?.shortBalanceUnits ?? credit.shortBalance ?? risk?.shortBalance ?? breadth.short_balance)
   const estimatedMarginPositionValue = asNumber(risk?.estimatedMarginPositionValue ?? credit.estimatedMarginPositionValue)
   const estimatedShortPositionValue = asNumber(risk?.estimatedShortPositionValue ?? credit.estimatedShortPositionValue)
   const marginAmount = marginBalanceValue ?? estimatedMarginPositionValue
@@ -470,6 +488,10 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
   const creditScope = credit.scope ?? marketScope
   const marginChangePct = asNumber(risk?.marginBalanceChangePct ?? credit.marginBalanceChangePct)
   const shortChangePct = asNumber(risk?.shortBalanceChangePct ?? credit.shortBalanceChangePct)
+  const brokerBalanceIndex = asNumber(risk?.brokerBalanceIndex ?? chip.brokerBalanceIndex)
+  const brokerBuySellRatio = asNumber(risk?.brokerBuySellRatio ?? chip.brokerBuySellRatio)
+  const brokerBalanceTone: Tone = brokerBalanceIndex == null ? 'slate' : brokerBalanceIndex >= 0 ? 'green' : 'red'
+  const brokerBuySellTone: Tone = brokerBuySellRatio == null ? 'slate' : brokerBuySellRatio >= 1 ? 'green' : 'red'
 
   return (
     <div className="grid gap-4 xl:grid-cols-4">
@@ -501,21 +523,26 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
 
       <StatTrack
         icon={BarChart3}
-        title="成交量"
+        title="成交量 / 成交額"
         date={risk?.date}
         scope={marketScope}
         bar={<SplitBar values={[volumeLots ?? 0, amount == null ? 0 : amount / 100_000_000]} colors={['#3b82f6', '#8b5cf6']} />}
       >
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-3">
           <div>
-            <p className="text-xs text-slate-500">成交張數</p>
+            <p className="text-xs text-slate-500">全市場成交張數</p>
             <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(volumeLots)}</p>
             <p className="text-[11px] text-slate-500">由股數換算</p>
           </div>
           <div>
-            <p className="text-xs text-slate-500">成交金額</p>
+            <p className="text-xs text-slate-500">全市場成交金額</p>
             <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(amount)}</p>
             <p className="text-[11px] text-slate-500">成交金額（TWD）</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">成交筆數</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactCount(tradeCount)}</p>
+            <p className="text-[11px] text-slate-500">交易密度</p>
           </div>
         </div>
       </StatTrack>
@@ -527,11 +554,11 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
         scope={creditScope}
         bar={<SplitBar values={[marginBalanceUnits ?? 0, shortBalanceUnits ?? 0]} colors={['#22c55e', '#8b5cf6']} />}
       >
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3">
           <div>
-            <p className="text-xs text-slate-500">融資餘額（金額）</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(marginAmount)}</p>
-            <p className="text-[11px] text-slate-500">{formatLots(marginBalanceUnits)} · {marginAmountNote}</p>
+            <p className="text-xs text-slate-500">融資餘額（張數）</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(marginBalanceUnits)}</p>
+            <p className="text-[11px] text-slate-500">{formatCompactAmount(marginAmount)} · {marginAmountNote}</p>
             <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(marginChangePct)))}>{formatPct(marginChangePct)}</p>
           </div>
           <div>
@@ -539,6 +566,16 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
             <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(shortBalanceUnits)}</p>
             <p className="text-[11px] text-slate-500">{formatCompactAmount(shortAmount)} · {shortAmountNote}</p>
             <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(shortChangePct)))}>{formatPct(shortChangePct)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">券商集中度</p>
+            <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(brokerBalanceTone))}>{formatNumber(brokerBalanceIndex, 2)}</p>
+            <p className="text-[11px] text-slate-500">broker balance index</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">券商買賣比</p>
+            <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(brokerBuySellTone))}>{formatNumber(brokerBuySellRatio, 2)}</p>
+            <p className="text-[11px] text-slate-500">大於 1 偏承接</p>
           </div>
         </div>
       </StatTrack>

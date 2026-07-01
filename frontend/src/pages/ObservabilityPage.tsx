@@ -396,6 +396,32 @@ function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; li
   )
 }
 
+function DataQualityCompactMatrix({ gates }: { gates: ReadinessGate[] }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
+      {gates.map((gate) => (
+        <div key={gate.id} className={`min-h-[106px] rounded-xl border p-2 ${statusRingClass(gate.tone)}`}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold text-[#f2ead8]">{gate.label}</p>
+              <p className="mt-0.5 truncate sv-num text-[10px] normal-case text-[#7f8ba0]">{gate.source}</p>
+            </div>
+            <span className="shrink-0 rounded-full border border-white/10 bg-black/20 px-1.5 py-0.5 sv-num text-[10px] normal-case" style={{ color: toneColor(gate.tone) }}>
+              {readinessLabel(gate.status)}
+            </span>
+          </div>
+          <div className="mt-2 flex items-end justify-between gap-2">
+            <p className="truncate sv-num text-base font-semibold" style={{ color: toneColor(gate.tone) }}>{gate.value}</p>
+            <p className="shrink-0 sv-num text-[10px] normal-case text-[#8b9bab]">{gate.latestDate ?? 'n/a'}</p>
+          </div>
+          <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
+          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#9badbf]">{gate.detail}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
   label: string
   purpose: string
@@ -445,22 +471,126 @@ const EXPECTED_SCHEDULER_COUNT = SCHEDULER_GROUP_ORDER.reduce(
   (sum, group) => sum + SCHEDULER_GROUP_META[group].expectedCount,
   0,
 )
+const SCHEDULER_GROUP_ANCHOR_PREFIX = 'scheduler-group-'
+
+function schedulerGroupAnchor(group: SchedulerJob['group']) {
+  return `${SCHEDULER_GROUP_ANCHOR_PREFIX}${group}`
+}
+
+function groupSchedulerJobs(jobs: SchedulerJob[]) {
+  const jobsByGroup = new Map<SchedulerJob['group'], SchedulerJob[]>()
+  for (const job of jobs) {
+    const groupJobs = jobsByGroup.get(job.group) ?? []
+    groupJobs.push(job)
+    jobsByGroup.set(job.group, groupJobs)
+  }
+  return jobsByGroup
+}
+
+function schedulerStatusIs(job: SchedulerJob, statuses: string[]) {
+  return statuses.includes(String(job.lastStatus ?? '').toLowerCase())
+}
 
 function summarizeSchedulerGroup(jobs: SchedulerJob[]) {
-  const failed = jobs.filter((job) => job.lastStatus === 'failed').length
-  const running = jobs.filter((job) => job.lastStatus === 'running').length
-  const waiting = jobs.filter((job) => job.lastStatus === 'waiting').length
-  const success = jobs.filter((job) => job.lastStatus === 'success').length
-  const inactive = jobs.filter((job) => job.lastStatus === 'sleep' || job.lastStatus === 'skip').length
+  const failed = jobs.filter((job) => schedulerStatusIs(job, ['failed', 'error'])).length
+  const running = jobs.filter((job) => schedulerStatusIs(job, ['running'])).length
+  const waiting = jobs.filter((job) => schedulerStatusIs(job, ['waiting'])).length
+  const success = jobs.filter((job) => schedulerStatusIs(job, ['success'])).length
+  const inactive = jobs.filter((job) => schedulerStatusIs(job, ['sleep', 'skip', 'skipped'])).length
   const tone: WorkstationTone = failed ? 'error' : running ? 'info' : waiting ? 'warn' : success ? 'ok' : 'neutral'
   const focus =
-    jobs.find((job) => job.lastStatus === 'failed') ??
-    jobs.find((job) => job.lastStatus === 'running') ??
-    jobs.find((job) => job.lastStatus === 'waiting') ??
+    jobs.find((job) => schedulerStatusIs(job, ['failed', 'error'])) ??
+    jobs.find((job) => schedulerStatusIs(job, ['running'])) ??
+    jobs.find((job) => schedulerStatusIs(job, ['waiting'])) ??
     jobs.find((job) => job.nextRun && job.nextRun !== 'N/A') ??
     jobs[0]
 
   return { failed, running, waiting, success, inactive, tone, focus }
+}
+
+function schedulerGroupHealthLabel(summary: ReturnType<typeof summarizeSchedulerGroup>, hasRuntimeJobs: boolean, groupJobCount: number) {
+  if (!hasRuntimeJobs) return 'OFFLINE'
+  if (!groupJobCount) return 'MISSING'
+  if (summary.failed) return 'FAIL'
+  if (summary.running) return 'RUN'
+  if (summary.waiting) return 'WAIT'
+  if (summary.success || summary.inactive) return 'OK'
+  return 'IDLE'
+}
+
+function SchedulerCountChip({ label, value, tone }: { label: string; value: number; tone: WorkstationTone }) {
+  return (
+    <span className={`min-w-0 rounded-lg border px-1.5 py-1 text-center sv-num text-[10px] normal-case ${statusRingClass(tone)}`}>
+      <span className="block leading-none">{label}</span>
+      <span className="mt-1 block text-sm font-semibold leading-none">{value}</span>
+    </span>
+  )
+}
+
+function SchedulerShortcutCard({
+  group,
+  jobs,
+  hasRuntimeJobs,
+  className,
+}: {
+  group: SchedulerJob['group']
+  jobs: SchedulerJob[]
+  hasRuntimeJobs: boolean
+  className?: string
+}) {
+  const meta = SCHEDULER_GROUP_META[group]
+  const summary = summarizeSchedulerGroup(jobs)
+  const cardTone: WorkstationTone = hasRuntimeJobs
+    ? jobs.length
+      ? summary.tone === 'neutral' ? 'neutral' : summary.tone
+      : 'warn'
+    : meta.tone
+  const healthLabel = schedulerGroupHealthLabel(summary, hasRuntimeJobs, jobs.length)
+  const focusText = summary.focus
+    ? `${summary.focus.name} · ${schedulerStatusLabel(summary.focus.lastStatus)}`
+    : `${meta.expectedCount} expected schedulers`
+
+  return (
+    <a
+      href={`#${schedulerGroupAnchor(group)}`}
+      className={`group min-w-0 rounded-xl border p-2.5 transition duration-200 hover:-translate-y-0.5 hover:border-sky-300/45 hover:bg-[#121b27] focus:outline-none focus:ring-2 focus:ring-sky-300/45 ${statusRingClass(cardTone)} ${className ?? ''}`}
+      title={`Jump to ${meta.label}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
+          <p className="mt-0.5 truncate sv-num text-[10px] normal-case text-[#7f8ba0]">{group}</p>
+        </div>
+        <WorkstationPill tone={cardTone}>{healthLabel}</WorkstationPill>
+      </div>
+      <div className="mt-3 grid grid-cols-4 gap-1">
+        <SchedulerCountChip label="OK" value={summary.success} tone="ok" />
+        <SchedulerCountChip label="RUN" value={summary.running} tone="info" />
+        <SchedulerCountChip label="WAIT" value={summary.waiting} tone="warn" />
+        <SchedulerCountChip label="FAIL" value={summary.failed} tone="error" />
+      </div>
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
+        <p className="truncate sv-num text-[11px] normal-case text-[#9badbf]">{focusText}</p>
+        <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[#6d7f97] transition group-hover:text-sky-200" />
+      </div>
+    </a>
+  )
+}
+
+function SchedulerShortcutDeck({ jobs }: { jobs: SchedulerJob[] }) {
+  const hasRuntimeJobs = jobs.length > 0
+  const jobsByGroup = groupSchedulerJobs(jobs)
+  const groupJobs = (group: SchedulerJob['group']) => jobsByGroup.get(group) ?? []
+
+  return (
+    <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(0,1.12fr)_minmax(220px,0.8fr)_minmax(220px,0.8fr)]">
+      <SchedulerShortcutCard group="pipeline_chain" jobs={groupJobs('pipeline_chain')} hasRuntimeJobs={hasRuntimeJobs} className="lg:row-span-2" />
+      <SchedulerShortcutCard group="daily" jobs={groupJobs('daily')} hasRuntimeJobs={hasRuntimeJobs} />
+      <SchedulerShortcutCard group="weekly" jobs={groupJobs('weekly')} hasRuntimeJobs={hasRuntimeJobs} />
+      <SchedulerShortcutCard group="intraday" jobs={groupJobs('intraday')} hasRuntimeJobs={hasRuntimeJobs} />
+      <SchedulerShortcutCard group="monthly" jobs={groupJobs('monthly')} hasRuntimeJobs={hasRuntimeJobs} />
+    </div>
+  )
 }
 
 function schedulerJobTone(job: SchedulerJob): WorkstationTone {
@@ -519,12 +649,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
 
 function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
   const hasRuntimeJobs = jobs.length > 0
-  const jobsByGroup = new Map<SchedulerJob['group'], SchedulerJob[]>()
-  for (const job of jobs) {
-    const groupJobs = jobsByGroup.get(job.group) ?? []
-    groupJobs.push(job)
-    jobsByGroup.set(job.group, groupJobs)
-  }
+  const jobsByGroup = groupSchedulerJobs(jobs)
 
   return (
     <div className="min-w-0 overflow-hidden rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
@@ -548,7 +673,7 @@ function SchedulerInventoryPanel({ jobs }: { jobs: SchedulerJob[] }) {
           const summary = summarizeSchedulerGroup(groupJobs)
           const cardTone = hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
           return (
-            <div key={group} className={`min-w-0 overflow-hidden rounded-2xl border p-3 ${statusRingClass(cardTone)} ${schedulerGroupSpanClass(group)}`}>
+            <div id={schedulerGroupAnchor(group)} key={group} className={`min-w-0 scroll-mt-24 overflow-hidden rounded-2xl border p-3 ${statusRingClass(cardTone)} ${schedulerGroupSpanClass(group)}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
@@ -752,6 +877,7 @@ function OperationalReadinessDeck({
             <WorkstationPill tone="neutral">scrollable</WorkstationPill>
           </div>
           <ReadinessFlowMap stages={stages} />
+          <SchedulerShortcutDeck jobs={jobs} />
         </div>
         <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -794,8 +920,8 @@ function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
     }
   })
   return (
-    <div className="min-w-0 overflow-hidden rounded-xl border border-[#263247] bg-[#05070c] p-3">
-      <ReadinessGateMatrix gates={gates} limit={0} />
+    <div className="min-w-0 overflow-hidden rounded-xl border border-[#263247] bg-[#05070c] p-2">
+      <DataQualityCompactMatrix gates={gates} />
     </div>
   )
 }

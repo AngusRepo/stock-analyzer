@@ -92,6 +92,27 @@ const baseConfig = {
 }
 
 {
+  const plan = buildFiveSlotCapitalPlan({
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 500_000 },
+    marketRiskLevel: 'low',
+    config: baseConfig,
+    holdings: [
+      { symbol: 'STALE', shares: 7000, avgCost: 14.97, lastPrice: 14.85, trailingStop: 14.65, daysHeld: 20, tp1Hit: false },
+      { symbol: 'NEARSTOP', shares: 2000, avgCost: 70.5, lastPrice: 67.4, trailingStop: 66.96, daysHeld: 6, tp1Hit: false },
+      { symbol: 'C', shares: 1000, avgCost: 100, lastPrice: 104, trailingStop: 90, daysHeld: 1, tp1Hit: true },
+      { symbol: 'D', shares: 1000, avgCost: 100, lastPrice: 105, trailingStop: 90, daysHeld: 1, tp1Hit: true },
+      { symbol: 'E', shares: 1000, avgCost: 100, lastPrice: 106, trailingStop: 90, daysHeld: 1, tp1Hit: true },
+    ],
+    candidates: [{ symbol: 'CANDIDATE', confidence: 0.78, score: 24.04, riskPct: 0.017 }],
+  })
+  const decision = plan.decisions.get('CANDIDATE')
+  assert(decision?.action === 'replace', 'near-stop replacement should not be blocked by a stale-only weakest holding')
+  assert(decision?.replaceSymbol === 'NEARSTOP', 'candidate should be allowed to replace the near-stop holding it clears')
+  assert((decision?.replaceRequiredRank ?? 0) > 0, 'replacement decision should expose required rank')
+  assert(formatFiveSlotDecisionWatchPoint(decision!).includes('required='), 'replacement watch point should expose required rank')
+}
+
+{
   assert(inferFiveSlotTargetExposure('low') > inferFiveSlotTargetExposure('orange'), 'orange risk should reduce target exposure')
   assert(inferFiveSlotTargetExposure('black') === 0, 'black risk should halt new exposure')
   assert(

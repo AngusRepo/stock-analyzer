@@ -1,6 +1,7 @@
 import {
   aggregateCompletedS12Bars,
   assessS12IntradayStructure,
+  assessS12IntradayStructureFromBaseBars,
   s12PreTradeTechnicalDecision,
   type S12Bar,
 } from './s12IntradayStructure'
@@ -48,6 +49,34 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(completed.length === 1, 'TW session-aware 4H aggregation should include the completed 09:00-13:00 bucket')
   assert(completed[0].startMs === baseMs, 'TW session-aware 4H bucket should align to 09:00 Taipei session open')
   assert(completed[0].open === 100 && completed[0].close === 105.5, 'TW session-aware 4H bucket should preserve OHLC order')
+}
+
+{
+  const currentBars = Array.from({ length: 8 }, (_, i) =>
+    bar(i * M15, 108 + i * 0.1, 109 + i * 0.1, 107 + i * 0.1, 108.5 + i * 0.1, 100),
+  )
+  const fallback4h = [{
+    startMs: Date.parse('2026-06-25T01:00:00.000Z'),
+    open: 100,
+    high: 110,
+    low: 98,
+    close: 108,
+    volume: 1000,
+  }]
+  const assessment = assessS12IntradayStructureFromBaseBars({
+    symbol: '2330',
+    baseBars: currentBars,
+    fallback4hBars: fallback4h,
+    nowMs: baseMs + 2 * H1,
+    barDiagnostics: { raw_kbars_count: 8, parsed_kbars_count: 8 },
+    h4ReferenceDate: '2026-06-25',
+    h4ReferenceClose: 108,
+  })
+  assert(assessment.h4Source === 'previous_trading_day_fallback', 'S12 should use previous trading day 4H fallback before current 4H completes')
+  assert(assessment.completedBars.h4 === 1, 'previous trading day 4H fallback should satisfy the 4H anchor requirement')
+  assert(assessment.state !== 'waiting_4h_completed_bar', 'previous 4H fallback must prevent opening-session 4H deadlock')
+  assert(assessment.detail.includes('h4_source=previous_trading_day_fallback'), 'S12 detail should expose h4 fallback source')
+  assert(assessment.detail.includes('raw_kbars_count=8'), 'S12 detail should expose kbar diagnostics')
 }
 
 {

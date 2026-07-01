@@ -30,6 +30,9 @@ export interface FiveSlotHolding {
   shares: number
   avgCost: number
   lastPrice?: number | null
+  initialStop?: number | null
+  trailingStop?: number | null
+  highestSinceEntry?: number | null
   daysHeld?: number | null
   tp1Hit?: boolean | null
 }
@@ -54,6 +57,7 @@ export interface FiveSlotDecision {
   confidenceMultiplier: number
   replaceSymbol?: string | null
   replaceWeaknessScore?: number | null
+  replaceRequiredRank?: number | null
   candidateRank?: number | null
 }
 
@@ -158,14 +162,38 @@ function candidateRank(candidate: FiveSlotCandidate): number {
   return score + confidence * 20 + riskPct * 500
 }
 
+function stopDistancePct(holding: FiveSlotHolding): number | null {
+  const lastPrice = finiteNumber(holding.lastPrice, finiteNumber(holding.avgCost, 0))
+  const stop = Math.max(
+    finiteNumber(holding.trailingStop, 0),
+    finiteNumber(holding.initialStop, 0),
+  )
+  if (lastPrice <= 0 || stop <= 0 || stop >= lastPrice) return stop >= lastPrice && lastPrice > 0 ? 0 : null
+  return (lastPrice - stop) / lastPrice
+}
+
 export function fiveSlotHoldingWeaknessScore(holding: FiveSlotHolding): number {
   const avgCost = finiteNumber(holding.avgCost, 0)
   const lastPrice = finiteNumber(holding.lastPrice, avgCost)
+  const highestSinceEntry = finiteNumber(holding.highestSinceEntry, Math.max(avgCost, lastPrice))
   const pnlPct = avgCost > 0 ? (lastPrice - avgCost) / avgCost : 0
   const lossScore = Math.max(0, -pnlPct * 100) * 3
   const staleScore = clamp(finiteNumber(holding.daysHeld, 0), 0, 20)
   const tp1Score = holding.tp1Hit === false ? 20 : 0
-  return lossScore + staleScore + tp1Score
+  const distance = stopDistancePct(holding)
+  const nearStopScore = distance == null
+    ? 0
+    : distance <= 0
+      ? 24
+      : distance <= 0.02
+        ? (0.02 - distance) / 0.02 * 18
+        : 0
+  const mfePct = avgCost > 0 ? Math.max(0, (highestSinceEntry - avgCost) / avgCost) : 0
+  const givebackPct = avgCost > 0 ? Math.max(0, (highestSinceEntry - lastPrice) / avgCost) : 0
+  const givebackScore = mfePct >= 0.03 && givebackPct >= 0.015
+    ? Math.min(15, givebackPct * 220)
+    : 0
+  return lossScore + staleScore + tp1Score + nearStopScore + givebackScore
 }
 
 function weakestHolding(holdings: FiveSlotHolding[]): { holding: FiveSlotHolding; weakness: number } | null {
@@ -175,6 +203,38 @@ function weakestHolding(holdings: FiveSlotHolding[]): { holding: FiveSlotHolding
     if (!weakest || weakness > weakest.weakness) weakest = { holding, weakness }
   }
   return weakest
+}
+
+function replacementThresholdForHolding(holding: FiveSlotHolding, baseThreshold: number): number {
+  const distance = stopDistancePct(holding)
+  if (distance == null) return baseThreshold
+  if (distance <= 0.01) return Math.min(baseThreshold, 0.90)
+  if (distance <= 0.02) return Math.min(baseThreshold, 1.00)
+  return baseThreshold
+}
+
+function bestReplacementHolding(
+  holdings: FiveSlotHolding[],
+  rank: number,
+  replacementThreshold: number,
+  minReplacementWeakness: number,
+): { holding: FiveSlotHolding; weakness: number; requiredRank: number; margin: number } | null {
+  let best: { holding: FiveSlotHolding; weakness: number; requiredRank: number; margin: number } | null = null
+  for (const holding of holdings) {
+    const weakness = fiveSlotHoldingWeaknessScore(holding)
+    if (weakness < minReplacementWeakness) continue
+    const requiredRank = weakness * replacementThresholdForHolding(holding, replacementThreshold)
+    const margin = rank - requiredRank
+    if (margin < 0) continue
+    if (
+      !best ||
+      margin > best.margin ||
+      (Math.abs(margin - best.margin) < 0.001 && weakness > best.weakness)
+    ) {
+      best = { holding, weakness, requiredRank, margin }
+    }
+  }
+  return best
 }
 
 function capBudget(value: number, account: FiveSlotAllocatorAccount, config: FiveSlotAllocatorConfig): number {
@@ -201,6 +261,7 @@ export function formatFiveSlotDecisionWatchPoint(decision: FiveSlotDecision): st
     metricPart('budget', Math.round(decision.budgetCap)),
     metricPart('replace', decision.replaceSymbol ?? null),
     metricPart('weakness', decision.replaceWeaknessScore ?? null),
+    metricPart('required', decision.replaceRequiredRank ?? null),
     metricPart('rank', decision.candidateRank ?? null),
     metricPart('exposure', decision.targetExposure),
   ].filter(Boolean).join(';')
@@ -217,6 +278,7 @@ function skipDecision(
   targetPositionValue = 0,
   replaceSymbol: string | null = null,
   replaceWeaknessScore: number | null = null,
+  replaceRequiredRank: number | null = null,
 ): FiveSlotDecision {
   return {
     symbol: candidate.symbol,
@@ -230,6 +292,7 @@ function skipDecision(
     confidenceMultiplier,
     replaceSymbol,
     replaceWeaknessScore,
+    replaceRequiredRank,
     candidateRank: candidateRank(candidate),
   }
 }
@@ -315,25 +378,40 @@ export function buildFiveSlotCapitalPlan(input: {
     }
 
     if (projectedSlots >= maxPositions) {
-      if (weakest && weakest.weakness >= minReplacementWeakness && rank >= weakest.weakness * replacementThreshold) {
+      const replacement = bestReplacementHolding(holdings, rank, replacementThreshold, minReplacementWeakness)
+      if (replacement) {
         const capped = capBudget(targetPositionValue, { ...input.account, cash, dailyRemaining }, input.config)
         decisions.set(candidate.symbol, {
           symbol: candidate.symbol,
           action: 'replace',
-          reason: 'allocator_replace_weakest_slot',
+          reason: replacement.holding.symbol === weakest?.holding.symbol
+            ? 'allocator_replace_weakest_slot'
+            : 'allocator_replace_risk_slot',
           budgetCap: capped,
           targetPositionValue,
           currentPositionValue,
           targetExposure,
           targetSlotValue,
           confidenceMultiplier,
-          replaceSymbol: weakest.holding.symbol,
-          replaceWeaknessScore: Math.round(weakest.weakness * 10) / 10,
+          replaceSymbol: replacement.holding.symbol,
+          replaceWeaknessScore: Math.round(replacement.weakness * 10) / 10,
+          replaceRequiredRank: Math.round(replacement.requiredRank * 10) / 10,
           candidateRank: Math.round(rank * 10) / 10,
         })
         continue
       }
-      decisions.set(candidate.symbol, skipDecision(candidate, 'allocator_full_requires_replacement', targetExposure, targetSlotValue, confidenceMultiplier, currentPositionValue, targetPositionValue))
+      decisions.set(candidate.symbol, skipDecision(
+        candidate,
+        'allocator_full_requires_replacement',
+        targetExposure,
+        targetSlotValue,
+        confidenceMultiplier,
+        currentPositionValue,
+        targetPositionValue,
+        weakest?.holding.symbol ?? null,
+        weakest ? Math.round(weakest.weakness * 10) / 10 : null,
+        weakest ? Math.round(weakest.weakness * replacementThresholdForHolding(weakest.holding, replacementThreshold) * 10) / 10 : null,
+      ))
       continue
     }
 

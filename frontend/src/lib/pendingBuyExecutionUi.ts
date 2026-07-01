@@ -402,13 +402,19 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
   const before = item.trailing_stop_before ?? item.detail?.holding_defense?.trailing_stop_before ?? null
   const after = item.trailing_stop_after ?? item.detail?.holding_defense?.trailing_stop_after ?? null
   const detail = item.detail?.detail ? formatS12Detail(String(item.detail.detail)) : ''
+  const completedBars = item.detail?.completedBars ?? {}
+  const hasNoCompletedBars = Number(completedBars.m15 ?? 0) <= 0 && Number(completedBars.h1 ?? 0) <= 0 && Number(completedBars.h4 ?? 0) <= 0
+  const h4Source = String(item.detail?.h4Source ?? item.detail?.h4_source ?? '').trim()
+  const insufficientData = reason === 's12_holding_defense_unavailable' || hasNoCompletedBars || reason === 's12_waiting_15m_completed_bars'
   const label = active
-    ? 'S12 提高防守'
-    : reason === 's12_holding_defense_unavailable'
+    ? 'S12 防守啟動'
+    : insufficientData
       ? 'S12 防守資料不足'
       : reason === 's12_bearish_defense_ready' || status === 'bearish_defense_ready'
         ? 'S12 空方防守成立'
-        : 'S12 防守觀察'
+        : reason === 's12_waiting_4h_completed_bar' && h4Source === 'unavailable'
+          ? 'S12 4H錨點不足'
+          : 'S12 結構監控'
   const stopText = before != null || after != null
     ? `防守停損：${before ?? '-'} -> ${after ?? '-'}`
     : null
@@ -417,7 +423,7 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
     : null
   return {
     label,
-    tone: active ? 'warn' : reason === 's12_holding_defense_unavailable' ? 'error' : s12Tone(reason || status),
+    tone: active ? 'warn' : insufficientData ? 'error' : s12Tone(reason || status),
     description: [actionText, stopText, detail].filter(Boolean).join('；') || humanizeExecutionReason(reason || status || 's12_structure_advisory_waiting'),
   }
 }

@@ -46,7 +46,7 @@ import {
   type S12IntradayGateMode,
 } from './s12IntradayStructure'
 import { buildCanonicalTradeLifecycle, serializeCanonicalTradeLifecycle } from './canonicalTradeLifecycle'
-import { loadIntradayTechnicalRollingBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows } from './s12RuntimeBars'
+import { loadIntradayTechnicalRollingBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows, type S12BaseBarSource } from './s12RuntimeBars'
 import { getTwClockParts, isTwIntradayTradingMinute } from './twMarketSession'
 import {
   appendPendingBuyExecutionNote,
@@ -131,7 +131,7 @@ interface S12RuntimeSidecar {
   assessment: S12IntradayAssessment
   technicalDecision: { action: 'pass' | 'defer' | 'skip'; reason: string; detail: string } | null
   assistEntryOverlay: S12AssistEntryOverlay | null
-  barSource: 'shioaji_kbars_plus_events' | 'event_history'
+  barSource: S12BaseBarSource
 }
 
 function positiveNumber(value: unknown): number | null {
@@ -619,7 +619,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     const { results: fullPositions } = await env.DB.prepare(`
       SELECT symbol, name, shares, avg_cost, entry_date, entry_price,
-             initial_stop, tp1_price, tp1_hit, highest_since_entry
+             initial_stop, trailing_stop, tp1_price, tp1_hit, highest_since_entry
       FROM paper_positions WHERE account_id=? AND shares>0
     `).bind(ACCOUNT_ID).all<any>()
 
@@ -633,6 +633,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         shares: Number(pos.shares ?? 0),
         avgCost: Number(pos.avg_cost ?? 0),
         lastPrice: posValueMap.get(pos.symbol) ?? Number(pos.avg_cost ?? 0),
+        initialStop: finiteNumber(pos.initial_stop),
+        trailingStop: finiteNumber(pos.trailing_stop),
+        highestSinceEntry: finiteNumber(pos.highest_since_entry),
         daysHeld,
         tp1Hit: Boolean(pos.tp1_hit),
       })
@@ -662,6 +665,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         shares: Number(pos.shares ?? 0),
         avgCost: Number(pos.avg_cost ?? 0),
         lastPrice: posValueMap.get(pos.symbol) ?? Number(pos.avg_cost ?? 0),
+        initialStop: finiteNumber(pos.initial_stop),
+        trailingStop: finiteNumber(pos.trailing_stop),
+        highestSinceEntry: finiteNumber(pos.highest_since_entry),
         daysHeld: pos.entry_date
           ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
           : 0,
@@ -899,7 +905,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   let dailyBuyTotal = todayBought?.total ?? 0
 
   const { results: capitalPositionRows } = await env.DB.prepare(
-    'SELECT symbol, shares, avg_cost, entry_date, tp1_hit FROM paper_positions WHERE account_id=? AND shares>0',
+    'SELECT symbol, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry FROM paper_positions WHERE account_id=? AND shares>0',
   ).bind(ACCOUNT_ID).all<any>()
   const capitalPositionSymbols = (capitalPositionRows ?? []).map((p: any) => p.symbol).filter(Boolean)
 
@@ -963,6 +969,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       shares: Number(pos.shares ?? 0),
       avgCost: Number(pos.avg_cost ?? 0),
       lastPrice: priceMap.get(symbol) ?? posValueMap.get(symbol) ?? Number(pos.avg_cost ?? 0),
+      initialStop: finiteNumber(pos.initial_stop),
+      trailingStop: finiteNumber(pos.trailing_stop),
+      highestSinceEntry: finiteNumber(pos.highest_since_entry),
       daysHeld: pos.entry_date
         ? Math.floor((Date.now() + 8 * 3600_000 - new Date(String(pos.entry_date).slice(0, 10) + 'T00:00:00+08:00').getTime()) / 86400_000)
         : 0,
@@ -971,7 +980,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   }
   const loadCurrentCapitalHoldings = async (): Promise<FiveSlotHolding[]> => {
     const { results } = await env.DB.prepare(`
-      SELECT symbol, name, shares, avg_cost, entry_date, tp1_hit
+      SELECT symbol, name, shares, avg_cost, entry_date, tp1_hit, initial_stop, trailing_stop, highest_since_entry
       FROM paper_positions WHERE account_id=? AND shares>0
     `).bind(ACCOUNT_ID).all<any>()
     return (results ?? []).map(toCapitalHolding)
@@ -1108,6 +1117,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         `current=${Math.round(decision.currentPositionValue)}`,
         `budget=${Math.round(decision.budgetCap)}`,
         `replace=${decision.replaceSymbol ?? 'none'}`,
+        `required=${decision.replaceRequiredRank == null ? 'none' : Math.round(decision.replaceRequiredRank * 10) / 10}`,
         contextDetail,
       ].filter(Boolean).join(';'),
     )
@@ -1134,7 +1144,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const assessment = assessS12IntradayStructureFromBaseBars({
         symbol: pending.symbol,
         baseBars: s12Base.bars,
+        fallback4hBars: s12Base.fallback4hBars,
         nowMs: Date.now(),
+        barDiagnostics: s12Base.diagnostics,
+        h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
+        h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
       })
       const assistEntryOverlay = buildS12AssistEntryOverlay(
         assessment,
@@ -1163,6 +1177,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           assist_entry_applied: assistEntryOverlay != null,
           assist_entry_overlay: assistEntryOverlay,
           bar_source: s12Base.source,
+          bar_diagnostics: s12Base.diagnostics,
           sidecar_stage: 'pre_allocator',
           always_run: true,
         },
@@ -1732,7 +1747,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         'checked_waiting',
         allocatorDecision.action === 'replace' ? 'allocator_replace_requires_sell_first' : 'allocator_full_requires_replacement',
         allocatorDecision.replaceSymbol
-          ? `replace=${allocatorDecision.replaceSymbol};weakness=${allocatorDecision.replaceWeaknessScore ?? 'na'}`
+          ? `replace=${allocatorDecision.replaceSymbol};weakness=${allocatorDecision.replaceWeaknessScore ?? 'na'};required=${allocatorDecision.replaceRequiredRank ?? 'na'};rank=${allocatorDecision.candidateRank ?? 'na'}`
           : null,
       )
       continue
@@ -2057,6 +2072,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             l4_sparse_allocation_target_budget: allocationTargetBudget == null ? null : Math.round(allocationTargetBudget),
             allocation_replace_symbol: allocatorDecision.replaceSymbol ?? null,
             allocation_replace_weakness: allocatorDecision.replaceWeaknessScore ?? null,
+            allocation_replace_required_rank: allocatorDecision.replaceRequiredRank ?? null,
             allocation_candidate_rank: allocatorDecision.candidateRank ?? null,
             stop_pct: stopPct,
             atr14,

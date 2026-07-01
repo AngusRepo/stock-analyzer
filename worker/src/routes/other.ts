@@ -1702,7 +1702,7 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v13-twii-finlab-pool-first', async () => {
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v14-twii-canonical-only', async () => {
     const [finlabTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, marketRiskTwii, twseOfficialTwii] = await Promise.all([
       loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
         {
@@ -1779,8 +1779,7 @@ market.get('/indices', async (c) => {
       status: 'ok',
       history: [],
     } : null
-    const bestFinlabTwii = chooseBestMarketSeries(finlabTwii, [marketRiskTwii])
-    const twii = hasMarketSeriesData(bestFinlabTwii) ? bestFinlabTwii : twseOfficialTwii
+    const twii = hasMarketSeriesData(finlabTwii) ? finlabTwii : twseOfficialTwii
     const twoii = hasMarketSeriesData(finlabTwoii)
       ? finlabTwoii
       : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab canonical_market_index_daily not materialized by GCP backfill')

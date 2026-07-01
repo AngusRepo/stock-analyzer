@@ -495,7 +495,6 @@ const SCHEDULER_GROUP_META: Record<SchedulerJob['group'], {
   },
 }
 
-const SCHEDULER_GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'monthly', 'weekly']
 const SCHEDULER_GROUP_ANCHOR_PREFIX = 'scheduler-group-'
 
 function schedulerGroupAnchor(group: SchedulerJob['group']) {
@@ -639,12 +638,6 @@ function schedulerJobPriority(job: SchedulerJob) {
   return 6
 }
 
-function schedulerSourceGateGroupClass(group: SchedulerJob['group']) {
-  if (group === 'pipeline_chain') return '2xl:row-span-3'
-  if (group === 'weekly') return '2xl:col-span-2'
-  return ''
-}
-
 function schedulerDetailTone(detail: string): WorkstationTone {
   const text = detail.toLowerCase()
   if (text.startsWith('waiting') || text.includes('rows=0/') || text.includes('not ready')) return 'warn'
@@ -780,22 +773,38 @@ function SchedulerGroupCard({
   )
 }
 
-function SchedulerSourceGateBoard({ jobs }: { jobs: SchedulerJob[] }) {
+function SchedulerReadinessGroupBoard({ jobs }: { jobs: SchedulerJob[] }) {
   const hasRuntimeJobs = jobs.length > 0
   const jobsByGroup = groupSchedulerJobs(jobs)
 
   return (
-    <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-2">
-      {SCHEDULER_GROUP_ORDER.map((group) => (
+    <div className="mt-3 grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]">
+      <SchedulerGroupCard
+        group="pipeline_chain"
+        jobsByGroup={jobsByGroup}
+        hasRuntimeJobs={hasRuntimeJobs}
+        className="2xl:h-full"
+        jobGridClass="lg:grid-cols-2"
+      />
+      <div className="grid min-w-0 gap-3">
         <SchedulerGroupCard
-          key={group}
-          group={group}
+          group="daily"
           jobsByGroup={jobsByGroup}
           hasRuntimeJobs={hasRuntimeJobs}
-          className={schedulerSourceGateGroupClass(group)}
-          jobGridClass={group === 'pipeline_chain' ? 'lg:grid-cols-2 2xl:grid-cols-1' : ''}
+          jobGridClass="lg:grid-cols-2"
         />
-      ))}
+        <div className="grid min-w-0 gap-3 xl:grid-cols-2">
+          <SchedulerGroupCard group="intraday" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} />
+          <SchedulerGroupCard group="monthly" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} />
+        </div>
+      </div>
+      <SchedulerGroupCard
+        group="weekly"
+        jobsByGroup={jobsByGroup}
+        hasRuntimeJobs={hasRuntimeJobs}
+        className="2xl:col-span-2"
+        jobGridClass="lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+      />
     </div>
   )
 }
@@ -956,7 +965,6 @@ function OperationalReadinessDeck({
             <WorkstationPill tone="neutral">{stages.length} stages</WorkstationPill>
           </div>
           <ReadinessFlowMap stages={stages} />
-          <SchedulerShortcutDeck jobs={jobs} />
         </div>
         <div className="flex h-full flex-col rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -969,9 +977,10 @@ function OperationalReadinessDeck({
             </a>
           </div>
           <DataQualityCompactMatrix gates={gates} />
-          <SchedulerSourceGateBoard jobs={jobs} />
+          <SchedulerShortcutDeck jobs={jobs} />
         </div>
       </div>
+      <SchedulerReadinessGroupBoard jobs={jobs} />
     </div>
   )
 }

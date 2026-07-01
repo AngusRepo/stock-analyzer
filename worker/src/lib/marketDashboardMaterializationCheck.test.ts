@@ -34,8 +34,8 @@ function assert(condition: unknown, message: string): void {
         source: 'canonical_regime_context_daily dataset=tw_business_indicators',
         rows: 1,
         latestDate: '2026-04-30',
-        warnLagDays: 65,
-        failLagDays: 95,
+        warnLagDays: 45,
+        failLagDays: 60,
       },
     ],
   })
@@ -46,7 +46,7 @@ function assert(condition: unknown, message: string): void {
   assert((check.metrics.missing_required as string[]).includes('twoii_index'), 'TWOII gap must be explicitly named')
   assert(items.find((item) => item.key === 'gdelt_global_news')?.status === 'warn', 'optional GDELT gap should warn, not fail')
   assert(items.find((item) => item.key === 'gdelt_global_news')?.root_cause === 'formal_shadow_fetch_failed', 'GDELT root cause should pass through')
-  assert(items.find((item) => item.key === 'business_signal')?.status === 'ok', 'monthly business signal should allow monthly lag window')
+  assert(items.find((item) => item.key === 'business_signal')?.status === 'warn', 'monthly business signal should warn before it exceeds the hard fail window')
 }
 
 {
@@ -59,8 +59,8 @@ function assert(condition: unknown, message: string): void {
         source: 'canonical_market_index_daily symbol=TWII/TAIEX',
         rows: 1,
         latestDate: '2026-06-26T12:00:00+08:00',
-        warnLagDays: 1,
-        failLagDays: 3,
+        warnLagDays: 0,
+        failLagDays: 1,
       },
       {
         key: 'market_turnover',
@@ -68,11 +68,34 @@ function assert(condition: unknown, message: string): void {
         source: 'canonical_market_summary_daily total_volume/total_value',
         rows: 2,
         latestDate: '2026-06-25',
-        warnLagDays: 1,
-        failLagDays: 3,
+        warnLagDays: 0,
+        failLagDays: 1,
       },
     ],
   })
 
-  assert(check.status === 'ok', 'fresh and one-day-lag allowed dashboard sources should pass')
+  assert(check.status === 'warn', 'one-day-lag dashboard sources should no longer pass as green')
+  const items = check.metrics?.materialization_checks as Array<Record<string, unknown>>
+  assert(items.find((item) => item.key === 'market_turnover')?.status === 'warn', 'one-day-lag daily source should render as warning')
+}
+
+{
+  const check = buildMarketDashboardMaterializationCheck({
+    targetDate: '2026-07-01',
+    sources: [
+      {
+        key: 'business_signal',
+        label: '景氣對策信號',
+        source: 'canonical_regime_context_daily dataset=tw_business_indicators',
+        rows: 1,
+        latestDate: '2026-04-27',
+        warnLagDays: 45,
+        failLagDays: 60,
+      },
+    ],
+  })
+
+  const items = check.metrics?.materialization_checks as Array<Record<string, unknown>>
+  assert(check.status === 'fail', 'stale monthly business signal beyond 60 days should fail')
+  assert(items.find((item) => item.key === 'business_signal')?.status === 'fail', '4/27 business signal on 7/1 must not be green')
 }

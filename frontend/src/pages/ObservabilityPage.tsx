@@ -563,7 +563,7 @@ function SchedulerShortcutCard({
         </div>
         <WorkstationPill tone={cardTone}>{healthLabel}</WorkstationPill>
       </div>
-      <div className="mt-3 grid grid-cols-4 gap-1">
+      <div className="mt-3 grid grid-cols-2 gap-1">
         <SchedulerCountChip label="OK" value={summary.success} tone="ok" />
         <SchedulerCountChip label="RUN" value={summary.running} tone="info" />
         <SchedulerCountChip label="WAIT" value={summary.waiting} tone="warn" />
@@ -583,11 +583,11 @@ function SchedulerShortcutDeck({ jobs }: { jobs: SchedulerJob[] }) {
   const groupJobs = (group: SchedulerJob['group']) => jobsByGroup.get(group) ?? []
 
   return (
-    <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(0,1.12fr)_minmax(220px,0.8fr)_minmax(220px,0.8fr)]">
-      <SchedulerShortcutCard group="pipeline_chain" jobs={groupJobs('pipeline_chain')} hasRuntimeJobs={hasRuntimeJobs} className="lg:row-span-2" />
+    <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.18fr)_repeat(4,minmax(0,1fr))]">
+      <SchedulerShortcutCard group="pipeline_chain" jobs={groupJobs('pipeline_chain')} hasRuntimeJobs={hasRuntimeJobs} />
       <SchedulerShortcutCard group="daily" jobs={groupJobs('daily')} hasRuntimeJobs={hasRuntimeJobs} />
-      <SchedulerShortcutCard group="weekly" jobs={groupJobs('weekly')} hasRuntimeJobs={hasRuntimeJobs} />
       <SchedulerShortcutCard group="intraday" jobs={groupJobs('intraday')} hasRuntimeJobs={hasRuntimeJobs} />
+      <SchedulerShortcutCard group="weekly" jobs={groupJobs('weekly')} hasRuntimeJobs={hasRuntimeJobs} />
       <SchedulerShortcutCard group="monthly" jobs={groupJobs('monthly')} hasRuntimeJobs={hasRuntimeJobs} />
     </div>
   )
@@ -867,7 +867,7 @@ function OperationalReadinessDeck({
         </div>
       </div>
 
-      <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+      <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,1fr)_minmax(560px,0.95fr)]">
         <div className="rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">

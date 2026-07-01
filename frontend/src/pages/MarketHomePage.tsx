@@ -998,18 +998,16 @@ function MarketOverviewBlock() {
           <div className="bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />
           </div>
-          <div className="bg-[#101116] px-4 pb-4">
-            <MarketRiskDetailBreakdown risk={risk} />
-          </div>
-          <div className="grid items-stretch gap-4 bg-[#101116] p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <div className="grid gap-4 self-stretch">
-              <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid items-start gap-4 bg-[#101116] px-4 pb-4 xl:grid-cols-[minmax(300px,0.58fr)_minmax(0,1.42fr)] 2xl:grid-cols-[minmax(280px,0.62fr)_minmax(520px,1.18fr)_minmax(340px,0.8fr)]">
+            <div className="grid gap-4 xl:self-stretch">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
                 <FearGreedCard risk={risk} />
                 <BusinessSignalCard risk={risk} />
               </div>
               <HedgeSentimentCard risk={risk} />
             </div>
-            <div className="grid gap-4 self-stretch xl:grid-rows-[minmax(0,1fr)_auto]">
+            <MarketRiskDetailBreakdown risk={risk} />
+            <div className="grid gap-4 self-stretch xl:col-span-2 2xl:col-span-1">
               <NewsBlock embedded />
               <GlobalEventContextCard risk={risk} />
             </div>
@@ -1028,7 +1026,7 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
     staleTime: 10 * 60 * 1000,
     retry: 1,
   })
-  const rows = asArray<any>(data).slice(0, embedded ? 6 : 12)
+  const rows = asArray<any>(data).slice(0, embedded ? 3 : 12)
   const sectionClass = embedded
     ? 'h-full overflow-hidden rounded-[20px] border border-white/[0.07] bg-white/[0.032]'
     : panelClass('overflow-hidden')
@@ -1038,7 +1036,7 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <section className={sectionClass}>
-      <SectionHeader icon={Newspaper} title="最新消息" action={<SourceBadge>每來源 3 則股票新聞</SourceBadge>} />
+      <SectionHeader icon={Newspaper} title="最新消息" action={<SourceBadge>{embedded ? '最新 3 則' : '每來源 3 則股票新聞'}</SourceBadge>} />
       {isLoading ? (
         <div className={gridClass}>
           {Array.from({ length: embedded ? 3 : 6 }).map((_, index) => (

@@ -806,6 +806,29 @@ function summarizeOrderReason(order: any): string {
   return typeof order?.note === 'string' ? order.note : '-'
 }
 
+function realizedPnlFromOrder(order: any): { pnl: number; pct: number | null } | null {
+  if (String(order?.side ?? '').toLowerCase() !== 'sell') return null
+  const note = parseOrderNote(order?.note)
+  const pnl = finiteNumber(order?.realized_pnl ?? note.realized_pnl)
+  if (pnl == null) {
+    const entryPrice = finiteNumber(note.entry_price)
+    const exitPrice = finiteNumber(order?.price)
+    const shares = finiteNumber(order?.shares)
+    if (entryPrice == null || exitPrice == null || shares == null || entryPrice <= 0 || shares <= 0) return null
+    const commission = finiteNumber(order?.commission) ?? 0
+    const tax = finiteNumber(order?.tax) ?? 0
+    const computedPnl = Math.round((exitPrice - entryPrice) * shares - commission - tax)
+    return {
+      pnl: computedPnl,
+      pct: Math.round((computedPnl / (entryPrice * shares) * 100) * 100) / 100,
+    }
+  }
+  return {
+    pnl,
+    pct: finiteNumber(order?.realized_pnl_pct ?? note.realized_pnl_pct),
+  }
+}
+
 function formatTaiwanShareLots(sharesInput: unknown): string {
   const shares = Math.max(0, Math.floor(Number(sharesInput ?? 0)))
   const lots = Math.floor(shares / 1000)
@@ -1081,12 +1104,14 @@ function TradeHistory() {
             <th className="text-left p-2">Side</th>
             <th className="text-right p-2">Shares</th>
             <th className="text-right p-2">Price</th>
+            <th className="text-right p-2">已實現</th>
             <th className="text-left p-2 hidden md:table-cell">Note</th>
           </tr>
         </thead>
         <tbody>
           {orders.map((o: any, i: number) => {
             const isBuy = o.side === 'buy'
+            const realized = realizedPnlFromOrder(o)
             let noteDisplay = ''
             try {
               const n = typeof o.note === 'string' ? JSON.parse(o.note) : o.note
@@ -1114,6 +1139,24 @@ function TradeHistory() {
                 </td>
                 <td className="p-2 text-right sv-num text-foreground/80">{fmt(o.shares)}</td>
                 <td className="p-2 text-right sv-num text-foreground/80">${fmt(o.price, 1)}</td>
+                <td className="p-2 text-right sv-num">
+                  {isBuy ? (
+                    <span className="text-muted-foreground/50">—</span>
+                  ) : realized ? (
+                    <div>
+                      <div className={pctClass(realized.pnl)}>
+                        {realized.pnl >= 0 ? '+' : ''}${fmt(Math.round(realized.pnl))}
+                      </div>
+                      {realized.pct != null && (
+                        <div className={`text-xs ${pctClass(realized.pct)}`}>
+                          {realized.pct >= 0 ? '+' : ''}{realized.pct.toFixed(2)}%
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-amber-300">待補</span>
+                  )}
+                </td>
                 <td className="p-2 text-xs text-muted-foreground hidden md:table-cell max-w-[200px] truncate">
                   {noteDisplay}
                 </td>

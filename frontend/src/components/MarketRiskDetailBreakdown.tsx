@@ -1,38 +1,6 @@
-import {
-  Activity,
-  Landmark,
-  Layers3,
-} from 'lucide-react'
+import { Landmark } from 'lucide-react'
 
 type Tone = 'cyan' | 'emerald' | 'amber' | 'rose' | 'violet' | 'slate'
-
-type Metric = {
-  label: string
-  value: string
-  note: string
-  tone: Tone
-  intensity: number
-}
-
-type Segment = {
-  label: string
-  value: number
-  tone: Tone
-}
-
-type BreakdownCard = {
-  title: string
-  subtitle: string
-  source: string
-  status: string
-  score: number
-  tone: Tone
-  Icon: typeof Activity
-  metrics: Metric[]
-  segments: Segment[]
-  preview: boolean
-  layout?: 'standard' | 'wide'
-}
 
 type FuturesInstitutionalRow = {
   id?: string
@@ -95,34 +63,8 @@ function signed(value: number | null, suffix = '', digits = 1) {
   return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}${suffix}`
 }
 
-function futuresBreakdownRows(regime: any, fallback: {
-  netTradeLots: number
-  netOiLots: number
-  netOiAmountK: number
-}): FuturesInstitutionalRow[] {
-  const rows = Array.isArray(regime?.futuresInstitutionalBreakdown)
-    ? regime.futuresInstitutionalBreakdown
-    : []
-  const normalized = rows
-    .map((row: any) => ({
-      id: String(row?.id ?? '').trim(),
-      label: String(row?.label ?? row?.category ?? '').trim(),
-      category: String(row?.category ?? '').trim(),
-      netTradeLots: asNumber(row?.netTradeLots),
-      netOiLots: asNumber(row?.netOiLots),
-      netTradeAmountK: asNumber(row?.netTradeAmountK),
-      netOiAmountK: asNumber(row?.netOiAmountK),
-    }))
-    .filter((row) => row.label)
-  if (normalized.length) return normalized
-  return [{
-    id: 'total',
-    label: '合計',
-    category: 'legacy aggregate',
-    netTradeLots: fallback.netTradeLots,
-    netOiLots: fallback.netOiLots,
-    netOiAmountK: fallback.netOiAmountK,
-  }]
+function realOrPreview<T>(value: T | null | undefined, preview: T): { value: T; preview: boolean } {
+  return value == null ? { value: preview, preview: true } : { value, preview: false }
 }
 
 function participantTone(value: number | null | undefined): Tone {
@@ -140,6 +82,34 @@ function participantLabel(row: FuturesInstitutionalRow) {
   return label || '法人'
 }
 
+function futuresBreakdownRows(regime: any, fallback: {
+  labels: string[]
+}): FuturesInstitutionalRow[] {
+  const rows = Array.isArray(regime?.futuresInstitutionalBreakdown)
+    ? regime.futuresInstitutionalBreakdown
+    : []
+  const normalized = rows
+    .map((row: any) => ({
+      id: String(row?.id ?? '').trim(),
+      label: String(row?.label ?? row?.category ?? '').trim(),
+      category: String(row?.category ?? '').trim(),
+      netTradeLots: asNumber(row?.netTradeLots),
+      netOiLots: asNumber(row?.netOiLots),
+      netTradeAmountK: asNumber(row?.netTradeAmountK),
+      netOiAmountK: asNumber(row?.netOiAmountK),
+    }))
+    .filter((row) => row.label)
+  if (normalized.length) return normalized
+  return fallback.labels.map((label) => ({
+    id: label,
+    label,
+    category: 'pending',
+    netTradeLots: null,
+    netOiLots: null,
+    netOiAmountK: null,
+  }))
+}
+
 function majorInstitutionRows(rows: FuturesInstitutionalRow[]) {
   const order = ['自營商', '投信', '外資']
   const selected = order
@@ -148,36 +118,47 @@ function majorInstitutionRows(rows: FuturesInstitutionalRow[]) {
   return selected.length ? selected : rows
 }
 
-function realOrPreview<T>(value: T | null | undefined, preview: T): { value: T; preview: boolean } {
-  return value == null ? { value: preview, preview: true } : { value, preview: false }
-}
-
 function DetailPill({ children, tone = 'slate' }: { children: string; tone?: Tone }) {
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${TONE_BORDER[tone]} ${TONE_TEXT[tone]}`}>
-      {children}
+    <span className={`inline-flex min-w-0 items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${TONE_BORDER[tone]} ${TONE_TEXT[tone]}`}>
+      <span className="truncate">{children}</span>
     </span>
   )
 }
 
-function SegmentBar({ segments }: { segments: Segment[] }) {
-  const total = segments.reduce((sum, item) => sum + Math.max(0, item.value), 0) || 1
+function FuturesOpenInterestBar({ rows }: { rows: FuturesInstitutionalRow[] }) {
+  const segments = rows.map((row) => {
+    const value = Math.abs(asNumber(row.netOiLots) ?? 0)
+    return {
+      label: participantLabel(row),
+      value,
+      tone: participantTone(row.netOiLots),
+    }
+  })
+  const total = segments.reduce((sum, segment) => sum + segment.value, 0)
+
   return (
-    <div>
-      <div className="flex h-2 overflow-hidden rounded-full bg-white/[0.07]">
+    <div className="rounded-[14px] border border-white/[0.055] bg-black/20 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="text-[11px] font-semibold text-slate-500">未平倉分布</span>
+        <span className="text-[11px] text-slate-600">三大法人</span>
+      </div>
+      <div className="flex h-2.5 overflow-hidden rounded-full bg-white/[0.07]">
         {segments.map((segment) => (
           <span
             key={segment.label}
             className={TONE_BAR[segment.tone]}
-            style={{ width: `${Math.max(5, (Math.max(0, segment.value) / total) * 100)}%` }}
+            style={{ width: `${total > 0 ? Math.max(8, (segment.value / total) * 100) : 100 / Math.max(1, segments.length)}%` }}
           />
         ))}
       </div>
       <div className="mt-2 grid grid-cols-3 gap-2">
-        {segments.slice(0, 3).map((segment) => (
+        {segments.map((segment) => (
           <div key={segment.label} className="min-w-0">
             <div className="truncate text-[10px] font-semibold text-slate-500">{segment.label}</div>
-            <div className={`mt-0.5 text-xs font-bold tabular-nums ${TONE_TEXT[segment.tone]}`}>{Math.round(segment.value)}</div>
+            <div className={`mt-0.5 text-xs font-bold tabular-nums ${TONE_TEXT[segment.tone]}`}>
+              {segment.value ? `${Math.round(segment.value).toLocaleString('zh-TW')} 口` : '待接資料'}
+            </div>
           </div>
         ))}
       </div>
@@ -185,223 +166,150 @@ function SegmentBar({ segments }: { segments: Segment[] }) {
   )
 }
 
-function MetricRow({ metric }: { metric: Metric }) {
+function FuturesMetricCell({
+  label,
+  value,
+  tone,
+  intensity,
+}: {
+  label: string
+  value: string
+  tone: Tone
+  intensity: number
+}) {
   return (
-    <div className={`rounded-[14px] border px-3 py-3 ${TONE_BORDER[metric.tone]}`}>
-      <div className="flex items-start justify-between gap-3">
+    <div className="min-w-0 rounded-[12px] border border-white/[0.055] bg-black/20 px-3 py-2">
+      <div className="text-[10px] font-semibold text-slate-500 sm:hidden">{label}</div>
+      <div className={`mt-1 break-words text-sm font-bold leading-tight tabular-nums sm:mt-0 ${TONE_TEXT[tone]}`}>{value}</div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/35">
+        <div className={`h-full rounded-full ${TONE_BAR[tone]}`} style={{ width: `${clamp(intensity, 6)}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function FuturesInstitutionRow({ row }: { row: FuturesInstitutionalRow }) {
+  const label = participantLabel(row)
+  const netOi = asNumber(row.netOiLots)
+  const netTrade = asNumber(row.netTradeLots)
+  const netAmountK = asNumber(row.netOiAmountK)
+  const dominant = netOi ?? netTrade ?? netAmountK
+  const tone = participantTone(dominant)
+  return (
+    <div className={`grid min-w-0 gap-2 rounded-[16px] border p-3 ${TONE_BORDER[tone]} sm:grid-cols-[minmax(72px,0.72fr)_repeat(3,minmax(0,1fr))]`}>
+      <div className="flex min-w-0 items-center gap-2 sm:block">
+        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_BAR[tone]}`} />
         <div className="min-w-0">
-          <div className="truncate text-[11px] font-semibold text-slate-500">{metric.label}</div>
-          <div className={`mt-1 text-base font-bold leading-none tabular-nums ${TONE_TEXT[metric.tone]}`}>{metric.value}</div>
-        </div>
-        <div className="h-8 w-16 pt-1">
-          <div className="h-1.5 overflow-hidden rounded-full bg-black/30">
-            <div
-              className={`h-full rounded-full ${TONE_BAR[metric.tone]}`}
-              style={{ width: `${clamp(metric.intensity)}%` }}
-            />
-          </div>
+          <div className="truncate text-sm font-bold text-slate-100">{label}</div>
+          <div className="mt-0.5 text-[10px] font-semibold text-slate-500">台指期貨</div>
         </div>
       </div>
-      <div className="mt-2 text-[11px] leading-4 text-slate-500">{metric.note}</div>
+      <FuturesMetricCell
+        label="未平倉"
+        value={signed(netOi, ' 口', 0)}
+        tone={participantTone(netOi)}
+        intensity={Math.abs(netOi ?? 0) / 800}
+      />
+      <FuturesMetricCell
+        label="交易淨口"
+        value={signed(netTrade, ' 口', 0)}
+        tone={participantTone(netTrade)}
+        intensity={Math.abs(netTrade ?? 0) / 220}
+      />
+      <FuturesMetricCell
+        label="未平倉淨額"
+        value={compact(netAmountK == null ? null : netAmountK * 1000)}
+        tone={participantTone(netAmountK)}
+        intensity={Math.abs(netAmountK ?? 0) / 120_000}
+      />
     </div>
   )
 }
 
-function ScoreDial({ score, tone, status }: { score: number; tone: Tone; status: string }) {
-  const marker = clamp(score)
-  const color = tone === 'rose'
-    ? '#fb7185'
-    : tone === 'amber'
-      ? '#fbbf24'
-      : tone === 'emerald'
-        ? '#34d399'
-        : tone === 'violet'
-          ? '#a78bfa'
-          : '#22d3ee'
-  return (
-    <div className="grid h-[92px] w-[92px] place-items-center rounded-full border border-white/[0.08] bg-black/25">
-      <div
-        className="grid h-[76px] w-[76px] place-items-center rounded-full"
-        style={{ background: `conic-gradient(${color} ${marker * 3.6}deg, rgba(255,255,255,.08) 0deg)` }}
-      >
-        <div className="grid h-[58px] w-[58px] place-items-center rounded-full bg-[#101116] text-center">
-          <div className={`text-xl font-bold leading-none tabular-nums ${TONE_TEXT[tone]}`}>{Math.round(score)}</div>
-          <div className="mt-0.5 text-[10px] font-semibold text-slate-500">{status}</div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function BreakdownCardView({ card }: { card: BreakdownCard }) {
-  const Icon = card.Icon
-  const wide = card.layout === 'wide'
-  return (
-    <article className={`overflow-hidden rounded-[18px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(20,22,30,0.96),rgba(13,15,22,0.98))] ${wide ? 'xl:col-span-3' : ''}`}>
-      <div className={`h-1.5 ${TONE_BAR[card.tone]}`} />
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className={`rounded-[12px] border p-2 ${TONE_BORDER[card.tone]}`}>
-              <Icon className={`h-4 w-4 ${TONE_TEXT[card.tone]}`} />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="truncate text-sm font-bold text-slate-100">{card.title}</h3>
-                {card.preview && <DetailPill tone="amber">預覽</DetailPill>}
-              </div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">{card.subtitle}</p>
-            </div>
-          </div>
-          <ScoreDial score={card.score} tone={card.tone} status={card.status} />
-        </div>
-
-        {wide ? (
-          <div className="mt-4 grid gap-4 xl:grid-cols-[240px_minmax(0,1fr)]">
-            <div className="rounded-[14px] border border-white/[0.07] bg-black/20 p-3">
-              <SegmentBar segments={card.segments} />
-              <p className="mt-3 text-xs leading-5 text-slate-500">
-                三大法人分開看；交易淨口偏短線，未平倉偏隔日風險。
-              </p>
-            </div>
-            <div className="grid gap-3 lg:grid-cols-3">
-              {card.metrics.map((metric) => (
-                <MetricRow key={metric.label} metric={metric} />
-              ))}
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="mt-4">
-              <SegmentBar segments={card.segments} />
-            </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              {card.metrics.map((metric) => (
-                <MetricRow key={metric.label} metric={metric} />
-              ))}
-            </div>
-          </>
-        )}
-
-        <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/[0.06] pt-3">
-          <span className="truncate text-[11px] text-slate-500">{card.source}</span>
-          <span className={`text-[11px] font-semibold ${TONE_TEXT[card.tone]}`}>canonical signal</span>
-        </div>
-      </div>
-    </article>
-  )
-}
-
-function buildCards(risk: any): BreakdownCard[] {
+function buildFuturesView(risk: any) {
   const dataDepth = risk?.marketRiskDetail ?? risk?.finlabDataDepth ?? {}
   const regime = dataDepth.regime ?? {}
 
-  const futuresNetOi = realOrPreview(asNumber(regime.futuresInstNetOiLots), -4_520)
-  const futuresNetTrade = realOrPreview(asNumber(regime.futuresInstNetTradeLots), 1_860)
-  const futuresNetAmount = realOrPreview(asNumber(regime.futuresInstNetOiAmountK), -12_800_000)
-  const worldAdjMove = realOrPreview(asNumber(regime.worldAdjCloseChangePct), 0.42)
-  const futuresRows = futuresBreakdownRows(regime, {
-    netTradeLots: futuresNetTrade.value,
-    netOiLots: futuresNetOi.value,
-    netOiAmountK: futuresNetAmount.value,
-  })
-  const displayedFuturesRows = majorInstitutionRows(futuresRows)
-  const futuresSegments = displayedFuturesRows.slice(0, 3).map((row) => {
-    const netOi = asNumber(row.netOiLots) ?? 0
-    return {
-      label: participantLabel(row),
-      value: Math.max(12, Math.abs(netOi) / 150),
-      tone: participantTone(netOi),
-    }
-  })
-  const futuresMetrics: Metric[] = displayedFuturesRows.flatMap((row) => {
-    const label = participantLabel(row)
-    const netOi = asNumber(row.netOiLots)
-    const netTrade = asNumber(row.netTradeLots)
-    const netAmountK = asNumber(row.netOiAmountK)
-    return [
-      {
-        label: `${label}未平倉`,
-        value: signed(netOi, ' 口', 0),
-        note: '台指期貨淨未平倉口數。',
-        tone: participantTone(netOi),
-        intensity: clamp(Math.abs(netOi ?? 0) / 800),
-      },
-      {
-        label: `${label}交易淨口`,
-        value: signed(netTrade, ' 口', 0),
-        note: '當日台指期貨交易淨口數。',
-        tone: participantTone(netTrade),
-        intensity: clamp(Math.abs(netTrade ?? 0) / 220),
-      },
-      {
-        label: `${label}未平倉淨額`,
-        value: compact((netAmountK ?? 0) * 1000),
-        note: '台指期貨未平倉淨額。',
-        tone: participantTone(netAmountK),
-        intensity: clamp(Math.abs(netAmountK ?? 0) / 120_000),
-      },
-    ]
-  })
+  const futuresNetOi = realOrPreview(asNumber(regime.futuresInstNetOiLots), null)
+  const futuresNetTrade = realOrPreview(asNumber(regime.futuresInstNetTradeLots), null)
+  const futuresNetAmount = realOrPreview(asNumber(regime.futuresInstNetOiAmountK), null)
+  const rows = majorInstitutionRows(futuresBreakdownRows(regime, {
+    labels: ['自營商', '投信', '外資'],
+  }))
 
-  const regimePreview = futuresNetOi.preview || futuresNetTrade.preview || futuresNetAmount.preview || worldAdjMove.preview
+  const hasRowData = rows.some((row) =>
+    asNumber(row.netOiLots) != null ||
+    asNumber(row.netTradeLots) != null ||
+    asNumber(row.netOiAmountK) != null,
+  )
+  const totalNetOi = hasRowData ? rows.reduce((sum, row) => sum + (asNumber(row.netOiLots) ?? 0), 0) : null
+  const totalNetTrade = hasRowData ? rows.reduce((sum, row) => sum + (asNumber(row.netTradeLots) ?? 0), 0) : null
+  const totalNetAmountK = hasRowData ? rows.reduce((sum, row) => sum + (asNumber(row.netOiAmountK) ?? 0), 0) : null
+  const preview = futuresNetOi.preview || futuresNetTrade.preview || futuresNetAmount.preview
 
-  return [
-    {
-      title: '期貨與全球風險',
-      subtitle: '保留三大法人拆解；未平倉看隔日風險，交易淨口看當日方向。',
-      source: regime.source ?? 'canonical_regime_context_daily',
-      status: futuresNetOi.value >= 0 ? '偏多' : '避險',
-      score: clamp(50 - Math.min(22, Math.abs(futuresNetOi.value) / 420) + (worldAdjMove.value + 1) * 8),
-      tone: futuresNetOi.value < 0 ? 'rose' : worldAdjMove.value >= 0 ? 'violet' : 'amber',
-      Icon: Landmark,
-      preview: regimePreview,
-      layout: 'wide',
-      segments: futuresSegments.length ? futuresSegments : [
-        { label: '自營商', value: 12, tone: 'slate' },
-        { label: '投信', value: 12, tone: 'slate' },
-        { label: '外資', value: 12, tone: 'slate' },
-      ],
-      metrics: [
-        ...futuresMetrics,
-        {
-          label: '海外均值變動',
-          value: signed(worldAdjMove.value, '%'),
-          note: '海外指數輔助情境，不是台股主訊號。',
-          tone: worldAdjMove.value >= 0 ? 'cyan' : 'amber',
-          intensity: clamp(Math.abs(worldAdjMove.value) * 55),
-        },
-      ],
-    },
-  ]
+  return {
+    rows,
+    source: regime.source ?? 'canonical_regime_context_daily',
+    status: totalNetOi == null ? '待接資料' : totalNetOi >= 0 ? '偏多' : '避險',
+    tone: participantTone(totalNetOi),
+    preview,
+    totalNetOi,
+    totalNetTrade,
+    totalNetAmountK,
+  }
 }
 
 export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
-  const cards = buildCards(risk)
+  const view = buildFuturesView(risk)
   const date = String(risk?.date ?? risk?.marketStats?.date ?? 'latest').slice(0, 10)
-  const hasPreview = cards.some((card) => card.preview)
 
   return (
-    <section className="rounded-[20px] border border-white/[0.07] bg-[#0d1017] p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-center gap-2">
-          <Layers3 className="h-4 w-4 shrink-0 text-cyan-200" />
-          <h2 className="truncate text-sm font-bold text-slate-100">細部風險分解</h2>
-          <DetailPill tone="slate">{date}</DetailPill>
-          {hasPreview && <DetailPill tone="amber">local preview</DetailPill>}
+    <section className="min-w-0 rounded-[20px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(20,22,30,0.96),rgba(13,15,22,0.98))]">
+      <div className="p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className={`rounded-[12px] border p-2 ${TONE_BORDER[view.tone]}`}>
+              <Landmark className={`h-4 w-4 ${TONE_TEXT[view.tone]}`} />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm font-bold text-slate-100">期貨與全球風險</h2>
+                <DetailPill tone="slate">{date}</DetailPill>
+                {view.preview && <DetailPill tone="amber">local preview</DetailPill>}
+              </div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                三大法人期貨拆解；未平倉看隔日風險，交易淨口看當日方向。
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:justify-end">
+            <DetailPill tone={view.tone}>{view.status}</DetailPill>
+            <DetailPill tone={participantTone(view.totalNetOi)}>{signed(view.totalNetOi, ' 口', 0)}</DetailPill>
+            <DetailPill tone={participantTone(view.totalNetTrade)}>{signed(view.totalNetTrade, ' 口', 0)}</DetailPill>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <DetailPill tone="violet">期貨總覽</DetailPill>
-          <DetailPill tone="emerald">法人拆解</DetailPill>
-          <DetailPill tone="cyan">海外情境</DetailPill>
-        </div>
-      </div>
 
-      <div className="mt-4 grid gap-4 xl:grid-cols-3">
-        {cards.map((card) => (
-          <BreakdownCardView key={card.title} card={card} />
-        ))}
+        <div className="mt-4">
+          <FuturesOpenInterestBar rows={view.rows} />
+        </div>
+
+        <div className="mt-4 hidden grid-cols-[minmax(72px,0.72fr)_repeat(3,minmax(0,1fr))] gap-2 px-3 text-[11px] font-semibold text-slate-500 sm:grid">
+          <span>法人</span>
+          <span>未平倉</span>
+          <span>交易淨口</span>
+          <span>未平倉淨額</span>
+        </div>
+
+        <div className="mt-2 grid min-w-0 gap-2">
+          {view.rows.map((row) => (
+            <FuturesInstitutionRow key={`${participantLabel(row)}-${row.id ?? row.category ?? 'row'}`} row={row} />
+          ))}
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-3">
+          <span className="min-w-0 break-words text-[11px] text-slate-500">{view.source}</span>
+          <span className={`text-[11px] font-semibold ${TONE_TEXT[view.tone]}`}>canonical signal</span>
+        </div>
       </div>
     </section>
   )

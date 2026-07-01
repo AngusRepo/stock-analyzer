@@ -829,7 +829,26 @@ paper.get('/orders', async (c) => {
     'SELECT * FROM paper_orders WHERE account_id=? ORDER BY created_at DESC LIMIT ?'
   ).bind(ACCOUNT_ID, limit).all<any>()
 
-  return c.json({ status: 'success', orders: results ?? [] })
+  const orders = (results ?? []).map((order: any) => {
+    if (String(order.side ?? '').toLowerCase() !== 'sell') return order
+
+    const note = parseSellOrderNote(order.note)
+    const realizedPnl = estimateSellOrderRealizedPnl(order)
+    const notePct = Number(note.realized_pnl_pct)
+    const entryPrice = Number(note.entry_price)
+    const shares = Number(order.shares)
+    const fallbackPct = realizedPnl != null && Number.isFinite(entryPrice) && entryPrice > 0 && Number.isFinite(shares) && shares > 0
+      ? Math.round((realizedPnl / (entryPrice * shares) * 100) * 100) / 100
+      : null
+
+    return {
+      ...order,
+      realized_pnl: realizedPnl,
+      realized_pnl_pct: Number.isFinite(notePct) ? notePct : fallbackPct,
+    }
+  })
+
+  return c.json({ status: 'success', orders })
 })
 
 // GET /api/paper/realized — server-side realized PnL summary.

@@ -40,6 +40,8 @@ last_ticks: dict[str, dict] = {}   # symbol → latest tick data
 last_bidasks: dict[str, dict] = {}
 subscribed: set[str] = set()
 bidask_subscribed: set[str] = set()
+_quote_reconnect_lock = threading.Lock()
+_last_quote_stream_reconnect_at = 0.0
 # F4: Rolling price buffer for momentum confirmation (30 entries ≈ 30 min at 1 tick/min)
 _price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
@@ -60,10 +62,18 @@ def orderbook_max_age_ms() -> int:
 
 def orderbook_refresh_wait_seconds() -> float:
     try:
-        value = float(os.environ.get("SHIOAJI_ORDERBOOK_REFRESH_WAIT_SECONDS", "0.6"))
+        value = float(os.environ.get("SHIOAJI_ORDERBOOK_REFRESH_WAIT_SECONDS", "1.2"))
     except ValueError:
-        return 0.6
+        return 1.2
     return max(0.1, min(value, 3.0))
+
+
+def orderbook_reconnect_age_ms() -> int:
+    try:
+        value = int(os.environ.get("SHIOAJI_ORDERBOOK_RECONNECT_AGE_MS", "30000"))
+    except ValueError:
+        return 30000
+    return max(orderbook_max_age_ms(), min(value, 300_000))
 
 
 def parse_quote_time(value) -> datetime | None:
@@ -223,6 +233,59 @@ def subscribe_symbol(symbol: str, *, force_bidask: bool = False):
         return False
 
 
+def refresh_bidask_subscription(symbol: str, *, reason: str) -> bool:
+    """Refresh a stale BidAsk stream instead of repeating an already-existing subscription."""
+    global api
+    if not api or not connected:
+        return False
+    try:
+        import shioaji as sj
+        contract = api.Contracts.Stocks.get(symbol)
+        if not contract:
+            print(f"[Shioaji] BidAsk refresh contract not found: {symbol}")
+            return False
+        if symbol in bidask_subscribed:
+            try:
+                api.quote.unsubscribe(contract, quote_type=sj.constant.QuoteType.BidAsk, version=sj.constant.QuoteVersion.v1)
+                print(f"[Shioaji] BidAsk unsubscribed: {symbol} ({reason})")
+            except Exception as e:
+                print(f"[Shioaji] BidAsk unsubscribe {symbol} failed: {e}")
+            bidask_subscribed.discard(symbol)
+        return subscribe_symbol(symbol, force_bidask=True)
+    except Exception as e:
+        print(f"[Shioaji] BidAsk refresh {symbol} failed: {e}")
+        return False
+
+
+def reconnect_shioaji_quote_stream(symbol: str, *, reason: str) -> bool:
+    """Last-resort recovery when the streaming BidAsk callback is stale for too long."""
+    global api, connected, _last_quote_stream_reconnect_at
+    now = time.time()
+    if now - _last_quote_stream_reconnect_at < 10:
+        print(f"[Shioaji] Quote stream reconnect skipped for {symbol}: recently reconnected")
+        return subscribe_symbol(symbol, force_bidask=True)
+    with _quote_reconnect_lock:
+        now = time.time()
+        if now - _last_quote_stream_reconnect_at < 10:
+            print(f"[Shioaji] Quote stream reconnect skipped for {symbol}: recently reconnected")
+            return subscribe_symbol(symbol, force_bidask=True)
+        _last_quote_stream_reconnect_at = now
+        print(f"[Shioaji] Quote stream reconnect requested for {symbol}: {reason}")
+        try:
+            if api and connected:
+                api.logout()
+        except Exception as e:
+            print(f"[Shioaji] Reconnect logout failed: {e}")
+        api = None
+        connected = False
+        subscribed.clear()
+        bidask_subscribed.clear()
+        last_ticks.clear()
+        last_bidasks.clear()
+        init_shioaji()
+    return subscribe_symbol(symbol, force_bidask=True)
+
+
 def get_snapshot(symbol: str) -> dict | None:
     """用 snapshots API 取得最新報價（不需要預先訂閱）"""
     if not api or not connected:
@@ -351,6 +414,8 @@ def verify_token(authorization: str | None):
 # ── Endpoints ───────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
+    bidask_ages = [age for age in (orderbook_age_ms(depth) for depth in last_bidasks.values()) if age is not None]
+    fresh_bidasks = sum(1 for depth in last_bidasks.values() if orderbook_is_fresh(depth))
     return {
         "status": "ok" if connected else "disconnected",
         "connected": connected,
@@ -358,6 +423,9 @@ def health():
         "bidask_subscribed_count": len(bidask_subscribed),
         "cached_ticks": len(last_ticks),
         "cached_bidasks": len(last_bidasks),
+        "fresh_bidasks": fresh_bidasks,
+        "stale_bidasks": max(0, len(last_bidasks) - fresh_bidasks),
+        "max_bidask_age_ms": max(bidask_ages) if bidask_ages else None,
         "auth_configured": bool(SERVICE_TOKEN),
         "market_hours": is_market_hours(),
         "tw_time": get_tw_now().isoformat(),
@@ -387,6 +455,18 @@ def quote(symbol: str, authorization: str | None = Header(default=None)):
 
 class BatchRequest(BaseModel):
     symbols: list[str]
+
+
+def _clean_symbols(symbols: list[str]) -> list[str]:
+    seen: set[str] = set()
+    clean: list[str] = []
+    for raw in symbols or []:
+        symbol = str(raw).upper().strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        clean.append(symbol)
+    return clean
 
 
 @app.post("/quotes")
@@ -569,6 +649,89 @@ def market_risk(authorization: str | None = Header(default=None)):
 
 
 # ── 五檔報價 + Orderbook Features ─────────────────────────────────────────
+def build_orderbook_payload(symbol: str) -> dict:
+    """Return a fresh streaming BidAsk payload or raise fail-closed HTTPException."""
+    symbol = symbol.upper().strip()
+    if not api or not connected:
+        raise HTTPException(503, "Shioaji not connected")
+
+    if symbol not in last_bidasks:
+        if not subscribe_symbol(symbol):
+            raise HTTPException(404, f"Contract not found: {symbol}")
+        time.sleep(orderbook_refresh_wait_seconds())
+    elif not orderbook_is_fresh(last_bidasks.get(symbol)):
+        stale_age = orderbook_age_ms(last_bidasks.get(symbol))
+        if stale_age is not None and stale_age >= orderbook_reconnect_age_ms():
+            reconnect_shioaji_quote_stream(symbol, reason=f"stale_depth_age_{stale_age}")
+        else:
+            refresh_bidask_subscription(symbol, reason=f"stale_depth_age_{stale_age}")
+        time.sleep(orderbook_refresh_wait_seconds())
+
+    depth = last_bidasks.get(symbol)
+    if not depth:
+        raise HTTPException(503, {"status": "no_depth", "symbol": symbol})
+
+    source_time = orderbook_source_time(depth)
+    quote_age_ms = orderbook_age_ms(depth)
+    bid_prices = depth.get("bid_prices", [])[:5]
+    bid_volumes = depth.get("bid_volumes", [])[:5]
+    ask_prices = depth.get("ask_prices", [])[:5]
+    ask_volumes = depth.get("ask_volumes", [])[:5]
+    if not orderbook_is_fresh(depth):
+        raise HTTPException(
+            503,
+            {
+                "status": "stale_depth",
+                "symbol": symbol,
+                "depth_available": len(bid_prices) >= 5 and len(ask_prices) >= 5,
+                "bid_levels": len(bid_prices),
+                "ask_levels": len(ask_prices),
+                "source_time": source_time.isoformat() if source_time else None,
+                "received_at": depth.get("updated_at"),
+                "quote_age_ms": quote_age_ms,
+                "max_quote_age_ms": orderbook_max_age_ms(),
+                "reconnect_age_ms": orderbook_reconnect_age_ms(),
+            },
+        )
+
+    if len(bid_prices) == 0 and len(ask_prices) == 0:
+        raise HTTPException(503, {"status": "empty_depth", "symbol": symbol})
+
+    total_bid_vol = sum(bid_volumes) if bid_volumes else 0
+    total_ask_vol = sum(ask_volumes) if ask_volumes else 0
+    total_vol = total_bid_vol + total_ask_vol
+    imbalance = (total_bid_vol - total_ask_vol) / total_vol if total_vol > 0 else 0
+    bid1 = bid_prices[0] if bid_prices else 0
+    ask1 = ask_prices[0] if ask_prices else 0
+    mid = (bid1 + ask1) / 2 if bid1 and ask1 else depth.get("price") or 0
+    spread_pct = ((ask1 - bid1) / mid * 100) if mid > 0 and bid1 and ask1 else 0
+    bid_concentration = (bid_volumes[0] / total_bid_vol) if total_bid_vol > 0 and bid_volumes else 0
+    tick = last_ticks.get(symbol) or {}
+
+    return {
+        "status": "ok",
+        "symbol": symbol,
+        "depth_available": len(bid_prices) >= 5 and len(ask_prices) >= 5,
+        "price": mid,
+        "last": tick.get("price"),
+        "last_source_time": tick.get("timestamp") or tick.get("updated_at"),
+        "bid_prices": bid_prices,
+        "bid_volumes": bid_volumes,
+        "ask_prices": ask_prices,
+        "ask_volumes": ask_volumes,
+        "features": {
+            "bid_ask_imbalance": round(imbalance, 4),
+            "spread_pct": round(spread_pct, 4),
+            "bid_concentration": round(bid_concentration, 4),
+        },
+        "source_time": source_time.isoformat() if source_time else None,
+        "received_at": depth.get("updated_at"),
+        "quote_age_ms": quote_age_ms,
+        "max_quote_age_ms": orderbook_max_age_ms(),
+        "updated_at": depth.get("updated_at"),
+    }
+
+
 @app.get("/orderbook/{symbol}")
 def orderbook(symbol: str, authorization: str | None = Header(default=None)):
     """Return latest streaming BidAsk L5 depth and derived orderbook features."""
@@ -576,81 +739,7 @@ def orderbook(symbol: str, authorization: str | None = Header(default=None)):
     symbol = symbol.upper().strip()
 
     try:
-        if not api or not connected:
-            raise HTTPException(503, "Shioaji not connected")
-
-        if symbol not in last_bidasks:
-            if not subscribe_symbol(symbol):
-                raise HTTPException(404, f"Contract not found: {symbol}")
-            time.sleep(orderbook_refresh_wait_seconds())
-        elif not orderbook_is_fresh(last_bidasks.get(symbol)):
-            subscribe_symbol(symbol, force_bidask=True)
-            time.sleep(orderbook_refresh_wait_seconds())
-
-        depth = last_bidasks.get(symbol)
-        if not depth:
-            raise HTTPException(503, f"Orderbook depth unavailable for {symbol}")
-
-        source_time = orderbook_source_time(depth)
-        quote_age_ms = orderbook_age_ms(depth)
-        if not orderbook_is_fresh(depth):
-            raise HTTPException(
-                503,
-                {
-                    "status": "stale_depth",
-                    "symbol": symbol,
-                    "depth_available": False,
-                    "source_time": source_time.isoformat() if source_time else None,
-                    "received_at": depth.get("updated_at"),
-                    "quote_age_ms": quote_age_ms,
-                    "max_quote_age_ms": orderbook_max_age_ms(),
-                },
-            )
-
-        bid_prices = depth["bid_prices"][:5]
-        bid_volumes = depth["bid_volumes"][:5]
-        ask_prices = depth["ask_prices"][:5]
-        ask_volumes = depth["ask_volumes"][:5]
-
-        if len(bid_prices) == 0 and len(ask_prices) == 0:
-            raise HTTPException(503, f"Orderbook depth empty for {symbol}")
-
-        total_bid_vol = sum(bid_volumes) if bid_volumes else 0
-        total_ask_vol = sum(ask_volumes) if ask_volumes else 0
-        total_vol = total_bid_vol + total_ask_vol
-
-        # Bid-Ask Imbalance: 正值 = 買方強，負值 = 賣方強
-        imbalance = (total_bid_vol - total_ask_vol) / total_vol if total_vol > 0 else 0
-
-        # Spread: 內外盤價差比例
-        bid1 = bid_prices[0] if bid_prices else 0
-        ask1 = ask_prices[0] if ask_prices else 0
-        mid = (bid1 + ask1) / 2 if bid1 and ask1 else depth.get("price") or 0
-        spread_pct = ((ask1 - bid1) / mid * 100) if mid > 0 and bid1 and ask1 else 0
-
-        # Bid Concentration: 內盤第一檔集中度（大單守護）
-        bid_concentration = (bid_volumes[0] / total_bid_vol) if total_bid_vol > 0 and bid_volumes else 0
-
-        return {
-            "status": "ok",
-            "symbol": symbol,
-            "depth_available": len(bid_prices) >= 5 and len(ask_prices) >= 5,
-            "price": depth.get("price"),
-            "bid_prices": bid_prices,
-            "bid_volumes": bid_volumes,
-            "ask_prices": ask_prices,
-            "ask_volumes": ask_volumes,
-            "features": {
-                "bid_ask_imbalance": round(imbalance, 4),
-                "spread_pct": round(spread_pct, 4),
-                "bid_concentration": round(bid_concentration, 4),
-            },
-            "source_time": source_time.isoformat() if source_time else None,
-            "received_at": depth.get("updated_at"),
-            "quote_age_ms": quote_age_ms,
-            "max_quote_age_ms": orderbook_max_age_ms(),
-            "updated_at": depth.get("updated_at"),
-        }
+        return build_orderbook_payload(symbol)
 
     except HTTPException:
         raise
@@ -660,6 +749,32 @@ def orderbook(symbol: str, authorization: str | None = Header(default=None)):
 
 
 # ── TWSE/TPEX Chips Proxy（CF Workers IP 被擋，透過 GCP proxy）────────────────
+
+@app.post("/orderbooks")
+def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(default=None)):
+    """Return fresh streaming BidAsk L5 books for multiple symbols; stale books are omitted."""
+    verify_token(authorization)
+    results: dict[str, dict] = {}
+    errors: dict[str, dict | str] = {}
+
+    for symbol in _clean_symbols(req.symbols):
+        try:
+            results[symbol] = build_orderbook_payload(symbol)
+        except HTTPException as exc:
+            errors[symbol] = exc.detail
+        except Exception as e:
+            print(f"[Orderbook] {symbol} batch failed: {e}")
+            errors[symbol] = {"status": "error", "message": str(e)[:200]}
+
+    return {
+        "status": "ok" if len(errors) == 0 else "partial" if results else "empty",
+        "count": len(results),
+        "error_count": len(errors),
+        "data": results,
+        "errors": errors,
+        "max_quote_age_ms": orderbook_max_age_ms(),
+    }
+
 
 class ChipsRequest(BaseModel):
     date: str  # YYYY-MM-DD

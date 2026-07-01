@@ -447,6 +447,15 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
     status === 'quote_unavailable'
 }
 
+function activeStatusForUnfilledBuy(reason: string): PendingBuyActiveExecutionStatus {
+  return reason === 'missing_best_ask' ||
+    reason === 'invalid_current_price' ||
+    reason === 'invalid_limit_price' ||
+    reason.startsWith('broker_quote_required:')
+    ? 'quote_unavailable'
+    : 'checked_waiting'
+}
+
 export async function runIntradayCheck(env: Bindings): Promise<void> {
   const cfg = await getTradingConfig(env.KV)
   const { hour: twHour, minute: twMin } = getTwClockParts()
@@ -519,6 +528,33 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   let pendingBuys: PendingBuy[] = pendingSnapshot.pendingBuys
   if (pendingBuys.length === 0) return
   const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
+  let stateChanged = false
+  const executionEvents: PendingBuyExecutionEvent[] = []
+  const executionAuditEvents: { symbol: string; status: string; reason: string; detail?: string | null }[] = []
+  const recordExecutionEvent = (
+    symbol: string,
+    status: PendingBuyTerminalExecutionStatus,
+    reason: string,
+    detail?: string | null,
+  ) => {
+    executionEvents.push({ symbol, status, reason, detail: detail ?? null })
+    executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
+  }
+  const recordExecutionNote = (symbol: string, status: string, reason: string, detail?: string | null) => {
+    executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
+  }
+  const recordActiveExecutionStatus = (
+    symbol: string,
+    status: PendingBuyActiveExecutionStatus,
+    reason: string,
+    detail?: string | null,
+  ) => {
+    recordExecutionNote(symbol, status, reason, detail)
+    if (!shouldPersistActiveExecutionStatus(status)) return
+    const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, [{ symbol, status, reason, detail }])
+    pendingBuys = transition.allItems as PendingBuy[]
+    if (transition.changed) stateChanged = true
+  }
 
   const pendingSymbols = pendingBuys.map((b) => b.symbol)
   const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
@@ -712,6 +748,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         requireBestAsk: true,
       })
       if (replacementQuote?.source !== 'shioaji' || !replacementFill.fillable || replacementFill.fillPrice == null) {
+        const fillReason = replacementQuote?.source !== 'shioaji'
+          ? `broker_quote_required:${replacementQuote?.source ?? 'missing'}`
+          : replacementFill.reason
         await recordPaperExecutionEvent(env, {
           tradeDate: today,
           symbol: pending.symbol,
@@ -723,10 +762,26 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             replacement_source: replacementQuote?.source ?? 'missing',
             replacement_price: replacementPrice ?? null,
             replacement_entry: pending.ml_entry_price ?? null,
-            fill_reason: replacementFill.reason,
+            fill_reason: fillReason,
           },
           source: 'auto_swap',
         })
+        recordActiveExecutionStatus(
+          pending.symbol,
+          activeStatusForUnfilledBuy(fillReason),
+          'auto_swap_replacement_not_executable',
+          [
+            `replace=${weakest.symbol}`,
+            `fill_reason=${fillReason}`,
+            `source=${replacementQuote?.source ?? 'missing'}`,
+            `price=${replacementPrice ?? 'na'}`,
+            `entry=${pending.ml_entry_price ?? 'na'}`,
+            `bid=${replacementQuote?.bid ?? 'na'}`,
+            `ask=${replacementQuote?.ask ?? 'na'}`,
+            `low=${replacementQuote?.low ?? 'na'}`,
+            `high=${replacementQuote?.high ?? 'na'}`,
+          ].join(';'),
+        )
         continue
       }
 
@@ -1069,33 +1124,6 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     `slot=${Math.round(capitalPlanPreview.targetSlotValue)} holdings=${capitalHoldings.length}/${maxPos}`,
   )
 
-  let stateChanged = false
-  const executionEvents: PendingBuyExecutionEvent[] = []
-  const executionAuditEvents: { symbol: string; status: string; reason: string; detail?: string | null }[] = []
-  const recordExecutionEvent = (
-    symbol: string,
-    status: PendingBuyTerminalExecutionStatus,
-    reason: string,
-    detail?: string | null,
-  ) => {
-    executionEvents.push({ symbol, status, reason, detail: detail ?? null })
-    executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
-  }
-  const recordExecutionNote = (symbol: string, status: string, reason: string, detail?: string | null) => {
-    executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
-  }
-  const recordActiveExecutionStatus = (
-    symbol: string,
-    status: PendingBuyActiveExecutionStatus,
-    reason: string,
-    detail?: string | null,
-  ) => {
-    recordExecutionNote(symbol, status, reason, detail)
-    if (!shouldPersistActiveExecutionStatus(status)) return
-    const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, [{ symbol, status, reason, detail }])
-    pendingBuys = transition.allItems as PendingBuy[]
-    if (transition.changed) stateChanged = true
-  }
   const recordAllocatorDecision = (
     symbol: string,
     decision: FiveSlotDecision,
@@ -1721,9 +1749,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (!fill.fillable || fill.fillPrice == null) {
       recordActiveExecutionStatus(
         pending.symbol,
-        'submitted',
+        activeStatusForUnfilledBuy(fill.reason),
         fill.reason,
-        `price=${price};limit=${limitPrice};low=${currentOhlc?.low ?? 'na'};high=${currentOhlc?.high ?? 'na'}`,
+        `price=${price};limit=${limitPrice};bid=${currentOhlc?.bid ?? 'na'};ask=${currentOhlc?.ask ?? 'na'};low=${currentOhlc?.low ?? 'na'};high=${currentOhlc?.high ?? 'na'}`,
       )
       console.log(`[Intraday] ${pending.symbol}: limit not filled (${fill.reason}) price=${price} limit=${limitPrice} low=${currentOhlc?.low ?? 'na'} high=${currentOhlc?.high ?? 'na'}`)
       continue
@@ -1884,7 +1912,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     if (shares <= 0) {
       recordActiveExecutionStatus(
         pending.symbol,
-        'submitted',
+        'checked_waiting',
         'paper_partial_fill_below_tradeable_lot',
         `requested=${requestedShares};raw_filled=${rawFilledShares}`,
       )

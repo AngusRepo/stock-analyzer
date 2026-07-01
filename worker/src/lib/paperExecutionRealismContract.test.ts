@@ -81,8 +81,11 @@ assert(
   'shared market-sell policy must not synthesize executable sell fills from last/current price',
 )
 assert(
-  intradayData.includes('/orderbook/${symbol}') && intradayData.includes('enrichMissingOrderbookQuotes'),
-  'broker snapshots missing bid/ask must be enriched from Shioaji orderbook before execution',
+  intradayData.includes('/orderbooks') &&
+    intradayData.includes('fetchFreshOrderbookQuotes') &&
+    intradayData.includes('if (env?.requireBrokerQuote)') &&
+    intradayData.includes('includeExecutableBook: false'),
+  'broker-required execution quotes must be Shioaji orderbook-first; snapshots may only enrich non-executable context',
 )
 assert(
   exitTasks.includes('putIntradayPrice(env.KV, symbol, quote.last)') &&

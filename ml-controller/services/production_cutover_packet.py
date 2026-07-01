@@ -129,6 +129,8 @@ REMOTE_PREFLIGHT_CHECKS = (
 
 LOCAL_AUDIT_SELF_REFRESH_CHECK_IDS = {
     "roadmap:p12:production_cutover_packet_artifact_fresh",
+    "roadmap:p12:cutover_ready_for_review",
+    "roadmap:p12:cutover_evidence_health_pass",
     "roadmap:p2:alpha_mining_similarity_validation_artifact_fresh",
     "roadmap:p8:monthly_pymoo_runtime_contract_validation_artifact_fresh",
 }

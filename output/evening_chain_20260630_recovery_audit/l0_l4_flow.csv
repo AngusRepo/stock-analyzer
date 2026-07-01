@@ -1,0 +1,16 @@
+layer,stage,decision,rows,symbols,note
+L0,universe,raw,2295,2295,pass + drop
+L0,universe,pass,802,802,tradable universe after universe gate
+L0,universe,drop,1493,1493,universe gate dropped
+L0,scoring,pass,802,802,scored candidates
+L1,l1_candidate_seed_after_overlay,selected,160,160,candidate seed after overlays; adaptive_before_dynamic=160; dynamic_effective_quota=191
+L1,layer1_strategy_breadth_gate,pass,160,160,strategy breadth gate
+L1.5,l15_ml_slate_queue,observe,320,160,ML slate queue rows can include paired evidence per symbol
+L2,layer2_timesfm_enrichment,observe,160,160,TimesFM sidecar enrichment
+L3,layer3_formal_ml_gate,pass,127,127,formal ML gate pass
+L3,layer3_formal_ml_gate,drop,21,21,formal ML gate drop
+L4,sparse_allocator_input,eligible,118,118,actual sparse allocator input pool; allocation_candidate_pool_size=118; not the L3 pass count
+L4,sparse_allocator_evidence,allocated_or_blocked,160,160,rows carrying alpha_allocation evidence from L4 owner
+L4,daily_recommendations,tradable_snapshot,160,160,final tradable daily table snapshot; not sparse allocator input
+L4,daily_recommendations,buy,5,5,sparse allocation BUY rows
+L4,daily_recommendations,emerging_watchlist,0,0,"context watchlist, not pending-buy eligible"

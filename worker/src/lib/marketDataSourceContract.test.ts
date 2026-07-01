@@ -53,7 +53,8 @@ assert(
 
 assert(
   updateOrchestrator.includes('FinLab primary canonical ready') &&
-    updateOrchestrator.includes('source_role=supplemental_after_finlab_canonical') &&
+    updateOrchestrator.includes("sourceRole: 'finlab_primary_canonical_mirror'") &&
+    updateOrchestrator.includes('source_role=${mirror.sourceRole}') &&
     !updateOrchestrator.includes('before legacy fallback + indicator queue'),
   'FinLab canonical must remain primary while TWSE/TPEX refresh is documented as supplemental, not legacy owner fallback',
 )
@@ -91,7 +92,7 @@ assert(
 )
 
 assert(
-  updateOrchestrator.includes('runMLAndRiskV2(env, triggerTime)'),
+  updateOrchestrator.includes('runMLAndRiskV2(env, triggerTime, { prevalidatedEventChain: true })'),
   'event-driven ML trigger after queue update must preserve the requested update date',
 )
 

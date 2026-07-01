@@ -782,7 +782,8 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         "\n".join([
             "FinLab primary canonical ready",
             "TWSE/TPEX supplemental refresh complete",
-            "source_role=supplemental_after_finlab_canonical",
+            "sourceRole: 'finlab_primary_canonical_mirror'",
+            "source_role=${mirror.sourceRole}",
             "TWSE/TPEX supplemental fetch",
         ]),
     )

@@ -4,7 +4,7 @@
   "roadmap_scope": "full_session_root",
   "audit_scope": [
     "p0_source_of_truth_semantics",
-    "p1_active9_data_chain",
+    "p1_active8_data_chain",
     "p1_optuna_adaptive_search_scheduler",
     "p1_mode_b_confidence_bandit_replay",
     "p2_opb_l4_allocation",
@@ -158,54 +158,49 @@
       "detail": "reviewed Worker/meta runtime pin is present (actual=6.0.3)"
     },
     {
-      "id": "active9_track:LightGBM",
+      "id": "active8_track:LightGBM",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:XGBoost",
+      "id": "active8_track:XGBoost",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:ExtraTrees",
+      "id": "active8_track:ExtraTrees",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:TabM",
+      "id": "active8_track:TabM",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:GNN",
+      "id": "active8_track:GNN",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:DLinear",
+      "id": "active8_track:DLinear",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:PatchTST",
+      "id": "active8_track:PatchTST",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:iTransformer",
+      "id": "active8_track:iTransformer",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
+      "detail": "active direct-alpha model is a production_slot_member in the backend track"
     },
     {
-      "id": "active9_track:TimesFM",
+      "id": "timesfm_l2_sidecar_track:TimesFM:timesfm25",
       "status": "pass",
-      "detail": "active-9 model is a production_slot_member in the backend track"
-    },
-    {
-      "id": "active9_track:TimesFM:timesfm25",
-      "status": "pass",
-      "detail": "TimesFM production slot is backed by the TimesFM 2.5 runtime/config, not a separate TimesFM25 voter"
+      "detail": "TimesFM is backed by the TimesFM 2.5 runtime/config as an L2 feature sidecar, not a direct L3 voter"
     },
     {
       "id": "ui:new_flow_workbench",
@@ -230,27 +225,22 @@
     {
       "id": "roadmap:p0:adaptive_l2_name_boundary",
       "status": "pass",
-      "detail": "legacy adaptive_l2 formula constants remain separated from new L2 coarse ML gate/search naming"
+      "detail": "legacy adaptive_l2 formula constants remain separated from TimesFM L2 feature sidecar naming"
     },
     {
       "id": "roadmap:p0:l2_l3_semantics",
       "status": "pass",
-      "detail": "L2 is 3ML coarse and L3 is 6ML formal family evidence, not a single top-k ranker"
+      "detail": "L2 is TimesFM feature enrichment and L3 is 8ML formal family evidence, not a single top-k ranker"
     },
     {
-      "id": "roadmap:p0:l2_core_ml_evidence_active_name",
+      "id": "roadmap:p0:l2_timesfm_active_name",
       "status": "pass",
-      "detail": "Daily pipeline emits canonical core_ml_evidence and keeps core_ml_gate only as a compatibility alias"
+      "detail": "Daily pipeline runs TimesFM as L2 feature enrichment before full-slate L3 formal inference"
     },
     {
-      "id": "roadmap:p6:legacy_topk_override_retired",
+      "id": "roadmap:p0:l2_timesfm_enrichment_audit_schema",
       "status": "pass",
-      "detail": "Daily pipeline permanently retires legacy top-K forced BUY and keeps rank-like outputs as evidence only"
-    },
-    {
-      "id": "roadmap:p0:l2_core_ml_evidence_audit_schema",
-      "status": "pass",
-      "detail": "Layer2 D1 audit persists evidence-only schema while retaining legacy schema metadata"
+      "detail": "Layer2 D1 audit persists TimesFM feature-enrichment evidence, not tree shortlist gate rows"
     },
     {
       "id": "roadmap:p0:l3_family_view",
@@ -278,19 +268,19 @@
       "detail": "Worker adaptive governance describes OPB consistently with the controller surface"
     },
     {
-      "id": "roadmap:p1:active9_dataset_policy",
+      "id": "roadmap:p1:active8_dataset_policy",
       "status": "pass",
-      "detail": "active-9 dataset policy includes all production slots and retired model exclusions"
+      "detail": "active-8 direct-alpha dataset policy keeps TimesFM as required L2 sidecar and retired model exclusions"
     },
     {
-      "id": "roadmap:p1:active9_verified_replay_source",
+      "id": "roadmap:p1:active8_verified_replay_source",
       "status": "pass",
-      "detail": "adaptive meta replay uses verified active-9 prediction rows only"
+      "detail": "adaptive meta replay uses verified active-8 direct-alpha prediction rows only"
     },
     {
-      "id": "roadmap:p1:active9_confidence_hook",
+      "id": "roadmap:p1:active8_confidence_hook",
       "status": "pass",
-      "detail": "adaptive confidence hook is scoped to active-9 evidence and excludes retired CatBoost"
+      "detail": "adaptive confidence hook is scoped to active-8 direct-alpha evidence and excludes TimesFM/CatBoost"
     },
     {
       "id": "roadmap:p1:retired_models_not_ic_tracked",
@@ -298,9 +288,9 @@
       "detail": "retired models are not tracked as active model IC sources"
     },
     {
-      "id": "roadmap:p1:active9_teacher_labels",
+      "id": "roadmap:p1:active8_teacher_labels",
       "status": "pass",
-      "detail": "PLE/Listwise router evidence expects active-9 teacher labels without fake backfill"
+      "detail": "PLE/Listwise router evidence expects active-8 direct-alpha teacher labels without fake backfill"
     },
     {
       "id": "roadmap:p1:optuna_worker_boundary",
@@ -373,9 +363,9 @@
       "detail": "Model Pool separates artifact/parameter governance from the L2/L3 alpha vote graph"
     },
     {
-      "id": "roadmap:p2:active9_artifact_promotion_blocker",
+      "id": "roadmap:p2:active8_artifact_promotion_blocker",
       "status": "pass",
-      "detail": "artifact promotion blocks non-active-9 models from production selection"
+      "detail": "artifact promotion blocks non-active-8 direct-alpha models from production selection"
     },
     {
       "id": "roadmap:p5:linucb_replay_adaptive_params_candidate",
@@ -660,7 +650,7 @@
     {
       "id": "strategy_baseline:active_spec_json_present",
       "status": "pass",
-      "detail": "active StrategySpec JSON exists at output/finlab_strategy_backtests/current_active_11_strategy_specs.json"
+      "detail": "active StrategySpec JSON exists at output/finlab_strategy_backtests/current_active_12_strategy_specs.json"
     },
     {
       "id": "strategy_baseline:active_spec_json_count_matches",
@@ -695,7 +685,7 @@
     {
       "id": "roadmap:p3:worker_not_formal_l2_owner",
       "status": "pass",
-      "detail": "Worker screener must not write formal layer2_coarse_ml_gate stage rows"
+      "detail": "Worker screener must not write formal layer2_timesfm_enrichment stage rows"
     },
     {
       "id": "roadmap:p3:l15_l2_evidence_summary",
@@ -730,7 +720,7 @@
     {
       "id": "roadmap:p3:model_pool_evidence_ui",
       "status": "pass",
-      "detail": "Model Pool UI surfaces active-9 fleet health and meta-policy evidence boundaries"
+      "detail": "Model Pool UI surfaces active-8 direct-alpha fleet health and meta-policy evidence boundaries"
     },
     {
       "id": "replay_file:adaptive_meta_policy_replay_20260605_20260611.json",

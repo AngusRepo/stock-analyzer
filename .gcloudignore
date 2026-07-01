@@ -22,7 +22,6 @@ worker/*
 !worker/tsconfig.tests.json
 !worker/src/
 !worker/src/**
-worker/src/lib/canonicalTradeLifecycle.ts
 !worker/migration_strategy_mining_ledger_2026_06_18.sql
 
 .uv-cache/

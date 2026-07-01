@@ -1,0 +1,793 @@
+[
+  {
+    "id": "alpha223_0009",
+    "version": "strategy-spec-v1",
+    "name": "Alpha223 0009 cash-change gap broker-flow",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "ALPHA223_CASH_GAP_BROKER_FLOW",
+    "variantId": "alpha223_0009_cash_gap_broker_flow_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "smart_money_accumulation",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Promoted Alpha223 candidate 0009 from fixed-contract recursive mining and FinLab confirmation.",
+    "thresholds": {
+      "minPrice": 10,
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "finlab701_financial_statement_本期現金及約當現金增加_減少_數",
+              "signal": "factorSignals.finlabCsCashAndCashEquivalentsIncreaseDecreaseRank",
+              "weight": 0.298865
+            },
+            {
+              "featureRef": "tech_gap_down",
+              "signal": "factorSignals.finlabCsTechGapDownRank",
+              "weight": 0.392316
+            },
+            {
+              "featureRef": "finlab701_fundamental_features_營運資金",
+              "signal": "factorSignals.finlabCsWorkingCapitalRank",
+              "weight": 0.066725
+            },
+            {
+              "featureRef": "finlab701_financial_statement_其他應付款",
+              "signal": "factorSignals.finlabCsOtherPayablesRank",
+              "weight": 0.048404
+            },
+            {
+              "featureRef": "l1_brokerNetAmount5d",
+              "signal": "factorSignals.finlabCsBrokerNetAmount5dRank",
+              "weight": 0.19369
+            }
+          ]
+        }
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 18,
+      "evidenceRequirements": [
+        "alpha223_recursive_search",
+        "fixed_contract:20230101_20260615:sii:M:top10",
+        "feature_ref:finlab701_financial_statement_本期現金及約當現金增加_減少_數",
+        "feature_ref:tech_gap_down",
+        "feature_ref:finlab701_fundamental_features_營運資金",
+        "feature_ref:finlab701_financial_statement_其他應付款",
+        "feature_ref:l1_brokerNetAmount5d"
+      ],
+      "maxMlShare": 0.22
+    },
+    "riskNotes": [
+      "Direct active draft only after promotion preflight factor/runtime mapping passes; not applied to remote D1 by this builder.",
+      "FinLab confirm: CAGR 55.9%, monthly Sharpe 2.04, max drawdown -14.6%."
+    ],
+    "createdBy": "codex_active12_promotion_preflight"
+  },
+  {
+    "id": "alpha223_0109",
+    "version": "strategy-spec-v1",
+    "name": "Alpha223 0109 quality order-block turnover",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "ALPHA223_QUALITY_TURNOVER",
+    "variantId": "alpha223_0109_ebitda_turnover_orderblock_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "trend_following",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Promoted Alpha223 candidate 0109 from fixed-contract recursive mining and FinLab confirmation.",
+    "thresholds": {
+      "minPrice": 10,
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "finlab701_fundamental_features_EBITDA",
+              "signal": "factorSignals.finlabCsEbitdaRank",
+              "weight": 0.22004
+            },
+            {
+              "featureRef": "vol_share_turnover_21d",
+              "signal": "factorSignals.finlabCsVolShareTurnover21dRank",
+              "weight": 0.287542
+            },
+            {
+              "featureRef": "finlab701_financial_statement_流動負債",
+              "signal": "factorSignals.finlabCsCurrentLiabilitiesRank",
+              "weight": 0.031705
+            },
+            {
+              "featureRef": "finlab701_fundamental_features_每股現金流量",
+              "signal": "factorSignals.finlabCsCashFlowPerShareRank",
+              "weight": 0.112209
+            },
+            {
+              "featureRef": "l1_bestOrderBlockStrength",
+              "signal": "factorSignals.finlabCsBestOrderBlockStrengthRank",
+              "weight": 0.307234
+            },
+            {
+              "featureRef": "finlab701_financial_statement_不動產廠房及設備",
+              "signal": "factorSignals.finlabCsPropertyPlantEquipmentRank",
+              "weight": 0.04127
+            }
+          ]
+        }
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 14,
+      "costBudget": 18,
+      "evidenceRequirements": [
+        "alpha223_recursive_search",
+        "fixed_contract:20230101_20260615:sii:M:top10",
+        "feature_ref:finlab701_fundamental_features_EBITDA",
+        "feature_ref:vol_share_turnover_21d",
+        "feature_ref:finlab701_financial_statement_流動負債",
+        "feature_ref:finlab701_fundamental_features_每股現金流量",
+        "feature_ref:l1_bestOrderBlockStrength",
+        "feature_ref:finlab701_financial_statement_不動產廠房及設備"
+      ],
+      "maxMlShare": 0.22
+    },
+    "riskNotes": [
+      "Direct active draft only after promotion preflight factor/runtime mapping passes; not applied to remote D1 by this builder.",
+      "FinLab confirm: CAGR 91.1%, monthly Sharpe 2.16, max drawdown -15.8%."
+    ],
+    "createdBy": "codex_active12_promotion_preflight"
+  },
+  {
+    "id": "alpha223_0166",
+    "version": "strategy-spec-v1",
+    "name": "Alpha223 0166 expense profit volume thrust",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "ALPHA223_EXPENSE_PROFIT_THRUST",
+    "variantId": "alpha223_0166_vstd_expense_profit_emv_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "trend_following",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Promoted Alpha223 candidate 0166 from fixed-contract recursive mining and FinLab confirmation.",
+    "thresholds": {
+      "minPrice": 10,
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "VSTD_10",
+              "signal": "factorSignals.finlabCsVstd10Rank",
+              "weight": 0.096729
+            },
+            {
+              "featureRef": "finlab701_financial_statement_營業費用",
+              "signal": "factorSignals.finlabCsOperatingExpensesRank",
+              "weight": 0.258915
+            },
+            {
+              "featureRef": "finlab701_fundamental_features_每股稅前淨利",
+              "signal": "factorSignals.finlabCsPretaxIncomePerShareRank",
+              "weight": 0.360216
+            },
+            {
+              "featureRef": "tech_emv_14",
+              "signal": "factorSignals.finlabCsTechEmv14Rank",
+              "weight": 0.28414
+            }
+          ]
+        }
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 12,
+      "costBudget": 18,
+      "evidenceRequirements": [
+        "alpha223_recursive_search",
+        "fixed_contract:20230101_20260615:sii:M:top10",
+        "feature_ref:VSTD_10",
+        "feature_ref:finlab701_financial_statement_營業費用",
+        "feature_ref:finlab701_fundamental_features_每股稅前淨利",
+        "feature_ref:tech_emv_14"
+      ],
+      "maxMlShare": 0.22
+    },
+    "riskNotes": [
+      "Direct active draft only after promotion preflight factor/runtime mapping passes; not applied to remote D1 by this builder.",
+      "FinLab confirm: CAGR 64.5%, monthly Sharpe 1.74, max drawdown -17.7%."
+    ],
+    "createdBy": "codex_active12_promotion_preflight"
+  },
+  {
+    "id": "alpha223_0248",
+    "version": "strategy-spec-v1",
+    "name": "Alpha223 0248 squeeze cash-flow breakout",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "ALPHA223_BREAKOUT_CASH_FLOW",
+    "variantId": "alpha223_0248_klow_cashflow_squeeze_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "breakout_vol_expansion",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Promoted Alpha223 candidate 0248 from fixed-contract recursive mining and FinLab confirmation.",
+    "thresholds": {
+      "minPrice": 10,
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "KLOW2",
+              "signal": "factorSignals.finlabCsKlow2LowRank",
+              "weight": 0.042969
+            },
+            {
+              "featureRef": "finlab701_financial_statement_營業活動之淨現金流入_流出",
+              "signal": "factorSignals.finlabCsOperatingCashFlowStatementRank",
+              "weight": 0.112639
+            },
+            {
+              "featureRef": "finlab701_fundamental_features_營運資金",
+              "signal": "factorSignals.finlabCsWorkingCapitalRank",
+              "weight": 0.171341
+            },
+            {
+              "featureRef": "l1_squeezeRelease",
+              "signal": "technicalIndicators.squeezeRelease",
+              "weight": 0.119207
+            },
+            {
+              "featureRef": "finlab701_fundamental_features_自由現金流量",
+              "signal": "factorSignals.finlabCsFreeCashFlowRank",
+              "weight": 0.146677
+            },
+            {
+              "featureRef": "l1_bbBandwidthPct",
+              "signal": "factorSignals.finlabCsBbBandwidthPctRank",
+              "weight": 0.199707
+            },
+            {
+              "featureRef": "l1_closeAboveMa60Pct",
+              "signal": "factorSignals.finlabCsCloseAboveMa60PctRank",
+              "weight": 0.097973
+            },
+            {
+              "featureRef": "finlab701_financial_statement_財務成本",
+              "signal": "factorSignals.finlabCsFinancialCostRank",
+              "weight": 0.109487
+            }
+          ]
+        }
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 14,
+      "costBudget": 18,
+      "evidenceRequirements": [
+        "alpha223_recursive_search",
+        "fixed_contract:20230101_20260615:sii:M:top10",
+        "feature_ref:KLOW2",
+        "feature_ref:finlab701_financial_statement_營業活動之淨現金流入_流出",
+        "feature_ref:finlab701_fundamental_features_營運資金",
+        "feature_ref:l1_squeezeRelease",
+        "feature_ref:finlab701_fundamental_features_自由現金流量",
+        "feature_ref:l1_bbBandwidthPct",
+        "feature_ref:l1_closeAboveMa60Pct",
+        "feature_ref:finlab701_financial_statement_財務成本"
+      ],
+      "maxMlShare": 0.22
+    },
+    "riskNotes": [
+      "Direct active draft only after promotion preflight factor/runtime mapping passes; not applied to remote D1 by this builder.",
+      "FinLab confirm: CAGR 82.0%, monthly Sharpe 1.77, max drawdown -17.1%."
+    ],
+    "createdBy": "codex_active12_promotion_preflight"
+  },
+  {
+    "id": "alpha223_0283",
+    "version": "strategy-spec-v1",
+    "name": "Alpha223 0283 OCF noncurrent-assets order-block",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "ALPHA223_CASHFLOW_ASSET_TURNOVER",
+    "variantId": "alpha223_0283_ocf_noncurrent_orderblock_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "breakout_vol_expansion",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Promoted Alpha223 candidate 0283 from fixed-contract recursive mining and FinLab confirmation.",
+    "thresholds": {
+      "minPrice": 10,
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "finlab701_financial_statement_營業活動之淨現金流入_流出",
+              "signal": "factorSignals.finlabCsOperatingCashFlowStatementRank",
+              "weight": 0.308613
+            },
+            {
+              "featureRef": "finlab701_financial_statement_非流動資產",
+              "signal": "factorSignals.finlabCsNonCurrentAssetsRank",
+              "weight": 0.368658
+            },
+            {
+              "featureRef": "l1_bestOrderBlockStrength",
+              "signal": "factorSignals.finlabCsBestOrderBlockStrengthRank",
+              "weight": 0.058169
+            },
+            {
+              "featureRef": "KSFT",
+              "signal": "factorSignals.finlabCsKsftLowRank",
+              "weight": 0.105579
+            },
+            {
+              "featureRef": "vol_share_turnover_21d",
+              "signal": "factorSignals.finlabCsVolShareTurnover21dRank",
+              "weight": 0.158982
+            }
+          ]
+        }
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 12,
+      "costBudget": 18,
+      "evidenceRequirements": [
+        "alpha223_recursive_search",
+        "fixed_contract:20230101_20260615:sii:M:top10",
+        "feature_ref:finlab701_financial_statement_營業活動之淨現金流入_流出",
+        "feature_ref:finlab701_financial_statement_非流動資產",
+        "feature_ref:l1_bestOrderBlockStrength",
+        "feature_ref:KSFT",
+        "feature_ref:vol_share_turnover_21d"
+      ],
+      "maxMlShare": 0.22
+    },
+    "riskNotes": [
+      "Direct active draft only after promotion preflight factor/runtime mapping passes; not applied to remote D1 by this builder.",
+      "FinLab confirm: CAGR 68.6%, monthly Sharpe 1.36, max drawdown -14.5%."
+    ],
+    "createdBy": "codex_active12_promotion_preflight"
+  },
+  {
+    "id": "alpha_miner_pymoo_nsga3_novelty_0193",
+    "version": "strategy-spec-v1",
+    "name": "Pymoo NSGA-III novelty 0193 sentiment margin flow",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "SMART_MONEY_ACCUMULATION",
+    "variantId": "us_sentiment_margin_balance_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "defensive_accumulation",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Promoted mined strategy 0193: US leading sentiment and margin-balance participation evidence discovered by pymoo NSGA-III plus novelty search.",
+    "thresholds": {
+      "minPrice": 10,
+      "minVolumeExpansion20": 0.5,
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "us_sentiment_score",
+              "signal": "factorSignals.us_sentiment_score",
+              "weight": 0.479025
+            },
+            {
+              "featureRef": "margin_balance",
+              "signal": "factorSignals.margin_balance",
+              "weight": 0.520975
+            }
+          ]
+        }
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 16,
+      "costBudget": 18,
+      "evidenceRequirements": [
+        "alpha_mining:pymoo_nsga3_novelty",
+        "formal137",
+        "feature_ref:us_sentiment_score",
+        "feature_ref:margin_balance"
+      ],
+      "maxMlShare": 0.2
+    },
+    "riskNotes": [
+      "Original mined factors: us_sentiment_score 0.479025, margin_balance 0.520975.",
+      "FinLab confirm: CAGR 50.6%, monthly Sharpe 1.23, max drawdown -21.3%, Calmar 2.38."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "defensive_accumulation_seed_v1",
+    "version": "strategy-spec-v1",
+    "name": "Defensive accumulation seed",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "SMART_MONEY_ACCUMULATION",
+    "variantId": "institutional_accumulation_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "defensive_accumulation",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "bear",
+      "volatile"
+    ],
+    "thesis": "Select stocks with constructive chip flow and tolerable technical structure for defensive accumulation.",
+    "thresholds": {
+      "minPrice": 10,
+      "minCloseAboveMa20Pct": -0.08,
+      "minVolumeExpansion20": 0.75,
+      "minForeignTrustNet5d": 0
+    },
+    "candidatePolicy": {
+      "poolQuota": 16,
+      "costBudget": 20,
+      "evidenceRequirements": [
+        "raw_price_structure",
+        "raw_chip_flow",
+        "raw_broker_flow"
+      ],
+      "maxMlShare": 0.24
+    },
+    "riskNotes": [
+      "Retained as the defensive chip-flow owner; L1.25 down-weights stale or crowded accumulation."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "stock_tech_s01_55d_trend_volume_breakout_v1",
+    "version": "strategy-spec-v1",
+    "name": "S1 55d trend volume breakout",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "TREND_RECLAIM_CONTINUATION",
+    "variantId": "s01_55d_trend_volume_breakout_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "breakout_vol_expansion",
+    "supportedRegimes": [
+      "bull",
+      "volatile"
+    ],
+    "thesis": "55-day trend and volume breakout challenger from 2026-06-25 technical StrategySpec batch.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS01Admission",
+            "op": "==",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S1",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedAdmission": "technicalIndicators.stockTechS01Admission",
+        "requiresMaterializedSignal": "technicalIndicators.stockTechS01Signal",
+        "scoreSignal": "technicalIndicators.stockTechS01Score",
+        "admissionPolicy": "adaptive_score_priority_or_hard_signal"
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 12,
+      "evidenceRequirements": [
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_price_structure",
+        "raw_volume",
+        "materialized_admission:stockTechS01Admission",
+        "materialized_signal:stockTechS01Signal",
+        "materialized_score:stockTechS01Score"
+      ],
+      "maxMlShare": 0
+    },
+    "riskNotes": [
+      "Active runtime gate uses adaptive score-priority admission; strict stockTechS01Signal remains stronger entry evidence, not the only admission path.",
+      "FinLab research benchmark remains evidence; runtime admission is materialized daily from live universe scores."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "stock_tech_s02_52w_dual_momentum_v1",
+    "version": "strategy-spec-v1",
+    "name": "S2 52w dual momentum",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "TREND_RECLAIM_CONTINUATION",
+    "variantId": "s02_52w_dual_momentum_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "trend_following",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "52-week high and 12-1 momentum monthly challenger from 2026-06-25 technical StrategySpec batch.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS02Admission",
+            "op": "==",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S2",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedAdmission": "technicalIndicators.stockTechS02Admission",
+        "requiresMaterializedSignal": "technicalIndicators.stockTechS02Signal",
+        "scoreSignal": "technicalIndicators.stockTechS02Score",
+        "admissionPolicy": "adaptive_score_priority_or_hard_signal"
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 12,
+      "evidenceRequirements": [
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_momentum",
+        "monthly_rebalance",
+        "materialized_admission:stockTechS02Admission",
+        "materialized_signal:stockTechS02Signal",
+        "materialized_score:stockTechS02Score"
+      ],
+      "maxMlShare": 0
+    },
+    "riskNotes": [
+      "Active runtime gate uses adaptive score-priority admission; strict stockTechS02Signal remains stronger entry evidence, not the only admission path.",
+      "S2 momentum uses 12-1 momentum with a 252-bar fallback to avoid off-by-one empty coverage.",
+      "2026-06-30 repair: volatile regime is allowed because production attribution is guarded by materialized stockTechS02Admission, not raw regime-only exposure."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "stock_tech_s04_ma_deduct_turn_breakout_v1",
+    "version": "strategy-spec-v1",
+    "name": "S4 MA deduct turn breakout",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "TREND_RECLAIM_CONTINUATION",
+    "variantId": "s04_ma_deduct_turn_breakout_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "trend_following",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Moving-average deduct turn plus range breakout challenger from 2026-06-25 technical StrategySpec batch.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS04Admission",
+            "op": "==",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S4",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedAdmission": "technicalIndicators.stockTechS04Admission",
+        "requiresMaterializedSignal": "technicalIndicators.stockTechS04Signal",
+        "scoreSignal": "technicalIndicators.stockTechS04Score",
+        "admissionPolicy": "adaptive_score_priority_or_hard_signal"
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 12,
+      "evidenceRequirements": [
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_price_structure",
+        "raw_volume",
+        "materialized_admission:stockTechS04Admission",
+        "materialized_signal:stockTechS04Signal",
+        "materialized_score:stockTechS04Score"
+      ],
+      "maxMlShare": 0
+    },
+    "riskNotes": [
+      "Active runtime gate uses adaptive score-priority admission; strict stockTechS04Signal remains stronger entry evidence, not the only admission path.",
+      "Runtime matching should prefer materialized admission over hard signal-only trigger.",
+      "2026-06-30 repair: volatile regime is allowed because production attribution is guarded by materialized stockTechS04Admission, not raw regime-only exposure."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "stock_tech_s06_nr7_inside_bar_breakout_v1",
+    "version": "strategy-spec-v1",
+    "name": "S6 NR7 inside bar breakout",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "VOLATILITY_CONTRACTION_BREAKOUT",
+    "variantId": "s06_nr7_inside_bar_breakout_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "breakout_vol_expansion",
+    "supportedRegimes": [
+      "bull",
+      "volatile"
+    ],
+    "thesis": "NR7 inside bar breakout challenger from 2026-06-25 technical StrategySpec batch.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "all": [
+          {
+            "signal": "technicalIndicators.stockTechS06Admission",
+            "op": "==",
+            "value": 1
+          }
+        ]
+      },
+      "technicalStrategy": {
+        "id": "S6",
+        "sourceSpec": "C:/Users/Wei/Downloads/stock_technical_strategies_12_complete_spec.md",
+        "requiresMaterializedAdmission": "technicalIndicators.stockTechS06Admission",
+        "requiresMaterializedSignal": "technicalIndicators.stockTechS06Signal",
+        "scoreSignal": "technicalIndicators.stockTechS06Score",
+        "admissionPolicy": "adaptive_score_priority_or_hard_signal"
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 10,
+      "costBudget": 12,
+      "evidenceRequirements": [
+        "technical_strategy12",
+        "finlab_backtest",
+        "raw_price_structure",
+        "raw_volume",
+        "materialized_admission:stockTechS06Admission",
+        "materialized_signal:stockTechS06Signal",
+        "materialized_score:stockTechS06Score"
+      ],
+      "maxMlShare": 0
+    },
+    "riskNotes": [
+      "Active runtime gate uses adaptive score-priority admission; strict stockTechS06Signal remains stronger entry evidence, not the only admission path.",
+      "Breakout-sensitive execution still requires intraday quote sanity before paper fills."
+    ],
+    "createdBy": "p5_strategy_governance"
+  },
+  {
+    "id": "trend_quality_breakout_fused_v1",
+    "version": "strategy-spec-v1",
+    "name": "Trend quality breakout fused",
+    "status": "active",
+    "owner": "strategy",
+    "familyId": "TREND_QUALITY_BREAKOUT_FUSED",
+    "variantId": "revenue_trend_squeeze_breakout_fused_v1",
+    "ownerType": "strategy",
+    "promotionStatus": "production",
+    "alphaBucket": "trend_following",
+    "supportedRegimes": [
+      "bull",
+      "sideways",
+      "volatile"
+    ],
+    "thesis": "Fuse the overlapping AlphaBuilders revenue-quality, trend-following, and breakout-volume labels into one diversified trend-quality-breakout owner.",
+    "thresholds": {
+      "minPrice": 10,
+      "dsl": {
+        "any": [
+          {
+            "signal": "factorSignals.monthlyRevenueYoY",
+            "op": ">=",
+            "value": 0
+          },
+          {
+            "signal": "technicalIndicators.macdHist",
+            "op": ">=",
+            "value": 0
+          },
+          {
+            "signal": "technicalIndicators.squeezeRelease",
+            "op": ">=",
+            "value": 1
+          }
+        ]
+      },
+      "featureRefs": {
+        "weightedScore": {
+          "min": 0.58,
+          "terms": [
+            {
+              "featureRef": "l1_closeAboveMa60Pct",
+              "signal": "factorSignals.finlabCsCloseAboveMa60PctRank",
+              "weight": 0.2
+            },
+            {
+              "featureRef": "l1_volumeExpansion20",
+              "signal": "factorSignals.finlabCsVolumeExpansion20Rank",
+              "weight": 0.2
+            },
+            {
+              "featureRef": "l1_return20d",
+              "signal": "factorSignals.finlabCsReturn20dRank",
+              "weight": 0.16
+            },
+            {
+              "featureRef": "l1_bbBandwidthPct",
+              "signal": "factorSignals.finlabCsBbBandwidthPctRank",
+              "weight": 0.14
+            },
+            {
+              "featureRef": "l1_monthlyRevenueYoY",
+              "signal": "factorSignals.finlabCsMonthlyRevenueYoYRank",
+              "weight": 0.16
+            },
+            {
+              "featureRef": "l1_monthlyRevenueMoM",
+              "signal": "factorSignals.finlabCsMonthlyRevenueMoMRank",
+              "weight": 0.14
+            }
+          ]
+        }
+      }
+    },
+    "candidatePolicy": {
+      "poolQuota": 18,
+      "costBudget": 20,
+      "evidenceRequirements": [
+        "fused_source:alphabuilders_multifactor_revenue_quality_momentum_v1",
+        "fused_source:breakout_vol_expansion_seed_v1",
+        "fused_source:trend_following_seed_v1"
+      ],
+      "maxMlShare": 0.26
+    },
+    "riskNotes": [
+      "Uses the normalized weighted-score fused variant selected by local full/OOS/cost replay; not applied to remote D1 by this builder."
+    ],
+    "createdBy": "codex_active12_promotion_preflight"
+  }
+]

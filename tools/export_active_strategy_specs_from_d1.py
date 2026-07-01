@@ -49,6 +49,10 @@ ORDER BY CASE status
 END, strategy_id;
 """.strip()
 
+SELECT_ACTIVE_STRATEGIES_SQL_ONE_LINE = " ".join(
+    SELECT_STRATEGIES_SQL_TEMPLATE.format(status_placeholders="'active'").split()
+)
+
 
 def _select_sql(status_scope: str) -> str:
     statuses = STATUS_SCOPES[status_scope]

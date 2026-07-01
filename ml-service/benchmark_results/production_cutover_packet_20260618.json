@@ -4,7 +4,7 @@
   "production_mutation_allowed": false,
   "actions_allowed_without_wei_approval": [],
   "local_gate": {
-    "audit_path": "ml-service\\benchmark_results\\local_prod_ready_audit_20260618.json",
+    "audit_path": "ml-service/benchmark_results/local_prod_ready_audit_20260618.json",
     "local_closure": "done",
     "local_prod_ready": "done",
     "failed_check_count": 0,
@@ -123,28 +123,28 @@
     },
     {
       "id": "active_strategy_spec_export_summary",
-      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
+      "path": "output/finlab_strategy_backtests/current_active_12_strategy_specs_summary.json",
       "required": true,
       "dynamic": true,
       "exists": true
     },
     {
       "id": "active_strategy_spec_json",
-      "path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
+      "path": "output/finlab_strategy_backtests/current_active_12_strategy_specs.json",
       "required": true,
       "dynamic": true,
       "exists": true
     },
     {
       "id": "active_strategy_finlab_backtest_summary",
-      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
+      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615_summary.json",
       "required": true,
       "dynamic": true,
       "exists": true
     },
     {
       "id": "active_strategy_finlab_backtest_json",
-      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
+      "path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615.json",
       "required": true,
       "dynamic": true,
       "exists": true
@@ -247,16 +247,16 @@
       "id": "active_strategy_baseline_export_and_backtest",
       "passed": true,
       "detail": {
-        "strategy_count": 11,
+        "strategy_count": 12,
         "exporter_path": "tools/export_active_strategy_specs_from_d1.py",
         "backtest_tool_path": "tools/finlab_strategy_spec_backtest.py",
-        "export_summary_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs_summary.json",
-        "spec_path": "output/finlab_strategy_backtests/current_active_11_strategy_specs.json",
-        "backtest_summary_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615_summary.json",
-        "backtest_json_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active11_20230101_20260615.json",
-        "backtest_ok": 8,
+        "export_summary_path": "output/finlab_strategy_backtests/current_active_12_strategy_specs_summary.json",
+        "spec_path": "output/finlab_strategy_backtests/current_active_12_strategy_specs.json",
+        "backtest_summary_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615_summary.json",
+        "backtest_json_path": "output/finlab_strategy_backtests/finlab_strategy_spec_active12_20230101_20260615.json",
+        "backtest_ok": 7,
         "backtest_no_signal": 0,
-        "backtest_unsupported_feature": 3,
+        "backtest_unsupported_feature": 5,
         "backtest_errors": [],
         "freshness": {
           "export_summary": {
@@ -424,14 +424,14 @@
       "expected": "PatchTST and iTransformer production artifact slots point to NeuralForecast-backed zip artifacts"
     },
     {
-      "id": "timesfm_active_slot_uses_25_config",
+      "id": "timesfm_l2_sidecar_uses_25_config",
       "check_type": "remote_read_only",
-      "expected": "TimesFM production slot config references google/timesfm-2.5-200m-pytorch and max_context >= 1024"
+      "expected": "TimesFM L2 sidecar config references google/timesfm-2.5-200m-pytorch and max_context >= 1024"
     },
     {
-      "id": "active9_model_pool_has_no_retired_champion",
+      "id": "active8_model_pool_has_no_retired_champion",
       "check_type": "remote_read_only",
-      "expected": "production model_pool champion set contains only the active-9 ML families"
+      "expected": "production model_pool champion set contains only the Active-8 direct-alpha ML families"
     },
     {
       "id": "challenger_cleanup_scope_is_explicit",

@@ -31,6 +31,10 @@ assert(
     controllerResearchWorkflows.includes('controller returned non-json for finlab backfill') &&
     !controllerResearchWorkflows.includes('require_official_market_summary: dailySourceMode') &&
     !controllerResearchWorkflows.includes('market_summary,global_context') &&
+    controllerResearchWorkflows.includes("const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,regime_context,trading_restrictions'") &&
+    !controllerResearchWorkflows.includes('FINLAB_DAILY_PRIMARY_LANES_DEFAULT = \'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,global_context') &&
+    controllerResearchWorkflows.includes('canonical_broker_rank_daily,canonical_trading_restrictions') &&
+    controllerResearchWorkflows.includes('FINLAB_BACKFILL_LANES must be set for archive backfill') &&
     !controllerResearchWorkflows.includes('canonical_market_summary_daily,canonical_regime_context_daily') &&
     controllerResearchWorkflows.includes('canonical_start_date: canonicalStartDate') &&
     controllerResearchWorkflows.includes("mode: dailySourceMode ? 'daily_price_primary' : 'archive_backfill'"),
@@ -62,8 +66,21 @@ assert(
     updateOrchestrator.includes('ignoreEveningChainInFlight') &&
     updateOrchestrator.includes("callbackMode: 'readiness_probe'") &&
     updateOrchestrator.includes('finLabRefreshScopeForReadiness') &&
+    updateOrchestrator.includes('22:00 fallback skipped FinLab refresh') &&
+    updateOrchestrator.includes('22:00 fallback waiting at non-FinLab source-readiness gate') &&
+    updateOrchestrator.includes('22:00 fallback cannot derive FinLab lanes from missing readiness keys') &&
+    updateOrchestrator.includes('...refreshScope') &&
     updateOrchestrator.includes('malformed scheduler run log ignored') &&
     !updateOrchestrator.includes("lanes.add('market_summary')") &&
+    updateOrchestrator.includes("'canonical_market_daily:listed_otc'") &&
+    updateOrchestrator.includes("'canonical_chip_daily:listed_otc'") &&
+    updateOrchestrator.includes("'canonical_institutional_amount_daily:listed_otc'") &&
+    updateOrchestrator.includes("if (key.startsWith('canonical_market_daily:'))") &&
+    updateOrchestrator.includes("if (key.startsWith('canonical_chip_daily:'))") &&
+    updateOrchestrator.includes("if (key.startsWith('canonical_institutional_amount_daily:'))") &&
+    updateOrchestrator.includes("'canonical_trading_restrictions:daily_micro_lane'") &&
+    updateOrchestrator.includes("if (key.startsWith('canonical_trading_restrictions:'))") &&
+    updateOrchestrator.includes("lanes.add('trading_restrictions')") &&
     updateOrchestrator.includes("datasets.add('canonical_broker_rank_daily')") &&
     updateOrchestrator.includes('dailySourceRefresh: true'),
   'source-readiness-probe must trigger FinLab daily refresh and automatically queue a recheck callback without self-blocking on the same evening-chain run',

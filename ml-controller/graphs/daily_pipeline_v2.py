@@ -1548,6 +1548,13 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
             raise RuntimeError("universal/model_pool.json missing")
 
         pool = _json.loads(blob.download_as_text().lstrip("\ufeff"))
+        from services.model_serving_resolver import resolve_serving_pool
+
+        pool = resolve_serving_pool(
+            pool,
+            required_models=tuple(ACTIVE_ALPHA_MODELS),
+            sidecar_models=tuple(TIMESFM_L2_SIDECAR_MODELS),
+        )
         _require_model_pool_required_contract(pool, "model_pool_versions")
         status: dict[str, str] = {}
         active_versions: dict[str, str] = {}
@@ -2039,6 +2046,13 @@ def _load_pool_and_ic():
         if not pool_blob.exists():
             raise RuntimeError("universal/model_pool.json missing")
         pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+        from services.model_serving_resolver import resolve_serving_pool
+
+        pool = resolve_serving_pool(
+            pool,
+            required_models=tuple(ACTIVE_ALPHA_MODELS),
+            sidecar_models=tuple(TIMESFM_L2_SIDECAR_MODELS),
+        )
         _require_model_pool_required_contract(pool, "load_pool_and_ic")
         model_status: dict[str, str] = {}
         ic_weights: dict[str, float] = {}

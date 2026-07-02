@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { fetchAttentionStocks, fetchPunishedStocks } from './twseApi'
+import { fetchAttentionStocks, fetchPunishedStocks, fetchTpexAttentionStocks, fetchTpexPunishedStocks } from './twseApi'
 
 export type TradingRestrictionSource =
   | 'finlab.trading_attention'
@@ -42,7 +42,7 @@ function isHardRestrictionType(type: unknown, source: unknown): boolean {
   const normalizedSource = String(source ?? '').trim().toLowerCase()
   if (HARD_RESTRICTION_TYPES.has(normalizedType)) return true
   if (normalizedType === 'attention' || normalizedSource.includes('attention') || normalizedSource.includes('notice')) return false
-  if (normalizedType === 'disposition' || normalizedSource.includes('punish') || normalizedSource.includes('disposition')) return false
+  if (normalizedType === 'disposition' || normalizedSource.includes('punish') || normalizedSource.includes('disposition')) return true
   return false
 }
 
@@ -128,18 +128,26 @@ async function upsertOfficialRestrictions(
   tradeDate: string,
   type: 'attention' | 'disposition',
   symbols: string[],
+  market: 'LISTED' | 'OTC' = 'LISTED',
 ): Promise<void> {
   if (!symbols.length) return
-  const source = type === 'attention' ? 'official.twse_notice' : 'official.twse_punish'
+  const isTpex = market === 'OTC'
+  const source = type === 'attention'
+    ? (isTpex ? 'official.tpex_notice' : 'official.twse_notice')
+    : (isTpex ? 'official.tpex_punish' : 'official.twse_punish')
   const sourceUrl = type === 'attention'
-    ? 'https://www.twse.com.tw/rwd/zh/announcement/notice?response=json'
-    : 'https://www.twse.com.tw/rwd/zh/announcement/punish?response=json'
+    ? (isTpex
+        ? 'https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_information'
+        : 'https://www.twse.com.tw/rwd/zh/announcement/notice?response=json')
+    : (isTpex
+        ? 'https://www.tpex.org.tw/openapi/v1/tpex_disposal_information'
+        : 'https://www.twse.com.tw/rwd/zh/announcement/punish?response=json')
   const statements = symbols.map((symbol) => env.DB.prepare(`
     INSERT INTO canonical_trading_restrictions (
       symbol, restriction_type, market_segment, start_date, end_date, source,
       source_date, title, source_url, lineage_json, active, updated_at
     )
-    VALUES (?, ?, 'LISTED_OTC', ?, NULL, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
     ON CONFLICT(symbol, restriction_type, source, source_date) DO UPDATE SET
       market_segment=excluded.market_segment,
       title=excluded.title,
@@ -150,6 +158,7 @@ async function upsertOfficialRestrictions(
   `).bind(
     symbol,
     type,
+    market,
     tradeDate,
     source,
     tradeDate,
@@ -163,20 +172,32 @@ async function upsertOfficialRestrictions(
 }
 
 export async function refreshOfficialTradingRestrictions(env: Bindings, tradeDate: string): Promise<Record<string, number>> {
-  const [punishedResult, attentionResult] = await Promise.allSettled([
+  const [punishedResult, attentionResult, tpexPunishedResult, tpexAttentionResult] = await Promise.allSettled([
     fetchPunishedStocks(),
     fetchAttentionStocks(),
+    fetchTpexPunishedStocks(),
+    fetchTpexAttentionStocks(),
   ])
   const counts: Record<string, number> = {}
   if (punishedResult.status === 'fulfilled' && punishedResult.value.length > 0) {
     await env.KV.put('market:punished_stocks', JSON.stringify(punishedResult.value), { expirationTtl: 86400 })
-    await upsertOfficialRestrictions(env, tradeDate, 'disposition', punishedResult.value)
+    await upsertOfficialRestrictions(env, tradeDate, 'disposition', punishedResult.value, 'LISTED')
     counts['official.twse_punish'] = punishedResult.value.length
   }
   if (attentionResult.status === 'fulfilled' && attentionResult.value.length > 0) {
     await env.KV.put('market:attention_stocks', JSON.stringify(attentionResult.value), { expirationTtl: 86400 })
-    await upsertOfficialRestrictions(env, tradeDate, 'attention', attentionResult.value)
+    await upsertOfficialRestrictions(env, tradeDate, 'attention', attentionResult.value, 'LISTED')
     counts['official.twse_notice'] = attentionResult.value.length
+  }
+  if (tpexPunishedResult.status === 'fulfilled' && tpexPunishedResult.value.length > 0) {
+    await env.KV.put('market:tpex_punished_stocks', JSON.stringify(tpexPunishedResult.value), { expirationTtl: 86400 })
+    await upsertOfficialRestrictions(env, tradeDate, 'disposition', tpexPunishedResult.value, 'OTC')
+    counts['official.tpex_punish'] = tpexPunishedResult.value.length
+  }
+  if (tpexAttentionResult.status === 'fulfilled' && tpexAttentionResult.value.length > 0) {
+    await env.KV.put('market:tpex_attention_stocks', JSON.stringify(tpexAttentionResult.value), { expirationTtl: 86400 })
+    await upsertOfficialRestrictions(env, tradeDate, 'attention', tpexAttentionResult.value, 'OTC')
+    counts['official.tpex_notice'] = tpexAttentionResult.value.length
   }
   await env.KV.put('market:restricted_execution_checked_at', new Date().toISOString(), { expirationTtl: 3600 })
   await env.KV.put('market:trading_restrictions:checked_at', new Date().toISOString(), { expirationTtl: 86400 })

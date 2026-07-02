@@ -426,6 +426,41 @@ export async function fetchPunishedStocks(): Promise<string[]> {
 
 // ─── TWSE 當沖標的 ──────────────────────────────────────────────────────────
 
+function extractTpexRestrictionCodes(rows: unknown): string[] {
+  const bodyRows = Array.isArray(rows) ? rows : []
+  const codes = new Set<string>()
+  for (const row of bodyRows) {
+    const value = typeof row === 'object' && row
+      ? (row as any).SecuritiesCompanyCode ?? (row as any)['證券代號'] ?? (row as any).Code ?? (row as any).code
+      : row
+    const match = String(value ?? '').match(/\b(\d{4,6})\b/)
+    if (match && isStockCode(match[1])) codes.add(match[1])
+  }
+  return Array.from(codes)
+}
+
+async function fetchTpexRestrictionCodes(endpoint: string, label: string): Promise<string[]> {
+  try {
+    const res = await fetch(`https://www.tpex.org.tw/openapi/v1/${endpoint}`, {
+      headers: TWSE_HEADERS,
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return []
+    return extractTpexRestrictionCodes(await res.json())
+  } catch (e) {
+    console.warn(`[${label}] TPEX fetch failed:`, e)
+    return []
+  }
+}
+
+export async function fetchTpexAttentionStocks(): Promise<string[]> {
+  return fetchTpexRestrictionCodes('tpex_trading_warning_information', 'TpexAttention')
+}
+
+export async function fetchTpexPunishedStocks(): Promise<string[]> {
+  return fetchTpexRestrictionCodes('tpex_disposal_information', 'TpexPunished')
+}
+
 export async function fetchDayTradeEligible(): Promise<string[]> {
   try {
     const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10).replace(/-/g, '')

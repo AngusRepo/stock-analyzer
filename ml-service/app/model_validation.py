@@ -115,6 +115,100 @@ def _coverage_stats(rows: list[dict[str, Any]], policy: dict[str, Any]) -> dict[
     return stats
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _normal_segment(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"TSE", "TWSE", "LISTED"}:
+        return "LISTED"
+    if text in {"OTC", "TPEx".upper(), "TPEX"}:
+        return "OTC"
+    return text
+
+
+def _segment_ic_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    buckets: dict[str, list[float]] = {}
+    counts: dict[str, int] = {}
+
+    def add(segment: Any, ic_value: Any, test_rows: Any = None) -> None:
+        key = _normal_segment(segment)
+        ic = _as_float(ic_value, math.nan)
+        if not key or not math.isfinite(ic):
+            return
+        buckets.setdefault(key, []).append(ic)
+        counts[key] = counts.get(key, 0) + _as_int(test_rows, 0)
+
+    for row in rows:
+        if row.get("market_segment") or row.get("segment"):
+            add(row.get("market_segment") or row.get("segment"), row.get("oos_ic"), row.get("test_rows"))
+        for dict_key in ("segment_oos_ic", "segment_ic", "segment_rank_ic"):
+            payload = row.get(dict_key)
+            if not isinstance(payload, dict):
+                continue
+            for segment, value in payload.items():
+                if isinstance(value, dict):
+                    add(
+                        segment,
+                        value.get("oos_ic", value.get("rank_ic", value.get("ic"))),
+                        value.get("test_rows", value.get("rows", value.get("samples"))),
+                    )
+                else:
+                    add(segment, value, row.get("test_rows"))
+
+    return {
+        segment: {
+            "oos_ic_mean": round(mean(values), 6),
+            "folds": len(values),
+            "test_rows": counts.get(segment, 0),
+        }
+        for segment, values in sorted(buckets.items())
+        if values
+    }
+
+
+def _tail_fold_stats(rows: list[dict[str, Any]], guard: dict[str, Any]) -> dict[str, Any]:
+    tail_folds = max(1, _as_int(guard.get("tail_folds"), 3))
+    tail_rows = rows[-tail_folds:]
+    values = [_as_float(row.get("oos_ic"), math.nan) for row in tail_rows]
+    values = [value for value in values if math.isfinite(value)]
+    positive_ratio = sum(1 for value in values if value > 0.0) / len(values) if values else 0.0
+    return {
+        "tail_folds": tail_folds,
+        "observed_tail_folds": len(values),
+        "tail_oos_ic_mean": round(mean(values), 6) if values else 0.0,
+        "tail_positive_fold_ratio": round(positive_ratio, 6),
+    }
+
+
+def _return_quality_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    all_zero_days = 0
+    max_zero_ratio = 0.0
+    observed = 0
+    for row in rows:
+        if _as_bool(row.get("all_zero_actual_return_day")) or _as_bool(row.get("actual_return_all_zero")):
+            all_zero_days += 1
+            observed += 1
+        for key in ("actual_return_zero_ratio", "zero_return_ratio", "target_zero_ratio"):
+            if key not in row:
+                continue
+            value = _as_float(row.get(key), math.nan)
+            if math.isfinite(value):
+                observed += 1
+                max_zero_ratio = max(max_zero_ratio, _clamp_ratio(value))
+    return {
+        "observed_rows": observed,
+        "all_zero_actual_return_days": all_zero_days,
+        "max_actual_return_zero_ratio": round(max_zero_ratio, 6),
+    }
+
+
 def _policy(
     policy: dict[str, Any] | None,
     *,
@@ -188,6 +282,20 @@ def build_model_cpcv_evidence(
                 "valid_series_coverage",
                 "union_oos_coverage",
                 "oos_coverage",
+                "actual_return_zero_ratio",
+                "zero_return_ratio",
+                "target_zero_ratio",
+            ):
+                if key in fold:
+                    normalized[key] = fold.get(key)
+            for key in (
+                "market_segment",
+                "segment",
+                "segment_oos_ic",
+                "segment_ic",
+                "segment_rank_ic",
+                "all_zero_actual_return_day",
+                "actual_return_all_zero",
             ):
                 if key in fold:
                     normalized[key] = fold.get(key)
@@ -229,6 +337,37 @@ def build_model_cpcv_evidence(
     if coverage_gate_value < _as_float(p["min_coverage"]):
         failed_gates.append("cpcv_coverage")
 
+    tail_stats: dict[str, Any] | None = None
+    tail_guard = p.get("tail_fold_guard") if isinstance(p.get("tail_fold_guard"), dict) else {}
+    if _as_bool(tail_guard.get("enabled")) and rows:
+        tail_stats = _tail_fold_stats(rows, tail_guard)
+        if tail_stats["observed_tail_folds"] < _as_int(tail_guard.get("tail_folds"), 3):
+            failed_gates.append("cpcv_tail_fold_count")
+        if tail_stats["tail_oos_ic_mean"] < _as_float(tail_guard.get("min_tail_oos_ic_mean"), 0.0):
+            failed_gates.append("cpcv_tail_oos_ic")
+        if tail_stats["tail_positive_fold_ratio"] < _as_float(tail_guard.get("min_tail_positive_fold_ratio"), 0.50):
+            failed_gates.append("cpcv_tail_positive_fold_ratio")
+
+    segment_stats = _segment_ic_stats(rows)
+    segment_guard = p.get("segment_ic_guard") if isinstance(p.get("segment_ic_guard"), dict) else {}
+    if _as_bool(segment_guard.get("enabled")) and segment_stats:
+        min_segment_ic = _as_float(segment_guard.get("min_segment_ic_mean"), 0.0)
+        min_segment_rows = _as_int(segment_guard.get("min_segment_test_rows"), 0)
+        for stats in segment_stats.values():
+            if stats.get("test_rows", 0) < min_segment_rows:
+                continue
+            if stats.get("oos_ic_mean", 0.0) < min_segment_ic:
+                failed_gates.append("cpcv_segment_ic")
+                break
+
+    return_quality_stats = _return_quality_stats(rows)
+    return_guard = p.get("return_quality_guard") if isinstance(p.get("return_quality_guard"), dict) else {}
+    if _as_bool(return_guard.get("enabled")) and return_quality_stats["observed_rows"]:
+        if _as_bool(return_guard.get("exclude_all_zero_return_days")) and return_quality_stats["all_zero_actual_return_days"] > 0:
+            failed_gates.append("cpcv_actual_return_all_zero_day")
+        if return_quality_stats["max_actual_return_zero_ratio"] >= _as_float(return_guard.get("max_zero_return_ratio"), 0.98):
+            failed_gates.append("cpcv_actual_return_zero_ratio")
+
     decision = "PASS" if not failed_gates else "FAIL"
     evidence = {
         "schema_version": MODEL_CPCV_EVIDENCE_SCHEMA_VERSION,
@@ -253,6 +392,12 @@ def build_model_cpcv_evidence(
         "policy": p,
         "fold_metrics": rows,
     }
+    if tail_stats is not None:
+        evidence["tail_fold_stats"] = tail_stats
+    if segment_stats:
+        evidence["segment_ic_stats"] = segment_stats
+    if return_quality_stats["observed_rows"]:
+        evidence["return_quality_stats"] = return_quality_stats
     for key, value in coverage.items():
         if key in evidence or value is None:
             continue

@@ -78,6 +78,76 @@ def test_learned_sequence_coverage_fix_keeps_itransformer_performance_fail_close
     assert "cpcv_positive_fold_ratio" in evidence["failed_gates"]
 
 
+def test_tabm_tail_decay_fails_closed_even_when_aggregate_ic_is_positive():
+    evidence = build_model_cpcv_evidence(
+        model="TabM",
+        family="tabular_neural",
+        fold_metrics=[
+            {"fold_id": 1, "oos_ic": 0.18, "test_rows": 120, "coverage": 1.0},
+            {"fold_id": 2, "oos_ic": 0.14, "test_rows": 120, "coverage": 1.0},
+            {"fold_id": 3, "oos_ic": 0.12, "test_rows": 120, "coverage": 1.0},
+            {"fold_id": 4, "oos_ic": -0.02, "test_rows": 120, "coverage": 1.0},
+            {"fold_id": 5, "oos_ic": -0.03, "test_rows": 120, "coverage": 1.0},
+            {"fold_id": 6, "oos_ic": -0.01, "test_rows": 120, "coverage": 1.0},
+        ],
+        policy={"min_positive_fold_ratio": 0.45},
+    )
+
+    assert evidence["oos_ic_mean"] > 0
+    assert evidence["decision"] == "FAIL"
+    assert "cpcv_tail_oos_ic" in evidence["failed_gates"]
+    assert evidence["tail_fold_stats"]["tail_oos_ic_mean"] < 0
+
+
+def test_patchtst_segment_inverted_rank_fails_closed():
+    evidence = build_model_cpcv_evidence(
+        model="PatchTST",
+        family="learned_sequence",
+        coverage_mode="sequence_window",
+        fold_metrics=[
+            {
+                "fold_id": i,
+                "oos_ic": 0.10,
+                "test_rows": 120,
+                "coverage": 0.20,
+                "segment_ic": {
+                    "LISTED": {"ic": 0.08, "test_rows": 80},
+                    "OTC": {"ic": -0.12, "test_rows": 60},
+                },
+            }
+            for i in range(5)
+        ],
+        policy={"min_positive_fold_ratio": 0.45},
+    )
+
+    assert evidence["coverage_gate_value"] == 1.0
+    assert evidence["decision"] == "FAIL"
+    assert "cpcv_segment_ic" in evidence["failed_gates"]
+    assert evidence["segment_ic_stats"]["OTC"]["oos_ic_mean"] < 0
+
+
+def test_model_cpcv_rejects_all_zero_actual_return_days():
+    evidence = build_model_cpcv_evidence(
+        model="TabM",
+        family="tabular_neural",
+        fold_metrics=[
+            {"fold_id": i, "oos_ic": 0.06, "test_rows": 120, "coverage": 1.0}
+            for i in range(5)
+        ] + [{
+            "fold_id": "bad_zero_return_day",
+            "oos_ic": 0.07,
+            "test_rows": 120,
+            "coverage": 1.0,
+            "all_zero_actual_return_day": True,
+        }],
+        policy={"min_positive_fold_ratio": 0.45},
+    )
+
+    assert evidence["decision"] == "FAIL"
+    assert "cpcv_actual_return_all_zero_day" in evidence["failed_gates"]
+    assert evidence["return_quality_stats"]["all_zero_actual_return_days"] == 1
+
+
 def test_build_model_cpcv_adapter_missing_evidence_fails_visible():
     evidence = build_model_cpcv_adapter_missing_evidence(
         model="FT-Transformer",

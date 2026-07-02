@@ -126,6 +126,52 @@ def test_remote_backfill_tool_supports_daily_source_window_contract():
     assert list(tool.filter_date_range(frame, start_date="2026-07-01", end_date="2026-07-01")["close"]) == [12]
 
 
+def test_source_quality_zero_finlab_rows_is_empty_not_ok(monkeypatch):
+    tool = _load_tool_module()
+    calls: list[tuple[str, list]] = []
+
+    def fake_d1_exec(sql, params=None):
+        calls.append((sql, list(params or [])))
+        return {"success": True}
+
+    monkeypatch.setattr(tool, "d1_exec", fake_d1_exec)
+    manifest = {
+        "run_id": "finlab-zero-row-test",
+        "generated_at": "2026-07-02T10:30:00+00:00",
+        "lookback_years": 3,
+        "checksum": "checksum",
+        "mode": "daily_price_primary",
+        "artifact_root": "gs://bucket/run",
+        "summary": {
+            "dataset_count": 1,
+            "finlab_rows": 0,
+            "gap_fill_rows": 0,
+            "value_conflicts": 0,
+        },
+        "diff_reports": [{
+            "dataset_lane": "chip_diversity",
+            "source": "finlab",
+            "generated_at": "2026-07-02T10:30:00+00:00",
+            "summary": {
+                "finlab_rows": 0,
+                "stockvision_rows": 0,
+                "matched": 0,
+                "missing_in_stockvision": 0,
+                "missing_in_finlab": 0,
+                "value_conflicts": 0,
+                "schema_extra_fields": [],
+            },
+        }],
+    }
+
+    tool.insert_d1_summary(manifest)
+
+    source_quality = next(params for sql, params in calls if "INSERT INTO source_quality_metrics" in sql)
+    assert source_quality[1] == "chip_diversity"
+    assert source_quality[3] == "empty"
+    assert source_quality[4] == 1.0
+
+
 def test_core_specs_include_finlab_wave2_official_replacement_keys():
     tool = _load_tool_module()
     fundamental = next(spec for spec in tool.CORE_SPECS if spec.lane == "fundamental_factor_diversity")

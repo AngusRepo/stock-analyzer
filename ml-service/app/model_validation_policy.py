@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 
-MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v1"
+MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v2"
 
 MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "LightGBM": "tree",
@@ -121,6 +121,46 @@ def _deep_merge(base: dict[str, Any], overrides: dict[str, Any] | None) -> dict[
     return merged
 
 
+def _tail_fold_guard(
+    *,
+    model_name: str,
+    family: str,
+    regime: str,
+    min_oos_ic_mean: float,
+    min_positive_fold_ratio: float,
+) -> dict[str, Any]:
+    enabled = model_name in {"TabM", "PatchTST"} or family in {"tabular_neural", "learned_sequence"}
+    risk_buffer = 0.02 if regime in {"bear", "volatile"} else 0.0
+    return {
+        "enabled": enabled,
+        "tail_folds": 3,
+        "min_tail_oos_ic_mean": round(min_oos_ic_mean, 6),
+        "min_tail_positive_fold_ratio": round(_clamp(min_positive_fold_ratio - 0.05 + risk_buffer, 0.50, 0.70), 6),
+        "required_for_serving_promotion": model_name in {"TabM", "PatchTST"},
+    }
+
+
+def _segment_ic_guard(*, model_name: str, family: str) -> dict[str, Any]:
+    enabled = model_name in {"TabM", "PatchTST"} or family in {"tabular_neural", "learned_sequence"}
+    return {
+        "enabled": enabled,
+        "required_segments": ["LISTED", "OTC"],
+        "min_segment_ic_mean": 0.0,
+        "min_segment_test_rows": 40,
+        "fail_on_inverted_rank": True,
+        "required_for_serving_promotion": model_name in {"TabM", "PatchTST"},
+    }
+
+
+def _return_quality_guard(*, model_name: str, family: str) -> dict[str, Any]:
+    return {
+        "enabled": model_name in {"TabM", "PatchTST"} or family in {"tabular_neural", "learned_sequence"},
+        "exclude_all_zero_return_days": True,
+        "max_zero_return_ratio": 0.98,
+        "required_for_serving_promotion": model_name in {"TabM", "PatchTST"},
+    }
+
+
 def _nested_get(source: dict[str, Any], first: str, second: str) -> Any:
     value = source.get(first)
     if isinstance(value, dict):
@@ -220,6 +260,15 @@ def resolve_model_validation_policy(
             "regime": resolved_regime,
             "family": resolved_family,
             "policy_version": MODEL_VALIDATION_POLICY_VERSION,
+            "tail_fold_guard": _tail_fold_guard(
+                model_name=model_name,
+                family=resolved_family,
+                regime=resolved_regime,
+                min_oos_ic_mean=min_ic,
+                min_positive_fold_ratio=min_positive,
+            ),
+            "segment_ic_guard": _segment_ic_guard(model_name=model_name, family=resolved_family),
+            "return_quality_guard": _return_quality_guard(model_name=model_name, family=resolved_family),
         },
         "pbo": {
             "required": pbo_required,

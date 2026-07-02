@@ -66,9 +66,14 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(tradingRestrictions.includes('market:tpex_attention_stocks'), 'screener restricted gate must reserve TPEX attention-list source')
   assert(tradingRestrictions.includes('canonical_trading_restrictions'), 'screener restricted gate must include canonical D1 restriction governance')
   assert(tradingRestrictions.includes("normalizedType === 'attention'"), 'attention stocks must be explicit soft risk evidence, not hard blocks')
-  assert(tradingRestrictions.includes("normalizedType === 'disposition'"), 'disposition/punish rows must be explicit soft risk evidence, not hard blocks')
+  assert(
+    tradingRestrictions.includes("normalizedType === 'disposition'") &&
+      tradingRestrictions.includes("normalizedSource.includes('punish')") &&
+      tradingRestrictions.includes("normalizedSource.includes('disposition')) return true"),
+    'disposition/punish rows must be L0 hard blocks while attention remains soft risk evidence',
+  )
   assert(!tradingRestrictions.includes("  'attention',\n"), 'attention must not be listed in hard restriction types')
-  assert(!tradingRestrictions.includes("  'disposition',\n"), 'disposition must not be listed in hard restriction types')
+  assert(!tradingRestrictions.includes("  'disposition',\n"), 'disposition must be hard by source/type logic, not by broad static fallback')
   assert(updateOrchestrator.includes('fetchPunishedStocks'), 'market data update must refresh punished-stock cache, not leave screener as the only owner')
   assert(updateOrchestrator.includes('market:punished_stocks'), 'market data update must write punished-stock KV for downstream gates')
   assert(pendingBuyOrchestrator.includes('loadTradingRestrictionBuckets'), 'morning setup restricted gate must use shared hard/risk restriction buckets')

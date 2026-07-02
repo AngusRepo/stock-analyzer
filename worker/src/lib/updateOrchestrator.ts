@@ -23,9 +23,21 @@ const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const FINLAB_CANONICAL_DAILY_CHECKS = [
-  { table: 'canonical_market_daily', minRows: 1000 },
-  { table: 'canonical_chip_daily', minRows: 1000 },
-  { table: 'canonical_institutional_amount_daily', minRows: 1 },
+  {
+    key: 'canonical_market_daily:listed_otc',
+    table: 'canonical_market_daily',
+    minRows: 1000,
+  },
+  {
+    key: 'canonical_chip_daily:listed_otc',
+    table: 'canonical_chip_daily',
+    minRows: 1000,
+  },
+  {
+    key: 'canonical_institutional_amount_daily:listed_otc',
+    table: 'canonical_institutional_amount_daily',
+    minRows: 1,
+  },
 ] as const
 
 const UPDATE_UNIVERSE_WHERE = `
@@ -80,29 +92,52 @@ async function finLabCanonicalTableStats(
 }
 
 async function assertFinLabCanonicalDailyReady(db: D1Database, targetDate: string): Promise<string> {
-  const stats = await Promise.all(
-    FINLAB_CANONICAL_DAILY_CHECKS.map((check) => finLabCanonicalTableStats(db, check.table, targetDate)),
-  )
-  const errors: string[] = []
-  for (const stat of stats) {
-    const check = FINLAB_CANONICAL_DAILY_CHECKS.find((item) => item.table === stat.table)!
-    if (!stat.latestDate || stat.latestDate < targetDate) {
-      errors.push(`${stat.table} latest=${stat.latestDate ?? 'none'} before expected=${targetDate}`)
-    }
-    if (stat.rowsOnTarget < check.minRows) {
-      errors.push(`${stat.table} target_rows=${stat.rowsOnTarget}/${check.minRows} date=${targetDate}`)
-    }
-  }
+  const checks = await finLabCanonicalDailyReadinessChecks(db, targetDate)
+  const errors = checks.filter((check) => !check.ok).map((check) => check.summary)
   if (errors.length) {
     throw new Error(`FinLab canonical daily not ready: ${errors.join('; ')}`)
   }
-  return `FinLab canonical ready for ${targetDate}: ${stats.map((row) => `${row.table}=${row.rowsOnTarget}`).join(' ')}`
+  return `FinLab canonical ready for ${targetDate}: ${checks.map((row) => row.summary).join(' ')}`
 }
 
 type ReadinessCheck = {
   key: string
   ok: boolean
   summary: string
+}
+
+async function finLabCanonicalDailyReadinessChecks(
+  db: D1Database,
+  targetDate: string,
+): Promise<ReadinessCheck[]> {
+  const stats = await Promise.all(
+    FINLAB_CANONICAL_DAILY_CHECKS.map((check) => finLabCanonicalTableStats(db, check.table, targetDate)),
+  )
+  const checks: ReadinessCheck[] = []
+  for (const stat of stats) {
+    const check = FINLAB_CANONICAL_DAILY_CHECKS.find((item) => item.table === stat.table)!
+    const parts: string[] = []
+    if (!stat.latestDate || stat.latestDate < targetDate) {
+      parts.push(`${stat.table} latest=${stat.latestDate ?? 'none'} before expected=${targetDate}`)
+    }
+    if (stat.rowsOnTarget < check.minRows) {
+      parts.push(`${stat.table} target_rows=${stat.rowsOnTarget}/${check.minRows} date=${targetDate}`)
+    }
+    if (parts.length) {
+      checks.push({
+        key: check.key,
+        ok: false,
+        summary: parts.join('; '),
+      })
+    } else {
+      checks.push({
+        key: check.key,
+        ok: true,
+        summary: `${stat.table}=${stat.rowsOnTarget}`,
+      })
+    }
+  }
+  return checks
 }
 
 type SourceReadinessSnapshot = {
@@ -182,22 +217,76 @@ async function countReadinessRows(
   }
 }
 
+function taipeiDateFromIso(value: string | null | undefined): string | null {
+  const ms = Date.parse(String(value ?? ''))
+  if (!Number.isFinite(ms)) return null
+  return new Date(ms + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
+async function tradingRestrictionsDailyReadinessCheck(
+  env: Bindings,
+  targetDate: string,
+): Promise<ReadinessCheck> {
+  const key = 'canonical_trading_restrictions:daily_micro_lane'
+  try {
+    const [quality, checkedAt] = await Promise.all([
+      env.DB.prepare(`
+        SELECT freshness_status, missing_rate, latest_materialization, metrics_json
+          FROM source_quality_metrics
+         WHERE source = 'finlab'
+           AND dataset = 'trading_restrictions'
+           AND as_of_date = ?
+         ORDER BY latest_materialization DESC
+         LIMIT 1
+      `).bind(targetDate).first<{
+        freshness_status: string | null
+        missing_rate: number | null
+        latest_materialization: string | null
+        metrics_json: string | null
+      }>(),
+      env.KV.get('market:trading_restrictions:checked_at'),
+    ])
+    const freshness = String(quality?.freshness_status ?? '').trim().toLowerCase()
+    const finlabFresh = Boolean(quality) && !/empty|missing|failed|stale|disabled|error/i.test(freshness)
+    if (finlabFresh) {
+      return {
+        key,
+        ok: true,
+        summary: `${key} finlab=${quality?.freshness_status ?? 'ok'} materialized=${quality?.latest_materialization ?? 'n/a'}`,
+      }
+    }
+
+    const checkedDate = taipeiDateFromIso(checkedAt)
+    if (checkedDate && checkedDate >= targetDate) {
+      return {
+        key,
+        ok: true,
+        summary: `${key} official_checked_at=${checkedAt}`,
+      }
+    }
+
+    return {
+      key,
+      ok: false,
+      summary: `${key} waiting: finlab=${quality?.freshness_status ?? 'missing'} checked_at=${checkedAt ?? 'missing'}`,
+    }
+  } catch (e) {
+    return {
+      key,
+      ok: false,
+      summary: `${key} query failed: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
 async function checkEveningChainSourceReadiness(
   env: Bindings,
   targetDate: string,
 ): Promise<SourceReadinessSnapshot> {
   const checks: ReadinessCheck[] = []
 
-  try {
-    const summary = await assertFinLabCanonicalDailyReady(env.DB, targetDate)
-    checks.push({ key: 'finlab_primary_canonical', ok: true, summary })
-  } catch (e) {
-    checks.push({
-      key: 'finlab_primary_canonical',
-      ok: false,
-      summary: e instanceof Error ? e.message : String(e),
-    })
-  }
+  checks.push(...await finLabCanonicalDailyReadinessChecks(env.DB, targetDate))
+  checks.push(await tradingRestrictionsDailyReadinessCheck(env, targetDate))
 
   try {
     const ready = await assertMarketDataReady(env.DB, targetDate, { requireIndicators: false })
@@ -319,6 +408,21 @@ function finLabRefreshScopeForReadiness(readiness: SourceReadinessSnapshot): {
       datasets.add('canonical_institutional_amount_daily')
       continue
     }
+    if (key.startsWith('canonical_market_daily:')) {
+      lanes.add('daily_price')
+      datasets.add('canonical_market_daily')
+      continue
+    }
+    if (key.startsWith('canonical_chip_daily:')) {
+      lanes.add('chip_diversity')
+      datasets.add('canonical_chip_daily')
+      continue
+    }
+    if (key.startsWith('canonical_institutional_amount_daily:')) {
+      lanes.add('institutional_amount_summary')
+      datasets.add('canonical_institutional_amount_daily')
+      continue
+    }
     if (key.startsWith('canonical_market_index_daily:')) {
       lanes.add('regime_context')
       datasets.add('canonical_market_index_daily')
@@ -338,6 +442,10 @@ function finLabRefreshScopeForReadiness(readiness: SourceReadinessSnapshot): {
       lanes.add('broker_flow_diversity')
       datasets.add('canonical_broker_flow_daily')
       datasets.add('canonical_broker_rank_daily')
+      continue
+    }
+    if (key.startsWith('canonical_trading_restrictions:')) {
+      lanes.add('trading_restrictions')
     }
   }
 
@@ -1864,10 +1972,31 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
       if (!isFinLabCanonicalReadinessError(e)) throw e
     }
   }
+  const fallbackReadiness = await checkEveningChainSourceReadiness(env, twDate)
+  if (fallbackReadiness.ok) {
+    const continuation = await continueAfterFinLabBackfill(env, twDate, force, `fallback-ready-${twDate}`)
+    return `triggered evening-chain: 22:00 fallback skipped FinLab refresh; source readiness already ready for ${twDate}; ${continuation}`
+  }
+  if (!hasFinLabRefreshableMissing(fallbackReadiness)) {
+    const summary = `running: 22:00 fallback waiting at non-FinLab source-readiness gate; ${fallbackReadiness.summary}`
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'running',
+      summary,
+      duration_ms: 0,
+      details: readinessDetails(fallbackReadiness),
+      run_date: twDate,
+    })
+    return summary
+  }
+  const refreshScope = finLabRefreshScopeForReadiness(fallbackReadiness)
+  if (!refreshScope.lanes) {
+    throw new Error(`22:00 fallback cannot derive FinLab lanes from missing readiness keys: ${fallbackReadiness.missingKeys.join(',')}`)
+  }
   const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
     continueEveningChain: true,
     dailySourceRefresh: true,
     callbackMode: 'evening_chain',
+    ...refreshScope,
   }))
   const finlabStatus = classifySchedulerSummary(finlabSummary)
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {

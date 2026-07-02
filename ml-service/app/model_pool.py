@@ -203,7 +203,10 @@ def load_pool() -> Optional[dict]:
     global _POOL_CACHE, _POOL_CACHE_LOADED_AT
     ttl = int(os.environ.get("MODEL_POOL_CACHE_TTL_SECONDS", "300") or "300")
     if _POOL_CACHE is not None and time.time() - _POOL_CACHE_LOADED_AT < max(0, ttl):
-        return sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
+        cached = sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
+        from .serving_resolver import resolve_serving_pool
+
+        return resolve_serving_pool(cached)
     try:
         bucket = _get_bucket()
         blob = bucket.blob(GCS_POOL_KEY)
@@ -211,7 +214,10 @@ def load_pool() -> Optional[dict]:
             return None
         _POOL_CACHE = json.loads(blob.download_as_text().lstrip("\ufeff"))
         _POOL_CACHE_LOADED_AT = time.time()
-        return sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
+        pool = sanitize_pool_active_alpha(json.loads(json.dumps(_POOL_CACHE)))
+        from .serving_resolver import resolve_serving_pool
+
+        return resolve_serving_pool(pool)
     except Exception as e:
         logger.warning(f"[ModelPool] Load failed: {e}")
         return None

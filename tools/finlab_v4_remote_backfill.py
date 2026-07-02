@@ -1503,6 +1503,7 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
 
     for diff in manifest["diff_reports"]:
         diff_summary = diff["summary"]
+        source_quality_status = "ok" if int(diff_summary.get("finlab_rows") or 0) > 0 else "empty"
         d1_exec(
             """
             INSERT INTO source_diff_report (
@@ -1546,7 +1547,7 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
                 "finlab",
                 diff["dataset_lane"],
                 generated_at[:10],
-                "ok",
+                source_quality_status,
                 0.0 if diff_summary["finlab_rows"] else 1.0,
                 0.0,
                 "aggregate_diff",

@@ -352,8 +352,8 @@ function finLabCanonicalWindowDays(env: Bindings): number {
   return windowDays
 }
 
-const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,global_context,regime_context'
-const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_market_index_daily,canonical_futures_daily,canonical_regime_context_daily,canonical_broker_flow_daily,canonical_broker_rank_daily'
+const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,regime_context,trading_restrictions'
+const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_market_index_daily,canonical_futures_daily,canonical_regime_context_daily,canonical_broker_flow_daily,canonical_broker_rank_daily,canonical_trading_restrictions'
 
 function buildFinLabBackfillRunId(years: number, runDate?: string, dailySourceRefresh = false): string {
   const day = (runDate && /^\d{4}-\d{2}-\d{2}$/.test(runDate))
@@ -402,6 +402,10 @@ function buildFinLabBackfillRequestBody(
   const sourceEndDate = dailySourceMode
     ? dailyTargetDate
     : optionalString((env as any).FINLAB_BACKFILL_SOURCE_END_DATE)
+  const archiveLanes = optionalString((env as any).FINLAB_BACKFILL_LANES)
+  if (!dailySourceMode && !archiveLanes) {
+    throw new Error('FINLAB_BACKFILL_LANES must be set for archive backfill; empty lanes would run all CORE_SPECS and burn FinLab quota')
+  }
   return {
     years,
     run_id: runId,
@@ -431,7 +435,7 @@ function buildFinLabBackfillRequestBody(
     callback_mode: callbackMode,
     lanes: dailySourceMode
       ? (optionalString(options.lanes) ?? optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
-      : optionalString((env as any).FINLAB_BACKFILL_LANES),
+      : archiveLanes,
     skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)
       : truthyFlag((env as any).FINLAB_BACKFILL_SKIP_DIFF_COUNTS),

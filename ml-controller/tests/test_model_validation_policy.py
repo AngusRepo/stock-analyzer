@@ -116,3 +116,25 @@ def test_external_override_can_adjust_policy_without_callsite_thresholds(monkeyp
     assert policy["cpcv"]["min_coverage"] == 0.95
     assert policy["pbo"]["required"] is True
     assert policy["pbo"]["max_pbo"] == 0.12
+
+
+def test_tabm_and_patchtst_policy_requires_tail_segment_and_return_quality_guards():
+    for model_name in ("TabM", "PatchTST"):
+        policy = resolve_model_validation_policy(
+            model_name=model_name,
+            stage="promotion",
+            regime="sideways",
+            search_trials=32,
+            sample_count=800,
+            fold_count=6,
+        )
+
+        cpcv = policy["cpcv"]
+        assert cpcv["tail_fold_guard"]["enabled"] is True
+        assert cpcv["tail_fold_guard"]["required_for_serving_promotion"] is True
+        assert cpcv["tail_fold_guard"]["tail_folds"] == 3
+        assert cpcv["segment_ic_guard"]["enabled"] is True
+        assert cpcv["segment_ic_guard"]["required_segments"] == ["LISTED", "OTC"]
+        assert cpcv["segment_ic_guard"]["required_for_serving_promotion"] is True
+        assert cpcv["return_quality_guard"]["exclude_all_zero_return_days"] is True
+        assert cpcv["return_quality_guard"]["required_for_serving_promotion"] is True

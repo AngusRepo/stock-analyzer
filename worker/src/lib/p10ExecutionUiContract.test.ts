@@ -72,8 +72,10 @@ assert(
   'Bot dashboard must use item-aware execution status labels',
 )
 assert(
-  botDashboard.includes('盤中原因：{executionBadge.label}'),
-  'Bot dashboard pending-buy cards must display the intraday reason inside each card',
+  botDashboard.includes('盤中 Real-time 檢查：{executionBadge.label}') &&
+    botDashboard.includes('交易門檻：{executionBadge.description}') &&
+    botDashboard.includes('S12 結構：{s12Badge.label}'),
+  'Bot dashboard pending-buy cards must merge intraday threshold and S12 structure into one readable real-time gate card',
 )
 assert(
   botDashboard.includes('formatS12HoldingDefenseBadge') && botDashboard.includes('p.s12_holding_defense'),
@@ -82,6 +84,12 @@ assert(
 assert(
   botDashboard.includes('formatCanonicalTradeLifecycleBadge') && botDashboard.includes('p.canonical_trade_lifecycle'),
   'Bot dashboard holdings table must surface canonical lifecycle owner status',
+)
+assert(
+  uiHelper.includes('formatPositionRiskPlan') &&
+    botDashboard.includes('S12 持倉分析：{s12HoldingDefense.label}') &&
+    botDashboard.includes('止損 / 停利 contract：{lifecycleBadge.label}'),
+  'Bot dashboard holdings table must expand S12 holding analysis and align stop/take-profit UI with the risk-plan formatter',
 )
 assert(
   botDashboard.includes('formatPartialFillRemaining'),

@@ -4,7 +4,7 @@
  * Design: Dark Mode + Mobile-first, inspired by FreqUI + 3Commas
  * Sections: Portfolio Summary → Signals → Positions → Trade History → Bot Status
  */
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
@@ -23,7 +23,7 @@ import AppShell from '@/components/AppShell'
 import PaperTradePerformanceChart from '@/components/charts/PaperTradePerformanceChart'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
-import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge } from '@/lib/pendingBuyExecutionUi'
+import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatPositionRiskPlan, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge } from '@/lib/pendingBuyExecutionUi'
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
@@ -475,6 +475,14 @@ function executionToneClass(tone: string): string {
   return 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200'
 }
 
+function dominantExecutionTone(...tones: Array<string | null | undefined>): string {
+  if (tones.includes('error')) return 'error'
+  if (tones.includes('warn')) return 'warn'
+  if (tones.includes('info')) return 'info'
+  if (tones.includes('ok')) return 'ok'
+  return 'neutral'
+}
+
 function pendingBuyEmptyMessage(meta?: any): string {
   const counts = meta?.execution_counts ?? {}
   const cancelled = Number(counts.cancelled ?? 0)
@@ -561,6 +569,11 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const partialRemaining = formatPartialFillRemaining(b.watch_points)
         const allocatorSummary = describeAllocatorDecision(b.watch_points)
+        const realtimeGateTone = dominantExecutionTone(
+          executionBadge.tone,
+          s12Badge?.tone,
+          allocatorSummary?.tone,
+        )
         // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
         // prefix with price line. Previously price line 100% replaced reason.
         // Also strip "⚠️ Signal Provenance ..." English debate-only preamble
@@ -610,35 +623,15 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               </div>
               <div className={[
                 'mt-2 rounded-lg border px-3 py-2',
-                executionToneClass(executionBadge.tone),
+                executionToneClass(realtimeGateTone),
               ].join(' ')}>
-                <div className="text-[13px] font-semibold md:text-sm">盤中原因：{executionBadge.label}</div>
-                <div className="mt-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">
-                  {executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}
+                <div className="text-[13px] font-semibold md:text-sm">盤中 Real-time 檢查：{executionBadge.label}</div>
+                <div className="mt-1 space-y-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">
+                  <div>交易門檻：{executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}</div>
+                  {s12Badge && <div>S12 結構：{s12Badge.label}。{s12Badge.description}</div>}
+                  {allocatorSummary && <div>資金配置：{allocatorSummary.title}。{allocatorSummary.detail}</div>}
                 </div>
               </div>
-              {s12Badge && (
-                <div className={[
-                  'mt-2 rounded-lg border px-3 py-2',
-                  executionToneClass(s12Badge.tone),
-                ].join(' ')}>
-                  <div className="text-[13px] font-semibold md:text-sm">S12 盤中結構：{s12Badge.label}</div>
-                  <div className="mt-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">{s12Badge.description}</div>
-                </div>
-              )}
-              {allocatorSummary && (
-                <div className={[
-                  'mt-2 rounded-lg border px-3 py-2',
-                  allocatorSummary.tone === 'ok'
-                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-                    : allocatorSummary.tone === 'warn'
-                      ? 'border-amber-500/25 bg-amber-500/10 text-amber-200'
-                      : 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200',
-                ].join(' ')}>
-                  <div className="text-[13px] font-semibold md:text-sm">{allocatorSummary.title}</div>
-                  <div className="mt-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">{allocatorSummary.detail}</div>
-                </div>
-              )}
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
@@ -990,6 +983,7 @@ function PositionsTable() {
               const costBasis = entry * shares
               const s12HoldingDefense = formatS12HoldingDefenseBadge(p.s12_holding_defense)
               const lifecycleBadge = formatCanonicalTradeLifecycleBadge(p.canonical_trade_lifecycle)
+              const riskPlan = formatPositionRiskPlan(p)
               totalUnrealized += pnlAmt
               totalCostBasis += costBasis
 
@@ -999,60 +993,74 @@ function PositionsTable() {
                 : null
 
               return (
-                <tr key={p.symbol} className="border-b border-border/50 hover:bg-muted/30">
-                  <td className="p-2">
-                    <div className="sv-num text-foreground">{p.symbol}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {p.name}
-                      {daysHeld != null && <span className="ml-1 text-muted-foreground/60">({daysHeld}天)</span>}
-                    </div>
-                    {s12HoldingDefense && (
-                      <div className={[
-                        'mt-1 inline-flex max-w-[220px] rounded-full border px-2 py-0.5 text-[11px] leading-4',
-                        executionToneClass(s12HoldingDefense.tone),
-                      ].join(' ')} title={s12HoldingDefense.description}>
-                        {s12HoldingDefense.label}
+                <Fragment key={p.symbol}>
+                  <tr className="border-b border-border/50 hover:bg-muted/30">
+                    <td className="p-2">
+                      <div className="sv-num text-foreground">{p.symbol}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {p.name}
+                        {daysHeld != null && <span className="ml-1 text-muted-foreground/60">({daysHeld}天)</span>}
                       </div>
-                    )}
-                    {lifecycleBadge && (
-                      <div className={[
-                        'mt-1 inline-flex max-w-[240px] rounded-full border px-2 py-0.5 text-[11px] leading-4',
-                        executionToneClass(lifecycleBadge.tone),
-                      ].join(' ')} title={lifecycleBadge.description}>
-                        {lifecycleBadge.label}
+                    </td>
+                    <td className="p-2 text-right sv-num text-foreground/80">{lots}</td>
+                    <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 1)}</td>
+                    <td className="p-2 text-right sv-num text-foreground/80">${fmt(current, 1)}</td>
+                    <td className="p-2 text-right">
+                      {riskPlan.stop ? (
+                        <div>
+                          <div className={`sv-num text-xs ${riskPlan.stopTone === 'warn' ? 'text-amber-300' : 'text-red-400'}`}>${riskPlan.stop}</div>
+                          {riskPlan.stopSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.stopSource}</div>}
+                        </div>
+                      ) : <span className="text-muted-foreground/60">—</span>}
+                    </td>
+                    <td className="p-2 text-right">
+                      {riskPlan.tp1 && (
+                        <div className={`sv-num text-xs ${riskPlan.tp1Hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
+                          T1 ${riskPlan.tp1}
+                        </div>
+                      )}
+                      {riskPlan.tp2 && (
+                        <div className="sv-num text-xs text-red-300">T2 ${riskPlan.tp2}</div>
+                      )}
+                      {riskPlan.tpSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.tpSource}</div>}
+                      {!riskPlan.tp1 && !riskPlan.tp2 && <span className="text-muted-foreground/60">—</span>}
+                    </td>
+                    <td className="p-2 text-right">
+                      <div className={`sv-num ${pctClass(pnlPct)}`}>
+                        {pnlPct >= 0 ? '+' : ''}{(pnlPct * 100).toFixed(2)}%
                       </div>
-                    )}
-                  </td>
-                  <td className="p-2 text-right sv-num text-foreground/80">{lots}</td>
-                  <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 1)}</td>
-                  <td className="p-2 text-right sv-num text-foreground/80">${fmt(current, 1)}</td>
-                  <td className="p-2 text-right">
-                    {p.trailing_stop ? (
-                      <div className="sv-num text-red-400 text-xs">${fmt(p.trailing_stop, 1)}</div>
-                    ) : p.initial_stop ? (
-                      <div className="sv-num text-red-400/60 text-xs">${fmt(p.initial_stop, 1)}</div>
-                    ) : <span className="text-muted-foreground/60">—</span>}
-                  </td>
-                  <td className="p-2 text-right">
-                    {p.tp1_price && (
-                      <div className={`sv-num text-xs ${p.tp1_hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
-                        T1 ${fmt(p.tp1_price, 1)}
+                      <div className={`text-xs sv-num ${pctClass(pnlAmt)}`}>
+                        {pnlAmt >= 0 ? '+' : ''}${fmt(Math.round(pnlAmt))}
                       </div>
-                    )}
-                    {p.tp2_price && (
-                      <div className="sv-num text-xs text-red-300">T2 ${fmt(p.tp2_price, 1)}</div>
-                    )}
-                    {!p.tp1_price && !p.tp2_price && <span className="text-muted-foreground/60">—</span>}
-                  </td>
-                  <td className="p-2 text-right">
-                    <div className={`sv-num ${pctClass(pnlPct)}`}>
-                      {pnlPct >= 0 ? '+' : ''}{(pnlPct * 100).toFixed(2)}%
-                    </div>
-                    <div className={`text-xs sv-num ${pctClass(pnlAmt)}`}>
-                      {pnlAmt >= 0 ? '+' : ''}${fmt(Math.round(pnlAmt))}
-                    </div>
-                  </td>
-                </tr>
+                    </td>
+                  </tr>
+                  {(s12HoldingDefense || lifecycleBadge) && (
+                    <tr className="border-b border-border/50">
+                      <td colSpan={7} className="px-2 pb-3">
+                        <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                          {s12HoldingDefense && (
+                            <div className={[
+                              'rounded-lg border px-3 py-2 text-[12px] leading-5 md:text-[13px]',
+                              executionToneClass(s12HoldingDefense.tone),
+                            ].join(' ')}>
+                              <div className="font-semibold">S12 持倉分析：{s12HoldingDefense.label}</div>
+                              <div className="mt-1 text-muted-foreground/90">{s12HoldingDefense.description}</div>
+                            </div>
+                          )}
+                          {lifecycleBadge && (
+                            <div className={[
+                              'rounded-lg border px-3 py-2 text-[12px] leading-5 md:text-[13px]',
+                              executionToneClass(lifecycleBadge.tone),
+                            ].join(' ')}>
+                              <div className="font-semibold">止損 / 停利 contract：{lifecycleBadge.label}</div>
+                              <div className="mt-1 text-muted-foreground/90">{lifecycleBadge.description}</div>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               )
             })}
           </tbody>

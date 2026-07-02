@@ -47,6 +47,16 @@ export interface CanonicalTradeLifecycleContext {
   }
 }
 
+export interface PositionRiskPlanBadge {
+  stop: string | null
+  stopSource: string | null
+  stopTone: PendingBuyExecutionTone
+  tp1: string | null
+  tp2: string | null
+  tpSource: string | null
+  tp1Hit: boolean
+}
+
 interface ParsedExecutionNote {
   status: string
   reason: string
@@ -295,6 +305,11 @@ function fmtPrice(value: unknown): string | null {
   return n.toLocaleString('zh-TW', { maximumFractionDigits: 2 })
 }
 
+function positivePrice(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 function yn(value: string | undefined): string | null {
   if (value === 'true') return '已對齊'
   if (value === 'false') return '未對齊'
@@ -444,8 +459,52 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
     : null
   return {
     label,
-    tone: active ? 'warn' : insufficientData ? 'error' : s12Tone(reason || status),
+    tone: active
+      ? action === 'quote_unavailable' ? 'error' : 'warn'
+      : insufficientData ? 'warn' : s12Tone(reason || status),
     description: [actionText, stopText, detail].filter(Boolean).join('；') || humanizeExecutionReason(reason || status || 's12_structure_advisory_waiting'),
+  }
+}
+
+export function formatPositionRiskPlan(raw: Record<string, unknown> | null | undefined): PositionRiskPlanBadge {
+  const lifecycle = parseLifecycle(raw?.canonical_trade_lifecycle)
+  const s12Defense = raw?.s12_holding_defense as S12HoldingDefenseContext | null | undefined
+  const s12Stop = positivePrice(s12Defense?.trailing_stop_after ?? s12Defense?.detail?.holding_defense?.trailing_stop_after)
+  const trailingStop = positivePrice(raw?.trailing_stop)
+  const lifecycleStop = positivePrice(lifecycle?.exit?.trailingStop ?? lifecycle?.exit?.initialStop ?? lifecycle?.entry?.stopLoss)
+  const initialStop = positivePrice(raw?.initial_stop)
+  const stopValue = s12Stop ?? trailingStop ?? lifecycleStop ?? initialStop
+  const stopSource = s12Stop != null
+    ? 'S12 防守'
+    : trailingStop != null
+      ? 'ATR trailing'
+      : lifecycleStop != null
+        ? '生命週期'
+        : initialStop != null
+          ? '初始停損'
+          : null
+
+  const s12ExitPlan = lifecycle?.entry?.s12?.exitPlan ?? {}
+  const s12Tp1 = positivePrice(s12ExitPlan.tp1)
+  const s12MainExit = positivePrice(s12ExitPlan.mainExit)
+  const tp1Value = s12Tp1 ?? positivePrice(lifecycle?.exit?.tp1) ?? positivePrice(raw?.tp1_price)
+  const tp2Value = s12MainExit ?? positivePrice(lifecycle?.exit?.tp2) ?? positivePrice(raw?.tp2_price)
+  const tpSource = s12Tp1 != null || s12MainExit != null
+    ? 'S12 結構'
+    : lifecycle?.owners?.exit
+      ? OWNER_LABELS[String(lifecycle.owners.exit)] ?? String(lifecycle.owners.exit)
+      : tp1Value != null || tp2Value != null
+        ? 'paper SLTP'
+        : null
+
+  return {
+    stop: fmtPrice(stopValue),
+    stopSource,
+    stopTone: s12Stop != null ? 'warn' : 'neutral',
+    tp1: fmtPrice(tp1Value),
+    tp2: fmtPrice(tp2Value),
+    tpSource,
+    tp1Hit: Boolean(raw?.tp1_hit),
   }
 }
 

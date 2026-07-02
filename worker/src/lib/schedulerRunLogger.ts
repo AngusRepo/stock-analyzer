@@ -18,6 +18,7 @@ export interface SchedulerRunLogEntry {
 
 export interface SchedulerRunLogReadOptions {
   legacyFallback?: boolean
+  directFallback?: boolean
 }
 
 type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> & {
@@ -80,6 +81,8 @@ const TASK_NAMES: Record<string, string> = {
   'monthly-retrain': 'Monthly Universal Retrain',
   verify: 'Verify (compat alias)',
 }
+
+const DAILY_RUN_LOG_TTL_SECONDS = 7 * 86400
 
 export function getSchedulerLogTaskCount(): number {
   return Object.keys(TASK_NAMES).length
@@ -162,9 +165,17 @@ export async function logSchedulerRunResult(
   try {
     const payload = JSON.stringify(entry)
     await Promise.all([
-      kv.put(`scheduler:run:${task}:${today}`, payload, { expirationTtl: 7 * 86400 }),
-      kv.put(`cron:log:${task}:${today}`, payload, { expirationTtl: 7 * 86400 }),
+      kv.put(`scheduler:run:${task}:${today}`, payload, { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS }),
+      kv.put(`cron:log:${task}:${today}`, payload, { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS }),
     ])
+
+    const aggregateKey = `scheduler:run:daily:${today}`
+    const aggregate = await kv.get(aggregateKey, 'json') as Record<string, SchedulerRunLogEntry> | null
+    await kv.put(
+      aggregateKey,
+      JSON.stringify({ ...(aggregate ?? {}), [task]: entry }),
+      { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS },
+    )
   } catch (error) {
     // Scheduler run logging should never break the task itself, but silent failure
     // makes Scheduler incidents impossible to diagnose.
@@ -211,6 +222,19 @@ export async function getSchedulerRunLogs(
   const tasks = Object.keys(TASK_NAMES)
   const results: SchedulerRunLogEntry[] = []
   const legacyFallback = options.legacyFallback !== false
+  const directFallback = options.directFallback !== false
+
+  const aggregate = await kv.get(`scheduler:run:daily:${date}`, 'json') as Record<string, SchedulerRunLogEntry> | SchedulerRunLogEntry[] | null
+  if (aggregate) {
+    const values = Array.isArray(aggregate) ? aggregate : Object.values(aggregate)
+    for (const entry of values) {
+      if (entry?.task && tasks.includes(entry.task)) results.push(entry)
+    }
+  }
+
+  if (aggregate || !directFallback) {
+    return fillMissingSchedulerLogs(tasks, results)
+  }
 
   const entries = await Promise.all(
     tasks.map(async (task) => {
@@ -224,6 +248,10 @@ export async function getSchedulerRunLogs(
     if (entry) results.push(entry)
   }
 
+  return fillMissingSchedulerLogs(tasks, results)
+}
+
+function fillMissingSchedulerLogs(tasks: string[], results: SchedulerRunLogEntry[]): SchedulerRunLogEntry[] {
   const loggedTasks = new Set(results.map((row) => row.task))
   for (const task of tasks) {
     if (loggedTasks.has(task)) continue

@@ -5,6 +5,7 @@ import {
   selectSchedulerDisplayLogs,
   type SchedulerDisplayLogCandidate,
 } from './schedulerStatus'
+import * as fs from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -40,10 +41,20 @@ const logs: SchedulerDisplayLogCandidate[] = [
     const dates = getSchedulerScanDates()
     assert(dates.length === 7, 'scheduler status scan window must stay bounded for Cloudflare Worker KV subrequest budget')
     assert(dates.includes('2026-05-03'), 'scheduler scan window must include weekends so weekly/monthly jobs can show lastRun')
-    assert(estimateSchedulerStatusKvReads() < 900, 'scheduler status must stay below Cloudflare Worker subrequest limits')
+    assert(estimateSchedulerStatusKvReads() < 50, 'scheduler status must stay below Cloudflare Worker subrequest limits')
   } finally {
     Date.now = originalNow
   }
+}
+
+{
+  const statusSource = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
+  const loggerSource = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
+  const policySource = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
+  assert(statusSource.includes('directFallback: false'), 'scheduler status must not per-task scan KV logs')
+  assert(statusSource.includes('skipKvPolicy: true'), 'scheduler status nextRun must not probe KV policy per card')
+  assert(loggerSource.includes('scheduler:run:daily:'), 'scheduler logger must maintain daily aggregate logs for OBS')
+  assert(policySource.includes('skipKvPolicy?: boolean'), 'scheduler policy must expose no-KV nextRun mode')
 }
 
 {

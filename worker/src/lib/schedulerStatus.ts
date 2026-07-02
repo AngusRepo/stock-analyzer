@@ -3,7 +3,7 @@
  */
 
 import type { Bindings } from '../types'
-import { getCronLogs, getSchedulerLogTaskCount, type CronLogEntry } from './schedulerRunLogger'
+import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
 import { getSchedulerDependencySpec } from './schedulerDependencyMap'
 
@@ -107,9 +107,8 @@ const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
 const SCHEDULER_STATUS_SCAN_DAYS = 7
 const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
 
-export function estimateSchedulerStatusKvReads(taskCount = getSchedulerLogTaskCount()): number {
-  return (SCHEDULER_STATUS_SCAN_DAYS * taskCount) +
-    (Math.min(SCHEDULER_STATUS_SCAN_DAYS, SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS) * taskCount)
+export function estimateSchedulerStatusKvReads(): number {
+  return SCHEDULER_STATUS_SCAN_DAYS
 }
 
 export interface SchedulerDisplayLogCandidate {
@@ -378,13 +377,14 @@ export async function getSchedulerStatus(env: Bindings) {
     dates.map(async (date, index) => {
       allLogs[date] = await getCronLogs(env.KV, date, {
         legacyFallback: index < SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS,
+        directFallback: false,
       })
     }),
   )
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getDisplayLog(allLogs[today], def.id) ?? inferPipelineChildLog(allLogs[today], def.id)
-    const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV })
+    const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV, skipKvPolicy: true })
 
     const displayLogs = dates.map((date) => ({
       date,

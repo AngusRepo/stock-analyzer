@@ -252,6 +252,7 @@ export async function getNextRunApproxWithPolicy(input: {
   cron: string
   kv: KVNamespace
   nowTw?: Date
+  skipKvPolicy?: boolean
 }): Promise<string> {
   const { cron, task, kv } = input
   if (!cron) return 'N/A'
@@ -264,6 +265,7 @@ export async function getNextRunApproxWithPolicy(input: {
         cron: part.trim(),
         kv,
         nowTw,
+        skipKvPolicy: input.skipKvPolicy,
       })),
     )
     return candidates
@@ -286,6 +288,7 @@ export async function getNextRunApproxWithPolicy(input: {
         ? candidateBase
         : new Date(candidateBase.getTime() + 8 * 3600_000)
       if (candidateTw <= nowTw) continue
+      if (input.skipKvPolicy) return formatNextRun(candidateTw, candidateTw.getUTCHours(), candidateTw.getUTCMinutes())
       const gate = await shouldRunScheduledTask({ task, kv, nowTw: candidateTw })
       if (gate.shouldRun) return formatNextRun(candidateTw, candidateTw.getUTCHours(), candidateTw.getUTCMinutes())
     }
@@ -310,6 +313,7 @@ export async function getNextRunApproxWithPolicy(input: {
     const candidateUtc = twWallToUtcDate(candidate)
     if (!isCronDueOnUtcDate(dom, month, dow, candidateUtc)) continue
 
+    if (input.skipKvPolicy) return formatNextRun(candidate, targetHourTw, targetMin)
     const gate = await shouldRunScheduledTask({ task, kv, nowTw: candidate })
     if (gate.shouldRun) return formatNextRun(candidate, targetHourTw, targetMin)
   }

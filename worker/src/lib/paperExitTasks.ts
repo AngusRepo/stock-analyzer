@@ -16,7 +16,13 @@ import { putIntradayPrice } from './paperIntradayPriceCache'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
-import { assessS12IntradayStructureFromBaseBars, s12TimingPolicyFromEnv, type S12IntradayAssessment } from './s12IntradayStructure'
+import {
+  assessS12IntradayStructureFromBaseBars,
+  resolveS12PositionDecision,
+  s12TimingPolicyFromEnv,
+  type S12IntradayAssessment,
+  type S12UnifiedDecision,
+} from './s12IntradayStructure'
 import { loadS12IntradayBaseBars } from './s12RuntimeBars'
 import {
   getCurrentRegime as getCurrentSltpRegime,
@@ -33,6 +39,9 @@ type S12HoldingDefenseEventAction =
   | 'tighten_stop'
   | 'take_profit_or_tighten_stop'
   | 'trim_or_take_profit'
+  | 'take_profit'
+  | 'full_exit'
+  | 'quote_unavailable'
 
 function enabledFlag(value: unknown, fallback = false): boolean {
   const normalized = String(value ?? '').trim().toLowerCase()
@@ -54,9 +63,13 @@ function positiveNumber(value: unknown): number | null {
 
 export function resolveS12HoldingDefenseEventAction(reason: string | null | undefined): S12HoldingDefenseEventAction {
   const text = String(reason ?? '')
-  if (text.includes('TRIM_OR_TAKE_PROFIT')) return 'trim_or_take_profit'
-  if (text.includes('TAKE_PROFIT_OR_TIGHTEN_STOP')) return 'take_profit_or_tighten_stop'
+  if (text.includes('take_profit_or_tighten_stop') || text.includes('TAKE_PROFIT_OR_TIGHTEN_STOP')) return 'take_profit_or_tighten_stop'
+  if (text.includes('trim_or_take_profit') || text.includes('TRIM_OR_TAKE_PROFIT')) return 'trim_or_take_profit'
+  if (text.includes('quote_unavailable')) return 'quote_unavailable'
+  if (text.includes('full_exit') || text.includes('reverse_bos')) return 'full_exit'
+  if (text.includes('take_profit') || text.includes('tp1') || text.includes('tp2')) return 'take_profit'
   if (text.includes('TIGHTEN_STOP')) return 'tighten_stop'
+  if (text.includes('tighten_stop')) return 'tighten_stop'
   return 'observe'
 }
 
@@ -176,57 +189,76 @@ function resolveExitSellFill(
 
 export function resolveS12HoldingDefenseUpdate(params: {
   pos: {
+    shares?: number | null
+    original_shares?: number | null
     avg_cost: number
     entry_price: number | null
     initial_stop: number | null
     trailing_stop: number | null
     highest_since_entry: number | null
+    tp1_price?: number | null
+    tp2_price?: number | null
     tp1_hit: number
   }
   currentPrice: number
   atr14: number
   assessment: S12IntradayAssessment | null
+  executableBookAvailable?: boolean
+  tp1SellRatio?: number | null
 }): ExitDecision | null {
-  const assessment = params.assessment
-  if (!assessment?.bearishDefense.ready && assessment?.state !== 'bearish_defense_ready') return null
+  const s12Decision = resolveS12PositionDecision({
+    assessment: params.assessment,
+    currentPrice: params.currentPrice,
+    executableBookAvailable: params.executableBookAvailable ?? true,
+    atr14: params.atr14,
+    tp1SellRatio: params.tp1SellRatio,
+    pos: params.pos,
+  })
+  return s12PositionDecisionToExitDecision(s12Decision, params.pos, params.currentPrice)
+}
 
-  const entryPrice = positiveNumber(params.pos.entry_price) ?? positiveNumber(params.pos.avg_cost)
-  if (entryPrice == null) return null
-
-  const currentTrailing =
-    positiveNumber(params.pos.trailing_stop) ??
-    positiveNumber(params.pos.initial_stop) ??
-    entryPrice * 0.92
-  const effectiveAtr = positiveNumber(params.atr14) ?? params.currentPrice * 0.015
-  const pnlPct = (params.currentPrice - entryPrice) / entryPrice
-  const highest = Math.max(
-    positiveNumber(params.pos.highest_since_entry) ?? entryPrice,
-    params.currentPrice,
-  )
-  const belowCurrentCap = params.currentPrice - effectiveAtr * 0.2
-  const profitFloor = params.currentPrice > entryPrice
-    ? entryPrice
-    : params.currentPrice - effectiveAtr * 0.6
-  const structuralTrail = params.currentPrice - effectiveAtr * (params.pos.tp1_hit ? 0.55 : 0.8)
-  const proposed = Math.min(
-    belowCurrentCap,
-    Math.max(currentTrailing, profitFloor, structuralTrail),
-  )
-  const newTrailingStop = Math.max(currentTrailing, proposed)
-  if (!(newTrailingStop > currentTrailing)) return null
-
-  const advisory =
-    !params.pos.tp1_hit && pnlPct >= 0.04
-      ? 'TRIM_OR_TAKE_PROFIT'
-      : params.pos.tp1_hit || pnlPct >= 0.02
-      ? 'TAKE_PROFIT_OR_TIGHTEN_STOP'
-      : 'TIGHTEN_STOP'
-  return {
-    action: 'hold',
-    reason: `S12 bearish defense ${advisory} @ ${newTrailingStop.toFixed(2)}`,
-    newTrailingStop,
-    newHighest: highest,
+function s12PositionDecisionToExitDecision(
+  decision: S12UnifiedDecision,
+  pos: { shares?: number | null; highest_since_entry?: number | null },
+  currentPrice: number,
+): ExitDecision | null {
+  const shares = Math.floor(positiveNumber(pos.shares) ?? 0)
+  const highest = Math.max(positiveNumber(pos.highest_since_entry) ?? currentPrice, currentPrice)
+  if (decision.action === 'TAKE_PROFIT') {
+    const sellShares = Math.min(shares, Math.floor(positiveNumber(decision.sellShares) ?? shares))
+    if (sellShares > 0 && sellShares < shares) {
+      return {
+        action: 'partial_sell',
+        reason: `S12 ${decision.reason} @ ${currentPrice.toFixed(2)}`,
+        sellShares,
+        moveStopToEntry: true,
+        newHighest: highest,
+      }
+    }
+    if (shares > 0) {
+      return {
+        action: 'full_sell',
+        reason: `S12 ${decision.reason} @ ${currentPrice.toFixed(2)}`,
+        newHighest: highest,
+      }
+    }
   }
+  if (decision.action === 'EXIT_ON_REVERSE_BOS') {
+    return {
+      action: 'full_sell',
+      reason: `S12 ${decision.reason} @ ${currentPrice.toFixed(2)}`,
+      newHighest: highest,
+    }
+  }
+  if (decision.action === 'TIGHTEN_STOP' && decision.stopPrice != null) {
+    return {
+      action: 'hold',
+      reason: `S12 ${decision.reason} @ ${Number(decision.stopPrice).toFixed(2)}`,
+      newTrailingStop: Number(decision.stopPrice),
+      newHighest: highest,
+    }
+  }
+  return null
 }
 
 function mergeHoldExitUpdates(base: ExitDecision, overlay: ExitDecision | null): ExitDecision {
@@ -291,6 +323,7 @@ async function evaluateS12HoldingDefense(
   pos: any,
   quote: IntradayOHLC,
   atr14: number,
+  cfg: TradingConfig,
 ): Promise<ExitDecision | null> {
   if (!enabledFlag((env as any).S12_INTRADAY_HOLDING_DEFENSE_ENABLED, true)) return null
   try {
@@ -305,33 +338,47 @@ async function evaluateS12HoldingDefense(
       symbol: pos.symbol,
       baseBars: s12Base.bars,
       fallback4hBars: s12Base.fallback4hBars,
+      fallback1hBars: s12Base.fallback1hBars,
       nowMs: Date.now(),
       policy: s12TimingPolicyFromEnv(env as any),
       barDiagnostics: s12Base.diagnostics,
       h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
       h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
     })
+    const executableBookAvailable = positiveNumber(quote.bid) != null && positiveNumber(quote.ask) != null
+    const s12Decision = resolveS12PositionDecision({
+      assessment,
+      currentPrice: quote.last,
+      executableBookAvailable,
+      atr14,
+      tp1SellRatio: cfg.exit.tp1SellRatio,
+      pos,
+    })
     const update = resolveS12HoldingDefenseUpdate({
       pos,
       currentPrice: quote.last,
       atr14,
       assessment,
+      executableBookAvailable,
+      tp1SellRatio: cfg.exit.tp1SellRatio,
     })
-    const eventReason = update?.reason ?? assessment.reason
-    const holdingDefenseAction = update
-      ? resolveS12HoldingDefenseEventAction(update.reason)
-      : 'observe'
+    const eventReason = update?.reason ?? (s12Decision.action === 'QUOTE_UNAVAILABLE' ? s12Decision.reason : assessment.reason)
+    const holdingDefenseAction = resolveS12HoldingDefenseEventAction(update?.reason ?? s12Decision.reason)
     const eventDetail = {
       ...assessment,
       holding_defense: {
-        active: update != null,
+        active: update != null || s12Decision.action === 'QUOTE_UNAVAILABLE',
         trailing_stop_before: pos.trailing_stop ?? null,
         trailing_stop_after: update?.newTrailingStop ?? null,
         action: holdingDefenseAction,
-        advisory_action: holdingDefenseAction,
-        advisory_only: true,
+        decision_action: s12Decision.action,
+        decision_reason: s12Decision.reason,
+        decision_detail: s12Decision.detail,
+        advisory_only: false,
         no_short_order: true,
-        execution_owner: 'paper_sltp_atr_trailing_v1',
+        executable_book_available: executableBookAvailable,
+        execution_owner: 's12_position_decision_v1',
+        fallback_exit_owner: 'paper_sltp_atr_trailing_v1',
         bar_source: s12Base.source,
         bar_diagnostics: s12Base.diagnostics,
       },
@@ -351,7 +398,7 @@ async function evaluateS12HoldingDefense(
       latest: latestEvent ?? null,
       nextStatus: assessment.state,
       nextReason: eventReason,
-      nextActive: update != null,
+      nextActive: update != null || s12Decision.action === 'QUOTE_UNAVAILABLE',
       nextTrailingAfter: update?.newTrailingStop ?? null,
       nowMs: Date.now(),
     })) {
@@ -841,9 +888,12 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       pos,
       quote,
       atr14,
+      cfg,
     )
     if (decision.action === 'hold') {
-      decision = mergeHoldExitUpdates(decision, s12HoldingDefenseUpdate)
+      decision = s12HoldingDefenseUpdate?.action && s12HoldingDefenseUpdate.action !== 'hold'
+        ? s12HoldingDefenseUpdate
+        : mergeHoldExitUpdates(decision, s12HoldingDefenseUpdate)
     }
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, env.DB)
 
@@ -949,7 +999,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       await runPostExitDiscipline(env, cfg, pos.symbol, decision.reason, 'full_sell', 'Intraday')
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares
-      const sellFill = resolveExitSellFill(quote, { allowLastPriceFallback: true })
+      const sellFill = resolveExitSellFill(quote)
       if (!sellFill.fillable || sellFill.price == null) {
         await recordPaperExecutionEvent(env, {
           tradeDate: intradayToday,

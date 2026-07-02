@@ -29,11 +29,15 @@ function compactOrderbookDiagnostic(symbol: string, payload: any, fallbackStatus
   const status = String(detail?.status ?? payload?.status ?? fallbackStatus ?? 'unknown').trim()
   const parts = [
     `${symbol}:${status}`,
+    detail?.message ? `message=${String(detail.message).slice(0, 80).replace(/\s+/g, '_')}` : null,
     detail?.quote_age_ms != null ? `age=${detail.quote_age_ms}` : null,
     detail?.max_quote_age_ms != null ? `max=${detail.max_quote_age_ms}` : null,
+    detail?.refresh_wait_seconds != null ? `wait=${detail.refresh_wait_seconds}s` : null,
     detail?.source_time ? `source_time=${String(detail.source_time)}` : null,
     detail?.bid_levels != null ? `bid_levels=${detail.bid_levels}` : null,
     detail?.ask_levels != null ? `ask_levels=${detail.ask_levels}` : null,
+    detail?.bidask_event_count != null ? `events=${detail.bidask_event_count}` : null,
+    detail?.last_bidask_event_at ? `last_event=${String(detail.last_bidask_event_at)}` : null,
   ].filter(Boolean)
   return parts.join(';')
 }
@@ -147,7 +151,15 @@ export function normalizeShioajiSnapshot(snapshot: any, options: NormalizeSnapsh
 
 function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
   const status = String(payload?.status ?? 'ok').trim().toLowerCase()
-  if (status.startsWith('stale') || status === 'no_depth' || status === 'empty_depth' || status === 'error') return null
+  if (
+    status.startsWith('stale') ||
+    status === 'no_depth' ||
+    status === 'empty_depth' ||
+    status === 'waiting_callback' ||
+    status === 'proxy_disconnected' ||
+    status === 'no_contract' ||
+    status === 'error'
+  ) return null
 
   const bid = firstFiniteTwTickPrice(payload?.bid, payload?.bid_price, payload?.best_bid, payload?.bestBid, payload?.bid_prices, payload?.bids)
   const ask = firstFiniteTwTickPrice(payload?.ask, payload?.ask_price, payload?.best_ask, payload?.bestAsk, payload?.ask_prices, payload?.asks)
@@ -215,6 +227,56 @@ async function enrichSnapshotContext(
   } catch (e) {
     console.warn(`[Price] snapshot context enrichment failed: ${e}`)
   }
+}
+
+async function fetchShioajiMonitoringQuotes(
+  symbols: string[],
+  env?: IntradayEnv,
+): Promise<Map<string, IntradayOHLC>> {
+  const map = new Map<string, IntradayOHLC>()
+  const proxyUrl = env?.SHIOAJI_PROXY_URL
+  if (!proxyUrl || symbols.length === 0) return map
+
+  try {
+    const res = await fetch(`${proxyUrl}/snapshots`, {
+      method: 'POST',
+      headers: proxyHeaders(env, true),
+      body: JSON.stringify({ symbols }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (res.ok) {
+      const json = await res.json() as any
+      const data = json?.data ?? {}
+      for (const [symbol, snapshot] of Object.entries(data)) {
+        const normalized = normalizeShioajiSnapshot(snapshot, { includeExecutableBook: false })
+        if (normalized) map.set(symbol, normalized)
+      }
+      if (map.size > 0) return map
+    }
+  } catch (e) {
+    console.warn(`[Price] monitoring /snapshots failed: ${e}`)
+  }
+
+  try {
+    const res = await fetch(`${proxyUrl}/quotes`, {
+      method: 'POST',
+      headers: proxyHeaders(env, true),
+      body: JSON.stringify({ symbols }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (res.ok) {
+      const json = await res.json() as any
+      const data = json?.data ?? {}
+      for (const [symbol, quote] of Object.entries(data)) {
+        const normalized = normalizeShioajiSnapshot(quote, { includeExecutableBook: false })
+        if (normalized) map.set(symbol, normalized)
+      }
+    }
+  } catch (e) {
+    console.warn(`[Price] monitoring /quotes failed: ${e}`)
+  }
+
+  return map
 }
 
 async function fetchSingleOrderbookQuotes(
@@ -390,15 +452,25 @@ export async function batchGetIntradayOHLC(
 
   if (env?.requireBrokerQuote) {
     const orderbookMap = await fetchFreshOrderbookQuotes(symbols, env)
+    const missingSymbols = symbols.filter((symbol) => !orderbookMap.has(symbol))
+    if (missingSymbols.length > 0) {
+      const monitoringMap = await fetchShioajiMonitoringQuotes(missingSymbols, env)
+      for (const [symbol, quote] of monitoringMap) orderbookMap.set(symbol, quote)
+      if (monitoringMap.size > 0) {
+        console.warn(
+          `[Price] broker quote degraded: ${monitoringMap.size}/${symbols.length} symbols using Shioaji monitoring snapshots without executable book`,
+        )
+      }
+    }
     if (orderbookMap.size === 0) {
-      console.warn(`[Price] broker quote required; no fresh orderbook quotes for ${symbols.length} symbols`)
+      console.warn(`[Price] broker quote required; no Shioaji orderbook or monitoring quotes for ${symbols.length} symbols`)
       return orderbookMap
     }
     await enrichSnapshotContext(orderbookMap, symbols, env)
     const sample = [...orderbookMap.entries()].slice(0, 3)
       .map(([symbol, ohlc]) => `${symbol}=bid${ohlc.bid ?? '-'} ask${ohlc.ask ?? '-'} t${ohlc.quoteTime ?? '-'}`)
       .join(', ')
-    console.log(`[Price] Shioaji /orderbooks OK: ${orderbookMap.size} fresh books (${sample})`)
+    console.log(`[Price] Shioaji broker quotes: ${orderbookMap.size}/${symbols.length} quotes (${sample})`)
     return orderbookMap
   }
 

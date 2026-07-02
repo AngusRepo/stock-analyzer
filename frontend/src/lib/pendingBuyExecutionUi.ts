@@ -156,6 +156,14 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
   s12_structure_stale: 'S12 結構等待過久',
   s12_bearish_defense_ready: 'S12 空方防守成立',
   s12_holding_defense_unavailable: 'S12 持倉防守資料不足',
+  s12_tp1_partial_take_profit: 'S12 TP1 部分停利',
+  s12_tp1_full_take_profit: 'S12 TP1 全部停利',
+  s12_tp2_main_take_profit: 'S12 主出場停利',
+  s12_bearish_defense_partial_take_profit: 'S12 空方防守部分停利',
+  s12_reverse_bos_full_exit: 'S12 反向 BOS 出場',
+  s12_tp1_quote_unavailable: 'S12 TP1 報價不可用',
+  s12_tp2_quote_unavailable: 'S12 主出場報價不可用',
+  s12_bearish_defense_quote_unavailable: 'S12 防守報價不可用',
 }
 
 const S12_STATE_LABELS: Record<string, string> = {
@@ -186,12 +194,16 @@ const S12_DEFENSE_ACTION_LABELS: Record<string, string> = {
   tighten_stop: '提高防守停損',
   take_profit_or_tighten_stop: '停利或提高防守',
   trim_or_take_profit: '減碼或停利',
+  take_profit: '停利',
+  full_exit: '全部出場',
+  quote_unavailable: '報價不可用',
   observe: '觀察',
 }
 
 const OWNER_LABELS: Record<string, string> = {
   market_regime_alpha_context_v1: '市場 regime / alpha context',
   s12_intraday_structure_v1: 'S12 結構進場',
+  s12_position_decision_v1: 'S12 持倉出場',
   ohlcv_pre_trade_plan_v1: 'OHLCV 進場計畫',
   paper_sltp_atr_trailing_v1: 'ATR trailing 出場',
 }
@@ -399,6 +411,7 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
   const status = String(item.status ?? '').trim()
   const active = Boolean(item.active)
   const action = String(item.action ?? item.detail?.holding_defense?.action ?? '').trim()
+  const decisionReason = String(item.detail?.holding_defense?.decision_reason ?? '').trim()
   const before = item.trailing_stop_before ?? item.detail?.holding_defense?.trailing_stop_before ?? null
   const after = item.trailing_stop_after ?? item.detail?.holding_defense?.trailing_stop_after ?? null
   const detail = item.detail?.detail ? formatS12Detail(String(item.detail.detail)) : ''
@@ -407,7 +420,15 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
   const h4Source = String(item.detail?.h4Source ?? item.detail?.h4_source ?? '').trim()
   const insufficientData = reason === 's12_holding_defense_unavailable' || hasNoCompletedBars || reason === 's12_waiting_15m_completed_bars'
   const label = active
-    ? 'S12 防守啟動'
+    ? action === 'take_profit'
+      ? decisionReason.includes('tp2') || decisionReason.includes('full')
+        ? 'S12 主出場'
+        : 'S12 部分停利'
+      : action === 'full_exit'
+        ? 'S12 全部出場'
+        : action === 'quote_unavailable'
+          ? 'S12 報價不可用'
+          : 'S12 防守啟動'
     : insufficientData
       ? 'S12 防守資料不足'
       : reason === 's12_bearish_defense_ready' || status === 'bearish_defense_ready'

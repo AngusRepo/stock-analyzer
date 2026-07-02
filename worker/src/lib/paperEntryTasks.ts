@@ -1146,6 +1146,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         symbol: pending.symbol,
         baseBars: s12Base.bars,
         fallback4hBars: s12Base.fallback4hBars,
+        fallback1hBars: s12Base.fallback1hBars,
         nowMs: Date.now(),
         policy: s12TimingPolicyFromEnv(env as any),
         barDiagnostics: s12Base.diagnostics,

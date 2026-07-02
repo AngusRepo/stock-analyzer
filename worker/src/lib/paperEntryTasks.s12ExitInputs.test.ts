@@ -10,7 +10,10 @@ function assessment(exitPlan: Partial<S12IntradayAssessment['exitPlan']>, execut
     exitPlan: {
       tp1: { price: null, source: 'unavailable', action: 'partial_take_profit' },
       mainExit: { price: null, zoneLow: null, zoneHigh: null, source: 'unavailable', action: 'main_take_profit' },
-      trailingStop: { initial: null, method: 'structure_stop_then_15m_higher_low_atr_vwap', activation: 'after_tp1_or_reverse_choch' },
+      tp3: { price: null, source: 'unavailable', action: 'extended_take_profit' },
+      tp4: { price: null, source: 'unavailable', action: 'extended_take_profit' },
+      manualTp: { price: null, source: 'unavailable', action: 'manual_take_profit' },
+      trailingStop: { initial: null, method: 'structure_stop_then_15m_higher_low_atr_vwap', source: 'adaptive', activation: 'after_tp1_or_reverse_choch' },
       reverseWarning: { state: null, action: 'none', source: 'bearish_defense_sidecar' },
       ...exitPlan,
     },
@@ -24,7 +27,7 @@ const structural = resolveS12AssistedExitInputs({
   s12Assessment: assessment({
     tp1: { price: 108, source: '15m_previous_high', action: 'partial_take_profit' },
     mainExit: { price: 118, zoneLow: 116, zoneHigh: 120, source: '1h_supply_zone', action: 'main_take_profit' },
-    trailingStop: { initial: 94, method: 'structure_stop_then_15m_higher_low_atr_vwap', activation: 'after_tp1_or_reverse_choch' },
+    trailingStop: { initial: 94, method: 'structure_stop_then_15m_higher_low_atr_vwap', source: 'adaptive', activation: 'after_tp1_or_reverse_choch' },
   }),
   atrInitialStop: 92,
   atrTp1: 106,
@@ -41,7 +44,7 @@ const fallback = resolveS12AssistedExitInputs({
   s12Assessment: assessment({
     tp1: { price: 98, source: '15m_previous_high', action: 'partial_take_profit' },
     mainExit: { price: 99, zoneLow: 98, zoneHigh: 100, source: '1h_supply_zone', action: 'main_take_profit' },
-    trailingStop: { initial: 103, method: 'structure_stop_then_15m_higher_low_atr_vwap', activation: 'after_tp1_or_reverse_choch' },
+    trailingStop: { initial: 103, method: 'structure_stop_then_15m_higher_low_atr_vwap', source: 'adaptive', activation: 'after_tp1_or_reverse_choch' },
   }, { stopLoss: 104 }),
   atrInitialStop: 92,
   atrTp1: 106,

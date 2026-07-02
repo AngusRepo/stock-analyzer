@@ -2,6 +2,8 @@ import {
   aggregateCompletedS12Bars,
   assessS12IntradayStructure,
   assessS12IntradayStructureFromBaseBars,
+  resolveS12PositionDecision,
+  resolveS12UnifiedDecision,
   s12TimingPolicyFromEnv,
   s12PreTradeTechnicalDecision,
   type S12Bar,
@@ -86,11 +88,25 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     S12_INTRADAY_ATR_15M_BARS: '99',
     S12_INTRADAY_SWING_LOOKBACK_BARS: '1',
     S12_INTRADAY_BOS_WAIT_BARS: '50',
+    S12_INTRADAY_SR_PIVOT_LEN: '10',
+    S12_INTRADAY_OB_LOOKBACK_BARS: '34',
+    S12_INTRADAY_MIN_FVG_ATR: '0.08',
+    S12_INTRADAY_TRIGGER_MODE: 'reaction_close',
+    S12_POSITION_STOP_SOURCE: '15m_recent_fvg',
+    S12_POSITION_PLANNED_TP: 'tp4',
+    S12_POSITION_MANUAL_TP_PRICE: '123.4',
   })
   assert(policy.min15mBars === 3, 'S12 min 15m bars must clamp to the FVG-compatible lower bound')
   assert(policy.atr15mBars === 30, 'S12 ATR period should clamp unsafe large env overrides')
   assert(policy.swingLookbackBars === 2, 'S12 swing lookback should clamp below community-style pivot minimum')
   assert(policy.bosWaitBars === 50, 'S12 BOS wait should accept bounded env overrides')
+  assert(policy.srPivotLen === 10, 'S12 S/R pivot window should be env-configurable')
+  assert(policy.obLookbackBars === 34, 'S12 order-block lookback should be env-configurable')
+  assert(policy.minFvgAtr === 0.08, 'S12 FVG minimum ATR ratio should be env-configurable')
+  assert(policy.triggerMode === 'reaction_close', 'S12 trigger mode should be env-configurable')
+  assert(policy.positionStopSource === '15m_recent_fvg', 'S12 position stop source should be env-configurable')
+  assert(policy.plannedTakeProfit === 'tp4', 'S12 planned TP should be env-configurable')
+  assert(policy.manualTakeProfitPrice === 123.4, 'S12 manual TP price should be env-configurable')
 }
 
 {
@@ -177,6 +193,39 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   const bars4h = [
     bar(0, 100, 110, 98, 108, 1000),
   ]
+  const fallback1hBars = [
+    {
+      startMs: Date.parse('2026-06-25T01:00:00.000Z'),
+      open: 100,
+      high: 105,
+      low: 98,
+      close: 104,
+      volume: 500,
+    },
+  ]
+  const bars15m = [
+    bar(H4 + H1 + 0 * M15, 106.0, 107.0, 105.0, 106.5),
+    bar(H4 + H1 + 1 * M15, 106.5, 107.2, 105.5, 106.8),
+    bar(H4 + H1 + 2 * M15, 106.8, 107.5, 106.0, 107.0),
+    bar(H4 + H1 + 3 * M15, 107.0, 107.6, 106.2, 107.2),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m,
+    bars1h: [],
+    bars4h,
+    fallback1hBars,
+  })
+  assert(assessment.state !== 'waiting_1h_completed_bar', 'S12 should use previous-session 1H zone seed instead of blocking early session')
+  assert(assessment.demandZone1h != null, 'previous-session 1H seed should provide a demand/support zone')
+  assert(assessment.detail.includes('demand_zone_source=previous_session_1h'), 'S12 detail should expose previous-session demand-zone source')
+  assert(assessment.detail.includes('fallback_1h_completed_bars=1'), 'S12 detail should expose fallback 1H bar count')
+}
+
+{
+  const bars4h = [
+    bar(0, 100, 110, 98, 108, 1000),
+  ]
   const bars1h = [
     bar(H4, 100, 105, 99, 104, 500),
   ]
@@ -201,7 +250,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.maturity.takeoverRole === 'long_entry', 'ready long sequence should expose long-entry takeover role')
   assert(assessment.setupId?.startsWith('s12l-2330-'), 'ready S12 signal should expose setup_id')
   assert(assessment.execution.entryPrice === 102.8, 'ready S12 signal should use reaction close as entry reference')
-  assert((assessment.execution.stopLoss ?? 999) < 100.2, 'ready S12 signal should anchor stop below sweep low / entry zone')
+  assert((assessment.execution.stopLoss ?? 999) < assessment.execution.entryPrice!, 'ready S12 signal should keep the selected stop below entry')
   assert((assessment.execution.chaseCeiling ?? 0) > assessment.execution.entryPrice!, 'ready S12 signal should expose no-chase ceiling')
   assert(assessment.quality.vwap.value != null, 'S12 assessment should expose VWAP quality telemetry')
   assert(assessment.quality.rvol.state === 'thin', 'flat-volume fixture should expose thin RVOL without blocking ready state')
@@ -210,7 +259,13 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.exitPlan.tp1.source === '15m_previous_high', 'S12 TP1 should prefer the nearest 15m prior high')
   assert(assessment.execution.target1 === assessment.exitPlan.tp1.price, 'S12 execution target1 should mirror structural TP1')
   assert(assessment.execution.target2 === assessment.exitPlan.mainExit.price, 'S12 execution target2 should mirror structural main exit')
-  assert(assessment.execution.target3 == null, 'S12 should not expose simplified 3R as target3 after structural exit contract')
+  assert(assessment.exitPlan.tp3.price != null, 'S12 Pine parity should expose TP3 in the structural ladder')
+  assert(assessment.exitPlan.tp4.price != null, 'S12 Pine parity should expose TP4 in the structural ladder')
+  assert(assessment.execution.target3 === assessment.exitPlan.tp3.price, 'S12 execution target3 should mirror structural TP3')
+  assert(assessment.execution.target4 === assessment.exitPlan.tp4.price, 'S12 execution target4 should mirror structural TP4')
+  assert(assessment.exitPlan.trailingStop.source !== undefined, 'S12 stop plan should expose the selected 15m stop source')
+  assert(assessment.detail.includes('pine_v7_parity_contract='), 'S12 detail should expose Pine v7 parity diagnostics')
+  assert(assessment.detail.includes('idm_price='), 'S12 detail should expose IDM proxy diagnostics')
 
   const observeDecision = s12PreTradeTechnicalDecision(assessment, 'observe')
   assert(observeDecision === null, 'observe mode must not alter pre-trade execution')
@@ -218,6 +273,102 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assistDecision?.action === 'pass', 'assist_entry mode should pass when S12 long sequence is ready')
   const requireReadyDecision = s12PreTradeTechnicalDecision(assessment, 'require_ready')
   assert(requireReadyDecision?.action === 'pass', 'require_ready mode should pass when S12 long sequence is ready')
+  const unified = resolveS12UnifiedDecision(assessment)
+  assert(unified.action === 'READY', 'S12 unified pre-trade decision should expose READY for completed long sequence')
+  assert(unified.executableBookRequired === true, 'S12 READY entry decision should require executable orderbook')
+  const positionTp1 = resolveS12PositionDecision({
+    assessment,
+    currentPrice: assessment.exitPlan.tp1.price ?? 0,
+    executableBookAvailable: true,
+    atr14: 2,
+    pos: {
+      shares: 2000,
+      original_shares: 2000,
+      avg_cost: assessment.execution.entryPrice ?? 100,
+      entry_price: assessment.execution.entryPrice ?? 100,
+      initial_stop: assessment.execution.stopLoss ?? 95,
+      trailing_stop: assessment.execution.stopLoss ?? 95,
+      highest_since_entry: assessment.exitPlan.tp1.price ?? 0,
+      tp1_price: assessment.exitPlan.tp1.price,
+      tp2_price: assessment.exitPlan.mainExit.price,
+      tp1_hit: 0,
+    },
+  })
+  assert(positionTp1.action === 'TAKE_PROFIT', 'S12 position decision should trigger TP1 take-profit from structural plan')
+  assert(positionTp1.sellShares === 1000, 'S12 position TP1 should sell half in board lots by default')
+  const positionQuoteBlocked = resolveS12PositionDecision({
+    assessment,
+    currentPrice: assessment.exitPlan.tp1.price ?? 0,
+    executableBookAvailable: false,
+    atr14: 2,
+    pos: {
+      shares: 2000,
+      original_shares: 2000,
+      avg_cost: assessment.execution.entryPrice ?? 100,
+      entry_price: assessment.execution.entryPrice ?? 100,
+      initial_stop: assessment.execution.stopLoss ?? 95,
+      trailing_stop: assessment.execution.stopLoss ?? 95,
+      highest_since_entry: assessment.exitPlan.tp1.price ?? 0,
+      tp1_price: assessment.exitPlan.tp1.price,
+      tp2_price: assessment.exitPlan.mainExit.price,
+      tp1_hit: 0,
+    },
+  })
+  assert(positionQuoteBlocked.action === 'QUOTE_UNAVAILABLE', 'S12 sell decision should fail closed when executable book is missing')
+
+  const positionTp4 = resolveS12PositionDecision({
+    assessment,
+    currentPrice: assessment.exitPlan.tp4.price ?? 0,
+    executableBookAvailable: true,
+    atr14: 2,
+    pos: {
+      shares: 1000,
+      original_shares: 2000,
+      avg_cost: assessment.execution.entryPrice ?? 100,
+      entry_price: assessment.execution.entryPrice ?? 100,
+      initial_stop: assessment.execution.stopLoss ?? 95,
+      trailing_stop: assessment.execution.stopLoss ?? 95,
+      highest_since_entry: assessment.exitPlan.tp4.price ?? 0,
+      tp1_price: assessment.exitPlan.tp1.price,
+      tp2_price: assessment.exitPlan.mainExit.price,
+      tp3_price: assessment.exitPlan.tp3.price,
+      tp4_price: assessment.exitPlan.tp4.price,
+      planned_take_profit: 'tp4',
+      tp1_hit: 1,
+    },
+  })
+  assert(positionTp4.action === 'TAKE_PROFIT', 'S12 position decision should support Pine-style planned TP4 exit')
+  assert(positionTp4.reason === 's12_tp4_extended_take_profit', 'S12 TP4 exit reason should be explicit')
+
+  const manualAssessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m,
+    bars1h,
+    bars4h,
+    policy: { plannedTakeProfit: 'manual', manualTakeProfitPrice: 108 },
+  })
+  assert(manualAssessment.exitPlan.manualTp.price === 108, 'S12 should carry manual TP from policy into the exit plan')
+  const manualTp = resolveS12PositionDecision({
+    assessment: manualAssessment,
+    currentPrice: 108,
+    executableBookAvailable: true,
+    atr14: 2,
+    pos: {
+      shares: 1000,
+      original_shares: 2000,
+      avg_cost: manualAssessment.execution.entryPrice ?? 100,
+      entry_price: manualAssessment.execution.entryPrice ?? 100,
+      initial_stop: manualAssessment.execution.stopLoss ?? 95,
+      trailing_stop: manualAssessment.execution.stopLoss ?? 95,
+      highest_since_entry: 108,
+      tp1_price: manualAssessment.exitPlan.tp1.price,
+      tp2_price: manualAssessment.exitPlan.mainExit.price,
+      manual_tp_price: manualAssessment.exitPlan.manualTp.price,
+      tp1_hit: 1,
+    },
+  })
+  assert(manualTp.action === 'TAKE_PROFIT', 'S12 position decision should support manual TP exit')
+  assert(manualTp.reason === 's12_manual_take_profit', 'S12 manual TP exit reason should be explicit')
 }
 
 {
@@ -306,4 +457,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   const assistDecision = s12PreTradeTechnicalDecision(assessment, 'assist_entry')
   assert(assistDecision?.action === 'skip', 'assist_entry mode should skip pending buys on complete bearish defense')
   assert(assistDecision.reason === 's12_bearish_defense_ready', 'skip reason should be explicit bearish defense')
+  const unified = resolveS12UnifiedDecision(assessment)
+  assert(unified.action === 'NO_BUY', 'S12 unified pre-trade decision should expose NO_BUY for bearish defense')
+  assert(unified.noShortOrder === true, 'S12 bearish defense must keep no-short boundary')
 }

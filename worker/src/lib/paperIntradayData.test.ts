@@ -155,13 +155,15 @@ async function runAsyncTests(): Promise<void> {
             data: {},
             errors: {
               '9914': {
-                status: 'stale_depth',
+                status: 'waiting_callback',
                 symbol: '9914',
-                source_time: '2026-07-01T10:12:03+08:00',
-                quote_age_ms: 5333318,
+                message: 'BidAsk subscribed but no depth callback has reached cache yet',
+                quote_age_ms: null,
                 max_quote_age_ms: 3000,
-                bid_levels: 5,
-                ask_levels: 5,
+                refresh_wait_seconds: 0.6,
+                bid_levels: 0,
+                ask_levels: 0,
+                bidask_event_count: 0,
               },
             },
           }),
@@ -194,10 +196,16 @@ async function runAsyncTests(): Promise<void> {
         requireBrokerQuote: true,
       })
       const quote = quotes.get('9914')
-      assert(quote == null, 'stale orderbook must fail closed instead of falling back to snapshot ask')
+      assert(quote?.last === 77.3, 'stale orderbook should still provide a Shioaji monitoring price')
+      assert(quote?.bid == null && quote?.ask == null, 'monitoring fallback must not expose snapshot bid/ask as executable book')
+      assert(quote?.low === 76.8 && quote.high === 78.1, 'monitoring fallback should preserve OHLC context')
       assert(
-        warnings.some((line) => line.includes('stale_depth') && line.includes('age=5333318') && line.includes('source_time=2026-07-01T10:12:03+08:00')),
-        'stale orderbook diagnostics must be surfaced in logs',
+        warnings.some((line) => line.includes('waiting_callback') && line.includes('wait=0.6s') && line.includes('events=0')),
+        'structured orderbook diagnostics must be surfaced in logs',
+      )
+      assert(
+        warnings.some((line) => line.includes('broker quote degraded')),
+        'monitoring fallback should log degraded executable-book coverage',
       )
     } finally {
       console.warn = originalWarn

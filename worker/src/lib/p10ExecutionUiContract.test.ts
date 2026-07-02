@@ -50,7 +50,9 @@ assert(
   uiHelper.includes('formatS12HoldingDefenseBadge') &&
     uiHelper.includes('S12 防守啟動') &&
     uiHelper.includes('S12 結構監控') &&
-    uiHelper.includes('S12 防守資料不足'),
+    uiHelper.includes('S12 防守資料不足') &&
+    uiHelper.includes('S12 部分停利') &&
+    uiHelper.includes('S12 報價不可用'),
   'frontend must expose readable S12 active-holding defense labels',
 )
 assert(

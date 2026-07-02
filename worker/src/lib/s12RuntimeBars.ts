@@ -47,6 +47,10 @@ export interface S12BaseBarDiagnostics {
   previous_4h_fallback_loaded: boolean
   previous_4h_reference_date: string | null
   previous_4h_reference_close: number | null
+  previous_session_kbars_count: number
+  previous_session_kbars_date: string | null
+  previous_session_kbars_first_tw: string | null
+  previous_session_kbars_last_tw: string | null
   kbars_error: string | null
 }
 
@@ -166,6 +170,26 @@ export function filterS12KbarsToTradeDate(bars: IntradayRollingBar[], tradeDate:
   }
 }
 
+function selectPreviousSessionKbars(bars: IntradayRollingBar[], tradeDate: string): {
+  bars: IntradayRollingBar[]
+  date: string | null
+} {
+  const byDate = new Map<string, IntradayRollingBar[]>()
+  for (const bar of bars) {
+    const date = twDateText(bar.startMs)
+    if (date >= tradeDate) continue
+    const bucket = byDate.get(date) ?? []
+    bucket.push(bar)
+    byDate.set(date, bucket)
+  }
+  const latestDate = [...byDate.keys()].sort().pop() ?? null
+  if (!latestDate) return { bars: [], date: null }
+  return {
+    bars: (byDate.get(latestDate) ?? []).sort((a, b) => a.startMs - b.startMs),
+    date: latestDate,
+  }
+}
+
 function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
   const startMs = parseEventTimeMs(row.created_at)
   if (startMs == null) return null
@@ -271,17 +295,21 @@ async function fetchS12ShioajiKbars(
   tradeDate: string,
 ): Promise<{
   bars: IntradayRollingBar[]
+  previousSessionBars: IntradayRollingBar[]
   diagnostics: Pick<S12BaseBarDiagnostics,
     'raw_kbars_count' | 'parsed_kbars_count' | 'invalid_kbars_count' | 'kbars_first_tw' |
     'kbars_last_tw' | 'kbars_min_interval_ms' | 'kbars_granularity' | 'kbars_unusable_reason' |
     'kbars_time_adjustment' | 'kbars_raw_first_tw' | 'kbars_raw_last_tw' |
     'kbars_raw_session_count' | 'kbars_shifted_session_count' | 'kbars_normalized_session_count' |
-    'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count'
+    'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count' |
+    'previous_session_kbars_count' | 'previous_session_kbars_date' |
+    'previous_session_kbars_first_tw' | 'previous_session_kbars_last_tw'
   >
 }> {
   if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) {
     return {
       bars: [],
+      previousSessionBars: [],
       diagnostics: {
         raw_kbars_count: 0,
         parsed_kbars_count: 0,
@@ -299,6 +327,10 @@ async function fetchS12ShioajiKbars(
         kbars_normalized_session_count: 0,
         kbars_filtered_count: 0,
         kbars_filtered_outside_trade_date_count: 0,
+        previous_session_kbars_count: 0,
+        previous_session_kbars_date: null,
+        previous_session_kbars_first_tw: null,
+        previous_session_kbars_last_tw: null,
       },
     }
   }
@@ -306,6 +338,7 @@ async function fetchS12ShioajiKbars(
   if (!proxyUrl) {
     return {
       bars: [],
+      previousSessionBars: [],
       diagnostics: {
         raw_kbars_count: 0,
         parsed_kbars_count: 0,
@@ -323,6 +356,10 @@ async function fetchS12ShioajiKbars(
         kbars_normalized_session_count: 0,
         kbars_filtered_count: 0,
         kbars_filtered_outside_trade_date_count: 0,
+        previous_session_kbars_count: 0,
+        previous_session_kbars_date: null,
+        previous_session_kbars_first_tw: null,
+        previous_session_kbars_last_tw: null,
       },
     }
   }
@@ -342,10 +379,12 @@ async function fetchS12ShioajiKbars(
     .sort((a, b) => a.startMs - b.startMs)
   const normalized = normalizeS12KbarSessionTimeSkew(rawBars)
   const filtered = filterS12KbarsToTradeDate(normalized.bars, tradeDate)
+  const previousSession = selectPreviousSessionKbars(normalized.bars, tradeDate)
   const bars = filtered.bars.sort((a, b) => a.startMs - b.startMs)
   const granularity = kbarGranularity(bars)
   return {
     bars,
+    previousSessionBars: previousSession.bars,
     diagnostics: {
       raw_kbars_count: rows.length,
       parsed_kbars_count: rawBars.length,
@@ -363,6 +402,10 @@ async function fetchS12ShioajiKbars(
       kbars_normalized_session_count: normalized.normalizedSessionCount,
       kbars_filtered_count: bars.length,
       kbars_filtered_outside_trade_date_count: filtered.outsideTradeDateCount,
+      previous_session_kbars_count: previousSession.bars.length,
+      previous_session_kbars_date: previousSession.date,
+      previous_session_kbars_first_tw: twTimeText(previousSession.bars[0]?.startMs),
+      previous_session_kbars_last_tw: twTimeText(previousSession.bars[previousSession.bars.length - 1]?.startMs),
     },
   }
 }
@@ -486,6 +529,7 @@ export async function loadS12IntradayBaseBars(
 ): Promise<{
   bars: IntradayRollingBar[]
   fallback4hBars: IntradayRollingBar[]
+  fallback1hBars: IntradayRollingBar[]
   source: S12BaseBarSource
   diagnostics: S12BaseBarDiagnostics
 }> {
@@ -523,10 +567,16 @@ export async function loadS12IntradayBaseBars(
     previous_4h_fallback_loaded: previous4h.bar != null,
     previous_4h_reference_date: previous4h.referenceDate,
     previous_4h_reference_close: previous4h.referenceClose,
+    previous_session_kbars_count: 0,
+    previous_session_kbars_date: null,
+    previous_session_kbars_first_tw: null,
+    previous_session_kbars_last_tw: null,
     kbars_error: null,
   }
+  let previousSessionBars: IntradayRollingBar[] = []
   try {
     const kbars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
+    previousSessionBars = kbars.previousSessionBars
     diagnostics = {
       ...diagnostics,
       ...kbars.diagnostics,
@@ -536,6 +586,7 @@ export async function loadS12IntradayBaseBars(
       return {
         bars,
         fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+        fallback1hBars: previousSessionBars,
         source: 'shioaji_kbars_usable',
         diagnostics: {
           ...diagnostics,
@@ -554,6 +605,7 @@ export async function loadS12IntradayBaseBars(
   return {
     bars: eventBars,
     fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+    fallback1hBars: previousSessionBars,
     source: diagnostics.raw_kbars_count > 0
       ? 'shioaji_kbars_unusable_fallback_event_history'
       : 'event_history_only',

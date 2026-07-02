@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,25 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "output" / "feature_universe_triage" / "monthly_pymoo_runtime_contract_validation_20260618.json"
+
+VALIDATION_INPUTS = (
+    "infra/gcp-scheduler-jobs.json",
+    "worker/src/lib/adminTriggerGcpTasks.ts",
+    "worker/src/routes/adminTriggerRoutes.ts",
+    "worker/src/lib/schedulerPolicy.ts",
+    "worker/src/lib/schedulerStatus.ts",
+    "worker/src/lib/schedulerRunLogger.ts",
+    "worker/src/routes/scheduleReadRoutes.ts",
+    "worker/src/lib/schedulerDependencyMap.ts",
+    "ml-controller/main.py",
+    "ml-controller/routers/strategy_mining.py",
+    "ml-controller/services/modal_client.py",
+    "ml-service/modal_app.py",
+    "worker/migration_strategy_mining_ledger_2026_06_18.sql",
+    "tools/finlab_alpha_miner_bakeoff.py",
+    "data/feature_registry/alpha_mining_promotion_contract_v1.json",
+    "output/feature_universe_triage/feature_registry_local_closure_20260617.json",
+)
 
 
 def _read(path: str) -> str:
@@ -21,6 +41,24 @@ def _load_json(path: str) -> dict[str, Any]:
 def _check(condition: bool, reason: str, errors: list[str]) -> None:
     if not condition:
         errors.append(reason)
+
+
+def _source_fingerprint(paths: tuple[str, ...]) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for rel_path in paths:
+        path = ROOT / rel_path
+        data = path.read_bytes()
+        entries.append({
+            "path": rel_path,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data),
+        })
+    canonical = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "algorithm": "sha256",
+        "digest": hashlib.sha256(canonical).hexdigest(),
+        "inputs": entries,
+    }
 
 
 def build_validation_payload() -> dict[str, Any]:
@@ -160,6 +198,7 @@ def build_validation_payload() -> dict[str, Any]:
             "eligible_for_alpha_mining": actual_alpha_pool,
             "expected_from_local_closure": expected_alpha_pool,
         },
+        "source_fingerprint": _source_fingerprint(VALIDATION_INPUTS),
         "decision_effect": "local_validation_only",
     }
 

@@ -289,7 +289,14 @@ export async function runWeeklyBacktestResearchBundle(env: Bindings, runDate?: s
     return `failed (${resp.status}): ${text.slice(0, 200)}`
   }
 
-  const result = text ? JSON.parse(text) as Record<string, any> : {}
+  let result: Record<string, any> = {}
+  if (text) {
+    try {
+      result = JSON.parse(text) as Record<string, any>
+    } catch (error) {
+      return `failed: controller returned non-json for finlab backfill (${text.slice(0, 300)})`
+    }
+  }
   if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
   if (result.status === 'not_triggered') return `failed: ${result.reason ?? 'backtest research bundle not triggered'}`
 

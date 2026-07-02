@@ -67,6 +67,18 @@ function sumObjectField(rows: unknown[], names: string[]): number | null {
   return seen ? total : null
 }
 
+function arrayValueByHeader(row: unknown[], fields: unknown[], names: string[]): unknown {
+  const cleanFields = fields.map((field) => String(field ?? '').replace(/\s+/g, ''))
+  const index = cleanFields.findIndex((field) =>
+    names.some((name) => field === name || field.startsWith(`${name}(`)),
+  )
+  if (index >= 0) return row[index]
+  const fallbackIndex = cleanFields.findIndex((field) =>
+    !field.startsWith('前') && names.some((name) => field.includes(name)),
+  )
+  return fallbackIndex >= 0 ? row[fallbackIndex] : null
+}
+
 function parseOfficialDate(value: unknown, fallback: string): string {
   const text = String(value ?? '').trim()
   const digits = text.replace(/\D/g, '')
@@ -163,21 +175,22 @@ function tpexSummaryRowFromRows(
 
 async function fetchTpexDateSpecificMarginSummaryRow(targetDate: string, runId: string, generatedAt: string): Promise<MarketSummaryRow | null> {
   const body = await officialJson(
-    `https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&d=${rocSlashDate(targetDate)}&o=json`,
+    `https://www.tpex.org.tw/www/zh-tw/margin/balance?date=${rocSlashDate(targetDate)}&id=&response=json`,
     `tpex_margin_balance_${targetDate}`,
   )
   const tables = body && typeof body === 'object' && Array.isArray((body as any).tables) ? (body as any).tables : []
   const table = tables[0] && typeof tables[0] === 'object' ? tables[0] : null
+  const fields = Array.isArray(table?.fields) ? table.fields : []
   const rawRows = Array.isArray(table?.data) ? table.data : []
   const rows = rawRows
     .filter((row: unknown) => Array.isArray(row) && /^\d{4}$/.test(String(row[0] ?? '').trim()))
     .map((row: any[]) => ({
-      margin_buy: row[2],
-      margin_sell: row[3],
-      margin_balance: row[4],
-      short_buy: row[8],
-      short_sell: row[9],
-      short_balance: row[10],
+      margin_buy: arrayValueByHeader(row, fields, ['資買']),
+      margin_sell: arrayValueByHeader(row, fields, ['資賣']),
+      margin_balance: arrayValueByHeader(row, fields, ['資餘額']),
+      short_buy: arrayValueByHeader(row, fields, ['券買']),
+      short_sell: arrayValueByHeader(row, fields, ['券賣']),
+      short_balance: arrayValueByHeader(row, fields, ['券餘額']),
     }))
   return tpexSummaryRowFromRows(rows, targetDate, runId, generatedAt, targetDate)
 }
@@ -201,7 +214,12 @@ async function fetchTpexMarginSummaryRow(targetDate: string, runId: string, gene
   } catch (e) {
     console.warn(`[OfficialMarketSummary] TPEX date-specific margin failed for ${targetDate}:`, e)
   }
-  return fetchTpexLatestMarginSummaryRow(targetDate, runId, generatedAt)
+  try {
+    return await fetchTpexLatestMarginSummaryRow(targetDate, runId, generatedAt)
+  } catch (e) {
+    console.warn(`[OfficialMarketSummary] TPEX latest margin failed for ${targetDate}:`, e)
+    return null
+  }
 }
 
 async function fetchOfficialMarketSummaryRows(targetDate: string, runId: string, generatedAt: string): Promise<MarketSummaryRow[]> {

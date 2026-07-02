@@ -28,6 +28,7 @@ assert(
     controllerResearchWorkflows.includes('FinLab daily source refresh requires YYYY-MM-DD runDate') &&
     controllerResearchWorkflows.includes('canonical_window_days: dailySourceMode ? 1 : finLabCanonicalWindowDays(env)') &&
     controllerResearchWorkflows.includes('source_window_days: dailySourceMode ? 1 : undefined') &&
+    controllerResearchWorkflows.includes('controller returned non-json for finlab backfill') &&
     !controllerResearchWorkflows.includes('require_official_market_summary: dailySourceMode') &&
     !controllerResearchWorkflows.includes('market_summary,global_context') &&
     !controllerResearchWorkflows.includes('canonical_market_summary_daily,canonical_regime_context_daily') &&
@@ -73,7 +74,8 @@ assert(
     officialMarketSummaryRefresh.includes('validateTargetDateRows') &&
     officialMarketSummaryRefresh.includes('twse.mi_margn.official') &&
     officialMarketSummaryRefresh.includes('tpex.margin_balance.official') &&
-    officialMarketSummaryRefresh.includes('margin_bal_result.php') &&
+    officialMarketSummaryRefresh.includes('/www/zh-tw/margin/balance') &&
+    officialMarketSummaryRefresh.includes('arrayValueByHeader') &&
     officialMarketSummaryRefresh.includes('official_market_summary_missing'),
   'official market summary refresh must be an independent TWSE/TPEX canonical owner',
 )

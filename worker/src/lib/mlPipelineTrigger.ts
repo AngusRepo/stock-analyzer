@@ -17,6 +17,16 @@ export interface PipelineTriggerOptions {
   prevalidatedEventChain?: boolean
 }
 
+const MARKET_RISK_LATEST_CACHE_KEYS = [
+  'market:risk:latest',
+  'market:risk:latest:v4-context',
+  'market:risk:latest:v19-finlab-risk-detail',
+]
+
+async function clearMarketRiskLatestCaches(env: Bindings): Promise<void> {
+  await Promise.allSettled(MARKET_RISK_LATEST_CACHE_KEYS.map((key) => env.KV.delete(key)))
+}
+
 export async function runMLAndRiskV2(
   env: Bindings,
   runDate?: string | null,
@@ -59,8 +69,7 @@ export async function runMLAndRiskV2(
         const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
         const packet = await buildMarketRegimeFactorPacket(env.DB, existingRisk, regimeState)
         await upsertMarketRegimeFactorPacket(env.DB, packet)
-        await env.KV.delete('market:risk:latest')
-        await env.KV.delete('market:risk:latest:v4-context')
+        await clearMarketRiskLatestCaches(env)
         console.log(`[ML V2] Market regime factor packet refreshed from preserved row: ${packet.level} (${packet.score}/100) date=${packet.date}`)
       } else {
         const risk = await calcMarketRisk(
@@ -113,8 +122,7 @@ export async function runMLAndRiskV2(
           risk_summary: risk.riskSummary,
         }, regimeState)
         await upsertMarketRegimeFactorPacket(env.DB, packet)
-        await env.KV.delete('market:risk:latest')
-        await env.KV.delete('market:risk:latest:v4-context')
+        await clearMarketRiskLatestCaches(env)
         console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
       }
     } catch (e: any) {

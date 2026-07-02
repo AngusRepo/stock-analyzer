@@ -65,6 +65,7 @@ from services.recommendation_service import (
     build_return_history_from_payloads,
     filter_and_score_recommendations,
     apply_sparse_tangent_allocation,
+    load_online_portfolio_bandit_reward_ledger,
     load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
     write_layer2_timesfm_enrichment_audit,
@@ -2469,6 +2470,12 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         sorted(set(active_family_counts)),
     )
     return_history = build_return_history_from_payloads(state["payloads"])
+    opb_reward_ledger = load_online_portfolio_bandit_reward_ledger()
+    logger.info(
+        "[Pipeline V2] OnlinePortfolioBandit reward ledger loaded arms=%s samples=%s",
+        len(opb_reward_ledger),
+        sum(int(float(row.get("samples") or 0)) for row in opb_reward_ledger),
+    )
 
     ranking_cfg = trading_cfg.get("ranking", {"enabled": True,
                                               "alpha": 0.40, "beta": 0.40, "gamma": 0.20,
@@ -2482,6 +2489,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
         return_history=return_history,
+        opb_reward_ledger=opb_reward_ledger,
     )
     for row in final:
         allocation = row.get("alpha_allocation")

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from datetime import datetime, timedelta, timezone
 from numbers import Integral, Real
 from typing import Any, Optional
 
@@ -689,6 +690,18 @@ def _parse_score_components_payload(value: Any) -> dict[str, Any] | None:
     if not (isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION):
         return None
     return payload
+
+
+def _parse_json_dict(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
 
 
 def _round1(value: float) -> float:
@@ -2311,6 +2324,93 @@ def _row_daily_risk_estimate(symbol: str, risk_history: dict[str, list[float]], 
     return max(daily_vol_floor, math.sqrt(max(0.0, variance)))
 
 
+def load_online_portfolio_bandit_reward_ledger(
+    *,
+    lookback_days: int = 180,
+    limit: int = 5000,
+    query_fn: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Build OPB arm rewards from realized recommendation outcomes."""
+
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=max(1, int(lookback_days)))).isoformat()
+    max_rows = max(1, min(int(limit), 20000))
+    query = query_fn or d1_client.query
+    try:
+        rows = query(
+            """
+            SELECT dr.date,
+                   dr.stock_id,
+                   dr.symbol,
+                   dr.alpha_allocation,
+                   p.trade_pnl_pct,
+                   p.actual_return_pct
+              FROM daily_recommendations dr
+              JOIN predictions p
+                ON p.stock_id = dr.stock_id
+               AND p.prediction_date = dr.date
+             WHERE dr.date >= ?
+               AND dr.alpha_allocation IS NOT NULL
+               AND json_valid(dr.alpha_allocation)
+               AND json_extract(dr.alpha_allocation, '$.selected') = 1
+               AND json_extract(dr.alpha_allocation, '$.opb_controller.enabled') = 1
+               AND (p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)
+             ORDER BY dr.date DESC, dr.rank ASC
+             LIMIT ?
+            """,
+            [cutoff, max_rows],
+            timeout=30.0,
+        )
+    except Exception as exc:  # noqa: BLE001 - OPB learning must not block serving.
+        logger.warning("[Ranking] OnlinePortfolioBandit reward ledger unavailable; using priors: %s", exc)
+        return []
+
+    daily_rewards: dict[tuple[str, str], dict[str, float]] = {}
+    for row in rows or []:
+        allocation = _parse_json_dict(row.get("alpha_allocation"))
+        opb = allocation.get("opb_controller") if isinstance(allocation, dict) else None
+        selected_arm = opb.get("selected_arm") if isinstance(opb, dict) else None
+        arm_id = str((selected_arm or {}).get("arm_id") or "").strip()
+        business_date = str(row.get("date") or "").strip()
+        if not arm_id or not business_date:
+            continue
+        reward = _float_or_none(row.get("trade_pnl_pct"))
+        if reward is None:
+            reward = _float_or_none(row.get("actual_return_pct"))
+        if reward is None:
+            continue
+        weight = _float_or_none((allocation or {}).get("allocation_weight"))
+        if weight is None:
+            weight = _float_or_none((allocation or {}).get("single_name_weight"))
+        if weight is None or weight <= 0:
+            weight = 1.0
+        bucket = daily_rewards.setdefault((business_date, arm_id), {"weighted_reward": 0.0, "weight": 0.0})
+        bucket["weighted_reward"] += reward * weight
+        bucket["weight"] += weight
+
+    by_arm: dict[str, list[float]] = {}
+    for (_business_date, arm_id), bucket in daily_rewards.items():
+        total_weight = bucket["weight"]
+        if total_weight <= 0:
+            continue
+        by_arm.setdefault(arm_id, []).append(bucket["weighted_reward"] / total_weight)
+
+    ledger: list[dict[str, Any]] = []
+    for arm_id, rewards in sorted(by_arm.items()):
+        if not rewards:
+            continue
+        reward_sum = sum(rewards)
+        samples = len(rewards)
+        ledger.append({
+            "policy_id": "OnlinePortfolioBandit",
+            "arm_id": arm_id,
+            "samples": samples,
+            "reward_sum": reward_sum,
+            "reward_mean": reward_sum / samples,
+            "source": "daily_recommendations.alpha_allocation+predictions.outcome",
+        })
+    return ledger
+
+
 def _apply_sparse_tangent_buy_selection(
     scored: list[dict],
     ranking_config: dict,
@@ -2318,6 +2418,7 @@ def _apply_sparse_tangent_buy_selection(
     *,
     confidence_floor: float,
     return_history: dict[str, list[float]] | None = None,
+    opb_reward_ledger: list[dict[str, Any]] | None = None,
 ) -> list[dict]:
     allocation = policy.get("allocation") or {}
     buy_signal_count = int(allocation.get("buy_signal_count") or 3)
@@ -2373,7 +2474,11 @@ def _apply_sparse_tangent_buy_selection(
     l2_penalty = float(_allocation_float(["l2_penalty", "l2Penalty"], 0.0) or 0.0)
     utility_iterations = max(40, min(500, _allocation_int(["utility_iterations", "utilityIterations"], 180)))
 
-    def _cap_final_weight_count(weights: dict[str, Any]) -> dict[str, float]:
+    def _cap_final_weight_count(
+        weights: dict[str, Any],
+        *,
+        preserve_total_exposure: bool = False,
+    ) -> dict[str, float]:
         cleaned: list[tuple[str, float]] = []
         for symbol, raw_weight in weights.items():
             symbol_text = str(symbol or "").strip()
@@ -2389,6 +2494,10 @@ def _apply_sparse_tangent_buy_selection(
         total = sum(weight for _symbol, weight in capped)
         if total <= 0:
             return {}
+        if preserve_total_exposure:
+            if total > 1.0:
+                return {symbol: round(weight / total, 10) for symbol, weight in capped}
+            return {symbol: round(weight, 10) for symbol, weight in capped}
         return {symbol: round(weight / total, 10) for symbol, weight in capped}
 
     allocation_contract = {
@@ -2505,11 +2614,12 @@ def _apply_sparse_tangent_buy_selection(
             opb_packet = build_online_portfolio_bandit_l2_packet(
                 candidates=allocation_candidates,
                 return_history=risk_history,
+                reward_ledger=opb_reward_ledger or [],
                 stage="L3_production_allocation_controller",
                 candidate_cap_limit=None,
             )
             weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
-            weights = _cap_final_weight_count(weights)
+            weights = _cap_final_weight_count(weights, preserve_total_exposure=True)
         except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
             logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
             weights = {}
@@ -2551,6 +2661,7 @@ def _apply_sparse_tangent_buy_selection(
             weights,
             opb_similarity,
             max_cluster_weight=max_cluster_weight,
+            preserve_total_weight=True,
         )
         if cluster_penalty_applied:
             opb_similarity = similarity_components(
@@ -2599,6 +2710,11 @@ def _apply_sparse_tangent_buy_selection(
         "return_history_candidate_symbols": return_history_candidate_symbols,
         "controller": controller,
         "controller_packet_enabled": opb_packet is not None,
+        "controller_reward_ledger_samples": sum(
+            int(float(row.get("samples") or 0))
+            for row in (opb_reward_ledger or [])
+            if isinstance(row, dict)
+        ),
         "covariance_method": similarity_evidence.get("covariance_method"),
         "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),
         "cluster_penalty_applied": cluster_penalty_applied,
@@ -2818,6 +2934,7 @@ def apply_sparse_tangent_allocation(
     regime_surface: dict | None = None,
     alpha_policy: dict | None = None,
     return_history: dict[str, list[float]] | None = None,
+    opb_reward_ledger: list[dict[str, Any]] | None = None,
 ) -> list[dict]:
     """Run the production allocation owner after Score V2 + ML ranking.
 
@@ -2872,6 +2989,7 @@ def apply_sparse_tangent_allocation(
         policy,
         confidence_floor=effective_boost,
         return_history=return_history,
+        opb_reward_ledger=opb_reward_ledger,
     )
 
 

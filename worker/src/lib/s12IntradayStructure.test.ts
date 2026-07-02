@@ -2,6 +2,7 @@ import {
   aggregateCompletedS12Bars,
   assessS12IntradayStructure,
   assessS12IntradayStructureFromBaseBars,
+  buildS12LongPositionStopPlan,
   resolveS12PositionDecision,
   resolveS12UnifiedDecision,
   s12TimingPolicyFromEnv,
@@ -106,7 +107,72 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(policy.triggerMode === 'reaction_close', 'S12 trigger mode should be env-configurable')
   assert(policy.positionStopSource === '15m_recent_fvg', 'S12 position stop source should be env-configurable')
   assert(policy.plannedTakeProfit === 'tp4', 'S12 planned TP should be env-configurable')
-  assert(policy.manualTakeProfitPrice === 123.4, 'S12 manual TP price should be env-configurable')
+  assert(policy.manualTakeProfitPrice === null, 'S12 manual TP env override must be disabled for automated trading')
+}
+
+{
+  const positionBars = [
+    bar(0 * M15, 100.0, 100.0, 99.0, 99.5),
+    bar(1 * M15, 99.5, 101.0, 98.5, 100.0),
+    bar(2 * M15, 100.0, 103.0, 99.5, 101.0),
+    bar(3 * M15, 101.0, 101.0, 98.0, 99.0),
+    bar(4 * M15, 99.0, 100.0, 97.5, 98.5),
+    bar(5 * M15, 99.5, 100.5, 98.0, 99.0),
+    bar(6 * M15, 99.0, 104.2, 101.0, 104.0),
+  ]
+  const sharedPolicy = {
+    swingLookbackBars: 2,
+    obLookbackBars: 4,
+    minFvgAtr: 0.01,
+    maxVisibleZones: 3,
+  }
+  const protectedLow = buildS12LongPositionStopPlan({
+    bars15m: positionBars,
+    entryPrice: 104.5,
+    policy: sharedPolicy,
+    stopSource: '15m_protected_low',
+  })
+  assert(protectedLow?.price === 97.5, 'Pine-style S12 position stop should use confirmed 15m protected low without ATR buffer')
+  assert(protectedLow?.noAtrBuffer === true, 'S12 position stop must explicitly expose no-ATR Pine parity')
+
+  const fvgBars = [
+    bar(0 * M15, 100.0, 100.5, 99.0, 100.0),
+    bar(1 * M15, 100.0, 101.0, 99.5, 100.5),
+    bar(2 * M15, 103.0, 104.0, 103.0, 103.5),
+  ]
+  const fvg = buildS12LongPositionStopPlan({
+    bars15m: fvgBars,
+    entryPrice: 104,
+    policy: sharedPolicy,
+    stopSource: '15m_recent_fvg',
+  })
+  assert(fvg?.price === 103, `Pine-style S12 FVG stop should use bullish FVG upper edge, got ${fvg?.price}`)
+  assert(fvg?.zoneLow === 100.5 && fvg.zoneHigh === 103, 'S12 FVG stop should expose the active 15m FVG zone')
+
+  const trailingFvg = buildS12LongPositionStopPlan({
+    bars15m: fvgBars,
+    entryPrice: 100,
+    referencePrice: 104,
+    policy: sharedPolicy,
+    stopSource: '15m_recent_fvg',
+  })
+  assert(trailingFvg?.price === 103, 'S12 position stop should trail to the latest valid 15m FVG below current price, even above entry')
+
+  const orderBlock = buildS12LongPositionStopPlan({
+    bars15m: positionBars,
+    entryPrice: 104.5,
+    policy: sharedPolicy,
+    stopSource: '15m_order_block',
+  })
+  assert(orderBlock?.price === 99, `Pine-style S12 OB stop should use bullish OB lower edge, got ${orderBlock?.price}`)
+
+  const adaptive = buildS12LongPositionStopPlan({
+    bars15m: fvgBars,
+    entryPrice: 104,
+    policy: sharedPolicy,
+    stopSource: 'adaptive',
+  })
+  assert(adaptive?.source === '15m_recent_fvg', 'S12 adaptive position stop should choose the nearest valid 15m structure below reference price')
 }
 
 {
@@ -345,12 +411,13 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars15m,
     bars1h,
     bars4h,
-    policy: { plannedTakeProfit: 'manual', manualTakeProfitPrice: 108 },
+    policy: { plannedTakeProfit: 'manual' as any, manualTakeProfitPrice: 108 },
   })
-  assert(manualAssessment.exitPlan.manualTp.price === 108, 'S12 should carry manual TP from policy into the exit plan')
-  const manualTp = resolveS12PositionDecision({
+  assert(manualAssessment.exitPlan.manualTp.price === null, 'S12 manual TP should stay disabled in automated trading mode')
+  const automaticMainExit = manualAssessment.exitPlan.mainExit.price ?? 108
+  const manualIgnored = resolveS12PositionDecision({
     assessment: manualAssessment,
-    currentPrice: 108,
+    currentPrice: automaticMainExit,
     executableBookAvailable: true,
     atr14: 2,
     pos: {
@@ -360,15 +427,15 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
       entry_price: manualAssessment.execution.entryPrice ?? 100,
       initial_stop: manualAssessment.execution.stopLoss ?? 95,
       trailing_stop: manualAssessment.execution.stopLoss ?? 95,
-      highest_since_entry: 108,
+      highest_since_entry: automaticMainExit,
       tp1_price: manualAssessment.exitPlan.tp1.price,
       tp2_price: manualAssessment.exitPlan.mainExit.price,
-      manual_tp_price: manualAssessment.exitPlan.manualTp.price,
+      planned_take_profit: 'manual',
       tp1_hit: 1,
     },
   })
-  assert(manualTp.action === 'TAKE_PROFIT', 'S12 position decision should support manual TP exit')
-  assert(manualTp.reason === 's12_manual_take_profit', 'S12 manual TP exit reason should be explicit')
+  assert(manualIgnored.action === 'TAKE_PROFIT', 'S12 position decision should keep automatic TP behavior when manual is requested')
+  assert(manualIgnored.reason === 's12_tp2_main_take_profit', 'S12 manual TP request should normalize to the automatic main-exit TP')
 }
 
 {

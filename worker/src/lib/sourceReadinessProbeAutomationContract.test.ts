@@ -23,13 +23,17 @@ assert(
     controllerResearchWorkflows.includes('callback_mode: callbackMode') &&
     controllerResearchWorkflows.includes('source_start_date: sourceStartDate') &&
     controllerResearchWorkflows.includes('source_end_date: sourceEndDate') &&
+    controllerResearchWorkflows.includes('buildFinLabBackfillRunId(years, runDate, dailySourceMode)') &&
+    controllerResearchWorkflows.includes("const mode = dailySourceRefresh ? 'daily' : `${years}y`") &&
+    controllerResearchWorkflows.includes('FinLab daily source refresh requires YYYY-MM-DD runDate') &&
+    controllerResearchWorkflows.includes('canonical_window_days: dailySourceMode ? 1 : finLabCanonicalWindowDays(env)') &&
+    controllerResearchWorkflows.includes('source_window_days: dailySourceMode ? 1 : undefined') &&
     !controllerResearchWorkflows.includes('require_official_market_summary: dailySourceMode') &&
     !controllerResearchWorkflows.includes('market_summary,global_context') &&
     !controllerResearchWorkflows.includes('canonical_market_summary_daily,canonical_regime_context_daily') &&
-    controllerResearchWorkflows.includes('FINLAB_DAILY_SOURCE_WINDOW_DAYS') &&
     controllerResearchWorkflows.includes('canonical_start_date: canonicalStartDate') &&
     controllerResearchWorkflows.includes("mode: dailySourceMode ? 'daily_price_primary' : 'archive_backfill'"),
-  'FinLab trigger payload must separate daily source refresh from direct evening-chain continuation',
+  'FinLab trigger payload must separate daily one-day source refresh from direct evening-chain continuation',
 )
 
 assert(

@@ -555,23 +555,29 @@ function SchedulerShortcutCard({
   group,
   jobs,
   hasRuntimeJobs,
+  schedulerApiError,
   className,
 }: {
   group: SchedulerJob['group']
   jobs: SchedulerJob[]
   hasRuntimeJobs: boolean
+  schedulerApiError?: string | null
   className?: string
 }) {
   const meta = SCHEDULER_GROUP_META[group]
   const summary = summarizeSchedulerGroup(jobs)
-  const cardTone: WorkstationTone = hasRuntimeJobs
+  const cardTone: WorkstationTone = schedulerApiError
+    ? 'error'
+    : hasRuntimeJobs
     ? jobs.length
       ? summary.tone === 'neutral' ? 'neutral' : summary.tone
       : 'warn'
     : meta.tone
-  const healthLabel = schedulerGroupHealthLabel(summary, hasRuntimeJobs, jobs.length)
+  const healthLabel = schedulerApiError ? 'API ERROR' : schedulerGroupHealthLabel(summary, hasRuntimeJobs, jobs.length)
   const focusText = summary.focus
     ? `${summary.focus.name} · ${schedulerStatusLabel(summary.focus.lastStatus)}`
+    : schedulerApiError
+      ? `Scheduler API: ${schedulerApiError}`
     : `${meta.expectedCount} expected schedulers`
 
   return (
@@ -601,18 +607,18 @@ function SchedulerShortcutCard({
   )
 }
 
-function SchedulerShortcutDeck({ jobs }: { jobs: SchedulerJob[] }) {
+function SchedulerShortcutDeck({ jobs, schedulerApiError }: { jobs: SchedulerJob[]; schedulerApiError?: string | null }) {
   const hasRuntimeJobs = jobs.length > 0
   const jobsByGroup = groupSchedulerJobs(jobs)
   const groupJobs = (group: SchedulerJob['group']) => jobsByGroup.get(group) ?? []
 
   return (
     <div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.14fr)_repeat(4,minmax(0,0.96fr))]">
-      <SchedulerShortcutCard group="pipeline_chain" jobs={groupJobs('pipeline_chain')} hasRuntimeJobs={hasRuntimeJobs} />
-      <SchedulerShortcutCard group="daily" jobs={groupJobs('daily')} hasRuntimeJobs={hasRuntimeJobs} />
-      <SchedulerShortcutCard group="intraday" jobs={groupJobs('intraday')} hasRuntimeJobs={hasRuntimeJobs} />
-      <SchedulerShortcutCard group="weekly" jobs={groupJobs('weekly')} hasRuntimeJobs={hasRuntimeJobs} />
-      <SchedulerShortcutCard group="monthly" jobs={groupJobs('monthly')} hasRuntimeJobs={hasRuntimeJobs} />
+      <SchedulerShortcutCard group="pipeline_chain" jobs={groupJobs('pipeline_chain')} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
+      <SchedulerShortcutCard group="daily" jobs={groupJobs('daily')} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
+      <SchedulerShortcutCard group="intraday" jobs={groupJobs('intraday')} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
+      <SchedulerShortcutCard group="weekly" jobs={groupJobs('weekly')} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
+      <SchedulerShortcutCard group="monthly" jobs={groupJobs('monthly')} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
     </div>
   )
 }
@@ -714,12 +720,14 @@ function SchedulerGroupCard({
   group,
   jobsByGroup,
   hasRuntimeJobs,
+  schedulerApiError,
   className = '',
   jobGridClass = '',
 }: {
   group: SchedulerJob['group']
   jobsByGroup: Map<SchedulerJob['group'], SchedulerJob[]>
   hasRuntimeJobs: boolean
+  schedulerApiError?: string | null
   className?: string
   jobGridClass?: string
 }) {
@@ -730,7 +738,7 @@ function SchedulerGroupCard({
   )
   const meta = SCHEDULER_GROUP_META[group]
   const summary = summarizeSchedulerGroup(groupJobs)
-  const cardTone = hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
+  const cardTone = schedulerApiError ? 'error' : hasRuntimeJobs ? (summary.tone === 'neutral' ? meta.tone : summary.tone) : meta.tone
   return (
     <div id={schedulerGroupAnchor(group)} className={`min-w-0 scroll-mt-24 overflow-hidden rounded-2xl border p-3 ${statusRingClass(cardTone)} ${className}`}>
       <div className="flex items-start justify-between gap-3">
@@ -738,8 +746,8 @@ function SchedulerGroupCard({
           <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
           <p className="mt-1 sv-num text-[11px] normal-case text-[#7f8ba0]">{group}</p>
         </div>
-        <WorkstationPill tone={hasRuntimeJobs ? summary.tone : meta.tone}>
-          {hasRuntimeJobs ? groupJobs.length : `${meta.expectedCount} expected`}
+        <WorkstationPill tone={schedulerApiError ? 'error' : hasRuntimeJobs ? summary.tone : meta.tone}>
+          {schedulerApiError ? 'API ERROR' : hasRuntimeJobs ? groupJobs.length : `${meta.expectedCount} expected`}
         </WorkstationPill>
       </div>
       <p className="mt-3 min-h-10 text-xs leading-5 text-[#9badbf]">{meta.purpose}</p>
@@ -756,8 +764,10 @@ function SchedulerGroupCard({
           </div>
         </>
       ) : (
-        <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-2 text-xs leading-5 text-amber-100">
-          Runtime 狀態等待 `/api/scheduler/status`；此卡只提示預期 job universe，不當作執行結果。
+        <div className={`mt-3 rounded-xl border p-2 text-xs leading-5 ${schedulerApiError ? 'border-rose-400/20 bg-rose-400/[0.06] text-rose-100' : 'border-amber-400/15 bg-amber-400/[0.05] text-amber-100'}`}>
+          {schedulerApiError
+            ? `Scheduler API 失敗：${schedulerApiError}；此卡只顯示預期 job universe，不當作執行結果。`
+            : 'Runtime 狀態等待 `/api/scheduler/status`；此卡只提示預期 job universe，不當作執行結果。'}
         </div>
       )}
       {!hasRuntimeJobs && (
@@ -773,7 +783,7 @@ function SchedulerGroupCard({
   )
 }
 
-function SchedulerReadinessGroupBoard({ jobs }: { jobs: SchedulerJob[] }) {
+function SchedulerReadinessGroupBoard({ jobs, schedulerApiError }: { jobs: SchedulerJob[]; schedulerApiError?: string | null }) {
   const hasRuntimeJobs = jobs.length > 0
   const jobsByGroup = groupSchedulerJobs(jobs)
 
@@ -783,6 +793,7 @@ function SchedulerReadinessGroupBoard({ jobs }: { jobs: SchedulerJob[] }) {
         group="pipeline_chain"
         jobsByGroup={jobsByGroup}
         hasRuntimeJobs={hasRuntimeJobs}
+        schedulerApiError={schedulerApiError}
         className="2xl:h-full"
         jobGridClass="lg:grid-cols-2"
       />
@@ -791,17 +802,19 @@ function SchedulerReadinessGroupBoard({ jobs }: { jobs: SchedulerJob[] }) {
           group="daily"
           jobsByGroup={jobsByGroup}
           hasRuntimeJobs={hasRuntimeJobs}
+          schedulerApiError={schedulerApiError}
           jobGridClass="lg:grid-cols-2"
         />
         <div className="grid min-w-0 gap-3 xl:grid-cols-2">
-          <SchedulerGroupCard group="intraday" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} />
-          <SchedulerGroupCard group="monthly" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} />
+          <SchedulerGroupCard group="intraday" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
+          <SchedulerGroupCard group="monthly" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
         </div>
       </div>
       <SchedulerGroupCard
         group="weekly"
         jobsByGroup={jobsByGroup}
         hasRuntimeJobs={hasRuntimeJobs}
+        schedulerApiError={schedulerApiError}
         className="2xl:col-span-2"
         jobGridClass="lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
       />
@@ -869,6 +882,7 @@ function OperationalReadinessDeck({
   reportDate,
   deployDecision,
   apiErrors,
+  schedulerApiError,
 }: {
   jobs: SchedulerJob[]
   checks: DataQualityCheck[]
@@ -878,6 +892,7 @@ function OperationalReadinessDeck({
   reportDate?: string
   deployDecision?: string
   apiErrors: Array<{ label: string; message: string }>
+  schedulerApiError?: string | null
 }) {
   const stages = READINESS_STAGES.map((stage) => stageFromDefinition(stage, jobs))
   const gates = buildReadinessGates(checks)
@@ -977,10 +992,10 @@ function OperationalReadinessDeck({
             </a>
           </div>
           <DataQualityCompactMatrix gates={gates} />
-          <SchedulerShortcutDeck jobs={jobs} />
+          <SchedulerShortcutDeck jobs={jobs} schedulerApiError={schedulerApiError} />
         </div>
       </div>
-      <SchedulerReadinessGroupBoard jobs={jobs} />
+      <SchedulerReadinessGroupBoard jobs={jobs} schedulerApiError={schedulerApiError} />
     </div>
   )
 }
@@ -1363,12 +1378,13 @@ export default function ObservabilityPage() {
   const jobs = scheduler.data?.jobs ?? []
   const dqChecks = dataQuality.data?.checks ?? []
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
+  const schedulerApiError = errorMessage(scheduler.error)
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const deployScore = deployGate.data ? deployGate.data.decision === 'PASS' ? 100 : deployGate.data.decision === 'WARN' ? 70 : 30 : 0
   const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
   const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
   const apiErrors = [
-    { label: 'Scheduler API', message: errorMessage(scheduler.error) },
+    { label: 'Scheduler API', message: schedulerApiError },
     { label: 'Data Quality API', message: errorMessage(dataQuality.error) },
     { label: 'Deploy Gate API', message: errorMessage(deployGate.error) },
     { label: 'OBS Events API', message: errorMessage(observability.error) },
@@ -1412,6 +1428,7 @@ export default function ObservabilityPage() {
             reportDate={dataQuality.data?.date}
             deployDecision={deployGate.data?.decision}
             apiErrors={apiErrors}
+            schedulerApiError={schedulerApiError}
           />
           <div className="border-b border-[#263247] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">

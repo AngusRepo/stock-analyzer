@@ -16,6 +16,10 @@ export interface SchedulerRunLogEntry {
   error?: string
 }
 
+export interface SchedulerRunLogReadOptions {
+  legacyFallback?: boolean
+}
+
 type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> & {
   date?: string
   run_date?: string
@@ -75,6 +79,10 @@ const TASK_NAMES: Record<string, string> = {
   'optuna-queue': 'Optuna Queue Processor',
   'monthly-retrain': 'Monthly Universal Retrain',
   verify: 'Verify (compat alias)',
+}
+
+export function getSchedulerLogTaskCount(): number {
+  return Object.keys(TASK_NAMES).length
 }
 
 export function getTaskDisplayName(task: string): string {
@@ -195,14 +203,19 @@ export async function logSchedulerRunResult(
   }
 }
 
-export async function getSchedulerRunLogs(kv: KVNamespace, date: string): Promise<SchedulerRunLogEntry[]> {
+export async function getSchedulerRunLogs(
+  kv: KVNamespace,
+  date: string,
+  options: SchedulerRunLogReadOptions = {},
+): Promise<SchedulerRunLogEntry[]> {
   const tasks = Object.keys(TASK_NAMES)
   const results: SchedulerRunLogEntry[] = []
+  const legacyFallback = options.legacyFallback !== false
 
   const entries = await Promise.all(
     tasks.map(async (task) => {
       const canonical = await kv.get(`scheduler:run:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
-      if (canonical) return canonical
+      if (canonical || !legacyFallback) return canonical
       return await kv.get(`cron:log:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
     }),
   )

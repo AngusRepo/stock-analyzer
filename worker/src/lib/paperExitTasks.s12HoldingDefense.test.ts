@@ -58,7 +58,73 @@ const noSignal = resolveS12HoldingDefenseUpdate({
 })
 assert(noSignal == null, 'non-bearish S12 assessment should not alter holding defense')
 
-const tightened = resolveS12HoldingDefenseUpdate({
+const structuralStopWatch = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 2000,
+    original_shares: 2000,
+    avg_cost: 100,
+    entry_price: 100,
+    initial_stop: 92,
+    trailing_stop: 94,
+    highest_since_entry: 103,
+    tp1_hit: 0,
+    s12_position_stop_price: 97,
+    s12_position_stop_source: '15m_recent_fvg',
+    s12_position_stop_method: '15m_recent_bullish_fvg',
+  },
+  currentPrice: 102,
+  atr14: 2,
+  assessment: assessment(false),
+})
+assert(structuralStopWatch?.action === 'hold', 'S12 position stop should own holding defense even before bearish-defense readiness')
+assert(structuralStopWatch?.newTrailingStop === 97, 'S12 position stop should set the structural 15m no-ATR stop')
+assert(String(structuralStopWatch?.reason ?? '').includes('s12_position_structural_stop_watch'), 'S12 position stop watch reason should be explicit')
+
+const structuralStopExit = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 2000,
+    original_shares: 2000,
+    avg_cost: 100,
+    entry_price: 100,
+    initial_stop: 92,
+    trailing_stop: 94,
+    highest_since_entry: 103,
+    tp1_hit: 0,
+    s12_position_stop_price: 97,
+    s12_position_stop_source: '15m_recent_fvg',
+    s12_position_stop_method: '15m_recent_bullish_fvg',
+  },
+  currentPrice: 96.8,
+  atr14: 2,
+  assessment: assessment(false),
+  executableBookAvailable: true,
+})
+assert(structuralStopExit?.action === 'full_sell', 'S12 position structural stop touch should trigger a primary full exit')
+assert(String(structuralStopExit?.reason ?? '').includes('s12_position_structural_stop_full_exit'), 'S12 structural stop exit reason should be explicit')
+
+const structuralProfitStopExit = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 2000,
+    original_shares: 2000,
+    avg_cost: 100,
+    entry_price: 100,
+    initial_stop: 92,
+    trailing_stop: 101,
+    highest_since_entry: 110,
+    tp1_hit: 1,
+    s12_position_stop_price: 103,
+    s12_position_stop_source: '15m_recent_fvg',
+    s12_position_stop_method: '15m_recent_bullish_fvg',
+  },
+  currentPrice: 102.9,
+  atr14: 2,
+  assessment: assessment(false),
+  executableBookAvailable: true,
+})
+assert(structuralProfitStopExit?.action === 'full_sell', 'S12 structural trailing stop above entry should protect profit on pullback')
+assert(String(structuralProfitStopExit?.reason ?? '').includes('s12_position_structural_stop_full_exit'), 'S12 profit-stop exit reason should stay structural')
+
+const lowerTimeframeWeakTightened = resolveS12HoldingDefenseUpdate({
   pos: {
     shares: 2000,
     original_shares: 2000,
@@ -73,13 +139,58 @@ const tightened = resolveS12HoldingDefenseUpdate({
   atr14: 2,
   assessment: assessment(true),
 })
+assert(lowerTimeframeWeakTightened?.action === 'hold', 'S12 lower-timeframe bearish defense should tighten stop instead of selling by itself')
+assert(String(lowerTimeframeWeakTightened?.reason ?? '').includes('tighten_stop'), 'S12 lower-timeframe weakness should explain tighten-stop defense')
+assert(
+  resolveS12HoldingDefenseEventAction(lowerTimeframeWeakTightened?.reason) === 'tighten_stop',
+  'S12 lower-timeframe weakness should surface tighten-stop advisory action',
+)
+
+const htfBearishExit = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 2000,
+    original_shares: 2000,
+    avg_cost: 100,
+    entry_price: 100,
+    initial_stop: 92,
+    trailing_stop: 99,
+    highest_since_entry: 106,
+    tp1_hit: 1,
+  },
+  currentPrice: 103,
+  atr14: 2,
+  assessment: {
+    ...assessment(false),
+    bias4h: { direction: 'short', confidence: 'confirmed', channelAlign: false },
+    barDiagnostics: { channel_1d_direction: 'short' },
+  } as S12IntradayAssessment,
+  executableBookAvailable: true,
+})
+assert(htfBearishExit?.action === 'full_sell', 'S12 should full-exit only when Daily and 4H bearish regime confirm profit protection')
+assert(String(htfBearishExit?.reason ?? '').includes('s12_daily_4h_bearish_profit_protect_full_exit'), 'S12 HTF bearish full-exit reason should be explicit')
+
+const tightened = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 2000,
+    original_shares: 2000,
+    avg_cost: 100,
+    entry_price: 100,
+    initial_stop: 92,
+    trailing_stop: 94,
+    highest_since_entry: 100.5,
+    tp1_hit: 0,
+  },
+  currentPrice: 100.5,
+  atr14: 2,
+  assessment: assessment(true),
+})
 assert(tightened?.action === 'hold', 'S12 holding defense must stay hold/update only')
 assert((tightened?.newTrailingStop ?? 0) > 94, 'S12 bearish defense should raise trailing stop')
 assert((tightened?.newTrailingStop ?? 999) < 103, 'S12 trailing update should stay below current price')
 assert(String(tightened?.reason ?? '').includes('tighten_stop'), 'S12 bearish defense should explain defensive action')
 assert(
-  resolveS12HoldingDefenseEventAction(tightened?.reason) === 'take_profit_or_tighten_stop',
-  'profitable S12 bearish defense should surface take-profit-or-tighten advisory action',
+  resolveS12HoldingDefenseEventAction(tightened?.reason) === 'tighten_stop',
+  'S12 bearish defense stop update should surface tighten-stop advisory action',
 )
 
 const trimAdvisory = resolveS12HoldingDefenseUpdate({
@@ -97,11 +208,10 @@ const trimAdvisory = resolveS12HoldingDefenseUpdate({
   atr14: 2,
   assessment: assessment(true),
 })
-assert(trimAdvisory?.action === 'partial_sell', 'S12 high-profit bearish defense should become a primary partial sell when book is executable')
-assert(trimAdvisory?.sellShares === 1000, 'S12 partial sell should use configured 50% lot-rounded shares')
+assert(trimAdvisory?.action === 'hold', 'S12 high-profit lower-timeframe bearish defense should tighten stop, not sell without HTF confirmation')
 assert(
-  resolveS12HoldingDefenseEventAction(trimAdvisory?.reason) === 'take_profit',
-  'high-profit S12 bearish defense should surface executable take-profit action',
+  resolveS12HoldingDefenseEventAction(trimAdvisory?.reason) === 'tighten_stop',
+  'high-profit lower-timeframe S12 bearish defense should surface tighten-stop action',
 )
 
 const defensiveOnly = resolveS12HoldingDefenseUpdate({
@@ -136,7 +246,7 @@ const alreadyTight = resolveS12HoldingDefenseUpdate({
     highest_since_entry: 103,
     tp1_hit: 1,
   },
-  currentPrice: 103,
+  currentPrice: 100.8,
   atr14: 2,
   assessment: assessment(true),
 })

@@ -17,7 +17,9 @@ import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
+  aggregateCompletedS12Bars,
   assessS12IntradayStructureFromBaseBars,
+  buildS12LongPositionStopPlan,
   resolveS12PositionDecision,
   s12TimingPolicyFromEnv,
   type S12IntradayAssessment,
@@ -33,6 +35,7 @@ import {
 
 const ACCOUNT_ID = 1
 const S12_HOLDING_DEFENSE_EVENT_MIN_INTERVAL_MS = 10 * 60_000
+const S12_M15_MS = 15 * 60_000
 
 type S12HoldingDefenseEventAction =
   | 'observe'
@@ -67,7 +70,9 @@ export function resolveS12HoldingDefenseEventAction(reason: string | null | unde
   if (text.includes('trim_or_take_profit') || text.includes('TRIM_OR_TAKE_PROFIT')) return 'trim_or_take_profit'
   if (text.includes('quote_unavailable')) return 'quote_unavailable'
   if (text.includes('full_exit') || text.includes('reverse_bos')) return 'full_exit'
+  if (text.includes('profit_protect')) return 'take_profit'
   if (text.includes('take_profit') || text.includes('tp1') || text.includes('tp2')) return 'take_profit'
+  if (text.includes('structural_stop')) return 'tighten_stop'
   if (text.includes('TIGHTEN_STOP')) return 'tighten_stop'
   if (text.includes('tighten_stop')) return 'tighten_stop'
   return 'observe'
@@ -199,6 +204,9 @@ export function resolveS12HoldingDefenseUpdate(params: {
     tp1_price?: number | null
     tp2_price?: number | null
     tp1_hit: number
+    s12_position_stop_price?: number | null
+    s12_position_stop_source?: string | null
+    s12_position_stop_method?: string | null
   }
   currentPrice: number
   atr14: number
@@ -258,6 +266,14 @@ function s12PositionDecisionToExitDecision(
       newHighest: highest,
     }
   }
+  if (decision.action === 'SET_STRUCTURAL_STOP' && decision.stopPrice != null) {
+    return {
+      action: 'hold',
+      reason: `S12 ${decision.reason} @ ${Number(decision.stopPrice).toFixed(2)}`,
+      newTrailingStop: Number(decision.stopPrice),
+      newHighest: highest,
+    }
+  }
   return null
 }
 
@@ -282,6 +298,7 @@ function mergeHoldExitUpdates(base: ExitDecision, overlay: ExitDecision | null):
 
 function resolveS12PrimaryExitDecision(s12Decision: ExitDecision | null, fallbackDecision: ExitDecision): ExitDecision {
   if (s12Decision?.action && s12Decision.action !== 'hold') return s12Decision
+  if (s12Decision?.action === 'hold' && String(s12Decision.reason ?? '').includes('s12_position_structural_stop')) return s12Decision
   if (fallbackDecision.action !== 'hold') return fallbackDecision
   return mergeHoldExitUpdates(fallbackDecision, s12Decision)
 }
@@ -333,6 +350,17 @@ async function evaluateS12HoldingDefense(
 ): Promise<ExitDecision | null> {
   if (!enabledFlag((env as any).S12_INTRADAY_HOLDING_DEFENSE_ENABLED, true)) return null
   try {
+    const policy = s12TimingPolicyFromEnv(env as any)
+    const latestEvent = await env.DB.prepare(`
+      SELECT status, reason, detail_json, created_at
+        FROM paper_execution_events
+       WHERE account_id = ?
+         AND symbol = ?
+         AND event_type = 's12_intraday_structure'
+         AND source = 's12_holding_defense'
+       ORDER BY id DESC
+       LIMIT 1
+    `).bind(ACCOUNT_ID, pos.symbol).first<any>()
     const s12Base = await loadS12IntradayBaseBars(
       env,
       pos.symbol,
@@ -340,28 +368,50 @@ async function evaluateS12HoldingDefense(
       quote.last,
       Number(quote.totalVolume ?? 0),
     )
+    const completed15m = aggregateCompletedS12Bars(s12Base.bars, S12_M15_MS, Date.now())
+    const entryPrice = positiveNumber(pos.entry_price) ?? positiveNumber(pos.avg_cost) ?? 0
+    const previousTrailingStop = positiveNumber(pos.trailing_stop)
+    const computedPositionStop = buildS12LongPositionStopPlan({
+      bars15m: completed15m,
+      entryPrice,
+      referencePrice: quote.last,
+      policy,
+      stopSource: policy.positionStopSource,
+    })
+    const appliedPositionStopPrice = computedPositionStop
+      ? Math.max(previousTrailingStop ?? computedPositionStop.price, computedPositionStop.price)
+      : null
+    const positionStop = computedPositionStop && appliedPositionStopPrice != null
+      ? { ...computedPositionStop, price: appliedPositionStopPrice }
+      : null
     const assessment = assessS12IntradayStructureFromBaseBars({
       symbol: pos.symbol,
       baseBars: s12Base.bars,
       fallback4hBars: s12Base.fallback4hBars,
       fallback1hBars: s12Base.fallback1hBars,
       nowMs: Date.now(),
-      policy: s12TimingPolicyFromEnv(env as any),
+      policy,
       barDiagnostics: s12Base.diagnostics,
       h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
       h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
     })
     const executableBookAvailable = positiveNumber(quote.bid) != null && positiveNumber(quote.ask) != null
+    const s12Position = {
+      ...pos,
+      s12_position_stop_price: positionStop?.price ?? null,
+      s12_position_stop_source: positionStop?.source ?? null,
+      s12_position_stop_method: positionStop?.method ?? null,
+    }
     const s12Decision = resolveS12PositionDecision({
       assessment,
       currentPrice: quote.last,
       executableBookAvailable,
       atr14,
       tp1SellRatio: cfg.exit.tp1SellRatio,
-      pos,
+      pos: s12Position,
     })
     const update = resolveS12HoldingDefenseUpdate({
-      pos,
+      pos: s12Position,
       currentPrice: quote.last,
       atr14,
       assessment,
@@ -388,19 +438,31 @@ async function evaluateS12HoldingDefense(
         fallback_exit_owner: 'paper_sltp_atr_trailing_v1',
         bar_source: s12Base.source,
         bar_diagnostics: s12Base.diagnostics,
+        position_stop_trailing: positionStop
+          ? {
+            mode: 's12_structure_trailing_stop_v1',
+            candidate_price: computedPositionStop?.price ?? null,
+            applied_price: positionStop.price,
+            previous_trailing_stop: previousTrailingStop ?? null,
+            source: positionStop.source,
+            method: positionStop.method,
+            zone_low: positionStop.zoneLow,
+            zone_high: positionStop.zoneHigh,
+            no_atr_buffer: true,
+            trailing_rule: 'never_loosen_max_existing',
+            auto_trade_adaptation: 'recompute_15m_structure_below_current_price',
+          }
+          : {
+            mode: 's12_structure_trailing_stop_v1',
+            candidate_price: null,
+            applied_price: null,
+            previous_trailing_stop: previousTrailingStop ?? null,
+            no_atr_buffer: true,
+            trailing_rule: 'never_loosen_max_existing',
+            auto_trade_adaptation: 'recompute_15m_structure_below_current_price',
+          },
       },
     }
-    const latestEvent = await env.DB.prepare(`
-      SELECT status, reason, detail_json, created_at
-        FROM paper_execution_events
-       WHERE account_id = ?
-         AND trade_date = ?
-         AND symbol = ?
-         AND event_type = 's12_intraday_structure'
-         AND source = 's12_holding_defense'
-       ORDER BY id DESC
-       LIMIT 1
-    `).bind(ACCOUNT_ID, tradeDate, pos.symbol).first<any>()
     if (shouldRecordS12HoldingDefenseEvent({
       latest: latestEvent ?? null,
       nextStatus: assessment.state,

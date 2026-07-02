@@ -21,10 +21,19 @@ assert(page.includes('Request {nextLevel} review'), 'GA panel should expose a cl
 assert(page.includes('Approve {pendingApprovalLevel}'), 'GA panel should expose a clickable pending GA approval action')
 assert(page.includes('Loading OBS evidence'), 'OBS should show a loading transition before rendering empty evidence frames')
 assert(page.includes('function SchedulerShortcutDeck'), 'OBS should keep the five compact scheduler shortcut cards')
-assert(page.includes('<DataQualityCompactMatrix gates={gates} />\n          <SchedulerShortcutDeck jobs={jobs} />'), 'OBS should place the five compact scheduler cards inside Source Gates / data readiness')
+assert(
+  page.includes('<DataQualityCompactMatrix gates={gates} />\n          <SchedulerShortcutDeck jobs={jobs} schedulerApiError={schedulerApiError} />'),
+  'OBS should place the five compact scheduler cards inside Source Gates / data readiness',
+)
 assert(page.includes('<ReadinessFlowMap stages={stages} />\n        </div>'), 'Readiness Flow should not own the compact scheduler card row')
 assert(page.includes('function SchedulerReadinessGroupBoard'), 'OBS should render detailed scheduler group cards as the row below Readiness Flow and Source Gates')
-assert(page.includes('</div>\n      <SchedulerReadinessGroupBoard jobs={jobs} />\n    </div>'), 'Detailed Daily readiness and Daily standalone cards should sit below the two top readiness/source-gate cards')
+assert(
+  page.includes('</div>\n      <SchedulerReadinessGroupBoard jobs={jobs} schedulerApiError={schedulerApiError} />\n    </div>'),
+  'Detailed Daily readiness and Daily standalone cards should sit below the two top readiness/source-gate cards',
+)
+assert(page.includes('const schedulerApiError = errorMessage(scheduler.error)'), 'OBS must keep the scheduler status API error as a first-class signal')
+assert(page.includes('Scheduler API') && page.includes('schedulerApiError'), 'OBS scheduler cards must show the real Scheduler API error instead of only expected job skeletons')
+assert(page.includes("schedulerApiError ? 'API ERROR'"), 'OBS scheduler group badges must not label API failures as expected schedulers')
 assert(!page.includes('SchedulerSourceGateBoard'), 'OBS should not embed detailed scheduler group cards inside Source Gates')
 assert(!page.includes('SchedulerInventoryPanel'), 'OBS should not render scheduler group cards as a separate bottom inventory block')
 assert(

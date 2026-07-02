@@ -263,7 +263,26 @@ function isStateSpaceOverlayModel(name: string, model: Record<string, unknown>):
 export function buildEventsFromScheduler(input: {
   generatedAt: string
   jobs?: SchedulerJobSnapshot[]
+  sourceError?: string
 }): ObservabilityEvent[] {
+  if (input.sourceError) {
+    return [{
+      id: eventId('scheduler', 'scheduler_status', 'unavailable'),
+      ts: input.generatedAt,
+      severity: 'error',
+      domain: 'scheduler',
+      source: 'scheduler_status',
+      status: 'error',
+      title: 'Scheduler status unavailable',
+      summary: input.sourceError,
+      owner: 'Worker',
+      impact: 'OBS cannot render scheduler runtime rows; scheduler health must be treated as unknown until status API recovers.',
+      next_action: 'Open /api/scheduler/status with service auth and inspect Worker runtime errors before changing Scheduler jobs.',
+      runbook: 'P8 scheduler callback contract',
+      evidence: { source_error: input.sourceError },
+    }]
+  }
+
   const jobs = input.jobs ?? []
   const actionable = jobs.filter((job) => ['failed', 'running'].includes(job.lastStatus))
   if (!actionable.length) {
@@ -773,6 +792,7 @@ export function buildObservabilityEventReport(input: {
   date: string
   generatedAt: string
   schedulerJobs?: SchedulerJobSnapshot[]
+  schedulerError?: string
   dataQualityChecks?: DataQualityCheck[]
   deployDecision?: string
   deployChecks?: Array<{ id?: string; name?: string; status?: string; summary?: string; metrics?: Record<string, unknown> }>
@@ -786,7 +806,7 @@ export function buildObservabilityEventReport(input: {
   gaOptimizerError?: string
 }): ObservabilityEventReport {
   const events = [
-    ...buildEventsFromScheduler({ generatedAt: input.generatedAt, jobs: input.schedulerJobs }),
+    ...buildEventsFromScheduler({ generatedAt: input.generatedAt, jobs: input.schedulerJobs, sourceError: input.schedulerError }),
     ...buildEventsFromDataQuality({ generatedAt: input.generatedAt, checks: input.dataQualityChecks }),
     ...buildEventsFromDeployGate({
       generatedAt: input.generatedAt,
@@ -971,6 +991,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     date,
     generatedAt,
     schedulerJobs: 'jobs' in scheduler ? scheduler.jobs as SchedulerJobSnapshot[] : [],
+    schedulerError: 'error' in scheduler ? scheduler.error : undefined,
     dataQualityChecks: dataQuality.checks,
     deployDecision: String(deployGate.decision ?? 'unknown'),
     deployChecks: deployGate.checks,

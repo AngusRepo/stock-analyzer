@@ -966,8 +966,8 @@ function PositionsTable() {
               <th className="text-right p-2">張數</th>
               <th className="text-right p-2">買入價</th>
               <th className="text-right p-2">現價</th>
-              <th className="text-right p-2">止損</th>
-              <th className="text-right p-2">停利</th>
+              <th className="text-right p-2">S12防守</th>
+              <th className="text-right p-2">S12出場</th>
               <th className="text-right p-2">未實現</th>
             </tr>
           </thead>
@@ -984,6 +984,20 @@ function PositionsTable() {
               const s12HoldingDefense = formatS12HoldingDefenseBadge(p.s12_holding_defense)
               const lifecycleBadge = formatCanonicalTradeLifecycleBadge(p.canonical_trade_lifecycle)
               const riskPlan = formatPositionRiskPlan(p)
+              const riskContractBadge = riskPlan.primaryS12
+                ? {
+                  label: 'S12 買賣主機制',
+                  tone: 'info' as const,
+                  description: [
+                    riskPlan.stop ? `防守停損 ${riskPlan.stop}` : null,
+                    riskPlan.tp1 ? `TP1 ${riskPlan.tp1}` : null,
+                    riskPlan.tp2 ? `主出場 ${riskPlan.tp2}` : null,
+                    riskPlan.tp3 ? `TP3 ${riskPlan.tp3}` : null,
+                    riskPlan.tp4 ? `TP4 ${riskPlan.tp4}` : null,
+                    riskPlan.tpSource,
+                  ].filter(Boolean).join('；'),
+                }
+                : lifecycleBadge
               totalUnrealized += pnlAmt
               totalCostBasis += costBasis
 
@@ -1016,14 +1030,20 @@ function PositionsTable() {
                     <td className="p-2 text-right">
                       {riskPlan.tp1 && (
                         <div className={`sv-num text-xs ${riskPlan.tp1Hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
-                          T1 ${riskPlan.tp1}
+                          {riskPlan.primaryS12 ? 'S12 TP1' : 'T1'} ${riskPlan.tp1}
                         </div>
                       )}
                       {riskPlan.tp2 && (
-                        <div className="sv-num text-xs text-red-300">T2 ${riskPlan.tp2}</div>
+                        <div className="sv-num text-xs text-red-300">{riskPlan.primaryS12 ? 'S12 主出場' : 'T2'} ${riskPlan.tp2}</div>
+                      )}
+                      {riskPlan.tp3 && (
+                        <div className="sv-num text-xs text-red-300">TP3 ${riskPlan.tp3}</div>
+                      )}
+                      {riskPlan.tp4 && (
+                        <div className="sv-num text-xs text-red-300">TP4 ${riskPlan.tp4}</div>
                       )}
                       {riskPlan.tpSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.tpSource}</div>}
-                      {!riskPlan.tp1 && !riskPlan.tp2 && <span className="text-muted-foreground/60">—</span>}
+                      {!riskPlan.tp1 && !riskPlan.tp2 && !riskPlan.tp3 && !riskPlan.tp4 && <span className="text-muted-foreground/60">—</span>}
                     </td>
                     <td className="p-2 text-right">
                       <div className={`sv-num ${pctClass(pnlPct)}`}>
@@ -1034,7 +1054,7 @@ function PositionsTable() {
                       </div>
                     </td>
                   </tr>
-                  {(s12HoldingDefense || lifecycleBadge) && (
+                  {(s12HoldingDefense || riskContractBadge) && (
                     <tr className="border-b border-border/50">
                       <td colSpan={7} className="px-2 pb-3">
                         <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
@@ -1047,13 +1067,13 @@ function PositionsTable() {
                               <div className="mt-1 text-muted-foreground/90">{s12HoldingDefense.description}</div>
                             </div>
                           )}
-                          {lifecycleBadge && (
+                          {riskContractBadge && (
                             <div className={[
                               'rounded-lg border px-3 py-2 text-[12px] leading-5 md:text-[13px]',
-                              executionToneClass(lifecycleBadge.tone),
+                              executionToneClass(riskContractBadge.tone),
                             ].join(' ')}>
-                              <div className="font-semibold">止損 / 停利 contract：{lifecycleBadge.label}</div>
-                              <div className="mt-1 text-muted-foreground/90">{lifecycleBadge.description}</div>
+                              <div className="font-semibold">止損 / 停利 contract：{riskContractBadge.label}</div>
+                              <div className="mt-1 text-muted-foreground/90">{riskContractBadge.description}</div>
                             </div>
                           )}
                         </div>

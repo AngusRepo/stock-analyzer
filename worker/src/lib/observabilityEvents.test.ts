@@ -105,6 +105,18 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
 {
   const events = buildEventsFromScheduler({
     generatedAt,
+    sourceError: 'Error: Too many subrequests',
+  })
+
+  assert(events.length === 1, 'scheduler source error should create one event')
+  assert(events[0].severity === 'error', 'scheduler source error must not be reported as stable')
+  assert(events[0].status === 'error', 'scheduler source error status should be explicit')
+  assert(events[0].summary.includes('Too many subrequests'), 'scheduler source error should expose the root cause')
+}
+
+{
+  const events = buildEventsFromScheduler({
+    generatedAt,
     jobs: [
       {
         id: 'pipeline',

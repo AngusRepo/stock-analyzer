@@ -55,8 +55,11 @@ export interface PositionRiskPlanBadge {
   stopTone: PendingBuyExecutionTone
   tp1: string | null
   tp2: string | null
+  tp3: string | null
+  tp4: string | null
   tpSource: string | null
   tp1Hit: boolean
+  primaryS12: boolean
 }
 
 interface ParsedExecutionNote {
@@ -313,6 +316,13 @@ function positivePrice(value: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
+function exitPlanPrice(value: unknown): number | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return positivePrice((value as Record<string, unknown>).price)
+  }
+  return positivePrice(value)
+}
+
 function yn(value: string | undefined): string | null {
   if (value === 'true') return '已對齊'
   if (value === 'false') return '未對齊'
@@ -472,28 +482,40 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
 export function formatPositionRiskPlan(raw: Record<string, unknown> | null | undefined): PositionRiskPlanBadge {
   const lifecycle = parseLifecycle(raw?.canonical_trade_lifecycle)
   const s12Defense = raw?.s12_holding_defense as S12HoldingDefenseContext | null | undefined
-  const s12Stop = positivePrice(s12Defense?.trailing_stop_after ?? s12Defense?.detail?.holding_defense?.trailing_stop_after)
+  const s12HoldingExitPlan = s12Defense?.detail?.exitPlan ?? {}
+  const lifecycleS12ExitPlan = lifecycle?.entry?.s12?.exitPlan ?? {}
+  const s12ExitPlan = s12HoldingExitPlan?.tp1 || s12HoldingExitPlan?.mainExit || s12HoldingExitPlan?.trailingStop
+    ? s12HoldingExitPlan
+    : lifecycleS12ExitPlan
+  const s12Stop = positivePrice(
+    s12Defense?.trailing_stop_after ??
+      s12Defense?.detail?.holding_defense?.trailing_stop_after ??
+      s12ExitPlan?.trailingStop?.initial,
+  )
   const trailingStop = positivePrice(raw?.trailing_stop)
   const lifecycleStop = positivePrice(lifecycle?.exit?.trailingStop ?? lifecycle?.exit?.initialStop ?? lifecycle?.entry?.stopLoss)
   const initialStop = positivePrice(raw?.initial_stop)
+  const hasS12HoldingPlan = Boolean(s12HoldingExitPlan?.tp1 || s12HoldingExitPlan?.mainExit || s12HoldingExitPlan?.trailingStop)
+  const primaryS12 = hasS12HoldingPlan || lifecycle?.owners?.exit === 's12_position_decision_v1'
   const stopValue = s12Stop ?? trailingStop ?? lifecycleStop ?? initialStop
   const stopSource = s12Stop != null
-    ? 'S12 防守'
+    ? 'S12 結構停損'
     : trailingStop != null
-      ? 'ATR trailing'
+      ? primaryS12 ? 'S12 fallback ATR' : 'ATR trailing'
       : lifecycleStop != null
         ? '生命週期'
         : initialStop != null
           ? '初始停損'
           : null
 
-  const s12ExitPlan = lifecycle?.entry?.s12?.exitPlan ?? {}
-  const s12Tp1 = positivePrice(s12ExitPlan.tp1)
-  const s12MainExit = positivePrice(s12ExitPlan.mainExit)
+  const s12Tp1 = exitPlanPrice(s12ExitPlan.tp1)
+  const s12MainExit = exitPlanPrice(s12ExitPlan.mainExit)
+  const s12Tp3 = exitPlanPrice(s12ExitPlan.tp3)
+  const s12Tp4 = exitPlanPrice(s12ExitPlan.tp4)
   const tp1Value = s12Tp1 ?? positivePrice(lifecycle?.exit?.tp1) ?? positivePrice(raw?.tp1_price)
   const tp2Value = s12MainExit ?? positivePrice(lifecycle?.exit?.tp2) ?? positivePrice(raw?.tp2_price)
-  const tpSource = s12Tp1 != null || s12MainExit != null
-    ? 'S12 結構'
+  const tpSource = s12Tp1 != null || s12MainExit != null || s12Tp3 != null || s12Tp4 != null
+    ? hasS12HoldingPlan ? 'S12 持倉主機制' : 'S12 結構'
     : lifecycle?.owners?.exit
       ? OWNER_LABELS[String(lifecycle.owners.exit)] ?? String(lifecycle.owners.exit)
       : tp1Value != null || tp2Value != null
@@ -506,8 +528,11 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
     stopTone: s12Stop != null ? 'warn' : 'neutral',
     tp1: fmtPrice(tp1Value),
     tp2: fmtPrice(tp2Value),
+    tp3: fmtPrice(s12Tp3),
+    tp4: fmtPrice(s12Tp4),
     tpSource,
     tp1Hit: Boolean(raw?.tp1_hit),
+    primaryS12,
   }
 }
 
@@ -526,7 +551,6 @@ export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExec
   const mainExit = fmtPrice(lifecycle.entry?.s12?.exitPlan?.mainExit ?? lifecycle.exit?.tp2)
   const tp3 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp3)
   const tp4 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp4)
-  const manualTp = fmtPrice(lifecycle.entry?.s12?.exitPlan?.manualTp)
   const plannedTp = String(lifecycle.entry?.s12?.exitPlan?.plannedTakeProfit ?? '').trim()
   const primaryS12 = entryOwner === 's12_intraday_structure_v1' || exitOwner === 's12_position_decision_v1'
   const parts = [
@@ -539,7 +563,6 @@ export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExec
     mainExit ? `主出場 ${mainExit}` : null,
     tp3 ? `TP3 ${tp3}` : null,
     tp4 ? `TP4 ${tp4}` : null,
-    manualTp ? `手動 TP ${manualTp}` : null,
     plannedTp ? `計畫 ${plannedTp}` : null,
     s12?.quality?.vwapState ? `VWAP ${s12.quality.vwapState}` : null,
     s12?.quality?.rvolState ? `RVOL ${s12.quality.rvolState}` : null,

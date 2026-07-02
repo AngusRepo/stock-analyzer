@@ -3,7 +3,7 @@
  */
 
 import type { Bindings } from '../types'
-import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
+import { getCronLogs, getSchedulerLogTaskCount, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
 import { getSchedulerDependencySpec } from './schedulerDependencyMap'
 
@@ -104,6 +104,13 @@ const CHAIN_STEP_IDS = [
   'strategy-learning',
 ]
 const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
+const SCHEDULER_STATUS_SCAN_DAYS = 7
+const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
+
+export function estimateSchedulerStatusKvReads(taskCount = getSchedulerLogTaskCount()): number {
+  return (SCHEDULER_STATUS_SCAN_DAYS * taskCount) +
+    (Math.min(SCHEDULER_STATUS_SCAN_DAYS, SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS) * taskCount)
+}
 
 export interface SchedulerDisplayLogCandidate {
   date: string
@@ -181,7 +188,7 @@ function inferShortRunConcern(def: JobDef, log?: CronLogEntry): {
 export function getSchedulerScanDates(): string[] {
   const dates: string[] = []
   const now = new Date(Date.now() + 8 * 3600_000)
-  for (let i = 0; i < 14; i += 1) {
+  for (let i = 0; i < SCHEDULER_STATUS_SCAN_DAYS; i += 1) {
     const d = new Date(now)
     d.setDate(d.getDate() - i)
     dates.push(d.toISOString().slice(0, 10))
@@ -368,8 +375,10 @@ export async function getSchedulerStatus(env: Bindings) {
 
   const allLogs: Record<string, CronLogEntry[]> = {}
   await Promise.all(
-    dates.map(async (date) => {
-      allLogs[date] = await getCronLogs(env.KV, date)
+    dates.map(async (date, index) => {
+      allLogs[date] = await getCronLogs(env.KV, date, {
+        legacyFallback: index < SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS,
+      })
     }),
   )
 

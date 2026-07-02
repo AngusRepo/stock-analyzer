@@ -1,4 +1,5 @@
 import {
+  estimateSchedulerStatusKvReads,
   getSchedulerScanDates,
   resolveSchedulerLogStatus,
   selectSchedulerDisplayLogs,
@@ -37,7 +38,9 @@ const logs: SchedulerDisplayLogCandidate[] = [
   Date.now = () => Date.parse('2026-05-08T04:00:00.000Z')
   try {
     const dates = getSchedulerScanDates()
+    assert(dates.length === 7, 'scheduler status scan window must stay bounded for Cloudflare Worker KV subrequest budget')
     assert(dates.includes('2026-05-03'), 'scheduler scan window must include weekends so weekly/monthly jobs can show lastRun')
+    assert(estimateSchedulerStatusKvReads() < 900, 'scheduler status must stay below Cloudflare Worker subrequest limits')
   } finally {
     Date.now = originalNow
   }

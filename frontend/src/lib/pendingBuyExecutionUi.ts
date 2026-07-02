@@ -30,6 +30,7 @@ export interface CanonicalTradeLifecycleContext {
     context?: unknown
     entry?: unknown
     exit?: unknown
+    fallbackExit?: unknown
   }
   context?: Record<string, unknown>
   entry?: {
@@ -44,6 +45,7 @@ export interface CanonicalTradeLifecycleContext {
     trailingStop?: unknown
     tp1?: unknown
     tp2?: unknown
+    fallbackOwner?: unknown
   }
 }
 
@@ -157,6 +159,7 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
   s12_reaction_ready: 'S12 反應確認完成',
   s12_assist_entry_ready: 'S12 輔助進場成立',
   s12_structure_advisory_waiting: 'S12 結構觀察，尚未接手',
+  s12_structure_primary_waiting: 'S12 主機制等待結構成熟',
   s12_primary_structure_owner_waiting: 'S12 主控結構等待中',
   s12_primary_cleared_momentum_directional_gate: 'S12 已通過方向門檻',
   s12_structure_invalidated: 'S12 結構失效',
@@ -521,20 +524,30 @@ export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExec
   const stop = fmtPrice(lifecycle.exit?.trailingStop ?? lifecycle.exit?.initialStop ?? lifecycle.entry?.stopLoss)
   const tp1 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp1 ?? lifecycle.exit?.tp1)
   const mainExit = fmtPrice(lifecycle.entry?.s12?.exitPlan?.mainExit ?? lifecycle.exit?.tp2)
+  const tp3 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp3)
+  const tp4 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp4)
+  const manualTp = fmtPrice(lifecycle.entry?.s12?.exitPlan?.manualTp)
+  const plannedTp = String(lifecycle.entry?.s12?.exitPlan?.plannedTakeProfit ?? '').trim()
+  const primaryS12 = entryOwner === 's12_intraday_structure_v1' || exitOwner === 's12_position_decision_v1'
   const parts = [
     contextOwner ? `情境：${OWNER_LABELS[contextOwner] ?? contextOwner}` : null,
     entrySource ? `進場來源：${entrySource === 's12_assist_entry' ? 'S12 輔助進場' : '盤前交易計畫'}` : null,
     exitLabel ? `出場：${exitLabel}` : null,
+    lifecycle.owners?.fallbackExit ? `備援：${OWNER_LABELS[String(lifecycle.owners.fallbackExit)] ?? String(lifecycle.owners.fallbackExit)}` : null,
     stop ? `防守停損 ${stop}` : null,
     tp1 ? `TP1 ${tp1}` : null,
     mainExit ? `主出場 ${mainExit}` : null,
+    tp3 ? `TP3 ${tp3}` : null,
+    tp4 ? `TP4 ${tp4}` : null,
+    manualTp ? `手動 TP ${manualTp}` : null,
+    plannedTp ? `計畫 ${plannedTp}` : null,
     s12?.quality?.vwapState ? `VWAP ${s12.quality.vwapState}` : null,
     s12?.quality?.rvolState ? `RVOL ${s12.quality.rvolState}` : null,
   ].filter(Boolean)
 
   return {
-    label: entryLabel || '交易生命週期',
-    tone: entryOwner === 's12_intraday_structure_v1' ? 'info' : 'neutral',
+    label: primaryS12 ? 'S12 買賣主機制' : entryLabel || '交易生命週期',
+    tone: primaryS12 ? 'info' : 'neutral',
     description: parts.join('；') || '此持倉已寫入 canonical lifecycle owner。',
   }
 }

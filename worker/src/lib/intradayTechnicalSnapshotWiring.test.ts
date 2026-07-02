@@ -13,9 +13,11 @@ assert(paperEntryTasks.includes('effectiveTechnicalDecision'), 'pre-trade policy
 assert(paperEntryTasks.includes('S12_INTRADAY_PRIMARY_OWNER_ENABLED'), 'S12 primary owner must be feature flagged')
 assert(paperEntryTasks.includes('s12PrimaryStructureOwnerActive'), 'S12 primary owner must be able to replace overlapping intraday technical vetoes')
 assert(
-  paperEntryTasks.includes('(s12Assessment.ready || s12Assessment.invalidated)') &&
-  paperEntryTasks.includes('s12_structure_advisory_waiting'),
-  'S12 must stay advisory until the intraday structure is ready or invalidated',
+  paperEntryTasks.includes("s12PrimaryOwnerEnabled ? 'require_ready' : s12Mode") &&
+  paperEntryTasks.includes('s12_structure_primary_waiting') &&
+  paperEntryTasks.includes('s12PrimaryDataUnavailableDecision') &&
+  paperEntryTasks.includes('blocked=entry_model_v2,intraday_technical_veto'),
+  'S12 primary owner must defer waiting entries instead of falling back to EntryModel V2',
 )
 assert(
   readFileSync('src/lib/s12IntradayStructure.ts', 'utf8').includes("policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated'") &&

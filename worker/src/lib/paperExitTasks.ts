@@ -280,6 +280,12 @@ function mergeHoldExitUpdates(base: ExitDecision, overlay: ExitDecision | null):
   }
 }
 
+function resolveS12PrimaryExitDecision(s12Decision: ExitDecision | null, fallbackDecision: ExitDecision): ExitDecision {
+  if (s12Decision?.action && s12Decision.action !== 'hold') return s12Decision
+  if (fallbackDecision.action !== 'hold') return fallbackDecision
+  return mergeHoldExitUpdates(fallbackDecision, s12Decision)
+}
+
 export function shouldRecordS12HoldingDefenseEvent(params: {
   latest: { status?: unknown; reason?: unknown; detail_json?: unknown; created_at?: unknown } | null
   nextStatus: string
@@ -377,6 +383,7 @@ async function evaluateS12HoldingDefense(
         advisory_only: false,
         no_short_order: true,
         executable_book_available: executableBookAvailable,
+        position_exit_policy: 's12_primary_independent_of_long_entry_readiness',
         execution_owner: 's12_position_decision_v1',
         fallback_exit_owner: 'paper_sltp_atr_trailing_v1',
         bar_source: s12Base.source,
@@ -641,7 +648,15 @@ export async function runEODExit(env: Bindings): Promise<void> {
     const currentPrice = quote.last
 
     const atr14 = exitAtrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    let decision = checkExitConditions(
+    const s12ExitDecision = await evaluateS12HoldingDefense(
+      env,
+      eodToday,
+      pos,
+      quote,
+      atr14,
+      cfg,
+    )
+    const fallbackDecision = checkExitConditions(
       pos,
       currentPrice,
       atr14,
@@ -651,6 +666,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       eodRegime ?? undefined,
     )
+    let decision = resolveS12PrimaryExitDecision(s12ExitDecision, fallbackDecision)
     if (eodRegime) logRegimeShadow('runEODExit', pos.symbol, eodRegime, decision.action, decision.reason, env.DB)
 
     let dayTradeSell = false
@@ -872,7 +888,15 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     const currentPrice = quote.last
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
-    let decision = checkExitConditions(
+    const s12ExitDecision = await evaluateS12HoldingDefense(
+      env,
+      intradayToday,
+      pos,
+      quote,
+      atr14,
+      cfg,
+    )
+    const fallbackDecision = checkExitConditions(
       pos,
       currentPrice,
       atr14,
@@ -882,19 +906,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       resolveSltpForRegime(cfg, await getCurrentSltpRegime(env.KV)),
       intraRegime ?? undefined,
     )
-    const s12HoldingDefenseUpdate = await evaluateS12HoldingDefense(
-      env,
-      intradayToday,
-      pos,
-      quote,
-      atr14,
-      cfg,
-    )
-    if (decision.action === 'hold') {
-      decision = s12HoldingDefenseUpdate?.action && s12HoldingDefenseUpdate.action !== 'hold'
-        ? s12HoldingDefenseUpdate
-        : mergeHoldExitUpdates(decision, s12HoldingDefenseUpdate)
-    }
+    let decision = resolveS12PrimaryExitDecision(s12ExitDecision, fallbackDecision)
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, env.DB)
 
     if (decision.action !== 'hold') {

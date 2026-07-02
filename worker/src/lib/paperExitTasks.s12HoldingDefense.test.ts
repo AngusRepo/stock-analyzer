@@ -10,8 +10,10 @@ const paperExitTasksSource = readFileSync('src/lib/paperExitTasks.ts', 'utf8')
 assert(
   paperExitTasksSource.includes('no_short_order: true') &&
   paperExitTasksSource.includes("execution_owner: 's12_position_decision_v1'") &&
-  paperExitTasksSource.includes("fallback_exit_owner: 'paper_sltp_atr_trailing_v1'"),
-  'S12 holding-defense telemetry must expose S12 as position-decision owner while preserving no-short and fallback owner boundaries',
+  paperExitTasksSource.includes("fallback_exit_owner: 'paper_sltp_atr_trailing_v1'") &&
+  paperExitTasksSource.includes('resolveS12PrimaryExitDecision') &&
+  paperExitTasksSource.includes('s12_primary_independent_of_long_entry_readiness'),
+  'S12 holding-defense telemetry must expose S12 as primary position-decision owner while preserving no-short and fallback owner boundaries',
 )
 
 function assessment(ready: boolean): S12IntradayAssessment {

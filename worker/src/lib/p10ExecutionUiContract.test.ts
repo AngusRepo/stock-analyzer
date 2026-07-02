@@ -87,6 +87,7 @@ assert(
 )
 assert(
   uiHelper.includes('formatPositionRiskPlan') &&
+    uiHelper.includes('S12 買賣主機制') &&
     botDashboard.includes('S12 持倉分析：{s12HoldingDefense.label}') &&
     botDashboard.includes('止損 / 停利 contract：{lifecycleBadge.label}'),
   'Bot dashboard holdings table must expand S12 holding analysis and align stop/take-profit UI with the risk-plan formatter',
@@ -104,8 +105,10 @@ assert(
   'paper positions API must expose latest S12 holding-defense event per position',
 )
 assert(
-  paperRoutes.includes('canonical_trade_lifecycle') && paperRoutes.includes('paper_orders'),
-  'paper positions API must expose canonical lifecycle from latest buy order note',
+  paperRoutes.includes('canonical_trade_lifecycle') &&
+    paperRoutes.includes('trade_lifecycle_json') &&
+    paperRoutes.includes('paper_orders'),
+  'paper positions API must expose canonical lifecycle from position row first and latest buy order note fallback',
 )
 assert(
   obsPage.includes('checked_waiting') && obsPage.includes('quote_unavailable') && obsPage.includes('partially_filled'),

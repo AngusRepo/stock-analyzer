@@ -1153,12 +1153,19 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
         h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
       })
+      const s12PrimaryOwnerEnabled =
+        s12Enabled &&
+        s12Mode === 'assist_entry' &&
+        enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
       const assistEntryOverlay = buildS12AssistEntryOverlay(
         assessment,
         s12Mode,
         optionalPositiveNumber((env as any).S12_INTRADAY_MAX_CHASE_PCT_CAP, 0.012),
       )
-      const technicalDecision = s12PreTradeTechnicalDecision(assessment, s12Mode)
+      const technicalDecision = s12PreTradeTechnicalDecision(
+        assessment,
+        s12PrimaryOwnerEnabled ? 'require_ready' : s12Mode,
+      )
       const sidecar: S12RuntimeSidecar = {
         assessment,
         technicalDecision,
@@ -1193,22 +1200,19 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         assessment.reason,
         `${assessment.detail};bar_source=${s12Base.source};sidecar=pre_allocator`,
       )
-      const s12PrimaryOwnerEnabled =
-        s12Mode === 'assist_entry' &&
-        enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
       if (assessment.maturity?.stale) {
         recordExecutionNote(
           pending.symbol,
           'checked_waiting',
           's12_structure_stale',
-          `${assessment.detail};advisory_only=true`,
+          `${assessment.detail};primary_owner=${s12PrimaryOwnerEnabled ? 'true' : 'false'}`,
         )
       } else if (s12PrimaryOwnerEnabled && !assessment.ready && !assessment.invalidated) {
         recordExecutionNote(
           pending.symbol,
           'checked_waiting',
-          's12_structure_advisory_waiting',
-          `${assessment.detail};advisory_only=true;kept=entry_model_v2,intraday_technical_veto`,
+          's12_structure_primary_waiting',
+          `${assessment.detail};primary_owner=true;blocked=entry_model_v2,intraday_technical_veto`,
         )
       }
       if (technicalDecision) {
@@ -1540,12 +1544,19 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     const s12TechnicalDecision = s12Sidecar?.technicalDecision ?? null
     const s12AssistEntryOverlay = s12Sidecar?.assistEntryOverlay ?? null
     const s12PrimaryOwnerEnabled =
+      s12Enabled &&
       s12Mode === 'assist_entry' &&
       enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
+    const s12PrimaryDataUnavailableDecision = s12PrimaryOwnerEnabled && !s12Sidecar
+      ? {
+        action: 'defer' as const,
+        reason: 's12_data_unavailable',
+        detail: 'primary_owner=true;blocked=entry_model_v2,intraday_technical_veto',
+      }
+      : null
     const s12PrimaryStructureOwnerActive =
       s12PrimaryOwnerEnabled &&
-      s12Assessment != null &&
-      (s12Assessment.ready || s12Assessment.invalidated)
+      s12Assessment != null
     if (s12AssistEntryOverlay) {
       executionEntryPrice = s12AssistEntryOverlay.entryPrice
       executionStopLoss = s12AssistEntryOverlay.stopLoss ?? executionStopLoss
@@ -1562,7 +1573,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
     const effectiveTechnicalDecision = s12PrimaryStructureOwnerActive
       ? s12TechnicalDecision
-      : s12TechnicalDecision ?? intradayTechnicalDecision
+      : s12PrimaryDataUnavailableDecision ?? s12TechnicalDecision ?? intradayTechnicalDecision
     const effectivePreTradeMomentum = s12AssistEntryOverlay
       ? s12PrimaryMomentumContext(baseMomentum)
       : baseMomentum
@@ -1980,6 +1991,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       chaseCeiling: s12AssistEntryOverlay?.chaseCeiling ?? null,
       s12Assessment,
       s12AssistApplied: s12AssistEntryOverlay != null,
+      s12ExitPrimary: s12PrimaryOwnerEnabled && s12Assessment != null,
       initialStop: effectiveInitialStop,
       trailingStop: effectiveInitialStop,
       tp1: effectiveTp1Price,
@@ -2020,10 +2032,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         env.DB.prepare(`
           INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at,
             entry_price, entry_date, initial_stop, trailing_stop, highest_since_entry,
-            stop_multiplier, tp1_price, tp2_price, tp1_hit, original_shares)
-          VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            stop_multiplier, tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json)
+          VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
           ON CONFLICT(account_id, symbol) DO UPDATE SET
-            shares=excluded.shares, avg_cost=excluded.avg_cost, name=excluded.name, updated_at=datetime('now')
+            shares=excluded.shares, avg_cost=excluded.avg_cost, name=excluded.name,
+            trade_lifecycle_json=excluded.trade_lifecycle_json, updated_at=datetime('now')
         `).bind(
           ACCOUNT_ID,
           pending.symbol,
@@ -2039,6 +2052,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           effectiveTp1Price,
           effectiveTp2Price,
           shares,
+          canonicalTradeLifecycleJson,
         ),
         env.DB.prepare(`
           INSERT INTO paper_orders
@@ -2086,7 +2100,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             effective_tp1: effectiveTp1Price,
             effective_tp2: effectiveTp2Price,
             exit_input_source: effectiveExitInputs.source,
-            exit_owner: 'paper_sltp_atr_trailing_v1',
+            exit_owner: canonicalTradeLifecycle.owners.exit,
+            fallback_exit_owner: canonicalTradeLifecycle.owners.fallbackExit,
             s12_exit_plan: s12Assessment?.exitPlan ?? null,
             s12_quality: s12Assessment?.quality ?? null,
             canonical_trade_lifecycle: canonicalTradeLifecycle,
@@ -2166,7 +2181,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         effective_tp1: effectiveTp1Price,
         effective_tp2: effectiveTp2Price,
         exit_input_source: effectiveExitInputs.source,
-        exit_owner: 'paper_sltp_atr_trailing_v1',
+        exit_owner: canonicalTradeLifecycle.owners.exit,
+        fallback_exit_owner: canonicalTradeLifecycle.owners.fallbackExit,
         sizing_mode: sizingMode,
         l4_sparse_allocation_weight: sparseSizing?.weight ?? null,
         l4_sparse_allocation_rank: sparseSizing?.allocationRank ?? null,

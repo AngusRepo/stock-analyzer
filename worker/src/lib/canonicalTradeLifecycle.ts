@@ -7,7 +7,8 @@ export interface CanonicalTradeLifecycle {
   owners: {
     context: 'market_regime_alpha_context_v1'
     entry: 's12_intraday_structure_v1' | 'ohlcv_pre_trade_plan_v1'
-    exit: 'paper_sltp_atr_trailing_v1'
+    exit: 's12_position_decision_v1' | 'paper_sltp_atr_trailing_v1'
+    fallbackExit: 'paper_sltp_atr_trailing_v1'
   }
   context: {
     marketRiskLevel: string | null
@@ -47,8 +48,16 @@ export interface CanonicalTradeLifecycle {
         tp1Source: string | null
         mainExit: number | null
         mainExitSource: string | null
+        tp3: number | null
+        tp3Source: string | null
+        tp4: number | null
+        tp4Source: string | null
+        manualTp: number | null
+        manualTpSource: string | null
+        plannedTakeProfit: string | null
         trailingInitial: number | null
         trailingMethod: string | null
+        trailingSource: string | null
         reverseWarningAction: string | null
       }
       detail: string | null
@@ -70,6 +79,7 @@ export interface CanonicalTradeLifecycle {
       mfeProfitLock3Pct: number
       mfeProfitLock6Pct: number
     }
+    fallbackOwner: 'paper_sltp_atr_trailing_v1'
   }
 }
 
@@ -98,6 +108,7 @@ export function buildCanonicalTradeLifecycle(input: {
   chaseCeiling: number | null
   s12Assessment: S12IntradayAssessment | null
   s12AssistApplied: boolean
+  s12ExitPrimary: boolean
   initialStop: number
   trailingStop: number
   tp1: number
@@ -109,6 +120,7 @@ export function buildCanonicalTradeLifecycle(input: {
   protectiveFloorPolicy: CanonicalTradeLifecycle['exit']['protectiveFloorPolicy']
 }): CanonicalTradeLifecycle {
   const s12 = input.s12Assessment
+  const exitOwner = input.s12ExitPrimary ? 's12_position_decision_v1' : 'paper_sltp_atr_trailing_v1'
   return {
     version: 'canonical_trade_lifecycle_v1',
     tradeDate: input.tradeDate,
@@ -116,7 +128,8 @@ export function buildCanonicalTradeLifecycle(input: {
     owners: {
       context: 'market_regime_alpha_context_v1',
       entry: input.s12AssistApplied ? 's12_intraday_structure_v1' : 'ohlcv_pre_trade_plan_v1',
-      exit: 'paper_sltp_atr_trailing_v1',
+      exit: exitOwner,
+      fallbackExit: 'paper_sltp_atr_trailing_v1',
     },
     context: {
       marketRiskLevel: input.marketRiskLevel,
@@ -157,8 +170,16 @@ export function buildCanonicalTradeLifecycle(input: {
             tp1Source: s12.exitPlan.tp1.source === 'unavailable' ? null : s12.exitPlan.tp1.source,
             mainExit: positiveNumber(s12.exitPlan.mainExit.price),
             mainExitSource: s12.exitPlan.mainExit.source === 'unavailable' ? null : s12.exitPlan.mainExit.source,
+            tp3: positiveNumber(s12.exitPlan.tp3.price),
+            tp3Source: s12.exitPlan.tp3.source === 'unavailable' ? null : s12.exitPlan.tp3.source,
+            tp4: positiveNumber(s12.exitPlan.tp4.price),
+            tp4Source: s12.exitPlan.tp4.source === 'unavailable' ? null : s12.exitPlan.tp4.source,
+            manualTp: positiveNumber(s12.exitPlan.manualTp.price),
+            manualTpSource: s12.exitPlan.manualTp.source === 'unavailable' ? null : s12.exitPlan.manualTp.source,
+            plannedTakeProfit: String(s12.barDiagnostics?.position_planned_tp ?? '').trim() || null,
             trailingInitial: positiveNumber(s12.exitPlan.trailingStop.initial),
             trailingMethod: s12.exitPlan.trailingStop.method,
+            trailingSource: s12.exitPlan.trailingStop.source,
             reverseWarningAction: s12.exitPlan.reverseWarning.action === 'none' ? null : s12.exitPlan.reverseWarning.action,
           },
           detail: s12.detail ?? null,
@@ -175,6 +196,7 @@ export function buildCanonicalTradeLifecycle(input: {
       tpMultiplier: input.tpMultiplier,
       tp2Multiplier: input.tp2Multiplier,
       protectiveFloorPolicy: input.protectiveFloorPolicy,
+      fallbackOwner: 'paper_sltp_atr_trailing_v1',
     },
   }
 }

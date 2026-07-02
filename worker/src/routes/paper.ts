@@ -91,6 +91,12 @@ function extractCanonicalTradeLifecycleFromOrderNote(note: unknown): Record<stri
   return lifecycle
 }
 
+function normalizeCanonicalTradeLifecycle(value: unknown): Record<string, any> | null {
+  const lifecycle = parseJsonRecord(value)
+  if (!lifecycle || lifecycle.version !== 'canonical_trade_lifecycle_v1') return null
+  return lifecycle
+}
+
 type InstitutionalRawCardRow = {
   key: string
   label: string
@@ -772,7 +778,7 @@ paper.get('/positions', async (c) => {
       tp2_price:        pos.tp2_price ? Math.round(pos.tp2_price * 10) / 10 : null,
       tp1_hit:          !!pos.tp1_hit,
       s12_holding_defense: s12HoldingDefenseMap.get(pos.symbol) ?? null,
-      canonical_trade_lifecycle: canonicalLifecycleMap.get(pos.symbol) ?? null,
+      canonical_trade_lifecycle: normalizeCanonicalTradeLifecycle(pos.trade_lifecycle_json) ?? canonicalLifecycleMap.get(pos.symbol) ?? null,
     }
   }))
 

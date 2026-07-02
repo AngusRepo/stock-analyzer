@@ -2401,6 +2401,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     structural_stop: price(structuralStop),
     structural_stop_source: assessment?.exitPlan?.trailingStop?.source ?? null,
     structural_stop_method: assessment?.exitPlan?.trailingStop?.method ?? null,
+    position_exit_policy: 'independent_of_long_entry_readiness',
     executable_book_available: input.executableBookAvailable ? 'true' : 'false',
     no_short_order: 'true',
   }

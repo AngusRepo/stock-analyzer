@@ -62,6 +62,7 @@ assert(
     updateOrchestrator.includes('ignoreEveningChainInFlight') &&
     updateOrchestrator.includes("callbackMode: 'readiness_probe'") &&
     updateOrchestrator.includes('finLabRefreshScopeForReadiness') &&
+    updateOrchestrator.includes('malformed scheduler run log ignored') &&
     !updateOrchestrator.includes("lanes.add('market_summary')") &&
     updateOrchestrator.includes("datasets.add('canonical_broker_rank_daily')") &&
     updateOrchestrator.includes('dailySourceRefresh: true'),

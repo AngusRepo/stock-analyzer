@@ -118,15 +118,33 @@ type SchedulerRunSnapshot = {
   timestamp?: string
 }
 
+async function readSchedulerRunLogKey(
+  env: Bindings,
+  key: string,
+): Promise<SchedulerRunSnapshot | null> {
+  try {
+    return await env.KV.get(key, 'json') as SchedulerRunSnapshot | null
+  } catch (error) {
+    const raw = await env.KV.get(key).catch(() => null)
+    console.warn(`[updateOrchestrator] malformed scheduler run log ignored key=${key}:`, error)
+    return raw
+      ? {
+          status: 'error',
+          summary: `malformed scheduler run log ignored: ${raw.slice(0, 160)}`,
+        }
+      : null
+  }
+}
+
 async function readSchedulerRunLog(
   env: Bindings,
   task: string,
   runDate: string,
 ): Promise<SchedulerRunSnapshot | null> {
   return (
-    await env.KV.get(`scheduler:run:${task}:${runDate}`, 'json') as SchedulerRunSnapshot | null
+    await readSchedulerRunLogKey(env, `scheduler:run:${task}:${runDate}`)
   ) ?? (
-    await env.KV.get(`cron:log:${task}:${runDate}`, 'json') as SchedulerRunSnapshot | null
+    await readSchedulerRunLogKey(env, `cron:log:${task}:${runDate}`)
   )
 }
 

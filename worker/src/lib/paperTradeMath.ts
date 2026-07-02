@@ -224,7 +224,25 @@ export function resolveMarketSellFill(input: MarketSellFillInput): MarketSellFil
 
   const bestBid = input.bestBid == null ? null : Number(input.bestBid)
   if (bestBid == null || !Number.isFinite(bestBid) || bestBid <= 0) {
-    return { fillable: false, reason: 'missing_best_bid' }
+    if (input.requireBestBid ?? true) return { fillable: false, reason: 'missing_best_bid' }
+    const fallbackFillPrice = snapToTwPriceTick(applySlippage(currentPrice, 'sell', input.slippageTicks ?? 1), 'floor')
+    if (low != null && Number.isFinite(low) && fallbackFillPrice < low) {
+      return {
+        fillable: false,
+        reason: `fill_below_intraday_low:${fallbackFillPrice.toFixed(2)}_lt_${low.toFixed(2)}`,
+      }
+    }
+    if (high != null && Number.isFinite(high) && fallbackFillPrice > high) {
+      return {
+        fillable: false,
+        reason: `fill_above_intraday_high:${fallbackFillPrice.toFixed(2)}_gt_${high.toFixed(2)}`,
+      }
+    }
+    return {
+      fillable: true,
+      fillPrice: fallbackFillPrice,
+      reason: 'last_price_fallback_market_sell',
+    }
   }
   const referencePrice = bestBid
   const fillPrice = snapToTwPriceTick(applySlippage(referencePrice, 'sell', input.slippageTicks ?? 1), 'floor')

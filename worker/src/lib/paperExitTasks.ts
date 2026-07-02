@@ -16,7 +16,7 @@ import { putIntradayPrice } from './paperIntradayPriceCache'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
-import { assessS12IntradayStructureFromBaseBars, type S12IntradayAssessment } from './s12IntradayStructure'
+import { assessS12IntradayStructureFromBaseBars, s12TimingPolicyFromEnv, type S12IntradayAssessment } from './s12IntradayStructure'
 import { loadS12IntradayBaseBars } from './s12RuntimeBars'
 import {
   getCurrentRegime as getCurrentSltpRegime,
@@ -141,7 +141,10 @@ async function persistExitPositionUpdate(
   })
 }
 
-function resolveExitSellFill(quote: IntradayOHLC): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
+function resolveExitSellFill(
+  quote: IntradayOHLC,
+  options: { allowLastPriceFallback?: boolean } = {},
+): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
   const fill = resolveMarketSellFill({
     currentPrice: quote.last,
     bestBid: quote.bid,
@@ -149,7 +152,7 @@ function resolveExitSellFill(quote: IntradayOHLC): { fillable: boolean; price?: 
     intradayLow: quote.low,
     intradayHigh: quote.high,
     slippageTicks: 1,
-    requireBestBid: true,
+    requireBestBid: !options.allowLastPriceFallback,
   })
   return {
     fillable: fill.fillable,
@@ -303,6 +306,7 @@ async function evaluateS12HoldingDefense(
       baseBars: s12Base.bars,
       fallback4hBars: s12Base.fallback4hBars,
       nowMs: Date.now(),
+      policy: s12TimingPolicyFromEnv(env as any),
       barDiagnostics: s12Base.diagnostics,
       h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
       h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
@@ -945,7 +949,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       await runPostExitDiscipline(env, cfg, pos.symbol, decision.reason, 'full_sell', 'Intraday')
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
       const sellShares = decision.sellShares
-      const sellFill = resolveExitSellFill(quote)
+      const sellFill = resolveExitSellFill(quote, { allowLastPriceFallback: true })
       if (!sellFill.fillable || sellFill.price == null) {
         await recordPaperExecutionEvent(env, {
           tradeDate: intradayToday,

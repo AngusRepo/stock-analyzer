@@ -577,9 +577,12 @@ async function loadMarketSummaryCreditTrading(db: D1Database) {
       `WITH ordered_dates AS (
          SELECT date
          FROM canonical_market_summary_daily
-         WHERE margin_balance_value IS NOT NULL
-            OR margin_balance_units IS NOT NULL
-            OR short_balance_units IS NOT NULL
+         WHERE UPPER(COALESCE(market_segment, '')) IN ('LISTED', 'OTC', 'LISTED_OTC', 'ALL')
+           AND (
+             margin_balance_value IS NOT NULL
+             OR margin_balance_units IS NOT NULL
+             OR short_balance_units IS NOT NULL
+           )
          GROUP BY date
          ORDER BY date DESC
          LIMIT 2
@@ -589,6 +592,7 @@ async function loadMarketSummaryCreditTrading(db: D1Database) {
                 CASE WHEN s.market_segment = 'ALL' THEN 1 ELSE 0 END AS is_all
          FROM canonical_market_summary_daily s
          JOIN ordered_dates d ON s.date = d.date
+         WHERE UPPER(COALESCE(s.market_segment, '')) IN ('LISTED', 'OTC', 'LISTED_OTC', 'ALL')
        ),
        mode AS (
          SELECT
@@ -773,6 +777,7 @@ async function loadCanonicalInstitutionalFlows(db: D1Database) {
       `WITH latest_date AS (
          SELECT MAX(date) AS date
          FROM canonical_institutional_amount_daily
+         WHERE UPPER(COALESCE(market_segment, '')) NOT IN ('EMERGING', 'ROTC', 'ESB')
        )
        SELECT
          (SELECT date FROM latest_date) AS date,
@@ -782,7 +787,8 @@ async function loadCanonicalInstitutionalFlows(db: D1Database) {
          SUM(CASE WHEN investor IN ('foreign', 'trust', 'dealer', 'dealer_self', 'dealer_hedge') THEN net_amount ELSE 0 END) / 100000000.0 AS total_net,
          COUNT(*) AS row_count
        FROM canonical_institutional_amount_daily
-       WHERE date = (SELECT date FROM latest_date)`
+       WHERE date = (SELECT date FROM latest_date)
+         AND UPPER(COALESCE(market_segment, '')) NOT IN ('EMERGING', 'ROTC', 'ESB')`
     ).first<any>()
     if (!row?.date) return null
     return {

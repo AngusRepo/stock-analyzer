@@ -178,3 +178,17 @@ function assert(condition: unknown, message: string): void {
   assert(!fill.fillable, 'market sell should fail closed when executable bid is missing')
   assert(fill.reason === 'missing_best_bid', 'missing bid must not fall back to last/current price')
 }
+
+{
+  const fill = resolveMarketSellFill({
+    currentPrice: 29,
+    bestBid: null,
+    intradayLow: 28.8,
+    intradayHigh: 29.2,
+    slippageTicks: 1,
+    requireBestBid: false,
+  })
+  assert(fill.fillable, 'TP1 partial sell may use last-price fallback when broker bid is missing')
+  assert(fill.reason === 'last_price_fallback_market_sell', 'last-price fallback must be explicit')
+  assert(fill.fillPrice != null && fill.fillPrice < 29, 'fallback sell should still apply conservative slippage')
+}

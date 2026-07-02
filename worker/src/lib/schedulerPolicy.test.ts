@@ -59,6 +59,18 @@ void (async () => {
   }
 
   {
+    const pausedGate = await shouldRunScheduledTask({
+      task: 'optuna-queue',
+      kv: {
+        get: async (key: string) => key === 'scheduler:pause:global' ? 'incident-stop' : null,
+      } as unknown as KVNamespace,
+      nowTw: new Date('2026-05-01T08:00:00.000Z'),
+    })
+    assert(!pausedGate.shouldRun, 'global scheduler pause must stop all scheduled tasks')
+    assert(pausedGate.reason.includes('global_pause:incident-stop'), 'global pause reason should be surfaced')
+  }
+
+  {
     const next = await getNextRunApproxWithPolicy({
       task: 'retrain',
       cron: 'first sunday of month 02:00 taipei',

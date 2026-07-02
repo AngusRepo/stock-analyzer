@@ -2,6 +2,7 @@ import {
   aggregateCompletedS12Bars,
   assessS12IntradayStructure,
   assessS12IntradayStructureFromBaseBars,
+  s12TimingPolicyFromEnv,
   s12PreTradeTechnicalDecision,
   type S12Bar,
 } from './s12IntradayStructure'
@@ -80,6 +81,19 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
 }
 
 {
+  const policy = s12TimingPolicyFromEnv({
+    S12_INTRADAY_MIN_15M_BARS: '2',
+    S12_INTRADAY_ATR_15M_BARS: '99',
+    S12_INTRADAY_SWING_LOOKBACK_BARS: '1',
+    S12_INTRADAY_BOS_WAIT_BARS: '50',
+  })
+  assert(policy.min15mBars === 3, 'S12 min 15m bars must clamp to the FVG-compatible lower bound')
+  assert(policy.atr15mBars === 30, 'S12 ATR period should clamp unsafe large env overrides')
+  assert(policy.swingLookbackBars === 2, 'S12 swing lookback should clamp below community-style pivot minimum')
+  assert(policy.bosWaitBars === 50, 'S12 BOS wait should accept bounded env overrides')
+}
+
+{
   const assessment = assessS12IntradayStructure({
     symbol: '2330',
     bars15m: [bar(5 * H1, 103, 104, 100, 101), bar(5 * H1 + M15, 101, 102, 99, 100)],
@@ -92,6 +106,71 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     s12PreTradeTechnicalDecision(assessment, 'assist_entry') === null,
     'assist_entry mode should not defer while S12 is still waiting for maturity',
   )
+  assert(assessment.detail.includes('policy_min15m_bars=4'), 'S12 detail must expose the effective timing policy')
+}
+
+{
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m: [
+      bar(5 * H1, 103, 104, 100, 101),
+      bar(5 * H1 + M15, 101, 102, 99, 100),
+      bar(5 * H1 + 2 * M15, 100, 102, 99, 101),
+      bar(5 * H1 + 3 * M15, 101, 103, 100, 102),
+    ],
+    bars1h: [],
+    bars4h: [],
+  })
+  assert(assessment.state !== 'waiting_15m_completed_bars', 'S12 should stop waiting for 15MK after four completed 15m bars')
+}
+
+{
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m: [
+      bar(5 * H1, 103, 104, 100, 101),
+      bar(5 * H1 + M15, 101, 102, 99, 100),
+      bar(5 * H1 + 2 * M15, 100, 102, 99, 101),
+    ],
+    bars1h: [],
+    bars4h: [],
+    policy: { min15mBars: 3 },
+  })
+  assert(assessment.state !== 'waiting_15m_completed_bars', 'S12 min 15m bars should be policy-configurable')
+  assert(assessment.detail.includes('policy_min15m_bars=3'), 'S12 detail should expose overridden min 15m bars')
+}
+
+{
+  const bars4h = [{
+    startMs: Date.parse('2026-06-25T01:00:00.000Z'),
+    open: 100,
+    high: 110,
+    low: 90,
+    close: 100,
+    volume: 1000,
+  }]
+  const bars1h = [
+    bar(H4, 100, 105, 99, 104, 500),
+  ]
+  const bars15m = [
+    bar(H4 + H1 + 0 * M15, 103.0, 104.0, 101.0, 102.0),
+    bar(H4 + H1 + 1 * M15, 102.0, 103.0, 100.5, 101.2),
+    bar(H4 + H1 + 2 * M15, 101.2, 102.5, 100.8, 102.0),
+    bar(H4 + H1 + 3 * M15, 102.0, 103.5, 101.8, 103.0),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m,
+    bars1h,
+    bars4h,
+    h4Source: 'previous_trading_day_fallback',
+    h4ReferenceDate: '2026-06-25',
+    h4ReferenceClose: 100,
+  })
+  assert(assessment.h4Source === 'previous_trading_day_fallback', 'S12 should preserve previous-day 4H fallback source')
+  assert(assessment.bias4h.direction !== 'long', 'fixture should exercise neutral fallback 4H context')
+  assert(assessment.state !== 'waiting_4h_long_bias', 'previous-day 4H fallback must be context only, not a hard long-bias gate')
+  assert(assessment.detail.includes('h4_fallback_bias_mode=context_only'), 'S12 detail should explain fallback 4H bias is context-only')
 }
 
 {

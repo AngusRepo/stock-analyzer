@@ -345,8 +345,16 @@ function finLabCanonicalWindowDays(env: Bindings): number {
   return windowDays
 }
 
-const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,market_summary,global_context,regime_context'
-const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_market_index_daily,canonical_futures_daily,canonical_market_summary_daily,canonical_regime_context_daily,canonical_broker_flow_daily,canonical_broker_rank_daily'
+function finLabDailySourceWindowDays(env: Bindings): number {
+  const windowDays = parsePositiveInt((env as any).FINLAB_DAILY_SOURCE_WINDOW_DAYS) ?? 3
+  if (windowDays < 1 || windowDays > 14) {
+    throw new Error('FINLAB_DAILY_SOURCE_WINDOW_DAYS must be between 1 and 14')
+  }
+  return windowDays
+}
+
+const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,global_context,regime_context'
+const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_market_index_daily,canonical_futures_daily,canonical_regime_context_daily,canonical_broker_flow_daily,canonical_broker_rank_daily'
 
 function buildFinLabBackfillRunId(years: number, runDate?: string): string {
   const day = (runDate && /^\d{4}-\d{2}-\d{2}$/.test(runDate))
@@ -360,10 +368,19 @@ function optionalString(value: unknown): string | undefined {
   return text || undefined
 }
 
+function dateDaysBefore(date: string | undefined, days: number): string | undefined {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined
+  const parsed = new Date(`${date}T00:00:00.000Z`)
+  parsed.setUTCDate(parsed.getUTCDate() - Math.max(0, days))
+  return parsed.toISOString().slice(0, 10)
+}
+
 type FinLabBackfillRunOptions = {
   continueEveningChain?: boolean
   dailySourceRefresh?: boolean
   callbackMode?: 'readiness_probe' | 'evening_chain'
+  lanes?: string
+  canonicalDatasets?: string
 }
 
 function buildFinLabBackfillRequestBody(
@@ -376,6 +393,21 @@ function buildFinLabBackfillRequestBody(
   const runId = buildFinLabBackfillRunId(years, runDate)
   const dailySourceMode = Boolean(options.dailySourceRefresh || options.continueEveningChain)
   const callbackMode = options.callbackMode ?? (options.continueEveningChain ? 'evening_chain' : undefined)
+  const dailySourceWindowDays = finLabDailySourceWindowDays(env)
+  const dailySourceStartDate = dateDaysBefore(runDate, dailySourceWindowDays - 1)
+  const dailySourceEndDate = runDate && /^\d{4}-\d{2}-\d{2}$/.test(runDate) ? runDate : undefined
+  const canonicalStartDate = dailySourceMode
+    ? (optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_START_DATE) ?? dailySourceEndDate)
+    : optionalString((env as any).FINLAB_BACKFILL_CANONICAL_START_DATE)
+  const canonicalEndDate = dailySourceMode
+    ? (optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_END_DATE) ?? dailySourceEndDate)
+    : optionalString((env as any).FINLAB_BACKFILL_CANONICAL_END_DATE)
+  const sourceStartDate = dailySourceMode
+    ? (optionalString((env as any).FINLAB_DAILY_SOURCE_START_DATE) ?? dailySourceStartDate)
+    : optionalString((env as any).FINLAB_BACKFILL_SOURCE_START_DATE)
+  const sourceEndDate = dailySourceMode
+    ? (optionalString((env as any).FINLAB_DAILY_SOURCE_END_DATE) ?? dailySourceEndDate)
+    : optionalString((env as any).FINLAB_BACKFILL_SOURCE_END_DATE)
   return {
     years,
     run_id: runId,
@@ -383,10 +415,13 @@ function buildFinLabBackfillRequestBody(
     write_d1: true,
     apply_canonical_d1: true,
     canonical_window_days: finLabCanonicalWindowDays(env),
-    canonical_start_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_START_DATE),
-    canonical_end_date: optionalString((env as any).FINLAB_BACKFILL_CANONICAL_END_DATE),
+    canonical_start_date: canonicalStartDate,
+    canonical_end_date: canonicalEndDate,
+    source_start_date: sourceStartDate,
+    source_end_date: sourceEndDate,
+    source_window_days: dailySourceMode ? dailySourceWindowDays : undefined,
     canonical_datasets: dailySourceMode
-      ? (optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_DATASETS) ?? FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT)
+      ? (optionalString(options.canonicalDatasets) ?? optionalString((env as any).FINLAB_DAILY_PRICE_CANONICAL_DATASETS) ?? FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT)
       : optionalString((env as any).FINLAB_BACKFILL_CANONICAL_DATASETS),
     canonical_limit_per_dataset: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_LIMIT_PER_DATASET),
     canonical_d1_chunk_size: parsePositiveInt((env as any).FINLAB_BACKFILL_CANONICAL_D1_CHUNK_SIZE),
@@ -401,7 +436,7 @@ function buildFinLabBackfillRequestBody(
     daily_source_refresh: dailySourceMode,
     callback_mode: callbackMode,
     lanes: dailySourceMode
-      ? (optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
+      ? (optionalString(options.lanes) ?? optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
       : optionalString((env as any).FINLAB_BACKFILL_LANES),
     skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)

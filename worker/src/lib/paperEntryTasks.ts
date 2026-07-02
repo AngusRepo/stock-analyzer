@@ -41,6 +41,7 @@ import {
 } from './intradayTechnicalSnapshot'
 import {
   assessS12IntradayStructureFromBaseBars,
+  s12TimingPolicyFromEnv,
   s12PreTradeTechnicalDecision,
   type S12IntradayAssessment,
   type S12IntradayGateMode,
@@ -1146,6 +1147,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         baseBars: s12Base.bars,
         fallback4hBars: s12Base.fallback4hBars,
         nowMs: Date.now(),
+        policy: s12TimingPolicyFromEnv(env as any),
         barDiagnostics: s12Base.diagnostics,
         h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
         h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,

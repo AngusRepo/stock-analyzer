@@ -73,12 +73,16 @@ assert(
   'auto buy execution must require executable best ask instead of low/high-only inference',
 )
 assert(
-  exitTasks.includes('requireBestBid: true') && workerTasks.includes('requireBestBid: true') && entryTasks.includes('requireBestBid: true'),
-  'all automatic sell execution paths must require executable best bid',
+  exitTasks.includes('requireBestBid: !options.allowLastPriceFallback') &&
+    exitTasks.includes('allowLastPriceFallback: true') &&
+    workerTasks.includes('requireBestBid: true') &&
+    entryTasks.includes('requireBestBid: true'),
+  'automatic sell execution paths must require executable best bid except explicit intraday TP1 fallback',
 )
 assert(
-  !readFileSync('src/lib/paperTradeMath.ts', 'utf8').includes('last_price_fallback_market_sell'),
-  'shared market-sell policy must not synthesize executable sell fills from last/current price',
+  readFileSync('src/lib/paperTradeMath.ts', 'utf8').includes('input.requireBestBid ?? true') &&
+    readFileSync('src/lib/paperTradeMath.ts', 'utf8').includes('last_price_fallback_market_sell'),
+  'shared market-sell policy must fail closed by default and expose explicit last-price fallback only when best bid is not required',
 )
 assert(
   intradayData.includes('/orderbook/${symbol}') && intradayData.includes('enrichMissingOrderbookQuotes'),

@@ -6,6 +6,7 @@ function assert(condition: unknown, message: string): void {
 
 const controllerResearchWorkflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const officialMarketSummaryRefresh = fs.readFileSync('src/lib/officialMarketSummaryRefresh.ts', 'utf8')
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const types = fs.readFileSync('src/types.ts', 'utf8')
 const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
@@ -20,6 +21,13 @@ assert(
     controllerResearchWorkflows.includes('options.dailySourceRefresh || options.continueEveningChain') &&
     controllerResearchWorkflows.includes('daily_source_refresh: dailySourceMode') &&
     controllerResearchWorkflows.includes('callback_mode: callbackMode') &&
+    controllerResearchWorkflows.includes('source_start_date: sourceStartDate') &&
+    controllerResearchWorkflows.includes('source_end_date: sourceEndDate') &&
+    !controllerResearchWorkflows.includes('require_official_market_summary: dailySourceMode') &&
+    !controllerResearchWorkflows.includes('market_summary,global_context') &&
+    !controllerResearchWorkflows.includes('canonical_market_summary_daily,canonical_regime_context_daily') &&
+    controllerResearchWorkflows.includes('FINLAB_DAILY_SOURCE_WINDOW_DAYS') &&
+    controllerResearchWorkflows.includes('canonical_start_date: canonicalStartDate') &&
     controllerResearchWorkflows.includes("mode: dailySourceMode ? 'daily_price_primary' : 'archive_backfill'"),
   'FinLab trigger payload must separate daily source refresh from direct evening-chain continuation',
 )
@@ -27,6 +35,12 @@ assert(
 assert(
   finlabRouter.includes('daily_source_refresh: bool = False') &&
     finlabRouter.includes('callback_mode: str | None = None') &&
+    finlabRouter.includes('source_start_date: str | None = None') &&
+    finlabRouter.includes('source_end_date: str | None = None') &&
+    finlabRouter.includes('require_official_market_summary: bool = False') &&
+    modalApp.includes('"--source-start-date"') &&
+    modalApp.includes('"--source-end-date"') &&
+    modalApp.includes('"--require-official-market-summary"') &&
     modalApp.includes('"daily_source_refresh": bool(payload.get("daily_source_refresh"))') &&
     modalApp.includes('"callback_mode": payload.get("callback_mode")'),
   'ml-controller/modal callback contract must round-trip daily source refresh and callback mode',
@@ -37,10 +51,27 @@ assert(
     types.includes("| 'source_readiness_recheck'") &&
     updateOrchestrator.includes('scheduleSourceReadinessRecheck') &&
     updateOrchestrator.includes('source-readiness:finlab-refresh') &&
+    updateOrchestrator.includes('runOfficialMarketSummaryRefresh') &&
+    updateOrchestrator.includes('official-market-summary-refresh') &&
+    updateOrchestrator.includes('hasOfficialMarketSummaryMissing') &&
     updateOrchestrator.includes('ignoreEveningChainInFlight') &&
     updateOrchestrator.includes("callbackMode: 'readiness_probe'") &&
+    updateOrchestrator.includes('finLabRefreshScopeForReadiness') &&
+    !updateOrchestrator.includes("lanes.add('market_summary')") &&
+    updateOrchestrator.includes("datasets.add('canonical_broker_rank_daily')") &&
     updateOrchestrator.includes('dailySourceRefresh: true'),
   'source-readiness-probe must trigger FinLab daily refresh and automatically queue a recheck callback without self-blocking on the same evening-chain run',
+)
+
+assert(
+  officialMarketSummaryRefresh.includes('runOfficialMarketSummaryRefresh') &&
+    officialMarketSummaryRefresh.includes('canonical_market_summary_daily') &&
+    officialMarketSummaryRefresh.includes('validateTargetDateRows') &&
+    officialMarketSummaryRefresh.includes('twse.mi_margn.official') &&
+    officialMarketSummaryRefresh.includes('tpex.margin_balance.official') &&
+    officialMarketSummaryRefresh.includes('margin_bal_result.php') &&
+    officialMarketSummaryRefresh.includes('official_market_summary_missing'),
+  'official market summary refresh must be an independent TWSE/TPEX canonical owner',
 )
 
 assert(

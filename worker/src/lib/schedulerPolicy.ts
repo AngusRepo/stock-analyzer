@@ -224,6 +224,15 @@ export async function shouldRunScheduledTask(input: {
   const twDate = twDateString(nowTw)
   const dow = nowTw.getUTCDay()
   const isWeekend = dow === 0 || dow === 6
+  const globalPause = await input.kv.get('scheduler:pause:global')
+  if (globalPause !== null) {
+    return {
+      shouldRun: false,
+      reason: `global_pause:${String(globalPause || 'paused').slice(0, 120)}`,
+      policy,
+      twDate,
+    }
+  }
   const holiday = policy.holidayGated ? await isTwHoliday(input.kv, twDate) : false
 
   if (policy.holidayGated && (isWeekend || holiday)) {

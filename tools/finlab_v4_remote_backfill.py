@@ -466,12 +466,20 @@ def controller_d1_batch_execute(
     error_count = 0
     changes_total = 0
     first_error: str | None = None
+    chunk_count = (len(statements) + chunk - 1) // chunk
     for i in range(0, len(statements), chunk):
         part = statements[i:i + chunk]
+        chunk_no = (i // chunk) + 1
         body = {
             "statements": [{"sql": sql, "params": params or []} for sql, params in part],
             "chunk_size": chunk,
         }
+        if chunk_no == 1 or chunk_no == chunk_count or chunk_no % 10 == 0:
+            print(
+                f"[finlab-backfill] controller_d1_batch chunk={chunk_no}/{chunk_count} statements={len(part)}",
+                file=sys.stderr,
+                flush=True,
+            )
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -494,6 +502,12 @@ def controller_d1_batch_execute(
         changes_total += int(payload.get("changes_total") or 0)
         if payload.get("first_error") and first_error is None:
             first_error = str(payload["first_error"])
+        if chunk_no == 1 or chunk_no == chunk_count or chunk_no % 10 == 0:
+            print(
+                f"[finlab-backfill] controller_d1_batch done={chunk_no}/{chunk_count} success={success_count} errors={error_count}",
+                file=sys.stderr,
+                flush=True,
+            )
     return {
         "total": total,
         "success_count": success_count,
@@ -503,7 +517,7 @@ def controller_d1_batch_execute(
         "partial_failure": error_count > 0 and success_count > 0,
         "mode": "controller_d1_batch_proxy",
         "chunk_size": chunk,
-        "chunk_count": (len(statements) + chunk - 1) // chunk,
+        "chunk_count": chunk_count,
     }
 
 
@@ -557,6 +571,43 @@ def normalize_context_frame(df: pd.DataFrame) -> pd.DataFrame:
 def filter_years(df: pd.DataFrame, years: int) -> pd.DataFrame:
     start = pd.Timestamp(start_date_for_years(years))
     return df[df.index >= start]
+
+
+def filter_date_range(
+    df: pd.DataFrame,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    out = pd.DataFrame(df).copy()
+    if out.empty or (not start_date and not end_date):
+        return out
+    parsed_index = pd.to_datetime(out.index, errors="coerce")
+    mask = pd.Series(True, index=out.index)
+    if start_date:
+        mask &= parsed_index >= pd.Timestamp(start_date)
+    if end_date:
+        mask &= parsed_index <= pd.Timestamp(end_date)
+    return out[mask.to_numpy()]
+
+
+def filter_rows_date_range(
+    df: pd.DataFrame,
+    *,
+    date_col: str = "date",
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    out = pd.DataFrame(df).copy()
+    if out.empty or date_col not in out.columns or (not start_date and not end_date):
+        return out
+    parsed = pd.to_datetime(out[date_col], errors="coerce")
+    mask = parsed.notna()
+    if start_date:
+        mask &= parsed >= pd.Timestamp(start_date)
+    if end_date:
+        mask &= parsed <= pd.Timestamp(end_date)
+    return out[mask.to_numpy()].copy()
 
 
 def non_null_cells(df: pd.DataFrame) -> int:
@@ -866,6 +917,35 @@ def fetch_official_market_summary_frames(lookback_days: int) -> dict[str, pd.Dat
     }
 
 
+def validate_official_market_summary_frames(
+    frames: dict[str, pd.DataFrame],
+    *,
+    target_date: str | None = None,
+) -> None:
+    required = {
+        "twse_margin_trading_summary": "LISTED",
+        "tpex_margin_trading_summary": "OTC",
+    }
+    errors: list[str] = []
+    for name, segment in required.items():
+        frame = frames.get(name)
+        if frame is None or frame.empty:
+            errors.append(f"{name}=missing")
+            continue
+        normalized = normalize_context_frame(frame)
+        if "market_segment" in normalized.columns:
+            segments = {str(value).upper() for value in normalized["market_segment"].dropna().tolist()}
+            if segment not in segments:
+                errors.append(f"{name}=missing_segment:{segment}")
+        if target_date and "date" in normalized.columns:
+            dates = set(pd.to_datetime(normalized["date"], errors="coerce").dt.strftime("%Y-%m-%d").dropna().tolist())
+            if target_date not in dates:
+                sample = ",".join(sorted(dates)[-3:]) or "none"
+                errors.append(f"{name}=missing_target_date:{target_date};dates={sample}")
+    if errors:
+        raise RuntimeError("official_market_summary_missing: " + "; ".join(errors))
+
+
 def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str) -> dict[str, Any]:
     from google.cloud import storage
 
@@ -1134,12 +1214,15 @@ def materialize_specs(
     years: int,
     run_dir: Path,
     lanes: list[str] | None = None,
+    source_start_date: str | None = None,
+    source_end_date: str | None = None,
+    require_official_market_summary: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from finlab import data, login
 
     api_key = os.environ["FINLAB_API_KEY"]
     login(api_key)
-    start = start_date_for_years(years)
+    start = source_start_date or start_date_for_years(years)
     counts = d1_counts(start)
     dataset_summaries: list[dict[str, Any]] = []
     diff_reports: list[dict[str, Any]] = []
@@ -1165,7 +1248,11 @@ def materialize_specs(
 
         if spec.kind == "wide_fields":
             for field, api_key_name in spec.keys.items():
-                frame = filter_years(normalize_wide_index(data.get(api_key_name)), years)
+                frame = filter_date_range(
+                    normalize_wide_index(data.get(api_key_name)),
+                    start_date=start,
+                    end_date=source_end_date,
+                )
                 finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum() * frame.shape[1]))
                 latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
                 schema_fields.append(field)
@@ -1174,7 +1261,11 @@ def materialize_specs(
                 artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": non_null_cells(frame)})
         elif spec.kind == "raw_frames":
             for field, api_key_name in spec.keys.items():
-                frame = filter_years(normalize_context_frame(data.get(api_key_name)), years)
+                frame = filter_date_range(
+                    normalize_context_frame(data.get(api_key_name)),
+                    start_date=start,
+                    end_date=source_end_date,
+                )
                 finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum()))
                 latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
                 schema_fields.append(field)
@@ -1222,7 +1313,16 @@ def materialize_specs(
             artifacts.append({"field": next(iter(spec.keys)), "api_key": next(iter(spec.keys.values())), "path": str(path), "shape": list(frame.shape)})
         elif spec.kind == "official_market_summary":
             frames = fetch_official_market_summary_frames(OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS)
+            if require_official_market_summary:
+                validate_official_market_summary_frames(frames, target_date=source_end_date)
             for field, frame in frames.items():
+                frame = filter_rows_date_range(
+                    frame,
+                    start_date=start,
+                    end_date=source_end_date,
+                )
+                if frame.empty:
+                    continue
                 path = lane_dir / f"{field}.parquet"
                 write_parquet(path, normalize_context_frame(frame))
                 finlab_rows += int(len(frame))
@@ -1238,15 +1338,25 @@ def materialize_specs(
         elif spec.kind == "broker_aggregate":
             frame = pd.DataFrame(data.get("broker_transactions"))
             grouped = normalize_broker_transactions_daily(frame, start)
+            rank_rows = grouped.attrs.get("broker_rank_daily")
+            grouped = filter_rows_date_range(
+                grouped,
+                start_date=start,
+                end_date=source_end_date,
+            )
             path = lane_dir / "broker_daily.parquet"
             write_parquet(path, grouped)
-            rank_rows = grouped.attrs.get("broker_rank_daily")
             if not isinstance(rank_rows, pd.DataFrame):
                 rank_rows = build_broker_rank_daily(
                     pd.DataFrame(),
                     market_segment="LISTED_OTC",
                     source="finlab.broker_transactions",
                 )
+            rank_rows = filter_rows_date_range(
+                rank_rows,
+                start_date=start,
+                end_date=source_end_date,
+            )
             rank_path = lane_dir / "broker_rank_daily.parquet"
             write_parquet(rank_path, rank_rows)
             finlab_rows = int(len(grouped))
@@ -1271,6 +1381,8 @@ def materialize_specs(
             frame = pd.DataFrame(data.get("rotc_broker_transactions"))
             frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
             frame = frame[frame["date"] >= pd.Timestamp(start)]
+            if source_end_date:
+                frame = frame[frame["date"] <= pd.Timestamp(source_end_date)]
             frame["buy_shares_raw"] = pd.to_numeric(frame["買進股數"], errors="coerce").fillna(0)
             frame["sell_shares_raw"] = pd.to_numeric(frame["賣出股數"], errors="coerce").fillna(0)
             frame["broker_net"] = frame["buy_shares_raw"] - frame["sell_shares_raw"]
@@ -1958,6 +2070,9 @@ def main() -> int:
     parser.add_argument("--canonical-d1-chunk-size", type=int, default=250)
     parser.add_argument("--canonical-dry-run", action="store_true")
     parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
+    parser.add_argument("--source-start-date", default="", help="Inclusive source materialization start date. Defaults to --years lookback.")
+    parser.add_argument("--source-end-date", default="", help="Inclusive source materialization end date.")
+    parser.add_argument("--require-official-market-summary", action="store_true", help="Fail daily refresh when TWSE/TPEX market summary rows are incomplete.")
     args = parser.parse_args()
 
     required_env = ["FINLAB_API_KEY"]
@@ -1976,7 +2091,16 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     generated_at = utc_now()
     requested_lanes = parse_lanes(args.lanes)
-    dataset_summaries, diff_reports = materialize_specs(years=args.years, run_dir=run_dir, lanes=requested_lanes)
+    source_start_date = args.source_start_date or None
+    source_end_date = args.source_end_date or None
+    dataset_summaries, diff_reports = materialize_specs(
+        years=args.years,
+        run_dir=run_dir,
+        lanes=requested_lanes,
+        source_start_date=source_start_date,
+        source_end_date=source_end_date,
+        require_official_market_summary=args.require_official_market_summary,
+    )
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),
@@ -1992,6 +2116,9 @@ def main() -> int:
         "mode": "remote_summary_writeback_full_artifacts",
         "artifact_root": str(run_dir),
         "requested_lanes": requested_lanes or None,
+        "source_start_date": source_start_date,
+        "source_end_date": source_end_date,
+        "require_official_market_summary": args.require_official_market_summary,
         "summary": summary,
         "datasets": dataset_summaries,
         "diff_reports": diff_reports,
@@ -2036,6 +2163,8 @@ def main() -> int:
     print(json.dumps({
         "run_id": run_id,
         "years": args.years,
+        "source_start_date": source_start_date,
+        "source_end_date": source_end_date,
         "summary": summary,
         "artifact_root": str(run_dir),
         "gcs_upload": manifest.get("gcs_upload"),

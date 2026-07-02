@@ -15,12 +15,41 @@ export interface IntradayOHLC {
 }
 
 type IntradayEnv = { SHIOAJI_PROXY_URL?: string; PROXY_SERVICE_TOKEN?: string; requireBrokerQuote?: boolean }
+type NormalizeSnapshotOptions = { includeExecutableBook?: boolean }
 
 function proxyHeaders(env?: IntradayEnv, json = false): Record<string, string> {
   const headers: Record<string, string> = {}
   if (json) headers['Content-Type'] = 'application/json'
   if (env?.PROXY_SERVICE_TOKEN) headers.Authorization = `Bearer ${env.PROXY_SERVICE_TOKEN}`
   return headers
+}
+
+function compactOrderbookDiagnostic(symbol: string, payload: any, fallbackStatus?: string): string {
+  const detail = payload?.detail ?? payload?.data ?? payload ?? {}
+  const status = String(detail?.status ?? payload?.status ?? fallbackStatus ?? 'unknown').trim()
+  const parts = [
+    `${symbol}:${status}`,
+    detail?.quote_age_ms != null ? `age=${detail.quote_age_ms}` : null,
+    detail?.max_quote_age_ms != null ? `max=${detail.max_quote_age_ms}` : null,
+    detail?.source_time ? `source_time=${String(detail.source_time)}` : null,
+    detail?.bid_levels != null ? `bid_levels=${detail.bid_levels}` : null,
+    detail?.ask_levels != null ? `ask_levels=${detail.ask_levels}` : null,
+  ].filter(Boolean)
+  return parts.join(';')
+}
+
+async function readOrderbookDiagnostic(symbol: string, res: Response): Promise<string> {
+  try {
+    const text = await res.text()
+    if (!text) return `${symbol}:http_${res.status}`
+    try {
+      return compactOrderbookDiagnostic(symbol, JSON.parse(text), `http_${res.status}`)
+    } catch {
+      return `${symbol}:http_${res.status};body=${text.slice(0, 120).replace(/\s+/g, '_')}`
+    }
+  } catch {
+    return `${symbol}:http_${res.status};body_unavailable`
+  }
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -71,14 +100,23 @@ function firstFiniteNumber(...values: unknown[]): number | undefined {
   return undefined
 }
 
-export function normalizeShioajiSnapshot(snapshot: any): IntradayOHLC | null {
+export function normalizeShioajiSnapshot(snapshot: any, options: NormalizeSnapshotOptions = {}): IntradayOHLC | null {
+  const includeExecutableBook = options.includeExecutableBook !== false
   const low = finiteTwTickPrice(snapshot?.low)
   const high = finiteTwTickPrice(snapshot?.high)
   const open = finiteTwTickPrice(snapshot?.open)
-  const bid = firstFiniteTwTickPrice(snapshot?.bid, snapshot?.bid_price, snapshot?.bidPrice, snapshot?.best_bid, snapshot?.bestBid, snapshot?.bid_prices, snapshot?.bids)
-  const ask = firstFiniteTwTickPrice(snapshot?.ask, snapshot?.ask_price, snapshot?.askPrice, snapshot?.best_ask, snapshot?.bestAsk, snapshot?.ask_prices, snapshot?.asks)
-  const bidVolume = firstFiniteNumber(snapshot?.bid_volume, snapshot?.bidVolume, snapshot?.best_bid_volume, snapshot?.bestBidVolume, snapshot?.bid_volumes)
-  const askVolume = firstFiniteNumber(snapshot?.ask_volume, snapshot?.askVolume, snapshot?.best_ask_volume, snapshot?.bestAskVolume, snapshot?.ask_volumes)
+  const bid = includeExecutableBook
+    ? firstFiniteTwTickPrice(snapshot?.bid, snapshot?.bid_price, snapshot?.bidPrice, snapshot?.best_bid, snapshot?.bestBid, snapshot?.bid_prices, snapshot?.bids)
+    : undefined
+  const ask = includeExecutableBook
+    ? firstFiniteTwTickPrice(snapshot?.ask, snapshot?.ask_price, snapshot?.askPrice, snapshot?.best_ask, snapshot?.bestAsk, snapshot?.ask_prices, snapshot?.asks)
+    : undefined
+  const bidVolume = includeExecutableBook
+    ? firstFiniteNumber(snapshot?.bid_volume, snapshot?.bidVolume, snapshot?.best_bid_volume, snapshot?.bestBidVolume, snapshot?.bid_volumes)
+    : undefined
+  const askVolume = includeExecutableBook
+    ? firstFiniteNumber(snapshot?.ask_volume, snapshot?.askVolume, snapshot?.best_ask_volume, snapshot?.bestAskVolume, snapshot?.ask_volumes)
+    : undefined
   const totalVolume = firstFiniteNumber(snapshot?.total_volume, snapshot?.totalVolume, snapshot?.volume, snapshot?.totalVol)
   const quoteTime = typeof snapshot?.ts === 'string'
     ? snapshot.ts
@@ -107,6 +145,149 @@ export function normalizeShioajiSnapshot(snapshot: any): IntradayOHLC | null {
   return { last, low, high, open, bid, ask, bidVolume, askVolume, totalVolume, quoteTime, source: 'shioaji' }
 }
 
+function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
+  const status = String(payload?.status ?? 'ok').trim().toLowerCase()
+  if (status.startsWith('stale') || status === 'no_depth' || status === 'empty_depth' || status === 'error') return null
+
+  const bid = firstFiniteTwTickPrice(payload?.bid, payload?.bid_price, payload?.best_bid, payload?.bestBid, payload?.bid_prices, payload?.bids)
+  const ask = firstFiniteTwTickPrice(payload?.ask, payload?.ask_price, payload?.best_ask, payload?.bestAsk, payload?.ask_prices, payload?.asks)
+  if (bid == null && ask == null) return null
+
+  const last = firstFiniteTwTickPrice(
+    payload?.last,
+    payload?.last_price,
+    payload?.trade_price,
+    payload?.close,
+    payload?.price,
+    ask,
+    bid,
+  )
+  if (last == null) return null
+
+  const bidVolume = firstFiniteNumber(payload?.bid_volume, payload?.bidVolume, payload?.best_bid_volume, payload?.bestBidVolume, payload?.bid_volumes)
+  const askVolume = firstFiniteNumber(payload?.ask_volume, payload?.askVolume, payload?.best_ask_volume, payload?.bestAskVolume, payload?.ask_volumes)
+  const quoteTime = typeof payload?.source_time === 'string'
+    ? payload.source_time
+    : typeof payload?.quote_time === 'string'
+      ? payload.quote_time
+      : typeof payload?.timestamp === 'string'
+        ? payload.timestamp
+        : typeof payload?.updated_at === 'string'
+          ? payload.updated_at
+          : undefined
+
+  return { last, bid, ask, bidVolume, askVolume, quoteTime, source: 'shioaji' }
+}
+
+function mergeSnapshotContext(current: IntradayOHLC, snapshot: any): IntradayOHLC {
+  const normalized = normalizeShioajiSnapshot(snapshot, { includeExecutableBook: false })
+  if (!normalized) return current
+  return {
+    ...current,
+    low: normalized.low ?? current.low,
+    high: normalized.high ?? current.high,
+    open: normalized.open ?? current.open,
+    totalVolume: normalized.totalVolume ?? current.totalVolume,
+  }
+}
+
+async function enrichSnapshotContext(
+  map: Map<string, IntradayOHLC>,
+  symbols: string[],
+  env?: IntradayEnv,
+): Promise<void> {
+  const proxyUrl = env?.SHIOAJI_PROXY_URL
+  if (!proxyUrl || map.size === 0) return
+  try {
+    const res = await fetch(`${proxyUrl}/snapshots`, {
+      method: 'POST',
+      headers: proxyHeaders(env, true),
+      body: JSON.stringify({ symbols }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return
+    const json = await res.json() as any
+    const data = json?.data ?? {}
+    for (const [symbol, snapshot] of Object.entries(data)) {
+      const current = map.get(symbol)
+      if (current) map.set(symbol, mergeSnapshotContext(current, snapshot))
+    }
+  } catch (e) {
+    console.warn(`[Price] snapshot context enrichment failed: ${e}`)
+  }
+}
+
+async function fetchSingleOrderbookQuotes(
+  symbols: string[],
+  env?: IntradayEnv,
+): Promise<Map<string, IntradayOHLC>> {
+  const map = new Map<string, IntradayOHLC>()
+  const proxyUrl = env?.SHIOAJI_PROXY_URL
+  if (!proxyUrl) return map
+
+  const results = await Promise.allSettled(symbols.map(async (symbol) => {
+    const res = await fetch(`${proxyUrl}/orderbook/${symbol}`, {
+      headers: proxyHeaders(env),
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!res.ok) {
+      console.warn(`[Price] orderbook unavailable: ${await readOrderbookDiagnostic(symbol, res)}`)
+      return
+    }
+    const json = await res.json() as any
+    const payload = json?.data ?? json
+    const normalized = normalizeShioajiOrderbook(payload)
+    if (!normalized) {
+      console.warn(`[Price] orderbook unavailable: ${compactOrderbookDiagnostic(symbol, payload)}`)
+      return
+    }
+    map.set(symbol, normalized)
+  }))
+
+  const failed = results.filter((result) => result.status === 'rejected').length
+  if (failed > 0) console.warn(`[Price] orderbook fetch rejected for ${failed}/${symbols.length} symbols`)
+  return map
+}
+
+async function fetchFreshOrderbookQuotes(
+  symbols: string[],
+  env?: IntradayEnv,
+): Promise<Map<string, IntradayOHLC>> {
+  const map = new Map<string, IntradayOHLC>()
+  const proxyUrl = env?.SHIOAJI_PROXY_URL
+  if (!proxyUrl || symbols.length === 0) return map
+
+  try {
+    const res = await fetch(`${proxyUrl}/orderbooks`, {
+      method: 'POST',
+      headers: proxyHeaders(env, true),
+      body: JSON.stringify({ symbols }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (res.ok) {
+      const json = await res.json() as any
+      const data = json?.data ?? {}
+      for (const [symbol, payload] of Object.entries(data)) {
+        const normalized = normalizeShioajiOrderbook(payload)
+        if (normalized) map.set(symbol, normalized)
+      }
+      const errors = json?.errors && typeof json.errors === 'object' ? Object.entries(json.errors) : []
+      for (const [symbol, error] of errors.slice(0, 8)) {
+        console.warn(`[Price] orderbook unavailable: ${compactOrderbookDiagnostic(symbol, error)}`)
+      }
+      if (errors.length > 8) console.warn(`[Price] orderbook unavailable: ${errors.length - 8} additional symbols omitted`)
+      return map
+    }
+    if (res.status !== 404 && res.status !== 405) {
+      console.warn(`[Price] batch orderbook unavailable: ${await readOrderbookDiagnostic('batch', res)}`)
+    }
+  } catch (e) {
+    console.warn(`[Price] batch orderbook failed, fallback single orderbook: ${e}`)
+  }
+
+  return fetchSingleOrderbookQuotes(symbols, env)
+}
+
 async function enrichMissingOrderbookQuotes(
   map: Map<string, IntradayOHLC>,
   symbols: string[],
@@ -126,11 +307,17 @@ async function enrichMissingOrderbookQuotes(
       headers: proxyHeaders(env),
       signal: AbortSignal.timeout(3000),
     })
-    if (!res.ok) return
+    if (!res.ok) {
+      console.warn(`[Price] orderbook enrichment unavailable: ${await readOrderbookDiagnostic(symbol, res)}`)
+      return
+    }
     const json = await res.json() as any
     const payload = json?.data ?? json
     const status = String(payload?.status ?? 'ok').trim().toLowerCase()
-    if (status.startsWith('stale') || status === 'no_depth' || status === 'error') return
+    if (status.startsWith('stale') || status === 'no_depth' || status === 'error') {
+      console.warn(`[Price] orderbook enrichment unavailable: ${compactOrderbookDiagnostic(symbol, payload)}`)
+      return
+    }
     const current = map.get(symbol)
     const normalized = normalizeShioajiSnapshot({
       ...payload,
@@ -199,6 +386,20 @@ export async function batchGetIntradayOHLC(
     const priceMap = await batchGetIntradayPrices(symbols, env)
     for (const [symbol, price] of priceMap) map.set(symbol, { last: price, low: price, source: 'yahoo' })
     return map
+  }
+
+  if (env?.requireBrokerQuote) {
+    const orderbookMap = await fetchFreshOrderbookQuotes(symbols, env)
+    if (orderbookMap.size === 0) {
+      console.warn(`[Price] broker quote required; no fresh orderbook quotes for ${symbols.length} symbols`)
+      return orderbookMap
+    }
+    await enrichSnapshotContext(orderbookMap, symbols, env)
+    const sample = [...orderbookMap.entries()].slice(0, 3)
+      .map(([symbol, ohlc]) => `${symbol}=bid${ohlc.bid ?? '-'} ask${ohlc.ask ?? '-'} t${ohlc.quoteTime ?? '-'}`)
+      .join(', ')
+    console.log(`[Price] Shioaji /orderbooks OK: ${orderbookMap.size} fresh books (${sample})`)
+    return orderbookMap
   }
 
   try {

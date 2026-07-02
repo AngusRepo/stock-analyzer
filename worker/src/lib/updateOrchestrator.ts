@@ -6,6 +6,7 @@ import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import { runFinLabV4Backfill } from './controllerResearchWorkflows'
+import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { fetchPunishedStocks } from './twseApi'
@@ -266,8 +267,66 @@ function readinessDetails(readiness: SourceReadinessSnapshot): string[] {
   return readiness.checks.map((check) => `${check.ok ? 'ok' : 'waiting'} ${check.summary}`)
 }
 
+function isOfficialMarketSummaryMissingKey(key: string): boolean {
+  return key.startsWith('canonical_market_summary_daily:')
+}
+
+function hasOfficialMarketSummaryMissing(readiness: SourceReadinessSnapshot): boolean {
+  return readiness.missingKeys.some(isOfficialMarketSummaryMissingKey)
+}
+
+function isFinLabRefreshableMissingKey(key: string): boolean {
+  return key !== 'official_supplemental_market_data' && !isOfficialMarketSummaryMissingKey(key)
+}
+
 function hasFinLabRefreshableMissing(readiness: SourceReadinessSnapshot): boolean {
-  return readiness.missingKeys.some((key) => key !== 'official_supplemental_market_data')
+  return readiness.missingKeys.some(isFinLabRefreshableMissingKey)
+}
+
+function finLabRefreshScopeForReadiness(readiness: SourceReadinessSnapshot): {
+  lanes?: string
+  canonicalDatasets?: string
+} {
+  const lanes = new Set<string>()
+  const datasets = new Set<string>()
+
+  for (const key of readiness.missingKeys) {
+    if (!isFinLabRefreshableMissingKey(key)) continue
+    if (key === 'finlab_primary_canonical') {
+      lanes.add('daily_price')
+      lanes.add('chip_diversity')
+      lanes.add('institutional_amount_summary')
+      datasets.add('canonical_market_daily')
+      datasets.add('canonical_chip_daily')
+      datasets.add('canonical_institutional_amount_daily')
+      continue
+    }
+    if (key.startsWith('canonical_market_index_daily:')) {
+      lanes.add('regime_context')
+      datasets.add('canonical_market_index_daily')
+      continue
+    }
+    if (key.startsWith('canonical_futures_daily:')) {
+      lanes.add('regime_context')
+      datasets.add('canonical_futures_daily')
+      continue
+    }
+    if (key.startsWith('canonical_regime_context_daily:')) {
+      lanes.add('regime_context')
+      datasets.add('canonical_regime_context_daily')
+      continue
+    }
+    if (key.startsWith('canonical_broker_flow_daily:') || key.startsWith('canonical_broker_rank_daily:')) {
+      lanes.add('broker_flow_diversity')
+      datasets.add('canonical_broker_flow_daily')
+      datasets.add('canonical_broker_rank_daily')
+    }
+  }
+
+  return {
+    lanes: lanes.size ? Array.from(lanes).join(',') : undefined,
+    canonicalDatasets: datasets.size ? Array.from(datasets).join(',') : undefined,
+  }
 }
 
 async function readFinLabRefreshLock(env: Bindings, runDate: string): Promise<string | null> {
@@ -284,14 +343,48 @@ async function writeFinLabRefreshLock(env: Bindings, runDate: string, summary: s
 
 async function assertFinLabCanonicalReadinessReady(env: Bindings, targetDate: string): Promise<string> {
   const readiness = await checkEveningChainSourceReadiness(env, targetDate)
-  const missing = readiness.checks.filter((check) => !check.ok && check.key !== 'official_supplemental_market_data')
+  const missing = readiness.checks.filter((check) =>
+    !check.ok &&
+    check.key !== 'official_supplemental_market_data' &&
+    !isOfficialMarketSummaryMissingKey(check.key)
+  )
   if (missing.length) {
     throw new Error(`FinLab canonical daily not ready: ${missing.map((check) => check.summary).join('; ')}`)
   }
   return `FinLab canonical ready for ${targetDate}: ${readiness.checks
-    .filter((check) => check.key !== 'official_supplemental_market_data')
+    .filter((check) => check.key !== 'official_supplemental_market_data' && !isOfficialMarketSummaryMissingKey(check.key))
     .map((check) => check.summary)
     .join('; ')}`
+}
+
+async function refreshOfficialMarketSummaryIfMissing(
+  env: Bindings,
+  targetDate: string,
+  started: number,
+): Promise<string | null> {
+  const readiness = await checkEveningChainSourceReadiness(env, targetDate)
+  if (!hasOfficialMarketSummaryMissing(readiness)) return null
+
+  try {
+    const summary = await runOfficialMarketSummaryRefresh(env, targetDate)
+    await logSchedulerResult(env.KV, 'official-market-summary-refresh', {
+      status: 'success',
+      summary,
+      duration_ms: Date.now() - started,
+      run_date: targetDate,
+    })
+    return summary
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    await logSchedulerResult(env.KV, 'official-market-summary-refresh', {
+      status: 'running',
+      summary: `official market summary waiting for ${targetDate}: ${message}`,
+      duration_ms: Date.now() - started,
+      error: message,
+      run_date: targetDate,
+    })
+    return `official_market_summary_waiting=${message}`
+  }
 }
 
 async function scheduleSourceReadinessRetry(
@@ -1382,6 +1475,11 @@ async function continueAfterFinLabBackfill(
   force = false,
   runId?: string,
 ): Promise<string> {
+  const officialMarketSummary = await refreshOfficialMarketSummaryIfMissing(env, twDate, Date.now())
+  if (officialMarketSummary?.startsWith('official_market_summary_waiting=')) {
+    await scheduleSourceReadinessRetry(env, twDate, 1, officialMarketSummary)
+    return `source waiting; queued official market summary retry for ${twDate}; ${officialMarketSummary}`
+  }
   const canonicalSummary = await assertFinLabCanonicalReadinessReady(env, twDate)
   let bulkSummary: string
   try {
@@ -1398,14 +1496,14 @@ async function continueAfterFinLabBackfill(
   }
   await logSchedulerResult(env.KV, 'update', {
     status: 'success',
-    summary: `market data update ready for ${twDate}; FinLab primary canonical ready; TWSE/TPEX supplemental refresh complete; ${canonicalSummary}; ${bulkSummary}`,
+    summary: `market data update ready for ${twDate}; FinLab primary canonical ready; official market summary ready; TWSE/TPEX supplemental refresh complete; ${canonicalSummary}; ${officialMarketSummary ?? 'official_market_summary=already_ready'}; ${bulkSummary}`,
     duration_ms: 0,
     details: readinessDetails(readiness),
     run_id: runId,
     run_date: twDate,
   })
   await runQueueUpdate(env, twDate, force)
-  return `${canonicalSummary}; TWSE/TPEX supplemental refresh complete; ${bulkSummary}; indicator queue accepted`
+  return `${canonicalSummary}; ${officialMarketSummary ?? 'official_market_summary=already_ready'}; TWSE/TPEX supplemental refresh complete; ${bulkSummary}; indicator queue accepted`
 }
 
 export async function runMarketCloseRefresh(env: Bindings, force = false, runDate?: string): Promise<string> {
@@ -1546,15 +1644,25 @@ export async function runSourceReadinessProbe(
   }
 
   let readiness = await checkEveningChainSourceReadiness(env, twDate)
+  let officialMarketSummaryWaiting: string | null = null
+  if (!readiness.ok && hasOfficialMarketSummaryMissing(readiness)) {
+    const officialSummary = await refreshOfficialMarketSummaryIfMissing(env, twDate, started)
+    readiness = await checkEveningChainSourceReadiness(env, twDate)
+    if (officialSummary?.startsWith('official_market_summary_waiting=')) {
+      officialMarketSummaryWaiting = officialSummary
+    }
+  }
   if (!readiness.ok && hasFinLabRefreshableMissing(readiness)) {
     const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
     const finlabInFlight = finlabLog?.status === 'running' || finlabLog?.status === 'triggered'
     const refreshLock = await readFinLabRefreshLock(env, twDate)
     if ((!finlabInFlight && !refreshLock) || force) {
+      const refreshScope = finLabRefreshScopeForReadiness(readiness)
       const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
         continueEveningChain: false,
         dailySourceRefresh: true,
         callbackMode: 'readiness_probe',
+        ...refreshScope,
       }))
       const finlabStatus = classifySchedulerSummary(finlabSummary)
       await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
@@ -1577,7 +1685,7 @@ export async function runSourceReadinessProbe(
       }
       await writeFinLabRefreshLock(env, twDate, finlabSummary)
       if (finlabStatus !== 'success') {
-        const summary = `running: ${readiness.summary}; finlab_refresh=${finlabSummary}`
+        const summary = `running: ${readiness.summary}; finlab_refresh=${finlabSummary}${officialMarketSummaryWaiting ? `; ${officialMarketSummaryWaiting}` : ''}`
         await logSchedulerResult(env.KV, 'source-readiness-probe', {
           status: 'running',
           summary,
@@ -1590,7 +1698,7 @@ export async function runSourceReadinessProbe(
       readiness = await checkEveningChainSourceReadiness(env, twDate)
     } else {
       const refreshState = finlabInFlight ? (finlabLog?.status ?? 'in-flight') : `cooldown ${refreshLock}`
-      const summary = `running: ${readiness.summary}; finlab_refresh already ${refreshState}`
+      const summary = `running: ${readiness.summary}; finlab_refresh already ${refreshState}${officialMarketSummaryWaiting ? `; ${officialMarketSummaryWaiting}` : ''}`
       await logSchedulerResult(env.KV, 'source-readiness-probe', {
         status: 'running',
         summary,
@@ -1600,6 +1708,18 @@ export async function runSourceReadinessProbe(
       })
       return summary
     }
+  }
+
+  if (!readiness.ok && officialMarketSummaryWaiting && !hasFinLabRefreshableMissing(readiness)) {
+    const summary = `running: ${readiness.summary}; ${officialMarketSummaryWaiting}`
+    await logSchedulerResult(env.KV, 'source-readiness-probe', {
+      status: 'running',
+      summary,
+      duration_ms: Date.now() - started,
+      details: readinessDetails(readiness),
+      run_date: twDate,
+    })
+    return summary
   }
 
   if (!readiness.ok && readiness.missingKeys.includes('official_supplemental_market_data')) {

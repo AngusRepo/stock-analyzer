@@ -108,6 +108,24 @@ def test_remote_backfill_tool_honors_requested_lanes_before_finlab_fetch():
     assert 'lane="market_summary"' in source
 
 
+def test_remote_backfill_tool_supports_daily_source_window_contract():
+    tool = _load_tool_module()
+    source = TOOL_PATH.read_text(encoding="utf-8")
+
+    frame = pd.DataFrame(
+        {"close": [10, 11, 12]},
+        index=pd.to_datetime(["2026-06-29", "2026-06-30", "2026-07-01"]),
+    )
+
+    assert 'parser.add_argument("--source-start-date"' in source
+    assert 'parser.add_argument("--source-end-date"' in source
+    assert 'parser.add_argument("--require-official-market-summary"' in source
+    assert "source_start_date or start_date_for_years(years)" in source
+    assert "validate_official_market_summary_frames(frames, target_date=source_end_date)" in source
+    assert "controller_d1_batch chunk=" in source
+    assert list(tool.filter_date_range(frame, start_date="2026-07-01", end_date="2026-07-01")["close"]) == [12]
+
+
 def test_core_specs_include_finlab_wave2_official_replacement_keys():
     tool = _load_tool_module()
     fundamental = next(spec for spec in tool.CORE_SPECS if spec.lane == "fundamental_factor_diversity")
@@ -220,6 +238,25 @@ def test_official_market_summary_parser_materializes_margin_and_breadth(monkeypa
     assert frames["market_breadth_summary"].iloc[0]["advance_count"] == 291
     assert frames["twse_margin_trading_summary"].iloc[0]["margin_balance_units"] == 55
     assert frames["tpex_margin_trading_summary"].iloc[0]["short_balance_units"] == 7
+
+
+def test_official_market_summary_required_validator_fails_when_tpex_missing():
+    tool = _load_tool_module()
+    frames = {
+        "twse_margin_trading_summary": pd.DataFrame([{
+            "date": "2026-07-01",
+            "market_segment": "LISTED",
+            "margin_balance_units": 1,
+        }]),
+    }
+
+    try:
+        tool.validate_official_market_summary_frames(frames, target_date="2026-07-01")
+    except RuntimeError as exc:
+        assert "official_market_summary_missing" in str(exc)
+        assert "tpex_margin_trading_summary=missing" in str(exc)
+    else:
+        raise AssertionError("required official market summary validator must fail when OTC/TPEX is missing")
 
 
 def test_official_twse_index_parser_materializes_taiex_history(monkeypatch):

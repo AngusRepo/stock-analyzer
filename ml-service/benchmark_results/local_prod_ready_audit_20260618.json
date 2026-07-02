@@ -650,7 +650,7 @@
     {
       "id": "strategy_baseline:active_spec_json_present",
       "status": "pass",
-      "detail": "active StrategySpec JSON exists at output/finlab_strategy_backtests/current_active_12_strategy_specs.json"
+      "detail": "active StrategySpec JSON exists at output/finlab_strategy_backtests/current_active_11_strategy_specs.json"
     },
     {
       "id": "strategy_baseline:active_spec_json_count_matches",

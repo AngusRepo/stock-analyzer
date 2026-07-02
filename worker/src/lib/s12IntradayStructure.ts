@@ -125,6 +125,40 @@ export type S12H4Source = 'current_session' | 'previous_trading_day_fallback' | 
 
 export type S12RuntimeBarDiagnostics = Record<string, unknown>
 
+export interface S12TimingPolicy {
+  min15mBars: number
+  atr15mBars: number
+  zoneAtrBars: number
+  rvolLookbackBars: number
+  swingLookbackBars: number
+  priorDirectionalBars: number
+  zoneTouchStaleBars: number
+  sweepWaitBars: number
+  chochWaitBars: number
+  bosWaitBars: number
+  retestWaitBars: number
+  fullCoverage15mBars: number
+  fullCoverage1hBars: number
+  fullCoverage4hBars: number
+}
+
+export const DEFAULT_S12_TIMING_POLICY: S12TimingPolicy = {
+  min15mBars: 4,
+  atr15mBars: 14,
+  zoneAtrBars: 8,
+  rvolLookbackBars: 20,
+  swingLookbackBars: 6,
+  priorDirectionalBars: 3,
+  zoneTouchStaleBars: 16,
+  sweepWaitBars: 16,
+  chochWaitBars: 12,
+  bosWaitBars: 24,
+  retestWaitBars: 16,
+  fullCoverage15mBars: 12,
+  fullCoverage1hBars: 3,
+  fullCoverage4hBars: 2,
+}
+
 export interface S12IntradayAssessment {
   version: 's12_intraday_structure_v1'
   symbol: string
@@ -191,6 +225,7 @@ interface S12IntradayInput {
   bars4h: S12Bar[]
   nowMs?: number
   min15mBars?: number
+  policy?: Partial<S12TimingPolicy> | null
   h4Source?: S12H4Source
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
@@ -202,6 +237,7 @@ interface S12FromBaseBarsInput {
   baseBars: S12Bar[]
   fallback4hBars?: S12Bar[]
   nowMs?: number
+  policy?: Partial<S12TimingPolicy> | null
   barDiagnostics?: S12RuntimeBarDiagnostics | null
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
@@ -220,6 +256,78 @@ const DAY_MS = 24 * 60 * 60_000
 const TW_OFFSET_MS = 8 * H1_MS
 const TW_SESSION_OPEN_MS = 9 * H1_MS
 const TW_SESSION_CLOSE_MS = (13 * 60 + 30) * 60_000
+
+function boundedInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(n)))
+}
+
+export function normalizeS12TimingPolicy(policy: Partial<S12TimingPolicy> | null | undefined): S12TimingPolicy {
+  return {
+    min15mBars: boundedInt(policy?.min15mBars, DEFAULT_S12_TIMING_POLICY.min15mBars, 3, 12),
+    atr15mBars: boundedInt(policy?.atr15mBars, DEFAULT_S12_TIMING_POLICY.atr15mBars, 5, 30),
+    zoneAtrBars: boundedInt(policy?.zoneAtrBars, DEFAULT_S12_TIMING_POLICY.zoneAtrBars, 5, 20),
+    rvolLookbackBars: boundedInt(policy?.rvolLookbackBars, DEFAULT_S12_TIMING_POLICY.rvolLookbackBars, 5, 40),
+    swingLookbackBars: boundedInt(policy?.swingLookbackBars, DEFAULT_S12_TIMING_POLICY.swingLookbackBars, 2, 12),
+    priorDirectionalBars: boundedInt(policy?.priorDirectionalBars, DEFAULT_S12_TIMING_POLICY.priorDirectionalBars, 1, 6),
+    zoneTouchStaleBars: boundedInt(policy?.zoneTouchStaleBars, DEFAULT_S12_TIMING_POLICY.zoneTouchStaleBars, 4, 40),
+    sweepWaitBars: boundedInt(policy?.sweepWaitBars, DEFAULT_S12_TIMING_POLICY.sweepWaitBars, 4, 40),
+    chochWaitBars: boundedInt(policy?.chochWaitBars, DEFAULT_S12_TIMING_POLICY.chochWaitBars, 4, 30),
+    bosWaitBars: boundedInt(policy?.bosWaitBars, DEFAULT_S12_TIMING_POLICY.bosWaitBars, 6, 60),
+    retestWaitBars: boundedInt(policy?.retestWaitBars, DEFAULT_S12_TIMING_POLICY.retestWaitBars, 4, 40),
+    fullCoverage15mBars: boundedInt(policy?.fullCoverage15mBars, DEFAULT_S12_TIMING_POLICY.fullCoverage15mBars, 4, 40),
+    fullCoverage1hBars: boundedInt(policy?.fullCoverage1hBars, DEFAULT_S12_TIMING_POLICY.fullCoverage1hBars, 1, 8),
+    fullCoverage4hBars: boundedInt(policy?.fullCoverage4hBars, DEFAULT_S12_TIMING_POLICY.fullCoverage4hBars, 1, 4),
+  }
+}
+
+export function s12TimingPolicyFromEnv(env: Record<string, unknown> | null | undefined): S12TimingPolicy {
+  return normalizeS12TimingPolicy({
+    min15mBars: env?.S12_INTRADAY_MIN_15M_BARS as number | undefined,
+    atr15mBars: env?.S12_INTRADAY_ATR_15M_BARS as number | undefined,
+    zoneAtrBars: env?.S12_INTRADAY_ZONE_ATR_BARS as number | undefined,
+    rvolLookbackBars: env?.S12_INTRADAY_RVOL_LOOKBACK_BARS as number | undefined,
+    swingLookbackBars: env?.S12_INTRADAY_SWING_LOOKBACK_BARS as number | undefined,
+    priorDirectionalBars: env?.S12_INTRADAY_PRIOR_DIRECTION_BARS as number | undefined,
+    zoneTouchStaleBars: env?.S12_INTRADAY_ZONE_TOUCH_STALE_BARS as number | undefined,
+    sweepWaitBars: env?.S12_INTRADAY_SWEEP_WAIT_BARS as number | undefined,
+    chochWaitBars: env?.S12_INTRADAY_CHOCH_WAIT_BARS as number | undefined,
+    bosWaitBars: env?.S12_INTRADAY_BOS_WAIT_BARS as number | undefined,
+    retestWaitBars: env?.S12_INTRADAY_RETEST_WAIT_BARS as number | undefined,
+    fullCoverage15mBars: env?.S12_INTRADAY_FULL_COVERAGE_15M_BARS as number | undefined,
+    fullCoverage1hBars: env?.S12_INTRADAY_FULL_COVERAGE_1H_BARS as number | undefined,
+    fullCoverage4hBars: env?.S12_INTRADAY_FULL_COVERAGE_4H_BARS as number | undefined,
+  })
+}
+
+function inputTimingPolicy(input: Pick<S12IntradayInput, 'min15mBars' | 'policy'>): S12TimingPolicy {
+  return normalizeS12TimingPolicy({
+    ...(input.policy ?? {}),
+    min15mBars: input.min15mBars ?? input.policy?.min15mBars,
+  })
+}
+
+function timingPolicyDetail(policy: S12TimingPolicy): Record<string, number> {
+  return {
+    policy_min15m_bars: policy.min15mBars,
+    policy_atr15m_bars: policy.atr15mBars,
+    policy_zone_atr_bars: policy.zoneAtrBars,
+    policy_rvol_lookback_bars: policy.rvolLookbackBars,
+    policy_swing_lookback_bars: policy.swingLookbackBars,
+    policy_prior_direction_bars: policy.priorDirectionalBars,
+    policy_zone_touch_stale_bars: policy.zoneTouchStaleBars,
+    policy_sweep_wait_bars: policy.sweepWaitBars,
+    policy_choch_wait_bars: policy.chochWaitBars,
+    policy_bos_wait_bars: policy.bosWaitBars,
+    policy_retest_wait_bars: policy.retestWaitBars,
+  }
+}
+
+function shouldBlockOn4hBias(h4Source: S12H4Source, bias4h: S12HtfBias): boolean {
+  if (bias4h.direction === 'long' && bias4h.channelAlign) return false
+  return h4Source === 'current_session'
+}
 
 function finitePositive(value: unknown): number | null {
   const n = Number(value)
@@ -452,7 +560,7 @@ function emptyExitPlan(defense: S12BearishDefense | null = null): S12StructureEx
   }
 }
 
-function buildStructureQuality(bars15m: S12Bar[]): S12StructureQuality {
+function buildStructureQuality(bars15m: S12Bar[], policy: S12TimingPolicy = DEFAULT_S12_TIMING_POLICY): S12StructureQuality {
   const bars = normalizeBars(bars15m)
   if (!bars.length) return emptyQuality()
   const latest = bars[bars.length - 1]
@@ -470,7 +578,7 @@ function buildStructureQuality(bars15m: S12Bar[]): S12StructureQuality {
         : priceVsVwapPct < -0.001
           ? 'below'
           : 'flat'
-  const prior = bars.slice(Math.max(0, bars.length - 21), -1)
+  const prior = bars.slice(Math.max(0, bars.length - policy.rvolLookbackBars - 1), -1)
   const priorVolumes = prior.map((bar) => Math.max(0, Number(bar.volume ?? 0))).filter((value) => value > 0)
   const avgVolume = priorVolumes.length
     ? priorVolumes.reduce((sum, value) => sum + value, 0) / priorVolumes.length
@@ -525,7 +633,7 @@ function emptyBearishDefense(
 }
 
 function emptyAssessment(
-  input: Pick<S12IntradayInput, 'symbol' | 'h4Source' | 'h4ReferenceDate' | 'h4ReferenceClose' | 'barDiagnostics'>,
+  input: S12IntradayInput,
   state: S12IntradayState,
   reason: string,
   detail: Record<string, unknown>,
@@ -533,6 +641,7 @@ function emptyAssessment(
 ): S12IntradayAssessment {
   const h4Source = input.h4Source ?? (completedBars.h4 > 0 ? 'current_session' : 'unavailable')
   const barDiagnostics = input.barDiagnostics ?? {}
+  const policy = inputTimingPolicy(input)
   return {
     version: 's12_intraday_structure_v1',
     symbol: input.symbol,
@@ -547,6 +656,8 @@ function emptyAssessment(
       h4_source: h4Source,
       h4_reference_date: input.h4ReferenceDate ?? null,
       h4_reference_close: price(input.h4ReferenceClose),
+      h4_fallback_bias_mode: h4Source === 'previous_trading_day_fallback' ? 'context_only' : null,
+      ...timingPolicyDetail(policy),
       ...barDiagnostics,
       ...detail,
     }),
@@ -632,10 +743,10 @@ function latestBearishFvg1h(bars: S12Bar[], atr: number): S12IntradayZone | null
   return null
 }
 
-function findDemandZone1h(bars1h: S12Bar[]): S12IntradayZone | null {
+function findDemandZone1h(bars1h: S12Bar[], policy: S12TimingPolicy = DEFAULT_S12_TIMING_POLICY): S12IntradayZone | null {
   const bars = normalizeBars(bars1h)
   if (!bars.length) return null
-  const atr = averageTrueRange(bars, 8) ?? Math.max(0.01, bars[bars.length - 1].high - bars[bars.length - 1].low)
+  const atr = averageTrueRange(bars, policy.zoneAtrBars) ?? Math.max(0.01, bars[bars.length - 1].high - bars[bars.length - 1].low)
   const fvg = latestBullishFvg1h(bars, atr)
   if (fvg) return fvg
   for (let i = bars.length - 1; i >= 1; i -= 1) {
@@ -670,10 +781,10 @@ function findDemandZone1h(bars1h: S12Bar[]): S12IntradayZone | null {
   return null
 }
 
-function findSupplyZone1h(bars1h: S12Bar[]): S12IntradayZone | null {
+function findSupplyZone1h(bars1h: S12Bar[], policy: S12TimingPolicy = DEFAULT_S12_TIMING_POLICY): S12IntradayZone | null {
   const bars = normalizeBars(bars1h)
   if (!bars.length) return null
-  const atr = averageTrueRange(bars, 8) ?? Math.max(0.01, bars[bars.length - 1].high - bars[bars.length - 1].low)
+  const atr = averageTrueRange(bars, policy.zoneAtrBars) ?? Math.max(0.01, bars[bars.length - 1].high - bars[bars.length - 1].low)
   const fvg = latestBearishFvg1h(bars, atr)
   if (fvg) return fvg
   for (let i = bars.length - 1; i >= 1; i -= 1) {
@@ -751,7 +862,11 @@ function completeAssessment(params: {
   const staleReason = params.extraDetail?.stale_reason == null ? null : String(params.extraDetail.stale_reason)
   const staleAfterBars = params.extraDetail?.stale_after_15m_bars == null ? null : Number(params.extraDetail.stale_after_15m_bars)
   const elapsedBars = params.extraDetail?.elapsed_15m_bars == null ? null : Number(params.extraDetail.elapsed_15m_bars)
-  const coverage = params.completedBars.h4 >= 2 && params.completedBars.h1 >= 3 && params.completedBars.m15 >= 12
+  const policy = inputTimingPolicy(params.input)
+  const coverage =
+    params.completedBars.h4 >= policy.fullCoverage4hBars &&
+    params.completedBars.h1 >= policy.fullCoverage1hBars &&
+    params.completedBars.m15 >= policy.fullCoverage15mBars
     ? 'full'
     : 'partial'
   const bias1h = params.bias1h ?? { direction: 'neutral', confidence: 'none', channelAlign: false }
@@ -789,6 +904,8 @@ function completeAssessment(params: {
       h4_source: h4Source,
       h4_reference_date: params.input.h4ReferenceDate ?? null,
       h4_reference_close: price(params.input.h4ReferenceClose),
+      h4_fallback_bias_mode: h4Source === 'previous_trading_day_fallback' ? 'context_only' : null,
+      ...timingPolicyDetail(policy),
       bias4h: params.bias4h.direction,
       bias_confidence: params.bias4h.confidence,
       bias_channel_align: params.bias4h.channelAlign ? 'true' : 'false',
@@ -924,8 +1041,9 @@ function scanBearishDefenseSequence(params: {
   input: S12IntradayInput
   bars15m: S12Bar[]
   supplyZone1h: S12IntradayZone | null
+  policy: S12TimingPolicy
 }): S12BearishDefense {
-  const { bars15m, supplyZone1h } = params
+  const { bars15m, supplyZone1h, policy } = params
   if (!supplyZone1h) {
     return bearishDefenseAssessment({
       state: 'no_supply_zone',
@@ -933,7 +1051,7 @@ function scanBearishDefenseSequence(params: {
       supplyZone1h: null,
     })
   }
-  const atr15m = averageTrueRange(bars15m, 14) ?? Math.max(0.01, bars15m[bars15m.length - 1].high - bars15m[bars15m.length - 1].low)
+  const atr15m = averageTrueRange(bars15m, policy.atr15mBars) ?? Math.max(0.01, bars15m[bars15m.length - 1].high - bars15m[bars15m.length - 1].low)
   const eligibleBars = bars15m.filter((bar) => bar.startMs >= supplyZone1h.createdMs)
   const offset = bars15m.length - eligibleBars.length
   const touchRelative = eligibleBars.findIndex((bar) => overlapsZone(bar, supplyZone1h))
@@ -949,12 +1067,12 @@ function scanBearishDefenseSequence(params: {
   const touch = bars15m[touchIndex]
 
   let sweepIndex = -1
-  const sweepEnd = Math.min(bars15m.length - 1, touchIndex + 16)
+  const sweepEnd = Math.min(bars15m.length - 1, touchIndex + policy.sweepWaitBars)
   for (let i = touchIndex; i <= sweepEnd; i += 1) {
-    const priorHigh = highBetween(bars15m, Math.max(0, i - 6), i)
+    const priorHigh = highBetween(bars15m, Math.max(0, i - policy.swingLookbackBars), i)
     if (priorHigh == null) continue
     const bar = bars15m[i]
-    const priorUp = bars15m.slice(Math.max(0, i - 3), i).some((candidate) => candidate.close > candidate.open)
+    const priorUp = bars15m.slice(Math.max(0, i - policy.priorDirectionalBars), i).some((candidate) => candidate.close > candidate.open)
     const rejected = bar.close < Math.min(supplyZone1h.high, bar.high - atr15m * 0.12)
     if (priorUp && bar.high > priorHigh && rejected && bar.high >= supplyZone1h.low) {
       sweepIndex = i
@@ -974,8 +1092,8 @@ function scanBearishDefenseSequence(params: {
   const sweep = bars15m[sweepIndex]
 
   let chochIndex = -1
-  const chochLevel = lowBetween(bars15m, Math.max(0, sweepIndex - 6), sweepIndex + 1)
-  const chochEnd = Math.min(bars15m.length - 1, sweepIndex + 12)
+  const chochLevel = lowBetween(bars15m, Math.max(0, sweepIndex - policy.swingLookbackBars), sweepIndex + 1)
+  const chochEnd = Math.min(bars15m.length - 1, sweepIndex + policy.chochWaitBars)
   for (let i = sweepIndex + 1; i <= chochEnd; i += 1) {
     const bar = bars15m[i]
     const body = Math.abs(bar.close - bar.open)
@@ -998,7 +1116,7 @@ function scanBearishDefenseSequence(params: {
 
   let bosIndex = -1
   const bosLevel = lowBetween(bars15m, touchIndex, chochIndex + 1)
-  const bosEnd = Math.min(bars15m.length - 1, chochIndex + 24)
+  const bosEnd = Math.min(bars15m.length - 1, chochIndex + policy.bosWaitBars)
   for (let i = chochIndex + 1; i <= bosEnd; i += 1) {
     const bar = bars15m[i]
     const lowerHigh = highBetween(bars15m, chochIndex + 1, i + 1)
@@ -1025,7 +1143,7 @@ function scanBearishDefenseSequence(params: {
   }
 
   let reactionIndex = -1
-  const retestEnd = Math.min(bars15m.length - 1, bosIndex + 16)
+  const retestEnd = Math.min(bars15m.length - 1, bosIndex + policy.retestWaitBars)
   for (let i = bosIndex + 1; i <= retestEnd; i += 1) {
     const bar = bars15m[i]
     const retest = bar.low <= entryZone.high && bar.high >= entryZone.low
@@ -1137,13 +1255,14 @@ function scanLongSequence(params: {
   supplyZone1h: S12IntradayZone | null
   bearishDefense: S12BearishDefense
   quality: S12StructureQuality
+  policy: S12TimingPolicy
 }): S12IntradayAssessment {
-  const { input, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality } = params
+  const { input, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality, policy } = params
   const context = { bias1h, supplyZone1h, bearishDefense, quality }
-  const atr15m = averageTrueRange(bars15m, 14) ?? Math.max(0.01, bars15m[bars15m.length - 1].high - bars15m[bars15m.length - 1].low)
+  const atr15m = averageTrueRange(bars15m, policy.atr15mBars) ?? Math.max(0.01, bars15m[bars15m.length - 1].high - bars15m[bars15m.length - 1].low)
   const eligibleBars = bars15m.filter((bar) => bar.startMs >= demandZone1h.createdMs)
   const offset = bars15m.length - eligibleBars.length
-  const zoneTouchStaleBars = 16
+  const zoneTouchStaleBars = policy.zoneTouchStaleBars
   const touchRelative = eligibleBars.findIndex((bar) => overlapsZone(bar, demandZone1h))
   if (touchRelative < 0) {
     return completeAssessment({
@@ -1186,12 +1305,12 @@ function scanLongSequence(params: {
   }
 
   let sweepIndex = -1
-  const sweepEnd = Math.min(bars15m.length - 1, touchIndex + 16)
+  const sweepEnd = Math.min(bars15m.length - 1, touchIndex + policy.sweepWaitBars)
   for (let i = touchIndex; i <= sweepEnd; i += 1) {
-    const priorLow = lowBetween(bars15m, Math.max(0, i - 6), i)
+    const priorLow = lowBetween(bars15m, Math.max(0, i - policy.swingLookbackBars), i)
     if (priorLow == null) continue
     const bar = bars15m[i]
-    const priorDown = bars15m.slice(Math.max(0, i - 3), i).some((candidate) => candidate.close < candidate.open)
+    const priorDown = bars15m.slice(Math.max(0, i - policy.priorDirectionalBars), i).some((candidate) => candidate.close < candidate.open)
     const reclaimed = bar.close > Math.max(demandZone1h.low, bar.low + atr15m * 0.12)
     if (priorDown && bar.low < priorLow && reclaimed && bar.low <= demandZone1h.high) {
       sweepIndex = i
@@ -1215,7 +1334,7 @@ function scanLongSequence(params: {
         ? {
           stale: 'true',
           stale_reason: 'sweep_timeout',
-          stale_after_15m_bars: 16,
+          stale_after_15m_bars: policy.sweepWaitBars,
           elapsed_15m_bars: elapsedBars,
         }
         : { elapsed_15m_bars: elapsedBars },
@@ -1224,8 +1343,8 @@ function scanLongSequence(params: {
   const sweep = bars15m[sweepIndex]
 
   let chochIndex = -1
-  const chochLevel = highBetween(bars15m, Math.max(0, sweepIndex - 6), sweepIndex + 1)
-  const chochEnd = Math.min(bars15m.length - 1, sweepIndex + 12)
+  const chochLevel = highBetween(bars15m, Math.max(0, sweepIndex - policy.swingLookbackBars), sweepIndex + 1)
+  const chochEnd = Math.min(bars15m.length - 1, sweepIndex + policy.chochWaitBars)
   for (let i = sweepIndex + 1; i <= chochEnd; i += 1) {
     const bar = bars15m[i]
     const body = Math.abs(bar.close - bar.open)
@@ -1251,7 +1370,7 @@ function scanLongSequence(params: {
         ? {
           stale: 'true',
           stale_reason: 'choch_timeout',
-          stale_after_15m_bars: 12,
+          stale_after_15m_bars: policy.chochWaitBars,
           elapsed_15m_bars: elapsedBars,
         }
         : { elapsed_15m_bars: elapsedBars },
@@ -1261,7 +1380,7 @@ function scanLongSequence(params: {
 
   let bosIndex = -1
   const bosLevel = highBetween(bars15m, touchIndex, chochIndex + 1)
-  const bosEnd = Math.min(bars15m.length - 1, chochIndex + 24)
+  const bosEnd = Math.min(bars15m.length - 1, chochIndex + policy.bosWaitBars)
   for (let i = chochIndex + 1; i <= bosEnd; i += 1) {
     const bar = bars15m[i]
     const higherLow = lowBetween(bars15m, chochIndex + 1, i + 1)
@@ -1287,7 +1406,7 @@ function scanLongSequence(params: {
         ? {
           stale: 'true',
           stale_reason: 'bos_timeout',
-          stale_after_15m_bars: 24,
+          stale_after_15m_bars: policy.bosWaitBars,
           elapsed_15m_bars: elapsedBars,
         }
         : { elapsed_15m_bars: elapsedBars },
@@ -1321,7 +1440,7 @@ function scanLongSequence(params: {
   }
 
   let reactionIndex = -1
-  const retestEnd = Math.min(bars15m.length - 1, bosIndex + 16)
+  const retestEnd = Math.min(bars15m.length - 1, bosIndex + policy.retestWaitBars)
   for (let i = bosIndex + 1; i <= retestEnd; i += 1) {
     const bar = bars15m[i]
     const retest = bar.low <= entryZone.high && bar.high >= entryZone.low
@@ -1349,7 +1468,7 @@ function scanLongSequence(params: {
         entry_zone_high: price(entryZone.high),
         stale: stale ? 'true' : null,
         stale_reason: stale ? 'retest_reaction_timeout' : null,
-        stale_after_15m_bars: 16,
+        stale_after_15m_bars: policy.retestWaitBars,
         elapsed_15m_bars: elapsedBars,
       },
     })
@@ -1436,11 +1555,11 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   const bars1h = normalizeBars(input.bars1h)
   const bars4h = normalizeBars(input.bars4h)
   const completedBars = { m15: bars15m.length, h1: bars1h.length, h4: bars4h.length }
-  const min15mBars = Math.max(4, Math.floor(input.min15mBars ?? 6))
-  if (bars15m.length < min15mBars) {
+  const policy = inputTimingPolicy(input)
+  if (bars15m.length < policy.min15mBars) {
     return emptyAssessment(input, 'waiting_15m_completed_bars', 's12_waiting_15m_completed_bars', {
       bars15m: bars15m.length,
-      min15mBars,
+      min15mBars: policy.min15mBars,
     }, completedBars)
   }
   if (bars4h.length < 1) {
@@ -1449,10 +1568,10 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   const bias4h = resolve4hBias(bars4h)
   const neutral1hBias: S12HtfBias = { direction: 'neutral', confidence: 'none', channelAlign: false }
   const bias1h = bars1h.length > 0 ? resolve1hBias(bars1h) : neutral1hBias
-  const supplyZone1h = bars1h.length > 0 ? findSupplyZone1h(bars1h) : null
-  const bearishDefense = scanBearishDefenseSequence({ input, bars15m, supplyZone1h })
-  const demandZone1h = bars1h.length > 0 ? findDemandZone1h(bars1h) : null
-  const quality = buildStructureQuality(bars15m)
+  const supplyZone1h = bars1h.length > 0 ? findSupplyZone1h(bars1h, policy) : null
+  const bearishDefense = scanBearishDefenseSequence({ input, bars15m, supplyZone1h, policy })
+  const demandZone1h = bars1h.length > 0 ? findDemandZone1h(bars1h, policy) : null
+  const quality = buildStructureQuality(bars15m, policy)
 
   if (bearishDefense.ready) {
     return completeAssessment({
@@ -1475,7 +1594,8 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     })
   }
 
-  if (bias4h.direction !== 'long' || !bias4h.channelAlign) {
+  const h4Source = input.h4Source ?? (completedBars.h4 > 0 ? 'current_session' : 'unavailable')
+  if (shouldBlockOn4hBias(h4Source, bias4h)) {
     return completeAssessment({
       input,
       state: 'waiting_4h_long_bias',
@@ -1490,6 +1610,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       extraDetail: {
         latest4h_close: price(bars4h[bars4h.length - 1]?.close),
         required: '4h_long_channel_align',
+        h4_bias_gate: 'current_session_only',
       },
     })
   }
@@ -1521,7 +1642,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       sequence: {},
     })
   }
-  return scanLongSequence({ input, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality })
+  return scanLongSequence({ input, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality, policy })
 }
 
 export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInput): S12IntradayAssessment {
@@ -1547,6 +1668,7 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
     h4Source,
     h4ReferenceDate: h4Source === 'previous_trading_day_fallback' ? input.h4ReferenceDate ?? null : null,
     h4ReferenceClose: h4Source === 'previous_trading_day_fallback' ? input.h4ReferenceClose ?? null : null,
+    policy: input.policy,
     barDiagnostics: {
       ...(input.barDiagnostics ?? {}),
       ...sessionAggregationDiagnostics(input.baseBars, nowMs),

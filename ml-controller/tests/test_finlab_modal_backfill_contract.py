@@ -27,6 +27,12 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert "X-Controller-Token" in modal_app
     assert "continue_evening_chain" in modal_app
     assert '"--lanes"' in modal_app
+    assert '"--source-start-date"' in modal_app
+    assert '"--source-end-date"' in modal_app
+    assert '"--require-official-market-summary"' in modal_app
+    assert "source_start_date: str | None = None" in finlab_router
+    assert "source_end_date: str | None = None" in finlab_router
+    assert "require_official_market_summary: bool = False" in finlab_router
     assert "def spawn_finlab_v4_backfill(payload: dict)" in modal_client
     assert '"status": "triggered"' in modal_client
     assert "callback_url" in finlab_router

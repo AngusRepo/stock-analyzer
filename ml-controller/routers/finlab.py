@@ -31,6 +31,10 @@ class FinLabBackfillRunRequest(BaseModel):
     canonical_window_days: int = Field(7, ge=1, le=30)
     canonical_start_date: str | None = None
     canonical_end_date: str | None = None
+    source_start_date: str | None = None
+    source_end_date: str | None = None
+    source_window_days: int | None = None
+    require_official_market_summary: bool = False
     canonical_datasets: str | None = None
     canonical_limit_per_dataset: int | None = None
     canonical_d1_chunk_size: int | None = None

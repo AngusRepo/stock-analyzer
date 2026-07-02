@@ -2564,6 +2564,12 @@ def finlab_v4_backfill(payload: dict) -> dict:
         argv.extend(["--canonical-start-date", str(payload["canonical_start_date"])])
     if payload.get("canonical_end_date"):
         argv.extend(["--canonical-end-date", str(payload["canonical_end_date"])])
+    if payload.get("source_start_date"):
+        argv.extend(["--source-start-date", str(payload["source_start_date"])])
+    if payload.get("source_end_date"):
+        argv.extend(["--source-end-date", str(payload["source_end_date"])])
+    if payload.get("require_official_market_summary"):
+        argv.append("--require-official-market-summary")
     if payload.get("canonical_datasets"):
         argv.extend(["--canonical-datasets", str(payload["canonical_datasets"])])
     if payload.get("canonical_limit_per_dataset"):

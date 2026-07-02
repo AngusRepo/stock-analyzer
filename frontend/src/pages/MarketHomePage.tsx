@@ -53,7 +53,7 @@ type RiskFactor = {
 
 const HOME_RECOMMENDATION_LIMIT = 80
 const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
-const EMBEDDED_NEWS_LIMIT = 6
+const EMBEDDED_NEWS_LIMIT = 9
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
@@ -1060,6 +1060,15 @@ function newsSourceTone(source: unknown) {
   return 'border-white/[0.08] bg-white/[0.05] text-slate-400'
 }
 
+function newsSourceAccent(source: unknown) {
+  const normalized = String(source ?? '').trim().toLowerCase()
+  if (/經濟日報|money\.udn|udn/.test(normalized)) return 'before:bg-emerald-300/70'
+  if (/鉅亨|anue/.test(normalized)) return 'before:bg-amber-300/75'
+  if (/自由財經|ltn/.test(normalized)) return 'before:bg-sky-300/70'
+  if (/moneydj/.test(normalized)) return 'before:bg-violet-300/75'
+  return 'before:bg-slate-500/70'
+}
+
 function NewsBlock({ embedded = false }: { embedded?: boolean }) {
   const { data, isLoading } = useQuery({
     queryKey: ['market', 'news', 'home'],
@@ -1073,7 +1082,7 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
     ? 'flex h-full min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/[0.07] bg-white/[0.032]'
     : panelClass('overflow-hidden')
   const gridClass = embedded
-    ? 'grid min-h-0 flex-1 auto-rows-fr gap-px bg-white/[0.06]'
+    ? 'grid min-h-0 flex-1 auto-rows-fr bg-[#111216]'
     : 'grid gap-px bg-white/[0.06] md:grid-cols-2 xl:grid-cols-3'
 
   return (
@@ -1082,9 +1091,9 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
       {isLoading ? (
         <div className={gridClass}>
           {Array.from({ length: embedded ? EMBEDDED_NEWS_LIMIT : 6 }).map((_, index) => (
-            <div key={index} className={cx(embedded ? 'min-h-0 p-3' : 'min-h-[126px] p-4', 'animate-pulse bg-[#111216]')}>
-              <div className="h-5 w-24 rounded-full bg-white/[0.06]" />
-              <div className="mt-4 h-4 w-4/5 rounded bg-white/[0.06]" />
+            <div key={index} className={cx(embedded ? 'min-h-0 px-4 py-2.5' : 'min-h-[126px] p-4', 'animate-pulse bg-[#111216]')}>
+              <div className="h-4 w-20 rounded bg-white/[0.06]" />
+              <div className="mt-3 h-4 w-4/5 rounded bg-white/[0.06]" />
               <div className="mt-2 h-4 w-2/3 rounded bg-white/[0.05]" />
             </div>
           ))}
@@ -1097,14 +1106,20 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
               href={item.url ?? '#'}
               target={item.url ? '_blank' : undefined}
               rel="noreferrer"
-              className={cx(embedded ? 'min-h-0 p-3' : 'min-h-[126px] p-4', 'bg-[#111216] transition-colors hover:bg-[#151823]')}
+              className={cx(
+                embedded
+                  ? 'relative min-h-0 border-b border-white/[0.055] px-4 py-2.5 before:absolute before:inset-y-2 before:left-0 before:w-[2px] before:rounded-full last:border-b-0'
+                  : 'min-h-[126px] p-4',
+                embedded ? newsSourceAccent(item.source) : '',
+                'bg-[#111216] transition-colors hover:bg-[#151823]',
+              )}
             >
               <div className="flex items-center justify-between gap-3">
-                <span className={cx('rounded-full border px-2 py-1 text-[11px] font-semibold', newsSourceTone(item.source))}>{item.source ?? 'news'}</span>
-                <span className="text-[11px] text-slate-600">{String(item.published_at ?? item.publishedAt ?? '').slice(0, 10)}</span>
+                <span className={cx(embedded ? 'text-[12px] font-semibold' : 'rounded-full border px-2 py-1 text-[11px] font-semibold', newsSourceTone(item.source))}>{item.source ?? 'news'}</span>
+                <span className={cx(embedded ? 'text-[12px]' : 'text-[11px]', 'text-slate-600')}>{String(item.published_at ?? item.publishedAt ?? '').slice(0, 10)}</span>
               </div>
-              <p className={cx('mt-3 line-clamp-2 font-semibold text-slate-100', embedded ? 'text-[13px] leading-5' : 'text-sm leading-6')}>{item.title}</p>
-              {item.stock_symbol && <p className={cx(embedded ? 'mt-1' : 'mt-2', 'text-[11px] text-blue-300')}>{item.stock_symbol} {item.stock_name ?? ''}</p>}
+              <p className={cx('line-clamp-2 font-semibold text-slate-100', embedded ? 'mt-1.5 text-sm leading-[1.45]' : 'mt-3 text-sm leading-6')}>{item.title}</p>
+              {item.stock_symbol && <p className={cx(embedded ? 'mt-1 text-[12px]' : 'mt-2 text-[11px]', 'text-blue-300')}>{item.stock_symbol} {item.stock_name ?? ''}</p>}
             </a>
           ))}
         </div>

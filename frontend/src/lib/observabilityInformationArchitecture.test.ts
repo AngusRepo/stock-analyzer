@@ -10,6 +10,11 @@ const pagePath = path.join(root, 'src', 'pages', 'ObservabilityPage.tsx')
 const removedChartPath = path.join(root, 'src', 'components', 'charts', 'ObservabilityEventTimeline.tsx')
 
 const page = fs.readFileSync(pagePath, 'utf8')
+const schedulerGroupBoardStart = page.indexOf('function SchedulerReadinessGroupBoard')
+const schedulerGroupBoardEnd = page.indexOf('function CriticalSchedulerErrors')
+const schedulerGroupBoard = schedulerGroupBoardStart >= 0 && schedulerGroupBoardEnd > schedulerGroupBoardStart
+  ? page.slice(schedulerGroupBoardStart, schedulerGroupBoardEnd)
+  : ''
 
 assert(!fs.existsSync(removedChartPath), 'OBS severity timeline chart should be removed; it duplicated event counts without decision value')
 assert(!page.includes('ObservabilityEventTimeline'), 'ObservabilityPage should not render the removed severity timeline')
@@ -45,12 +50,18 @@ assert(
   'Detailed scheduler board should keep Daily readiness, Daily standalone, Intraday, Monthly, and Weekly visible',
 )
 assert(
-  page.includes('<div className="grid min-w-0 gap-3 xl:grid-cols-2">') &&
-    page.includes('<SchedulerGroupCard group="intraday"') &&
-    page.includes('<SchedulerGroupCard group="monthly"') &&
-    page.includes('group="weekly"') &&
-    page.includes('className="2xl:col-span-2"'),
-  'Detailed scheduler board should place Intraday and Monthly under Daily standalone, while Weekly spans the full next row',
+  schedulerGroupBoard.includes('2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]') &&
+    schedulerGroupBoard.indexOf('group="daily"') >= 0 &&
+    schedulerGroupBoard.indexOf('group="intraday"') > schedulerGroupBoard.indexOf('group="daily"') &&
+    schedulerGroupBoard.indexOf('group="monthly"') > schedulerGroupBoard.indexOf('group="intraday"') &&
+    schedulerGroupBoard.indexOf('group="pipeline_chain"') > schedulerGroupBoard.indexOf('group="monthly"') &&
+    schedulerGroupBoard.includes('group="weekly"') &&
+    schedulerGroupBoard.includes('className="2xl:col-span-2"'),
+  'Detailed scheduler board should put Daily standalone and Intraday/Monthly on the narrow left, and Daily readiness chain on the wider right',
+)
+assert(
+  !page.includes('text-[10px]') && !page.includes('text-[11px]'),
+  'OBS should avoid tiny 10/11px text utilities so operational evidence remains readable',
 )
 assert(
   page.includes('xl:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)]') &&

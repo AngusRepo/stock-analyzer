@@ -98,6 +98,10 @@ assert(
   'Bot dashboard holdings table must expand S12 holding analysis and align stop/take-profit UI with the risk-plan formatter',
 )
 assert(
+  !botDashboard.includes("label: 'S12 買賣主機制'"),
+  'Bot dashboard must not duplicate S12 primary ownership inside the stop/take-profit contract card',
+)
+assert(
   botDashboard.includes('formatPartialFillRemaining'),
   'Bot dashboard must surface partial-fill remaining shares',
 )

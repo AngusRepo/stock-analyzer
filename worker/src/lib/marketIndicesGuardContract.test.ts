@@ -44,3 +44,8 @@ assert(
   source.includes("session = 'night'") && source.includes('canonicalNightFallback'),
   'TXF night should fall back to canonical_futures_daily night when TAIFEX live night is unavailable',
 )
+
+assert(
+  source.includes('marketSeriesFreshnessRank') && source.includes("source.includes('TAIFEX MIS')"),
+  'TXF same-date selection must prefer TAIFEX MIS live quotes over canonical futures snapshots',
+)

@@ -402,7 +402,18 @@ function chooseBestMarketSeries(primary: any, fallbacks: any[]): any {
   if (!candidates.length) return primary
   const withDelta = candidates.filter((snapshot) => hasMarketSeriesDelta(snapshot))
   const pool = withDelta.length ? withDelta : candidates
-  return pool.sort((a, b) => normalizeMarketSeriesDate(b?.date).localeCompare(normalizeMarketSeriesDate(a?.date)))[0] ?? primary
+  return pool.sort((a, b) => {
+    const dateCompare = normalizeMarketSeriesDate(b?.date).localeCompare(normalizeMarketSeriesDate(a?.date))
+    if (dateCompare !== 0) return dateCompare
+    return marketSeriesFreshnessRank(b) - marketSeriesFreshnessRank(a)
+  })[0] ?? primary
+}
+
+function marketSeriesFreshnessRank(snapshot: any): number {
+  const source = String(snapshot?.source ?? '')
+  if (source.includes('TAIFEX MIS')) return 2
+  if (snapshot?.time) return 1
+  return 0
 }
 
 function percentChange(current: number | null, previous: number | null): number | null {

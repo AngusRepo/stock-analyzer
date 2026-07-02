@@ -340,7 +340,7 @@ function ReadinessGauge({ score, tone }: { score: number; tone: WorkstationTone 
       <div className="relative grid h-[74px] w-[74px] place-items-center rounded-full bg-[#0f151d] shadow-[inset_0_0_20px_rgba(0,0,0,0.45)]">
         <div className="text-center">
           <p className="sv-num text-2xl font-semibold text-[#f2ead8]">{clamped}</p>
-          <p className="sv-num text-[10px] normal-case text-[#7f8ba0]">readiness</p>
+          <p className="sv-num text-xs normal-case text-[#7f8ba0]">readiness</p>
         </div>
       </div>
     </div>
@@ -366,7 +366,7 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
                   <WorkstationPill tone={stage.tone}>{readinessLabel(stage.status)}</WorkstationPill>
                 </div>
                 <p className="mt-3 text-base font-semibold text-[#f8efe0]">{stage.label}</p>
-                <p className="mt-1 sv-num text-[11px] normal-case text-[#9badbf]">{stage.owner}</p>
+                <p className="mt-1 sv-num text-xs normal-case text-[#9badbf]">{stage.owner}</p>
                 <p className="mt-3 line-clamp-2 text-xs leading-5 text-[#a8b6c5]">{stage.detail}</p>
                 {detailItems.length > 0 && (
                   <div className="mt-2 flex min-w-0 flex-wrap gap-1">
@@ -376,7 +376,7 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
                       return (
                         <span
                           key={`${stage.id}-${detail}`}
-                          className="max-w-full rounded-lg border px-2 py-1 sv-num text-[10px] leading-4 normal-case [overflow-wrap:anywhere]"
+                          className="max-w-full rounded-lg border px-2 py-1 sv-num text-xs leading-4 normal-case [overflow-wrap:anywhere]"
                           style={{
                             borderColor: `${toneColor(chipTone)}45`,
                             backgroundColor: `${toneColor(chipTone)}10`,
@@ -389,7 +389,7 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
                     })}
                   </div>
                 )}
-                <p className="mt-2 truncate sv-num text-[11px] normal-case text-[#70809b]">{stage.job?.lastRun || stage.job?.nextRun || 'no runtime evidence yet'}</p>
+                <p className="mt-2 truncate sv-num text-xs normal-case text-[#70809b]">{stage.job?.lastRun || stage.job?.nextRun || 'no runtime evidence yet'}</p>
               </div>
               {index < stages.length - 1 && <ArrowRight className="hidden h-3.5 w-3.5 text-[#4d5b70]" />}
             </div>
@@ -409,13 +409,13 @@ function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; li
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-[#f2ead8]">{gate.label}</p>
-              <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#7f8ba0]">{gate.source}</p>
+              <p className="mt-1 truncate sv-num text-xs normal-case text-[#7f8ba0]">{gate.source}</p>
             </div>
             <WorkstationPill tone={gate.tone}>{readinessLabel(gate.status)}</WorkstationPill>
           </div>
           <div className="mt-3 flex items-end justify-between gap-3">
             <p className="sv-num text-xl font-semibold" style={{ color: toneColor(gate.tone) }}>{gate.value}</p>
-            <p className="sv-num text-[11px] normal-case text-[#8b9bab]">{gate.latestDate ?? 'date n/a'}</p>
+            <p className="sv-num text-xs normal-case text-[#8b9bab]">{gate.latestDate ?? 'date n/a'}</p>
           </div>
           <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
           <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#9badbf]">{gate.detail}</p>
@@ -433,18 +433,18 @@ function DataQualityCompactMatrix({ gates }: { gates: ReadinessGate[] }) {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-xs font-semibold text-[#f2ead8]">{gate.label}</p>
-              <p className="mt-0.5 truncate sv-num text-[10px] normal-case text-[#7f8ba0]">{gate.source}</p>
+              <p className="mt-0.5 truncate sv-num text-xs normal-case text-[#7f8ba0]">{gate.source}</p>
             </div>
-            <span className="shrink-0 rounded-full border border-white/10 bg-black/20 px-1.5 py-0.5 sv-num text-[10px] normal-case" style={{ color: toneColor(gate.tone) }}>
+            <span className="shrink-0 rounded-full border border-white/10 bg-black/20 px-1.5 py-0.5 sv-num text-xs normal-case" style={{ color: toneColor(gate.tone) }}>
               {readinessLabel(gate.status)}
             </span>
           </div>
           <div className="mt-2 flex items-end justify-between gap-2">
             <p className="truncate sv-num text-base font-semibold" style={{ color: toneColor(gate.tone) }}>{gate.value}</p>
-            <p className="shrink-0 sv-num text-[10px] normal-case text-[#8b9bab]">{gate.latestDate ?? 'n/a'}</p>
+            <p className="shrink-0 sv-num text-xs normal-case text-[#8b9bab]">{gate.latestDate ?? 'n/a'}</p>
           </div>
           <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
-          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#9badbf]">{gate.detail}</p>
+          <p className="mt-1 line-clamp-2 text-xs leading-4 text-[#9badbf]">{gate.detail}</p>
         </div>
       ))}
     </div>
@@ -544,7 +544,7 @@ function schedulerGroupHealthLabel(summary: ReturnType<typeof summarizeScheduler
 
 function SchedulerCountChip({ label, value, tone }: { label: string; value: number; tone: WorkstationTone }) {
   return (
-    <span className={`min-w-0 rounded-lg border px-1.5 py-1 text-center sv-num text-[10px] normal-case ${statusRingClass(tone)}`}>
+    <span className={`min-w-0 rounded-lg border px-1.5 py-1 text-center sv-num text-xs normal-case ${statusRingClass(tone)}`}>
       <span className="block leading-none">{label}</span>
       <span className="mt-1 block text-sm font-semibold leading-none">{value}</span>
     </span>
@@ -589,7 +589,7 @@ function SchedulerShortcutCard({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
-          <p className="mt-0.5 truncate sv-num text-[10px] normal-case text-[#7f8ba0]">{group}</p>
+          <p className="mt-0.5 truncate sv-num text-xs normal-case text-[#7f8ba0]">{group}</p>
         </div>
         <WorkstationPill tone={cardTone}>{healthLabel}</WorkstationPill>
       </div>
@@ -600,7 +600,7 @@ function SchedulerShortcutCard({
         <SchedulerCountChip label="FAIL" value={summary.failed} tone="error" />
       </div>
       <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
-        <p className="truncate sv-num text-[11px] normal-case text-[#9badbf]">{focusText}</p>
+        <p className="truncate sv-num text-xs normal-case text-[#9badbf]">{focusText}</p>
         <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[#6d7f97] transition group-hover:text-sky-200" />
       </div>
     </a>
@@ -673,11 +673,11 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
             <span className="h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_12px_currentColor]" style={{ color: toneColor(tone), backgroundColor: toneColor(tone) }} />
             <p className="truncate text-sm font-semibold text-[#f8efe0]">{job.name}</p>
           </div>
-          <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#7f8ba0]">{job.id} · {job.schedule}</p>
+          <p className="mt-1 truncate sv-num text-xs normal-case text-[#7f8ba0]">{job.id} · {job.schedule}</p>
         </div>
         <WorkstationPill tone={tone}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
       </div>
-      <div className="mt-2 grid min-w-0 grid-cols-1 gap-1 sv-num text-[11px] normal-case text-[#9badbf] sm:grid-cols-3">
+      <div className="mt-2 grid min-w-0 grid-cols-1 gap-1 sv-num text-xs normal-case text-[#9badbf] sm:grid-cols-3">
         <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">last {job.lastRun || '-'}</span>
         <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">next {job.nextRun || '-'}</span>
         <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">7d {job.rate7d || '-'}</span>
@@ -694,7 +694,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
             return (
               <span
                 key={`${job.id}-${detail}`}
-                className="max-w-full rounded-lg border px-2 py-1 sv-num text-[10px] leading-4 normal-case [overflow-wrap:anywhere]"
+                className="max-w-full rounded-lg border px-2 py-1 sv-num text-xs leading-4 normal-case [overflow-wrap:anywhere]"
                 style={{
                   borderColor: `${toneColor(detailTone)}45`,
                   backgroundColor: `${toneColor(detailTone)}10`,
@@ -706,7 +706,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
             )
           })}
           {Array.isArray(job.details) && job.details.length > readinessDetails.length && (
-            <span className="rounded-lg border border-[#2f3c4c] bg-[#111824] px-2 py-1 sv-num text-[10px] leading-4 text-[#9badbf]">
+            <span className="rounded-lg border border-[#2f3c4c] bg-[#111824] px-2 py-1 sv-num text-xs leading-4 text-[#9badbf]">
               +{job.details.length - readinessDetails.length}
             </span>
           )}
@@ -744,7 +744,7 @@ function SchedulerGroupCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
-          <p className="mt-1 sv-num text-[11px] normal-case text-[#7f8ba0]">{group}</p>
+          <p className="mt-1 sv-num text-xs normal-case text-[#7f8ba0]">{group}</p>
         </div>
         <WorkstationPill tone={schedulerApiError ? 'error' : hasRuntimeJobs ? summary.tone : meta.tone}>
           {schedulerApiError ? 'API ERROR' : hasRuntimeJobs ? groupJobs.length : `${meta.expectedCount} expected`}
@@ -753,7 +753,7 @@ function SchedulerGroupCard({
       <p className="mt-3 min-h-10 text-xs leading-5 text-[#9badbf]">{meta.purpose}</p>
       {hasRuntimeJobs ? (
         <>
-          <div className="mt-3 grid grid-cols-4 gap-1 sv-num text-[11px] normal-case">
+          <div className="mt-3 grid grid-cols-4 gap-1 sv-num text-xs normal-case">
             <span className="rounded-lg border border-emerald-400/15 bg-emerald-400/[0.06] px-2 py-1 text-emerald-200">ok {summary.success}</span>
             <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">run {summary.running}</span>
             <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">wait {summary.waiting}</span>
@@ -773,7 +773,7 @@ function SchedulerGroupCard({
       {!hasRuntimeJobs && (
         <div className="mt-2 flex flex-wrap gap-1">
           {meta.examples.map((label) => (
-            <span key={`${group}-${label}`} className="max-w-full truncate rounded-full border border-[#2f3c4c] bg-[#171d27] px-2 py-1 text-[11px] font-semibold text-[#dbeafe]" style={{ borderColor: `${toneColor(meta.tone)}55`, color: toneColor(meta.tone) }}>
+            <span key={`${group}-${label}`} className="max-w-full truncate rounded-full border border-[#2f3c4c] bg-[#171d27] px-2 py-1 text-xs font-semibold text-[#dbeafe]" style={{ borderColor: `${toneColor(meta.tone)}55`, color: toneColor(meta.tone) }}>
               {label}
             </span>
           ))}
@@ -789,14 +789,6 @@ function SchedulerReadinessGroupBoard({ jobs, schedulerApiError }: { jobs: Sched
 
   return (
     <div className="mt-3 grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]">
-      <SchedulerGroupCard
-        group="pipeline_chain"
-        jobsByGroup={jobsByGroup}
-        hasRuntimeJobs={hasRuntimeJobs}
-        schedulerApiError={schedulerApiError}
-        className="2xl:h-full"
-        jobGridClass="lg:grid-cols-2"
-      />
       <div className="grid min-w-0 gap-3">
         <SchedulerGroupCard
           group="daily"
@@ -810,6 +802,14 @@ function SchedulerReadinessGroupBoard({ jobs, schedulerApiError }: { jobs: Sched
           <SchedulerGroupCard group="monthly" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
         </div>
       </div>
+      <SchedulerGroupCard
+        group="pipeline_chain"
+        jobsByGroup={jobsByGroup}
+        hasRuntimeJobs={hasRuntimeJobs}
+        schedulerApiError={schedulerApiError}
+        className="2xl:h-full"
+        jobGridClass="lg:grid-cols-2 xl:grid-cols-2"
+      />
       <SchedulerGroupCard
         group="weekly"
         jobsByGroup={jobsByGroup}
@@ -851,8 +851,8 @@ function CriticalSchedulerErrors({ jobs }: { jobs: SchedulerJob[] }) {
                 <WorkstationPill tone="error">{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
                 <p className="truncate text-base font-semibold text-[#f8efe0]">{job.name}</p>
               </div>
-              <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#71839a]">{job.group} / {job.schedule}</p>
-              <p className="mt-2 sv-num text-[11px] normal-case text-[#9badbf]">發生 {job.lastRun || '-'} · {job.lastDuration || '-'}</p>
+              <p className="mt-1 truncate sv-num text-xs normal-case text-[#71839a]">{job.group} / {job.schedule}</p>
+              <p className="mt-2 sv-num text-xs normal-case text-[#9badbf]">發生 {job.lastRun || '-'} · {job.lastDuration || '-'}</p>
             </div>
             <p className="min-w-0 text-[#a9d7ff]">
               <span className="font-semibold text-[#f8efe0]">狀態紀錄：</span>{schedulerStatusLog(job)}
@@ -863,7 +863,7 @@ function CriticalSchedulerErrors({ jobs }: { jobs: SchedulerJob[] }) {
             <p className="min-w-0 text-[#c5d3e2]">
               <span className="font-semibold text-[#f8efe0]">可能影響：</span>{schedulerImpact(job)}
             </p>
-            <a href="/scheduler" className="inline-flex items-start justify-end gap-1 sv-num text-[11px] normal-case text-sky-200 hover:text-sky-100">
+            <a href="/scheduler" className="inline-flex items-start justify-end gap-1 sv-num text-xs normal-case text-sky-200 hover:text-sky-100">
               Drilldown <ExternalLink className="h-3 w-3" />
             </a>
           </div>
@@ -927,7 +927,7 @@ function OperationalReadinessDeck({
             </div>
             <div className="flex shrink-0 items-center gap-3">
               <ReadinessGauge score={score} tone={decisionTone} />
-              <div className="grid gap-2 sv-num text-[11px] normal-case text-[#9badbf]">
+              <div className="grid gap-2 sv-num text-xs normal-case text-[#9badbf]">
                 <span>Scheduler {Math.round(schedulerScore || 0)}%</span>
                 <span>Data Quality {dataQualityScore}%</span>
                 <span>Deploy Gate {deployScore}%</span>
@@ -987,7 +987,7 @@ function OperationalReadinessDeck({
               <Database className="h-4 w-4 text-emerald-300" />
               <p className="text-sm font-semibold text-[#f2ead8]">Source Gates / 資料就緒</p>
             </div>
-            <a href="/data-quality" className="inline-flex items-center gap-1 sv-num text-[11px] normal-case text-emerald-200 hover:text-emerald-100">
+            <a href="/data-quality" className="inline-flex items-center gap-1 sv-num text-xs normal-case text-emerald-200 hover:text-emerald-100">
               Data Quality <ExternalLink className="h-3 w-3" />
             </a>
           </div>
@@ -1118,7 +1118,7 @@ function AdaptiveMetaPanel({
         <div className="grid h-full gap-3 xl:grid-rows-[auto_minmax(0,1fr)]">
           <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="sv-num text-[10px] normal-case text-[#70809b]">Threshold Policy</p>
+              <p className="sv-num text-xs normal-case text-[#70809b]">Threshold Policy</p>
               <WorkstationPill tone={tone}>{adaptive?.status ?? 'missing'}</WorkstationPill>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -1131,7 +1131,7 @@ function AdaptiveMetaPanel({
                 <p className="sv-num text-lg text-slate-100">{String(thresholdInputs.regime ?? asRecord(evidence.provenance).regime ?? '-')}</p>
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-400">
               <span>risk {fmtNumber(threshold.risk_penalty)}</span>
               <span>model {fmtNumber(threshold.model_quality_penalty)}</span>
               <span>vol {fmtNumber(threshold.volatility_penalty)}</span>
@@ -1141,7 +1141,7 @@ function AdaptiveMetaPanel({
 
           <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="sv-num text-[10px] normal-case text-[#70809b]">LinUCB Guard</p>
+              <p className="sv-num text-xs normal-case text-[#70809b]">LinUCB Guard</p>
               <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
             </div>
             <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
@@ -1158,7 +1158,7 @@ function AdaptiveMetaPanel({
                 <p className="sv-num text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
               </div>
             </div>
-            <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+            <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-300">
               <div className="flex flex-wrap items-center gap-2">
                 <WorkstationPill tone={linucbLedger.reward_ledger_status === 'updated' ? 'ok' : 'warn'}>
                   ledger {String(linucbLedger.reward_ledger_status ?? 'missing')}
@@ -1176,7 +1176,7 @@ function AdaptiveMetaPanel({
 
         <div className="h-full rounded-xl border border-[#263247] bg-[#05070c] p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="sv-num text-[10px] normal-case text-[#70809b]">GA Promotion</p>
+            <p className="sv-num text-xs normal-case text-[#70809b]">GA Promotion</p>
             <WorkstationPill tone={severityTone(ga?.severity)}>{String(promotion.level ?? 'L0')}</WorkstationPill>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -1207,7 +1207,7 @@ function AdaptiveMetaPanel({
               <p className="sv-num text-sm text-slate-100">{gaLearningUpdatedAt}</p>
             </div>
           </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-400">
             <span>run population {String(gaRunPopulation ?? '-')}</span>
             <span>run generations {String(gaRunGenerations ?? '-')}</span>
             <span>history {String(gaEvidence.history_count ?? '-')}</span>
@@ -1215,7 +1215,7 @@ function AdaptiveMetaPanel({
             <span>MDD95 {fmtNumber(bestMetrics.mdd_95th, 3)}</span>
             <span>Sharpe {fmtNumber(bestMetrics.sharpe, 2)}</span>
           </div>
-          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-300">
             <p className="font-semibold text-slate-100">L3 gate evidence</p>
             <div className="mt-2 flex flex-wrap gap-1">
               {(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']).map((item) => (
@@ -1234,7 +1234,7 @@ function AdaptiveMetaPanel({
             </div>
             <p className="mt-2 text-[#9badbf]">{gaNextAction || 'GA promotion state has not exposed a next action yet.'}</p>
           </div>
-          <p className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-slate-300">
+          <p className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-300">
             learned policy: {summarizeLearnedPolicy(learnedPolicy)}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -1245,7 +1245,7 @@ function AdaptiveMetaPanel({
               approval {approvalRequiredForNextLevel ? 'required' : 'not yet'}
             </WorkstationPill>
           </div>
-          <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-[11px] leading-5 text-amber-100">
+          <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-xs leading-5 text-amber-100">
             <p className="font-semibold text-amber-200">GA 學習節奏</p>
             <p>weekly 會跑小型 GA sweep（目前 12 population / 4 generations），monthly 會跑較大型 sweep（目前 36 / 12）。這些數字是單次 run 設定，不是累積進度；是否持續學習要看 last learned、history 與 best score 是否更新。L3/L4 仍需 approval gate，通過前不寫入 production trading config。</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1254,7 +1254,7 @@ function AdaptiveMetaPanel({
                   size="sm"
                   variant="outline"
                   disabled={!onGaReview || gaReviewPending}
-                  className="h-7 rounded-full border-amber-400/30 px-3 text-[11px] text-amber-200 hover:bg-amber-400/10"
+                  className="h-7 rounded-full border-amber-400/30 px-3 text-xs text-amber-200 hover:bg-amber-400/10"
                   onClick={() => onGaReview?.('request', nextLevel)}
                 >
                   {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
@@ -1267,7 +1267,7 @@ function AdaptiveMetaPanel({
                     size="sm"
                     variant="outline"
                     disabled={!onGaReview || gaReviewPending}
-                    className="h-7 rounded-full border-emerald-400/30 px-3 text-[11px] text-emerald-200 hover:bg-emerald-400/10"
+                    className="h-7 rounded-full border-emerald-400/30 px-3 text-xs text-emerald-200 hover:bg-emerald-400/10"
                     onClick={() => onGaReview?.('approve', pendingApprovalLevel)}
                   >
                     {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
@@ -1277,14 +1277,14 @@ function AdaptiveMetaPanel({
                     size="sm"
                     variant="outline"
                     disabled={!onGaReview || gaReviewPending}
-                    className="h-7 rounded-full border-rose-400/30 px-3 text-[11px] text-rose-200 hover:bg-rose-400/10"
+                    className="h-7 rounded-full border-rose-400/30 px-3 text-xs text-rose-200 hover:bg-rose-400/10"
                     onClick={() => onGaReview?.('reject', pendingApprovalLevel)}
                   >
                     Reject {pendingApprovalLevel}
                   </Button>
                 </>
               )}
-              <a href="/strategy-lab" className="inline-flex items-center gap-1 sv-num text-[10px] normal-case text-amber-200 hover:text-amber-100">
+              <a href="/strategy-lab" className="inline-flex items-center gap-1 sv-num text-xs normal-case text-amber-200 hover:text-amber-100">
                 Review GA candidate <ExternalLink className="h-3 w-3" />
               </a>
             </div>
@@ -1297,13 +1297,13 @@ function AdaptiveMetaPanel({
           {metaLearners.map(([name, description, stage, evidenceNeed]) => (
             <div key={String(name)} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
               <div className="flex items-center justify-between gap-2">
-                <p className="sv-num text-[10px] normal-case text-[#70809b]">{String(name)}</p>
+                <p className="sv-num text-xs normal-case text-[#70809b]">{String(name)}</p>
                 <WorkstationPill tone={stage === 'production baseline' ? 'ok' : stage === 'research only' ? 'warn' : 'info'}>
                   {String(stage)}
                 </WorkstationPill>
               </div>
               <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-300">{String(description)}</p>
-              <p className="mt-2 text-[11px] leading-5 text-slate-500">needs: {String(evidenceNeed)}</p>
+              <p className="mt-2 text-xs leading-5 text-slate-500">needs: {String(evidenceNeed)}</p>
             </div>
           ))}
           {!metaLearners.length && (
@@ -1398,7 +1398,7 @@ export default function ObservabilityPage() {
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#05070c]/95 backdrop-blur-sm">
             <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-sky-300" />
-              <p className="mt-3 sv-num text-[11px] normal-case text-sky-200">Loading OBS evidence</p>
+              <p className="mt-3 sv-num text-xs normal-case text-sky-200">Loading OBS evidence</p>
               <p className="mt-1 text-xs text-slate-500">scheduler / data quality / deploy gate / model events</p>
             </div>
           </div>
@@ -1435,7 +1435,7 @@ export default function ObservabilityPage() {
               <p className="text-xs leading-5 text-slate-400">
                 Scheduler row 直接顯示 root cause、發生時間與可能影響；OBS 不再另外維護重複的事件收件匣。
               </p>
-              <div className="flex flex-wrap gap-2 text-[11px]">
+              <div className="flex flex-wrap gap-2 text-xs">
                 <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 sv-num text-sky-200 hover:border-sky-300/50">
                   Scheduler <ExternalLink className="h-3 w-3" />
                 </a>
@@ -1451,7 +1451,7 @@ export default function ObservabilityPage() {
           <div className="grid gap-3 p-3">
             <div>
               <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap sv-num text-[10px] normal-case text-slate-400">Data Quality / 資料品質</p>
+                <p className="shrink-0 whitespace-nowrap sv-num text-xs normal-case text-slate-400">Data Quality / 資料品質</p>
                 <div className="hidden items-center gap-3 sm:flex">
                   <span className={`sv-num text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
                 </div>

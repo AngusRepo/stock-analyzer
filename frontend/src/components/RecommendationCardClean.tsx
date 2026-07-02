@@ -3135,7 +3135,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
         : 'border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,24,33,0.96),rgba(12,14,20,0.99))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] hover:border-sky-300/20 hover:bg-[#151923]',
     )}>
       <div
-        className="grid cursor-pointer select-none grid-cols-[2rem_minmax(0,1fr)_3.35rem_1rem] items-center gap-3 p-3 sm:grid-cols-[2rem_minmax(0,1fr)_3.6rem_1rem] sm:p-4"
+        className="grid cursor-pointer select-none grid-cols-[2rem_minmax(0,1fr)_4.5rem] items-center gap-3 p-3 sm:grid-cols-[2rem_minmax(0,1fr)_4.75rem] sm:p-4"
         onClick={() => setExpanded((value) => !value)}
       >
         <div className={cn(
@@ -3185,16 +3185,19 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
           </div>
         </div>
 
-        <div className="justify-self-end text-center">
-          <div className="sv-num text-xl font-bold leading-none text-amber-200">{Math.round(scoreViewModel.finalScore)}</div>
-          <div className="mt-1 whitespace-nowrap text-[10px] font-medium leading-none text-slate-500">最終分</div>
+        <div className="grid min-w-[4.5rem] shrink-0 grid-cols-[minmax(0,1fr)_1rem] items-center gap-1 justify-self-end">
+          <div className="min-w-0 text-right">
+            <div className="sv-num whitespace-nowrap text-xl font-bold leading-none text-amber-200">{Math.round(scoreViewModel.finalScore)}</div>
+            <div className="mt-1 whitespace-nowrap text-[10px] font-medium leading-none text-slate-500">最終分</div>
+          </div>
+          <div className="flex h-7 w-4 items-center justify-end">
+            {expanded ? (
+              <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" />
+            ) : (
+              <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+            )}
+          </div>
         </div>
-
-        {expanded ? (
-          <ChevronUp className="h-4 w-4 shrink-0 justify-self-end text-slate-400" />
-        ) : (
-          <ChevronDown className="h-4 w-4 shrink-0 justify-self-end text-slate-400" />
-        )}
       </div>
 
       {evidenceLinks.length > 0 && (

@@ -64,6 +64,13 @@ assert(
   'Recommendation card should display Score V2 points instead of normalized 0.xx ratios',
 )
 
+assert(
+  recommendationComponent.includes('grid-cols-[2rem_minmax(0,1fr)_4.5rem]')
+    && recommendationComponent.includes('grid min-w-[4.5rem] shrink-0 grid-cols-[minmax(0,1fr)_1rem]')
+    && recommendationComponent.includes('sv-num whitespace-nowrap text-xl'),
+  'Recommendation card header must keep score and chevron in one fixed no-wrap rail',
+)
+
 for (const model of ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']) {
   assert(recommendationCard.includes(`'${model}'`), `Recommendation card active model pool should include ${model}`)
 }

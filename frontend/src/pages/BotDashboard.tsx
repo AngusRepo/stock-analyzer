@@ -984,20 +984,7 @@ function PositionsTable() {
               const s12HoldingDefense = formatS12HoldingDefenseBadge(p.s12_holding_defense)
               const lifecycleBadge = formatCanonicalTradeLifecycleBadge(p.canonical_trade_lifecycle)
               const riskPlan = formatPositionRiskPlan(p)
-              const riskContractBadge = riskPlan.primaryS12
-                ? {
-                  label: 'S12 買賣主機制',
-                  tone: 'info' as const,
-                  description: [
-                    riskPlan.stop ? `防守停損 ${riskPlan.stop}` : null,
-                    riskPlan.tp1 ? `TP1 ${riskPlan.tp1}` : null,
-                    riskPlan.tp2 ? `主出場 ${riskPlan.tp2}` : null,
-                    riskPlan.tp3 ? `TP3 ${riskPlan.tp3}` : null,
-                    riskPlan.tp4 ? `TP4 ${riskPlan.tp4}` : null,
-                    riskPlan.tpSource,
-                  ].filter(Boolean).join('；'),
-                }
-                : lifecycleBadge
+              const riskContractBadge = riskPlan.primaryS12 ? null : lifecycleBadge
               totalUnrealized += pnlAmt
               totalCostBasis += costBasis
 

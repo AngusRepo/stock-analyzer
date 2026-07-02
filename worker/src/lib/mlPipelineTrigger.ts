@@ -49,7 +49,12 @@ export async function runMLAndRiskV2(
       const existingRisk = shouldRecomputeRisk
         ? null
         : await env.DB.prepare('SELECT * FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<any>()
-      if (!shouldRecomputeRisk && existingRisk) {
+      const existingRiskComplete = existingRisk
+        && existingRisk.twii_close != null
+        && existingRisk.twii_ma20 != null
+        && existingRisk.twii_bias != null
+        && existingRisk.twii_vol20 != null
+      if (!shouldRecomputeRisk && existingRiskComplete) {
         console.log(`[ML V2] Market risk preserved for backfill date=${twDate}; skip current-market overwrite`)
         const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
         const packet = await buildMarketRegimeFactorPacket(env.DB, existingRisk, regimeState)

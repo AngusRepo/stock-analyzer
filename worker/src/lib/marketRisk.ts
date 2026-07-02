@@ -61,6 +61,63 @@ interface TwiiHistoryRow {
   source: string
 }
 
+function parseTwseOfficialNumber(value: unknown): number | null {
+  const parsed = Number(String(value ?? '').replace(/,/g, '').trim())
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseTwseOfficialDate(value: unknown): string | null {
+  const match = String(value ?? '').trim().match(/^(\d{2,3})\/(\d{2})\/(\d{2})$/)
+  if (!match) return null
+  const year = Number(match[1]) + 1911
+  return `${year}-${match[2]}-${match[3]}`
+}
+
+function ymd(date: Date): string {
+  return date.toISOString().slice(0, 10).replace(/-/g, '')
+}
+
+function addUtcDays(isoDate: string, days: number): Date {
+  const [year, month, day] = isoDate.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + days))
+}
+
+function monthQueryDates(runDate: string): string[] {
+  const [year, month] = runDate.split('-').map(Number)
+  const queries = new Set<string>()
+  queries.add(ymd(addUtcDays(runDate, 0)))
+  queries.add(ymd(addUtcDays(runDate, 1)))
+  for (let offset = 0; offset < 4; offset++) {
+    queries.add(ymd(new Date(Date.UTC(year, month - 1 - offset, 1))))
+  }
+  return [...queries]
+}
+
+async function fetchTwseOfficialTwiiHistory(runDate: string): Promise<TwiiHistoryRow[]> {
+  const rows: TwiiHistoryRow[] = []
+  for (const queryDate of monthQueryDates(runDate)) {
+    try {
+      const res = await fetch(`https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date=${queryDate}&response=json`, {
+        headers: { Accept: 'application/json', 'User-Agent': 'StockVisionBot/1.0' },
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!res.ok) continue
+      const body = await res.json() as any
+      const data = Array.isArray(body?.data) ? body.data : []
+      for (const item of data) {
+        if (!Array.isArray(item) || item.length < 5) continue
+        const date = parseTwseOfficialDate(item[0])
+        const close = parseTwseOfficialNumber(item[4])
+        if (!date || date > runDate || close == null || close <= 1000 || close >= 100000) continue
+        rows.push({ date, close, source: 'twse.mi_5mins_hist.official' })
+      }
+    } catch {
+      continue
+    }
+  }
+  return rows
+}
+
 function twiiSourceRank(source: string): number {
   if (source === 'finlab.taiex_total_index') return 0
   if (source === 'twse.mi_5mins_hist.official') return 1
@@ -91,6 +148,15 @@ async function fetchTWIIHistory(db: D1Database, runDate: string): Promise<number
       const previous = byDate.get(date)
       if (!previous || twiiSourceRank(source) < twiiSourceRank(previous.source)) {
         byDate.set(date, { date, close, source })
+      }
+    }
+
+    if (byDate.size < 21) {
+      for (const row of await fetchTwseOfficialTwiiHistory(runDate)) {
+        const previous = byDate.get(row.date)
+        if (!previous || twiiSourceRank(row.source) < twiiSourceRank(previous.source)) {
+          byDate.set(row.date, row)
+        }
       }
     }
 

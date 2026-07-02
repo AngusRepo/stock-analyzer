@@ -24,6 +24,16 @@ assert(
 )
 
 assert(
+  source.includes('fetchTwseOfficialTwiiHistory') && source.includes('MI_5MINS_HIST'),
+  'market risk TWII history should use TWSE official TAIEX history only when canonical history is too short',
+)
+
+assert(
+  source.includes('if (byDate.size < 21)'),
+  'market risk TWII official fallback should only run when the canonical 20-day window is incomplete',
+)
+
+assert(
   !source.includes('finance/chart/%5ETWII'),
   'market risk TWII history must not use Yahoo ^TWII live chart data',
 )

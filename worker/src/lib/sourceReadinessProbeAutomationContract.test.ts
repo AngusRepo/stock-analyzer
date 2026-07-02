@@ -77,6 +77,8 @@ assert(
     officialMarketSummaryRefresh.includes('tpex.margin_balance.official') &&
     officialMarketSummaryRefresh.includes('/www/zh-tw/margin/balance') &&
     officialMarketSummaryRefresh.includes('arrayValueByHeader') &&
+    officialMarketSummaryRefresh.includes('deriveOtcSummaryFromCanonicalChip') &&
+    officialMarketSummaryRefresh.includes('finlab.canonical_chip_minus_twse') &&
     officialMarketSummaryRefresh.includes('official_market_summary_missing'),
   'official market summary refresh must be an independent TWSE/TPEX canonical owner',
 )

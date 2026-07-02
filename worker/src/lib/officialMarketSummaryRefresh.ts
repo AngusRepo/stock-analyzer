@@ -173,6 +173,59 @@ function tpexSummaryRowFromRows(
   }
 }
 
+function subtractNumber(total: unknown, listed: unknown): number | null {
+  const totalValue = numberOrNull(total)
+  const listedValue = numberOrNull(listed)
+  if (totalValue == null || listedValue == null) return null
+  const value = totalValue - listedValue
+  return Number.isFinite(value) ? Math.max(0, value) : null
+}
+
+async function deriveOtcSummaryFromCanonicalChip(
+  db: D1Database,
+  rows: MarketSummaryRow[],
+  targetDate: string,
+  runId: string,
+  generatedAt: string,
+): Promise<MarketSummaryRow[]> {
+  if (rows.some((row) => row.market_segment === 'OTC' && row.date === targetDate)) return rows
+  const listed = rows.find((row) => row.market_segment === 'LISTED' && row.date === targetDate)
+  if (!listed) return rows
+
+  const total = await db.prepare(`
+    SELECT
+      SUM(COALESCE(margin_buy, 0)) AS margin_buy_units,
+      SUM(COALESCE(margin_sell, 0)) AS margin_sell_units,
+      SUM(COALESCE(margin_cash_repayment, 0)) AS margin_return_units,
+      SUM(COALESCE(margin_balance, 0)) AS margin_balance_units,
+      SUM(COALESCE(short_buy, 0)) AS short_buy_units,
+      SUM(COALESCE(short_sell, 0)) AS short_sell_units,
+      SUM(COALESCE(short_stock_repayment, 0)) AS short_return_units,
+      SUM(COALESCE(short_balance, 0)) AS short_balance_units,
+      COUNT(*) AS rows
+    FROM canonical_chip_daily
+    WHERE date = ? AND market_segment = 'LISTED_OTC'
+  `).bind(targetDate).first<Record<string, unknown>>()
+  if (!total || numberOrNull(total.rows) == null || Number(total.rows) <= 0) return rows
+
+  const otc: MarketSummaryRow = {
+    date: targetDate,
+    market_segment: 'OTC',
+    margin_buy_units: subtractNumber(total.margin_buy_units, listed.margin_buy_units),
+    margin_sell_units: subtractNumber(total.margin_sell_units, listed.margin_sell_units),
+    margin_return_units: subtractNumber(total.margin_return_units, listed.margin_return_units),
+    margin_balance_units: subtractNumber(total.margin_balance_units, listed.margin_balance_units),
+    short_buy_units: subtractNumber(total.short_buy_units, listed.short_buy_units),
+    short_sell_units: subtractNumber(total.short_sell_units, listed.short_sell_units),
+    short_return_units: subtractNumber(total.short_return_units, listed.short_return_units),
+    short_balance_units: subtractNumber(total.short_balance_units, listed.short_balance_units),
+    source: 'finlab.canonical_chip_minus_twse',
+    lineage_json: lineage(runId, 'finlab.canonical_chip_minus_twse', targetDate),
+    as_of_date: generatedAt.slice(0, 10),
+  }
+  return [...rows, otc]
+}
+
 async function fetchTpexDateSpecificMarginSummaryRow(targetDate: string, runId: string, generatedAt: string): Promise<MarketSummaryRow | null> {
   const body = await officialJson(
     `https://www.tpex.org.tw/www/zh-tw/margin/balance?date=${rocSlashDate(targetDate)}&id=&response=json`,
@@ -310,7 +363,13 @@ async function upsertMarketSummaryRows(db: D1Database, rows: MarketSummaryRow[])
 export async function runOfficialMarketSummaryRefresh(env: Bindings, targetDate: string): Promise<string> {
   const generatedAt = new Date().toISOString()
   const runId = `official-market-summary-${targetDate.replace(/-/g, '')}-${Date.now()}`
-  const rows = await fetchOfficialMarketSummaryRows(targetDate, runId, generatedAt)
+  const rows = await deriveOtcSummaryFromCanonicalChip(
+    env.DB,
+    await fetchOfficialMarketSummaryRows(targetDate, runId, generatedAt),
+    targetDate,
+    runId,
+    generatedAt,
+  )
   validateTargetDateRows(rows, targetDate)
   await upsertMarketSummaryRows(env.DB, rows)
   const summary = rows.map((row) => `${row.market_segment}:${row.date}:${row.source}`).join(',')

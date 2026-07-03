@@ -316,6 +316,50 @@ function buildIndexSnapshot(
   }
 }
 
+function twiiCanonicalSourceRank(source: string): number {
+  if (source === 'finlab.taiex_total_index') return 0
+  if (source === 'twse.mi_5mins_hist.official') return 1
+  return 2
+}
+
+async function loadCanonicalTwiiSeries(db: D1Database) {
+  try {
+    const { results } = await db.prepare(
+      `SELECT date, close, source
+       FROM canonical_market_index_daily
+       WHERE symbol IN ('TWII', 'TAIEX')
+         AND source IN ('finlab.taiex_total_index', 'twse.mi_5mins_hist.official')
+         AND close > 1000
+         AND close < 100000
+       ORDER BY date DESC
+       LIMIT 90`
+    ).all<any>()
+
+    const byDate = new Map<string, { date: string; close: number; source: string }>()
+    for (const row of results ?? []) {
+      const date = String(row.date ?? '').slice(0, 10)
+      const close = numberOrNull(row.close)
+      const source = String(row.source ?? '')
+      if (!date || close == null) continue
+      const previous = byDate.get(date)
+      if (!previous || twiiCanonicalSourceRank(source) < twiiCanonicalSourceRank(previous.source)) {
+        byDate.set(date, { date, close, source })
+      }
+    }
+
+    const points = [...byDate.values()].map(({ date, close }) => ({ date, close }))
+    return buildIndexSnapshot(
+      'TWII',
+      '加權指數',
+      points,
+      'canonical_market_index_daily FinLab primary + TWSE official date fallback',
+    )
+  } catch (e) {
+    console.warn('[market/indices] canonical TWII series failed', e)
+    return buildIndexSnapshot('TWII', '加權指數', [], 'canonical_market_index_daily TWII source missing')
+  }
+}
+
 async function loadFinlabSeries(
   db: D1Database,
   symbol: string,
@@ -1837,20 +1881,9 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v15-twii-source-filter', async () => {
-    const [finlabTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, marketRiskTwii, twseOfficialTwii] = await Promise.all([
-      loadFinlabSeries(c.env.DB, 'TWII', '加權指數', [
-        {
-          sql: "SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?) AND source = 'finlab.taiex_total_index' AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30",
-          binds: ['TWII', 'TAIEX'],
-          source: 'FinLab canonical_market_index_daily',
-        },
-        {
-          sql: 'SELECT date, close FROM market_index_daily WHERE symbol IN (?, ?) AND close > 1000 AND close < 100000 ORDER BY date DESC LIMIT 30',
-          binds: ['TWII', 'TAIEX'],
-          source: 'FinLab market_index_daily',
-        },
-      ]),
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v16-twii-canonical-date-fallback', async () => {
+    const [canonicalTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, twseOfficialTwii] = await Promise.all([
+      loadCanonicalTwiiSeries(c.env.DB),
       loadFinlabSeries(c.env.DB, 'TWOII', '櫃買指數', [
         {
           sql: 'SELECT date, close FROM canonical_market_index_daily WHERE symbol IN (?, ?, ?) AND close > 10 AND close < 10000 ORDER BY date DESC LIMIT 30',
@@ -1899,7 +1932,6 @@ market.get('/indices', async (c) => {
       ]),
       fetchTaifexDayClose().catch(() => null),
       fetchTaifexNightClose().catch(() => null),
-      loadMarketRiskTwiiSeries(c.env.DB),
       fetchTwseTaiexOfficialSeries(),
     ])
     const taifexDaySnapshot = taifexDay ? {
@@ -1914,7 +1946,7 @@ market.get('/indices', async (c) => {
       status: 'ok',
       history: [],
     } : null
-    const twii = hasMarketSeriesData(finlabTwii) ? finlabTwii : twseOfficialTwii
+    const twii = chooseBestMarketSeries(canonicalTwii, [twseOfficialTwii])
     const twoii = hasMarketSeriesData(finlabTwoii)
       ? finlabTwoii
       : missingMaterializationSnapshot('TWOII', '櫃買指數', 'FinLab canonical_market_index_daily not materialized by GCP backfill')

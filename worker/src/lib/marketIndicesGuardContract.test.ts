@@ -12,16 +12,22 @@ assert(
   'TAIEX fallback should use TWSE official MI_5MINS_HIST',
 )
 assert(
-  source.includes('market:indices:finlab-clean:v15-twii-source-filter'),
-  'market indices cache key should be bumped for FinLab taiex_total_index guard',
+  source.includes('market:indices:finlab-clean:v16-twii-canonical-date-fallback'),
+  'market indices cache key should be bumped for TWII canonical date fallback',
 )
 assert(
-  source.includes('close > 1000 AND close < 100000'),
+  source.includes('close > 1000') && source.includes('close < 100000'),
   'TWII canonical query should reject score-like bad index values',
 )
 assert(
-  source.includes("source = 'finlab.taiex_total_index'"),
-  'TWII canonical query must only treat FinLab taiex_total_index rows as the FinLab primary source',
+  source.includes("source IN ('finlab.taiex_total_index', 'twse.mi_5mins_hist.official')"),
+  'TWII canonical query must include FinLab primary rows and TWSE official canonical date fallback rows',
+)
+assert(
+  source.includes('twiiCanonicalSourceRank') &&
+    source.includes("source === 'finlab.taiex_total_index'") &&
+    source.includes("source === 'twse.mi_5mins_hist.official'"),
+  'TWII same-date canonical dedupe must prefer FinLab over TWSE official fallback',
 )
 assert(
   !source.includes('benchmark_return:發行量加權股價報酬指數') &&
@@ -29,8 +35,8 @@ assert(
   'TWII market index candidates must not use the total-return benchmark as price index close',
 )
 assert(
-  source.includes('const twii = hasMarketSeriesData(finlabTwii) ? finlabTwii : twseOfficialTwii'),
-  'TWII market index serving must prefer canonical FinLab market-index rows and must not use market_risk.twii_close as a price-index fallback',
+  source.includes('const twii = chooseBestMarketSeries(canonicalTwii, [twseOfficialTwii])'),
+  'TWII market index serving must choose the latest canonical date before falling back to live TWSE official fetch',
 )
 assert(
   !source.includes('chooseBestMarketSeries(finlabTwii, [marketRiskTwii])'),

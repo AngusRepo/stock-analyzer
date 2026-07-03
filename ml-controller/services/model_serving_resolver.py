@@ -93,7 +93,7 @@ def _latest_artifact_for_pointer(
     )[0]
 
 
-def _artifact_block_reason(artifact: dict[str, Any] | None) -> str | None:
+def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) -> str | None:
     if not artifact:
         return "missing_registry_artifact"
     state = str(artifact.get("state") or "").strip()
@@ -105,8 +105,13 @@ def _artifact_block_reason(artifact: dict[str, Any] | None) -> str | None:
     live_status = str(artifact.get("live_gate_status") or "").strip().lower()
     if live_status in SERVING_BAD_LIVE_STATUSES:
         return f"live_gate_{live_status}"
-    if not str(artifact.get("artifact_path") or "").strip():
+    artifact_path = str(artifact.get("artifact_path") or "").strip()
+    if not artifact_path:
         return "missing_artifact_path"
+    expected_ext = str(ARTIFACT_EXTENSIONS.get(model_name) or "").strip().lower()
+    actual_ext = artifact_path.rsplit(".", 1)[-1].lower() if "." in artifact_path else ""
+    if expected_ext and actual_ext != expected_ext:
+        return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
     return None
 
 
@@ -179,7 +184,7 @@ def build_pool_from_champion_pointers(
             artifacts_by_model_version=artifacts_by_model_version,
         ) if pointer and version else None
         block_reason = None if pointer and version else "missing_d1_champion_pointer"
-        block_reason = block_reason or _artifact_block_reason(artifact)
+        block_reason = block_reason or _artifact_block_reason(artifact, model_name=model_name)
 
         entry = dict(fallback_entry or {})
         entry["version"] = version or str(entry.get("version") or "")

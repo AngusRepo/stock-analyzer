@@ -239,6 +239,30 @@ def model_metadata_path(model_name: str, version: str) -> str:
     return f"universal/{folder}/metadata_{version}.json"
 
 
+def artifact_extension_blocker(row: dict[str, Any]) -> dict[str, Any] | None:
+    model_name = str(row.get("model_name") or "").strip()
+    if not model_name or not is_production_artifact_model(model_name):
+        return None
+    expected_ext = PRODUCTION_ARTIFACT_EXTENSIONS.get(model_name)
+    artifact_path = str(row.get("artifact_path") or "").strip()
+    if not artifact_path:
+        return {
+            "code": "artifact_path_missing",
+            "label": "Artifact path is missing",
+            "next_action": "Register a concrete versioned artifact path before promotion.",
+            "severity": "blocker",
+        }
+    actual_ext = artifact_path.rsplit(".", 1)[-1].lower() if "." in artifact_path else ""
+    if expected_ext and actual_ext != expected_ext:
+        return {
+            "code": f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}",
+            "label": "Artifact extension does not match the production runtime",
+            "next_action": f"Use a {model_name} artifact ending in .{expected_ext}, or retrain/register a compatible artifact.",
+            "severity": "blocker",
+        }
+    return None
+
+
 def evaluate_offline_gate(
     *,
     model_name: str,
@@ -1583,6 +1607,9 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Model is not in the active-8 direct-alpha production artifact set",
             "Keep this artifact as historical/research evidence; production promotion must use an active-8 direct-alpha model.",
         )
+    extension_blocker = artifact_extension_blocker(row)
+    if extension_blocker:
+        blockers.append(extension_blocker)
 
     if live_status not in {"passed", "multi_evidence_passed", "rolling_ic_passed"} and state != "live_gate_passed":
         add(

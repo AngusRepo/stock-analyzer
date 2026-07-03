@@ -364,6 +364,47 @@ def test_lifecycle_pool_update_cannot_promote_offline_failed_artifact():
     assert offline["production_cutover_source"] is None
 
 
+def test_promotion_controller_blocks_patchtst_legacy_pt_artifact():
+    artifact = {
+        "artifact_id": "PatchTST:vLegacy:weekly_drift",
+        "model_name": "PatchTST",
+        "version": "vLegacy",
+        "candidate_type": "weekly_drift",
+        "state": "live_gate_passed",
+        "artifact_path": "universal/patchtst/vLegacy.pt",
+        "metadata_path": "universal/patchtst/metadata_vLegacy.json",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "passed",
+        "live_evidence_json": json.dumps({
+            "decision": {
+                "metrics": {
+                    "shadow_samples": 1000,
+                    "production_samples": 1000,
+                    "min_samples": 50,
+                },
+            },
+        }),
+        "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+    }
+
+    result = registry.run_promotion_controller(
+        artifact_id=artifact["artifact_id"],
+        registry_rows=[artifact],
+        d1_pointers=[{
+            "model_name": "PatchTST",
+            "champion_version": "vCurrent",
+            "champion_artifact_id": "PatchTST:vCurrent:monthly_release",
+        }],
+        model_pool_versions={"PatchTST": "vCurrent"},
+        confirm=False,
+        approved=True,
+    )
+
+    blockers = result["evidence"]["blockers"]
+    assert result["decision"] == "blocked"
+    assert "artifact_extension_pt_expected_zip" in blockers
+
+
 def test_build_artifact_records_from_no_challenger_active8_train_stage():
     payload = {
         "run_id": "universal-20260615T124432-3f2c0c79",

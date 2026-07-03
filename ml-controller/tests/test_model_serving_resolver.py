@@ -80,6 +80,35 @@ def test_build_pool_from_d1_champion_pointer_retires_archived_or_failed_artifact
     assert entry["serving_block_reason"] == "artifact_state_archived"
 
 
+def test_patchtst_d1_champion_rejects_legacy_pt_artifact():
+    pool = resolver.build_pool_from_champion_pointers(
+        pointers=[{
+            "model_name": "PatchTST",
+            "champion_version": "vLegacy",
+            "champion_artifact_id": "PatchTST:vLegacy:weekly_drift",
+        }],
+        artifacts=[{
+            "artifact_id": "PatchTST:vLegacy:weekly_drift",
+            "model_name": "PatchTST",
+            "version": "vLegacy",
+            "candidate_type": "weekly_drift",
+            "state": "production",
+            "artifact_path": "universal/patchtst/vLegacy.pt",
+            "metadata_path": "universal/patchtst/metadata_vLegacy.json",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+        }],
+        fallback_pool=_fallback_pool(),
+        required_models=("PatchTST",),
+        sidecar_models=(),
+    )
+
+    entry = pool["models"]["PatchTST"]
+    assert entry["status"] == "retired"
+    assert entry["version"] == "vLegacy"
+    assert entry["serving_block_reason"] == "artifact_extension_pt_expected_zip"
+
+
 def test_model_pool_reconcile_plan_updates_patchtst_to_d1_champion():
     current_pool = {
         "models": {

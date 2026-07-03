@@ -194,6 +194,11 @@ def _int_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _csv_env(name: str, default: str) -> list[str]:
+    text = str(os.environ.get(name) or default or "").strip()
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
 def _finlab_backfill_prefix() -> str:
     return os.environ.get("FINLAB_BACKFILL_GCS_PREFIX", "finlab/v4/backfill").strip().strip("/") or "finlab/v4/backfill"
 
@@ -208,6 +213,15 @@ def _long_sequence_base_5y_prefix(bucket_name: str) -> str:
 
 def _is_long_sequence_tail_backfill_run(run_id: str) -> bool:
     return "-3y-" in run_id or "-daily-" in run_id
+
+
+def _gcs_object_exists(gcs_uri: str) -> bool:
+    if not gcs_uri.startswith("gs://"):
+        return False
+    bucket_name, key = gcs_uri[5:].split("/", 1)
+    from google.cloud import storage
+
+    return storage.Client().bucket(bucket_name).blob(key).exists()
 
 
 async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, Any]:
@@ -228,12 +242,24 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
 
     output_prefix = os.environ.get("FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/latest").strip().strip("/")
     tail_prefix = f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
+    lanes = _csv_env("FINLAB_LONG_SEQUENCE_LANES", "daily_price")
+    if "daily_price" in lanes:
+        tail_close_uri = f"{tail_prefix}/raw/daily_price/close.parquet"
+        if not _gcs_object_exists(tail_close_uri):
+            return {
+                "status": "skipped",
+                "reason": "tail_daily_price_close_missing",
+                "run_id": run_id,
+                "required_uri": tail_close_uri,
+            }
+
     payload = {
         "source_gcs_prefixes": [
             _long_sequence_base_5y_prefix(bucket_name),
             tail_prefix,
         ],
         "output_gcs_prefix": output_prefix,
+        "lanes": lanes,
         "min_len": _int_env("FINLAB_LONG_SEQUENCE_MIN_LEN", 65),
         "batch_size": _int_env("FINLAB_LONG_SEQUENCE_BATCH_SIZE", 512),
         "trigger_source": "finlab_backfill_controller_callback",

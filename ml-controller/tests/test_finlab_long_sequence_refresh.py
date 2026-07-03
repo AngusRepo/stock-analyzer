@@ -53,7 +53,50 @@ def test_successful_daily_3y_callback_spawns_long_sequence_refresh(monkeypatch):
     }
 
 
-def test_long_sequence_refresh_skips_non_3y_backfill(monkeypatch):
+def test_successful_daily_incremental_callback_spawns_long_sequence_refresh(monkeypatch):
+    captured: dict = {}
+
+    async def fake_build_finlab_long_sequence_prep(payload: dict, fire_and_forget: bool = False) -> dict:
+        captured["payload"] = payload
+        captured["fire_and_forget"] = fire_and_forget
+        return {"status": "spawned"}
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
+    monkeypatch.setenv("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")
+    monkeypatch.setenv("FINLAB_LONG_SEQUENCE_5Y_BASE_RUN_ID", "finlab-v4-5y-base")
+    monkeypatch.setenv("FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/latest")
+    monkeypatch.setattr(modal_client, "build_finlab_long_sequence_prep", fake_build_finlab_long_sequence_prep)
+
+    result = asyncio.run(
+        finlab._maybe_spawn_long_sequence_refresh(
+            {
+                "status": "success",
+                "run_date": "2026-07-02",
+                "result": {"run_id": "finlab-v4-daily-20260702-178298215995"},
+            }
+        )
+    )
+
+    assert result["status"] == "spawned"
+    assert result["function"] == "build_finlab_long_sequence_prep"
+    assert result["output_gcs_prefix"] == "universal/sequence_long/latest"
+    assert result["trigger_run_id"] == "finlab-v4-daily-20260702-178298215995"
+    assert captured["fire_and_forget"] is True
+    assert captured["payload"] == {
+        "source_gcs_prefixes": [
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-5y-base",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-178298215995",
+        ],
+        "output_gcs_prefix": "universal/sequence_long/latest",
+        "min_len": 65,
+        "batch_size": 512,
+        "trigger_source": "finlab_backfill_controller_callback",
+        "trigger_run_id": "finlab-v4-daily-20260702-178298215995",
+        "run_date": "2026-07-02",
+    }
+
+
+def test_long_sequence_refresh_skips_non_tail_backfill(monkeypatch):
     async def fake_build_finlab_long_sequence_prep(payload: dict, fire_and_forget: bool = False) -> dict:
         raise AssertionError("long sequence refresh should not spawn")
 
@@ -73,7 +116,7 @@ def test_long_sequence_refresh_skips_non_3y_backfill(monkeypatch):
 
     assert result == {
         "status": "skipped",
-        "reason": "not_daily_3y_backfill",
+        "reason": "not_daily_tail_backfill",
         "run_id": "finlab-v4-5y-20260611-1781186403489",
     }
 

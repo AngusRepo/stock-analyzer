@@ -206,8 +206,12 @@ def _long_sequence_base_5y_prefix(bucket_name: str) -> str:
     return f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
 
 
+def _is_long_sequence_tail_backfill_run(run_id: str) -> bool:
+    return "-3y-" in run_id or "-daily-" in run_id
+
+
 async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, Any]:
-    """Refresh long-history sequence prep after a successful daily 3Y FinLab run."""
+    """Refresh long-history sequence prep after a successful daily FinLab run."""
     if not _truthy_flag(os.environ.get("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")):
         return {"status": "skipped", "reason": "disabled"}
     if str(body.get("status") or "").lower() != "success":
@@ -215,8 +219,8 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
 
     result = body.get("result") if isinstance(body.get("result"), dict) else {}
     run_id = str(result.get("run_id") or body.get("run_id") or "").strip()
-    if not run_id or "-3y-" not in run_id:
-        return {"status": "skipped", "reason": "not_daily_3y_backfill", "run_id": run_id}
+    if not run_id or not _is_long_sequence_tail_backfill_run(run_id):
+        return {"status": "skipped", "reason": "not_daily_tail_backfill", "run_id": run_id}
 
     bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
     if not bucket_name:

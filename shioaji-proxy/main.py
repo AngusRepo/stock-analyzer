@@ -42,6 +42,15 @@ last_bidasks: dict[str, dict] = {}
 bidask_stats: dict[str, dict] = {}
 subscribed: set[str] = set()
 bidask_subscribed: set[str] = set()
+watched_orderbook_symbols: dict[str, float] = {}
+subscription_recovery: dict[str, dict] = {}
+_state_lock = threading.RLock()
+_watchdog_stop = threading.Event()
+_watchdog_thread: threading.Thread | None = None
+_last_reconnect_attempt_at = 0.0
+_reconnect_count = 0
+_last_reconnect_reason: str | None = None
+_last_reconnect_at: str | None = None
 # F4: Rolling price buffer for momentum confirmation (30 entries ≈ 30 min at 1 tick/min)
 _price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
@@ -166,6 +175,152 @@ def is_market_hours() -> bool:
 
 
 # ── Shioaji 連線管理 ────────────────────────────────────────────────────────
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def watchdog_enabled() -> bool:
+    return os.environ.get("SHIOAJI_WATCHDOG_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def watchdog_interval_seconds() -> float:
+    return _env_float("SHIOAJI_WATCHDOG_INTERVAL_SECONDS", 2.0, 0.5, 30.0)
+
+
+def orderbook_watch_ttl_seconds() -> float:
+    return _env_float("SHIOAJI_ORDERBOOK_WATCH_TTL_SECONDS", 3600.0, 60.0, 8 * 3600.0)
+
+
+def orderbook_recovery_cooldown_seconds() -> float:
+    return _env_float("SHIOAJI_ORDERBOOK_RECOVERY_COOLDOWN_SECONDS", 8.0, 1.0, 120.0)
+
+
+def reconnect_cooldown_seconds() -> float:
+    return _env_float("SHIOAJI_RECONNECT_COOLDOWN_SECONDS", 60.0, 10.0, 600.0)
+
+
+def reconnect_after_consecutive_failures() -> int:
+    return _env_int("SHIOAJI_RECONNECT_AFTER_CONSECUTIVE_ORDERBOOK_FAILURES", 4, 2, 20)
+
+
+def reconnect_after_global_stale_seconds() -> float:
+    return _env_float("SHIOAJI_RECONNECT_AFTER_GLOBAL_STALE_SECONDS", 45.0, 10.0, 300.0)
+
+
+def static_watchlist_symbols() -> list[str]:
+    raw = os.environ.get("SHIOAJI_ORDERBOOK_WATCHLIST", "")
+    symbols = []
+    for item in raw.replace(";", ",").split(","):
+        symbol = item.strip().upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols
+
+
+def watch_orderbook_symbols(symbols: list[str], ttl_seconds: float | None = None) -> list[str]:
+    now = time.time()
+    ttl = ttl_seconds if ttl_seconds is not None else orderbook_watch_ttl_seconds()
+    clean: list[str] = []
+    with _state_lock:
+        for symbol in symbols:
+            normalized = str(symbol).strip().upper()
+            if not normalized or normalized in clean:
+                continue
+            clean.append(normalized)
+            watched_orderbook_symbols[normalized] = max(
+                watched_orderbook_symbols.get(normalized, 0),
+                now + ttl,
+            )
+    return clean
+
+
+def active_orderbook_watch_symbols() -> list[str]:
+    now = time.time()
+    static_symbols = static_watchlist_symbols()
+    with _state_lock:
+        for symbol in static_symbols:
+            watched_orderbook_symbols[symbol] = max(
+                watched_orderbook_symbols.get(symbol, 0),
+                now + max(orderbook_watch_ttl_seconds(), 3600.0),
+            )
+        expired = [
+            symbol for symbol, expires_at in watched_orderbook_symbols.items()
+            if expires_at < now and symbol not in static_symbols
+        ]
+        for symbol in expired:
+            watched_orderbook_symbols.pop(symbol, None)
+            subscription_recovery.pop(symbol, None)
+        return sorted(watched_orderbook_symbols)
+
+
+def _parse_iso_age_seconds(value: str | None) -> float | None:
+    dt = parse_quote_time(value)
+    if dt is None:
+        return None
+    return max(0.0, (get_tw_now() - dt).total_seconds())
+
+
+def latest_bidask_event_age_seconds(symbols: list[str]) -> float | None:
+    ages: list[float] = []
+    with _state_lock:
+        for symbol in symbols:
+            stat = bidask_stats.get(symbol) or {}
+            age = _parse_iso_age_seconds(stat.get("last_event_at"))
+            if age is not None:
+                ages.append(age)
+    return min(ages) if ages else None
+
+
+def orderbook_health_summary(symbols: list[str] | None = None) -> dict:
+    target_symbols = symbols if symbols is not None else active_orderbook_watch_symbols()
+    fresh = 0
+    stale = 0
+    waiting = 0
+    samples: list[dict] = []
+    with _state_lock:
+        for symbol in target_symbols:
+            depth = last_bidasks.get(symbol)
+            stat = bidask_stats.get(symbol) or {}
+            if depth and orderbook_is_fresh(depth):
+                fresh += 1
+                status = "fresh"
+            elif depth:
+                stale += 1
+                status = "stale"
+            else:
+                waiting += 1
+                status = "waiting_callback"
+            if len(samples) < 12:
+                samples.append({
+                    "symbol": symbol,
+                    "status": status,
+                    "quote_age_ms": orderbook_age_ms(depth),
+                    "bidask_event_count": int(stat.get("event_count") or 0),
+                    "last_bidask_event_at": stat.get("last_event_at"),
+                    "bid_levels": len((depth or {}).get("bid_prices") or []),
+                    "ask_levels": len((depth or {}).get("ask_prices") or []),
+                })
+    return {
+        "watch_count": len(target_symbols),
+        "fresh_bidasks": fresh,
+        "stale_bidasks": stale,
+        "waiting_bidasks": waiting,
+        "samples": samples,
+    }
+
+
 def init_shioaji():
     global api, connected
     if not API_KEY or not SECRET_KEY:
@@ -187,21 +342,22 @@ def init_shioaji():
         @api.on_tick_stk_v1()
         def on_tick(exchange, tick):
             symbol = tick.code
-            last_ticks[symbol] = {
-                "symbol": symbol,
-                "price": tick.close,
-                "volume": tick.volume,
-                "total_volume": tick.total_volume,
-                "bid": tick.bid_price,
-                "ask": tick.ask_price,
-                "timestamp": tick.datetime.isoformat() if hasattr(tick, 'datetime') else None,
-                "updated_at": datetime.now(TW_TZ).isoformat(),
-            }
-            # F4: Append to rolling buffer (deduped to ~1 entry per minute)
-            buf = _price_buffer[symbol]
-            now_ts = time.time()
-            if not buf or now_ts - buf[-1][0] >= 30:  # at most 1 entry per 30 sec
-                buf.append((now_ts, tick.close))
+            with _state_lock:
+                last_ticks[symbol] = {
+                    "symbol": symbol,
+                    "price": tick.close,
+                    "volume": tick.volume,
+                    "total_volume": tick.total_volume,
+                    "bid": tick.bid_price,
+                    "ask": tick.ask_price,
+                    "timestamp": tick.datetime.isoformat() if hasattr(tick, 'datetime') else None,
+                    "updated_at": datetime.now(TW_TZ).isoformat(),
+                }
+                # F4: Append to rolling buffer (deduped to ~1 entry per minute)
+                buf = _price_buffer[symbol]
+                now_ts = time.time()
+                if not buf or now_ts - buf[-1][0] >= 30:  # at most 1 entry per 30 sec
+                    buf.append((now_ts, tick.close))
 
         @api.on_bidask_stk_v1()
         def on_bidask(exchange, bidask):
@@ -221,23 +377,25 @@ def init_shioaji():
             ask1 = ask_prices[0] if ask_prices else None
             mid = (bid1 + ask1) / 2 if bid1 and ask1 else None
 
-            last_bidasks[symbol] = {
-                "symbol": symbol,
-                "bid_prices": bid_prices,
-                "bid_volumes": bid_volumes,
-                "ask_prices": ask_prices,
-                "ask_volumes": ask_volumes,
-                "price": mid,
-                "timestamp": bidask.datetime.isoformat() if hasattr(bidask, "datetime") else None,
-                "updated_at": datetime.now(TW_TZ).isoformat(),
-                "simtrade": bool(getattr(bidask, "simtrade", False)),
-            }
-            stat = bidask_stats.setdefault(symbol, {"event_count": 0})
-            stat["event_count"] = int(stat.get("event_count") or 0) + 1
-            stat["last_event_at"] = datetime.now(TW_TZ).isoformat()
-            stat["last_source_time"] = last_bidasks[symbol]["timestamp"]
-            stat["bid_levels"] = len(bid_prices)
-            stat["ask_levels"] = len(ask_prices)
+            with _state_lock:
+                last_bidasks[symbol] = {
+                    "symbol": symbol,
+                    "bid_prices": bid_prices,
+                    "bid_volumes": bid_volumes,
+                    "ask_prices": ask_prices,
+                    "ask_volumes": ask_volumes,
+                    "price": mid,
+                    "timestamp": bidask.datetime.isoformat() if hasattr(bidask, "datetime") else None,
+                    "updated_at": datetime.now(TW_TZ).isoformat(),
+                    "simtrade": bool(getattr(bidask, "simtrade", False)),
+                }
+                stat = bidask_stats.setdefault(symbol, {"event_count": 0})
+                stat["event_count"] = int(stat.get("event_count") or 0) + 1
+                stat["last_event_at"] = datetime.now(TW_TZ).isoformat()
+                stat["last_source_time"] = last_bidasks[symbol]["timestamp"]
+                stat["bid_levels"] = len(bid_prices)
+                stat["ask_levels"] = len(ask_prices)
+                subscription_recovery.pop(symbol, None)
 
     except Exception as e:
         print(f"[Shioaji] Init failed: {e}")
@@ -258,6 +416,41 @@ def shutdown_shioaji():
 def subscribe_symbol(symbol: str, *, force_bidask: bool = False):
     """訂閱個股即時 tick"""
     global api
+    symbol = symbol.upper().strip()
+    with _state_lock:
+        if not api or not connected:
+            return False
+        try:
+            import shioaji as sj
+            contract = api.Contracts.Stocks.get(symbol)
+            if not contract:
+                contract = api.Contracts.Stocks.get(symbol)
+            if not contract:
+                print(f"[Shioaji] Contract not found: {symbol}")
+                return False
+
+            if symbol not in subscribed:
+                api.quote.subscribe(contract, quote_type=sj.constant.QuoteType.Tick, version=sj.constant.QuoteVersion.v1)
+                subscribed.add(symbol)
+                print(f"[Shioaji] Tick subscribed: {symbol}")
+
+            if force_bidask and symbol in bidask_subscribed:
+                try:
+                    api.quote.unsubscribe(contract, quote_type=sj.constant.QuoteType.BidAsk, version=sj.constant.QuoteVersion.v1)
+                    print(f"[Shioaji] BidAsk unsubscribed before refresh: {symbol}")
+                except Exception as e:
+                    print(f"[Shioaji] BidAsk unsubscribe {symbol} failed before refresh: {e}")
+                bidask_subscribed.discard(symbol)
+                time.sleep(0.1)
+
+            if symbol not in bidask_subscribed:
+                api.quote.subscribe(contract, quote_type=sj.constant.QuoteType.BidAsk, version=sj.constant.QuoteVersion.v1)
+                bidask_subscribed.add(symbol)
+                print(f"[Shioaji] BidAsk subscribed: {symbol}{' (refresh)' if force_bidask else ''}")
+            return True
+        except Exception as e:
+            print(f"[Shioaji] Subscribe {symbol} failed: {e}")
+            return False
     if not api or not connected:
         return False
     try:
@@ -282,6 +475,121 @@ def subscribe_symbol(symbol: str, *, force_bidask: bool = False):
     except Exception as e:
         print(f"[Shioaji] Subscribe {symbol} failed: {e}")
         return False
+
+
+def _mark_orderbook_recovery(symbol: str, reason: str) -> tuple[int, bool]:
+    now = time.time()
+    with _state_lock:
+        state = subscription_recovery.setdefault(symbol, {
+            "consecutive_failures": 0,
+            "last_attempt_at": 0.0,
+            "last_reason": None,
+        })
+        state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
+        state["last_reason"] = reason
+        last_attempt_at = float(state.get("last_attempt_at") or 0.0)
+        if now - last_attempt_at < orderbook_recovery_cooldown_seconds():
+            return int(state["consecutive_failures"]), False
+        state["last_attempt_at"] = now
+        return int(state["consecutive_failures"]), True
+
+
+def reset_shioaji_connection(reason: str) -> bool:
+    global api, connected, _last_reconnect_attempt_at, _reconnect_count, _last_reconnect_reason, _last_reconnect_at
+    now = time.time()
+    with _state_lock:
+        if now - _last_reconnect_attempt_at < reconnect_cooldown_seconds():
+            return False
+        _last_reconnect_attempt_at = now
+        old_api = api
+        api = None
+        connected = False
+        subscribed.clear()
+        bidask_subscribed.clear()
+
+    if old_api:
+        try:
+            old_api.logout()
+        except Exception as e:
+            print(f"[Shioaji] Logout during reconnect failed: {e}")
+
+    print(f"[Shioaji] Reconnecting realtime channel: {reason}")
+    init_shioaji()
+    with _state_lock:
+        if connected:
+            _reconnect_count += 1
+            _last_reconnect_reason = reason
+            _last_reconnect_at = get_tw_now().isoformat()
+    for symbol in active_orderbook_watch_symbols():
+        subscribe_symbol(symbol)
+    return connected
+
+
+def recover_orderbook_symbol(symbol: str, reason: str) -> None:
+    symbol = symbol.upper().strip()
+    if not symbol:
+        return
+    watch_orderbook_symbols([symbol])
+    failures, should_attempt = _mark_orderbook_recovery(symbol, reason)
+    if not should_attempt:
+        return
+    if failures >= reconnect_after_consecutive_failures():
+        if reset_shioaji_connection(f"{reason}:{symbol}:failures={failures}"):
+            return
+    subscribe_symbol(symbol, force_bidask=True)
+
+
+def _watchdog_once() -> None:
+    symbols = active_orderbook_watch_symbols()
+    if not symbols:
+        return
+    if not connected:
+        reset_shioaji_connection("watchdog_disconnected")
+        return
+
+    latest_event_age = latest_bidask_event_age_seconds(symbols)
+    if latest_event_age is not None and latest_event_age > reconnect_after_global_stale_seconds():
+        reset_shioaji_connection(f"watchdog_global_bidask_stale:{latest_event_age:.1f}s")
+        return
+
+    for symbol in symbols:
+        depth = last_bidasks.get(symbol)
+        if depth and orderbook_is_fresh(depth):
+            continue
+        reason = "watchdog_waiting_callback" if not depth else "watchdog_stale_depth"
+        recover_orderbook_symbol(symbol, reason)
+
+
+def _watchdog_loop() -> None:
+    while not _watchdog_stop.wait(watchdog_interval_seconds()):
+        if not is_market_hours() and not static_watchlist_symbols():
+            continue
+        try:
+            _watchdog_once()
+        except Exception as e:
+            print(f"[Shioaji] Watchdog failed: {e}")
+
+
+def start_watchdog() -> None:
+    global _watchdog_thread
+    if not watchdog_enabled():
+        return
+    with _state_lock:
+        if _watchdog_thread and _watchdog_thread.is_alive():
+            return
+        _watchdog_stop.clear()
+        _watchdog_thread = threading.Thread(target=_watchdog_loop, name="shioaji-orderbook-watchdog", daemon=True)
+        _watchdog_thread.start()
+        print("[Shioaji] Orderbook watchdog started")
+
+
+def stop_watchdog() -> None:
+    global _watchdog_thread
+    _watchdog_stop.set()
+    thread = _watchdog_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=3)
+    _watchdog_thread = None
 
 
 def get_snapshot(symbol: str) -> dict | None:
@@ -385,8 +693,13 @@ def get_kbars(symbol: str, start: str, end: str, limit: int = 3000) -> list[dict
 async def lifespan(app: FastAPI):
     # Startup: connect to Shioaji
     init_shioaji()
+    static_symbols = active_orderbook_watch_symbols()
+    for symbol in static_symbols:
+        subscribe_symbol(symbol)
+    start_watchdog()
     yield
     # Shutdown: disconnect
+    stop_watchdog()
     shutdown_shioaji()
 
 
@@ -408,6 +721,7 @@ def verify_token(authorization: str | None):
 # ── Endpoints ───────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
+    orderbook_health = orderbook_health_summary()
     return {
         "status": "ok" if connected else "disconnected",
         "connected": connected,
@@ -418,6 +732,12 @@ def health():
         "bidask_event_symbols": len(bidask_stats),
         "auth_configured": bool(SERVICE_TOKEN),
         "market_hours": is_market_hours(),
+        "watchdog_enabled": watchdog_enabled(),
+        "watchdog_alive": bool(_watchdog_thread and _watchdog_thread.is_alive()),
+        "orderbook_watch": orderbook_health,
+        "reconnect_count": _reconnect_count,
+        "last_reconnect_at": _last_reconnect_at,
+        "last_reconnect_reason": _last_reconnect_reason,
         "tw_time": get_tw_now().isoformat(),
     }
 
@@ -656,16 +976,18 @@ def _orderbook_payload(symbol: str, *, refresh: bool = True) -> tuple[int, dict]
         if not api or not connected:
             return 503, _orderbook_diagnostic(symbol, "proxy_disconnected", message="Shioaji not connected")
 
+        watch_orderbook_symbols([symbol])
         if refresh and symbol not in last_bidasks:
             if not subscribe_symbol(symbol):
                 return 404, _orderbook_diagnostic(symbol, "no_contract", message=f"Contract not found: {symbol}")
             time.sleep(orderbook_refresh_wait_seconds())
         elif refresh and not orderbook_is_fresh(last_bidasks.get(symbol)):
-            subscribe_symbol(symbol, force_bidask=True)
+            recover_orderbook_symbol(symbol, "request_stale_depth")
             time.sleep(orderbook_refresh_wait_seconds())
 
         depth = last_bidasks.get(symbol)
         if not depth:
+            recover_orderbook_symbol(symbol, "request_waiting_callback")
             return 503, _orderbook_diagnostic(
                 symbol,
                 "waiting_callback",
@@ -673,6 +995,7 @@ def _orderbook_payload(symbol: str, *, refresh: bool = True) -> tuple[int, dict]
             )
 
         if not orderbook_is_fresh(depth):
+            recover_orderbook_symbol(symbol, "request_stale_depth")
             return 503, _orderbook_diagnostic(symbol, "stale_depth", depth=depth)
 
         bid_prices = list(depth.get("bid_prices") or [])[:5]
@@ -681,8 +1004,10 @@ def _orderbook_payload(symbol: str, *, refresh: bool = True) -> tuple[int, dict]
         ask_volumes = list(depth.get("ask_volumes") or [])[:5]
 
         if len(bid_prices) == 0 and len(ask_prices) == 0:
+            recover_orderbook_symbol(symbol, "request_empty_depth")
             return 503, _orderbook_diagnostic(symbol, "empty_depth", depth=depth)
         if len(bid_prices) == 0 or len(ask_prices) == 0:
+            recover_orderbook_symbol(symbol, "request_no_depth")
             return 503, _orderbook_diagnostic(
                 symbol,
                 "no_depth",
@@ -752,6 +1077,7 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
         if normalized and normalized not in clean_symbols:
             clean_symbols.append(normalized)
 
+    watch_orderbook_symbols(clean_symbols)
     for symbol in clean_symbols:
         status_code, payload = _orderbook_payload(symbol)
         if status_code == 200:
@@ -767,11 +1093,29 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
         "errors": errors,
         "max_quote_age_ms": orderbook_max_age_ms(),
         "refresh_wait_seconds": orderbook_refresh_wait_seconds(),
+        "orderbook_watch": orderbook_health_summary(clean_symbols),
         "tw_time": get_tw_now().isoformat(),
     }
 
 
 # ── TWSE/TPEX Chips Proxy（CF Workers IP 被擋，透過 GCP proxy）────────────────
+
+@app.post("/orderbook/watchlist")
+def orderbook_watchlist(req: BatchRequest, authorization: str | None = Header(default=None)):
+    """Prewarm BidAsk subscriptions for symbols that may need executable quotes."""
+    verify_token(authorization)
+    symbols = watch_orderbook_symbols(req.symbols)
+    for symbol in symbols:
+        subscribe_symbol(symbol)
+    return {
+        "status": "ok",
+        "count": len(symbols),
+        "symbols": symbols,
+        "orderbook_watch": orderbook_health_summary(symbols),
+        "watch_ttl_seconds": orderbook_watch_ttl_seconds(),
+        "tw_time": get_tw_now().isoformat(),
+    }
+
 
 class ChipsRequest(BaseModel):
     date: str  # YYYY-MM-DD

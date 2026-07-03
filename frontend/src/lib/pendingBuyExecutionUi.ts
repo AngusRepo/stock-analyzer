@@ -501,7 +501,7 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
   const stopSource = s12Stop != null
     ? 'S12 結構停損'
     : trailingStop != null
-      ? primaryS12 ? 'S12 fallback ATR' : 'ATR trailing'
+      ? primaryS12 ? 'S12 防守備援' : 'ATR trailing'
       : lifecycleStop != null
         ? '生命週期'
         : initialStop != null
@@ -518,8 +518,8 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
     ? hasS12HoldingPlan ? 'S12 持倉主機制' : 'S12 結構'
     : lifecycle?.owners?.exit
       ? OWNER_LABELS[String(lifecycle.owners.exit)] ?? String(lifecycle.owners.exit)
-      : tp1Value != null || tp2Value != null
-        ? 'paper SLTP'
+    : tp1Value != null || tp2Value != null
+        ? primaryS12 ? 'S12 出場備援' : 'paper SLTP'
         : null
 
   return {

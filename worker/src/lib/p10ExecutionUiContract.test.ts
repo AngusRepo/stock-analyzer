@@ -88,6 +88,8 @@ assert(
 assert(
   uiHelper.includes('formatPositionRiskPlan') &&
     uiHelper.includes('S12 買賣主機制') &&
+    uiHelper.includes('S12 防守備援') &&
+    uiHelper.includes("primaryS12 ? 'S12 出場備援' : 'paper SLTP'") &&
     uiHelper.includes('exitPlanPrice') &&
     botDashboard.includes('S12 持倉分析：{s12HoldingDefense.label}') &&
     botDashboard.includes('riskPlan.primaryS12') &&
@@ -96,6 +98,10 @@ assert(
     botDashboard.includes('riskContractBadge') &&
     botDashboard.includes('止損 / 停利 contract：{riskContractBadge.label}'),
   'Bot dashboard holdings table must expand S12 holding analysis and align stop/take-profit UI with the risk-plan formatter',
+)
+assert(
+  !uiHelper.includes('S12 fallback ATR'),
+  'S12 holding risk-plan UI must not expose raw fallback ATR wording',
 )
 assert(
   !botDashboard.includes("label: 'S12 買賣主機制'"),

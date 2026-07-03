@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 
@@ -107,3 +109,57 @@ def test_orderbook_payload_rejects_one_sided_depth():
     assert payload["status"] == "no_depth"
     assert payload["bid_levels"] == 1
     assert payload["ask_levels"] == 0
+
+
+def test_orderbook_payload_registers_symbol_for_warm_watchlist(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    proxy.watched_orderbook_symbols.clear()
+
+    def fake_subscribe(symbol: str, *, force_bidask: bool = False):
+        proxy.subscribed.add(symbol)
+        proxy.bidask_subscribed.add(symbol)
+        return True
+
+    monkeypatch.setattr(proxy, "subscribe_symbol", fake_subscribe)
+    monkeypatch.setattr(proxy, "orderbook_refresh_wait_seconds", lambda: 0)
+    proxy._orderbook_payload("2330")
+
+    assert "2330" in proxy.watched_orderbook_symbols
+
+
+def test_force_bidask_refresh_unsubscribes_before_resubscribe(monkeypatch):
+    proxy = _load_proxy_main()
+    calls: list[tuple[str, str]] = []
+    contract = object()
+
+    class Quote:
+        def subscribe(self, contract_arg, quote_type, version):
+            assert contract_arg is contract
+            calls.append(("subscribe", quote_type))
+
+        def unsubscribe(self, contract_arg, quote_type, version):
+            assert contract_arg is contract
+            calls.append(("unsubscribe", quote_type))
+
+    proxy.api = SimpleNamespace(
+        Contracts=SimpleNamespace(Stocks=SimpleNamespace(get=lambda symbol: contract)),
+        quote=Quote(),
+    )
+    proxy.connected = True
+    proxy.subscribed.add("2330")
+    proxy.bidask_subscribed.add("2330")
+    monkeypatch.setitem(
+        sys.modules,
+        "shioaji",
+        SimpleNamespace(
+            constant=SimpleNamespace(
+                QuoteType=SimpleNamespace(Tick="tick", BidAsk="bidask"),
+                QuoteVersion=SimpleNamespace(v1="v1"),
+            ),
+        ),
+    )
+
+    assert proxy.subscribe_symbol("2330", force_bidask=True) is True
+    assert calls == [("unsubscribe", "bidask"), ("subscribe", "bidask")]

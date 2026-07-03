@@ -50,14 +50,16 @@ assert(
   'Detailed scheduler board should keep Daily readiness, Daily standalone, Intraday, Monthly, and Weekly visible',
 )
 assert(
-  schedulerGroupBoard.includes('2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]') &&
+  schedulerGroupBoard.includes('items-stretch') &&
+    schedulerGroupBoard.includes('2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]') &&
+    schedulerGroupBoard.includes('2xl:grid-rows-[auto_auto_minmax(0,1fr)]') &&
     schedulerGroupBoard.indexOf('group="daily"') >= 0 &&
     schedulerGroupBoard.indexOf('group="intraday"') > schedulerGroupBoard.indexOf('group="daily"') &&
     schedulerGroupBoard.indexOf('group="monthly"') > schedulerGroupBoard.indexOf('group="intraday"') &&
-    schedulerGroupBoard.indexOf('group="pipeline_chain"') > schedulerGroupBoard.indexOf('group="monthly"') &&
-    schedulerGroupBoard.includes('group="weekly"') &&
-    schedulerGroupBoard.includes('className="2xl:col-span-2"'),
-  'Detailed scheduler board should put Daily standalone and Intraday/Monthly on the narrow left, and Daily readiness chain on the wider right',
+    schedulerGroupBoard.indexOf('group="weekly"') > schedulerGroupBoard.indexOf('group="monthly"') &&
+    schedulerGroupBoard.indexOf('group="pipeline_chain"') > schedulerGroupBoard.indexOf('group="weekly"') &&
+    !schedulerGroupBoard.includes('className="2xl:col-span-2"'),
+  'Detailed scheduler board should stack Daily standalone, Intraday/Monthly, then Weekly on the left and bottom-align with Daily readiness chain on the wider right',
 )
 assert(
   !page.includes('text-[10px]') && !page.includes('text-[11px]'),

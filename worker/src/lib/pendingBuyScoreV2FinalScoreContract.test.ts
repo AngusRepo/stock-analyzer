@@ -69,6 +69,12 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     'morning setup execution pool must only consume L4 sparse final BUY rows',
   )
   assert(
+    !morningSetupQuery.includes('LIMIT ?') &&
+      !pendingBuyOrchestrator.includes('if (pendingBuys.length >= pendingBuyLimit) break') &&
+      pendingBuyOrchestrator.includes("debate_pool_policy: 'all_l4_sparse_buy_signals'"),
+    'morning setup must send every L4 sparse final BUY signal into debate instead of pre-capping the debate pool',
+  )
+  assert(
     !morningSetupQuery.includes('WHERE dr.date = ?\n         AND dr.confidence >= ?\n         AND COALESCE(dr.eligible_for_pending_buy, 1) = 1'),
     'morning setup must not let adaptive buyConfThreshold block final allocator has_buy_signal rows',
   )
@@ -128,6 +134,15 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
       pendingBuyOrchestrator.includes('debate_required=true') &&
       !pendingBuyOrchestrator.includes("action: 'REJECT'"),
     'RRG Lagging must be a soft risk/debate overlay, not a hard reject in morning setup',
+  )
+  assert(
+    pendingBuyOrchestrator.includes("action: 'ALPHA_RISK_DEBATE_REQUIRED'") &&
+      pendingBuyOrchestrator.includes("reason_code: 'ALPHA_RISK_OVERLAY_DEBATE_REQUIRED'") &&
+      pendingBuyOrchestrator.includes('alpha_risk_overlay:skip=true') &&
+      pendingBuyOrchestrator.includes('formatDebateWatchPoints(item.watch_points)') &&
+      !pendingBuyOrchestrator.includes("action: 'ALPHA_SKIP'") &&
+      !pendingBuyOrchestrator.includes("incAudit(filterAudit, 'alpha_skip')"),
+    'alpha risk overlay skip must become debate-required evidence, not a hard reject before debate',
   )
   assert(
     pendingBuyOrchestrator.includes('formatEntryPriceModelV2WatchPoint(buildEntryPriceModelV2FromOhlcvPlan(ohlcvEntryPlan))'),

@@ -93,11 +93,15 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     S12_INTRADAY_OB_LOOKBACK_BARS: '34',
     S12_INTRADAY_MIN_FVG_ATR: '0.08',
     S12_INTRADAY_TRIGGER_MODE: 'reaction_close',
+    S12_INTRADAY_PREVIOUS_SESSION_FAST_MATURITY_ENABLED: 'false',
+    S12_INTRADAY_PREVIOUS_SESSION_MIN_15M_BARS: '2',
     S12_POSITION_STOP_SOURCE: '15m_recent_fvg',
     S12_POSITION_PLANNED_TP: 'tp4',
     S12_POSITION_MANUAL_TP_PRICE: '123.4',
   })
   assert(policy.min15mBars === 3, 'S12 min 15m bars must clamp to the FVG-compatible lower bound')
+  assert(policy.seededFastMaturityEnabled === false, 'S12 previous-session fast maturity should be env-configurable')
+  assert(policy.seededMin15mBars === 3, 'S12 previous-session seed min 15m bars must clamp to the FVG-compatible lower bound')
   assert(policy.atr15mBars === 30, 'S12 ATR period should clamp unsafe large env overrides')
   assert(policy.swingLookbackBars === 2, 'S12 swing lookback should clamp below community-style pivot minimum')
   assert(policy.bosWaitBars === 50, 'S12 BOS wait should accept bounded env overrides')
@@ -198,6 +202,22 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
       bar(5 * H1, 103, 104, 100, 101),
       bar(5 * H1 + M15, 101, 102, 99, 100),
       bar(5 * H1 + 2 * M15, 100, 102, 99, 101),
+    ],
+    bars1h: [],
+    bars4h: [],
+  })
+  assert(assessment.state === 'waiting_15m_completed_bars', 'S12 should still require four completed 15m bars when no previous-session 1H seed exists')
+  assert(assessment.detail.includes('effective_min15m_bars=4'), 'S12 detail should expose the non-seeded effective 15m gate')
+  assert(assessment.detail.includes('previous_session_1h_seed_candidate=false'), 'S12 detail should expose missing previous-session seed')
+}
+
+{
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m: [
+      bar(5 * H1, 103, 104, 100, 101),
+      bar(5 * H1 + M15, 101, 102, 99, 100),
+      bar(5 * H1 + 2 * M15, 100, 102, 99, 101),
       bar(5 * H1 + 3 * M15, 101, 103, 100, 102),
     ],
     bars1h: [],
@@ -286,6 +306,31 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.demandZone1h != null, 'previous-session 1H seed should provide a demand/support zone')
   assert(assessment.detail.includes('demand_zone_source=previous_session_1h'), 'S12 detail should expose previous-session demand-zone source')
   assert(assessment.detail.includes('fallback_1h_completed_bars=1'), 'S12 detail should expose fallback 1H bar count')
+}
+
+{
+  const bars4h = [
+    bar(0, 100, 110, 98, 108, 1000),
+  ]
+  const fallback1hBars = [
+    bar(H4, 100, 105, 98, 104, 500),
+  ]
+  const bars15m = [
+    bar(H4 + H1 + 0 * M15, 106.0, 107.0, 105.0, 106.5),
+    bar(H4 + H1 + 1 * M15, 106.5, 107.2, 105.5, 106.8),
+    bar(H4 + H1 + 2 * M15, 106.8, 107.5, 106.0, 107.0),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m,
+    bars1h: [],
+    bars4h,
+    fallback1hBars,
+  })
+  assert(assessment.state !== 'waiting_15m_completed_bars', 'previous-session 1H seed should allow S12 to leave the 15m data gate after three completed 15m bars')
+  assert(assessment.detail.includes('effective_min15m_bars=3'), 'S12 detail should expose the seeded effective 15m gate')
+  assert(assessment.detail.includes('previous_session_1h_seed_candidate=true'), 'S12 detail should expose previous-session seed acceleration')
+  assert(assessment.detail.includes('demand_zone_source=previous_session_1h'), 'S12 detail should keep the previous-session demand-zone source')
 }
 
 {

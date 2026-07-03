@@ -788,8 +788,8 @@ function SchedulerReadinessGroupBoard({ jobs, schedulerApiError }: { jobs: Sched
   const jobsByGroup = groupSchedulerJobs(jobs)
 
   return (
-    <div className="mt-3 grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]">
-      <div className="grid min-w-0 gap-3">
+    <div className="mt-3 grid min-w-0 items-stretch gap-3 2xl:grid-cols-[minmax(0,0.78fr)_minmax(700px,1.22fr)]">
+      <div className="grid min-w-0 gap-3 2xl:h-full 2xl:grid-rows-[auto_auto_minmax(0,1fr)]">
         <SchedulerGroupCard
           group="daily"
           jobsByGroup={jobsByGroup}
@@ -801,6 +801,14 @@ function SchedulerReadinessGroupBoard({ jobs, schedulerApiError }: { jobs: Sched
           <SchedulerGroupCard group="intraday" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
           <SchedulerGroupCard group="monthly" jobsByGroup={jobsByGroup} hasRuntimeJobs={hasRuntimeJobs} schedulerApiError={schedulerApiError} />
         </div>
+        <SchedulerGroupCard
+          group="weekly"
+          jobsByGroup={jobsByGroup}
+          hasRuntimeJobs={hasRuntimeJobs}
+          schedulerApiError={schedulerApiError}
+          className="2xl:h-full"
+          jobGridClass="lg:grid-cols-2 xl:grid-cols-3"
+        />
       </div>
       <SchedulerGroupCard
         group="pipeline_chain"
@@ -809,14 +817,6 @@ function SchedulerReadinessGroupBoard({ jobs, schedulerApiError }: { jobs: Sched
         schedulerApiError={schedulerApiError}
         className="2xl:h-full"
         jobGridClass="lg:grid-cols-2 xl:grid-cols-2"
-      />
-      <SchedulerGroupCard
-        group="weekly"
-        jobsByGroup={jobsByGroup}
-        hasRuntimeJobs={hasRuntimeJobs}
-        schedulerApiError={schedulerApiError}
-        className="2xl:col-span-2"
-        jobGridClass="lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
       />
     </div>
   )

@@ -115,6 +115,7 @@ interface PendingBuyFilterAuditSummary {
   missing_entry: number
   score_v2_missing: number
   alpha_skip: number
+  alpha_risk_debate_required: number
   rrg_unmapped_neutral: number
   rrg_lagging_soft_downgrade: number
   rrg_weakening_downgrade: number
@@ -199,6 +200,23 @@ function parseWatchPoints(raw: unknown): string[] {
   }
 }
 
+function formatDebateWatchPoints(watchPoints: string[] | undefined): string | null {
+  const points = (watchPoints ?? []).filter((point) => typeof point === 'string' && point.trim().length > 0)
+  if (!points.length) return null
+  const riskEvidence = points.filter((point) =>
+    point.includes('debate_required=true') ||
+    point.includes('alpha_risk_overlay') ||
+    point.includes('trading_attention_risk_evidence') ||
+    point.includes('rrg_soft_overlay'),
+  )
+  const supportingEvidence = points.filter((point) => !riskEvidence.includes(point))
+  const promptPoints = [...riskEvidence, ...supportingEvidence].slice(0, 16)
+  return [
+    'Watch points / debate evidence:',
+    ...promptPoints.map((point) => `- ${point}`),
+  ].join('\n')
+}
+
 function clampNumber(value: unknown, lo: number, hi: number, fallback: number): number {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : fallback
   return Math.max(lo, Math.min(hi, numeric))
@@ -226,6 +244,7 @@ function newFilterAuditSummary(initialBuySignals: number): PendingBuyFilterAudit
     missing_entry: 0,
     score_v2_missing: 0,
     alpha_skip: 0,
+    alpha_risk_debate_required: 0,
     rrg_unmapped_neutral: 0,
     rrg_lagging_soft_downgrade: 0,
     rrg_weakening_downgrade: 0,
@@ -753,7 +772,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await getPrevTradingDay(env.DB, env.KV)
     const sourceRecoDate = prevDay
-    const pendingBuyLimit = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
+    const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const { results } = await env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
@@ -827,10 +846,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
              0
            ) ELSE 0 END DESC,
            dr.confidence DESC
-        LIMIT ?
     `).bind(sourceRecoDate,
       sourceRecoDate,
-      pendingBuyLimit,
     ).all<BuyRecommendationRow>()
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
@@ -981,19 +998,31 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       }
       const executionRole = 'l4_sparse_final_buy'
       const pendingSignal = rec.signal ?? 'BUY'
+      const softRiskWatchPoints: string[] = []
       if (alphaContext?.risk_overlay?.skip === true) {
+        const alphaRiskFlags = Array.isArray(alphaContext.risk_overlay?.flags)
+          ? alphaContext.risk_overlay.flags
+          : []
+        softRiskWatchPoints.push(
+          `alpha_risk_overlay:skip=true:flags=${alphaRiskFlags.join('|') || 'none'}:hard_block=false:debate_required=true`,
+        )
         quadrantFilterLog.push({
           symbol: rec.symbol,
           name: rec.name ?? rec.symbol,
           theme: alphaContext.edge_bucket ?? 'alpha',
           quadrant: alphaContext.regime ?? 'unknown',
-          action: 'ALPHA_SKIP',
-          stage: 'hard_safety',
-          reason_code: 'ALPHA_SKIP',
-          details: { flags: alphaContext.risk_overlay?.flags ?? [] },
+          action: 'ALPHA_RISK_DEBATE_REQUIRED',
+          stage: 'soft_risk_overlay',
+          reason_code: 'ALPHA_RISK_OVERLAY_DEBATE_REQUIRED',
+          details: {
+            flags: alphaRiskFlags,
+            volatility_level: alphaContext.risk_overlay?.volatility_level ?? null,
+            liquidity_level: alphaContext.risk_overlay?.liquidity_level ?? null,
+            policy: 'alpha_skip_is_risk_evidence_not_hard_block',
+            debate_required: true,
+          },
         })
-        incAudit(filterAudit, 'alpha_skip')
-        continue
+        incAudit(filterAudit, 'alpha_risk_debate_required')
       }
 
       const quadrant = quadrantMap.get(rec.symbol)
@@ -1001,7 +1030,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
       riskPct *= alphaSizing
-      const softRiskWatchPoints: string[] = []
       const hasTradingRestrictionRiskEvidence = restrictionPolicy.riskEvidenceSymbols.has(rec.symbol)
         && !restrictionPolicy.hardBlockedSymbols.has(rec.symbol)
       if (hasTradingRestrictionRiskEvidence) {
@@ -1234,7 +1262,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         source: 'morning_setup_l4_sparse',
         original_entry: originalEntry,
       })
-      if (pendingBuys.length >= pendingBuyLimit) break
     }
 
     filterAudit.final_candidates = pendingBuys.length
@@ -1245,8 +1272,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       status: 'ready',
       count: pendingBuys.length,
       prev_day: prevDay,
-      final_buy_limit: pendingBuyLimit,
-      execution_pool_limit: pendingBuyLimit,
+      final_buy_limit: pendingBuys.length,
+      execution_pool_limit: pendingBuys.length,
+      configured_buy_signal_count: configuredBuySignalCount,
+      debate_pool_policy: 'all_l4_sparse_buy_signals',
       execution_pool_policy: 'l4_sparse_final_buy_only',
       filter_audit: filterAudit,
       empty_reason: emptyReason,
@@ -1323,6 +1352,7 @@ export async function reconcilePendingBuyDebates(
     confidence: item.confidence,
     reasoning: [
       item.reason ?? 'ML ensemble signal',
+      formatDebateWatchPoints(item.watch_points),
       extractBreeze2WatchPoint(breeze2Context.get(item.symbol)),
     ].filter(Boolean).join('\n'),
     us_context: mergedUsContext || undefined,

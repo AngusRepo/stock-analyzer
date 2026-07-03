@@ -155,6 +155,8 @@ export type S12RuntimeBarDiagnostics = Record<string, unknown>
 
 export interface S12TimingPolicy {
   min15mBars: number
+  seededFastMaturityEnabled: boolean
+  seededMin15mBars: number
   atr15mBars: number
   zoneAtrBars: number
   rvolLookbackBars: number
@@ -186,6 +188,8 @@ export interface S12TimingPolicy {
 
 export const DEFAULT_S12_TIMING_POLICY: S12TimingPolicy = {
   min15mBars: 4,
+  seededFastMaturityEnabled: true,
+  seededMin15mBars: 3,
   atr15mBars: 14,
   zoneAtrBars: 8,
   rvolLookbackBars: 20,
@@ -388,6 +392,15 @@ function boundedInt(value: unknown, fallback: number, min: number, max: number):
   return Math.max(min, Math.min(max, Math.floor(n)))
 }
 
+function enabledFlag(value: unknown, fallback: boolean): boolean {
+  if (value == null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  const key = String(value).trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(key)) return true
+  if (['0', 'false', 'no', 'off'].includes(key)) return false
+  return fallback
+}
+
 function normalizePositionStopSource(value: unknown): S12PositionStopSource {
   const key = String(value ?? DEFAULT_S12_TIMING_POLICY.positionStopSource).trim()
   if (key === '15m_protected_low') return '15m_protected_low'
@@ -406,6 +419,8 @@ function normalizePlannedTakeProfit(value: unknown): S12PlannedTakeProfit {
 export function normalizeS12TimingPolicy(policy: Partial<S12TimingPolicy> | null | undefined): S12TimingPolicy {
   return {
     min15mBars: boundedInt(policy?.min15mBars, DEFAULT_S12_TIMING_POLICY.min15mBars, 3, 12),
+    seededFastMaturityEnabled: enabledFlag(policy?.seededFastMaturityEnabled, DEFAULT_S12_TIMING_POLICY.seededFastMaturityEnabled),
+    seededMin15mBars: boundedInt(policy?.seededMin15mBars, DEFAULT_S12_TIMING_POLICY.seededMin15mBars, 3, 6),
     atr15mBars: boundedInt(policy?.atr15mBars, DEFAULT_S12_TIMING_POLICY.atr15mBars, 5, 30),
     zoneAtrBars: boundedInt(policy?.zoneAtrBars, DEFAULT_S12_TIMING_POLICY.zoneAtrBars, 5, 20),
     rvolLookbackBars: boundedInt(policy?.rvolLookbackBars, DEFAULT_S12_TIMING_POLICY.rvolLookbackBars, 5, 40),
@@ -439,6 +454,8 @@ export function normalizeS12TimingPolicy(policy: Partial<S12TimingPolicy> | null
 export function s12TimingPolicyFromEnv(env: Record<string, unknown> | null | undefined): S12TimingPolicy {
   return normalizeS12TimingPolicy({
     min15mBars: env?.S12_INTRADAY_MIN_15M_BARS as number | undefined,
+    seededFastMaturityEnabled: env?.S12_INTRADAY_PREVIOUS_SESSION_FAST_MATURITY_ENABLED as boolean | undefined,
+    seededMin15mBars: env?.S12_INTRADAY_PREVIOUS_SESSION_MIN_15M_BARS as number | undefined,
     atr15mBars: env?.S12_INTRADAY_ATR_15M_BARS as number | undefined,
     zoneAtrBars: env?.S12_INTRADAY_ZONE_ATR_BARS as number | undefined,
     rvolLookbackBars: env?.S12_INTRADAY_RVOL_LOOKBACK_BARS as number | undefined,
@@ -478,6 +495,8 @@ function inputTimingPolicy(input: Pick<S12IntradayInput, 'min15mBars' | 'policy'
 function timingPolicyDetail(policy: S12TimingPolicy): Record<string, unknown> {
   return {
     policy_min15m_bars: policy.min15mBars,
+    policy_seeded_fast_maturity_enabled: policy.seededFastMaturityEnabled ? 'true' : 'false',
+    policy_seeded_min15m_bars: policy.seededMin15mBars,
     policy_atr15m_bars: policy.atr15mBars,
     policy_zone_atr_bars: policy.zoneAtrBars,
     policy_rvol_lookback_bars: policy.rvolLookbackBars,
@@ -503,6 +522,11 @@ function timingPolicyDetail(policy: S12TimingPolicy): Record<string, unknown> {
     policy_bos_wait_bars: policy.bosWaitBars,
     policy_retest_wait_bars: policy.retestWaitBars,
   }
+}
+
+function effectiveMin15mBarsForSeed(policy: S12TimingPolicy, hasPreviousSession1hSeed: boolean): number {
+  if (!policy.seededFastMaturityEnabled || !hasPreviousSession1hSeed) return policy.min15mBars
+  return Math.min(policy.min15mBars, policy.seededMin15mBars)
 }
 
 function shouldBlockOn4hBias(h4Source: S12H4Source, bias4h: S12HtfBias): boolean {
@@ -2312,10 +2336,24 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   const fallback1hBars = normalizeBars(input.fallback1hBars ?? [])
   const completedBars = { m15: bars15m.length, h1: bars1h.length, h4: bars4h.length }
   const policy = inputTimingPolicy(input)
-  if (bars15m.length < policy.min15mBars) {
+  const currentSupplyZone1h = bars1h.length > 0 ? findSupplyZone1h(bars1h, policy) : null
+  const fallbackSupplyZone1h = !currentSupplyZone1h && fallback1hBars.length > 0 ? findSupplyZone1h(fallback1hBars, policy) : null
+  const currentDemandZone1h = bars1h.length > 0 ? findDemandZone1h(bars1h, policy) : null
+  const fallbackDemandZone1h = !currentDemandZone1h && fallback1hBars.length > 0 ? findDemandZone1h(fallback1hBars, policy) : null
+  const previousSession1hSeedCandidate = Boolean(
+    (!currentDemandZone1h && fallbackDemandZone1h) ||
+    (!currentSupplyZone1h && fallbackSupplyZone1h),
+  )
+  const effectiveMin15mBars = effectiveMin15mBarsForSeed(policy, previousSession1hSeedCandidate)
+  if (bars15m.length < effectiveMin15mBars) {
     return emptyAssessment(input, 'waiting_15m_completed_bars', 's12_waiting_15m_completed_bars', {
       bars15m: bars15m.length,
       min15mBars: policy.min15mBars,
+      effective_min15m_bars: effectiveMin15mBars,
+      previous_session_1h_seed_candidate: previousSession1hSeedCandidate ? 'true' : 'false',
+      fallback_1h_completed_bars: fallback1hBars.length,
+      demand_zone_source: currentDemandZone1h ? 'current_session_1h' : fallbackDemandZone1h ? 'previous_session_1h' : null,
+      supply_zone_source: currentSupplyZone1h ? 'current_session_1h' : fallbackSupplyZone1h ? 'previous_session_1h' : null,
     }, completedBars)
   }
   if (bars4h.length < 1) {
@@ -2324,11 +2362,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   const bias4h = resolve4hBias(bars4h)
   const neutral1hBias: S12HtfBias = { direction: 'neutral', confidence: 'none', channelAlign: false }
   const bias1h = bars1h.length > 0 ? resolve1hBias(bars1h) : neutral1hBias
-  const currentSupplyZone1h = bars1h.length > 0 ? findSupplyZone1h(bars1h, policy) : null
-  const fallbackSupplyZone1h = !currentSupplyZone1h && fallback1hBars.length > 0 ? findSupplyZone1h(fallback1hBars, policy) : null
   const supplyZone1h = currentSupplyZone1h ?? fallbackSupplyZone1h
-  const currentDemandZone1h = bars1h.length > 0 ? findDemandZone1h(bars1h, policy) : null
-  const fallbackDemandZone1h = !currentDemandZone1h && fallback1hBars.length > 0 ? findDemandZone1h(fallback1hBars, policy) : null
   const demandZone1h = currentDemandZone1h ?? fallbackDemandZone1h
   const parityDiagnostics = zoneLifecycleDiagnostics({ demandZone1h, supplyZone1h, bars15m, bars1h, bars4h, bars1d, policy })
   const inputWithZoneDiagnostics: S12IntradayInput = {
@@ -2336,6 +2370,8 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     barDiagnostics: {
       ...(input.barDiagnostics ?? {}),
       fallback_1h_completed_bars: fallback1hBars.length,
+      effective_min15m_bars: effectiveMin15mBars,
+      previous_session_1h_seed_candidate: previousSession1hSeedCandidate ? 'true' : 'false',
       demand_zone_source: currentDemandZone1h ? 'current_session_1h' : fallbackDemandZone1h ? 'previous_session_1h' : null,
       supply_zone_source: currentSupplyZone1h ? 'current_session_1h' : fallbackSupplyZone1h ? 'previous_session_1h' : null,
       position_planned_tp: policy.plannedTakeProfit,

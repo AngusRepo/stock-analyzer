@@ -1903,6 +1903,91 @@ def test_promotion_controller_dry_run_offline_monthly_release_requires_wei_appro
     assert "live_gate_not_passed" not in result["evidence"]["blockers"]
 
 
+def test_promotion_controller_allows_approved_weekly_manual_override(monkeypatch):
+    executed: list[dict[str, object]] = []
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append({"sql": sql, "params": params})
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    result = registry.run_promotion_controller(
+        artifact_id="PatchTST:vWeekly:weekly_drift",
+        registry_rows=[{
+            "artifact_id": "PatchTST:vWeekly:weekly_drift",
+            "model_name": "PatchTST",
+            "version": "vWeekly",
+            "candidate_type": "weekly_drift",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "not_started",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+            "artifact_path": "universal/patchtst/vWeekly.zip",
+        }],
+        d1_pointers=[{
+            "model_name": "PatchTST",
+            "champion_version": "vOld",
+            "champion_artifact_id": "PatchTST:vOld:production_backfill",
+        }],
+        model_pool_versions={"PatchTST": "vOld"},
+        confirm=True,
+        approved=True,
+        approved_by="Wei",
+        reason="wei_manual_weekly_override",
+        manual_override=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["decision"] == "manual_override_promote"
+    assert result["can_promote"] is True
+    assert result["evidence"]["manual_override_allowed"] is True
+    assert "live_gate_not_passed" not in result["evidence"]["blockers"]
+    assert [b["code"] for b in result["evidence"]["manual_override_overridden_blockers"]]
+    pointer_params = executed[2]["params"]
+    assert pointer_params[0] == "PatchTST"
+    assert pointer_params[1] == "vWeekly"
+    assert pointer_params[2] == "PatchTST:vWeekly:weekly_drift"
+
+
+def test_promotion_controller_manual_override_does_not_bypass_monthly_release():
+    result = registry.run_promotion_controller(
+        artifact_id="TabM:vMonthly:monthly_release",
+        registry_rows=[{
+            "artifact_id": "TabM:vMonthly:monthly_release",
+            "model_name": "TabM",
+            "version": "vMonthly",
+            "candidate_type": "monthly_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "not_started",
+            "live_evidence_json": "{}",
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+            "artifact_path": "universal/tabm/vMonthly.pt",
+        }],
+        d1_pointers=[{
+            "model_name": "TabM",
+            "champion_version": "vOld",
+            "champion_artifact_id": "TabM:vOld:monthly_release",
+        }],
+        model_pool_versions={"TabM": "vOld"},
+        confirm=False,
+        approved=True,
+        approved_by="Wei",
+        reason="do_not_bypass_july_monthly_approval",
+        manual_override=True,
+        allow_offline_monthly_release=False,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["decision"] == "blocked"
+    assert result["can_promote"] is False
+    assert result["evidence"]["manual_override_requested"] is True
+    assert result["evidence"]["manual_override_allowed"] is False
+    assert "live_gate_not_passed" in result["evidence"]["blockers"]
+
+
 def test_promotion_controller_offline_monthly_release_cutover_still_blocks_failed_offline_gate():
     result = registry.run_promotion_controller(
         artifact_id="PatchTST:vBad:monthly_release",

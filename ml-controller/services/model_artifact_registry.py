@@ -2515,6 +2515,7 @@ def _promotion_row_decision(
     pointer: dict[str, Any] | None,
     champion_version: str | None,
     approved: bool,
+    manual_override: bool = False,
     allow_offline_monthly_release: bool = False,
 ) -> dict[str, Any]:
     """Evaluate the final promotion step against the current champion pointer.
@@ -2547,10 +2548,34 @@ def _promotion_row_decision(
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
     if offline_monthly_release_candidate or offline_timesfm_l175_feature_release_candidate:
         promotion_blockers = _offline_monthly_release_blockers(promotion_blockers)
-    if promotion_blockers:
-        blockers.extend(_blocker_codes(promotion_blockers))
+    manual_override_requested = bool(manual_override)
+    manual_override_allowed = bool(
+        manual_override_requested
+        and approved
+        and candidate_type in {"weekly_drift", "manual_hotfix"}
+        and offline_decision in {"STRONG_PASS", "PASS"}
+    )
+    overridden_blockers: list[dict[str, Any]] = []
+    effective_promotion_blockers = promotion_blockers
+    if manual_override_allowed:
+        non_overridable_prefixes = ("artifact_extension_", "cpcv_", "foundation_", "return_quality_")
+        non_overridable_codes = {
+            "model_not_active_production_artifact",
+            "missing_current_champion",
+            "offline_gate_not_passed",
+        }
+
+        def is_non_overridable(blocker: dict[str, Any]) -> bool:
+            code = str(blocker.get("code") or "")
+            return code in non_overridable_codes or any(code.startswith(prefix) for prefix in non_overridable_prefixes)
+
+        effective_promotion_blockers = [blocker for blocker in promotion_blockers if is_non_overridable(blocker)]
+        overridden_blockers = [blocker for blocker in promotion_blockers if not is_non_overridable(blocker)]
+    if effective_promotion_blockers:
+        blockers.extend(_blocker_codes(effective_promotion_blockers))
     if (
-        not offline_monthly_release_candidate
+        not manual_override_allowed
+        and not offline_monthly_release_candidate
         and not offline_timesfm_l175_feature_release_candidate
         and live_status not in {"passed", "multi_evidence_passed"}
         and state not in {"approval_required", "approved"}
@@ -2580,12 +2605,15 @@ def _promotion_row_decision(
         "offline_evidence": offline_evidence,
         "approval_required": approval_required,
         "approved": approved,
+        "manual_override_requested": manual_override_requested,
+        "manual_override_allowed": manual_override_allowed,
+        "manual_override_overridden_blockers": overridden_blockers,
         "allow_offline_monthly_release": allow_offline_monthly_release,
         "offline_monthly_release_candidate": offline_monthly_release_candidate,
         "offline_timesfm_l175_feature_release_candidate": offline_timesfm_l175_feature_release_candidate,
         "offline_monthly_release_cutover": offline_monthly_release_cutover,
         "blockers": blockers,
-        "blocker_details": promotion_blockers,
+        "blocker_details": effective_promotion_blockers,
     }
 
     if blockers:
@@ -2610,13 +2638,19 @@ def _promotion_row_decision(
             "final_compared_to": champion_version,
             "evidence": evidence,
         }
+    decision = "manual_override_promote" if manual_override_allowed else "promote"
+    next_action = (
+        "Update D1 champion pointer by Wei-approved manual override; keep monthly release on manual approval gate."
+        if manual_override_allowed
+        else "Update D1 champion pointer; serving reader migration still requires explicit deployment."
+    )
     return {
-        "decision": "promote",
+        "decision": decision,
         "can_promote": True,
         "approval_required": approval_required,
         "target_state": "production",
         "approval_state": "approved" if approval_required else "not_required",
-        "next_action": "Update D1 champion pointer; serving reader migration still requires explicit deployment.",
+        "next_action": next_action,
         "final_compared_to": champion_version,
         "evidence": evidence,
     }
@@ -2633,6 +2667,7 @@ def run_promotion_controller(
     approved_by: str | None = None,
     reason: str = "promotion_controller",
     allow_offline_monthly_release: bool = False,
+    manual_override: bool = False,
 ) -> dict[str, Any]:
     """Run final comparison and optionally update the champion pointer.
 
@@ -2680,6 +2715,7 @@ def run_promotion_controller(
         pointer=pointer,
         champion_version=champion_version,
         approved=approved,
+        manual_override=manual_override,
         allow_offline_monthly_release=allow_offline_monthly_release,
     )
     evidence = {

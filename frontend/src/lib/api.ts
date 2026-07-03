@@ -1248,6 +1248,8 @@ export type ModelArtifactPromotionControllerRequest = {
   approved?: boolean
   approved_by?: string
   reason?: string
+  allow_offline_monthly_release?: boolean
+  manual_override?: boolean
 }
 
 export type ModelArtifactPromotionControllerResponse = {

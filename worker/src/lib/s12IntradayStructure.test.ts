@@ -341,6 +341,34 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bar(H4, 100, 105, 99, 104, 500),
   ]
   const bars15m = [
+    bar(H4 + H1 + 0 * M15, 102.0, 102.5, 100.4, 101.5),
+    bar(H4 + H1 + 1 * M15, 101.5, 102.2, 100.6, 101.8),
+    bar(H4 + H1 + 2 * M15, 101.8, 102.4, 100.7, 102.0),
+    bar(H4 + H1 + 3 * M15, 102.0, 102.6, 100.8, 102.1),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m,
+    bars1h,
+    bars4h,
+  })
+  assert(assessment.state === 'waiting_sweep', `expected waiting_sweep provisional takeover, got ${assessment.state}: ${assessment.detail}`)
+  assert(assessment.maturity.tier === 'provisional_takeover', 'S12 zone-touch state should expose provisional single-owner takeover')
+  assert(assessment.maturity.takeoverRole === 'long_entry', 'S12 provisional takeover should remain under the same long-entry owner')
+  assert(assessment.execution.entryPrice != null && assessment.execution.stopLoss != null, 'S12 provisional takeover must expose an executable risk box')
+  assert(assessment.detail.includes('maturity_tier=provisional_takeover'), 'S12 detail should expose maturity ladder tier')
+  assert(s12PreTradeTechnicalDecision(assessment, 'require_ready')?.action === 'pass', 'S12 primary owner should pass provisional takeover instead of waiting for full reaction')
+  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'S12 unified decision should allow provisional takeover to reach execution gates')
+}
+
+{
+  const bars4h = [
+    bar(0, 100, 110, 98, 108, 1000),
+  ]
+  const bars1h = [
+    bar(H4, 100, 105, 99, 104, 500),
+  ]
+  const bars15m = [
     bar(H4 + H1 + 0 * M15, 102.0, 102.2, 100.5, 101.0),
     bar(H4 + H1 + 1 * M15, 101.0, 101.5, 99.8, 100.2),
     bar(H4 + H1 + 2 * M15, 100.2, 101.0, 98.8, 100.4),
@@ -505,10 +533,27 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars4h,
   })
   assert(assessment.state === 'invalidated', `expected invalidated, got ${assessment.state}: ${assessment.detail}`)
+  assert(assessment.maturity.tier === 'defensive_invalidation', 'S12 invalidation should be a defensive maturity tier')
   const gateDecision = s12PreTradeTechnicalDecision(assessment, 'block_invalidated')
   assert(gateDecision?.action === 'skip', 'block_invalidated mode should skip structurally invalidated S12 setups')
   const assistDecision = s12PreTradeTechnicalDecision(assessment, 'assist_entry')
   assert(assistDecision?.action === 'skip', 'assist_entry mode should still skip structurally invalidated S12 setups')
+  const positionDecision = resolveS12PositionDecision({
+    assessment,
+    currentPrice: 98,
+    executableBookAvailable: true,
+    atr14: 2,
+    pos: {
+      shares: 1000,
+      original_shares: 1000,
+      avg_cost: 100,
+      entry_price: 100,
+      initial_stop: 95,
+      trailing_stop: 95,
+    },
+  })
+  assert(positionDecision.action === 'EXIT_ON_REVERSE_BOS', 'S12 invalidation should directly trigger defensive position exit')
+  assert(positionDecision.reason === 's12_invalidated_defensive_exit', 'S12 invalidation exit reason should be explicit')
 }
 
 {

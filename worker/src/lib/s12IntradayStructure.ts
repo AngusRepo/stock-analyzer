@@ -269,6 +269,19 @@ export interface S12IntradayAssessment {
   maturity: {
     takeoverEligible: boolean
     takeoverRole: 'none' | 'long_entry' | 'no_buy_defense' | 'invalidate'
+    tier:
+      | 'none'
+      | 'provisional_takeover'
+      | 'confirmed_takeover'
+      | 'full_reaction_ready'
+      | 'defensive_invalidation'
+      | 'no_buy_defense'
+    riskMode:
+      | 'none'
+      | 'reduced_size_tight_stop'
+      | 'normal_size_structure_stop'
+      | 'full_size_reaction'
+      | 'defense_only'
     policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated'
     blocker: S12IntradayState
     stage: 'data' | 'higher_timeframe_bias' | 'setup' | 'trigger_sequence' | 'ready' | 'defensive' | 'invalidated'
@@ -736,8 +749,34 @@ function maturityTakeoverRole(state: S12IntradayState): S12IntradayAssessment['m
   }
 }
 
+function maturityTier(
+  state: S12IntradayState,
+  sequence: S12IntradayAssessment['sequence'] = {},
+): Pick<S12IntradayAssessment['maturity'], 'tier' | 'riskMode' | 'takeoverRole'> {
+  if (state === 'reaction_ready') {
+    return { tier: 'full_reaction_ready', riskMode: 'full_size_reaction', takeoverRole: 'long_entry' }
+  }
+  if (state === 'bearish_defense_ready') {
+    return { tier: 'no_buy_defense', riskMode: 'defense_only', takeoverRole: 'no_buy_defense' }
+  }
+  if (state === 'invalidated') {
+    return { tier: 'defensive_invalidation', riskMode: 'defense_only', takeoverRole: 'invalidate' }
+  }
+  if ((state === 'waiting_bos' || state === 'waiting_retest') && sequence.chochMs != null) {
+    return { tier: 'confirmed_takeover', riskMode: 'normal_size_structure_stop', takeoverRole: 'long_entry' }
+  }
+  if (state === 'waiting_choch' && sequence.sweepMs != null) {
+    return { tier: 'confirmed_takeover', riskMode: 'normal_size_structure_stop', takeoverRole: 'long_entry' }
+  }
+  if (state === 'waiting_sweep' && sequence.zoneTouchMs != null) {
+    return { tier: 'provisional_takeover', riskMode: 'reduced_size_tight_stop', takeoverRole: 'long_entry' }
+  }
+  return { tier: 'none', riskMode: 'none', takeoverRole: maturityTakeoverRole(state) }
+}
+
 function maturitySnapshot(
   state: S12IntradayState,
+  sequence: S12IntradayAssessment['sequence'] = {},
   stale?: {
     stale: boolean
     staleReason?: string | null
@@ -745,10 +784,12 @@ function maturitySnapshot(
     elapsedBars?: number | null
   },
 ): S12IntradayAssessment['maturity'] {
-  const takeoverRole = maturityTakeoverRole(state)
+  const tier = maturityTier(state, sequence)
   return {
-    takeoverEligible: takeoverRole !== 'none',
-    takeoverRole,
+    takeoverEligible: tier.takeoverRole !== 'none',
+    takeoverRole: tier.takeoverRole,
+    tier: tier.tier,
+    riskMode: tier.riskMode,
     policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated',
     blocker: state,
     stage: maturityStage(state),
@@ -959,6 +1000,7 @@ function emptyAssessment(
   const h4Source = input.h4Source ?? (completedBars.h4 > 0 ? 'current_session' : 'unavailable')
   const barDiagnostics = input.barDiagnostics ?? {}
   const policy = inputTimingPolicy(input)
+  const maturity = maturitySnapshot(state)
   return {
     version: 's12_intraday_structure_v1',
     symbol: input.symbol,
@@ -995,7 +1037,7 @@ function emptyAssessment(
     exitPlan: emptyExitPlan(),
     sequence: {},
     execution: {},
-    maturity: maturitySnapshot(state),
+    maturity,
   }
 }
 
@@ -1300,6 +1342,12 @@ function completeAssessment(params: {
   const exitPlan = params.exitPlan ?? emptyExitPlan(bearishDefense)
   const h4Source = params.input.h4Source ?? (params.completedBars.h4 > 0 ? 'current_session' : 'unavailable')
   const barDiagnostics = params.input.barDiagnostics ?? {}
+  const maturity = maturitySnapshot(params.state, params.sequence, {
+    stale,
+    staleReason,
+    staleAfterBars: Number.isFinite(staleAfterBars) ? staleAfterBars : null,
+    elapsedBars: Number.isFinite(elapsedBars) ? elapsedBars : null,
+  })
   return {
     version: 's12_intraday_structure_v1',
     symbol: params.input.symbol,
@@ -1364,8 +1412,10 @@ function completeAssessment(params: {
       t4: price(params.execution?.target4),
       atr15m: price(params.execution?.atr15m),
       r: params.execution?.rMultiple == null ? null : round(params.execution.rMultiple, 4),
-      takeover_eligible: ready || invalidated || params.state === 'bearish_defense_ready' ? 'true' : 'false',
-      takeover_role: maturityTakeoverRole(params.state),
+      takeover_eligible: maturity.takeoverEligible ? 'true' : 'false',
+      takeover_role: maturity.takeoverRole,
+      maturity_tier: maturity.tier,
+      maturity_risk_mode: maturity.riskMode,
       maturity_stage: maturityStage(params.state),
       maturity_policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated',
       stale: stale ? 'true' : null,
@@ -1392,12 +1442,7 @@ function completeAssessment(params: {
     exitPlan,
     sequence: params.sequence,
     execution: params.execution ?? {},
-    maturity: maturitySnapshot(params.state, {
-      stale,
-      staleReason,
-      staleAfterBars: Number.isFinite(staleAfterBars) ? staleAfterBars : null,
-      elapsedBars: Number.isFinite(elapsedBars) ? elapsedBars : null,
-    }),
+    maturity,
   }
 }
 
@@ -2091,6 +2136,8 @@ function scanLongSequence(params: {
   if (sweepIndex < 0) {
     const elapsedBars = Math.max(0, bars15m.length - 1 - touchIndex)
     const stale = bars15m.length - 1 > sweepEnd
+    const entryPrice = latest.close
+    const stopLoss = Math.max(0.01, Math.min(touch.low, demandZone1h.low) - atr15m * 0.1)
     return completeAssessment({
       input,
       state: 'waiting_sweep',
@@ -2099,7 +2146,13 @@ function scanLongSequence(params: {
       ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs },
-      execution: { atr15m },
+      execution: {
+        entryPrice,
+        chaseCeiling: entryPrice + atr15m * 0.2,
+        stopLoss,
+        atr15m,
+        rMultiple: entryPrice > stopLoss ? (entryPrice - stopLoss) / atr15m : null,
+      },
       setupId: setupKey(input.symbol, touch.startMs),
       extraDetail: stale
         ? {
@@ -2127,6 +2180,8 @@ function scanLongSequence(params: {
   if (chochIndex < 0) {
     const elapsedBars = Math.max(0, bars15m.length - 1 - sweepIndex)
     const stale = bars15m.length - 1 > chochEnd
+    const entryPrice = latest.close
+    const stopLoss = Math.max(0.01, Math.min(sweep.low, demandZone1h.low) - atr15m * 0.1)
     return completeAssessment({
       input,
       state: 'waiting_choch',
@@ -2135,7 +2190,13 @@ function scanLongSequence(params: {
       ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs },
-      execution: { atr15m },
+      execution: {
+        entryPrice,
+        chaseCeiling: entryPrice + atr15m * 0.22,
+        stopLoss,
+        atr15m,
+        rMultiple: entryPrice > stopLoss ? (entryPrice - stopLoss) / atr15m : null,
+      },
       setupId: setupKey(input.symbol, touch.startMs, sweep.startMs),
       extraDetail: stale
         ? {
@@ -2163,6 +2224,8 @@ function scanLongSequence(params: {
   if (bosIndex < 0) {
     const elapsedBars = Math.max(0, bars15m.length - 1 - chochIndex)
     const stale = bars15m.length - 1 > bosEnd
+    const entryPrice = latest.close
+    const stopLoss = Math.max(0.01, Math.min(sweep.low, demandZone1h.low) - atr15m * 0.1)
     return completeAssessment({
       input,
       state: 'waiting_bos',
@@ -2171,7 +2234,13 @@ function scanLongSequence(params: {
       ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs },
-      execution: { atr15m },
+      execution: {
+        entryPrice,
+        chaseCeiling: entryPrice + atr15m * 0.25,
+        stopLoss,
+        atr15m,
+        rMultiple: entryPrice > stopLoss ? (entryPrice - stopLoss) / atr15m : null,
+      },
       setupId: setupKey(input.symbol, touch.startMs, sweep.startMs, choch.startMs),
       extraDetail: stale
         ? {
@@ -2224,6 +2293,8 @@ function scanLongSequence(params: {
   if (reactionIndex < 0) {
     const elapsedBars = Math.max(0, bars15m.length - 1 - bosIndex)
     const stale = bars15m.length - 1 > retestEnd
+    const entryPrice = latest.close
+    const stopLoss = Math.max(0.01, Math.min(sweep.low, entryZone.low) - atr15m * 0.1)
     return completeAssessment({
       input,
       state: 'waiting_retest',
@@ -2232,7 +2303,13 @@ function scanLongSequence(params: {
       ...context,
       demandZone1h,
       sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs, bosMs: bos.startMs },
-      execution: { atr15m },
+      execution: {
+        entryPrice,
+        chaseCeiling: entryPrice + atr15m * 0.25,
+        stopLoss,
+        atr15m,
+        rMultiple: entryPrice > stopLoss ? (entryPrice - stopLoss) / atr15m : null,
+      },
       setupId: setupKey(input.symbol, touch.startMs, sweep.startMs, choch.startMs, bos.startMs),
       extraDetail: {
         entry_zone_low: price(entryZone.low),
@@ -2508,10 +2585,11 @@ export function s12PreTradeTechnicalDecision(
   if (assessment.invalidated) {
     return { action: 'skip', reason: assessment.reason, detail: assessment.detail }
   }
-  if (mode === 'require_ready' && !assessment.ready) {
+  const longEntryTakeover = assessment.maturity.takeoverRole === 'long_entry'
+  if (mode === 'require_ready' && !longEntryTakeover) {
     return { action: 'defer', reason: assessment.reason, detail: assessment.detail }
   }
-  if ((mode === 'require_ready' || mode === 'assist_entry') && assessment.ready) {
+  if ((mode === 'require_ready' || mode === 'assist_entry') && longEntryTakeover) {
     return { action: 'pass', reason: assessment.reason, detail: assessment.detail }
   }
   return null
@@ -2562,7 +2640,7 @@ export function resolveS12UnifiedDecision(
       setupId: assessment.setupId,
     }
   }
-  if (assessment.ready) {
+  if (assessment.maturity.takeoverRole === 'long_entry') {
     return {
       action: 'READY',
       reason: assessment.reason,
@@ -2668,6 +2746,37 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const sellRatio = boundedRatio(input.tp1SellRatio, 0.5)
   const partialShares = roundLot(originalShares * sellRatio)
   const clampedPartial = partialShares > 0 && partialShares < shares ? partialShares : shares
+
+  if (assessment.invalidated) {
+    if (!input.executableBookAvailable) {
+      return {
+        action: 'QUOTE_UNAVAILABLE',
+        reason: 's12_invalidated_defensive_exit_quote_unavailable',
+        detail: s12DecisionDetail({ ...baseDetail, trigger: 'invalidated_defensive_exit' }),
+        stage: assessment.maturity.stage,
+        role: 'position_defense',
+        source: 's12_position_decision_v1',
+        executableBookRequired: true,
+        noShortOrder: true,
+        s12State: assessment.state,
+        setupId: assessment.setupId,
+      }
+    }
+    return {
+      action: 'EXIT_ON_REVERSE_BOS',
+      reason: 's12_invalidated_defensive_exit',
+      detail: s12DecisionDetail({ ...baseDetail, trigger: 'invalidated_defensive_exit', sell_shares: shares }),
+      stage: assessment.maturity.stage,
+      role: 'position_defense',
+      source: 's12_position_decision_v1',
+      executableBookRequired: true,
+      noShortOrder: true,
+      s12State: assessment.state,
+      setupId: assessment.setupId,
+      sellShares: shares,
+      sellRatio: 1,
+    }
+  }
 
   if (positionStructuralStop != null && structuralStop != null && currentPrice <= structuralStop) {
     if (!input.executableBookAvailable) {

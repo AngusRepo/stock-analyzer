@@ -2,6 +2,7 @@ import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
 import {
+  batchGetLatestPrices,
   batchGetATR,
   getCurrentRegime,
   isDayTradeAllowed,
@@ -40,6 +41,7 @@ import {
   resolveIntradayTechnicalDecision,
 } from './intradayTechnicalSnapshot'
 import {
+  applyS12TakeoverContinuity,
   assessS12IntradayStructureFromBaseBars,
   s12TimingPolicyFromEnv,
   s12PreTradeTechnicalDecision,
@@ -60,7 +62,7 @@ import { formatExecutionStatusEvent } from './executionEvent'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { shouldMarkPendingDebateSlaReached } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
-import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
+import { computePaperPositionValuation, computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { readScoreV2Snapshot } from './scoreV2Taxonomy'
 import {
@@ -569,12 +571,30 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
   })
-  const posValueMap = new Map<string, number>()
-  for (const [symbol, quote] of posQuoteMap) posValueMap.set(symbol, quote.last)
-  let positionValue = 0
-  for (const pos of positions ?? []) {
-    const p = posValueMap.get(pos.symbol) ?? 0
-    positionValue += p * pos.shares
+  const posQuotePriceMap = new Map<string, number>()
+  for (const [symbol, quote] of posQuoteMap) {
+    const price = positiveNumber(quote.last)
+    if (price != null) posQuotePriceMap.set(symbol, price)
+  }
+  const quoteMissingPosSymbols = posSymbols.filter((symbol: string) => !posQuotePriceMap.has(symbol))
+  const posFallbackPriceMap = quoteMissingPosSymbols.length > 0
+    ? await batchGetLatestPrices(env.DB, quoteMissingPosSymbols)
+    : new Map<string, number>()
+  const positionValuation = computePaperPositionValuation({
+    positions: (positions ?? []).map((pos: any) => ({
+      symbol: String(pos.symbol ?? ''),
+      shares: Number(pos.shares ?? 0),
+    })),
+    quotePrices: posQuotePriceMap,
+    fallbackPrices: posFallbackPriceMap,
+  })
+  const posValueMap = positionValuation.symbolPrices
+  const positionValue = positionValuation.positionsValue
+  if (positionValuation.fallbackSymbols.length > 0 || positionValuation.missingSymbols.length > 0) {
+    console.warn(
+      `[Allocator] position valuation fallback=${positionValuation.fallbackSymbols.join(',') || '-'} ` +
+      `missing=${positionValuation.missingSymbols.join(',') || '-'}`,
+    )
   }
   const settlement = await getUnsettledSettlementSummary(env.DB, ACCOUNT_ID)
   const totalPortfolio = computePaperTotalValue({
@@ -1025,7 +1045,16 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       context: {
         settled_cash: Math.round(settledCash),
         available_cash: Math.round(account.cash),
+        safe_buying_power: Math.round(account.cash),
+        buying_power_source: 'internal_settlement_ledger',
         total_portfolio: Math.round(totalPortfolio),
+        positions_value: Math.round(positionValue),
+        unsettled_buy_amount: Math.round(settlement.unsettledBuyAmount),
+        unsettled_sell_amount: Math.round(settlement.unsettledSellAmount),
+        net_unsettled_settlement: Math.round(settlement.netUnsettledSettlement),
+        valuation_quote_symbols: positionValuation.quoteSymbols.join(','),
+        valuation_fallback_symbols: positionValuation.fallbackSymbols.join(','),
+        valuation_missing_symbols: positionValuation.missingSymbols.join(','),
         positions: holdings.length,
         max_positions: maxPos,
         daily_buy_limit: DAILY_BUY_LIMIT,
@@ -1144,7 +1173,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         price,
         Number(currentOhlc?.totalVolume ?? 0),
       )
-      const assessment = assessS12IntradayStructureFromBaseBars({
+      const latestTakeoverEvent = await env.DB.prepare(`
+        SELECT detail_json
+          FROM paper_execution_events
+         WHERE account_id = ?
+           AND symbol = ?
+           AND trade_date = ?
+           AND event_type = 's12_intraday_structure'
+           AND source = 's12_intraday_structure'
+         ORDER BY id DESC
+         LIMIT 1
+      `).bind(ACCOUNT_ID, pending.symbol, today).first<any>()
+      const rawAssessment = assessS12IntradayStructureFromBaseBars({
         symbol: pending.symbol,
         baseBars: s12Base.bars,
         fallback4hBars: s12Base.fallback4hBars,
@@ -1155,6 +1195,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
         h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
       })
+      const assessment = applyS12TakeoverContinuity(rawAssessment, latestTakeoverEvent?.detail_json)
       const s12PrimaryOwnerEnabled =
         s12Enabled &&
         s12Mode === 'assist_entry' &&

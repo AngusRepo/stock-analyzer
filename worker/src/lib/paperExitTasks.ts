@@ -18,6 +18,7 @@ import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
   aggregateCompletedS12Bars,
+  applyS12TakeoverContinuity,
   assessS12IntradayStructureFromBaseBars,
   buildS12LongPositionStopPlan,
   resolveS12PositionDecision,
@@ -356,11 +357,12 @@ async function evaluateS12HoldingDefense(
         FROM paper_execution_events
        WHERE account_id = ?
          AND symbol = ?
+         AND trade_date = ?
          AND event_type = 's12_intraday_structure'
          AND source = 's12_holding_defense'
        ORDER BY id DESC
        LIMIT 1
-    `).bind(ACCOUNT_ID, pos.symbol).first<any>()
+    `).bind(ACCOUNT_ID, pos.symbol, tradeDate).first<any>()
     const s12Base = await loadS12IntradayBaseBars(
       env,
       pos.symbol,
@@ -384,7 +386,7 @@ async function evaluateS12HoldingDefense(
     const positionStop = computedPositionStop && appliedPositionStopPrice != null
       ? { ...computedPositionStop, price: appliedPositionStopPrice }
       : null
-    const assessment = assessS12IntradayStructureFromBaseBars({
+    const rawAssessment = assessS12IntradayStructureFromBaseBars({
       symbol: pos.symbol,
       baseBars: s12Base.bars,
       fallback4hBars: s12Base.fallback4hBars,
@@ -395,6 +397,7 @@ async function evaluateS12HoldingDefense(
       h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
       h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
     })
+    const assessment = applyS12TakeoverContinuity(rawAssessment, latestEvent?.detail_json)
     const executableBookAvailable = positiveNumber(quote.bid) != null && positiveNumber(quote.ask) != null
     const s12Position = {
       ...pos,

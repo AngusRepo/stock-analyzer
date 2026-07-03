@@ -48,10 +48,10 @@ assert(
 )
 assert(
   uiHelper.includes('formatS12HoldingDefenseBadge') &&
-    uiHelper.includes('S12 防守啟動') &&
-    uiHelper.includes('S12 結構監控') &&
+    uiHelper.includes('S12 防守調整') &&
+    uiHelper.includes('S12 持倉防守監控') &&
     uiHelper.includes('S12 防守資料不足') &&
-    uiHelper.includes('S12 部分停利') &&
+    uiHelper.includes('S12 持倉部分停利') &&
     uiHelper.includes('S12 報價不可用'),
   'frontend must expose readable S12 active-holding defense labels',
 )
@@ -88,8 +88,8 @@ assert(
 assert(
   uiHelper.includes('formatPositionRiskPlan') &&
     uiHelper.includes('S12 買賣主機制') &&
-    uiHelper.includes('S12 防守備援') &&
-    uiHelper.includes("primaryS12 ? 'S12 出場備援' : 'paper SLTP'") &&
+    uiHelper.includes('ATR trailing 備援') &&
+    uiHelper.includes("primaryS12 ? 'paper SLTP 備援' : 'paper SLTP'") &&
     uiHelper.includes('exitPlanPrice') &&
     botDashboard.includes('S12 持倉分析：{s12HoldingDefense.label}') &&
     botDashboard.includes('riskPlan.primaryS12') &&
@@ -102,6 +102,10 @@ assert(
 assert(
   !uiHelper.includes('S12 fallback ATR'),
   'S12 holding risk-plan UI must not expose raw fallback ATR wording',
+)
+assert(
+  !uiHelper.includes('S12 防守備援') && !uiHelper.includes('S12 出場備援'),
+  'frontend must not label fallback ATR/SLTP as if S12 ownership regressed',
 )
 assert(
   !botDashboard.includes("label: 'S12 買賣主機制'"),

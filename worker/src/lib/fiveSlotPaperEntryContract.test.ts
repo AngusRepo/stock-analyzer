@@ -11,6 +11,18 @@ assert(source.includes('const autoSwapPlan = buildFiveSlotCapitalPlan'), 'auto-s
 assert(source.includes('formatFiveSlotDecisionWatchPoint'), 'paper entry must persist structured allocator watch points')
 assert(source.includes('const allocatorMarketContext = {'), 'paper entry should build a market context for continuous 5-slot exposure sizing')
 assert(source.includes('marketContext: allocatorMarketContext'), 'paper entry should pass market context into the 5-slot allocator')
+assert(source.includes('computePaperPositionValuation'), 'paper entry allocator NAV must use the shared position valuation helper')
+assert(
+  source.includes('batchGetLatestPrices(env.DB, quoteMissingPosSymbols)') &&
+    source.includes('valuation_missing_symbols'),
+  'paper entry allocator must fall back quote-missing holdings to EOD prices and expose valuation misses',
+)
+assert(
+  source.includes('safe_buying_power') &&
+    source.includes("buying_power_source: 'internal_settlement_ledger'") &&
+    source.includes('totalCost > acc.cash'),
+  'paper entry must separate NAV sizing from available-cash buying-power hard gates',
+)
 assert(source.includes("replacementDecision?.action !== 'replace'"), 'auto-swap must require an allocator replace decision')
 assert(source.includes('allocator_replace_requires_sell_first'), 'paper entry must not buy a sixth slot before replacement sell completes')
 assert(!source.includes('weaknessThreshold = 100 / swapThreshold'), 'legacy standalone weakness threshold must not own replacement decisions')

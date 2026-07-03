@@ -704,11 +704,24 @@ function overlapsZone(bar: S12Bar, zone: S12IntradayZone): boolean {
   return bar.low <= zone.high && bar.high >= zone.low
 }
 
+function zoneOverlapCoverage(a: S12IntradayZone | null | undefined, b: S12IntradayZone | null | undefined): number {
+  if (!a || !b) return 0
+  const intersection = Math.max(0, Math.min(a.high, b.high) - Math.max(a.low, b.low))
+  const aWidth = Math.max(0.0001, a.high - a.low)
+  const bWidth = Math.max(0.0001, b.high - b.low)
+  return Math.min(intersection / aWidth, intersection / bWidth)
+}
+
 function detailText(parts: Record<string, unknown>): string {
   return Object.entries(parts)
     .filter(([, value]) => value != null && value !== '')
     .map(([key, value]) => `${key}=${value}`)
     .join(';')
+}
+
+function detailWithOverrides(detail: string, parts: Record<string, unknown>): string {
+  const patch = detailText(parts)
+  return patch ? `${detail};${patch}` : detail
 }
 
 function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity']['stage'] {
@@ -1443,6 +1456,92 @@ function completeAssessment(params: {
     sequence: params.sequence,
     execution: params.execution ?? {},
     maturity,
+  }
+}
+
+function parseS12Assessment(raw: unknown): S12IntradayAssessment | null {
+  if (!raw) return null
+  if (typeof raw === 'string') {
+    try {
+      return parseS12Assessment(JSON.parse(raw))
+    } catch {
+      return null
+    }
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  if (record.version === 's12_intraday_structure_v1') return record as unknown as S12IntradayAssessment
+  if (record.detail_json) return parseS12Assessment(record.detail_json)
+  if (record.detail) return parseS12Assessment(record.detail)
+  return null
+}
+
+export function applyS12TakeoverContinuity(
+  current: S12IntradayAssessment,
+  previousRaw: unknown,
+  options: { minZoneOverlap?: number } = {},
+): S12IntradayAssessment {
+  const previous = parseS12Assessment(previousRaw)
+  if (!previous || previous.symbol !== current.symbol) return current
+  if (current.maturity?.takeoverRole === 'long_entry') return current
+  if (current.invalidated || current.state === 'invalidated' || current.state === 'bearish_defense_ready') return current
+  if (previous.invalidated || previous.state === 'invalidated' || previous.state === 'bearish_defense_ready') return current
+  if (previous.maturity?.takeoverRole !== 'long_entry') return current
+  if (previous.maturity?.stale) return current
+  if (!previous.demandZone1h || !current.demandZone1h) return current
+  if (previous.sequence?.zoneTouchMs == null) return current
+
+  const minZoneOverlap = Math.max(0.5, Math.min(1, options.minZoneOverlap ?? 0.8))
+  const zoneOverlap = zoneOverlapCoverage(previous.demandZone1h, current.demandZone1h)
+  if (zoneOverlap < minZoneOverlap) return current
+
+  const preservedMaturity: S12IntradayAssessment['maturity'] = {
+    ...previous.maturity,
+    takeoverEligible: true,
+    takeoverRole: 'long_entry',
+    blocker: previous.maturity?.blocker ?? previous.state,
+    stage: previous.maturity?.stage ?? maturityStage(previous.state),
+    policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated',
+  }
+  return {
+    ...current,
+    state: previous.state,
+    ready: previous.ready,
+    invalidated: false,
+    reason: previous.reason,
+    detail: detailWithOverrides(current.detail, {
+      state: previous.state,
+      reason: previous.reason,
+      setup_id: previous.setupId,
+      zone_low: price(previous.demandZone1h.low),
+      zone_high: price(previous.demandZone1h.high),
+      zone_type: previous.demandZone1h.type,
+      entry: price(previous.execution?.entryPrice),
+      chase_ceiling: price(previous.execution?.chaseCeiling),
+      stop: price(previous.execution?.stopLoss),
+      takeover_eligible: 'true',
+      takeover_role: 'long_entry',
+      maturity_tier: preservedMaturity.tier,
+      maturity_risk_mode: preservedMaturity.riskMode,
+      maturity_stage: preservedMaturity.stage,
+      maturity_blocker: preservedMaturity.blocker,
+      takeover_continuity: 'preserved',
+      continuity_reason: 'overlapping_zone_reselected',
+      continuity_zone_overlap: round(zoneOverlap, 4),
+      continuity_previous_state: previous.state,
+      continuity_current_state: current.state,
+      continuity_previous_zone_type: previous.demandZone1h.type,
+      continuity_current_zone_type: current.demandZone1h.type,
+    }),
+    setupId: previous.setupId ?? current.setupId,
+    demandZone1h: previous.demandZone1h,
+    sequence: { ...previous.sequence },
+    execution: {
+      ...previous.execution,
+      atr15m: current.execution?.atr15m ?? previous.execution?.atr15m ?? null,
+    },
+    exitPlan: previous.exitPlan ?? current.exitPlan,
+    maturity: preservedMaturity,
   }
 }
 

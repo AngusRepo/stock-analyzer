@@ -1,5 +1,6 @@
 import {
   aggregateCompletedS12Bars,
+  applyS12TakeoverContinuity,
   assessS12IntradayStructure,
   assessS12IntradayStructureFromBaseBars,
   buildS12LongPositionStopPlan,
@@ -359,6 +360,67 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.detail.includes('maturity_tier=provisional_takeover'), 'S12 detail should expose maturity ladder tier')
   assert(s12PreTradeTechnicalDecision(assessment, 'require_ready')?.action === 'pass', 'S12 primary owner should pass provisional takeover instead of waiting for full reaction')
   assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'S12 unified decision should allow provisional takeover to reach execution gates')
+}
+
+{
+  const bars4h = [
+    bar(0, 100, 110, 98, 108, 1000),
+  ]
+  const bars1h = [
+    bar(H4, 100, 105, 99, 104, 500),
+  ]
+  const bars15m = [
+    bar(H4 + H1 + 0 * M15, 102.0, 102.5, 100.4, 101.5),
+    bar(H4 + H1 + 1 * M15, 101.5, 102.2, 100.6, 101.8),
+    bar(H4 + H1 + 2 * M15, 101.8, 102.4, 100.7, 102.0),
+    bar(H4 + H1 + 3 * M15, 102.0, 102.6, 100.8, 102.1),
+  ]
+  const previous = assessS12IntradayStructure({
+    symbol: '8091',
+    bars15m,
+    bars1h,
+    bars4h,
+  })
+  assert(previous.maturity.takeoverRole === 'long_entry', 'fixture must start from a provisional takeover')
+  const overlappingRegression = {
+    ...previous,
+    state: 'waiting_15m_zone_touch' as const,
+    ready: false,
+    reason: 's12_waiting_15m_zone_touch',
+    demandZone1h: {
+      ...previous.demandZone1h!,
+      type: 'bullish_order_block' as const,
+      createdMs: previous.demandZone1h!.createdMs + H1,
+    },
+    sequence: {},
+    execution: { atr15m: previous.execution.atr15m },
+    maturity: {
+      ...previous.maturity,
+      takeoverEligible: false,
+      takeoverRole: 'none' as const,
+      tier: 'none' as const,
+      riskMode: 'none' as const,
+      blocker: 'waiting_15m_zone_touch' as const,
+      stage: 'setup' as const,
+    },
+    detail: previous.detail.replace('state=waiting_sweep', 'state=waiting_15m_zone_touch'),
+  }
+  const preserved = applyS12TakeoverContinuity(overlappingRegression, JSON.stringify(previous))
+  assert(preserved.state === previous.state, 'overlapping zone re-selection must not reset S12 takeover state')
+  assert(preserved.maturity.takeoverRole === 'long_entry', 'overlapping zone re-selection must preserve long-entry takeover role')
+  assert(preserved.sequence.zoneTouchMs === previous.sequence.zoneTouchMs, 'overlapping zone re-selection must preserve the original touch sequence')
+  assert(preserved.detail.includes('takeover_continuity=preserved'), 'S12 continuity preservation must be visible in diagnostics')
+
+  const differentZone = {
+    ...overlappingRegression,
+    demandZone1h: {
+      ...overlappingRegression.demandZone1h!,
+      low: previous.demandZone1h!.high + 10,
+      high: previous.demandZone1h!.high + 12,
+    },
+  }
+  const notPreserved = applyS12TakeoverContinuity(differentZone, JSON.stringify(previous))
+  assert(notPreserved.maturity.takeoverRole === 'none', 'different zones must still force a fresh S12 judgment')
 }
 
 {

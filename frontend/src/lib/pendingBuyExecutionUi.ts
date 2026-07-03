@@ -450,20 +450,20 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
   const label = active
     ? action === 'take_profit'
       ? decisionReason.includes('tp2') || decisionReason.includes('full')
-        ? 'S12 主出場'
-        : 'S12 部分停利'
+        ? 'S12 持倉主出場'
+        : 'S12 持倉部分停利'
       : action === 'full_exit'
-        ? 'S12 全部出場'
+        ? 'S12 持倉全部出場'
         : action === 'quote_unavailable'
           ? 'S12 報價不可用'
-          : 'S12 防守啟動'
+          : 'S12 防守調整'
     : insufficientData
       ? 'S12 防守資料不足'
       : reason === 's12_bearish_defense_ready' || status === 'bearish_defense_ready'
         ? 'S12 空方防守成立'
         : reason === 's12_waiting_4h_completed_bar' && h4Source === 'unavailable'
           ? 'S12 4H錨點不足'
-          : 'S12 結構監控'
+          : 'S12 持倉防守監控'
   const stopText = before != null || after != null
     ? `防守停損：${before ?? '-'} -> ${after ?? '-'}`
     : null
@@ -501,7 +501,7 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
   const stopSource = s12Stop != null
     ? 'S12 結構停損'
     : trailingStop != null
-      ? primaryS12 ? 'S12 防守備援' : 'ATR trailing'
+      ? primaryS12 ? 'ATR trailing 備援' : 'ATR trailing'
       : lifecycleStop != null
         ? '生命週期'
         : initialStop != null
@@ -519,7 +519,7 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
     : lifecycle?.owners?.exit
       ? OWNER_LABELS[String(lifecycle.owners.exit)] ?? String(lifecycle.owners.exit)
     : tp1Value != null || tp2Value != null
-        ? primaryS12 ? 'S12 出場備援' : 'paper SLTP'
+        ? primaryS12 ? 'paper SLTP 備援' : 'paper SLTP'
         : null
 
   return {

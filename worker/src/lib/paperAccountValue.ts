@@ -10,9 +10,27 @@ export interface PaperAccountValueInput {
   netUnsettledSettlement?: number | null
 }
 
+export interface PaperPositionValueInput {
+  symbol: string
+  shares: number
+}
+
+export interface PaperPositionValuationResult {
+  positionsValue: number
+  symbolPrices: Map<string, number>
+  quoteSymbols: string[]
+  fallbackSymbols: string[]
+  missingSymbols: string[]
+}
+
 function finiteNumber(value: unknown): number {
   const numeric = Number(value ?? 0)
   return Number.isFinite(numeric) ? numeric : 0
+}
+
+function positiveFiniteNumber(value: unknown): number | null {
+  const numeric = finiteNumber(value)
+  return numeric > 0 ? numeric : null
 }
 
 export function computePaperTotalValue(input: PaperAccountValueInput): number {
@@ -21,6 +39,45 @@ export function computePaperTotalValue(input: PaperAccountValueInput): number {
     + finiteNumber(input.positionsValue)
     + finiteNumber(input.netUnsettledSettlement)
   )
+}
+
+export function computePaperPositionValuation(input: {
+  positions: PaperPositionValueInput[]
+  quotePrices?: Map<string, number> | null
+  fallbackPrices?: Map<string, number> | null
+}): PaperPositionValuationResult {
+  const symbolPrices = new Map<string, number>()
+  const quoteSymbols = new Set<string>()
+  const fallbackSymbols = new Set<string>()
+  const missingSymbols = new Set<string>()
+  let positionsValue = 0
+
+  for (const position of input.positions ?? []) {
+    const symbol = String(position.symbol ?? '').trim()
+    const shares = positiveFiniteNumber(position.shares)
+    if (!symbol || shares == null) continue
+
+    const quotePrice = positiveFiniteNumber(input.quotePrices?.get(symbol))
+    const fallbackPrice = positiveFiniteNumber(input.fallbackPrices?.get(symbol))
+    const price = quotePrice ?? fallbackPrice
+    if (price == null) {
+      missingSymbols.add(symbol)
+      continue
+    }
+
+    symbolPrices.set(symbol, price)
+    positionsValue += price * shares
+    if (quotePrice != null) quoteSymbols.add(symbol)
+    else fallbackSymbols.add(symbol)
+  }
+
+  return {
+    positionsValue,
+    symbolPrices,
+    quoteSymbols: [...quoteSymbols].sort(),
+    fallbackSymbols: [...fallbackSymbols].sort(),
+    missingSymbols: [...missingSymbols].sort(),
+  }
 }
 
 export async function getUnsettledSettlementSummary(

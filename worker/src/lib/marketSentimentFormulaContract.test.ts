@@ -61,6 +61,8 @@ for (const required of [
   'selectLargeTraderScope',
   '所有契約',
   '全市場未沖銷部位數',
+  '買賣權未平倉量比率',
+  'derivePutCallOpenInterestRatio',
 ]) {
   assert(route.includes(required), `Large-trader signal must avoid weekly-contract row collapse: ${required}`)
 }

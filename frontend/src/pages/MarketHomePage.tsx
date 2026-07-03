@@ -767,9 +767,9 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
           tone={toneBySigned(asNumber(largeTrader?.raw_value))}
         />
         <HedgeFactor
-          label="賣買權量比"
+          label="賣買權未平倉量比"
           value={factorDisplay(pcr, '待接 PCR')}
-          note={pcr?.detail ?? '賣權相對買權越高，代表避險需求越強。'}
+          note={pcr?.detail ?? '賣權未平倉相對買權未平倉越高，代表避險需求越強。'}
           tone="blue"
         />
         <HedgeFactor

@@ -582,6 +582,61 @@ def test_large_trader_regime_context_preserves_contract_expiry_scope() -> None:
     assert weekly_oi["value"] == 22.0
 
 
+def test_option_large_trader_regime_context_preserves_option_type_scope() -> None:
+    root = _root("option_large_trader_option_type_scope")
+    symbol = "\u81fa\u6307"
+    option_type_col = "\u8cb7\u8ce3\u6b0a"
+    expiry_col = "\u5230\u671f\u6708\u4efd(\u9031\u5225)"
+    all_contracts = "\u6240\u6709\u5951\u7d04"
+    call = "\u8cb7\u6b0a"
+    put = "\u8ce3\u6b0a"
+    buy_top5_col = "\u8cb7\u65b9\u524d\u4e94\u5927\u4ea4\u6613\u4eba\u90e8\u4f4d\u6578"
+    sell_top5_col = "\u8ce3\u65b9\u524d\u4e94\u5927\u4ea4\u6613\u4eba\u90e8\u4f4d\u6578"
+    market_oi_col = "\u5168\u5e02\u5834\u672a\u6c96\u92b7\u90e8\u4f4d\u6578"
+    _write(
+        root / "raw" / "regime_context" / "tw_taifex_option_large_trader.parquet",
+        pl.DataFrame(
+            {
+                "date": ["2026-07-02", "2026-07-02"],
+                "symbol": [symbol, symbol],
+                option_type_col: [call, put],
+                expiry_col: [all_contracts, all_contracts],
+                buy_top5_col: [24784.0, 26588.0],
+                sell_top5_col: [27639.0, 34754.0],
+                market_oi_col: [72364.0, 87173.0],
+            }
+        ),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-07-03T00:00:00+00:00",
+        start_date="2026-07-02",
+        end_date="2026-07-02",
+        datasets=["canonical_regime_context_daily"],
+    )
+
+    rows = [
+        row for row in outputs.canonical_regime_context_daily
+        if row["dataset"] == "tw_taifex_option_large_trader"
+    ]
+    categories = {row["category"] for row in rows}
+    assert f"{symbol} / {call} / {all_contracts}" in categories
+    assert f"{symbol} / {put} / {all_contracts}" in categories
+    assert all(row["field"] != option_type_col for row in rows)
+    assert all(row["field"] != expiry_col for row in rows)
+    call_market_oi = next(
+        row for row in rows
+        if row["category"] == f"{symbol} / {call} / {all_contracts}" and row["field"] == market_oi_col
+    )
+    put_market_oi = next(
+        row for row in rows
+        if row["category"] == f"{symbol} / {put} / {all_contracts}" and row["field"] == market_oi_col
+    )
+    assert call_market_oi["value"] == 72364.0
+    assert put_market_oi["value"] == 87173.0
+
+
 def test_futures_rows_keep_regular_and_after_hours_sessions_separate() -> None:
     root = _root("regime_context_futures_sessions")
     _write(

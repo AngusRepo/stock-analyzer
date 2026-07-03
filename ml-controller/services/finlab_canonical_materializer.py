@@ -965,6 +965,7 @@ def _context_rows_from_frame(
     category_columns = {"symbol", "stock_id", "contract", "category", "name", "商品", "契約"}
     category_column_order = ["symbol", "stock_id", "contract", "category", "name"]
     expiry_columns = {"到期月份(週別)", "expiry", "contract_month", "month", "settlement_month"}
+    option_type_columns = {"買賣權", "option_type", "call_put", "cp"}
     large_trader_datasets = {"tw_taifex_futures_large_trader", "tw_taifex_option_large_trader"}
     table_like = len([col for col in frame.columns if col not in date_columns]) > 2 and _table_has_any(frame, category_columns | {"value", "ratio", "close"})
 
@@ -976,6 +977,11 @@ def _context_rows_from_frame(
             category = _clean_text(_first_row_value(raw, category_column_order)) or "market"
             metadata_columns = {name.lower() for name in category_columns} | {name.lower() for name in date_columns}
             if dataset in large_trader_datasets:
+                if dataset == "tw_taifex_option_large_trader":
+                    option_type = _clean_text(_first_row_value(raw, option_type_columns))
+                    if option_type:
+                        category = f"{category} / {option_type}"
+                    metadata_columns.update(name.lower() for name in option_type_columns)
                 expiry = _clean_text(_first_row_value(raw, expiry_columns))
                 if expiry:
                     category = f"{category} / {expiry}"

@@ -34,11 +34,20 @@ assert(
     route.includes("SELECT 'dealer' AS participant_id") &&
     route.includes("UNION ALL SELECT 'trust'") &&
     route.includes("UNION ALL SELECT 'foreign'") &&
-    route.includes('futuresInstitutionalBreakdown: futuresBreakdown'),
-  'market risk futures detail must scope TX rows and serve dealer/trust/foreign/total breakdown',
+    route.includes('futuresInstitutionalBreakdown: futuresBreakdown') &&
+    route.includes('previous_futures_inst_net_oi_lots') &&
+    route.includes('netOiDeltaLots'),
+  'market risk futures detail must scope TX rows and serve dealer/trust/foreign/total breakdown with OI delta',
 )
 
 assert(
   route.includes('AND date < (SELECT date FROM latest_date)'),
   'market risk world index change must not compare the latest date to itself when only one date is materialized',
+)
+
+assert(
+  route.includes('derivePutCallOpenInterestRatio') &&
+    route.includes('買賣權未平倉量比率') &&
+    !route.includes("return derivedContextRow(ratio, '賣買權量比'"),
+  'market risk Put/Call must use open-interest ratio instead of volume ratio for hedge sentiment',
 )

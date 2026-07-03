@@ -8,8 +8,11 @@ type FuturesInstitutionalRow = {
   category?: string
   netTradeLots?: number | null
   netOiLots?: number | null
+  previousNetOiLots?: number | null
+  netOiDeltaLots?: number | null
   netTradeAmountK?: number | null
   netOiAmountK?: number | null
+  previousDate?: string | null
 }
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -106,8 +109,11 @@ function futuresBreakdownRows(regime: any, fallback: {
       category: String(row?.category ?? '').trim(),
       netTradeLots: asNumber(row?.netTradeLots),
       netOiLots: asNumber(row?.netOiLots),
+      previousNetOiLots: asNumber(row?.previousNetOiLots),
+      netOiDeltaLots: asNumber(row?.netOiDeltaLots),
       netTradeAmountK: asNumber(row?.netTradeAmountK),
       netOiAmountK: asNumber(row?.netOiAmountK),
+      previousDate: row?.previousDate == null ? null : String(row.previousDate).slice(0, 10),
     }))
     .filter((row) => row.label)
   if (normalized.length) return normalized
@@ -117,7 +123,10 @@ function futuresBreakdownRows(regime: any, fallback: {
     category: 'pending',
     netTradeLots: null,
     netOiLots: null,
+    previousNetOiLots: null,
+    netOiDeltaLots: null,
     netOiAmountK: null,
+    previousDate: null,
   }))
 }
 
@@ -203,12 +212,13 @@ function FuturesInstitutionRow({ row }: { row: FuturesInstitutionalRow }) {
   const label = participantLabel(row)
   const identityTone = participantIdentityTone(row)
   const netOi = asNumber(row.netOiLots)
+  const netOiDelta = asNumber(row.netOiDeltaLots)
   const netTrade = asNumber(row.netTradeLots)
   const netAmountK = asNumber(row.netOiAmountK)
   const dominant = netOi ?? netTrade ?? netAmountK
   const tone = participantTone(dominant)
   return (
-    <div className={`grid min-w-0 gap-2 rounded-[16px] border p-3 ${TONE_BORDER[tone]} sm:grid-cols-[minmax(72px,0.72fr)_repeat(3,minmax(0,1fr))]`}>
+    <div className={`grid min-w-0 gap-2 rounded-[16px] border p-3 ${TONE_BORDER[tone]} sm:grid-cols-[minmax(72px,0.72fr)_repeat(4,minmax(0,1fr))]`}>
       <div className="flex min-w-0 items-center gap-2 sm:block">
         <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_BAR[identityTone]}`} />
         <div className="min-w-0">
@@ -221,6 +231,12 @@ function FuturesInstitutionRow({ row }: { row: FuturesInstitutionalRow }) {
         value={signed(netOi, ' 口', 0)}
         tone={participantTone(netOi)}
         intensity={Math.abs(netOi ?? 0) / 800}
+      />
+      <FuturesMetricCell
+        label="未平倉差"
+        value={signed(netOiDelta, ' 口', 0)}
+        tone={participantTone(netOiDelta)}
+        intensity={Math.abs(netOiDelta ?? 0) / 80}
       />
       <FuturesMetricCell
         label="交易淨口"
@@ -251,10 +267,12 @@ function buildFuturesView(risk: any) {
 
   const hasRowData = rows.some((row) =>
     asNumber(row.netOiLots) != null ||
+    asNumber(row.netOiDeltaLots) != null ||
     asNumber(row.netTradeLots) != null ||
     asNumber(row.netOiAmountK) != null,
   )
   const totalNetOi = hasRowData ? rows.reduce((sum, row) => sum + (asNumber(row.netOiLots) ?? 0), 0) : null
+  const totalNetOiDelta = hasRowData ? rows.reduce((sum, row) => sum + (asNumber(row.netOiDeltaLots) ?? 0), 0) : null
   const totalNetTrade = hasRowData ? rows.reduce((sum, row) => sum + (asNumber(row.netTradeLots) ?? 0), 0) : null
   const totalNetAmountK = hasRowData ? rows.reduce((sum, row) => sum + (asNumber(row.netOiAmountK) ?? 0), 0) : null
   const preview = futuresNetOi.preview || futuresNetTrade.preview || futuresNetAmount.preview
@@ -266,6 +284,7 @@ function buildFuturesView(risk: any) {
     tone: participantTone(totalNetOi),
     preview,
     totalNetOi,
+    totalNetOiDelta,
     totalNetTrade,
     totalNetAmountK,
   }
@@ -300,9 +319,10 @@ export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
           <FuturesOpenInterestBar rows={view.rows} />
         </div>
 
-        <div className="mt-4 hidden grid-cols-[minmax(72px,0.72fr)_repeat(3,minmax(0,1fr))] gap-2 px-3 text-[11px] font-semibold text-slate-500 sm:grid">
+        <div className="mt-4 hidden grid-cols-[minmax(72px,0.72fr)_repeat(4,minmax(0,1fr))] gap-2 px-3 text-[11px] font-semibold text-slate-500 sm:grid">
           <span>法人</span>
           <span>未平倉</span>
+          <span>未平倉差</span>
           <span>交易淨口</span>
           <span>未平倉淨額</span>
         </div>

@@ -1050,7 +1050,7 @@ function buildFearGreedIndex(args: {
       scoreFromFearGreedRange(pcr, 1.4, 0.6),
       pcr == null ? '待匯入' : pcr.toFixed(2),
       'canonical_regime_context_daily.tw_option_put_call_ratio',
-      '賣買權量比越高通常代表避險需求越強。',
+      '賣買權未平倉量比越高通常代表避險需求越強。',
     ),
     fearGreedFactor(
       'volatility_pressure',
@@ -1135,11 +1135,11 @@ function buildHedgeSentimentFactors(args: {
     },
     {
       id: 'put_call_ratio',
-      label: '賣買權量比',
+      label: '賣買權未平倉量比',
       value: pcr == null ? '待匯入' : pcr.toFixed(2),
       raw_value: pcr,
       source: 'canonical_regime_context_daily.tw_option_put_call_ratio',
-      detail: '賣權相對買權越高，代表避險需求越強。',
+      detail: '賣權未平倉相對買權未平倉越高，代表避險需求越強。',
     },
     {
       id: 'twii_vol20',
@@ -1315,17 +1315,17 @@ function derivedContextRow(
   }
 }
 
-function derivePutCallVolumeRatio(rows: CanonicalRegimeContextRow[]): CanonicalRegimeContextRow | null {
+function derivePutCallOpenInterestRatio(rows: CanonicalRegimeContextRow[]): CanonicalRegimeContextRow | null {
   const latestRows = latestContextRows(rows)
-  const ratio = latestRows.find((row) => /買賣權成交量比率|賣買權成交量比率|put.*call.*volume/i.test(row.field) && row.value != null)
+  const ratio = latestRows.find((row) => /買賣權未平倉量比率|賣買權未平倉量比率|put.*call.*open.*interest/i.test(row.field) && row.value != null)
   if (ratio?.value != null) {
     const normalized = ratio.value > 10 ? ratio.value / 100 : ratio.value
-    return derivedContextRow(ratio, '賣買權量比', Math.round(normalized * 1000) / 1000)
+    return derivedContextRow(ratio, '賣買權未平倉量比', Math.round(normalized * 1000) / 1000)
   }
-  const putVolume = latestRows.find((row) => /賣權成交量|put.*volume/i.test(row.field) && row.value != null)
-  const callVolume = latestRows.find((row) => /買權成交量|call.*volume/i.test(row.field) && row.value != null)
-  if (putVolume?.value != null && callVolume?.value) {
-    return derivedContextRow(putVolume, '賣買權量比', Math.round((putVolume.value / callVolume.value) * 1000) / 1000)
+  const putOpenInterest = latestRows.find((row) => /賣權未平倉量|put.*open.*interest/i.test(row.field) && row.value != null)
+  const callOpenInterest = latestRows.find((row) => /買權未平倉量|call.*open.*interest/i.test(row.field) && row.value != null)
+  if (putOpenInterest?.value != null && callOpenInterest?.value) {
+    return derivedContextRow(putOpenInterest, '賣買權未平倉量比', Math.round((putOpenInterest.value / callOpenInterest.value) * 1000) / 1000)
   }
   return null
 }
@@ -1479,7 +1479,7 @@ async function loadCanonicalRegimeContext(db: D1Database) {
     const usdRows = rows
       .filter((row) => row.dataset === 'world_index' && row.value != null)
       .filter((row) => /usd|twd|美元|台幣|匯率/i.test(`${row.field} ${row.category}`))
-    const pcr = derivePutCallVolumeRatio(pcrRows) ?? pickContextRow(pcrRows, [/pcr/i, /put.*call/i, /ratio/i, /賣買權|買賣權|賣權.*買權/])
+    const pcr = derivePutCallOpenInterestRatio(pcrRows) ?? pickContextRow(pcrRows, [/pcr/i, /put.*call.*open.*interest/i, /未平倉量比率|賣買權未平倉|買賣權未平倉/])
     const largeTrader = deriveLargeTraderNet(largeRows) ?? pickContextRow(largeRows, [/net/i, /淨|部位|大戶|未平倉/])
     const usdTwd = pickContextRow(usdRows, [/usd.*twd/i, /twd.*usd/i, /美元|台幣|匯率/])
     const usdPrevious = usdTwd
@@ -1497,7 +1497,7 @@ async function loadCanonicalRegimeContext(db: D1Database) {
       .reverse()
 
     const factors = [
-      contextFactor('put_call_ratio', '賣買權量比', pcr, 'info'),
+      contextFactor('put_call_ratio', '賣買權未平倉量比', pcr, 'info'),
       contextFactor('large_trader_net', '大戶前五淨部位', largeTrader, (largeTrader?.value ?? 0) < 0 ? 'warn' : 'info'),
       contextFactor('usd_twd', '美元兌台幣', usdTwd, 'info'),
     ]
@@ -1678,6 +1678,12 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
            FROM canonical_regime_context_daily
            WHERE dataset = 'futures_institutional_investors_trading_summary'
          ),
+         previous_date AS (
+           SELECT MAX(date) AS date
+           FROM canonical_regime_context_daily
+           WHERE dataset = 'futures_institutional_investors_trading_summary'
+             AND date < (SELECT date FROM latest_date)
+         ),
          tx_categories AS (
            SELECT 'dealer' AS participant_id, '自營商' AS label, '臺股期貨_自營商' AS category
            UNION ALL SELECT 'trust', '投信', '臺股期貨_投信'
@@ -1688,10 +1694,13 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
            tx.participant_id,
            tx.label,
            tx.category,
+           (SELECT date FROM previous_date) AS previous_date,
            SUM(CASE WHEN c.field = 'futures_inst_net_trade_lots' THEN c.value ELSE 0 END) AS futures_inst_net_trade_lots,
            SUM(CASE WHEN c.field = 'futures_inst_net_oi_lots' THEN c.value ELSE 0 END) AS futures_inst_net_oi_lots,
            SUM(CASE WHEN c.field = 'futures_inst_net_trade_amount_k' THEN c.value ELSE 0 END) AS futures_inst_net_trade_amount_k,
            SUM(CASE WHEN c.field = 'futures_inst_net_oi_amount_k' THEN c.value ELSE 0 END) AS futures_inst_net_oi_amount_k,
+           SUM(CASE WHEN c.field = 'futures_inst_net_oi_lots' THEN prev.value END) AS previous_futures_inst_net_oi_lots,
+           SUM(CASE WHEN c.field = 'futures_inst_net_oi_amount_k' THEN prev.value END) AS previous_futures_inst_net_oi_amount_k,
            COUNT(c.field) AS coverage_count
          FROM tx_categories tx
          LEFT JOIN canonical_regime_context_daily c
@@ -1704,6 +1713,11 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
              'futures_inst_net_trade_amount_k',
              'futures_inst_net_oi_amount_k'
            )
+         LEFT JOIN canonical_regime_context_daily prev
+           ON prev.date = (SELECT date FROM previous_date)
+          AND prev.dataset = c.dataset
+          AND prev.category = c.category
+          AND prev.field = c.field
          GROUP BY tx.participant_id, tx.label, tx.category
          ORDER BY CASE tx.participant_id WHEN 'dealer' THEN 1 WHEN 'trust' THEN 2 WHEN 'foreign' THEN 3 ELSE 4 END`
       ).all<any>(),
@@ -1748,8 +1762,19 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
       netOiLots: numberOrNull(row.futures_inst_net_oi_lots) ?? 0,
       netTradeAmountK: numberOrNull(row.futures_inst_net_trade_amount_k) ?? 0,
       netOiAmountK: numberOrNull(row.futures_inst_net_oi_amount_k) ?? 0,
+      previousNetOiLots: numberOrNull(row.previous_futures_inst_net_oi_lots),
+      netOiDeltaLots:
+        numberOrNull(row.futures_inst_net_oi_lots) == null || numberOrNull(row.previous_futures_inst_net_oi_lots) == null
+          ? null
+          : (numberOrNull(row.futures_inst_net_oi_lots)! - numberOrNull(row.previous_futures_inst_net_oi_lots)!),
+      previousNetOiAmountK: numberOrNull(row.previous_futures_inst_net_oi_amount_k),
+      netOiDeltaAmountK:
+        numberOrNull(row.futures_inst_net_oi_amount_k) == null || numberOrNull(row.previous_futures_inst_net_oi_amount_k) == null
+          ? null
+          : (numberOrNull(row.futures_inst_net_oi_amount_k)! - numberOrNull(row.previous_futures_inst_net_oi_amount_k)!),
       coverageCount: numberOrNull(row.coverage_count) ?? 0,
       date: row.date ?? null,
+      previousDate: row.previous_date ?? null,
     })).filter((row) => row.id && row.label)
     const totalRow = participantRows.reduce((acc, row) => ({
       ...acc,
@@ -1757,6 +1782,18 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
       netOiLots: acc.netOiLots + row.netOiLots,
       netTradeAmountK: acc.netTradeAmountK + row.netTradeAmountK,
       netOiAmountK: acc.netOiAmountK + row.netOiAmountK,
+      previousNetOiLots: acc.previousNetOiLots == null || row.previousNetOiLots == null
+        ? null
+        : acc.previousNetOiLots + row.previousNetOiLots,
+      netOiDeltaLots: acc.netOiDeltaLots == null || row.netOiDeltaLots == null
+        ? null
+        : acc.netOiDeltaLots + row.netOiDeltaLots,
+      previousNetOiAmountK: acc.previousNetOiAmountK == null || row.previousNetOiAmountK == null
+        ? null
+        : acc.previousNetOiAmountK + row.previousNetOiAmountK,
+      netOiDeltaAmountK: acc.netOiDeltaAmountK == null || row.netOiDeltaAmountK == null
+        ? null
+        : acc.netOiDeltaAmountK + row.netOiDeltaAmountK,
       coverageCount: acc.coverageCount + row.coverageCount,
     }), {
       id: 'total',
@@ -1766,8 +1803,13 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
       netOiLots: 0,
       netTradeAmountK: 0,
       netOiAmountK: 0,
+      previousNetOiLots: 0 as number | null,
+      netOiDeltaLots: 0 as number | null,
+      previousNetOiAmountK: 0 as number | null,
+      netOiDeltaAmountK: 0 as number | null,
       coverageCount: 0,
       date: participantRows.find((row) => row.date)?.date ?? null,
+      previousDate: participantRows.find((row) => row.previousDate)?.previousDate ?? null,
     })
     const futuresBreakdown = [...participantRows, totalRow]
     if (!totalRow.date && !worldRow?.date) return null
@@ -1775,8 +1817,13 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
       date: totalRow.date ?? worldRow?.date ?? null,
       futuresInstNetTradeLots: totalRow.netTradeLots,
       futuresInstNetOiLots: totalRow.netOiLots,
+      futuresInstPreviousNetOiLots: totalRow.previousNetOiLots,
+      futuresInstNetOiDeltaLots: totalRow.netOiDeltaLots,
       futuresInstNetTradeAmountK: totalRow.netTradeAmountK,
       futuresInstNetOiAmountK: totalRow.netOiAmountK,
+      futuresInstPreviousNetOiAmountK: totalRow.previousNetOiAmountK,
+      futuresInstNetOiDeltaAmountK: totalRow.netOiDeltaAmountK,
+      previousDate: totalRow.previousDate,
       futuresInstitutionalBreakdown: futuresBreakdown,
       worldAdjCloseChangePct: numberOrNull(worldRow?.world_adj_close_change_pct),
       coverageCount: totalRow.coverageCount,
@@ -2500,7 +2547,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v19-finlab-risk-detail'
+  const cacheKey = 'market:risk:latest:v20-finlab-risk-detail-oi-delta'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 

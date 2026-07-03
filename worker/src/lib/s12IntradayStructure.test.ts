@@ -517,6 +517,48 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   })
   assert(positionQuoteBlocked.action === 'QUOTE_UNAVAILABLE', 'S12 sell decision should fail closed when executable book is missing')
 
+  const assessmentStopWatch = resolveS12PositionDecision({
+    assessment,
+    currentPrice: (assessment.execution.stopLoss ?? 95) + 0.2,
+    executableBookAvailable: true,
+    atr14: 2,
+    pos: {
+      shares: 2000,
+      original_shares: 2000,
+      avg_cost: assessment.execution.entryPrice ?? 100,
+      entry_price: assessment.execution.entryPrice ?? 100,
+      initial_stop: 80,
+      trailing_stop: 80,
+      highest_since_entry: assessment.execution.entryPrice ?? 100,
+      tp1_price: assessment.exitPlan.tp1.price,
+      tp2_price: assessment.exitPlan.mainExit.price,
+      tp1_hit: 0,
+    },
+  })
+  assert(assessmentStopWatch.action === 'SET_STRUCTURAL_STOP', 'S12 assessment stopLoss should become the active structural stop watch')
+  assert(assessmentStopWatch.stopPrice === assessment.execution.stopLoss, 'S12 structural stop watch should use assessment stopLoss instead of ATR fallback')
+
+  const assessmentStopExit = resolveS12PositionDecision({
+    assessment,
+    currentPrice: assessment.execution.stopLoss ?? 0,
+    executableBookAvailable: true,
+    atr14: 2,
+    pos: {
+      shares: 2000,
+      original_shares: 2000,
+      avg_cost: assessment.execution.entryPrice ?? 100,
+      entry_price: assessment.execution.entryPrice ?? 100,
+      initial_stop: 80,
+      trailing_stop: 80,
+      highest_since_entry: assessment.execution.entryPrice ?? 100,
+      tp1_price: assessment.exitPlan.tp1.price,
+      tp2_price: assessment.exitPlan.mainExit.price,
+      tp1_hit: 0,
+    },
+  })
+  assert(assessmentStopExit.action === 'EXIT_ON_REVERSE_BOS', 'S12 assessment stopLoss breach should trigger structural stop exit')
+  assert(assessmentStopExit.reason === 's12_position_structural_stop_full_exit', 'S12 assessment stopLoss breach should use structural-stop reason')
+
   const positionTp4 = resolveS12PositionDecision({
     assessment,
     currentPrice: assessment.exitPlan.tp4.price ?? 0,

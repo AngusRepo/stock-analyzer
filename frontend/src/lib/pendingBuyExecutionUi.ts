@@ -483,6 +483,7 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
   const lifecycle = parseLifecycle(raw?.canonical_trade_lifecycle)
   const s12Defense = raw?.s12_holding_defense as S12HoldingDefenseContext | null | undefined
   const s12HoldingExitPlan = s12Defense?.detail?.exitPlan ?? {}
+  const s12PositionStop = s12Defense?.detail?.holding_defense?.position_stop_trailing ?? {}
   const lifecycleS12ExitPlan = lifecycle?.entry?.s12?.exitPlan ?? {}
   const s12ExitPlan = s12HoldingExitPlan?.tp1 || s12HoldingExitPlan?.mainExit || s12HoldingExitPlan?.trailingStop
     ? s12HoldingExitPlan
@@ -490,13 +491,24 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
   const s12Stop = positivePrice(
     s12Defense?.trailing_stop_after ??
       s12Defense?.detail?.holding_defense?.trailing_stop_after ??
-      s12ExitPlan?.trailingStop?.initial,
+      s12PositionStop?.applied_price ??
+      s12PositionStop?.candidate_price ??
+      s12ExitPlan?.trailingStop?.initial ??
+      s12ExitPlan?.trailingInitial ??
+      s12Defense?.detail?.execution?.stopLoss,
   )
   const trailingStop = positivePrice(raw?.trailing_stop)
   const lifecycleStop = positivePrice(lifecycle?.exit?.trailingStop ?? lifecycle?.exit?.initialStop ?? lifecycle?.entry?.stopLoss)
   const initialStop = positivePrice(raw?.initial_stop)
-  const hasS12HoldingPlan = Boolean(s12HoldingExitPlan?.tp1 || s12HoldingExitPlan?.mainExit || s12HoldingExitPlan?.trailingStop)
-  const primaryS12 = hasS12HoldingPlan || lifecycle?.owners?.exit === 's12_position_decision_v1'
+  const hasS12HoldingPlan = Boolean(
+    s12HoldingExitPlan?.tp1 ||
+    s12HoldingExitPlan?.mainExit ||
+    s12HoldingExitPlan?.trailingStop ||
+    s12PositionStop?.applied_price ||
+    s12PositionStop?.candidate_price ||
+    s12Defense?.detail?.execution?.stopLoss,
+  )
+  const primaryS12 = hasS12HoldingPlan || s12Stop != null || lifecycle?.owners?.exit === 's12_position_decision_v1'
   const stopValue = s12Stop ?? trailingStop ?? lifecycleStop ?? initialStop
   const stopSource = s12Stop != null
     ? 'S12 結構停損'

@@ -90,6 +90,8 @@ assert(
     uiHelper.includes('S12 買賣主機制') &&
     uiHelper.includes('ATR trailing 備援') &&
     uiHelper.includes("primaryS12 ? 'paper SLTP 備援' : 'paper SLTP'") &&
+    uiHelper.includes('position_stop_trailing') &&
+    uiHelper.includes('detail?.execution?.stopLoss') &&
     uiHelper.includes('exitPlanPrice') &&
     botDashboard.includes('S12 持倉分析：{s12HoldingDefense.label}') &&
     botDashboard.includes('riskPlan.primaryS12') &&

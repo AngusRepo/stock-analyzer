@@ -2793,10 +2793,12 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const positionStructuralMethod = input.pos.s12_position_stop_method != null
     ? String(input.pos.s12_position_stop_method)
     : null
-  const structuralStop =
+  const s12StructuralStop =
     positionStructuralStop ??
     finitePositive(assessment?.exitPlan?.trailingStop?.initial) ??
-    finitePositive(assessment?.execution?.stopLoss) ??
+    finitePositive(assessment?.execution?.stopLoss)
+  const structuralStop =
+    s12StructuralStop ??
     finitePositive(input.pos.initial_stop) ??
     finitePositive(input.pos.trailing_stop)
   const atr = finitePositive(input.atr14) ?? (currentPrice != null ? currentPrice * 0.02 : null)
@@ -2816,7 +2818,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     structural_stop: price(structuralStop),
     structural_stop_source: positionStructuralSource ?? assessment?.exitPlan?.trailingStop?.source ?? null,
     structural_stop_method: positionStructuralMethod ?? assessment?.exitPlan?.trailingStop?.method ?? null,
-    structural_stop_no_atr_buffer: positionStructuralStop != null ? 'true' : null,
+    structural_stop_no_atr_buffer: s12StructuralStop != null ? 'true' : null,
     position_exit_policy: 'independent_of_long_entry_readiness',
     executable_book_available: input.executableBookAvailable ? 'true' : 'false',
     no_short_order: 'true',
@@ -2877,7 +2879,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     }
   }
 
-  if (positionStructuralStop != null && structuralStop != null && currentPrice <= structuralStop) {
+  if (s12StructuralStop != null && structuralStop != null && currentPrice <= structuralStop) {
     if (!input.executableBookAvailable) {
       return {
         action: 'QUOTE_UNAVAILABLE',
@@ -3076,7 +3078,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     }
   }
 
-  if (positionStructuralStop != null && structuralStop != null && currentPrice > structuralStop) {
+  if (s12StructuralStop != null && structuralStop != null && currentPrice > structuralStop) {
     return {
       action: 'SET_STRUCTURAL_STOP',
       reason: 's12_position_structural_stop_watch',

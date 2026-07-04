@@ -116,11 +116,13 @@
     },
     "fundamental_factor_diversity": {
       "canonical_datasets": ["canonical_fundamental_features"],
-      "required_fields": ["pe"],
-      "optional_fields": [],
+      "required_fields": ["pe", "pb"],
+      "optional_fields": ["dividend_yield"],
       "sentinel_field": "pe",
       "fields": {
-        "pe": { "required": true }
+        "pe": { "required": true },
+        "pb": { "required": true },
+        "dividend_yield": { "required": false }
       }
     },
     "emerging_price_diversity": {

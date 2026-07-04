@@ -1698,6 +1698,7 @@ def build_fundamental_rows(
     valuation_only_fields = {"pe", "pb", "dividend_yield"}
     canonical_presence_fields = [field for field in fields if field not in valuation_only_fields]
     single_day_snapshot = bool(start_date and end_date and start_date == end_date)
+    presence_fields = canonical_presence_fields if not single_day_snapshot else [*canonical_presence_fields, "pe", "pb"]
     df = (
         _join_wide_fields_asof_snapshot(
             artifact_root / "raw" / "fundamental_factor_diversity",
@@ -1719,7 +1720,7 @@ def build_fundamental_rows(
         df = df.with_columns([pl.lit(None, dtype=pl.Float64).alias(field) for field in missing_fields])
     df = df.filter(pl.any_horizontal([
         pl.col(field).is_not_null() & ~pl.col(field).is_nan()
-        for field in canonical_presence_fields
+        for field in presence_fields
     ]))
     if df.is_empty():
         return []

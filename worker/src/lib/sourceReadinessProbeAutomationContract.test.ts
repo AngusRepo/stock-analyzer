@@ -21,7 +21,8 @@ assert(
     controllerResearchWorkflows.includes("callbackMode?: 'readiness_probe' | 'evening_chain'") &&
     controllerResearchWorkflows.includes('keyScopeJson?: string') &&
     controllerResearchWorkflows.includes('reuseSuccessfulArtifacts?: boolean') &&
-    controllerResearchWorkflows.includes('key_scope_json: optionalString(options.keyScopeJson)') &&
+    controllerResearchWorkflows.includes('key_scope_json: dailySourceMode') &&
+    controllerResearchWorkflows.includes('FINLAB_DAILY_PRICE_KEY_SCOPE_JSON') &&
     controllerResearchWorkflows.includes('reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts)') &&
     controllerResearchWorkflows.includes('options.dailySourceRefresh || options.continueEveningChain') &&
     controllerResearchWorkflows.includes('daily_source_refresh: dailySourceMode') &&
@@ -36,9 +37,11 @@ assert(
     controllerResearchWorkflows.includes('controller returned non-json for finlab backfill') &&
     !controllerResearchWorkflows.includes('require_official_market_summary: dailySourceMode') &&
     !controllerResearchWorkflows.includes('market_summary,global_context') &&
-    controllerResearchWorkflows.includes("const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,regime_context,trading_restrictions'") &&
+    controllerResearchWorkflows.includes("const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,regime_context,trading_restrictions,fundamental_factor_diversity'") &&
     !controllerResearchWorkflows.includes('FINLAB_DAILY_PRIMARY_LANES_DEFAULT = \'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,global_context') &&
-    controllerResearchWorkflows.includes('canonical_broker_rank_daily,canonical_trading_restrictions') &&
+    controllerResearchWorkflows.includes('canonical_broker_rank_daily,canonical_trading_restrictions,canonical_fundamental_features') &&
+    controllerResearchWorkflows.includes('FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON') &&
+    controllerResearchWorkflows.includes('FINLAB_DAILY_PRICE_KEY_SCOPE_JSON') &&
     controllerResearchWorkflows.includes('FINLAB_BACKFILL_LANES must be set for archive backfill') &&
     !controllerResearchWorkflows.includes('canonical_market_summary_daily,canonical_regime_context_daily') &&
     controllerResearchWorkflows.includes('canonical_start_date: canonicalStartDate') &&
@@ -114,9 +117,10 @@ assert(
     updateOrchestrator.includes("if (key.startsWith('canonical_institutional_amount_daily:'))") &&
     updateOrchestrator.includes("'canonical_trading_restrictions:daily_micro_lane'") &&
     updateOrchestrator.includes("if (key.startsWith('canonical_trading_restrictions:'))") &&
-    updateOrchestrator.includes("lanes.add('trading_restrictions')") &&
-    updateOrchestrator.includes("datasets.add('canonical_trading_restrictions')") &&
-    updateOrchestrator.includes("datasets.add('canonical_broker_rank_daily')") &&
+    updateOrchestrator.includes("addLane('trading_restrictions', ['canonical_trading_restrictions'])") &&
+    updateOrchestrator.includes("addLane('broker_flow_diversity', ['canonical_broker_flow_daily', 'canonical_broker_rank_daily'])") &&
+    updateOrchestrator.includes("if (key.startsWith('canonical_fundamental_features:valuation_daily'))") &&
+    updateOrchestrator.includes("addLane('fundamental_factor_diversity', ['canonical_fundamental_features'], ['pe', 'pb'])") &&
     updateOrchestrator.includes('dailySourceRefresh: true'),
   'source-readiness-probe must trigger FinLab daily refresh and automatically queue a recheck callback without self-blocking on the same evening-chain run',
 )

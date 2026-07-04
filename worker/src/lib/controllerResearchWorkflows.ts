@@ -352,8 +352,8 @@ function finLabCanonicalWindowDays(env: Bindings): number {
   return windowDays
 }
 
-const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,regime_context,trading_restrictions'
-const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_market_index_daily,canonical_futures_daily,canonical_regime_context_daily,canonical_broker_flow_daily,canonical_broker_rank_daily,canonical_trading_restrictions'
+const FINLAB_DAILY_PRIMARY_LANES_DEFAULT = 'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,regime_context,trading_restrictions,fundamental_factor_diversity'
+const FINLAB_DAILY_PRIMARY_CANONICAL_DATASETS_DEFAULT = 'canonical_market_daily,canonical_chip_daily,canonical_institutional_amount_daily,canonical_market_index_daily,canonical_futures_daily,canonical_regime_context_daily,canonical_broker_flow_daily,canonical_broker_rank_daily,canonical_trading_restrictions,canonical_fundamental_features'
 
 function buildFinLabBackfillRunId(years: number, runDate?: string, dailySourceRefresh = false): string {
   const day = (runDate && /^\d{4}-\d{2}-\d{2}$/.test(runDate))
@@ -438,7 +438,9 @@ function buildFinLabBackfillRequestBody(
     lanes: dailySourceMode
       ? (optionalString(options.lanes) ?? optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
       : archiveLanes,
-    key_scope_json: optionalString(options.keyScopeJson),
+    key_scope_json: dailySourceMode
+      ? (optionalString(options.keyScopeJson) ?? optionalString((env as any).FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON) ?? optionalString((env as any).FINLAB_DAILY_PRICE_KEY_SCOPE_JSON))
+      : optionalString(options.keyScopeJson),
     reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts),
     skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)

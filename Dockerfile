@@ -40,6 +40,8 @@ RUN mkdir -p /app/worker
 COPY worker/package.json worker/package-lock.json /app/worker/
 RUN cd /app/worker && npm ci
 COPY worker/ /app/worker/
+RUN mkdir -p /app/data
+COPY data/finlab_source_contract.json /app/data/finlab_source_contract.json
 RUN cd /app/worker && npx tsc -p tsconfig.json --noEmit false --rootDir src --outDir /app/worker-dist --module commonjs --moduleResolution node --ignoreDeprecations 6.0
 
 # Application source.

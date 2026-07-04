@@ -368,6 +368,13 @@ async function checkEveningChainSourceReadiness(
       [targetDate],
       1000,
     ),
+    countReadinessRows(
+      env.DB,
+      'canonical_fundamental_features:valuation_daily',
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND pe IS NOT NULL AND pb IS NOT NULL",
+      [targetDate],
+      1000,
+    ),
   ])
   checks.push(...canonicalChecks)
 
@@ -402,9 +409,16 @@ function hasFinLabRefreshableMissing(readiness: SourceReadinessSnapshot): boolea
   return readiness.missingKeys.some(isFinLabRefreshableMissingKey)
 }
 
+type FinLabKeyScopeEntry = {
+  lane: string
+  fields: string[]
+}
+
 type FinLabRefreshScope = {
   lanes?: string
   canonicalDatasets?: string
+  keyScope?: FinLabKeyScopeEntry[]
+  keyScopeJson?: string
 }
 
 type FinLabRetryScope = FinLabRefreshScope & {
@@ -492,66 +506,80 @@ function canonicalDatasetsForLanes(lanes: string[]): string | undefined {
   return csvJoin(datasets)
 }
 
+function keyScopeJsonForLanes(sourceScope: FinLabRefreshScope, lanes: string[]): string | undefined {
+  const allow = new Set(lanes)
+  const entries = (sourceScope.keyScope ?? [])
+    .filter((entry) => allow.has(entry.lane))
+    .map((entry) => ({ lane: entry.lane, fields: entry.fields }))
+  return entries.some((entry) => entry.fields.length > 0) ? JSON.stringify(entries) : undefined
+}
+
 function finLabRefreshScopeForReadiness(readiness: SourceReadinessSnapshot): FinLabRefreshScope {
   const lanes = new Set<string>()
   const datasets = new Set<string>()
+  const keyScope = new Map<string, string[]>()
+
+  const addLane = (lane: string, canonicalDatasets: string[], fields: string[] = []) => {
+    lanes.add(lane)
+    for (const dataset of canonicalDatasets) datasets.add(dataset)
+    if (fields.length || !keyScope.has(lane)) keyScope.set(lane, fields)
+  }
 
   for (const key of readiness.missingKeys) {
     if (!isFinLabRefreshableMissingKey(key)) continue
     if (key === 'finlab_primary_canonical') {
-      lanes.add('daily_price')
-      lanes.add('chip_diversity')
-      lanes.add('institutional_amount_summary')
-      datasets.add('canonical_market_daily')
-      datasets.add('canonical_chip_daily')
-      datasets.add('canonical_institutional_amount_daily')
+      addLane('daily_price', ['canonical_market_daily'])
+      addLane('chip_diversity', ['canonical_chip_daily'])
+      addLane('institutional_amount_summary', ['canonical_institutional_amount_daily'])
       continue
     }
     if (key.startsWith('canonical_market_daily:')) {
-      lanes.add('daily_price')
-      datasets.add('canonical_market_daily')
+      addLane('daily_price', ['canonical_market_daily'])
       continue
     }
     if (key.startsWith('canonical_chip_daily:')) {
-      lanes.add('chip_diversity')
-      datasets.add('canonical_chip_daily')
+      addLane('chip_diversity', ['canonical_chip_daily'])
       continue
     }
     if (key.startsWith('canonical_institutional_amount_daily:')) {
-      lanes.add('institutional_amount_summary')
-      datasets.add('canonical_institutional_amount_daily')
+      addLane('institutional_amount_summary', ['canonical_institutional_amount_daily'])
       continue
     }
     if (key.startsWith('canonical_market_index_daily:')) {
-      lanes.add('regime_context')
-      datasets.add('canonical_market_index_daily')
+      addLane('regime_context', ['canonical_market_index_daily'])
       continue
     }
     if (key.startsWith('canonical_futures_daily:')) {
-      lanes.add('regime_context')
-      datasets.add('canonical_futures_daily')
+      addLane('regime_context', ['canonical_futures_daily'])
       continue
     }
     if (key.startsWith('canonical_regime_context_daily:')) {
-      lanes.add('regime_context')
-      datasets.add('canonical_regime_context_daily')
+      addLane('regime_context', ['canonical_regime_context_daily'])
       continue
     }
     if (key.startsWith('canonical_broker_flow_daily:') || key.startsWith('canonical_broker_rank_daily:')) {
-      lanes.add('broker_flow_diversity')
-      datasets.add('canonical_broker_flow_daily')
-      datasets.add('canonical_broker_rank_daily')
+      addLane('broker_flow_diversity', ['canonical_broker_flow_daily', 'canonical_broker_rank_daily'])
+      continue
+    }
+    if (key.startsWith('canonical_fundamental_features:valuation_daily')) {
+      addLane('fundamental_factor_diversity', ['canonical_fundamental_features'], ['pe', 'pb'])
       continue
     }
     if (key.startsWith('canonical_trading_restrictions:')) {
-      lanes.add('trading_restrictions')
-      datasets.add('canonical_trading_restrictions')
+      addLane('trading_restrictions', ['canonical_trading_restrictions'])
     }
   }
+  const keyScopeEntries = Array.from(lanes)
+    .map((lane) => ({ lane, fields: keyScope.get(lane) ?? [] }))
+  const keyScopeJson = keyScopeEntries.some((entry) => entry.fields.length > 0)
+    ? JSON.stringify(keyScopeEntries)
+    : undefined
 
   return {
     lanes: csvJoin(lanes),
     canonicalDatasets: csvJoin(datasets),
+    keyScope: keyScopeEntries,
+    keyScopeJson,
   }
 }
 
@@ -629,6 +657,8 @@ async function finLabRetryScopeForReadiness(
       ...emptyFinLabRetryScope({
         lanes: csvJoin(retryLanes),
         canonicalDatasets: canonicalDatasetsForLanes(retryLanes),
+        keyScope: sourceScope.keyScope?.filter((entry) => retryLanes.includes(entry.lane)),
+        keyScopeJson: keyScopeJsonForLanes(sourceScope, retryLanes),
       }, requestedLanes),
       skippedFetchedLanes,
     }

@@ -54,6 +54,7 @@ scripts/
 screen_*.png
 /*.json
 data/*
+!data/finlab_source_contract.json
 !data/finlab_research/
 data/finlab_research/*
 !data/finlab_research/dagster_asset_graph.json
